@@ -18,7 +18,7 @@
 ai-remote 让你正在用的 AI Agent 直接操作你的其他电脑。在想要控制的 Windows 或 Mac 上运行一个轻量的被控端，和自己的电脑配对一次。之后，任何支持 MCP 的 Agent（Claude Code、Cursor，或者你自己写的）都能看到屏幕，把每个窗口读成一棵带名字的元素树，并直接操作这些元素。设备之间通过加密的点对点链路直连。每台设备允许做什么由你决定，高风险操作要经过你批准，你也随时可以接管。
 
 > [!NOTE]
-> **Pre-alpha 阶段**。第一个里程碑 M0（命令行、Windows 被控端、MCP 桥接）正在开发中。目前还没有发布任何版本，不能用在真实的机器上，命令也可能会变。欢迎 Star 或 Watch 关注进展，也欢迎提 issue 一起讨论设计。
+> **Pre-alpha 阶段**。第一个里程碑 M0（命令行、Windows 被控端、MCP 桥接）已经实现，正在测试打磨。目前还没有发布任何版本，不能用在真实的机器上，命令也可能会变。欢迎 Star 或 Watch 关注进展，也欢迎提 issue 一起讨论设计。
 
 <p align="center">
   <picture>
@@ -69,11 +69,11 @@ e9     └─ cell "2.4%"
   </picture>
 </p>
 
-1. **`ai-remote host`** 运行在每台要被控制的机器上，也就是被控端。它把这台机器的屏幕、界面树、输入、窗口和 shell 以 MCP 工具的形式提供出来（文件工具在 M1 推出），按设备的权限级别检查每一次调用，并写入审计日志。
+1. **`ai-remote host`** 运行在每台要被控制的机器上，也就是被控端。它把这台机器的屏幕、输入、窗口、剪贴板、shell 和后台任务以 MCP 工具的形式提供出来，也能挂载本机已有的 MCP server，比如提供元素级界面操作的无障碍树工具（文件工具在 M1 推出）。它按设备的权限级别检查每一次调用，并写入审计日志。
 2. **`ai-remote mcp`** 运行在 Agent 旁边，是控制端，负责把 Agent 和你配对过的所有被控端连起来。桌面应用和 iOS 应用会在之后推出。
 3. 两端按公钥找到彼此，用 QUIC 通信。中继只是兜底，读不到传输的内容。
 
-完整设计见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，也有[英文版](docs/architecture.md)。
+完整设计见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，也有[英文版](docs/architecture.md)。Agent 能用的每个工具及其参数和限制，见 [docs/tools.zh-CN.md](docs/tools.zh-CN.md)。
 
 ## 快速上手
 
@@ -101,6 +101,8 @@ claude mcp add ai-remote -- ai-remote mcp
 
 其他能启动 stdio 服务的 MCP 客户端也一样，指向 `ai-remote mcp` 即可。
 
+想让被控端在登录后自动启动、用 `ai-remote doctor` 检查机器，或者弄清调用为什么被拒绝，见 [docs/operations.zh-CN.md](docs/operations.zh-CN.md)。
+
 ### 可以让它做什么
 
 - “在 office-pc 上把 Q3 报告导出成 PDF，再分享给财务组。”
@@ -120,20 +122,20 @@ claude mcp add ai-remote -- ai-remote mcp
 
 每台设备只给够用的最低级别：查看屏幕给 `observe`，操作应用给 `control`，安装和维护才给 `admin`。
 
-- **审批**：高风险操作（比如会删除文件的 shell 命令）会先暂停，等机主批准或拒绝。审批界面计划在 M1 推出。
+- **审批**：高风险操作（比如会删除文件的 shell 命令）会先暂停，在被控端弹出原生对话框，等机主批准或拒绝；没人在场或超时未答都按拒绝处理。在桌面应用和手机上审批会在后续版本推出。
 - **审计日志**：每个操作都会记下是谁做的、动了什么、结果如何。
 - **接管与撤销**：你随时可以收回控制权，解除配对就能彻底切断这台设备的访问。
 - **配对与加密**：设备用一次性票据配对，以各自的密钥识别身份。流量端到端加密，经过中继时也一样。
 
-以上权限级别是规划中的默认设置，M0 和 M1 期间可能还会调整。
+以上是默认的权限级别，正式发布前可能还会调整。
 
 ## 路线图
 
 | 里&#8288;程&#8288;碑 | 交付内容 | 状&#8288;态 |
 | :-- | :-- | :-- |
-| **M0** | 命令行、Windows 被控端、MCP 桥接 | 进&#8288;行&#8288;中 |
-| **M1** | macOS 被控端、文件工具、审批界面 | 计&#8288;划&#8288;中 |
-| **M2** | 供人查看的实时画面、桌面应用 | 计&#8288;划&#8288;中 |
+| **M0** | 命令行、Windows 被控端、MCP 桥接 | 已&#8288;实&#8288;现&#8288;，&#8288;未&#8288;发&#8288;布 |
+| **M1** | macOS 被控端、文件工具 | 计&#8288;划&#8288;中 |
+| **M2** | 带实时画面和审批的桌面应用 | 计&#8288;划&#8288;中 |
 | **M3** | iOS 控制端（上架 App Store） | 计&#8288;划&#8288;中 |
 | **M4** | 可选的账号服务、可自建的中继 | 计&#8288;划&#8288;中 |
 
@@ -141,7 +143,7 @@ claude mcp add ai-remote -- ai-remote mcp
 
 ## 参与贡献
 
-架构还在定型，现阶段最有价值的贡献是设计上的反馈。建议先读 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，再到 [issue](https://github.com/JIA-ss/ai-remote/issues) 里提问题、讲使用场景，或者提出反对意见。代码贡献之后才会开放，具体流程见 [CONTRIBUTING.md](CONTRIBUTING.md#参与贡献)。安全问题请按 [SECURITY.md](SECURITY.md) 里的方式私下报告。
+架构还在定型，现阶段最有价值的贡献是设计上的反馈。建议先读 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，再到 [issue](https://github.com/JIA-ss/ai-remote/issues) 里提问题、讲使用场景，或者提出反对意见。代码贡献之后才会开放，具体流程见 [CONTRIBUTING.md](CONTRIBUTING.md#参与贡献)。安全问题请按 [SECURITY.md](SECURITY.md#安全策略) 里的方式私下报告。
 
 ## 许可证
 

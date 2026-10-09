@@ -1,0 +1,637 @@
+# Operating ai-remote
+
+[中文](operations.zh-CN.md) | English
+
+This guide is for the people who run hosts (the machines an agent operates) and controllers (the
+machines the agent runs on). It covers installation, pairing, access control, the checks and logs
+you use to see what is going on, and what to do when something is refused or does not work.
+
+> Status: pre-alpha. The Windows host is the M0 target; the macOS host is *(planned)* for M1.
+> Commands may still change before the first release.
+
+Related: [architecture.md](architecture.md) for the design, [tools.md](tools.md) for every tool and
+the configuration formats.
+
+## Contents
+
+1. [Command overview](#1-command-overview)
+2. [Profiles and files](#2-profiles-and-files)
+3. [Running the host](#3-running-the-host)
+4. [The controller agent](#4-the-controller-agent)
+5. [Pairing step by step](#5-pairing-step-by-step)
+6. [Levels, revoke, unrevoke, forget](#6-levels-revoke-unrevoke-forget)
+7. [When a host refuses](#7-when-a-host-refuses)
+8. [Doctor](#8-doctor)
+9. [Approval prompts](#9-approval-prompts)
+10. [Audit log](#10-audit-log)
+11. [Host configuration file](#11-host-configuration-file)
+12. [Self-hosted relays](#12-self-hosted-relays)
+13. [Troubleshooting](#13-troubleshooting)
+
+## 1. Command overview
+
+Every command takes `--home <DIR>` (another profile, see section 2) and `--json` (machine-readable
+output; `host`, `host install`, `host uninstall`, `mcp`, `agent` and `stop-agent` ignore it). Both
+options work before or after the subcommand. `ai-remote <command> --help` describes the rest.
+
+**On the host:**
+
+| Command | What it does |
+|---|---|
+| `ai-remote host [--no-pair-code]` | run the host in this terminal until Ctrl+C or `stop-host` |
+| `ai-remote host install` | start the host automatically at logon, in the background |
+| `ai-remote host uninstall` | remove the autostart entry, stop the host, remove the firewall rules |
+| `ai-remote host status` | autostart entry, firewall rules, whether the host runs |
+| `ai-remote doctor` | graded checks: can this machine really be operated? |
+| `ai-remote pair-code [--level L] [--name N]` | print a one-time pairing ticket |
+| `ai-remote peers` | paired controllers with their levels and device ids; revoked ones are marked `REVOKED` |
+| `ai-remote level <peer> <observe\|control\|admin\|none>` | change a controller's level |
+| `ai-remote revoke <peer>` / `unrevoke <peer>` | refuse a controller, or lift that |
+| `ai-remote forget <peer>` | remove a controller's pairing |
+| `ai-remote stop-host` | stop the running host |
+| `ai-remote mount list\|add\|add-profile\|remove\|test` | manage mounted MCP servers ([tools.md](tools.md#7-mounted-mcp-servers)) |
+
+**On the controller:**
+
+| Command | What it does |
+|---|---|
+| `ai-remote pair <ticket> [--name N]` | pair with a host |
+| `ai-remote hosts` | paired hosts and the level each granted at pairing |
+| `ai-remote unpair <host>` | forget a host on this controller |
+| `ai-remote call <tool> ['{json args}'] [--host H]` | call one tool and print the result |
+| `ai-remote mcp` | stdio MCP server for an MCP client |
+| `ai-remote agent` / `stop-agent` | run the controller agent in the foreground, or stop it |
+
+**Either side:** `ai-remote status` shows the profile, and whether a host and an agent run for it
+(with their device ids).
+
+## 2. Profiles and files
+
+All state lives in one per-user profile directory:
+
+| Platform | Default location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\ai-remote\data` (local, never roaming, so one device identity is not copied to several machines) |
+| macOS | `~/Library/Application Support/ai-remote` |
+
+`--home <DIR>` or the `AI_REMOTE_HOME` environment variable selects another directory. Several
+profiles can run side by side on one machine, each with its own identities, host and agent; this is
+how tests and local development run a host and a controller on the same computer. For an MCP client,
+add the option to the command line it starts: `ai-remote --home D:\profiles\lab mcp`.
+
+```
+<profile>/
+  host/
+    identity.key         the host's device secret key: treat it as a password
+    mesh/                transport state: pairings, levels, revocations, open tickets
+    ai-remote.toml       host configuration (section 11)
+    audit.jsonl          audit log (section 10)
+    host.log             background host log, rotated to host.log.1 and host.log.2
+    autostart-task.xml   task definition written by `host install` (Windows)
+    host-stderr.log      stderr of the LaunchAgent (macOS)
+    jobs/                <id>.log and <id>.json of each background job
+    mounts/              working directory of mounted servers: <name>.log, <name>.tools.json
+  controller/
+    identity.key         the controller's device secret key
+    mesh/                transport state: pairings
+    hosts.json           level each host granted at pairing, and when
+    controller.log       log of the agent when it was started on demand
+```
+
+Each running daemon listens on a local control endpoint that only the same user can open: on
+Windows the named pipes `\\.\pipe\ai-remote-host-<id>` and `\\.\pipe\ai-remote-controller-<id>`,
+elsewhere `host/control.sock` and `controller/control.sock`. `<id>` is a hash of the profile path
+(16 hex digits), so profiles never collide. The CLI finds the running host or agent through them.
+
+Logging: `AI_REMOTE_LOG` takes a log filter (for example `AI_REMOTE_LOG=debug` or
+`info,ar_host=debug`). Commands log to stderr (`ai-remote mcp` keeps stdout for the protocol); the
+background host and an agent started on demand log to their files.
+
+## 3. Running the host
+
+The host must run in the logged-in user's interactive desktop session. It is never a service: on
+Windows a service runs in session 0, which has no desktop, so screenshots would be black, input
+would go nowhere and no approval prompt could be shown.
+
+### 3.1 In a terminal
+
+```sh
+ai-remote host
+```
+
+It prints its name, device id, profile, number of paired controllers and the audit log path. If no
+controller is paired yet, it also prints a pairing ticket (level `control`); `--no-pair-code` skips
+that. If approval prompts cannot be shown right now (a locked desktop), it warns that actions which
+need approval will be refused.
+
+Stop it with Ctrl+C, or with `ai-remote stop-host` from another terminal. Stopping closes every
+controller connection with a "host stopping" reason. Only one host runs per profile: a second
+`ai-remote host` fails with "a host is already running for this profile".
+
+### 3.2 In the background: install and autostart
+
+```sh
+ai-remote host install --dry-run   # print every change, change nothing
+ai-remote host install
+```
+
+Repeating `host install` is safe; it is also the upgrade path after you move or update the
+binaries. `ai-remote-hostw` must sit next to `ai-remote`: the autostart entry runs it.
+
+#### Windows
+
+Who runs the install:
+
+| Your account | Run it from | Result |
+|---|---|---|
+| administrator | an elevated terminal ("Run as administrator") | logon task and firewall rules |
+| administrator | a normal terminal | refused, with the command to run elevated (the task needs it for "highest privileges", the firewall rules need it anyway) |
+| standard user | a normal terminal | logon task only; it prints the command an administrator runs for the firewall rules. The host then runs with the user's own rights, so it cannot operate elevated windows (doctor warns) |
+| administrator | `host install --firewall-only`, elevated | only the firewall rules, for the programs of this installation (they apply to every account) |
+
+An elevated terminal that runs as another account than the one using the desktop (a standard
+user's terminal elevated with an administrator's credentials) is refused: the task would start the
+host when the administrator logs on, with the administrator's profile. The fix is to run
+`ai-remote host install` unelevated in the user's own terminal and have an administrator run
+`host install --firewall-only`. `--force` installs for the elevated account anyway; the host then
+starts at that account's next logon and is not started now.
+
+What the install does (all of it is printed by `--dry-run`, including the full task XML):
+
+1. Writes the task definition to `<profile>/host/autostart-task.xml` and registers it with
+   `schtasks.exe` (called by absolute path) as `\ai-remote\host-<8 hex digits>`, one task per
+   profile. The task:
+   - starts at the logon of your account (by SID, so a rename does not break it);
+   - runs with an interactive token in your desktop session, with highest privileges (so the host
+     can drive elevated windows);
+   - runs `ai-remote-hostw.exe --home "<profile>"`;
+   - has no execution time limit (the default stops a task after 3 days), is never stopped or
+     blocked on battery, starts late if the logon was missed, and ignores a second start while one
+     runs.
+2. Firewall (administrator steps): removes earlier `ai-remote host` rules for the two programs at
+   their current paths (rules for a folder you moved them out of stay; delete those in `wf.msc`),
+   removes stale block rules for the two programs (typically left by an unanswered "allow access?"
+   prompt), and adds inbound allow rules named `ai-remote host` for UDP and TCP, any network
+   profile, for both `ai-remote-hostw.exe` and `ai-remote.exe`. A block rule for every program's
+   inbound UDP is reported but not changed (review it in `wf.msc`).
+3. Unless `--no-start`, starts the task, waits up to 20 seconds for the host to answer, and prints its
+   pid, its log path and the host's own doctor report as a self-check, then the next step (pairing)
+   if nobody is paired. If a host already runs for the profile (in a terminal, or a background host
+   started earlier), it is left alone and the new entry takes over at the next logon; to switch now,
+   run `ai-remote stop-host` and then `ai-remote host install` again.
+
+If a step fails, the steps after it are not run; fix the cause and run the same command again.
+
+#### macOS
+
+The install writes a per-user LaunchAgent
+`~/Library/LaunchAgents/io.github.jia-ss.ai-remote.host.<8 hex digits>.plist` and loads it with
+`launchctl bootstrap gui/<uid>`. It runs `ai-remote-hostw --home <profile>` at login, only in the GUI
+(Aqua) session, as an interactive process, and launchd restarts it after a crash but not after a
+clean exit, so `ai-remote stop-host` stays stopped until the next login. No elevation is needed.
+macOS asks to allow Screen Recording and Accessibility for `ai-remote-hostw` the first time it
+captures or acts; grant both in System Settings > Privacy & Security. The macOS host itself is
+*(planned)* for M1; the LaunchAgent install described here is already implemented.
+
+#### Checking and removing it
+
+```sh
+ai-remote host status
+```
+
+prints the autostart entry and what it runs (and whether that is this installation and profile), the
+inbound firewall rules for each host program (allow protocols, block rules that apply), whether the
+firewall is off, and whether the host runs (pid, background or in a terminal).
+
+```sh
+ai-remote host uninstall --dry-run
+ai-remote host uninstall
+```
+
+stops the running host (waits up to 10 seconds), ends and deletes the task (or unloads and removes the
+LaunchAgent), removes the task XML, and removes the firewall rules, unless another profile's task
+still starts the same `ai-remote-hostw` (the rules are per program, so they stay for it) or the
+other tasks cannot be listed (the output then names the `netsh` command to remove them). The same
+elevation rules apply: a standard user's uninstall leaves the firewall rules, which an administrator
+removes with `ai-remote host uninstall --firewall-only`.
+
+### 3.3 The background host: supervisor, logs, restarts
+
+`ai-remote-hostw` is the same host without a console window. Everything the terminal host would
+print goes to `<profile>/host/host.log`, and it never mints a pairing ticket by itself.
+
+- **Supervisor (Windows).** The process the task starts is a small supervisor that runs the host as a
+  child in a kill-on-close job object. When the host exits abnormally (crash, panic, error), the
+  supervisor starts it again after 5 seconds, doubling the wait up to 5 minutes; a host that ran for
+  10 minutes or more counts as healthy and the wait starts over at 5 seconds. A clean stop
+  (`ai-remote stop-host`) ends both. Ending the task, or the supervisor dying, ends the host and
+  everything in its job. The supervisor's job lets background jobs leave it, but the job object
+  Task Scheduler runs every task in does not, so whenever the background host process ends (a stop,
+  a crash, a restart), the background jobs it started end with it.
+  (Task Scheduler's own "restart on failure" only covers a task that fails to launch, never a
+  program that exits with an error.) On macOS launchd's `KeepAlive` does the same job.
+- **One host per profile.** A second start (a double-click, a script) finds the profile taken, writes
+  "not starting: a host is already running for this profile" to the log and exits with code 3,
+  without touching the running host.
+- **Logs.** `host.log` is rotated when it passes 8 MiB; two earlier files are kept (`host.log.1`,
+  `host.log.2`). Errors before the log can be opened go to `ai-remote-hostw-error.log` in the
+  temporary directory. On macOS, launchd also writes the process's stderr to `host/host-stderr.log`.
+- **Starting it again** after `stop-host`: log off and on, run `ai-remote host install` again (it
+  starts the task when no host runs), or start the task yourself:
+  `schtasks /Run /TN "ai-remote\host-<8 hex digits>"` (`ai-remote host status` shows the name).
+- **No console windows.** The background host has no console, so everything it starts (shell
+  commands, jobs, mounted servers, system tools) is started without a console window; nothing pops
+  up on the user's desktop.
+
+## 4. The controller agent
+
+The controller side is two programs:
+
+- `ai-remote agent` is a per-user daemon. It owns the controller identity and pairings and keeps one
+  connection per host; every MCP session is a stream on it.
+- `ai-remote mcp` is what an MCP client starts. It connects to the agent (starting it if needed),
+  relays stdio to it and exits when the client closes stdin.
+
+The agent starts on demand: `pair`, `hosts`, `unpair`, `call` and `mcp` all start it in the
+background when it is not running (waiting up to 20 seconds), with its output appended to
+`<profile>/controller/controller.log`. It exits after 30 minutes without any client; an open MCP
+session counts as a client. `ai-remote stop-agent` stops it now, and `ai-remote agent` runs it in the
+foreground for debugging (it fails if one already runs for the profile).
+
+Adding ai-remote to an MCP client:
+
+```sh
+claude mcp add ai-remote -- ai-remote mcp
+```
+
+Any MCP client that can start a stdio server works the same way: command `ai-remote`, arguments
+`["mcp"]` (add `"--home", "<DIR>"` for another profile). Several clients can run at once; they
+share the agent and its connections.
+
+For scripts, `ai-remote call <tool> '<json args>' [--host <name>]` calls one tool and prints the
+result (images as a one-line summary). It exits with code 2 when the tool reports an error (a
+refusal included) and with code 1 when the call could not be made (host unreachable, bad
+arguments). `--json` prints the raw result instead and does not use code 2. Each `call` is a new
+MCP session, so screenshot ids from an earlier `call` are unknown to the next one.
+
+## 5. Pairing step by step
+
+1. **Make sure the host runs** (`ai-remote host status` or `ai-remote status` on the host).
+2. **Mint a ticket on the host:**
+
+   ```sh
+   ai-remote pair-code --level control --name laptop
+   ```
+
+   `--level` is `observe`, `control` (default) or `admin`: start with the lowest level that does the
+   job. `--name` is the host's own name for the controller that redeems the ticket (default: the name
+   the controller suggests, its machine name). The ticket is valid once and expires after 24 hours.
+3. **Hand the ticket over** on a channel you trust. It is a credential: whoever redeems it first gets
+   the level.
+4. **Redeem it on the controller:**
+
+   ```sh
+   ai-remote pair <ticket> --name office-pc
+   ```
+
+   `--name` is your local name for the host (default: the name the host suggests). It prints the
+   host's name, a three-word safety code and the granted level.
+5. **Compare the safety code** with what the host shows:
+   - a host in a terminal prints `Paired with controller "laptop" (level: control).` and
+     `Safety code: ...`;
+   - a background host writes a `controller paired` line with `peer=`, `level=` and `sas=` to its
+     log. On Windows:
+
+     ```powershell
+     Select-String -Path "$env:LOCALAPPDATA\ai-remote\data\host\host.log" -Pattern 'controller paired' |
+       Select-Object -Last 1
+     ```
+
+6. **If the words differ**, someone else redeemed the ticket. On the host run
+   `ai-remote forget <name>` (or `revoke` to refuse that device for good), on the controller
+   `ai-remote unpair <host>`, and start again with a new ticket.
+7. **Check the result:** `ai-remote hosts` on the controller, `ai-remote peers` on the host, and
+   `ai-remote call system_info` (add `--host office-pc` when several hosts are paired).
+
+Names are lower-cased, every character other than an ASCII letter or digit becomes a dash, runs of
+dashes become one, dashes at either end are dropped, and the result is cut to 40 characters
+(`Office PC (2)` becomes `office-pc-2`). Commands that take a peer or host accept its name
+or its `eid:` device id; `level`, `revoke`, `unrevoke`, `forget`, `unpair` and the MCP `host` argument
+also accept a unique prefix of either.
+
+## 6. Levels, revoke, unrevoke, forget
+
+| Level | The controller can use |
+|---|---|
+| `observe` | `system_info`, `doctor`, `screenshot`, `zoom`, `list_windows`, observe tools of mounts |
+| `control` | + `focus_window`, `mouse`, `keyboard`, `clipboard_read`, `clipboard_write`, control tools of mounts |
+| `admin` | + `shell`, `jobs_*`, admin tools of mounts |
+
+A controller only sees the tools its level allows. All four commands below run on the host and take
+effect immediately; changes to `ai-remote.toml` (policy rules, mounts, approval timeout, relays,
+name) only apply when the host restarts.
+
+| Command | Pairing | Live connections | What the controller hears | Undo |
+|---|---|---|---|---|
+| `level <peer> <level>` | kept | kept; the next call is checked against the new level | a call above the level: "'shell' requires level 'admin', but this device has 'control' ..." | `level` again |
+| `level <peer> none` | kept | kept, but every call is refused | "This device no longer has access to this host."; new connections: "no access level" | `level <peer> <level>` |
+| `revoke <peer>` | kept, marked `REVOKED` in `peers` | cut | "access revoked by the host ..." (also on later attempts while its agent runs) | `unrevoke <peer>` |
+| `unrevoke <peer>` | unchanged | - | the device can connect again if it is still paired | `revoke` |
+| `forget <peer>` | removed (with its level) | cut | "not paired: ... Pair again with a fresh ticket" | a new ticket |
+
+Details:
+
+- **Revoke** refuses the device even if it redeems a new ticket. The controller agent remembers that
+  it was revoked, because later attempts only meet the transport's generic refusal. It keeps that in
+  memory only: once the agent has restarted (it exits after 30 idle minutes), the same refusal reads
+  `not paired`.
+- **Forget** a revoked device: the pairing goes, the refusal stays. The CLI prints the device id to use
+  later: `ai-remote unrevoke eid:<id>`. After that the device still needs a new ticket.
+- **Unrevoke** takes the peer name while the pairing exists, otherwise the device id (or a unique
+  prefix of it). The controller's refusal messages include its device id for this purpose.
+- **Unpair** on the controller only forgets the host there; the host still lists the controller until
+  you `forget` it on the host too.
+- MCP clients usually cache the tool list. After a level change, reconnect the client (or start a
+  new session) to see the tools of the new level; calls are checked against the current level either
+  way.
+
+## 7. When a host refuses
+
+Refusals are written for both the agent and you: each says what happened and what to do. An agent is
+told not to retry refused or declined calls automatically.
+
+### 7.1 Connection refusals
+
+What the controller reports when it cannot get a session with a host (messages are shortened here):
+
+| Message starts with | Meaning | What to do |
+|---|---|---|
+| `access revoked by the host` | the host owner revoked this controller | on the host: `ai-remote unrevoke <this controller>`; if the pairing was removed too, pair again |
+| `not paired` | the host does not know this controller (never paired, forgotten, or revoked before this agent started) | pair again with a new ticket; if it was revoked, the owner also has to `unrevoke` it |
+| `no access level` | paired, but the host grants no level | on the host: `ai-remote level <this controller> control` |
+| `host offline or unreachable` | no answer; the raw cause follows | start the host, check the machine is online, see section 13 |
+| `the host closed the connection` | the host stopped or restarted | try again shortly |
+| `this controller closed the connection` | the host was unpaired here, or the agent is stopping | pair again, or retry |
+| `this controller has revoked that host` | this machine refuses that host | - |
+| `connection failed:` | anything else, with the raw reason | read the reason; check versions match |
+
+When the host owner has to act, the message ends with `This controller's device id: eid:...`, which
+is how the owner finds it in `ai-remote peers` (or uses it with `unrevoke`).
+
+A refusal that only a person can lift is reported once and not redialled in a loop; the next attempt
+dials again, so a fix on the host is picked up.
+
+If the connection breaks while a call runs, the call is not repeated. The message ends with "The
+call's outcome is unknown: it may have run on the host. Check the host's state before repeating it".
+
+### 7.2 Call refusals by the gate
+
+| Message | Cause | What to do |
+|---|---|---|
+| `'<tool>' requires level '<x>', but this device has '<y>'` | the tool needs a higher level | the owner raises it with `ai-remote level`, if appropriate |
+| `This device no longer has access to this host.` | the level was set to `none` (or the pairing went) | the owner grants a level again |
+| `The host's policy does not allow '<tool>'.` | a `deny` rule or `approve = "deny"` | the owner changes `ai-remote.toml` |
+| `The host owner declined '<tool>'.` | the owner clicked No | ask the user what they want |
+| `Nobody approved it on the host in time for '<tool>'.` | no answer before the timeout | ask the user to be at the host, or add a rule |
+| `No one can approve actions on the host right now (desktop locked or unattended), so it refused '<tool>'.` | no prompt could be shown | unlock the desktop, or add a rule (section 9) |
+| `cancelled: the session ended` / `cancelled by the controller` | the session ended or the client cancelled | - |
+| `unknown tool '<name>'` | the host does not have that tool (a protocol error, not audited) | check the tool list of that host |
+
+### 7.3 Common tool refusals
+
+| Message contains | Cause | What to do |
+|---|---|---|
+| `the desktop is locked or showing a security prompt` | locked screen, sign-in screen, UAC prompt | unlock; on unattended machines turn off automatic locking |
+| `runs in the services session (session 0)` | the host runs as a service or from session 0 | run it in the user's session (`host install`) |
+| `an ai-remote approval prompt is open on the host` | input is paused while a prompt waits for its answer | wait for the owner to answer, then retry |
+| `the input would go to one of ai-remote's own windows` | the target is the approval prompt or the host's terminal | act on another window |
+| `running with higher privileges` | the target window belongs to an elevated program | run the host elevated (`host install` as an administrator) |
+| `is refused: it locks the workstation` (and similar) | a lock or sign-out chord | do not send it; the owner decides |
+| `mount '<m>' is not running: it failed N times in a row` | a mounted server keeps crashing | read `host/mounts/<m>.log`; see [tools.md](tools.md#75-lifecycle-crashes-and-restarts) |
+| `refusing to start ...: its SHA-256 is ...` | the mounted server's executable changed | re-add the mount if the update was intended |
+
+Tool-specific errors are listed with each tool in [tools.md](tools.md).
+
+## 8. Doctor
+
+```sh
+ai-remote doctor [--json]
+```
+
+asks the running host for its checks, so they see the host's own session, token and network. Without
+a running host the CLI runs them itself from your terminal and skips the network check. The same
+report is the `doctor` tool (agents are told to run it before a task and stop on `fail`) and the
+self-check printed by `host install`.
+
+Each check is `ok`, `warn`, `fail` or `skip` (not applicable, or not checkable from where it ran),
+with a fix for anything not `ok`. The overall grade is the worst one; `ai-remote doctor` exits with
+code 1 when it is `fail`.
+
+```
+Checked by the running host:
+  ok    session    interactive session 1
+  ok    console    attached to the physical console
+  ok    desktop    desktop unlocked (input desktop: Default)
+  warn  elevation  not elevated: windows of elevated programs (installers, admin tools) silently ignore its input and UI actions
+                   fix: run the host with highest privileges; `ai-remote host install` registers it that way
+  ok    dpi        per-monitor DPI aware (v2): screenshot and click coordinates agree
+  ok    relay      connected to https://...; 3 direct address(es)
+  ok    approval   approval prompts can be shown on this desktop
+  ok    firewall   inbound connections allowed for C:\...\ai-remote-hostw.exe (UDP, TCP)
+  ok    autostart  Task Scheduler task \ai-remote\host-1a2b3c4d starts the background host at login
+  ok    audit      audit log writable: C:\...\host\audit.jsonl
+  ok    disk       212.4 GiB free on C:\
+Overall: warn
+```
+
+| Check | ok when | Not ok means | Fix |
+|---|---|---|---|
+| `session` | an interactive Windows session (not 0) | **fail**: the services session has no desktop; screenshots are black, input goes nowhere | start the host from the user's session; `host install` registers it that way |
+| `console` | the session is attached to the physical console | **warn**: a remote desktop session; capture and input stop when it disconnects, and the console stays locked | return the session to the console instead of disconnecting: `tscon <session> /dest:console` from an elevated prompt |
+| `desktop` | the input desktop is `Default` (unlocked) | **fail**: locked, or a sign-in or UAC prompt is showing | unlock; on unattended machines turn off automatic locking |
+| `elevation` | the host runs elevated | **warn**: windows of elevated programs ignore its input | run with highest privileges (`host install` as an administrator) |
+| `dpi` | per-monitor DPI aware (v2) | **fail**: clicks on scaled displays land in the wrong place | remove any high-DPI compatibility override on the executable (Properties > Compatibility) |
+| `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
+| `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
+| `firewall` | an inbound allow rule covers UDP for the host program, or the firewall is off | **fail**: a block rule applies to the program (traffic falls back to the relay); **warn**: no allow rule (Windows will prompt at the first connection), or a block rule for every program's inbound UDP | `host install` from an elevated terminal; review rules of other programs in `wf.msc` |
+| `autostart` | the task (or LaunchAgent) starts this installation's background host with this profile | **warn**: none installed, or it runs something else | run `ai-remote host install` (again) |
+| `audit` | the audit log can be opened for appending | **fail**: actions are not recorded | fix the profile directory's permissions, or use another `--home` |
+| `disk` | 5 GiB or more free where the profile is | **warn** under 5 GiB; **fail** under 0.5 GiB (logs and the audit log may stop being written) | free some disk space |
+
+The firewall check looks at the program that runs the host: the running host's executable, or
+without a host the one autostart would run.
+
+## 9. Approval prompts
+
+A call needs approval when its action is `ask`: the default for `shell` and `jobs_start`, for admin
+tools of mounted servers without an `approve` setting and for mounted tools with `approve = "ask"`,
+or whenever a policy rule says `ask` (see [tools.md](tools.md#8-policy-rules)).
+
+The host shows a native warning dialog on its desktop, titled "ai-remote: approve an action":
+
+```
+"laptop" wants to run: shell
+
+Why: Check free disk space before the update
+
+Details:
+{"command":"Get-PSDrive C","intent":"Check free disk space before the update"}
+
+Allow this once? (No answer within 60 s counts as No.)
+```
+
+- **Yes** runs this one call. There is no "always allow" button; use a policy rule for that.
+- **No**, no answer within `approval_timeout_secs` (default 60, at least 5), or no way to show the
+  dialog (locked desktop, secure desktop, no interactive session) all refuse the call, and the agent
+  is told which of these happened. After a timeout the dialog may stay on screen, but its answer is
+  ignored.
+- The text the caller controls is shown safely: control characters are escaped, the intent is cut at
+  600 characters and the arguments preview at about 400. Secret values (environment values, standard
+  input, clipboard text) appear only by size, such as `<hidden: 12 chars>`.
+- While any prompt waits for its answer, every mouse and keyboard call from every controller is
+  refused, and input can never be aimed at the host's own windows, so a controller cannot answer its
+  own prompt.
+- On an unattended machine nobody can answer. Either give such devices only the tools they need, or
+  allow specific tools for a specific device with a rule (`action = "allow"` skips the prompt).
+
+## 10. Audit log
+
+Every tool call on the host is appended to `<profile>/host/audit.jsonl`, one JSON object per line.
+A call that runs gets two records: `decision` before it runs and `outcome` after it. A refused call
+gets only the `decision` record.
+
+| Field | Meaning |
+|---|---|
+| `ts` | milliseconds since the Unix epoch |
+| `kind` | `decision` or `outcome` |
+| `session` | 8-hex-digit id of the MCP session |
+| `peer` | the host's name for the controller |
+| `principal` | the controller's device id, `eid:<hex>` |
+| `tool` | tool name (mounted tools with their prefix) |
+| `decision` | `allow`, `approved`, `denied`, `timeout`, `unavailable` (no prompt possible), `level` (refused by level), `policy` (refused by a rule) |
+| `intent` | the caller's stated reason, when given |
+| `args_hash` | BLAKE3 of the argument JSON: matches identical calls without storing values |
+| `args_preview` | `decision` records only: the arguments as shown to the owner, at most about 400 characters (head and tail), secrets by size only |
+| `outcome` | `ok`, `error` or `cancelled` |
+| `duration_ms` | how long the call ran |
+| `result_bytes` | size of the result's content as JSON, after the result budget |
+| `error` | the error text; over 300 characters it is cut to its first and last 140 |
+
+```json
+{"ts":1791021600123,"kind":"decision","session":"5f2c19ab","peer":"laptop","principal":"eid:3b7e...","tool":"shell","decision":"approved","intent":"Check free disk space","args_hash":"9f2d...","args_preview":"{\"command\":\"Get-PSDrive C\",\"intent\":\"Check free disk space\"}"}
+{"ts":1791021601412,"kind":"outcome","session":"5f2c19ab","peer":"laptop","principal":"eid:3b7e...","tool":"shell","intent":"Check free disk space","args_hash":"9f2d...","outcome":"ok","duration_ms":1289,"result_bytes":512}
+```
+
+ai-remote does not rotate or prune the audit log; archive it yourself if it grows. The doctor `audit`
+check fails when it cannot be written. Background jobs keep their own records in `host/jobs/`
+(command, owner, intent, times, exit code; never the environment).
+
+## 11. Host configuration file
+
+`<profile>/host/ai-remote.toml` is optional; without it every default applies. The host reads it when
+it starts, so restart the host after editing it (`ai-remote stop-host`, then start it again). A file
+that does not parse stops the host from starting; the error is in the terminal, or in `host.log` for
+the background host (on Windows its supervisor keeps retrying with the backoff of section 3.3, so a
+fixed file is picked up within at most 5 minutes).
+
+```toml
+[host]
+name = "office-pc"           # shown to controllers; default: the machine name
+approval_timeout_secs = 60   # how long a prompt waits; at least 5
+
+[network]
+relays = []                  # empty: the default public relays (section 12)
+
+[[rule]]                     # policy rules, first match wins
+tool = "shell"
+action = "ask"
+
+[[mount]]                    # mounted MCP servers
+name = "ui"
+command = "C:/tools/cua-driver/cua-driver.exe"
+args = ["mcp"]
+[mount.tools]
+click = "control"
+```
+
+`[[rule]]` is described in [tools.md](tools.md#8-policy-rules), `[[mount]]` in
+[tools.md](tools.md#7-mounted-mcp-servers). Only the `[[mount]]` tables and their tool entries reject
+unknown keys; a misspelled key elsewhere (for example `principle` instead of `principal` in a rule) is
+ignored without a warning, so check the spelling. `ai-remote mount ...` edits the file and keeps your
+comments and layout.
+
+## 12. Self-hosted relays
+
+By default hosts use the public n0 relays. Devices use a relay to find each other and to carry traffic
+while no direct path works; a relay only sees encrypted traffic it cannot read. To use your own
+[iroh-relay](https://github.com/n0-computer/iroh) servers, list their URLs in the host's
+configuration:
+
+```toml
+[network]
+relays = ["https://relay1.example.org", "https://relay2.example.org"]
+```
+
+- An empty list (or no `[network]` section) means the default public relays.
+- The setting is read when the host starts. A pairing ticket records the relay the host used when the
+  ticket was minted, so mint new tickets after changing it.
+- `ai-remote doctor` on the host shows whether it is connected to a relay (`relay` check).
+- The controller agent has no relay setting in M0; it uses the default relays for its own
+  connection.
+
+## 13. Troubleshooting
+
+**Black or single-colour screenshots.** The `screenshot` result carries a `warning` when the image is
+entirely black or one flat colour. Usual causes: the desktop is locked or showing a sign-in or UAC
+prompt; the display is off or asleep; an exclusive-fullscreen or DRM-protected app; or the host does
+not run in the logged-in user's interactive session. Run `ai-remote doctor` on the host (`session`,
+`console`, `desktop`) and check `system_info.session`.
+
+**Locked desktop.** While the desktop is locked or a secure prompt shows, screen capture, focus,
+mouse, keyboard, clipboard and mounted tools that need the desktop refuse with the reason, and every
+approval is refused. Unlock it. On an unattended test machine turn off automatic locking (screen
+saver lock, lock after sleep, dynamic lock), or the host stops being usable whenever it locks.
+
+**Remote Desktop (RDP).** A host inside an RDP session works while the session is connected. When the
+RDP client disconnects, the session loses its display (capture and input stop) and the physical
+console stays at the lock screen. Before disconnecting, return the session to the console from an
+elevated prompt on the host: `tscon <session id> /dest:console` (the `console` doctor check prints the
+command with the right id).
+
+**Elevated windows.** Windows silently drops input sent to a program running with higher privileges
+(installers, admin tools, UAC-elevated apps). The host refuses such input with a message instead of
+pretending it worked. Run the host elevated: install it with `ai-remote host install` from an
+administrator's elevated terminal (the task runs with highest privileges). UAC consent prompts
+themselves are on the secure desktop and cannot be operated at all.
+
+**Relayed instead of direct.** `list_hosts` (in the MCP client) and `ai-remote hosts --json` show
+`path`: `direct`, `relay` or `unknown` for a live connection. Relayed traffic works but adds latency.
+Common causes on the host: a firewall block rule for the host program (doctor `firewall` fails;
+`host install` from an elevated terminal removes it), a block rule for all inbound UDP (doctor warns;
+review it in `wf.msc`), or networks where UDP hole punching cannot succeed (some corporate and mobile
+networks).
+
+**Firewall prompts.** The first time a program listens, Windows asks on the desktop whether to allow
+it. On an unattended machine nobody answers, and the unanswered prompt leaves block rules that beat
+allow rules, so connections quietly fall back to the relay. `host install` adds the allow rules up
+front and removes such stale block rules; `ai-remote host status` lists the rules per program.
+
+**focus_window fails with "foreground lock".** Windows sometimes refuses to bring another app's window
+to the front. Click inside the window with `mouse` instead, or ask the user to switch to it.
+
+**The host is not reachable.** On the host: `ai-remote host status` (does it run?) and
+`ai-remote doctor` (relay, firewall). On the controller: the error from `list_hosts` or
+`ai-remote call system_info` includes the raw cause. Check that both machines are online and that
+outbound HTTPS to the relays is allowed.
+
+**The agent does not start.** `ai-remote mcp` and the controller commands report "the controller agent
+did not start" with the log path; read `<profile>/controller/controller.log`. Running
+`ai-remote agent` in a terminal shows the same messages directly.
+
+**A new host's tools do not show in the MCP client.** The client asked for the tool list before the
+host was paired or reachable. Reconnect the client (for example restart the MCP server in its
+settings); the tool list is built from the hosts reachable at that moment.
+
+**"a host is already running for this profile".** A host (in a terminal or in the background) already
+uses this profile. `ai-remote host status` shows its pid and whether it runs in the background; stop
+it with `ai-remote stop-host`, or use another profile with `--home`.

@@ -53,6 +53,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 toml = "1"
+# Job objects with kill-on-close plus breakaway (the background host's supervisor).
+win32job = "2"
 toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

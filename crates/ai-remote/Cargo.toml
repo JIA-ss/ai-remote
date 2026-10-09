@@ -33,4 +33,4 @@ file-rotate.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The background host restarts itself after a crash (Task Scheduler does not; see the binary).
-process-wrap.workspace = true
+win32job.workspace = true

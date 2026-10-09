@@ -54,6 +54,24 @@ fn detach(cmd: &mut std::process::Command) {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    // The agent outlives this process, and a Windows child inherits every inheritable handle. If a
+    // caller reads our stdout through a pipe (a script, or an MCP client that started `ai-remote
+    // mcp`), the agent would keep that pipe open and the caller would never see end-of-file. The
+    // agent gets its log file and NUL explicitly, so stop our own standard handles being inherited.
+    use windows::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: queries and flag changes on this process's own standard handles.
+        unsafe {
+            if let Ok(handle) = GetStdHandle(which)
+                && !handle.is_invalid()
+            {
+                let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0));
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
