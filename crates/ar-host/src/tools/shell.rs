@@ -75,7 +75,12 @@ impl Tool for Shell {
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(KillOnDrop);
         #[cfg(windows)]
-        wrap.wrap(process_wrap::tokio::JobObject);
+        {
+            // Through the wrapper: JobObject sets the creation flags itself and would drop a flag
+            // set on the command directly.
+            wrap.wrap(process_wrap::tokio::CreationFlags(windows::Win32::System::Threading::CREATE_NO_WINDOW));
+            wrap.wrap(process_wrap::tokio::JobObject);
+        }
         #[cfg(unix)]
         wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
 
@@ -120,14 +125,12 @@ fn build_command(p: &ShellParams) -> tokio::process::Command {
             let exe = if shell == "pwsh" { "pwsh.exe".to_string() } else { system32("WindowsPowerShell\\v1.0\\powershell.exe") };
             let mut c = tokio::process::Command::new(exe);
             c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded]);
-            no_window(&mut c);
             c
         }
         #[cfg(windows)]
         "cmd" => {
             let mut c = tokio::process::Command::new(system32("cmd.exe"));
             c.raw_arg(format!("/d /s /c \"chcp 65001 >nul & {}\"", p.command));
-            no_window(&mut c);
             c
         }
         _ => {
@@ -143,12 +146,6 @@ fn build_command(p: &ShellParams) -> tokio::process::Command {
 fn system32(rel: &str) -> String {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     format!("{root}\\System32\\{rel}")
-}
-
-#[cfg(windows)]
-fn no_window(c: &mut tokio::process::Command) {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    c.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// UTF-8 first; fall back to lossy decoding (legacy code pages).
