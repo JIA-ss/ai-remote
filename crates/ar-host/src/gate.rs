@@ -4,9 +4,11 @@
 //! 2. policy (`allow` / `ask` / `deny`);
 //! 3. owner approval when the policy says `ask`;
 //! 4. audit record of the decision;
-//! 5. the call itself, cancelled when the session or connection ends;
+//! 5. the call itself, cancelled when the session or connection ends or the controller cancels the
+//!    request;
 //! 6. audit record of the outcome;
-//! 7. result budget (large text cut to head and tail).
+//! 7. result budget (large text cut to head and tail, oversized structured content dropped, images
+//!    kept within what model APIs accept; see [`crate::result_budget`]).
 
 use std::time::Instant;
 
@@ -15,20 +17,23 @@ use rmcp::{
     ErrorData,
     model::{CallToolResult, ContentBlock, JsonObject},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     HostState,
     approval::{ApprovalRequest, Verdict},
     audit::{AuditRecord, now_ms},
-    policy,
+    policy, result_budget,
     session::{Session, ToolCtx},
 };
 
+/// `cancel` is the request's own token (cancelled by the controller's `notifications/cancelled`).
 pub async fn call(
     host: &HostState,
     session: &Session,
     name: &str,
     args: JsonObject,
+    cancel: &CancellationToken,
 ) -> Result<CallToolResult, ErrorData> {
     let Some(tool) = host.registry().get(name) else {
         return Err(ErrorData::invalid_params(format!("unknown tool '{name}'"), None));
@@ -113,20 +118,22 @@ pub async fn call(
     // 4. Decision record.
     host.audit().write(&AuditRecord { decision: Some(decision), args_preview: Some(&preview), ..record("decision") });
 
-    // 5. The call, bounded by the session's lifetime.
+    // 5. The call, bounded by the session's lifetime and the request's own cancellation.
     let started = Instant::now();
     let ctx = ToolCtx { host, session };
+    // Dropping the tool's future is what stops it (a mounted server is sent `notifications/cancelled`).
     let result = tokio::select! {
-        r = tool.call(&ctx, args) => Some(r),
-        _ = session.cancel.cancelled() => None,
+        r = tool.call(&ctx, args) => Ok(r),
+        _ = session.cancel.cancelled() => Err("cancelled: the session ended"),
+        _ = cancel.cancelled() => Err("cancelled by the controller"),
     };
     let duration_ms = Some(started.elapsed().as_millis());
 
     // 6-7. Outcome and budget.
     let (outcome, result) = match result {
-        None => ("cancelled", CallToolResult::error(vec![ContentBlock::text("cancelled: the session ended")])),
-        Some(Ok(r)) => ("ok", apply_budget(r)),
-        Some(Err(e)) => ("error", CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])),
+        Err(why) => ("cancelled", CallToolResult::error(vec![ContentBlock::text(why)])),
+        Ok(Ok(r)) => ("ok", result_budget::apply(r).await),
+        Ok(Err(e)) => ("error", CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])),
     };
     let outcome = if outcome == "ok" && result.is_error == Some(true) { "error" } else { outcome };
     let bytes = serde_json::to_vec(&result.content).map(|v| v.len()).unwrap_or(0);
@@ -145,15 +152,4 @@ pub async fn call(
 
 fn refusal(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.to_string())])
-}
-
-fn apply_budget(mut r: CallToolResult) -> CallToolResult {
-    for block in &mut r.content {
-        if let ContentBlock::Text(t) = block {
-            if t.text.len() > budget::TEXT_LIMIT {
-                t.text = budget::clip(&t.text);
-            }
-        }
-    }
-    r
 }
