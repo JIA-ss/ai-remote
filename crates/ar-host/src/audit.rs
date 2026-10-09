@@ -73,7 +73,11 @@ impl AuditLog {
             .open(path)
             .with_context(|| format!("open audit log {}", path.display()))?;
         let (live, _) = broadcast::channel(1024);
-        Ok(Self { path: path.to_path_buf(), inner: Mutex::new(Inner { file, recent }), live })
+        Ok(Self {
+            path: path.to_path_buf(),
+            inner: Mutex::new(Inner { file, recent }),
+            live,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -121,7 +125,10 @@ impl AuditLog {
     /// between the backlog and the live feed.
     pub fn subscribe(&self) -> (Vec<Arc<str>>, broadcast::Receiver<Arc<str>>) {
         let inner = self.inner.lock().unwrap();
-        (inner.recent.iter().cloned().collect(), self.live.subscribe())
+        (
+            inner.recent.iter().cloned().collect(),
+            self.live.subscribe(),
+        )
     }
 }
 
@@ -135,8 +142,12 @@ pub fn now_ms() -> u128 {
 /// The last complete lines of the existing log (up to [`BACKLOG`]).
 fn seed_backlog(path: &Path) -> VecDeque<Arc<str>> {
     let mut out = VecDeque::new();
-    let Ok(mut file) = File::open(path) else { return out };
-    let Ok(len) = file.seek(SeekFrom::End(0)) else { return out };
+    let Ok(mut file) = File::open(path) else {
+        return out;
+    };
+    let Ok(len) = file.seek(SeekFrom::End(0)) else {
+        return out;
+    };
     let start = len.saturating_sub(SEED_BYTES);
     if file.seek(SeekFrom::Start(start)).is_err() {
         return out;
@@ -147,7 +158,11 @@ fn seed_backlog(path: &Path) -> VecDeque<Arc<str>> {
     }
     let text = String::from_utf8_lossy(&bytes);
     // Reading from the middle of the file starts inside a line: drop that partial line.
-    let body = if start > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+    let body = if start > 0 {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
+    };
     for line in body.lines().filter(|l| !l.trim().is_empty()) {
         if out.len() == BACKLOG {
             out.pop_front();
@@ -184,7 +199,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ar-audit-seed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("audit.jsonl");
-        let lines: String = (0..BACKLOG + 50).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        let lines: String = (0..BACKLOG + 50)
+            .map(|i| format!("{{\"n\":{i}}}\n"))
+            .collect();
         std::fs::write(&path, lines).unwrap();
         let seeded = seed_backlog(&path);
         assert_eq!(seeded.len(), BACKLOG);

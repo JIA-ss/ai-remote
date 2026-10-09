@@ -15,8 +15,12 @@ use serde_json::{Value, json};
 
 /// The running host's `status` answer, if a host runs for this profile.
 async fn running_host(profile: &Profile) -> Option<Value> {
-    let mut conn = Conn::connect(&profile.control_endpoint(Role::Host).ok()?).await.ok()?;
-    conn.request(&serde_json::to_value(HostRequest::Status).ok()?).await.ok()
+    let mut conn = Conn::connect(&profile.control_endpoint(Role::Host).ok()?)
+        .await
+        .ok()?;
+    conn.request(&serde_json::to_value(HostRequest::Status).ok()?)
+        .await
+        .ok()
 }
 
 async fn wait_for_host(profile: &Profile, timeout: Duration) -> Option<Value> {
@@ -41,7 +45,11 @@ pub struct InstallFlags {
 }
 
 pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> {
-    let scope = if flags.firewall_only { Scope::FirewallOnly } else { Scope::All };
+    let scope = if flags.firewall_only {
+        Scope::FirewallOnly
+    } else {
+        Scope::All
+    };
     let p = profile.clone();
     let plan = tokio::task::spawn_blocking(move || install::install_plan(&p, scope)).await??;
     print_plan(&plan, flags.dry_run);
@@ -70,7 +78,9 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
         );
     }
     if plan.blocker.is_some() {
-        println!("It starts when this account logs on; it is not started now because the desktop belongs to another account.");
+        println!(
+            "It starts when this account logs on; it is not started now because the desktop belongs to another account."
+        );
         return Ok(());
     }
     if flags.no_start {
@@ -91,22 +101,39 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
     }
     let log = profile.log_path(Role::Host)?;
     let Some(host) = wait_for_host(profile, Duration::from_secs(20)).await else {
-        bail!("the background host did not answer within 20 s; see {}", log.display());
+        bail!(
+            "the background host did not answer within 20 s; see {}",
+            log.display()
+        );
     };
-    println!("The background host is running (pid {}); it logs to {}.\n", host["pid"], log.display());
+    println!(
+        "The background host is running (pid {}); it logs to {}.\n",
+        host["pid"],
+        log.display()
+    );
     // The self-check: the host's own view of its session, token and network.
     print_report(&host_doctor(profile).await?);
     if host["peers"].as_u64() == Some(0) {
-        println!("\nNext: pair a controller. Run `ai-remote pair-code` here and follow its instructions.");
+        println!(
+            "\nNext: pair a controller. Run `ai-remote pair-code` here and follow its instructions."
+        );
     }
     Ok(())
 }
 
 pub async fn host_uninstall(profile: &Profile, dry_run: bool, firewall_only: bool) -> Result<()> {
-    let scope = if firewall_only { Scope::FirewallOnly } else { Scope::All };
+    let scope = if firewall_only {
+        Scope::FirewallOnly
+    } else {
+        Scope::All
+    };
     let p = profile.clone();
     let plan = tokio::task::spawn_blocking(move || install::uninstall_plan(&p, scope)).await??;
-    let running = if scope == Scope::All { running_host(profile).await } else { None };
+    let running = if scope == Scope::All {
+        running_host(profile).await
+    } else {
+        None
+    };
     print_plan(&plan, dry_run);
     if let Some(host) = &running {
         println!("  - Also stops the running host (pid {}).", host["pid"]);
@@ -146,7 +173,9 @@ fn this_exe() -> String {
 async fn stop_host(profile: &Profile) -> Result<()> {
     let endpoint = profile.control_endpoint(Role::Host)?;
     if let Ok(mut conn) = Conn::connect(&endpoint).await {
-        let _ = conn.request(&serde_json::to_value(HostRequest::Shutdown)?).await;
+        let _ = conn
+            .request(&serde_json::to_value(HostRequest::Shutdown)?)
+            .await;
     }
     for _ in 0..40 {
         if running_host(profile).await.is_none() {
@@ -168,7 +197,10 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
             Ok(s) => serde_json::to_value(s)?,
             Err(e) => json!({"error": format!("{e:#}")}),
         };
-        println!("{}", serde_json::to_string_pretty(&json!({"autostart": autostart, "host": host}))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({"autostart": autostart, "host": host}))?
+        );
         return Ok(());
     }
     match status {
@@ -179,32 +211,55 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
                     println!("           runs {cmd}");
                 }
                 if s.current == Some(false) {
-                    println!("           not this installation or profile: run `ai-remote host install` again");
+                    println!(
+                        "           not this installation or profile: run `ai-remote host install` again"
+                    );
                 }
             } else {
-                let why = s.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default();
+                let why = s
+                    .detail
+                    .as_deref()
+                    .map(|d| format!(" ({d})"))
+                    .unwrap_or_default();
                 println!("autostart: not installed{why}");
             }
             for fw in &s.firewall {
-                let allow = if fw.allow.is_empty() { "no allow rule".to_string() } else { format!("allow {}", fw.allow.join(", ")) };
+                let allow = if fw.allow.is_empty() {
+                    "no allow rule".to_string()
+                } else {
+                    format!("allow {}", fw.allow.join(", "))
+                };
                 let block = if fw.block.is_empty() {
                     String::new()
                 } else {
-                    format!("; BLOCKED by {}", fw.block.iter().map(|b| format!("\"{b}\"")).collect::<Vec<_>>().join(", "))
+                    format!(
+                        "; BLOCKED by {}",
+                        fw.block
+                            .iter()
+                            .map(|b| format!("\"{b}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
                 println!("firewall:  {}: {allow}{block}", fw.program);
             }
             if let Some(fw) = s.firewall.first().filter(|fw| !fw.block_all.is_empty()) {
                 println!(
                     "firewall:  inbound UDP of every program is blocked by {} (beats the allow rules; review in wf.msc)",
-                    fw.block_all.iter().map(|b| format!("\"{b}\"")).collect::<Vec<_>>().join(", ")
+                    fw.block_all
+                        .iter()
+                        .map(|b| format!("\"{b}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
             if let Some(e) = &s.firewall_error {
                 println!("firewall:  unknown ({e})");
             }
             if s.firewall_enabled == Some(false) {
-                println!("firewall:  Windows Firewall is off on every network profile; the rules matter once it is on");
+                println!(
+                    "firewall:  Windows Firewall is off on every network profile; the rules matter once it is on"
+                );
             }
         }
         Err(e) => println!("autostart: unknown ({e:#})"),
@@ -214,7 +269,11 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
             "host:      running as \"{}\" (pid {}, {})",
             h["name"].as_str().unwrap_or("?"),
             h["pid"],
-            if h["background"].as_bool() == Some(true) { "background" } else { "in a terminal" }
+            if h["background"].as_bool() == Some(true) {
+                "background"
+            } else {
+                "in a terminal"
+            }
         ),
         None => println!("host:      not running"),
     }
@@ -223,8 +282,12 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
 
 /// The running host's doctor report.
 async fn host_doctor(profile: &Profile) -> Result<Report> {
-    let mut conn = Conn::connect(&profile.control_endpoint(Role::Host)?).await.context("connect to the host")?;
-    let v = conn.request(&serde_json::to_value(HostRequest::Doctor)?).await?;
+    let mut conn = Conn::connect(&profile.control_endpoint(Role::Host)?)
+        .await
+        .context("connect to the host")?;
+    let v = conn
+        .request(&serde_json::to_value(HostRequest::Doctor)?)
+        .await?;
     serde_json::from_value(v).context("unexpected doctor report from the host")
 }
 
@@ -234,7 +297,11 @@ pub async fn doctor(profile: &Profile, json_out: bool) -> Result<()> {
     } else {
         // Same process setup as the host, so the DPI check measures what the host would get.
         ar_host::platform::init_process();
-        doctor::run(doctor::Inputs { profile, mesh: None }).await
+        doctor::run(doctor::Inputs {
+            profile,
+            mesh: None,
+        })
+        .await
     };
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -298,7 +365,11 @@ fn admin_steps_allowed(plan: &Plan, profile: &Profile, verb: &str, scope: Scope)
     if !plan.needs_elevation {
         return Ok(true);
     }
-    let firewall_flag = if scope == Scope::FirewallOnly { " --firewall-only" } else { "" };
+    let firewall_flag = if scope == Scope::FirewallOnly {
+        " --firewall-only"
+    } else {
+        ""
+    };
     match ar_host::platform::rights() {
         Rights::Elevated => Ok(true),
         Rights::AdminNotElevated => bail!(

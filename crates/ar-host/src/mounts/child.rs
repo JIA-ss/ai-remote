@@ -30,8 +30,9 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use rmcp::{
     ServiceExt,
     model::{
-        CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification, CancelledNotificationParam,
-        ClientCapabilities, ClientConfig, ClientRequest, Implementation, JsonObject, RequestId, ServerResult,
+        CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
+        CancelledNotificationParam, ClientCapabilities, ClientConfig, ClientRequest,
+        Implementation, JsonObject, RequestId, ServerResult,
     },
     service::{Peer, PeerRequestOptions, RoleClient, RunningService, ServiceError},
     transport::async_rw::AsyncRwTransport,
@@ -93,7 +94,10 @@ struct Running {
 
 impl Running {
     fn live(&self) -> Live {
-        Live { client: self.client.clone(), exited: self.process.exited.clone() }
+        Live {
+            client: self.client.clone(),
+            exited: self.process.exited.clone(),
+        }
     }
 
     fn alive(&self) -> bool {
@@ -110,7 +114,10 @@ struct Live {
 impl Live {
     /// Waits for `fut`, but not past the server's exit. A response the server sent just before it
     /// exited still gets a moment to arrive.
-    async fn until_exit<T>(&self, fut: impl Future<Output = Result<T, ServiceError>>) -> Result<T, ServiceError> {
+    async fn until_exit<T>(
+        &self,
+        fut: impl Future<Output = Result<T, ServiceError>>,
+    ) -> Result<T, ServiceError> {
         tokio::pin!(fut);
         tokio::select! {
             biased;
@@ -164,7 +171,10 @@ impl Mount {
             dir,
             call_timeout,
             state: Mutex::new(State::default()),
-            activity: StdMutex::new(Activity { in_flight: 0, last_used: Instant::now() }),
+            activity: StdMutex::new(Activity {
+                in_flight: 0,
+                last_used: Instant::now(),
+            }),
         })
     }
 
@@ -196,15 +206,22 @@ impl Mount {
         let _busy = self.begin();
         let live = self.live().await?;
         // Bounded: the host waits for this at start.
-        match tokio::time::timeout(START_TIMEOUT, live.until_exit(live.client.list_all_tools())).await {
+        match tokio::time::timeout(START_TIMEOUT, live.until_exit(live.client.list_all_tools()))
+            .await
+        {
             Ok(Ok(tools)) => {
                 self.state.lock().await.succeeded();
                 Ok(tools)
             }
             Ok(Err(e)) => Err(self.failed_call(&live, "tools/list", e).await),
             Err(_) => {
-                self.drop_session(&live, "no answer to tools/list".into(), Duration::ZERO).await;
-                bail!("mount '{}' did not answer tools/list within {} s", self.name(), START_TIMEOUT.as_secs())
+                self.drop_session(&live, "no answer to tools/list".into(), Duration::ZERO)
+                    .await;
+                bail!(
+                    "mount '{}' did not answer tools/list within {} s",
+                    self.name(),
+                    START_TIMEOUT.as_secs()
+                )
             }
         }
     }
@@ -225,7 +242,10 @@ impl Mount {
         };
         // The gate drops this future when the session ends; tell the server so it can stop, and
         // so the pending request does not linger in the client.
-        let mut on_drop = CancelOnDrop { peer: Some(peer), id: handle.id.clone() };
+        let mut on_drop = CancelOnDrop {
+            peer: Some(peer),
+            id: handle.id.clone(),
+        };
         let response = live.until_exit(handle.await_response()).await;
         on_drop.peer = None;
         match response {
@@ -261,7 +281,9 @@ impl Mount {
                 return false;
             }
         }
-        let Some(running) = state.running.take() else { return false };
+        let Some(running) = state.running.take() else {
+            return false;
+        };
         drop(state);
         shutdown(running, STOP_GRACE).await;
         true
@@ -281,7 +303,11 @@ impl Mount {
             if running.alive() {
                 return Ok(running.live());
             }
-            let why = format!("the server exited{}{}", running.process.exit_note(), running.stderr.render());
+            let why = format!(
+                "the server exited{}{}",
+                running.process.exit_note(),
+                running.stderr.render()
+            );
             tracing::warn!(mount = %self.name(), pid = ?running.pid, "mounted server exited; restarting it");
             // The supervisor has already ended what was left of its process tree.
             state.running = None;
@@ -328,18 +354,24 @@ impl Mount {
             // No console window, and no share in the host's console: Ctrl+C in the host terminal
             // must reach the host only, which then stops its mounts. The flag has to go through
             // the wrapper: JobObject sets the creation flags itself and would drop a direct one.
-            wrap.wrap(process_wrap::tokio::CreationFlags(windows::Win32::System::Threading::CREATE_NO_WINDOW));
+            wrap.wrap(process_wrap::tokio::CreationFlags(
+                windows::Win32::System::Threading::CREATE_NO_WINDOW,
+            ));
             wrap.wrap(process_wrap::tokio::JobObject);
         }
         #[cfg(unix)]
         wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
 
-        let mut child =
-            wrap.spawn().with_context(|| format!("mount '{}': start {}", self.name(), self.command.display()))?;
+        let mut child = wrap.spawn().with_context(|| {
+            format!("mount '{}': start {}", self.name(), self.command.display())
+        })?;
         let pid = child.id();
         // Dropping `child` on the error path ends the process (kill-on-drop, job object).
         let (Some(stdin), Some(stdout)) = (child.stdin().take(), child.stdout().take()) else {
-            bail!("mount '{}': the server's stdin/stdout are not available", self.name());
+            bail!(
+                "mount '{}': the server's stdin/stdout are not available",
+                self.name()
+            );
         };
         let tail = Arc::new(StderrTail::default());
         if let Some(stderr) = child.stderr().take() {
@@ -348,8 +380,10 @@ impl Mount {
         // From here on the process is owned by its supervisor; dropping `process` stops it.
         let process = Process::supervise(child, self.name().to_string(), pid);
 
-        let handshake =
-            tokio::time::timeout(START_TIMEOUT, client_info().serve(AsyncRwTransport::new_client(stdout, stdin)));
+        let handshake = tokio::time::timeout(
+            START_TIMEOUT,
+            client_info().serve(AsyncRwTransport::new_client(stdout, stdin)),
+        );
         let outcome = tokio::select! {
             biased;
             r = handshake => r.map_err(|_| None).and_then(|r| r.map_err(|e| Some(e.to_string()))),
@@ -377,10 +411,19 @@ impl Mount {
         };
         let server = client
             .peer_info()
-            .and_then(|i| i.server_info.as_ref().map(|s| format!("{} {}", s.name, s.version)))
+            .and_then(|i| {
+                i.server_info
+                    .as_ref()
+                    .map(|s| format!("{} {}", s.name, s.version))
+            })
             .unwrap_or_else(|| "unknown".into());
         tracing::info!(mount = %self.name(), ?pid, %server, "mounted server started");
-        Ok(Running { client: Arc::new(client), pid, stderr: tail, process })
+        Ok(Running {
+            client: Arc::new(client),
+            pid,
+            stderr: tail,
+            process,
+        })
     }
 
     /// Refuses to start a binary that is not the one the owner pinned.
@@ -394,8 +437,9 @@ impl Mount {
             );
         }
         let path = self.command.clone();
-        let actual =
-            tokio::task::spawn_blocking(move || super::sha256_file(&path)).await.context("hash task failed")??;
+        let actual = tokio::task::spawn_blocking(move || super::sha256_file(&path))
+            .await
+            .context("hash task failed")??;
         if !actual.eq_ignore_ascii_case(pinned.trim()) {
             tracing::error!(
                 mount = %self.name(),
@@ -421,7 +465,11 @@ impl Mount {
     async fn drop_session(&self, live: &Live, why: String, grace: Duration) {
         let running = {
             let mut state = self.state.lock().await;
-            if !state.running.as_ref().is_some_and(|r| Arc::ptr_eq(&r.client, &live.client)) {
+            if !state
+                .running
+                .as_ref()
+                .is_some_and(|r| Arc::ptr_eq(&r.client, &live.client))
+            {
                 return;
             }
             state.failed(why);
@@ -452,7 +500,9 @@ impl Mount {
                     mount = %self.name(),
                     "mounted server hangs: no answer to a ping after '{what}' timed out"
                 );
-                let why = format!("the server stopped answering ('{what}' timed out, then a ping did too)");
+                let why = format!(
+                    "the server stopped answering ('{what}' timed out, then a ping did too)"
+                );
                 // It does not read its input any more, so there is no point in a graceful stop.
                 self.drop_session(live, why, Duration::ZERO).await;
                 anyhow!(
@@ -465,8 +515,13 @@ impl Mount {
             ServiceError::TransportClosed | ServiceError::TransportSend(_) => {
                 settle_stderr().await;
                 let mut state = self.state.lock().await;
-                let current = state.running.as_ref().filter(|r| Arc::ptr_eq(&r.client, &live.client));
-                let exit = current.map(|r| r.process.exit_note()).filter(|n| !n.is_empty());
+                let current = state
+                    .running
+                    .as_ref()
+                    .filter(|r| Arc::ptr_eq(&r.client, &live.client));
+                let exit = current
+                    .map(|r| r.process.exit_note())
+                    .filter(|n| !n.is_empty());
                 let exit = exit.unwrap_or_else(|| " (crashed or was stopped)".into());
                 let tail = current.map(|r| r.stderr.render()).unwrap_or_default();
                 if current.is_some() {
@@ -500,7 +555,8 @@ impl State {
 
     fn backoff_remaining(&self) -> Option<Duration> {
         let due = self.last_failure? + backoff(self.failures);
-        due.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())
+        due.checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
     }
 }
 
@@ -515,12 +571,17 @@ fn backoff(failures: u32) -> Duration {
 
 fn client_info() -> ClientConfig {
     // No elicitation or sampling capability: a mounted server has no human to ask through us.
-    ClientConfig::new(ClientCapabilities::default(), Implementation::new("ai-remote", VERSION))
+    ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("ai-remote", VERSION),
+    )
 }
 
 /// Ends a session: closes the server's stdin, gives it `grace` to exit, then ends its process tree.
 async fn shutdown(running: Running, grace: Duration) {
-    let Running { client, process, .. } = running;
+    let Running {
+        client, process, ..
+    } = running;
     match Arc::try_unwrap(client) {
         // Waits for the session to wind down; that closes the server's stdin.
         Ok(client) => {
@@ -549,13 +610,30 @@ impl Process {
         let exited = CancellationToken::new();
         let status = Arc::new(StdMutex::new(None));
         let (stop, stop_rx) = oneshot::channel();
-        let supervisor = tokio::spawn(supervise(child, stop_rx, exited.clone(), status.clone(), mount, pid));
-        Self { exited, status, stop: Some(stop), supervisor: Some(supervisor) }
+        let supervisor = tokio::spawn(supervise(
+            child,
+            stop_rx,
+            exited.clone(),
+            status.clone(),
+            mount,
+            pid,
+        ));
+        Self {
+            exited,
+            status,
+            stop: Some(stop),
+            supervisor: Some(supervisor),
+        }
     }
 
     /// ` (exit code: 3)`, or nothing while the exit status is unknown.
     fn exit_note(&self) -> String {
-        self.status.lock().unwrap().as_ref().map(|s| format!(" ({s})")).unwrap_or_default()
+        self.status
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default()
     }
 
     /// Ends the process tree, giving the server `grace` to exit by itself first, and waits for it.
@@ -621,8 +699,12 @@ async fn supervise(
 async fn end_tree(child: &mut Box<dyn ChildWrapper>, mount: &str) {
     match tokio::time::timeout(KILL_TIMEOUT, Box::into_pin(child.kill())).await {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::debug!(mount = %mount, "ending the mounted server's process tree: {e}"),
-        Err(_) => tracing::warn!(mount = %mount, "the mounted server's process tree did not end in time"),
+        Ok(Err(e)) => {
+            tracing::debug!(mount = %mount, "ending the mounted server's process tree: {e}")
+        }
+        Err(_) => {
+            tracing::warn!(mount = %mount, "the mounted server's process tree did not end in time")
+        }
     }
 }
 
@@ -646,7 +728,9 @@ struct CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         let Some(peer) = self.peer.take() else { return };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let note = CancelledNotification::new(CancelledNotificationParam::new(
             Some(self.id.clone()),
             Some("the caller stopped waiting".into()),
@@ -697,7 +781,10 @@ impl StderrTail {
         if lines.is_empty() {
             return String::new();
         }
-        format!("\nLast lines the server wrote to stderr:\n  {}", lines.join("\n  "))
+        format!(
+            "\nLast lines the server wrote to stderr:\n  {}",
+            lines.join("\n  ")
+        )
     }
 }
 
@@ -707,10 +794,19 @@ async fn settle_stderr() {
 }
 
 /// Copies the server's stderr to its log file and keeps the tail. Runs until the pipe closes.
-async fn drain_stderr(mut stderr: ChildStderr, tail: Arc<StderrTail>, log: PathBuf, pid: Option<u32>) {
+async fn drain_stderr(
+    mut stderr: ChildStderr,
+    tail: Arc<StderrTail>,
+    log: PathBuf,
+    pid: Option<u32>,
+) {
     let mut file = open_log(&log).await;
     if let Some(f) = file.as_mut() {
-        let header = format!("--- started pid {} at unix {} ---\n", pid.unwrap_or(0), ar_core::unix_now());
+        let header = format!(
+            "--- started pid {} at unix {} ---\n",
+            pid.unwrap_or(0),
+            ar_core::unix_now()
+        );
         let _ = f.write_all(header.as_bytes()).await;
     }
     let mut buf = vec![0u8; 8192];
@@ -731,10 +827,18 @@ async fn drain_stderr(mut stderr: ChildStderr, tail: Arc<StderrTail>, log: PathB
 }
 
 async fn open_log(path: &Path) -> Option<tokio::fs::File> {
-    if tokio::fs::metadata(path).await.is_ok_and(|m| m.len() > LOG_ROTATE_BYTES) {
+    if tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|m| m.len() > LOG_ROTATE_BYTES)
+    {
         let _ = tokio::fs::rename(path, path.with_extension("log.old")).await;
     }
-    match tokio::fs::OpenOptions::new().create(true).append(true).open(path).await {
+    match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+    {
         Ok(f) => Some(f),
         Err(e) => {
             tracing::warn!(log = %path.display(), "cannot write the mounted server's stderr log: {e}");
@@ -750,7 +854,11 @@ mod tests {
     #[test]
     fn backoff_grows_and_caps() {
         assert_eq!(backoff(0), Duration::ZERO);
-        assert_eq!(backoff(1), Duration::ZERO, "a single crash restarts at once");
+        assert_eq!(
+            backoff(1),
+            Duration::ZERO,
+            "a single crash restarts at once"
+        );
         assert_eq!(backoff(2), Duration::from_secs(1));
         assert_eq!(backoff(3), Duration::from_secs(2));
         assert_eq!(backoff(6), Duration::from_secs(16));
@@ -763,7 +871,10 @@ mod tests {
         let mut s = State::default();
         assert!(s.backoff_remaining().is_none());
         s.failed("boom".into());
-        assert!(s.backoff_remaining().is_none(), "first failure: retry immediately");
+        assert!(
+            s.backoff_remaining().is_none(),
+            "first failure: retry immediately"
+        );
         s.failed("boom".into());
         assert!(s.backoff_remaining().is_some());
         s.succeeded();
@@ -785,6 +896,9 @@ mod tests {
         assert!(!r.contains("first") && !r.contains("second"), "{r}");
         assert!(r.contains("line 19") && r.ends_with("partial"), "{r}");
         t.feed(&vec![b'x'; 10_000]);
-        assert!(t.render().len() < 20 * (STDERR_LINE_MAX + 4) + 200, "long lines are capped");
+        assert!(
+            t.render().len() < 20 * (STDERR_LINE_MAX + 4) + 200,
+            "long lines are capped"
+        );
     }
 }

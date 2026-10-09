@@ -203,7 +203,9 @@ impl ToolCache {
                 return None;
             }
         };
-        let same = cache.command == mount.command && cache.args == mount.args && cache.sha256 == mount.sha256;
+        let same = cache.command == mount.command
+            && cache.args == mount.args
+            && cache.sha256 == mount.sha256;
         same.then_some(cache)
     }
 
@@ -226,13 +228,23 @@ impl ToolCache {
 
 /// Allowlisted tools whose description (unless the allowlist replaces it) or input schema differ
 /// between two tool lists of the same server.
-fn changed_tools(mount: &MountConfig, before: &[rmcp::model::Tool], after: &[rmcp::model::Tool]) -> Vec<String> {
-    let before: HashMap<&str, &rmcp::model::Tool> = before.iter().map(|t| (t.name.as_ref(), t)).collect();
+fn changed_tools(
+    mount: &MountConfig,
+    before: &[rmcp::model::Tool],
+    after: &[rmcp::model::Tool],
+) -> Vec<String> {
+    let before: HashMap<&str, &rmcp::model::Tool> =
+        before.iter().map(|t| (t.name.as_ref(), t)).collect();
     let mut changed = Vec::new();
     for tool in after {
-        let Some(entry) = mount.tools.get(tool.name.as_ref()) else { continue };
-        let Some(old) = before.get(tool.name.as_ref()) else { continue };
-        let description_changed = entry.description().is_none() && old.description != tool.description;
+        let Some(entry) = mount.tools.get(tool.name.as_ref()) else {
+            continue;
+        };
+        let Some(old) = before.get(tool.name.as_ref()) else {
+            continue;
+        };
+        let description_changed =
+            entry.description().is_none() && old.description != tool.description;
         if description_changed || old.input_schema != tool.input_schema {
             changed.push(tool.name.to_string());
         }
@@ -255,7 +267,10 @@ pub struct NameClash {
 /// (mounts are exposed in config order). The host refuses such tools at start; the CLI uses this to
 /// refuse them when a mount is added.
 pub fn name_clashes(mounts: &[MountConfig]) -> Vec<NameClash> {
-    let builtin: HashSet<String> = Registry::builtin().iter().map(|t| t.spec().name.clone()).collect();
+    let builtin: HashSet<String> = Registry::builtin()
+        .iter()
+        .map(|t| t.spec().name.clone())
+        .collect();
     let mut taken: HashMap<String, String> = HashMap::new();
     let mut clashes = Vec::new();
     for m in mounts {
@@ -267,7 +282,12 @@ pub fn name_clashes(mounts: &[MountConfig]) -> Vec<NameClash> {
                 taken.get(&name).map(|other| format!("mount '{other}'"))
             };
             match taken_by {
-                Some(taken_by) => clashes.push(NameClash { mount: m.name.clone(), tool: tool.clone(), name, taken_by }),
+                Some(taken_by) => clashes.push(NameClash {
+                    mount: m.name.clone(),
+                    tool: tool.clone(),
+                    name,
+                    taken_by,
+                }),
                 None => {
                     taken.insert(name, m.name.clone());
                 }
@@ -314,11 +334,24 @@ pub fn plan(mount: &MountConfig, offered: &[rmcp::model::Tool]) -> Plan {
             hidden.push(upstream);
             continue;
         }
-        tools.push(PlannedTool { strip_intent: !declares_intent(&tool.input_schema), upstream, spec });
+        tools.push(PlannedTool {
+            strip_intent: !declares_intent(&tool.input_schema),
+            upstream,
+            spec,
+        });
     }
     let offered_names: HashSet<&str> = offered.iter().map(|t| t.name.as_ref()).collect();
-    let missing = mount.tools.keys().filter(|k| !offered_names.contains(k.as_str())).cloned().collect();
-    Plan { tools, hidden, missing }
+    let missing = mount
+        .tools
+        .keys()
+        .filter(|k| !offered_names.contains(k.as_str()))
+        .cloned()
+        .collect();
+    Plan {
+        tools,
+        hidden,
+        missing,
+    }
 }
 
 fn spec_for(mount: &str, entry: &MountTool, tool: &rmcp::model::Tool) -> ToolSpec {
@@ -353,8 +386,16 @@ fn spec_for(mount: &str, entry: &MountTool, tool: &rmcp::model::Tool) -> ToolSpe
 /// and a name longer than [`TOOL_NAME_MAX`] is cut and made unique again with a short hash.
 pub fn tool_name(mount: &str, tool: &str) -> String {
     let raw = format!("{mount}_{tool}");
-    let mut name: String =
-        raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+    let mut name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     if name.len() > TOOL_NAME_MAX {
         let hash = blake3::hash(raw.as_bytes()).to_hex();
         name.truncate(TOOL_NAME_MAX - 9);
@@ -365,7 +406,10 @@ pub fn tool_name(mount: &str, tool: &str) -> String {
 }
 
 fn declares_intent(schema: &JsonObject) -> bool {
-    schema.get("properties").and_then(|p| p.get("intent")).is_some()
+    schema
+        .get("properties")
+        .and_then(|p| p.get("intent"))
+        .is_some()
 }
 
 /// Adds the optional `intent` argument the gate shows in approval prompts and the audit log.
@@ -373,13 +417,21 @@ fn with_intent(schema: &JsonObject) -> JsonObject {
     let mut schema = schema.clone();
     let properties = schema.entry("properties").or_insert_with(|| json!({}));
     if let Some(p) = properties.as_object_mut() {
-        p.insert("intent".into(), json!({ "type": "string", "description": INTENT_DESCRIPTION }));
+        p.insert(
+            "intent".into(),
+            json!({ "type": "string", "description": INTENT_DESCRIPTION }),
+        );
     }
     schema
 }
 
 fn summarize(names: &[String], max: usize) -> String {
-    let mut s = names.iter().take(max).cloned().collect::<Vec<_>>().join(", ");
+    let mut s = names
+        .iter()
+        .take(max)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     if names.len() > max {
         s.push_str(&format!(", ... ({} more)", names.len() - max));
     }
@@ -409,7 +461,11 @@ impl Tool for MountedTool {
 impl MountedTool {
     /// Refuses early when the mount needs the desktop and it is not usable, and removes the
     /// gate-only `intent` argument the server did not declare.
-    fn prepare(&self, mut args: JsonObject, desktop: impl FnOnce() -> SessionState) -> Result<JsonObject> {
+    fn prepare(
+        &self,
+        mut args: JsonObject,
+        desktop: impl FnOnce() -> SessionState,
+    ) -> Result<JsonObject> {
         if self.mount.config().needs_desktop {
             let state = desktop();
             if !state.desktop_usable {
@@ -435,7 +491,9 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     loop {
-        let n = file.read(&mut buf).with_context(|| format!("read {}", path.display()))?;
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("read {}", path.display()))?;
         if n == 0 {
             break;
         }
@@ -449,7 +507,11 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 /// search path.
 pub fn resolve_command(command: &str, base: &Path) -> PathBuf {
     let path = Path::new(command);
-    if path.is_absolute() || path.components().count() <= 1 { path.to_path_buf() } else { base.join(path) }
+    if path.is_absolute() || path.components().count() <= 1 {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
 }
 
 #[cfg(test)]
@@ -462,8 +524,14 @@ mod tests {
     use super::*;
 
     fn offered(name: &str, schema: serde_json::Value) -> rmcp::model::Tool {
-        let serde_json::Value::Object(schema) = schema else { panic!("schema must be an object") };
-        rmcp::model::Tool::new(name.to_string(), format!("upstream {name}"), Arc::new(schema))
+        let serde_json::Value::Object(schema) = schema else {
+            panic!("schema must be an object")
+        };
+        rmcp::model::Tool::new(
+            name.to_string(),
+            format!("upstream {name}"),
+            Arc::new(schema),
+        )
     }
 
     fn mount(tools: &[(&str, MountTool)]) -> MountConfig {
@@ -475,7 +543,10 @@ mod tests {
             sha256: None,
             start: MountStart::Eager,
             needs_desktop: false,
-            tools: tools.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            tools: tools
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
         }
     }
 
@@ -486,8 +557,15 @@ mod tests {
         assert_eq!(tool_name("web", "ö/x"), "web___x");
         let long = tool_name("ui", &"a".repeat(100));
         assert_eq!(long.len(), TOOL_NAME_MAX);
-        assert!(long.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
-        assert_ne!(long, tool_name("ui", &format!("{}b", "a".repeat(99))), "cut names stay unique");
+        assert!(
+            long.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        );
+        assert_ne!(
+            long,
+            tool_name("ui", &format!("{}b", "a".repeat(99))),
+            "cut names stay unique"
+        );
     }
 
     #[test]
@@ -519,40 +597,73 @@ mod tests {
         assert_eq!(p.missing, ["gone"]);
 
         let echo = &p.tools[0].spec;
-        assert_eq!((echo.level, echo.default_action), (Level::Observe, Action::Allow));
+        assert_eq!(
+            (echo.level, echo.default_action),
+            (Level::Observe, Action::Allow)
+        );
         assert_eq!(echo.description, "upstream echo");
-        assert!(!declares_intent(&echo.input_schema), "observe tools get no intent argument");
+        assert!(
+            !declares_intent(&echo.input_schema),
+            "observe tools get no intent argument"
+        );
 
         let launch = &p.tools[1].spec;
-        assert_eq!((launch.level, launch.default_action), (Level::Control, Action::Ask));
+        assert_eq!(
+            (launch.level, launch.default_action),
+            (Level::Control, Action::Ask)
+        );
         assert_eq!(launch.description, "Short.");
         assert!(declares_intent(&launch.input_schema));
-        assert!(p.tools[1].strip_intent, "the server never sees an intent it did not declare");
+        assert!(
+            p.tools[1].strip_intent,
+            "the server never sees an intent it did not declare"
+        );
 
         let wipe = &p.tools[2].spec;
-        assert_eq!((wipe.level, wipe.default_action), (Level::Admin, Action::Ask), "admin tools ask by default");
-        assert!(declares_intent(&wipe.input_schema), "intent is added even without a properties map");
+        assert_eq!(
+            (wipe.level, wipe.default_action),
+            (Level::Admin, Action::Ask),
+            "admin tools ask by default"
+        );
+        assert!(
+            declares_intent(&wipe.input_schema),
+            "intent is added even without a properties map"
+        );
     }
 
     #[test]
     fn a_declared_intent_is_forwarded() {
         let cfg = mount(&[("note", MountTool::Level(Level::Control))]);
-        let tools = [offered("note", json!({"type": "object", "properties": {"intent": {"type": "string"}}}))];
+        let tools = [offered(
+            "note",
+            json!({"type": "object", "properties": {"intent": {"type": "string"}}}),
+        )];
         let p = plan(&cfg, &tools);
         assert!(!p.tools[0].strip_intent);
     }
 
     #[test]
     fn annotations_are_hints_only() {
-        let cfg = mount(&[("read", MountTool::Level(Level::Control)), ("plain", MountTool::Level(Level::Observe))]);
-        let read = offered("read", json!({"type": "object"})).annotate(ToolAnnotations::new().read_only(true));
+        let cfg = mount(&[
+            ("read", MountTool::Level(Level::Control)),
+            ("plain", MountTool::Level(Level::Observe)),
+        ]);
+        let read = offered("read", json!({"type": "object"}))
+            .annotate(ToolAnnotations::new().read_only(true));
         let plain = offered("plain", json!({"type": "object"}));
         let p = plan(&cfg, &[read, plain]);
         let read = &p.tools[0].spec;
         assert!(read.read_only && !read.destructive);
-        assert_eq!(read.level, Level::Control, "a read-only hint does not lower the level");
+        assert_eq!(
+            read.level,
+            Level::Control,
+            "a read-only hint does not lower the level"
+        );
         let plain = &p.tools[1].spec;
-        assert!(!plain.read_only && plain.destructive, "no annotations: MCP defaults (destructive)");
+        assert!(
+            !plain.read_only && plain.destructive,
+            "no annotations: MCP defaults (destructive)"
+        );
     }
 
     fn mounted(cfg: MountConfig, strip_intent: bool, dir: &Path) -> MountedTool {
@@ -569,13 +680,24 @@ mod tests {
     fn prepare_strips_an_undeclared_intent_only() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = mount(&[("note", MountTool::Level(Level::Control))]);
-        let args = JsonObject::from_iter([("intent".to_string(), json!("why")), ("x".to_string(), json!(1))]);
-        let no_desktop = || -> SessionState { panic!("the desktop is only checked for needs_desktop mounts") };
+        let args = JsonObject::from_iter([
+            ("intent".to_string(), json!("why")),
+            ("x".to_string(), json!(1)),
+        ]);
+        let no_desktop =
+            || -> SessionState { panic!("the desktop is only checked for needs_desktop mounts") };
 
-        let stripped = mounted(cfg.clone(), true, dir.path()).prepare(args.clone(), no_desktop).unwrap();
+        let stripped = mounted(cfg.clone(), true, dir.path())
+            .prepare(args.clone(), no_desktop)
+            .unwrap();
         assert!(!stripped.contains_key("intent") && stripped["x"] == 1);
-        let kept = mounted(cfg, false, dir.path()).prepare(args, no_desktop).unwrap();
-        assert_eq!(kept["intent"], "why", "a server that declares intent gets it");
+        let kept = mounted(cfg, false, dir.path())
+            .prepare(args, no_desktop)
+            .unwrap();
+        assert_eq!(
+            kept["intent"], "why",
+            "a server that declares intent gets it"
+        );
     }
 
     #[test]
@@ -589,9 +711,18 @@ mod tests {
             problem: Some("the workstation is locked".into()),
             ..Default::default()
         };
-        let e = tool.prepare(JsonObject::new(), locked).unwrap_err().to_string();
-        assert!(e.contains("ui_note") && e.contains("the workstation is locked"), "{e}");
-        let usable = || SessionState { desktop_usable: true, ..Default::default() };
+        let e = tool
+            .prepare(JsonObject::new(), locked)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("ui_note") && e.contains("the workstation is locked"),
+            "{e}"
+        );
+        let usable = || SessionState {
+            desktop_usable: true,
+            ..Default::default()
+        };
         assert!(tool.prepare(JsonObject::new(), usable).is_ok());
     }
 
@@ -604,8 +735,14 @@ mod tests {
         ui2.name = "ui".into();
         let ui = mount(&[("a_b", observe)]);
         let clashes = name_clashes(&[system, ui, ui2]);
-        let found: Vec<_> = clashes.iter().map(|c| (c.name.as_str(), c.taken_by.as_str())).collect();
-        assert_eq!(found, [("system_info", "a built-in tool"), ("ui_a_b", "mount 'ui'")]);
+        let found: Vec<_> = clashes
+            .iter()
+            .map(|c| (c.name.as_str(), c.taken_by.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [("system_info", "a built-in tool"), ("ui_a_b", "mount 'ui'")]
+        );
     }
 
     #[test]
@@ -616,7 +753,11 @@ mod tests {
             ("echo", MountTool::Level(Level::Observe)),
             (
                 "curated",
-                MountTool::Detailed { level: Level::Observe, approve: None, description: Some("Ours.".into()) },
+                MountTool::Detailed {
+                    level: Level::Observe,
+                    approve: None,
+                    description: Some("Ours.".into()),
+                },
             ),
         ]);
         let v1 = [
@@ -634,19 +775,36 @@ mod tests {
         v2[1].description = Some("Upstream text the allowlist replaces anyway.".into());
         v2[2].description = Some("Hidden tools do not matter.".into());
         assert_eq!(changed_tools(&cfg, &cached.tools, &v2), ["echo"]);
-        let v3 = [offered("curated", json!({"type": "object", "properties": {"x": {"type": "string"}}}))];
-        assert_eq!(changed_tools(&cfg, &cached.tools, &v3), ["curated"], "schema changes always count");
+        let v3 = [offered(
+            "curated",
+            json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+        )];
+        assert_eq!(
+            changed_tools(&cfg, &cached.tools, &v3),
+            ["curated"],
+            "schema changes always count"
+        );
 
         cfg.sha256 = Some("ab".repeat(32));
-        assert!(ToolCache::load(&path, &cfg).is_none(), "another pin: the cache is not for this binary");
+        assert!(
+            ToolCache::load(&path, &cfg).is_none(),
+            "another pin: the cache is not for this binary"
+        );
     }
 
     #[test]
     fn command_resolution() {
         let base = Path::new("/profile/host/mounts");
         assert_eq!(resolve_command("npx", base), PathBuf::from("npx"));
-        assert_eq!(resolve_command("cua/cua-driver.exe", base), base.join("cua/cua-driver.exe"));
-        let abs = if cfg!(windows) { "C:\\tools\\server.exe" } else { "/opt/server" };
+        assert_eq!(
+            resolve_command("cua/cua-driver.exe", base),
+            base.join("cua/cua-driver.exe")
+        );
+        let abs = if cfg!(windows) {
+            "C:\\tools\\server.exe"
+        } else {
+            "/opt/server"
+        };
         assert_eq!(resolve_command(abs, base), PathBuf::from(abs));
     }
 
@@ -655,6 +813,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f");
         std::fs::write(&path, b"abc").unwrap();
-        assert_eq!(sha256_file(&path).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

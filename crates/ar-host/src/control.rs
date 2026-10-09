@@ -20,13 +20,25 @@ use crate::HostState;
 pub enum HostRequest {
     Status,
     /// Mint a one-time pairing ticket.
-    PairCode { level: Level, name: Option<String> },
+    PairCode {
+        level: Level,
+        name: Option<String>,
+    },
     Peers,
     /// Set or clear (`level: null`) a peer's level.
-    SetLevel { peer: String, level: Option<Level> },
-    Revoke { peer: String },
-    Unrevoke { peer: String },
-    Forget { peer: String },
+    SetLevel {
+        peer: String,
+        level: Option<Level>,
+    },
+    Revoke {
+        peer: String,
+    },
+    Unrevoke {
+        peer: String,
+    },
+    Forget {
+        peer: String,
+    },
     /// Run the graded preflight from inside the host (its session, token and network).
     Doctor,
     Shutdown,
@@ -60,9 +72,15 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             "background": host.background(),
         }),
         HostRequest::Doctor => serde_json::to_value(
-            crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,
+            crate::doctor::run(crate::doctor::Inputs {
+                profile: host.profile(),
+                mesh: Some(mesh),
+            })
+            .await,
         )?,
-        HostRequest::PairCode { level, name } => serde_json::to_value(mesh.invite(level, name).await?)?,
+        HostRequest::PairCode { level, name } => {
+            serde_json::to_value(mesh.invite(level, name).await?)?
+        }
         HostRequest::Peers => serde_json::to_value(mesh.peers().await?)?,
         HostRequest::SetLevel { peer, level } => {
             let p = mesh.find_peer(&peer).await?;
@@ -71,16 +89,23 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
         }
         HostRequest::Revoke { peer } => {
             let p = mesh.find_peer(&peer).await?;
-            mesh.revoke(&p, Some("revoked by the host owner".into())).await?;
+            mesh.revoke(&p, Some("revoked by the host owner".into()))
+                .await?;
             json!({"peer": p.name, "device": p.principal, "revoked": true})
         }
         HostRequest::Unrevoke { peer } => {
             // A device revoked and then forgotten has no pairing left: find it by its device id.
             let (name, device) = match mesh.find_peer(&peer).await {
-                Ok(p) => (Some(p.name), p.principal.ok_or_else(|| anyhow!("that peer has no device id"))?),
+                Ok(p) => (
+                    Some(p.name),
+                    p.principal
+                        .ok_or_else(|| anyhow!("that peer has no device id"))?,
+                ),
                 Err(e) => match mesh.find_revoked(&peer).await? {
                     Some(d) => (d.name, d.principal),
-                    None => return Err(anyhow!("{e:#}; no revoked device matches '{peer}' either")),
+                    None => {
+                        return Err(anyhow!("{e:#}; no revoked device matches '{peer}' either"));
+                    }
                 },
             };
             mesh.unrevoke(&device).await?;
@@ -91,9 +116,16 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             // The transport removes every entry with this name and cuts their connections with its
             // generic "access revoked". Close them first, so the controller hears "not paired: pair
             // again" instead of being told to wait for an unrevoke that cannot happen.
-            let devices: Vec<String> =
-                mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
-            let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
+            let devices: Vec<String> = mesh
+                .peers()
+                .await?
+                .into_iter()
+                .filter(|x| x.name == p.name)
+                .filter_map(|x| x.principal)
+                .collect();
+            let closed = host
+                .live()
+                .close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
             mesh.forget(&p).await?;
             // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
             json!({

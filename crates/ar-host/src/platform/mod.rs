@@ -68,14 +68,22 @@ pub fn session_state() -> SessionState {
     }
     #[cfg(not(windows))]
     {
-        SessionState { desktop_usable: true, ..Default::default() }
+        SessionState {
+            desktop_usable: true,
+            ..Default::default()
+        }
     }
 }
 
 /// Why an approval prompt cannot be shown right now, if it cannot.
 pub fn prompt_blocker() -> Option<String> {
     let s = session_state();
-    if s.desktop_usable { None } else { s.problem.or_else(|| Some("the desktop is not usable".into())) }
+    if s.desktop_usable {
+        None
+    } else {
+        s.problem
+            .or_else(|| Some("the desktop is not usable".into()))
+    }
 }
 
 /// The window injected input would reach.
@@ -157,7 +165,9 @@ pub fn process_tree(cmd: tokio::process::Command) -> process_wrap::tokio::Comman
     let mut wrap = CommandWrap::from(cmd);
     // Must come before the job object, which reads these and adds its own.
     #[cfg(windows)]
-    wrap.wrap(process_wrap::tokio::CreationFlags(::windows::Win32::System::Threading::CREATE_NO_WINDOW));
+    wrap.wrap(process_wrap::tokio::CreationFlags(
+        ::windows::Win32::System::Threading::CREATE_NO_WINDOW,
+    ));
     wrap.wrap(KillOnDrop);
     #[cfg(windows)]
     wrap.wrap(process_wrap::tokio::JobObject);

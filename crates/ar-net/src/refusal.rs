@@ -60,7 +60,9 @@ impl Refusal {
     pub fn from_close(code: u64, reason: &[u8]) -> Self {
         match (code, reason) {
             (CLOSE_UNAUTHORIZED, r)
-                if r == REASON_ACCESS_REVOKED || r == REASON_REVOKED_BY_SENDER || r == b"roster revoked" =>
+                if r == REASON_ACCESS_REVOKED
+                    || r == REASON_REVOKED_BY_SENDER
+                    || r == b"roster revoked" =>
             {
                 Refusal::Revoked
             }
@@ -68,14 +70,19 @@ impl Refusal {
             (c, r) if c == CLOSE_NO_ACCESS as u64 && r == REASON_NOT_PAIRED => Refusal::NotPaired,
             (c, r) if c == CLOSE_NO_ACCESS as u64 && r == REASON_NO_LEVEL => Refusal::NoLevel,
             (0, _) => Refusal::Closed,
-            (code, reason) => Refusal::Other(format!("closed by the host: {} (code {code})", String::from_utf8_lossy(reason))),
+            (code, reason) => Refusal::Other(format!(
+                "closed by the host: {} (code {code})",
+                String::from_utf8_lossy(reason)
+            )),
         }
     }
 
     /// Classifies how an established connection ended.
     pub fn from_connection_error(e: &ConnectionError) -> Self {
         match e {
-            ConnectionError::ApplicationClosed(close) => Self::from_close(close.error_code.into_inner(), &close.reason),
+            ConnectionError::ApplicationClosed(close) => {
+                Self::from_close(close.error_code.into_inner(), &close.reason)
+            }
             ConnectionError::TimedOut | ConnectionError::Reset => Refusal::Unreachable,
             ConnectionError::LocallyClosed => Refusal::ClosedHere,
             ConnectionError::VersionMismatch => {
@@ -102,13 +109,19 @@ impl Refusal {
 
     /// Retrying will not help until a person changes something.
     pub fn is_final(&self) -> bool {
-        matches!(self, Refusal::Revoked | Refusal::NotPaired | Refusal::NoLevel | Refusal::RevokedHere)
+        matches!(
+            self,
+            Refusal::Revoked | Refusal::NotPaired | Refusal::NoLevel | Refusal::RevokedHere
+        )
     }
 
     /// The host owner has to act (lift a revocation, grant a level): worth naming this device so
     /// the owner can find it, even when its pairing (and with it its name there) is gone.
     pub fn needs_host_owner(&self) -> bool {
-        matches!(self, Refusal::Revoked | Refusal::NotPaired | Refusal::NoLevel)
+        matches!(
+            self,
+            Refusal::Revoked | Refusal::NotPaired | Refusal::NoLevel
+        )
     }
 
     /// The explanation for a call that was running when the connection ended. Its request may
@@ -122,7 +135,9 @@ impl Refusal {
             Refusal::ClosedHere => "this controller closed the connection while the call was running".to_string(),
             other => other.to_string(),
         };
-        format!("{why}. The call's outcome is unknown: it may have run on the host. Check the host's state before repeating it")
+        format!(
+            "{why}. The call's outcome is unknown: it may have run on the host. Check the host's state before repeating it"
+        )
     }
 }
 
@@ -163,24 +178,43 @@ mod tests {
 
     #[test]
     fn maps_transport_closes() {
-        assert_eq!(Refusal::from_close(401, b"access revoked"), Refusal::Revoked);
-        assert_eq!(Refusal::from_close(401, b"unauthorized"), Refusal::NotPaired);
+        assert_eq!(
+            Refusal::from_close(401, b"access revoked"),
+            Refusal::Revoked
+        );
+        assert_eq!(
+            Refusal::from_close(401, b"unauthorized"),
+            Refusal::NotPaired
+        );
         // Sent by the node that did the revoking: received here, the host revoked us.
-        assert_eq!(Refusal::from_close(401, b"revoked on this node"), Refusal::Revoked);
+        assert_eq!(
+            Refusal::from_close(401, b"revoked on this node"),
+            Refusal::Revoked
+        );
         assert_eq!(Refusal::from_close(0, b""), Refusal::Closed);
         assert_eq!(Refusal::from_close(0, REASON_STOPPING), Refusal::Closed);
     }
 
     #[test]
     fn maps_host_closes() {
-        assert_eq!(Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_NOT_PAIRED), Refusal::NotPaired);
-        assert_eq!(Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_NO_LEVEL), Refusal::NoLevel);
-        assert!(matches!(Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_UNRESOLVED), Refusal::Other(_)));
+        assert_eq!(
+            Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_NOT_PAIRED),
+            Refusal::NotPaired
+        );
+        assert_eq!(
+            Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_NO_LEVEL),
+            Refusal::NoLevel
+        );
+        assert!(matches!(
+            Refusal::from_close(CLOSE_NO_ACCESS as u64, REASON_UNRESOLVED),
+            Refusal::Other(_)
+        ));
     }
 
     #[test]
     fn dial_failures_are_unreachable_unless_recognised() {
-        let offline = anyhow::anyhow!("dial timed out").context("dial 'office' on a custom protocol");
+        let offline =
+            anyhow::anyhow!("dial timed out").context("dial 'office' on a custom protocol");
         assert_eq!(Refusal::from_dial_error(&offline), Refusal::Unreachable);
         let revoked = anyhow::anyhow!("'office' is REVOKED on this node");
         assert_eq!(Refusal::from_dial_error(&revoked), Refusal::RevokedHere);
@@ -190,16 +224,27 @@ mod tests {
     fn closing_our_own_side_is_not_blamed_on_the_host() {
         let r = Refusal::from_connection_error(&ConnectionError::LocallyClosed);
         assert_eq!(r, Refusal::ClosedHere);
-        assert!(r.to_string().starts_with("this controller closed the connection"));
+        assert!(
+            r.to_string()
+                .starts_with("this controller closed the connection")
+        );
         assert!(!r.is_final());
     }
 
     #[test]
     fn a_call_in_flight_has_an_unknown_outcome() {
         let stopped = Refusal::Closed.during_call();
-        assert!(stopped.starts_with("the host closed the connection while the call was running"), "{stopped}");
+        assert!(
+            stopped.starts_with("the host closed the connection while the call was running"),
+            "{stopped}"
+        );
         assert!(!stopped.contains("try again"), "{stopped}");
-        for r in [Refusal::Closed, Refusal::Revoked, Refusal::Unreachable, Refusal::ClosedHere] {
+        for r in [
+            Refusal::Closed,
+            Refusal::Revoked,
+            Refusal::Unreachable,
+            Refusal::ClosedHere,
+        ] {
             assert!(r.during_call().contains("outcome is unknown"), "{r:?}");
         }
     }
@@ -217,12 +262,20 @@ mod tests {
 
     #[test]
     fn messages_name_the_fix() {
-        assert!(Refusal::Revoked.to_string().starts_with("access revoked by the host"));
+        assert!(
+            Refusal::Revoked
+                .to_string()
+                .starts_with("access revoked by the host")
+        );
         // Both remedies: the controller cannot tell whether the pairing went too.
         assert!(Refusal::Revoked.to_string().contains("unrevoke"));
         assert!(Refusal::Revoked.to_string().contains("pair again"));
         assert!(Refusal::NotPaired.to_string().starts_with("not paired"));
         assert!(Refusal::NoLevel.to_string().starts_with("no access level"));
-        assert!(Refusal::Unreachable.to_string().starts_with("host offline or unreachable"));
+        assert!(
+            Refusal::Unreachable
+                .to_string()
+                .starts_with("host offline or unreachable")
+        );
     }
 }

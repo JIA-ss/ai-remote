@@ -33,7 +33,12 @@ struct KeepAlive {
 }
 
 /// The LaunchAgent property list (XML) running `program --home <home>`.
-pub fn launch_agent_plist(label: &str, program: &Path, home: &Path, stderr_log: &Path) -> Result<String> {
+pub fn launch_agent_plist(
+    label: &str,
+    program: &Path,
+    home: &Path,
+    stderr_log: &Path,
+) -> Result<String> {
     let agent = LaunchAgent {
         label: label.to_string(),
         program_arguments: vec![
@@ -42,7 +47,9 @@ pub fn launch_agent_plist(label: &str, program: &Path, home: &Path, stderr_log: 
             home.to_string_lossy().into_owned(),
         ],
         run_at_load: true,
-        keep_alive: KeepAlive { successful_exit: false },
+        keep_alive: KeepAlive {
+            successful_exit: false,
+        },
         process_type: "Interactive".into(),
         limit_load_to_session_type: "Aqua".into(),
         standard_error_path: stderr_log.to_string_lossy().into_owned(),
@@ -54,7 +61,9 @@ pub fn launch_agent_plist(label: &str, program: &Path, home: &Path, stderr_log: 
 
 /// The program arguments of an installed LaunchAgent, if the file is one.
 pub fn read_program_arguments(bytes: &[u8]) -> Option<Vec<String>> {
-    plist::from_bytes::<LaunchAgent>(bytes).ok().map(|a| a.program_arguments)
+    plist::from_bytes::<LaunchAgent>(bytes)
+        .ok()
+        .map(|a| a.program_arguments)
 }
 
 #[cfg(test)]
@@ -96,7 +105,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             read_program_arguments(xml.as_bytes()).unwrap(),
-            vec!["/opt/ai-remote-hostw".to_string(), "--home".into(), "/Users/me/x & y".into()]
+            vec![
+                "/opt/ai-remote-hostw".to_string(),
+                "--home".into(),
+                "/Users/me/x & y".into()
+            ]
         );
         assert_eq!(read_program_arguments(b"not a plist"), None);
     }

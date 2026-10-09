@@ -34,8 +34,16 @@ use serde::{Deserialize, Serialize};
 pub use task::quote_arg;
 
 /// File name of the windowless background host next to the `ai-remote` executable.
-pub const HOSTW_NAME: &str = if cfg!(windows) { "ai-remote-hostw.exe" } else { "ai-remote-hostw" };
-const CLI_NAME: &str = if cfg!(windows) { "ai-remote.exe" } else { "ai-remote" };
+pub const HOSTW_NAME: &str = if cfg!(windows) {
+    "ai-remote-hostw.exe"
+} else {
+    "ai-remote-hostw"
+};
+const CLI_NAME: &str = if cfg!(windows) {
+    "ai-remote.exe"
+} else {
+    "ai-remote"
+};
 
 /// Name of the inbound firewall rules for the host programs (Windows).
 pub const FIREWALL_RULE: &str = "ai-remote host";
@@ -53,8 +61,13 @@ impl Binaries {
     pub fn locate() -> Result<Self> {
         let exe = std::env::current_exe().context("locate the running executable")?;
         let exe = dunce::simplified(&exe).to_path_buf();
-        let dir = exe.parent().context("the running executable has no directory")?;
-        Ok(Self { cli: dir.join(CLI_NAME), hostw: dir.join(HOSTW_NAME) })
+        let dir = exe
+            .parent()
+            .context("the running executable has no directory")?;
+        Ok(Self {
+            cli: dir.join(CLI_NAME),
+            hostw: dir.join(HOSTW_NAME),
+        })
     }
 
     /// Both programs, background host first.
@@ -101,11 +114,23 @@ pub enum Action {
 
 impl Action {
     fn run(program: PathBuf, args: &[String], why: &str) -> Self {
-        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: false, admin: false }
+        Action::Run {
+            program,
+            args: args.to_vec(),
+            why: why.to_string(),
+            tolerate_failure: false,
+            admin: false,
+        }
     }
 
     fn run_tolerant(program: PathBuf, args: &[String], why: &str) -> Self {
-        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: true, admin: false }
+        Action::Run {
+            program,
+            args: args.to_vec(),
+            why: why.to_string(),
+            tolerate_failure: true,
+            admin: false,
+        }
     }
 
     /// Marks a step that needs an administrator.
@@ -127,7 +152,13 @@ impl Action {
         match self {
             Action::WriteFile { path, .. } => format!("write {}", path.display()),
             Action::RemoveFile { path } => format!("remove {}", path.display()),
-            Action::Run { program, args, why, admin, .. } => {
+            Action::Run {
+                program,
+                args,
+                why,
+                admin,
+                ..
+            } => {
                 let mut line = display_arg(&program.to_string_lossy());
                 for a in args {
                     line.push(' ');
@@ -144,17 +175,26 @@ impl Action {
         match self {
             Action::WriteFile { path, contents, .. } => {
                 if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+                    std::fs::create_dir_all(dir)
+                        .with_context(|| format!("create {}", dir.display()))?;
                 }
-                std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
+                std::fs::write(path, contents)
+                    .with_context(|| format!("write {}", path.display()))?;
                 Ok(None)
             }
             Action::RemoveFile { path } => match std::fs::remove_file(path) {
                 Ok(()) => Ok(None),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some("already absent".into())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(Some("already absent".into()))
+                }
                 Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
             },
-            Action::Run { program, args, tolerate_failure, .. } => {
+            Action::Run {
+                program,
+                args,
+                tolerate_failure,
+                ..
+            } => {
                 let mut cmd = std::process::Command::new(program);
                 #[cfg(windows)]
                 {
@@ -174,7 +214,10 @@ impl Action {
                     return Ok(None);
                 }
                 let text = tool_output(&out);
-                let name = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = program
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 if *tolerate_failure {
                     Ok(Some(format!("{name}: {text}")))
                 } else {
@@ -187,7 +230,11 @@ impl Action {
 
 /// Quotes an argument for display only when it would otherwise be ambiguous.
 fn display_arg(a: &str) -> String {
-    if a.contains(' ') && !a.contains('"') { format!("\"{a}\"") } else { a.to_string() }
+    if a.contains(' ') && !a.contains('"') {
+        format!("\"{a}\"")
+    } else {
+        a.to_string()
+    }
 }
 
 /// What a system tool printed, as one trimmed line of text.
@@ -196,7 +243,11 @@ fn tool_output(out: &std::process::Output) -> String {
     text.push(' ');
     text.push_str(&crate::platform::decode_console_output(&out.stderr));
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.is_empty() { "no output".into() } else { text }
+    if text.is_empty() {
+        "no output".into()
+    } else {
+        text
+    }
 }
 
 /// Everything an install or uninstall would do.
@@ -315,9 +366,14 @@ impl ProgramRules {
 /// installers and group policies often write them, are expanded first), plus the block rules that
 /// cover every program.
 pub fn rules_for(rules: &[FwRule], program: &Path) -> ProgramRules {
-    let mut out = ProgramRules { program: program.display().to_string(), ..Default::default() };
+    let mut out = ProgramRules {
+        program: program.display().to_string(),
+        ..Default::default()
+    };
     let names_program = |r: &FwRule| {
-        r.program.as_deref().is_some_and(|p| same_path(&expand_env(p, |v| std::env::var(v).ok()), program))
+        r.program
+            .as_deref()
+            .is_some_and(|p| same_path(&expand_env(p, |v| std::env::var(v).ok()), program))
     };
     for r in rules.iter().filter(|r| r.enabled) {
         if names_program(r) {
@@ -342,7 +398,10 @@ fn expand_env(text: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     while let Some(start) = rest.find('%') {
         out.push_str(&rest[..start]);
         let after = &rest[start + 1..];
-        let value = after.find('%').filter(|&end| end > 0).and_then(|end| Some((end, lookup(&after[..end])?)));
+        let value = after
+            .find('%')
+            .filter(|&end| end > 0)
+            .and_then(|end| Some((end, lookup(&after[..end])?)));
         match value {
             Some((end, value)) => {
                 out.push_str(&value);
@@ -369,7 +428,10 @@ fn current_user_id() -> Result<String> {
         false,
         ProcessRefreshKind::nothing().with_user(UpdateKind::Always),
     );
-    let uid = sys.process(pid).and_then(|p| p.user_id()).context("cannot read the current user's account id")?;
+    let uid = sys
+        .process(pid)
+        .and_then(|p| p.user_id())
+        .context("cannot read the current user's account id")?;
     Ok(uid.to_string())
 }
 
@@ -433,7 +495,9 @@ pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
 #[cfg(target_os = "macos")]
 fn no_firewall_scope(scope: Scope) -> Result<()> {
     if scope == Scope::FirewallOnly {
-        bail!("--firewall-only applies to Windows only; macOS needs no firewall rules for the host");
+        bail!(
+            "--firewall-only applies to Windows only; macOS needs no firewall rules for the host"
+        );
     }
     Ok(())
 }
@@ -491,8 +555,16 @@ mod tests {
 
     #[test]
     fn collects_rules_of_one_program() {
-        let exe = if cfg!(windows) { r"C:\Tools\ai-remote-hostw.exe" } else { "/opt/ai-remote-hostw" };
-        let shouted = if cfg!(windows) { r"c:/TOOLS/AI-REMOTE-HOSTW.EXE" } else { "/opt/ai-remote-hostw" };
+        let exe = if cfg!(windows) {
+            r"C:\Tools\ai-remote-hostw.exe"
+        } else {
+            "/opt/ai-remote-hostw"
+        };
+        let shouted = if cfg!(windows) {
+            r"c:/TOOLS/AI-REMOTE-HOSTW.EXE"
+        } else {
+            "/opt/ai-remote-hostw"
+        };
         let rules = vec![
             rule("ai-remote host", exe, true, true, "UDP"),
             rule("ai-remote host", shouted, true, true, "TCP"),
@@ -508,8 +580,14 @@ mod tests {
 
     #[test]
     fn rule_paths_with_variables_are_expanded() {
-        let lookup = |v: &str| v.eq_ignore_ascii_case("ProgramFiles").then(|| r"C:\Program Files".to_string());
-        assert_eq!(expand_env(r"%ProgramFiles%\ai-remote\x.exe", lookup), r"C:\Program Files\ai-remote\x.exe");
+        let lookup = |v: &str| {
+            v.eq_ignore_ascii_case("ProgramFiles")
+                .then(|| r"C:\Program Files".to_string())
+        };
+        assert_eq!(
+            expand_env(r"%ProgramFiles%\ai-remote\x.exe", lookup),
+            r"C:\Program Files\ai-remote\x.exe"
+        );
         assert_eq!(expand_env(r"%NOPE%\x.exe", lookup), r"%NOPE%\x.exe");
         assert_eq!(expand_env("100% sure", lookup), "100% sure");
         assert_eq!(expand_env("%%", lookup), "%%");
@@ -518,29 +596,69 @@ mod tests {
 
     #[test]
     fn block_rules_for_every_program_are_reported() {
-        let exe = if cfg!(windows) { r"C:\Tools\ai-remote-hostw.exe" } else { "/opt/ai-remote-hostw" };
-        let everything = FwRule { program: None, ..rule("block all udp", exe, false, true, "UDP") };
-        let one_port = FwRule { all_local_ports: false, ..everything.clone() };
-        let a_service = FwRule { service: Some("Dnscache".into()), ..everything.clone() };
-        let tcp = FwRule { protocol: "TCP".into(), ..everything.clone() };
-        let off = FwRule { enabled: false, ..everything.clone() };
-        let allow = FwRule { allow: true, ..everything.clone() };
-        let r = rules_for(&[everything, one_port, a_service, tcp, off, allow], Path::new(exe));
+        let exe = if cfg!(windows) {
+            r"C:\Tools\ai-remote-hostw.exe"
+        } else {
+            "/opt/ai-remote-hostw"
+        };
+        let everything = FwRule {
+            program: None,
+            ..rule("block all udp", exe, false, true, "UDP")
+        };
+        let one_port = FwRule {
+            all_local_ports: false,
+            ..everything.clone()
+        };
+        let a_service = FwRule {
+            service: Some("Dnscache".into()),
+            ..everything.clone()
+        };
+        let tcp = FwRule {
+            protocol: "TCP".into(),
+            ..everything.clone()
+        };
+        let off = FwRule {
+            enabled: false,
+            ..everything.clone()
+        };
+        let allow = FwRule {
+            allow: true,
+            ..everything.clone()
+        };
+        let r = rules_for(
+            &[everything, one_port, a_service, tcp, off, allow],
+            Path::new(exe),
+        );
         assert_eq!(r.block_all, vec!["block all udp".to_string()]);
         assert!(r.block.is_empty());
     }
 
     #[test]
     fn tcp_only_allow_does_not_cover_quic() {
-        let r = ProgramRules { program: "x".into(), allow: vec!["TCP".into()], ..Default::default() };
+        let r = ProgramRules {
+            program: "x".into(),
+            allow: vec!["TCP".into()],
+            ..Default::default()
+        };
         assert!(!r.allows_udp());
-        let any = ProgramRules { program: "x".into(), allow: vec!["any".into()], ..Default::default() };
+        let any = ProgramRules {
+            program: "x".into(),
+            allow: vec!["any".into()],
+            ..Default::default()
+        };
         assert!(any.allows_udp());
     }
 
     #[test]
     fn describes_commands_readably() {
-        let a = Action::run(PathBuf::from("C:/Windows/System32/netsh.exe"), &["advfirewall".into()], "add a rule");
-        assert_eq!(a.describe(), "add a rule:\n    C:/Windows/System32/netsh.exe advfirewall");
+        let a = Action::run(
+            PathBuf::from("C:/Windows/System32/netsh.exe"),
+            &["advfirewall".into()],
+            "add a rule",
+        );
+        assert_eq!(
+            a.describe(),
+            "add a rule:\n    C:/Windows/System32/netsh.exe advfirewall"
+        );
     }
 }

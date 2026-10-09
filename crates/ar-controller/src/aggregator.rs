@@ -9,10 +9,10 @@ use ar_net::{ipc::LocalStream, iroh::endpoint::Connection, refusal::Refusal};
 use rmcp::{
     ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotification,
-        CancelledNotificationParam, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, Implementation,
-        JsonObject, ListToolsResult, PaginatedRequestParams, ResultType, ServerCapabilities, ServerConfig, ServerResult,
-        Tool,
+        CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult,
+        CancelledNotification, CancelledNotificationParam, ClientCapabilities, ClientConfig,
+        ClientRequest, ContentBlock, Implementation, JsonObject, ListToolsResult,
+        PaginatedRequestParams, ResultType, ServerCapabilities, ServerConfig, ServerResult, Tool,
     },
     service::{PeerRequestOptions, RequestContext, RunningService, ServiceError},
 };
@@ -47,14 +47,20 @@ pub(crate) struct Aggregator {
 
 impl Aggregator {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent, default_host: Arc::default(), clients: Arc::default() }
+        Self {
+            agent,
+            default_host: Arc::default(),
+            clients: Arc::default(),
+        }
     }
 
     /// Serves MCP over the local stream until the shim goes away.
     pub async fn serve(self, stream: LocalStream, buffered: Vec<u8>) -> Result<()> {
         let (read, write) = tokio::io::split(stream);
         let read = std::io::Cursor::new(buffered).chain(read);
-        let running = ServiceExt::serve(self, (read, write)).await.map_err(|e| anyhow!("MCP session: {e}"))?;
+        let running = ServiceExt::serve(self, (read, write))
+            .await
+            .map_err(|e| anyhow!("MCP session: {e}"))?;
         let _ = running.waiting().await;
         Ok(())
     }
@@ -85,7 +91,9 @@ impl Aggregator {
             // Starting a session changes nothing on the host, so one more try on a fresh connection
             // is safe; unless the host refused this device on purpose.
             Err(e) if reused => {
-                let refusal = conn.close_reason().map(|r| Refusal::from_connection_error(&r));
+                let refusal = conn
+                    .close_reason()
+                    .map(|r| Refusal::from_connection_error(&r));
                 if refusal.is_some_and(|r| r.is_final()) {
                     return Err(e);
                 }
@@ -106,27 +114,43 @@ impl Aggregator {
     async fn start_session(&self, host: &str, conn: &Connection) -> Result<HostClient> {
         let (send, recv) = match conn.open_bi().await {
             Ok(s) => s,
-            Err(e) => return Err(self.failure(host, conn, anyhow!("open a session stream: {e}")).await),
+            Err(e) => {
+                return Err(self
+                    .failure(host, conn, anyhow!("open a session stream: {e}"))
+                    .await);
+            }
         };
         let config = ClientConfig::new(
             ClientCapabilities::default(),
-            Implementation::new(format!("ai-remote controller ({})", ar_core::machine_name()), VERSION),
+            Implementation::new(
+                format!("ai-remote controller ({})", ar_core::machine_name()),
+                VERSION,
+            ),
         );
         match config.serve((recv, send)).await {
             Ok(client) => Ok(client),
-            Err(e) => Err(self.failure(host, conn, anyhow!("the MCP session did not start: {e}")).await),
+            Err(e) => Err(self
+                .failure(host, conn, anyhow!("the MCP session did not start: {e}"))
+                .await),
         }
     }
 
     /// Explains a failed session start. A host that refuses this device closes the connection
     /// right after the handshake, so its close reason says more than the MCP error does.
-    async fn failure(&self, host: &str, conn: &Connection, fallback: anyhow::Error) -> anyhow::Error {
+    async fn failure(
+        &self,
+        host: &str,
+        conn: &Connection,
+        fallback: anyhow::Error,
+    ) -> anyhow::Error {
         let reason = match conn.close_reason() {
             Some(reason) => Some(reason),
             None => tokio::time::timeout(CLOSE_GRACE, conn.closed()).await.ok(),
         };
         match reason {
-            Some(reason) => self.agent.refused(host, Refusal::from_connection_error(&reason)),
+            Some(reason) => self
+                .agent
+                .refused(host, Refusal::from_connection_error(&reason)),
             None => fallback,
         }
     }
@@ -141,8 +165,13 @@ impl Aggregator {
         let hosts = self.agent.host_names().await?;
         match hosts.as_slice() {
             [one] => Ok(one.clone()),
-            [] => bail!("no host is paired yet; on the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here"),
-            _ => bail!("several hosts are paired ({}); say which one with `host`", hosts.join(", ")),
+            [] => bail!(
+                "no host is paired yet; on the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here"
+            ),
+            _ => bail!(
+                "several hosts are paired ({}); say which one with `host`",
+                hosts.join(", ")
+            ),
         }
     }
 
@@ -223,7 +252,8 @@ impl Aggregator {
 }
 
 fn local_tools() -> Vec<Tool> {
-    let empty: JsonObject = serde_json::from_value(json!({"type": "object", "properties": {}})).unwrap();
+    let empty: JsonObject =
+        serde_json::from_value(json!({"type": "object", "properties": {}})).unwrap();
     let use_host: JsonObject = serde_json::from_value(json!({
         "type": "object",
         "properties": {"host": {"type": "string", "description": "Name of a paired host (see list_hosts)."}},
@@ -281,7 +311,9 @@ fn error_result(msg: impl Into<String>) -> CallToolResult {
 }
 
 fn json_result(v: Value) -> CallToolResult {
-    let mut r = CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&v).unwrap_or_default())]);
+    let mut r = CallToolResult::success(vec![ContentBlock::text(
+        serde_json::to_string_pretty(&v).unwrap_or_default(),
+    )]);
     r.structured_content = Some(v);
     r
 }
@@ -295,7 +327,9 @@ async fn call_cancellable(
     cancel: &CancellationToken,
 ) -> Result<CallToolResult, ServiceError> {
     let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
-    let handle = client.send_cancellable_request(request, PeerRequestOptions::no_options()).await?;
+    let handle = client
+        .send_cancellable_request(request, PeerRequestOptions::no_options())
+        .await?;
     let (peer, id) = (handle.peer.clone(), handle.id.clone());
     tokio::select! {
         response = handle.await_response() => match response? {
@@ -326,7 +360,8 @@ impl ServerHandler for Aggregator {
         let mut tools = local_tools();
         let hosts = self.agent.host_names().await.unwrap_or_default();
         let lists = futures::future::join_all(hosts.iter().map(|h| self.host_tools(h))).await;
-        let mut seen: HashMap<String, ()> = tools.iter().map(|t| (t.name.to_string(), ())).collect();
+        let mut seen: HashMap<String, ()> =
+            tools.iter().map(|t| (t.name.to_string(), ())).collect();
         for (host, list) in hosts.iter().zip(lists) {
             match list {
                 Ok(list) => {
@@ -358,10 +393,16 @@ impl ServerHandler for Aggregator {
             "use_host" => {
                 let requested = args.get("host").and_then(Value::as_str).map(str::to_string);
                 match self.resolve_host(requested).await {
-                    Ok(host) => match self.call_on_host(&host, "system_info", JsonObject::new(), cancel).await {
+                    Ok(host) => match self
+                        .call_on_host(&host, "system_info", JsonObject::new(), cancel)
+                        .await
+                    {
                         Ok(mut r) => {
                             *self.default_host.lock().await = Some(host.clone());
-                            r.content.insert(0, ContentBlock::text(format!("Default host is now '{host}'.")));
+                            r.content.insert(
+                                0,
+                                ContentBlock::text(format!("Default host is now '{host}'.")),
+                            );
                             r
                         }
                         Err(e) => error_result(format!("host '{host}': {e:#}")),
@@ -370,7 +411,9 @@ impl ServerHandler for Aggregator {
                 }
             }
             tool => {
-                let requested = args.remove("host").and_then(|v| v.as_str().map(str::to_string));
+                let requested = args
+                    .remove("host")
+                    .and_then(|v| v.as_str().map(str::to_string));
                 match self.resolve_host(requested).await {
                     Ok(host) => match self.call_on_host(&host, tool, args, cancel).await {
                         Ok(r) => r,
@@ -391,7 +434,8 @@ mod tests {
     #[test]
     fn relayed_results_are_marked_complete() {
         // A host session on an older protocol version sends results without resultType.
-        let relayed: CallToolResult = serde_json::from_value(json!({"content": [{"type": "text", "text": "ok"}]})).unwrap();
+        let relayed: CallToolResult =
+            serde_json::from_value(json!({"content": [{"type": "text", "text": "ok"}]})).unwrap();
         assert!(relayed.result_type.is_none());
         assert_eq!(complete(relayed).result_type, Some(ResultType::COMPLETE));
     }

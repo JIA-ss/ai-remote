@@ -1,0 +1,32 @@
+[package]
+name = "ai-remote-desktop"
+description = "ai-remote desktop app: watch, approve and steer AI agents on your computers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary's on Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "ai_remote_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ar-core.workspace = true
+ar-controller.workspace = true
+ar-net.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
+specta-typescript = "0.0.12"
+tauri = { version = "2", features = [] }
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+tokio.workspace = true
