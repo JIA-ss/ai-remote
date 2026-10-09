@@ -12,6 +12,11 @@ authors.workspace = true
 name = "ai-remote"
 path = "src/main.rs"
 
+# The same host without a console window, for starting at login (`ai-remote host install`).
+[[bin]]
+name = "ai-remote-hostw"
+path = "src/bin/ai-remote-hostw.rs"
+
 [dependencies]
 ar-core.workspace = true
 ar-net.workspace = true

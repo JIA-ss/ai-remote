@@ -52,3 +52,29 @@ pub fn prompt_blocker() -> Option<String> {
     let s = session_state();
     if s.desktop_usable { None } else { s.problem.or_else(|| Some("the desktop is not usable".into())) }
 }
+
+/// This process's DPI awareness on Windows: `per_monitor_v2`, `per_monitor`, `system` or
+/// `unaware`. `None` where the question does not apply.
+pub fn dpi_awareness() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        Some(windows::dpi_awareness())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Text printed by a console tool (schtasks, netsh): those write the console's OEM code page, not
+/// UTF-8, so non-ASCII paths and localised messages would otherwise turn into mojibake.
+pub fn decode_console_output(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    if let Some(s) = windows::decode_oem(bytes) {
+        return s;
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}

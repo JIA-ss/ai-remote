@@ -2,13 +2,18 @@
 
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
+    Globalization::{CP_OEMCP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME},
         Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken},
     },
-    UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+    UI::HiDpi::{
+        AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_PER_MONITOR_AWARE,
+        DPI_AWARENESS_SYSTEM_AWARE, GetAwarenessFromDpiAwarenessContext, GetDpiAwarenessContextForProcess,
+        SetProcessDpiAwarenessContext,
+    },
 };
 
 use super::SessionState;
@@ -71,6 +76,42 @@ fn is_elevated() -> Option<bool> {
     // SAFETY: `token` was opened above.
     let _ = unsafe { CloseHandle(token) };
     ok.ok().map(|_| elevation.TokenIsElevated != 0)
+}
+
+/// The awareness the process actually ended up with: a manifest or compatibility shim can override
+/// what [`init_process`] asked for, and only per-monitor-v2 keeps capture and input in one space.
+pub fn dpi_awareness() -> &'static str {
+    // SAFETY: a null process handle means the current process; the returned context is a value
+    // that needs no freeing.
+    unsafe {
+        let ctx = GetDpiAwarenessContextForProcess(HANDLE::default());
+        if AreDpiAwarenessContextsEqual(ctx, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).as_bool() {
+            return "per_monitor_v2";
+        }
+        match GetAwarenessFromDpiAwarenessContext(ctx) {
+            a if a == DPI_AWARENESS_PER_MONITOR_AWARE => "per_monitor",
+            a if a == DPI_AWARENESS_SYSTEM_AWARE => "system",
+            _ => "unaware",
+        }
+    }
+}
+
+/// Decodes bytes in the console's OEM code page.
+pub fn decode_oem(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+    let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+    // SAFETY: both calls get correctly sized slices; the first only measures.
+    unsafe {
+        let len = MultiByteToWideChar(CP_OEMCP, flags, bytes, None);
+        if len <= 0 {
+            return None;
+        }
+        let mut wide = vec![0u16; len as usize];
+        let written = MultiByteToWideChar(CP_OEMCP, flags, bytes, Some(&mut wide));
+        (written > 0).then(|| String::from_utf16_lossy(&wide[..written as usize]))
+    }
 }
 
 /// Name of the desktop that currently receives input, or `None` when it cannot be opened (which

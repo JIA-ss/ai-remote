@@ -24,6 +24,8 @@ pub enum HostRequest {
     Revoke { peer: String },
     Unrevoke { peer: String },
     Forget { peer: String },
+    /// Run the graded preflight from inside the host (its session, token and network).
+    Doctor,
     Shutdown,
 }
 
@@ -49,7 +51,14 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             "peers": mesh.peers().await?.len(),
             "tools": host.registry().iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>(),
             "profile": host.profile().root(),
+            // A restart is verified by a changed pid, not by "it answers".
+            "pid": std::process::id(),
+            "exe": std::env::current_exe().ok().map(|p| dunce::simplified(&p).to_path_buf()),
+            "background": host.background(),
         }),
+        HostRequest::Doctor => serde_json::to_value(
+            crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,
+        )?,
         HostRequest::PairCode { level, name } => serde_json::to_value(mesh.invite(level, name).await?)?,
         HostRequest::Peers => serde_json::to_value(mesh.peers().await?)?,
         HostRequest::SetLevel { peer, level } => {

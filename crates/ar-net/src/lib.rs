@@ -11,14 +11,18 @@
 //! pairing records the redeemer's principal in that service's allow list.
 
 pub mod ipc;
+pub mod refusal;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use ar_core::Level;
-use mcpmesh_local_api::{BackendSpec, ControlClient};
+use mcpmesh_local_api::{
+    AuditKind, BackendSpec, ControlClient, RecentPairing, StatusResult, StreamFrame, StreamSubscription,
+    client::ClientError,
+};
 use mcpmesh_node::{Node, NodeBuilder, mcpmesh_trust::ed25519_dalek::SigningKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use mcpmesh_local_api::PeerPath;
 pub use mcpmesh_node::iroh;
@@ -82,6 +86,39 @@ pub struct Paired {
     pub sas: String,
     /// Level the invite grants this device on the peer.
     pub level: Option<Level>,
+}
+
+/// A controller that just redeemed one of this node's invites, as the inviting side sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PairingEvent {
+    /// This node's local name for the new peer.
+    pub peer: String,
+    /// Safety code: the redeemer was shown the same words; a mismatch means the ticket was
+    /// intercepted and the new peer must be removed.
+    pub sas: String,
+    /// Level this node grants the new peer.
+    pub level: Option<Level>,
+    /// The peer's stable principal (`b64u:` or `eid:`).
+    pub principal: Option<String>,
+}
+
+/// This node's own network posture: the first question when peers cannot reach it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkStatus {
+    /// A home-relay connection is established.
+    pub online: bool,
+    /// The connected home relay (scheme, host and port only).
+    pub home_relay: Option<String>,
+    /// Every known relay and whether it is connected.
+    pub relays: Vec<RelayState>,
+    /// This node's direct socket addresses.
+    pub direct_addrs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayState {
+    pub url: String,
+    pub connected: bool,
 }
 
 /// Whether a connection's traffic goes direct or through a relay.
@@ -179,30 +216,34 @@ impl Mesh {
     pub async fn peers(&self) -> Result<Vec<Peer>> {
         let mut c = self.control().await?;
         let status = c.status().await.map_err(|e| anyhow!("status: {e}"))?;
-        let mut peers: Vec<Peer> = status
-            .peers
-            .iter()
-            .map(|p| Peer {
-                name: p.name.clone(),
-                principal: p.principal.clone(),
-                user_id: p.user_id.clone(),
-                level: None,
-            })
-            .collect();
-        for peer in &mut peers {
-            for level in Level::ALL {
-                let name = service_name(level);
-                let granted = status
-                    .services
-                    .iter()
-                    .filter(|s| s.name == name)
-                    .any(|s| s.allow.iter().any(|a| peer.has_principal(a)));
-                if granted {
-                    peer.level = Some(peer.level.map_or(level, |l| l.max(level)));
-                }
-            }
-        }
-        Ok(peers)
+        Ok(peers_from_status(&status))
+    }
+
+    /// This node's relay connection and direct addresses (`None` before the node reports them).
+    pub async fn network(&self) -> Result<Option<NetworkStatus>> {
+        let mut c = self.control().await?;
+        let status = c.status().await.map_err(|e| anyhow!("status: {e}"))?;
+        Ok(status.self_network.map(|n| NetworkStatus {
+            online: n.online,
+            home_relay: n.home_relay,
+            relays: n.relays.into_iter().map(|r| RelayState { url: r.url, connected: r.connected }).collect(),
+            direct_addrs: n.direct_addrs,
+        }))
+    }
+
+    /// Starts watching for controllers that redeem this node's invites. Start it before handing
+    /// out a ticket: a pairing that completes before the watch starts is not reported.
+    pub async fn watch_pairings(&self) -> Result<PairingWatch> {
+        let mut control = self.control().await?;
+        let status = control.status().await.map_err(|e| anyhow!("status: {e}"))?;
+        let announced = status.recent_pairings.iter().map(pairing_key).collect();
+        let events = self
+            .control()
+            .await?
+            .subscribe()
+            .await
+            .map_err(|e| anyhow!("subscribe to transport events: {e}"))?;
+        Ok(PairingWatch { events, control, announced })
     }
 
     /// The paired peer behind an authenticated connection, if any.
@@ -303,6 +344,99 @@ impl Mesh {
             Ok(node) => node.shutdown().await,
             Err(_) => tracing::warn!("transport node still shared at shutdown; not closed gracefully"),
         }
+    }
+}
+
+fn peers_from_status(status: &StatusResult) -> Vec<Peer> {
+    let mut peers: Vec<Peer> = status
+        .peers
+        .iter()
+        .map(|p| Peer { name: p.name.clone(), principal: p.principal.clone(), user_id: p.user_id.clone(), level: None })
+        .collect();
+    for peer in &mut peers {
+        for level in Level::ALL {
+            let name = service_name(level);
+            let granted = status
+                .services
+                .iter()
+                .filter(|s| s.name == name)
+                .any(|s| s.allow.iter().any(|a| peer.has_principal(a)));
+            if granted {
+                peer.level = Some(peer.level.map_or(level, |l| l.max(level)));
+            }
+        }
+    }
+    peers
+}
+
+/// Identity of one completed ceremony in the transport's recent-pairings ring.
+fn pairing_key(p: &RecentPairing) -> (String, String, u64) {
+    (p.peer_nickname.clone(), p.sas_code.clone(), p.paired_at_epoch)
+}
+
+/// Live feed of completed pairings, from [`Mesh::watch_pairings`].
+///
+/// The transport reports a pairing as a `trust`/`pair` event and parks the inviter's side of the
+/// safety code in an in-memory ring that `status` exposes. The event is emitted a moment before
+/// the ring entry is written, so the watch polls `status` briefly after each event.
+pub struct PairingWatch {
+    events: StreamSubscription,
+    control: ControlClient,
+    announced: HashSet<(String, String, u64)>,
+}
+
+impl PairingWatch {
+    /// The next completed pairing, or `None` when the node stops.
+    pub async fn next(&mut self) -> Result<Option<PairingEvent>> {
+        loop {
+            let frame = match self.events.next().await {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return Ok(None),
+                // A frame this build does not model; nothing to do with it.
+                Err(ClientError::Malformed(_)) => continue,
+                Err(e) => return Err(anyhow!("transport event stream: {e}")),
+            };
+            let wanted = match frame {
+                StreamFrame::Event { record }
+                    if record.kind == AuditKind::Trust && record.event.as_deref() == Some("pair") =>
+                {
+                    record.target
+                }
+                // Events were dropped; one of them may have been a pairing.
+                StreamFrame::Lagged { .. } => None,
+                _ => continue,
+            };
+            if let Some(event) = self.find_new(wanted.as_deref()).await? {
+                return Ok(Some(event));
+            }
+        }
+    }
+
+    /// Polls `status` for a pairing not announced yet (of `peer`, when the event named one).
+    async fn find_new(&mut self, peer: Option<&str>) -> Result<Option<PairingEvent>> {
+        // Only a targeted event is worth waiting for; a lag notice gets one look.
+        let attempts = if peer.is_some() { 20 } else { 1 };
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let status = self.control.status().await.map_err(|e| anyhow!("status: {e}"))?;
+            let fresh = status.recent_pairings.iter().find(|p| {
+                !p.self_enroll && peer.is_none_or(|n| p.peer_nickname == n) && !self.announced.contains(&pairing_key(p))
+            });
+            if let Some(p) = fresh {
+                self.announced.insert(pairing_key(p));
+                let found = peers_from_status(&status).into_iter().find(|x| x.name == p.peer_nickname);
+                return Ok(Some(PairingEvent {
+                    peer: p.peer_nickname.clone(),
+                    sas: p.sas_code.clone(),
+                    level: found.as_ref().and_then(|x| x.level),
+                    principal: found.and_then(|x| x.user_id.or(x.principal)),
+                }));
+            }
+        }
+        // This node redeeming another node's invite also emits `pair`, without a ring entry.
+        Ok(None)
     }
 }
 

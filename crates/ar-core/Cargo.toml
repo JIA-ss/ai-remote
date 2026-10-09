@@ -12,6 +12,7 @@ authors.workspace = true
 anyhow.workspace = true
 data-encoding.workspace = true
 directories.workspace = true
+dunce.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true

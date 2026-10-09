@@ -5,16 +5,18 @@
 
 use std::sync::Arc;
 
-use ar_net::iroh::{
-    endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
+use ar_net::{
+    iroh::{
+        endpoint::Connection,
+        protocol::{AcceptError, ProtocolHandler},
+    },
+    // Shared with the controller, which turns them into plain language.
+    refusal::{CLOSE_NO_ACCESS, REASON_NO_LEVEL, REASON_NOT_PAIRED, REASON_STOPPING, REASON_UNRESOLVED},
 };
 use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::{HostState, server::HostServer, session::Session};
-
-const CLOSE_NO_ACCESS: u32 = 403;
 
 pub struct McpProtocol {
     host: Arc<HostState>,
@@ -38,17 +40,17 @@ impl ProtocolHandler for McpProtocol {
         let peer = match self.host.mesh().peer_for(&remote).await {
             Ok(Some(peer)) => peer,
             Ok(None) => {
-                conn.close(CLOSE_NO_ACCESS.into(), b"not paired");
+                conn.close(CLOSE_NO_ACCESS.into(), REASON_NOT_PAIRED);
                 return Ok(());
             }
             Err(e) => {
                 tracing::warn!(%e, "cannot resolve caller");
-                conn.close(CLOSE_NO_ACCESS.into(), b"cannot resolve caller");
+                conn.close(CLOSE_NO_ACCESS.into(), REASON_UNRESOLVED);
                 return Ok(());
             }
         };
         let Some(level) = peer.level else {
-            conn.close(CLOSE_NO_ACCESS.into(), b"no access level granted");
+            conn.close(CLOSE_NO_ACCESS.into(), REASON_NO_LEVEL);
             return Ok(());
         };
         tracing::info!(peer = %peer.name, %level, "controller connected");
@@ -71,6 +73,11 @@ impl ProtocolHandler for McpProtocol {
                     Err(_) => break,
                 },
                 _ = conn_cancel.cancelled() => break,
+                // Tell the controller now instead of letting it wait for an idle timeout.
+                _ = self.host.stopping().cancelled() => {
+                    conn.close(0u32.into(), REASON_STOPPING);
+                    break;
+                }
             };
             let session = Arc::new(Session::new(peer.clone(), level, conn_cancel.child_token()));
             let server = HostServer::new(self.host.clone(), session.clone());

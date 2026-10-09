@@ -30,10 +30,15 @@ blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
 directories = "6"
+# Canonical paths without the `\\?\` prefix on Windows (shown to people and passed to system tools).
+dunce = "1"
 enigo = "0.6"
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# macOS LaunchAgent property lists (`ai-remote host install`).
+plist = "1"
 process-wrap = { version = "9", features = ["tokio1"] }
+quick-xml = "0.42"
 rfd = "0.17"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -45,6 +50,8 @@ tokio-util = "0.7"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Reading Windows Firewall rules (doctor, `host status`); rules are written with netsh.exe.
+windows_firewall = "0.8"
 xcap = "0.9"
 
 [profile.release]

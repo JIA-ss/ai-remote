@@ -16,9 +16,12 @@ arboard.workspace = true
 async-trait = "0.1"
 base64.workspace = true
 blake3.workspace = true
+dunce.workspace = true
 enigo.workspace = true
 image.workspace = true
+plist.workspace = true
 process-wrap.workspace = true
+quick-xml.workspace = true
 rfd.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
@@ -32,8 +35,10 @@ getrandom.workspace = true
 xcap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows_firewall.workspace = true
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_System_Console",
   "Win32_System_RemoteDesktop",

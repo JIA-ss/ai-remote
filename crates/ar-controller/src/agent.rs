@@ -10,9 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
-use ar_net::{ALPN_MCP, Mesh, MeshOptions, PathKind, iroh::endpoint::Connection, ipc};
+use ar_net::{ALPN_MCP, Mesh, MeshOptions, PathKind, iroh::endpoint::Connection, ipc, refusal::Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -42,11 +42,32 @@ pub enum AgentRequest {
     Shutdown,
 }
 
+/// The last definitive refusal of each host, kept until a session succeeds again. A revoked device
+/// hears "access revoked" only when its live connection is cut; every later dial meets the gate's
+/// generic "unauthorized", and this keeps the specific reason.
+#[derive(Default)]
+struct Refusals(HashMap<String, Refusal>);
+
+impl Refusals {
+    /// Explains `refusal` in the light of earlier ones, and remembers it when it is definitive.
+    fn note(&mut self, host: &str, refusal: Refusal) -> Refusal {
+        let refusal = match (refusal, self.0.get(host)) {
+            (Refusal::NotPaired, Some(Refusal::Revoked)) => Refusal::Revoked,
+            (r, _) => r,
+        };
+        if refusal.is_final() {
+            self.0.insert(host.to_string(), refusal.clone());
+        }
+        refusal
+    }
+}
+
 /// State shared by every client of the agent.
 pub(crate) struct Agent {
     pub mesh: Mesh,
     hosts_path: PathBuf,
     conns: Mutex<HashMap<String, Connection>>,
+    refusals: std::sync::Mutex<Refusals>,
     active: AtomicUsize,
     last_activity: std::sync::Mutex<Instant>,
 }
@@ -57,16 +78,21 @@ impl Agent {
     pub async fn connection(&self, host: &str) -> Result<Connection> {
         let mut conns = self.conns.lock().await;
         if let Some(c) = conns.get(host) {
-            if c.close_reason().is_none() {
-                return Ok(c.clone());
+            match c.close_reason() {
+                None => return Ok(c.clone()),
+                Some(reason) => {
+                    self.note_refusal(host, Refusal::from_connection_error(&reason));
+                }
             }
             conns.remove(host);
         }
-        let conn = self
-            .mesh
-            .dial(host, ALPN_MCP)
-            .await
-            .with_context(|| format!("cannot reach host '{host}' (is `ai-remote host` running there?)"))?;
+        let conn = match self.mesh.dial(host, ALPN_MCP).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::debug!(host, error = %format!("{e:#}"), "dial failed");
+                return Err(self.refused(host, Refusal::from_dial_error(&e)));
+            }
+        };
         conns.insert(host.to_string(), conn.clone());
         Ok(conn)
     }
@@ -74,6 +100,28 @@ impl Agent {
     /// Drops a cached connection (after a transport error) so the next use redials.
     pub async fn invalidate(&self, host: &str) {
         self.conns.lock().await.remove(host);
+    }
+
+    /// Why the cached connection to `host` ended, if it did.
+    pub async fn closed_because(&self, host: &str) -> Option<Refusal> {
+        let conn = self.conns.lock().await.get(host).cloned()?;
+        let reason = conn.close_reason()?;
+        Some(self.note_refusal(host, Refusal::from_connection_error(&reason)))
+    }
+
+    fn note_refusal(&self, host: &str, refusal: Refusal) -> Refusal {
+        self.refusals.lock().unwrap().note(host, refusal)
+    }
+
+    /// The host served a session again: forget old refusals.
+    pub fn clear_refusal(&self, host: &str) {
+        self.refusals.lock().unwrap().0.remove(host);
+    }
+
+    /// An error carrying the plain-language reason a host refused or could not be reached (callers
+    /// name the host).
+    pub fn refused(&self, host: &str, refusal: Refusal) -> anyhow::Error {
+        anyhow!("{}", self.note_refusal(host, refusal))
     }
 
     /// Paired hosts, by local name.
@@ -120,6 +168,7 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
         mesh,
         hosts_path: profile.role_dir(Role::Controller)?.join("hosts.json"),
         conns: Mutex::new(HashMap::new()),
+        refusals: std::sync::Mutex::new(Refusals::default()),
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
     });
@@ -223,7 +272,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                 Some(h) => h,
                 None => aggregator.only_host().await?,
             };
-            let result = aggregator.call_on_host(&host, &tool, args).await?;
+            let result = aggregator.call_on_host(&host, &tool, args).await.map_err(|e| anyhow!("host '{host}': {e:#}"))?;
             serde_json::to_value(result)?
         }
         AgentRequest::Mcp => bail!("unreachable"),
@@ -232,4 +281,29 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             json!({"stopping": true})
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_revocation_outlives_later_generic_refusals() {
+        let mut r = Refusals::default();
+        assert_eq!(r.note("office", Refusal::Revoked), Refusal::Revoked);
+        // Every later dial meets the gate's "unauthorized".
+        assert_eq!(r.note("office", Refusal::NotPaired), Refusal::Revoked);
+        assert_eq!(r.note("office", Refusal::NotPaired), Refusal::Revoked);
+        // Other hosts are unaffected.
+        assert_eq!(r.note("lab", Refusal::NotPaired), Refusal::NotPaired);
+    }
+
+    #[test]
+    fn transient_failures_are_not_remembered() {
+        let mut r = Refusals::default();
+        assert_eq!(r.note("office", Refusal::Unreachable), Refusal::Unreachable);
+        assert_eq!(r.note("office", Refusal::NotPaired), Refusal::NotPaired);
+        assert_eq!(r.note("office", Refusal::NoLevel), Refusal::NoLevel);
+        assert!(!r.0.contains_key("lab"));
+    }
 }

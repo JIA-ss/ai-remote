@@ -54,14 +54,16 @@ iOS can only be a controller: iOS does not allow a third-party app to control th
 
 - **Identity**: each installation generates an iroh secret key on first run and stores it in the
   profile directory. The public key (endpoint id) is the device identity.
-- **Pairing (M0, no server)**:
-  1. Host owner runs `ai-remote pair-code`; the host creates a one-time pairing secret (128-bit,
-     expires after 10 minutes, single use) and prints a ticket = host endpoint id + secret.
-  2. Controller runs `ai-remote pair <ticket> --name <alias>`; it dials the host on the pairing
-     ALPN and presents the secret.
-  3. Host verifies the secret in constant time, records the controller's endpoint id with a
-     permission level, and returns its own display name. The controller stores the host under
-     the alias.
+- **Pairing (M0, no server)**, provided by mcpmesh's pairing ceremony (see `ar-net`):
+  1. Host owner runs `ai-remote pair-code` (or starts `ai-remote host` with nobody paired); the
+     host mints a single-use invite for one permission level and prints it as a ticket line. A
+     background host never mints one by itself: a ticket is a credential.
+  2. Controller runs `ai-remote pair <ticket> --name <alias>`; it dials the host, proves the
+     invite's secret, and prints a three-word **safety code** with the granted level.
+  3. The host records the controller's principal in that level's allow list and shows the same
+     safety code with the controller's name and level (in its terminal, and always in its log).
+     Both owners compare the words; different words mean someone else redeemed the ticket, and the
+     host owner removes that peer with `ai-remote forget <peer>`.
   Because the ticket contains the host's public key, the controller is guaranteed to talk to the
   intended host; because iroh authenticates both ends, the host learns the controller's real key.
 - **Authorization**: a connection on the session ALPN from an endpoint id that is not in the
@@ -88,6 +90,13 @@ iOS can only be a controller: iOS does not allow a third-party app to control th
     adaptive bitrate) and input events.
 - Versioning: the ALPN carries the major protocol version; MCP's own `initialize` negotiates the
   MCP spec version and capabilities.
+- Refusals: a host that will not serve a device closes the connection with a code and reason
+  (the transport's 401 for unknown or revoked devices, the host's 403 for "not paired" or "no
+  access level", code 0 when the host stops). The controller maps them to plain language for the
+  agent ("access revoked by the host", "not paired", "no access level", "host offline or
+  unreachable", "the host closed the connection") with the fix, and does not redial into a refusal
+  (`ar_net::refusal`). It remembers a revocation, because later dials only meet the gate's generic
+  401.
 
 ## 6. Host tool surface (v0)
 
@@ -96,6 +105,7 @@ Tool names are stable API. Annotations follow MCP (`readOnlyHint`, `destructiveH
 | Tool | Level | Purpose |
 |---|---|---|
 | `system_info` | observe | OS, hostname, user, monitors (geometry, scale), host version |
+| `doctor` | observe | Graded preflight (ok / warn / fail, reason, fix): session, console, desktop lock, elevation, DPI awareness, relay, firewall, autostart, approval prompts, audit log, disk |
 | `screenshot` | observe | Capture a monitor, downscale (default max 1280 px wide), return image + coordinate mapping |
 | `list_windows` | observe | Top-level windows: title, app, pid, bounds, focused/minimized |
 | `ui_tree` | observe | Accessibility tree of the focused window (or a given window) with element refs, roles, names, values, bounds, states, supported actions |
@@ -113,32 +123,83 @@ accepts image-space coordinates by default so a model never has to do DPI or mul
 
 - **Permission levels** per peer (section 4).
 - **Approval**: the host can require owner approval for `admin` tools (and optionally `control`).
-  M0 prompts in the host terminal; the desktop app will show a native prompt with the exact
-  action.
+  The prompt is a native dialog on the host's interactive desktop (the host often runs without a
+  terminal, see section 8); when nobody can answer (locked desktop, no answer in time) the action
+  is refused.
 - **Audit log**: every tool call is appended to `audit.jsonl` on the host (time, peer, tool,
   argument summary, outcome, duration).
-- **Revocation & kill switch**: `ai-remote peers remove <id>` drops a peer and its live sessions;
-  stopping the host ends everything. A global hotkey and on-screen "AI is controlling" indicator
-  are planned for the desktop app.
+- **Revocation & kill switch**: `ai-remote revoke <peer>` refuses a peer and cuts its live
+  connections, `ai-remote forget <peer>` also drops the pairing; stopping the host ends everything
+  and closes every controller connection with a "host stopping" reason. A global hotkey and
+  on-screen "AI is controlling" indicator are planned.
 - **Prompt injection awareness**: on-screen text is untrusted data. Tool results that contain
   screen text are labeled as such so agents can treat them accordingly.
 
-## 8. Code layout
+## 8. Process model and install
+
+The host must run in the logged-in user's interactive desktop session: a service (session 0 on
+Windows) has no desktop, so screenshots are black, input goes nowhere and no approval prompt can be
+shown. So the host is never a service; it runs as one of two programs of the same build:
+
+| Process | Started by | Output |
+|---|---|---|
+| `ai-remote host` | the user, in a terminal | terminal (stdout), logs on stderr; prints a pairing ticket when nobody is paired |
+| `ai-remote-hostw` | the autostart entry, at login | no console window (Windows GUI subsystem); everything goes to `<profile>/host/host.log` (one rotated copy kept); never mints a ticket |
+| `ai-remote agent` | the CLI or `ai-remote mcp`, on demand | `<profile>/controller/controller.log`; exits after 30 idle minutes |
+
+Both host programs take the control endpoint of their profile, so only one host runs per profile.
+Its `status` reports the pid (a restart is verified by a changed pid) and whether it runs in the
+background.
+
+**`ai-remote host install`** registers the background host (`--dry-run` prints every change,
+including the full task definition; repeating it is safe and is the upgrade path):
+
+- **Windows**, from an elevated terminal (the install checks and explains):
+  - A Task Scheduler task `\ai-remote\host-<profile id>`, registered with `schtasks.exe` (absolute
+    path) from an XML definition: logon trigger of the current user (by SID), interactive token,
+    highest privileges (so the host can drive elevated windows), no execution time limit (the
+    default stops tasks after 3 days), never stopped or blocked on battery, started late when the
+    logon was missed, a second instance ignored. It runs `ai-remote-hostw --home <profile>`.
+  - Inbound Windows Firewall allow rules `ai-remote host` (UDP and TCP, any profile) for both host
+    programs, written with `netsh.exe`. The first listen of a new program otherwise raises an
+    "allow access?" prompt on the desktop; unanswered on an unattended machine it leaves program
+    block rules that beat allow rules and quietly push connections onto the relay. Stale block rules
+    for the programs (found through the firewall's COM API) are deleted.
+  - Unless `--no-start`, it starts the task and prints the host's own doctor report as a
+    self-check, then the next step (pairing).
+- **macOS**: a per-user LaunchAgent `~/Library/LaunchAgents/io.github.jia-ss.ai-remote.host.<id>.plist`
+  (`RunAtLoad`, `KeepAlive` except after a clean exit so `stop-host` sticks, `ProcessType`
+  Interactive, Aqua sessions only), loaded with `launchctl bootstrap`. No elevation.
+
+`ai-remote host uninstall` stops the running host, deletes the task (or LaunchAgent) and the
+firewall rules; `ai-remote host status` shows the entry, what it runs, whether that is this
+installation and profile, the firewall rules per program, and whether the host runs.
+
+**`ai-remote doctor`** asks the running host for its graded preflight (the same checks as the
+`doctor` tool, seen from the host's own session, token and network); without a running host it
+checks from the CLI's process and skips the network. It exits with 1 when a check fails.
+
+## 9. Code layout
 
 ```
 crates/
-  ar-core/        identity, profile dirs, pairing tickets, peer store, iroh endpoint, ALPNs
-  ar-host/        host service: authz, approval, audit, MCP server, capability providers
-  ar-controller/  host registry, MCP client per host, aggregating stdio MCP bridge
-  ai-remote/      the `ai-remote` CLI binary
+  ar-core/        profile layout, device key, permission levels, config, result budgets
+  ar-net/         transport seam over mcpmesh-node: pairing (with the safety-code watch), gate,
+                  revocation, dialing, refusal reasons, local control channel (ipc)
+  ar-host/        host: gate (levels, policy, approval, audit), MCP server, tools, platform facts,
+                  doctor, install (autostart + firewall)
+  ar-controller/  controller agent, aggregating MCP server over all paired hosts, stdio shim
+  ai-remote/      the `ai-remote` CLI and the windowless `ai-remote-hostw` background host
 apps/             native shells (planned): desktop UI, iOS controller
 docs/
 ```
 
-Profiles: everything lives in a per-user profile directory; `AI_REMOTE_HOME` overrides it so
-several identities can run on one machine (used by tests and local development).
+Profiles: everything lives in a per-user profile directory; `AI_REMOTE_HOME` (or `--home`)
+overrides it so several identities can run on one machine (used by tests and local development).
+Paths are canonicalized without the Windows `\\?\` prefix, since they are shown to people and
+handed to system tools.
 
-## 9. Milestones
+## 10. Milestones
 
 | Milestone | Scope |
 |---|---|

@@ -181,6 +181,7 @@ dependencies = [
  "anyhow",
  "data-encoding",
  "directories",
+ "dunce",
  "getrandom 0.3.4",
  "serde",
  "serde_json",
@@ -198,10 +199,13 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "dunce",
  "enigo",
  "getrandom 0.3.4",
  "image",
+ "plist",
  "process-wrap 9.1.1",
+ "quick-xml 0.42.0",
  "rfd",
  "rmcp",
  "schemars",
@@ -212,6 +216,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "windows 0.62.2",
+ "windows_firewall",
  "xcap",
 ]
 
@@ -1351,6 +1356,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1911,6 +1922,17 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "getset"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cf442baaabe4213ce7d1239afc26c039180b6456da2cededa316ae2c8a77a77"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -5959,6 +5981,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typed-builder"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31aa81521b70f94402501d848ccc0ecaa8f93c8eb6999eb9747e72287757ffda"
+dependencies = [
+ "typed-builder-macro",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "076a02dc54dd46795c2e9c8282ed40bcfb1e22747e955de9389a1de28190fb26"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6689,6 +6731,21 @@ name = "windows_aarch64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d782e804c2f632e395708e99a94275910eb9100b2114651e04744e9b125006"
+
+[[package]]
+name = "windows_firewall"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "594c1cd7391c19ffd849c7a824bb7af453796a9a8c82457ebca4f835e395dd1c"
+dependencies = [
+ "getset",
+ "ipnet",
+ "scopeguard",
+ "thiserror 2.0.21",
+ "tracing",
+ "typed-builder",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "windows_i686_gnu"
