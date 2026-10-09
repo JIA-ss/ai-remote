@@ -255,9 +255,11 @@ dependencies = [
  "data-encoding",
  "dunce",
  "enigo",
+ "fast_image_resize",
  "futures",
  "getrandom 0.3.4",
  "image",
+ "openh264",
  "plist",
  "process-wrap",
  "quick-xml 0.42.0",
@@ -275,8 +277,10 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "windows 0.62.2",
+ "windows-capture",
  "windows_firewall",
  "xcap",
+ "yuvutils-rs",
 ]
 
 [[package]]
@@ -904,6 +908,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex 2.0.1",
 ]
 
@@ -1231,6 +1237,25 @@ name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1675,6 +1700,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "document-features"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
+dependencies = [
+ "litrs",
+]
+
+[[package]]
 name = "dom_query"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1997,6 +2031,18 @@ dependencies = [
  "autocfg",
  "indenter",
  "once_cell",
+]
+
+[[package]]
+name = "fast_image_resize"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9c50201dc184ba6553da1695aac20a042efffbe2d84542cee31917c86c3ab1e"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3705,6 +3751,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3914,6 +3970,12 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+
+[[package]]
+name = "litrs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "lock_api"
@@ -4253,6 +4315,15 @@ dependencies = [
  "derive_more",
  "n0-error",
  "n0-future",
+]
+
+[[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -5071,6 +5142,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "openh264"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc9071a0b5f9c501ddd01066c2600d922cc799dc450a52975222bcda7755a08"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ada29a4cadc13d4d326737af87c13e224210d7d99fe47594e9f3f9b0102fd70"
+dependencies = [
+ "cc",
+ "nasm-rs",
+ "walkdir",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5797,6 +5889,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "rayon"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "rcgen"
 version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6168,6 +6280,15 @@ name = "ryu-js"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -8372,6 +8493,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
+
+[[package]]
 name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8457,6 +8588,19 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-future 0.3.2",
  "windows-numerics 0.3.1",
+]
+
+[[package]]
+name = "windows-capture"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09046acbe9b6d039cde50e8c8178d95bb0f9b33ed7feccc4465dadc5404b31b4"
+dependencies = [
+ "parking_lot",
+ "rayon",
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+ "windows-future 0.3.2",
 ]
 
 [[package]]
@@ -9193,6 +9337,15 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure 0.14.0",
+]
+
+[[package]]
+name = "yuvutils-rs"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b699b6503cd14c70b258eaffedd7ada5a781ea23206eeb9066736b99ba37af1"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

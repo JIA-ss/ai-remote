@@ -27,6 +27,24 @@ struct AppState {
     cli: PathBuf,
     feeds: Mutex<HashMap<u32, tokio::task::JoinHandle<()>>>,
     next_feed: AtomicU32,
+    /// Live views: the task copying frames, and the writer that asks the host for keyframes.
+    views: Mutex<HashMap<u32, View>>,
+}
+
+struct View {
+    task: tokio::task::JoinHandle<()>,
+    control: tokio::sync::mpsc::Sender<Vec<u8>>,
+}
+
+/// One live-view frame for the page: the host's 18-byte header and the H.264 payload, sent as raw
+/// bytes (an `ArrayBuffer` in the page), never as JSON.
+#[derive(specta::Type)]
+pub struct Frame(#[specta(type = specta_typescript::Unknown)] Vec<u8>);
+
+impl tauri::ipc::IpcResponse for Frame {
+    fn body(self) -> tauri::Result<tauri::ipc::InvokeResponseBody> {
+        Ok(tauri::ipc::InvokeResponseBody::Raw(self.0))
+    }
 }
 
 impl AppState {
@@ -225,6 +243,77 @@ async fn tell_agent(state: State<'_, AppState>, host: String, message: String) -
     Ok(())
 }
 
+/// Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
+/// monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
+#[tauri::command]
+#[specta::specta]
+async fn watch_screen(
+    state: State<'_, AppState>,
+    host: Option<String>,
+    request: Json,
+    on_frame: Channel<Frame>,
+) -> Result<(u32, Json), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut conn = state.agent().await.map_err(text)?;
+    let reply = conn.request(&json!({"op": "screen", "host": host, "request": request.0})).await.map_err(text)?;
+    let (stream, buffered) = conn.into_raw();
+    let (read, mut write) = tokio::io::split(stream);
+    let (control, mut lines) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    let task = tokio::spawn(async move {
+        let mut read = std::io::Cursor::new(buffered).chain(read);
+        let frames = async {
+            loop {
+                let mut header = [0u8; 18];
+                if read.read_exact(&mut header).await.is_err() {
+                    break;
+                }
+                let len = u32::from_be_bytes([header[14], header[15], header[16], header[17]]) as usize;
+                let mut frame = Vec::with_capacity(18 + len);
+                frame.extend_from_slice(&header);
+                frame.resize(18 + len, 0);
+                if read.read_exact(&mut frame[18..]).await.is_err() || on_frame.send(Frame(frame)).is_err() {
+                    break;
+                }
+            }
+        };
+        let up = async {
+            while let Some(line) = lines.recv().await {
+                if write.write_all(&line).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = frames => {}
+            _ = up => {}
+        }
+    });
+    state.views.lock().unwrap().insert(id, View { task, control });
+    Ok((id, Json(reply)))
+}
+
+/// Asks the host for a keyframe on live view `id` (after a decoder error).
+#[tauri::command]
+#[specta::specta]
+async fn request_keyframe(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    let control = state.views.lock().unwrap().get(&id).map(|v| v.control.clone());
+    if let Some(control) = control {
+        let _ = control.send(b"{\"keyframe\":true}\n".to_vec()).await;
+    }
+    Ok(())
+}
+
+/// Ends live view `id`.
+#[tauri::command]
+#[specta::specta]
+async fn stop_screen(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    if let Some(view) = state.views.lock().unwrap().remove(&id) {
+        view.task.abort();
+    }
+    Ok(())
+}
+
 /// Ends a feed started by [`subscribe_events`].
 #[tauri::command]
 #[specta::specta]
@@ -251,6 +340,9 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         enroll_approver,
         set_turn,
         tell_agent,
+        watch_screen,
+        request_keyframe,
+        stop_screen,
     ])
 }
 
@@ -292,7 +384,13 @@ pub fn run() {
         // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
         // the page after its first paint (no white flash).
         .plugin(tauri_plugin_frame::FramePluginBuilder::new().auto_titlebar(true).titlebar_height(48).build())
-        .manage(AppState { profile, cli, feeds: Mutex::new(HashMap::new()), next_feed: AtomicU32::new(1) })
+        .manage(AppState {
+            profile,
+            cli,
+            feeds: Mutex::new(HashMap::new()),
+            next_feed: AtomicU32::new(1),
+            views: Mutex::new(HashMap::new()),
+        })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

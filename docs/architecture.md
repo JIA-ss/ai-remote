@@ -127,8 +127,15 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   watch` and the apps turn into the agent's timeline; `pending`, `answer`, `enroll` and
   `approver_status` serve remote approvals ([approvals.md](approvals.md#wire-format)); `turn` (take
   over, hand back, pause, resume) and `tell` (a message for the agent) serve turn-taking.
-- *(planned)* `app/ai-remote/screen/1` for live video to people, `app/ai-remote/file/1` for bulk
-  file transfer.
+- **ALPN `app/ai-remote/screen/1`.** Live video of the host's screen for a person at a controller
+  (the desktop app's session view; `ai-remote view` for checks). Windows Graphics Capture delivers a
+  frame only when the screen changes, the newest frame waits in a one-slot buffer (a slow network
+  skips frames before they are encoded, never queues them), OpenH264 encodes it in its screen-content
+  mode (bit rate held, a keyframe only at the start and on request) and the app decodes it with
+  WebCodecs. Frames are 18-byte headers plus H.264 Annex B on one stream; any device with a level may
+  watch, and watching is audited (`view_start`, `view_end`). Hardware encoding and macOS capture come
+  later.
+- *(planned)* `app/ai-remote/file/1` for bulk file transfer.
 
 ## 6. The gate
 

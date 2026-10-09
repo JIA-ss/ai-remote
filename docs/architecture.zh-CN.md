@@ -110,7 +110,12 @@ flowchart LR
   `ai-remote watch` 和应用把它变成 Agent 的操作时间线；`pending`、`answer`、`enroll`、`approver_status`
   用于远程审批（见 [approvals.zh-CN.md](approvals.zh-CN.md#通信格式)）；`turn`（接管、交还、暂停、恢复）和
   `tell`（给 Agent 的留言）用于轮流操作。
-- （规划中）`app/ai-remote/screen/1` 用于给人看的实时画面，`app/ai-remote/file/1` 用于大文件传输。
+- **ALPN `app/ai-remote/screen/1`。** 给控制端前的人看的被控端实时画面（桌面应用的会话画面；排查时用
+  `ai-remote view`）。Windows Graphics Capture 只在屏幕变化时才给出一帧，最新的一帧放在只有一格的缓冲里
+  （网络慢时在编码前就跳过旧帧，绝不排队），OpenH264 以屏幕内容模式编码（控制码率，只在开始和被请求时出关键帧），
+  应用用 WebCodecs 解码。一条流上是 18 字节帧头加 H.264 Annex B；任何有权限级别的设备都能看，观看会写入审计
+  （`view_start`、`view_end`）。硬件编码和 macOS 采集随后提供。
+- （规划中）`app/ai-remote/file/1` 用于大文件传输。
 
 ## 6. 闸门
 

@@ -12,7 +12,9 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
-use ar_net::{ALPN_EVENTS, ALPN_MCP, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection, refusal::Refusal};
+use ar_net::{
+    ALPN_EVENTS, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection, refusal::Refusal,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, sync::Mutex};
@@ -55,6 +57,15 @@ pub enum AgentRequest {
     /// Upgrade this connection to a host's live activity feed (one JSON line per event).
     Events {
         host: Option<String>,
+    },
+    /// Upgrade this connection to a host's live view: after the host's JSON reply, its binary video
+    /// frames (see the host's screen protocol); lines written on this connection reach the host
+    /// (`{"keyframe":true}`).
+    Screen {
+        host: Option<String>,
+        /// The host's screen request (`monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps`).
+        #[serde(default)]
+        request: Value,
     },
     /// One request on a host's events channel, returning the host's reply: approvals (`pending`,
     /// `answer`, `enroll`, `approver_status`) and turns (`turn`, `tell`); see the host's events
@@ -297,6 +308,20 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 }
             }
         }
+        if let AgentRequest::Screen { host, request } = req {
+            match open_screen(agent, host, &request).await {
+                Ok((view, reply)) => {
+                    conn.reply(Ok(reply)).await?;
+                    let (stream, buffered) = conn.into_raw();
+                    view.relay(stream, buffered).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    conn.reply(Err(e)).await?;
+                    continue;
+                }
+            }
+        }
         let result = handle(agent, req, shutdown).await;
         conn.reply(result).await?;
     }
@@ -361,7 +386,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             serde_json::to_value(result)?
         }
         AgentRequest::Channel { host, request } => channel_request(agent, host, &request).await?,
-        AgentRequest::Mcp | AgentRequest::Events { .. } => bail!("unreachable"),
+        AgentRequest::Mcp | AgentRequest::Events { .. } | AgentRequest::Screen { .. } => bail!("unreachable"),
         AgentRequest::Shutdown => {
             shutdown.cancel();
             json!({"stopping": true})
@@ -414,6 +439,69 @@ async fn channel_request(agent: &Arc<Agent>, host: Option<String>, request: &Val
     }
     reply["host"] = host.into();
     Ok(reply)
+}
+
+/// A live view of one host.
+struct ScreenView {
+    conn: Connection,
+    send: ar_net::iroh::endpoint::SendStream,
+    recv: ar_net::iroh::endpoint::RecvStream,
+}
+
+/// Opens `host`'s live view and returns it with the host's first reply (its monitors).
+async fn open_screen(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<(ScreenView, Value)> {
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).only_host().await?,
+    };
+    let conn = agent
+        .mesh
+        .dial(&host, ALPN_SCREEN)
+        .await
+        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
+    let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let request = if request.is_null() { json!({}) } else { request.clone() };
+    let mut line = request.to_string();
+    line.push('\n');
+    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    // The reply line is read byte by byte so no video after it is consumed here.
+    let mut recv = recv;
+    let mut reply = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match tokio::time::timeout(Duration::from_secs(15), recv.read_exact(&mut byte)).await {
+            Ok(Ok(_)) if byte[0] == b'\n' => break,
+            Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
+            Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
+            Ok(Err(e)) => bail!("host '{host}' closed the live view: {e} (an older host?)"),
+            Err(_) => bail!("host '{host}' did not answer"),
+        }
+    }
+    let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
+    if reply["ok"] != true {
+        bail!("host '{host}': {}", reply["error"].as_str().unwrap_or("refused"));
+    }
+    reply["host"] = host.into();
+    Ok((ScreenView { conn, send, recv }, reply))
+}
+
+impl ScreenView {
+    /// Copies video to the local client and the client's lines to the host, until either ends.
+    async fn relay(self, local: ipc::LocalStream, buffered: Vec<u8>) {
+        let ScreenView { conn, mut send, mut recv } = self;
+        let (mut local_read, mut local_write) = tokio::io::split(local);
+        let up = async {
+            if !buffered.is_empty() && send.write_all(&buffered).await.is_err() {
+                return;
+            }
+            let _ = tokio::io::copy(&mut local_read, &mut send).await;
+        };
+        tokio::select! {
+            _ = tokio::io::copy(&mut recv, &mut local_write) => {}
+            _ = up => {}
+        }
+        conn.close(0u32.into(), b"done");
+    }
 }
 
 /// A subscribed activity feed of one host.

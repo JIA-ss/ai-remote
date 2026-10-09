@@ -48,9 +48,24 @@ export const commands = {
 	setTurn: (host: string, action: string, agentMayWatch: boolean, note: string | null) => typedError<Json, string>(__TAURI_INVOKE("set_turn", { host, action, agentMayWatch, note })),
 	/**  Leaves a message for the agent working on `host`; it arrives with its next call result. */
 	tellAgent: (host: string, message: string) => typedError<null, string>(__TAURI_INVOKE("tell_agent", { host, message })),
+	/**
+	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
+	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
+	 */
+	watchScreen: (host: string | null, request: Json, onFrame: Channel<Frame>) => typedError<[number, Json], string>(__TAURI_INVOKE("watch_screen", { host, request, onFrame })),
+	/**  Asks the host for a keyframe on live view `id` (after a decoder error). */
+	requestKeyframe: (id: number) => typedError<null, string>(__TAURI_INVOKE("request_keyframe", { id })),
+	/**  Ends live view `id`. */
+	stopScreen: (id: number) => typedError<null, string>(__TAURI_INVOKE("stop_screen", { id })),
 };
 
 /* Types */
+/**
+ *  One live-view frame for the page: the host's 18-byte header and the H.264 payload, sent as raw
+ *  bytes (an `ArrayBuffer` in the page), never as JSON.
+ */
+export type Frame = unknown;
+
 /**
  *  Any JSON value; `unknown` in TypeScript, narrowed by the page. (Exporting `serde_json::Value`
  *  itself sends the binding generator into endless recursion.)
