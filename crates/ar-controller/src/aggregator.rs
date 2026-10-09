@@ -182,7 +182,8 @@ impl Aggregator {
                     tracing::debug!(%e, host, "session ended during a call");
                     self.drop_client(host).await;
                     return Err(anyhow!(
-                        "the session ended while the call was running ({e}). The call's outcome is unknown: it may                          have run on the host. Check the host's state before repeating it"
+                        "the session ended while the call was running ({e}). The call's outcome is unknown: it may \
+                         have run on the host. Check the host's state before repeating it"
                     ));
                 }
                 Err(anyhow!("{e}"))

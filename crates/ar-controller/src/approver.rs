@@ -96,7 +96,8 @@ pub fn get_or_create(profile: &Profile) -> Result<ApproverKey> {
     {
         let _ = profile;
         anyhow::bail!(
-            "Allowing from this device needs Touch ID support, which comes with the macOS controller. You can deny              from here; allow at the host or on another device."
+            "Allowing from this device needs Touch ID support, which comes with the macOS controller. You can deny \
+             from here; allow at the host or on another device."
         )
     }
 }
