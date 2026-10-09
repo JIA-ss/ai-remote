@@ -30,6 +30,9 @@ pub use mcpmesh_node::iroh;
 /// ALPN of an MCP session: the controller is the MCP client, the host the MCP server.
 pub const ALPN_MCP: &[u8] = b"app/ai-remote/mcp/1";
 
+/// ALPN of the live activity feed (audit lines) a controller subscribes to.
+pub const ALPN_EVENTS: &[u8] = b"app/ai-remote/events/1";
+
 const SERVICE_PREFIX: &str = "ai-remote.";
 
 fn service_name(level: Level) -> String {

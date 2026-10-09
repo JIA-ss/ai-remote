@@ -12,10 +12,10 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
-use ar_net::{ALPN_MCP, Mesh, MeshOptions, PathKind, iroh::endpoint::Connection, ipc, refusal::Refusal};
+use ar_net::{ALPN_EVENTS, ALPN_MCP, Mesh, MeshOptions, PathKind, iroh::endpoint::Connection, ipc, refusal::Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -39,6 +39,8 @@ pub enum AgentRequest {
     Call { host: Option<String>, tool: String, args: serde_json::Map<String, Value> },
     /// Upgrade this connection to an aggregated MCP session.
     Mcp,
+    /// Upgrade this connection to a host's live activity feed (one JSON line per event).
+    Events { host: Option<String> },
     Shutdown,
 }
 
@@ -257,6 +259,21 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
             let (stream, buffered) = conn.into_raw();
             return Aggregator::new(agent.clone()).serve(stream, buffered).await;
         }
+        if let AgentRequest::Events { host } = req {
+            // Connect first, so a failure is still an ordinary error reply.
+            match open_events(agent, host).await {
+                Ok(feed) => {
+                    conn.reply(Ok(json!({"events": true, "host": feed.host}))).await?;
+                    let (stream, _) = conn.into_raw();
+                    feed.relay(stream).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    conn.reply(Err(e)).await?;
+                    continue;
+                }
+            }
+        }
         let result = handle(agent, req, shutdown).await;
         conn.reply(result).await?;
     }
@@ -316,12 +333,55 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                 .map_err(|e| anyhow!("host '{host}': {e:#}"))?;
             serde_json::to_value(result)?
         }
-        AgentRequest::Mcp => bail!("unreachable"),
+        AgentRequest::Mcp | AgentRequest::Events { .. } => bail!("unreachable"),
         AgentRequest::Shutdown => {
             shutdown.cancel();
             json!({"stopping": true})
         }
     })
+}
+
+/// A subscribed activity feed of one host.
+struct EventFeed {
+    host: String,
+    /// Kept so the connection lives as long as the feed.
+    conn: Connection,
+    send: ar_net::iroh::endpoint::SendStream,
+    recv: ar_net::iroh::endpoint::RecvStream,
+}
+
+async fn open_events(agent: &Arc<Agent>, host: Option<String>) -> Result<EventFeed> {
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).only_host().await?,
+    };
+    let conn = agent
+        .mesh
+        .dial(&host, ALPN_EVENTS)
+        .await
+        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
+    let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    // A QUIC stream reaches the host only once something is written on it.
+    send.write_all(b"{\"subscribe\":true}\n").await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    Ok(EventFeed { host, conn, send, recv })
+}
+
+impl EventFeed {
+    /// Copies the feed to the local client until the host ends it or the client goes away.
+    async fn relay(self, local: ipc::LocalStream) {
+        let EventFeed { conn, send, mut recv, .. } = self;
+        let (mut local_read, mut local_write) = tokio::io::split(local);
+        let client_gone = async {
+            let mut buf = [0u8; 256];
+            while matches!(local_read.read(&mut buf).await, Ok(n) if n > 0) {}
+        };
+        tokio::select! {
+            _ = tokio::io::copy(&mut recv, &mut local_write) => {}
+            _ = client_gone => {}
+        }
+        drop(send);
+        conn.close(0u32.into(), b"done");
+    }
 }
 
 #[cfg(test)]

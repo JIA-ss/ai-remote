@@ -80,6 +80,13 @@ enum Command {
     Hosts,
     /// [controller] Forget a host.
     Unpair { host: String },
+    /// [controller] Follow a host's activity live: every tool call (decision and outcome) and every
+    /// session, starting with recent history. --json prints the raw events.
+    Watch {
+        /// Host name (optional when only one host is paired).
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// [controller] Call one tool on a host and print the result.
     Call {
         /// Tool name, e.g. system_info.
@@ -352,6 +359,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Watch { host } => watch(&profile, host, json_out).await,
         Command::Mcp => ar_controller::run_shim(&profile).await,
         Command::Agent => ar_controller::run_agent(profile).await,
         Command::StopAgent => {
@@ -675,6 +683,57 @@ fn print_result(json_out: bool, v: &Value, human: &str) -> Result<()> {
         println!("{human}");
         Ok(())
     }
+}
+
+/// Prints a host's activity feed until the host ends it or Ctrl+C.
+async fn watch(profile: &Profile, host: Option<String>, json_out: bool) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let mut conn = ar_controller::connect_agent(profile).await?;
+    let v = conn.request(&json!({"op": "events", "host": host})).await?;
+    if !json_out {
+        eprintln!("Watching {}. Press Ctrl+C to stop.", v["host"].as_str().unwrap_or("the host"));
+    }
+    let (stream, buffered) = conn.into_raw();
+    let mut lines = BufReader::new(std::io::Cursor::new(buffered).chain(stream)).lines();
+    while let Some(line) = lines.next_line().await? {
+        if json_out {
+            println!("{line}");
+        } else if let Some(text) = serde_json::from_str::<Value>(&line).ok().as_ref().and_then(describe_event) {
+            println!("{text}");
+        }
+    }
+    Ok(())
+}
+
+/// One activity event as a line for people; `None` for events not worth a line.
+fn describe_event(v: &Value) -> Option<String> {
+    let time = v["ts"]
+        .as_u64()
+        .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".into());
+    let peer = v["peer"].as_str().unwrap_or("?");
+    let tool = v["tool"].as_str().unwrap_or("?");
+    let text = match v["kind"].as_str()? {
+        "session_start" => format!("{peer} connected"),
+        "session_end" => format!("{peer} disconnected"),
+        "decision" => {
+            let decision = v["decision"].as_str().unwrap_or("?");
+            match v["intent"].as_str() {
+                Some(intent) => format!("{peer}  {tool}  {decision}  \"{intent}\""),
+                None => format!("{peer}  {tool}  {decision}"),
+            }
+        }
+        "outcome" => {
+            let outcome = v["outcome"].as_str().unwrap_or("?");
+            let ms = v["duration_ms"].as_u64().map(|d| format!("  {d} ms")).unwrap_or_default();
+            let error = v["error"].as_str().map(|e| format!("  {e}")).unwrap_or_default();
+            format!("{peer}  {tool}  {outcome}{ms}{error}")
+        }
+        "lagged" => format!("(missed {} events: this terminal fell behind)", v["missed"]),
+        _ => return None,
+    };
+    Some(format!("{time}  {text}"))
 }
 
 #[cfg(test)]

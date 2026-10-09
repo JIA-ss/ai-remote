@@ -133,10 +133,14 @@ impl ProtocolHandler for McpProtocol {
             };
             let session = Arc::new(Session::new(peer.clone(), level, conn_cancel.child_token()));
             let server = HostServer::new(self.host.clone(), session.clone());
+            let host = self.host.clone();
             tokio::spawn(async move {
+                let (id, name, principal) = (&session.id, &session.peer.name, session.peer.principal.as_deref());
                 match server.serve_with_ct((recv, send), session.cancel.clone()).await {
                     Ok(running) => {
+                        host.audit().session("session_start", id, name, principal);
                         let _ = running.waiting().await;
+                        host.audit().session("session_end", id, name, principal);
                     }
                     Err(e) => tracing::debug!(%e, "MCP session did not start"),
                 }

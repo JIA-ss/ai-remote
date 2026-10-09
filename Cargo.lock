@@ -76,6 +76,7 @@ dependencies = [
  "ar-core",
  "ar-host",
  "ar-net",
+ "chrono",
  "clap",
  "dunce",
  "file-rotate",

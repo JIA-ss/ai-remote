@@ -23,6 +23,7 @@ ar-net.workspace = true
 ar-host.workspace = true
 ar-controller.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
 dunce.workspace = true
 serde_json.workspace = true
