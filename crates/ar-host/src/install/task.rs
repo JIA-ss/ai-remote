@@ -97,10 +97,7 @@ pub fn read_exec(xml: &str) -> Option<(String, String)> {
     let exec = between(xml, "<Exec>", "</Exec>")?;
     let command = between(exec, "<Command>", "</Command>")?;
     let arguments = between(exec, "<Arguments>", "</Arguments>").unwrap_or("");
-    Some((
-        unescape(command.trim()).ok()?.into_owned(),
-        unescape(arguments.trim()).ok()?.into_owned(),
-    ))
+    Some((unescape(command.trim()).ok()?.into_owned(), unescape(arguments.trim()).ok()?.into_owned()))
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
@@ -162,10 +159,7 @@ mod tests {
 
     #[test]
     fn task_xml_is_well_formed() {
-        let xml = spec_xml(
-            r"C:\Tools & Co\ai-remote\ai-remote-hostw.exe",
-            r#"--home "C:\Users\me\AI <remote>""#,
-        );
+        let xml = spec_xml(r"C:\Tools & Co\ai-remote\ai-remote-hostw.exe", r#"--home "C:\Users\me\AI <remote>""#);
         let mut reader = Reader::from_str(&xml);
         let mut elements = 0;
         loop {
@@ -173,10 +167,7 @@ mod tests {
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(_)) => elements += 1,
                 Ok(_) => {}
-                Err(e) => panic!(
-                    "malformed task XML at {}: {e}\n{xml}",
-                    reader.buffer_position()
-                ),
+                Err(e) => panic!("malformed task XML at {}: {e}\n{xml}", reader.buffer_position()),
             }
         }
         assert!(elements > 20);
@@ -198,10 +189,7 @@ mod tests {
             assert!(xml.contains(needle), "missing {needle}");
         }
         // Logon trigger and principal name the same user.
-        assert_eq!(
-            xml.matches("<UserId>S-1-5-21-1-2-3-1001</UserId>").count(),
-            2
-        );
+        assert_eq!(xml.matches("<UserId>S-1-5-21-1-2-3-1001</UserId>").count(), 2);
     }
 
     #[test]
@@ -217,10 +205,7 @@ mod tests {
     fn reads_exec_from_a_queried_task() {
         let queried = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\r\n<Task><Actions Context=\"Author\">\r\r\n\
                        <Exec>\r\r\n<Command>C:\\a\\ai-remote-hostw.exe</Command>\r\r\n</Exec></Actions></Task>";
-        assert_eq!(
-            read_exec(queried),
-            Some((r"C:\a\ai-remote-hostw.exe".into(), String::new()))
-        );
+        assert_eq!(read_exec(queried), Some((r"C:\a\ai-remote-hostw.exe".into(), String::new())));
         assert_eq!(read_exec("<Task/>"), None);
     }
 
@@ -237,10 +222,7 @@ mod tests {
     fn utf16_file_has_bom_and_crlf() {
         let bytes = utf16_file("a\nb");
         assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
-        let units: Vec<u16> = bytes[2..]
-            .chunks(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let units: Vec<u16> = bytes[2..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(String::from_utf16(&units).unwrap(), "a\r\nb");
     }
 }

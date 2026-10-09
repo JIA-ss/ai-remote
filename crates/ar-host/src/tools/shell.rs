@@ -137,27 +137,17 @@ pub(crate) struct RunOutput {
 
 /// Runs a command to completion (or `timeout`), feeding it `stdin`. The whole process tree is
 /// killed when this returns or when the returned future is dropped.
-pub(crate) async fn run(
-    spec: &CommandSpec<'_>,
-    stdin: Option<&str>,
-    timeout: Duration,
-) -> Result<RunOutput> {
+pub(crate) async fn run(spec: &CommandSpec<'_>, stdin: Option<&str>, timeout: Duration) -> Result<RunOutput> {
     let mut cmd = command::build(spec)?;
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    })
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // No console window (the background host has none to share) and the whole tree dies with the
     // child handle.
     let mut wrap = crate::platform::process_tree(cmd);
 
     let started = std::time::Instant::now();
-    let child = wrap
-        .spawn()
-        .with_context(|| format!("start {}", spec.shell.name()))?;
+    let child = wrap.spawn().with_context(|| format!("start {}", spec.shell.name()))?;
     let mut child = TreeGuard(child);
 
     if let (Some(text), Some(mut pipe)) = (stdin, child.0.stdin().take()) {
@@ -176,12 +166,7 @@ pub(crate) async fn run(
 
     let finished = tokio::time::timeout(timeout, async {
         let exit = command::main_process(&mut *child.0).wait();
-        let pumps = async {
-            tokio::join!(
-                pump(stdout_pipe, &mut stdout),
-                pump(stderr_pipe, &mut stderr)
-            )
-        };
+        let pumps = async { tokio::join!(pump(stdout_pipe, &mut stdout), pump(stderr_pipe, &mut stderr)) };
         tokio::pin!(exit, pumps);
         tokio::select! {
             status = &mut exit => {
@@ -199,13 +184,7 @@ pub(crate) async fn run(
     };
     // Kills whatever is still running: the timed-out command, or processes it left behind.
     drop(child);
-    Ok(RunOutput {
-        exit_code,
-        stdout: stdout.into_string(),
-        stderr: stderr.into_string(),
-        timed_out,
-        elapsed_ms,
-    })
+    Ok(RunOutput { exit_code, stdout: stdout.into_string(), stderr: stderr.into_string(), timed_out, elapsed_ms })
 }
 
 /// Kills the whole tree when dropped. The Job Object would do it on Windows anyway, but dropping
@@ -276,12 +255,7 @@ mod tests {
     use super::*;
 
     fn spec<'a>(command: &'a str, shell: Option<&str>) -> CommandSpec<'a> {
-        CommandSpec {
-            command,
-            shell: Shell::parse(shell).unwrap(),
-            cwd: None,
-            env: None,
-        }
+        CommandSpec { command, shell: Shell::parse(shell).unwrap(), cwd: None, env: None }
     }
 
     #[test]
@@ -303,9 +277,7 @@ mod tests {
         } else {
             "printf 'héllo 世界\\n'; echo oops >&2; exit 3"
         };
-        let out = run(&spec(cmd, None), None, Duration::from_secs(60))
-            .await
-            .unwrap();
+        let out = run(&spec(cmd, None), None, Duration::from_secs(60)).await.unwrap();
         assert_eq!(out.exit_code, Some(3), "{out:?}");
         assert_eq!(out.stdout.trim_end(), "héllo 世界", "{out:?}");
         assert_eq!(out.stderr.trim_end(), "oops", "{out:?}");
@@ -316,9 +288,7 @@ mod tests {
     #[tokio::test]
     async fn powershell_errors_are_plain_text_without_progress_noise() {
         let cmd = "Write-Progress -Activity busy -Status x; Write-Error 'bad thing'; Get-Item 'Z:/no/such/thing'";
-        let out = run(&spec(cmd, None), None, Duration::from_secs(60))
-            .await
-            .unwrap();
+        let out = run(&spec(cmd, None), None, Duration::from_secs(60)).await.unwrap();
         assert_eq!(out.exit_code, Some(1), "{out:?}");
         assert!(!out.stderr.contains("CLIXML"), "{}", out.stderr);
         assert!(out.stderr.contains("command : bad thing"), "{}", out.stderr);
@@ -328,21 +298,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn powershell_syntax_errors_point_at_the_callers_code() {
-        let out = run(
-            &spec("Write-Output 'ok'\nWrite-Output (1 +", None),
-            None,
-            Duration::from_secs(60),
-        )
-        .await
-        .unwrap();
+        let out =
+            run(&spec("Write-Output 'ok'\nWrite-Output (1 +", None), None, Duration::from_secs(60)).await.unwrap();
         assert_eq!(out.exit_code, Some(1), "{out:?}");
         assert!(out.stdout.is_empty(), "nothing runs: {out:?}");
         assert!(out.stderr.contains("command:2"), "{}", out.stderr);
-        assert!(
-            !out.stderr.contains("LASTEXITCODE"),
-            "the appended check must not show: {}",
-            out.stderr
-        );
+        assert!(!out.stderr.contains("LASTEXITCODE"), "the appended check must not show: {}", out.stderr);
     }
 
     /// pwsh 7 colours errors with ANSI escapes unless told otherwise. Skipped where pwsh is missing.
@@ -357,46 +318,24 @@ mod tests {
         let mut env = EnvMap::new();
         env.insert("TERM".into(), Some("xterm-test".into()));
         let cmd = "Write-Output \"héllo $env:TERM\"; Write-Error 'bad'; cmd /c exit 4";
-        let spec = CommandSpec {
-            env: Some(&env),
-            ..spec(cmd, Some("pwsh"))
-        };
+        let spec = CommandSpec { env: Some(&env), ..spec(cmd, Some("pwsh")) };
         let out = run(&spec, None, Duration::from_secs(60)).await.unwrap();
         assert_eq!(out.exit_code, Some(4), "{out:?}");
-        assert_eq!(
-            out.stdout.trim_end(),
-            "héllo xterm-test",
-            "the script sees the caller's TERM: {out:?}"
-        );
-        assert!(
-            out.stderr.contains("bad") && !out.stderr.contains('\x1b'),
-            "{:?}",
-            out.stderr
-        );
+        assert_eq!(out.stdout.trim_end(), "héllo xterm-test", "the script sees the caller's TERM: {out:?}");
+        assert!(out.stderr.contains("bad") && !out.stderr.contains('\x1b'), "{:?}", out.stderr);
     }
 
     /// PowerShell starts with TERM=dumb, but neither the script nor what it runs see that.
     #[cfg(windows)]
     #[tokio::test]
     async fn powershell_scripts_see_the_callers_term() {
-        let cmd =
-            "\"[$env:TERM]\"; cmd /c 'if defined TERM (echo child=%TERM%) else (echo child=none)'";
-        for (term, expected) in [
-            (None, ["[]", "child=none"]),
-            (Some("vt100"), ["[vt100]", "child=vt100"]),
-        ] {
+        let cmd = "\"[$env:TERM]\"; cmd /c 'if defined TERM (echo child=%TERM%) else (echo child=none)'";
+        for (term, expected) in [(None, ["[]", "child=none"]), (Some("vt100"), ["[vt100]", "child=vt100"])] {
             let mut env = EnvMap::new();
             env.insert("TERM".into(), term.map(str::to_string));
-            let spec = CommandSpec {
-                env: Some(&env),
-                ..spec(cmd, None)
-            };
+            let spec = CommandSpec { env: Some(&env), ..spec(cmd, None) };
             let out = run(&spec, None, Duration::from_secs(60)).await.unwrap();
-            assert_eq!(
-                out.stdout.lines().map(str::trim_end).collect::<Vec<_>>(),
-                expected,
-                "{out:?}"
-            );
+            assert_eq!(out.stdout.lines().map(str::trim_end).collect::<Vec<_>>(), expected, "{out:?}");
         }
     }
 
@@ -404,10 +343,7 @@ mod tests {
     #[tokio::test]
     async fn cmd_keeps_quotes_and_operators() {
         let out = run(
-            &spec(
-                r#"echo "a & b" | findstr /c:"a & b" && echo 世界 100%"#,
-                Some("cmd"),
-            ),
+            &spec(r#"echo "a & b" | findstr /c:"a & b" && echo 世界 100%"#, Some("cmd")),
             None,
             Duration::from_secs(30),
         )
@@ -428,18 +364,9 @@ mod tests {
         } else {
             "echo \"[$AR_TEST_SET][$PATH_AR_TEST_UNSET]\"; read t; echo \"in=$t\""
         };
-        let spec = CommandSpec {
-            env: Some(&env),
-            ..spec(cmd, None)
-        };
-        let out = run(&spec, Some("stdin 世界\n"), Duration::from_secs(60))
-            .await
-            .unwrap();
-        assert_eq!(
-            out.stdout.lines().collect::<Vec<_>>(),
-            ["[välue][]", "in=stdin 世界"],
-            "{out:?}"
-        );
+        let spec = CommandSpec { env: Some(&env), ..spec(cmd, None) };
+        let out = run(&spec, Some("stdin 世界\n"), Duration::from_secs(60)).await.unwrap();
+        assert_eq!(out.stdout.lines().collect::<Vec<_>>(), ["[välue][]", "in=stdin 世界"], "{out:?}");
     }
 
     /// Whether a process with this pid is still alive.
@@ -466,10 +393,7 @@ mod tests {
     async fn read_pids(pid_file: &std::path::Path) -> Vec<u32> {
         for _ in 0..100 {
             if let Ok(s) = std::fs::read_to_string(pid_file) {
-                let pids: Vec<u32> = s
-                    .split_whitespace()
-                    .filter_map(|p| p.parse().ok())
-                    .collect();
+                let pids: Vec<u32> = s.split_whitespace().filter_map(|p| p.parse().ok()).collect();
                 if pids.len() == 2 {
                     return pids;
                 }
@@ -486,10 +410,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!(
-            "processes still alive: {:?}",
-            pids.iter().filter(|p| alive(**p)).collect::<Vec<_>>()
-        );
+        panic!("processes still alive: {:?}", pids.iter().filter(|p| alive(**p)).collect::<Vec<_>>());
     }
 
     #[tokio::test]
@@ -499,9 +420,7 @@ mod tests {
         let pid_file = dir.join("timeout.pids");
         let cmd = tree_command(&pid_file);
         // Generous: PowerShell can take seconds to start while other tests load the machine.
-        let out = run(&spec(&cmd, None), None, Duration::from_secs(12))
-            .await
-            .unwrap();
+        let out = run(&spec(&cmd, None), None, Duration::from_secs(12)).await.unwrap();
         assert!(out.timed_out, "{out:?}");
         assert_eq!(out.exit_code, None);
         let pids = read_pids(&pid_file).await;
@@ -525,16 +444,11 @@ mod tests {
         } else {
             format!("sleep 120 & echo \"$$ $!\" > '{f}'; echo main-done")
         };
-        let out = run(&spec(&cmd, None), None, Duration::from_secs(90))
-            .await
-            .unwrap();
+        let out = run(&spec(&cmd, None), None, Duration::from_secs(90)).await.unwrap();
         assert!(!out.timed_out, "{out:?}");
         assert_eq!(out.exit_code, Some(0), "{out:?}");
         assert!(out.stdout.contains("main-done"), "{out:?}");
-        assert!(
-            out.elapsed_ms < 45_000,
-            "the call waited for the leftover: {out:?}"
-        );
+        assert!(out.elapsed_ms < 45_000, "the call waited for the leftover: {out:?}");
         let pids = read_pids(&pid_file).await;
         assert_all_gone(&pids).await;
         let _ = std::fs::remove_dir_all(&dir);

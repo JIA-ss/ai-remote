@@ -11,8 +11,7 @@ use crate::store;
 /// Loads the secret key bytes at `path`, creating and persisting new random bytes if absent.
 pub fn load_or_create(path: &Path) -> Result<[u8; 32]> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse_hex(text.trim())
-            .with_context(|| format!("{} is not a valid identity key", path.display())),
+        Ok(text) => parse_hex(text.trim()).with_context(|| format!("{} is not a valid identity key", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let key = random_bytes()?;
             store::write_atomic(path, data_encoding::HEXLOWER.encode(&key).as_bytes())?;

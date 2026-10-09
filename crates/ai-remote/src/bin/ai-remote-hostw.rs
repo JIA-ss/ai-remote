@@ -68,19 +68,15 @@ fn main() -> ExitCode {
         // SAFETY: set before any thread is started.
         unsafe { std::env::set_var(ar_core::profile::HOME_ENV, home) };
     }
-    let (profile, log_path) =
-        match Profile::open_default().and_then(|p| Ok((p.log_path(Role::Host)?, p))) {
-            Ok((log, profile)) => (profile, log),
-            Err(e) => {
-                last_resort(&format!("{e:#}"));
-                return ExitCode::FAILURE;
-            }
-        };
+    let (profile, log_path) = match Profile::open_default().and_then(|p| Ok((p.log_path(Role::Host)?, p))) {
+        Ok((log, profile)) => (profile, log),
+        Err(e) => {
+            last_resort(&format!("{e:#}"));
+            return ExitCode::FAILURE;
+        }
+    };
     std::panic::set_hook(Box::new(|info| {
-        tracing::error!(
-            "panic: {info}\n{}",
-            std::backtrace::Backtrace::force_capture()
-        );
+        tracing::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
     }));
     #[cfg(windows)]
     if !args.supervised {
@@ -91,10 +87,7 @@ fn main() -> ExitCode {
 
 /// Runs the host in this process until it is stopped.
 fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
             last_resort(&format!("cannot start the async runtime: {e}"));
@@ -124,10 +117,7 @@ fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
     tracing::info!(log = %log_path.display(), pid = std::process::id(), "starting the background host");
-    let opts = ar_host::HostOptions {
-        pair_code_if_unpaired: false,
-        background: true,
-    };
+    let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true };
     match runtime.block_on(ar_host::run_claimed(profile, claim, opts)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -148,10 +138,7 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
             tracing::error!("cannot start the async runtime: {e}");
@@ -162,10 +149,7 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
         let mut backoff = Backoff::default();
         loop {
             let mut cmd = tokio::process::Command::new(&exe);
-            cmd.arg("--home")
-                .arg(profile.root())
-                .arg("--supervised")
-                .kill_on_drop(true);
+            cmd.arg("--home").arg(profile.root()).arg("--supervised").kill_on_drop(true);
             let started = std::time::Instant::now();
             let status = match spawn_in_job(&mut cmd) {
                 // Wait for the host process itself; dropping the job then kills anything it left in
@@ -176,17 +160,9 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
             let delay = backoff.after(started.elapsed());
             match status {
                 Ok(s) if s.success() => return ExitCode::SUCCESS,
-                Ok(s) if s.code() == Some(EXIT_ALREADY_RUNNING.into()) => {
-                    return ExitCode::from(EXIT_ALREADY_RUNNING);
-                }
-                Ok(s) => tracing::error!(
-                    "the host exited unexpectedly ({s}); restarting it in {} s",
-                    delay.as_secs()
-                ),
-                Err(e) => tracing::error!(
-                    "cannot start the host ({e}); trying again in {} s",
-                    delay.as_secs()
-                ),
+                Ok(s) if s.code() == Some(EXIT_ALREADY_RUNNING.into()) => return ExitCode::from(EXIT_ALREADY_RUNNING),
+                Ok(s) => tracing::error!("the host exited unexpectedly ({s}); restarting it in {} s", delay.as_secs()),
+                Err(e) => tracing::error!("cannot start the host ({e}); trying again in {} s", delay.as_secs()),
             }
             tokio::time::sleep(delay).await;
         }
@@ -198,20 +174,15 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
 /// the host starts with `CREATE_BREAKAWAY_FROM_JOB` outlive a host restart as documented. The
 /// child is windowless too, so it needs no console flags.
 #[cfg(windows)]
-fn spawn_in_job(
-    cmd: &mut tokio::process::Command,
-) -> std::io::Result<(tokio::process::Child, win32job::Job)> {
+fn spawn_in_job(cmd: &mut tokio::process::Command) -> std::io::Result<(tokio::process::Child, win32job::Job)> {
     let mut limits = win32job::ExtendedLimitInfo::new();
     limits.limit_kill_on_job_close().limit_breakaway_ok();
     let job = win32job::Job::create_with_limit_info(&limits).map_err(std::io::Error::other)?;
     let child = cmd.spawn()?;
-    let handle = child
-        .raw_handle()
-        .ok_or_else(|| std::io::Error::other("the host exited at once"))?;
+    let handle = child.raw_handle().ok_or_else(|| std::io::Error::other("the host exited at once"))?;
     // The host spawns nothing before it has started its transport, so nothing escapes the job
     // between spawn and assignment.
-    job.assign_process(handle as isize)
-        .map_err(std::io::Error::other)?;
+    job.assign_process(handle as isize).map_err(std::io::Error::other)?;
     Ok((child, job))
 }
 
@@ -261,11 +232,7 @@ fn log_rotating(path: &Path) -> Result<()> {
         Compression::None,
         None,
     );
-    tracing_subscriber::fmt()
-        .with_env_filter(log_filter())
-        .with_ansi(false)
-        .with_writer(Mutex::new(file))
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_filter()).with_ansi(false).with_writer(Mutex::new(file)).init();
     Ok(())
 }
 
@@ -279,11 +246,7 @@ fn log_appending(path: &Path) {
             Err(_) => Box::new(std::io::sink()),
         }
     };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_filter())
-        .with_ansi(false)
-        .with_writer(writer)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_filter()).with_ansi(false).with_writer(writer).init();
 }
 
 /// Where errors go before the log exists.

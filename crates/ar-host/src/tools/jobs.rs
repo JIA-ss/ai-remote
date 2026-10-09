@@ -132,20 +132,12 @@ struct JobMeta {
 impl JobMeta {
     /// `running` until the main process is seen to end, even when a kill is pending.
     fn shown_state(&self) -> JobState {
-        if self.ended_at.is_none() {
-            JobState::Running
-        } else {
-            self.state
-        }
+        if self.ended_at.is_none() { JobState::Running } else { self.state }
     }
 
     /// The main process, as the process table identifies it.
     fn root(&self) -> Root {
-        Root {
-            pid: self.pid,
-            start: self.process_start,
-            alive_until: self.alive_until.map(|ms| ms / 1000),
-        }
+        Root { pid: self.pid, start: self.process_start, alive_until: self.alive_until.map(|ms| ms / 1000) }
     }
 }
 
@@ -174,13 +166,7 @@ impl Job {
     fn new(meta: JobMeta, control: Control) -> Arc<Self> {
         let (done, _) = watch::channel(meta.ended_at.is_some());
         let saved_alive = AtomicU64::new(meta.alive_until.unwrap_or(0));
-        Arc::new(Self {
-            meta: Mutex::new(meta),
-            done,
-            control,
-            saved_alive,
-            settled: AtomicBool::new(false),
-        })
+        Arc::new(Self { meta: Mutex::new(meta), done, control, saved_alive, settled: AtomicBool::new(false) })
     }
 
     fn snapshot(&self) -> JobMeta {
@@ -209,8 +195,7 @@ impl Job {
             return;
         }
         m.alive_until = Some(now);
-        let due = now.saturating_sub(self.saved_alive.load(Ordering::Relaxed))
-            >= ALIVE_SAVE_EVERY.as_millis() as u64;
+        let due = now.saturating_sub(self.saved_alive.load(Ordering::Relaxed)) >= ALIVE_SAVE_EVERY.as_millis() as u64;
         if save || due {
             persist(dir, &m);
             self.saved_alive.store(now, Ordering::Relaxed);
@@ -266,12 +251,7 @@ pub struct StartRequest {
 
 impl StartRequest {
     fn spec(&self) -> CommandSpec<'_> {
-        CommandSpec {
-            command: &self.command,
-            shell: self.shell,
-            cwd: self.cwd.as_deref(),
-            env: self.env.as_ref(),
-        }
+        CommandSpec { command: &self.command, shell: self.shell, cwd: self.cwd.as_deref(), env: self.env.as_ref() }
     }
 }
 
@@ -292,15 +272,8 @@ impl JobManager {
     /// Loads the jobs recorded in `dir`, re-adopting those whose process still runs. Blocks
     /// briefly (it reads the process table).
     pub fn new(dir: PathBuf) -> Self {
-        let jobs = load_all(&dir)
-            .into_iter()
-            .map(|meta| (meta.id.clone(), Job::new(meta, Control::Adopted)))
-            .collect();
-        let inner = Inner {
-            dir,
-            jobs: Mutex::new(jobs),
-            starting: Mutex::new(()),
-        };
+        let jobs = load_all(&dir).into_iter().map(|meta| (meta.id.clone(), Job::new(meta, Control::Adopted))).collect();
+        let inner = Inner { dir, jobs: Mutex::new(jobs), starting: Mutex::new(()) };
         inner.refresh_adopted();
         Self(Arc::new(inner))
     }
@@ -364,13 +337,8 @@ impl JobManager {
         let swept = match &job.control {
             Control::Own(requests) => {
                 let (reply, answer) = oneshot::channel();
-                requests
-                    .send(reply)
-                    .await
-                    .map_err(|_| anyhow!("job {id} is no longer tracked"))?;
-                let result = answer
-                    .await
-                    .map_err(|_| anyhow!("job {id} is no longer tracked"))?;
+                requests.send(reply).await.map_err(|_| anyhow!("job {id} is no longer tracked"))?;
+                let result = answer.await.map_err(|_| anyhow!("job {id} is no longer tracked"))?;
                 // Killing a tree that has already emptied is not an error.
                 if let Err(e) = result
                     && was_running
@@ -379,19 +347,14 @@ impl JobManager {
                 }
                 // The process group misses processes that moved to another group; the session does not.
                 #[cfg(unix)]
-                self.blocking(move |_| Ok(ProcTable::read().kill_job(&root)))
-                    .await?;
+                self.blocking(move |_| Ok(ProcTable::read().kill_job(&root))).await?;
                 None
             }
-            Control::Adopted => Some(
-                self.blocking(move |_| Ok(ProcTable::read().kill_job(&root)))
-                    .await?,
-            ),
+            Control::Adopted => Some(self.blocking(move |_| Ok(ProcTable::read().kill_job(&root))).await?),
         };
         // Termination is asynchronous (on Windows a killed console process's conhost lingers for a
         // moment): wait until the tree is really gone, so a status read right after this call agrees.
-        self.blocking(move |_| Ok(wait_tree_empty(&root, Duration::from_secs(3))))
-            .await?;
+        self.blocking(move |_| Ok(wait_tree_empty(&root, Duration::from_secs(3)))).await?;
         if !was_running {
             return Ok(match swept {
                 Some(n) => format!("the job's main process had already ended; killed {n} process(es) it left running"),
@@ -401,22 +364,14 @@ impl JobManager {
         if self.wait(id, Duration::from_secs(5)).await? {
             Ok("killed the job and every process it started".into())
         } else {
-            Ok(
-                "asked the OS to kill the job, but its main process has not ended within 5 s"
-                    .into(),
-            )
+            Ok("asked the OS to kill the job, but its main process has not ended within 5 s".into())
         }
     }
 
     /// Runs `f` on the blocking pool: process-table scans, process creation and file access.
-    async fn blocking<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Inner) -> Result<T> + Send + 'static,
-    ) -> Result<T> {
+    async fn blocking<T: Send + 'static>(&self, f: impl FnOnce(&Inner) -> Result<T> + Send + 'static) -> Result<T> {
         let inner = self.0.clone();
-        tokio::task::spawn_blocking(move || f(&inner))
-            .await
-            .map_err(|e| anyhow!("the jobs task failed: {e}"))?
+        tokio::task::spawn_blocking(move || f(&inner)).await.map_err(|e| anyhow!("the jobs task failed: {e}"))?
     }
 }
 
@@ -446,9 +401,7 @@ impl Inner {
             .with_context(|| format!("create job log {}", log_path.display()))?;
         let make = || -> Result<tokio::process::Command> {
             let mut cmd = command::build(&spec)?;
-            cmd.stdin(Stdio::null())
-                .stdout(log.try_clone()?)
-                .stderr(log.try_clone()?);
+            cmd.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log.try_clone()?);
             Ok(cmd)
         };
         let child = match spawn_job(make) {
@@ -458,9 +411,7 @@ impl Inner {
                 return Err(e.context(format!("start {}", spec.shell.name())));
             }
         };
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow!("the job exited before its pid could be read"))?;
+        let pid = child.id().ok_or_else(|| anyhow!("the job exited before its pid could be read"))?;
         let now = now_ms();
         let meta = JobMeta {
             id: id.clone(),
@@ -484,9 +435,7 @@ impl Inner {
         tokio::spawn(reap(Arc::downgrade(&job), child, kill_rx, self.dir.clone()));
         self.jobs.lock().unwrap().insert(id.clone(), job);
         self.prune(&leftovers);
-        Ok(
-            json!({ "id": id, "pid": pid, "log_path": log_path.display().to_string(), "started_at": now }),
-        )
+        Ok(json!({ "id": id, "pid": pid, "log_path": log_path.display().to_string(), "started_at": now }))
     }
 
     fn status(&self, id: &str, tail_bytes: u64) -> Result<(Value, Option<String>)> {
@@ -573,10 +522,7 @@ impl Inner {
 
     /// Jobs that take a running slot: their main process runs, or processes they left do.
     fn busy(&self, leftovers: &HashMap<String, usize>) -> usize {
-        self.all()
-            .iter()
-            .filter(|j| j.running() || leftovers.contains_key(&j.id()))
-            .count()
+        self.all().iter().filter(|j| j.running() || leftovers.contains_key(&j.id())).count()
     }
 
     fn describe(&self, job: &Job, leftover: Option<usize>) -> Value {
@@ -632,11 +578,8 @@ impl Inner {
     /// Jobs whose main process has ended but that left processes running, with their count. Reads
     /// the process table only while some ended job has not been seen to empty.
     fn leftovers(&self) -> HashMap<String, usize> {
-        let pending: Vec<Arc<Job>> = self
-            .all()
-            .into_iter()
-            .filter(|j| !j.running() && !j.settled.load(Ordering::Relaxed))
-            .collect();
+        let pending: Vec<Arc<Job>> =
+            self.all().into_iter().filter(|j| !j.running() && !j.settled.load(Ordering::Relaxed)).collect();
         if pending.is_empty() {
             return HashMap::new();
         }
@@ -655,29 +598,16 @@ impl Inner {
 
     /// Marks re-adopted jobs whose main process is gone as ended, and notes the time for the others.
     fn refresh_adopted(&self) {
-        let candidates: Vec<Arc<Job>> = self
-            .all()
-            .into_iter()
-            .filter(|j| j.adopted() && j.running())
-            .collect();
+        let candidates: Vec<Arc<Job>> = self.all().into_iter().filter(|j| j.adopted() && j.running()).collect();
         if candidates.is_empty() {
             return;
         }
-        let pids: Vec<Pid> = candidates
-            .iter()
-            .map(|j| Pid::from_u32(j.snapshot().pid))
-            .collect();
+        let pids: Vec<Pid> = candidates.iter().map(|j| Pid::from_u32(j.snapshot().pid)).collect();
         let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&pids),
-            true,
-            ProcessRefreshKind::nothing(),
-        );
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
         for job in candidates {
             let m = job.snapshot();
-            let alive = sys
-                .process(Pid::from_u32(m.pid))
-                .is_some_and(|p| same_start(p.start_time(), m.process_start));
+            let alive = sys.process(Pid::from_u32(m.pid)).is_some_and(|p| same_start(p.start_time(), m.process_start));
             if alive {
                 job.seen_alive(&self.dir, false);
             } else {
@@ -752,16 +682,8 @@ impl Drop for Inner {
 /// the main process may have left processes running in its Job Object or process group). Notes
 /// every [`ALIVE_SAVE_EVERY`] that the main process still runs. Returns without killing anything
 /// when the manager is dropped, which is what happens when the host stops.
-async fn reap(
-    job: Weak<Job>,
-    mut child: Box<dyn ChildWrapper>,
-    mut kills: mpsc::Receiver<KillReply>,
-    dir: PathBuf,
-) {
-    let mut alive = tokio::time::interval_at(
-        tokio::time::Instant::now() + ALIVE_SAVE_EVERY,
-        ALIVE_SAVE_EVERY,
-    );
+async fn reap(job: Weak<Job>, mut child: Box<dyn ChildWrapper>, mut kills: mpsc::Receiver<KillReply>, dir: PathBuf) {
+    let mut alive = tokio::time::interval_at(tokio::time::Instant::now() + ALIVE_SAVE_EVERY, ALIVE_SAVE_EVERY);
     let status = loop {
         tokio::select! {
             status = command::main_process(&mut *child).wait() => break status,
@@ -792,9 +714,7 @@ async fn reap(
 #[cfg(windows)]
 fn spawn_job(make: impl Fn() -> Result<tokio::process::Command>) -> Result<Box<dyn ChildWrapper>> {
     use process_wrap::tokio::{CreationFlags, JobObject};
-    use windows::Win32::System::Threading::{
-        CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
-    };
+    use windows::Win32::System::Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS};
     let spawn = |flags: PROCESS_CREATION_FLAGS| -> Result<io::Result<Box<dyn ChildWrapper>>> {
         let mut wrap = CommandWrap::from(make()?);
         wrap.wrap(CreationFlags(flags));
@@ -849,11 +769,7 @@ struct ProcTable {
 impl ProcTable {
     fn read() -> Self {
         let mut sys = System::new();
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing(),
-        );
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
         let procs = sys
             .processes()
             .values()
@@ -874,10 +790,7 @@ impl ProcTable {
 
     /// Kills the job's live processes; returns how many were killed.
     fn kill_job(&self, root: &Root) -> usize {
-        self.members(root)
-            .iter()
-            .filter(|p| kill_process(&self.sys, p.pid, p.start))
-            .count()
+        self.members(root).iter().filter(|p| kill_process(&self.sys, p.pid, p.start)).count()
     }
 }
 
@@ -924,18 +837,14 @@ fn job_members(procs: &[Proc], root: &Root) -> Vec<Proc> {
     };
     let reused_at = holder.filter(|_| !root_alive).map(|p| p.start);
     let started_by_root = |p: &Proc| {
-        p.start >= root.start
-            && latest.is_none_or(|t| p.start <= t)
-            && reused_at.is_none_or(|r| p.start < r)
+        p.start >= root.start && latest.is_none_or(|t| p.start <= t) && reused_at.is_none_or(|r| p.start < r)
     };
     let mut members: Vec<Proc> = holder.filter(|_| root_alive).copied().into_iter().collect();
     members.extend(
         procs
             .iter()
             .filter(|p| !p.os_helper)
-            .filter(|p| {
-                p.pid != root.pid && (p.parent == Some(root.pid) || p.session == Some(root.pid))
-            })
+            .filter(|p| p.pid != root.pid && (p.parent == Some(root.pid) || p.session == Some(root.pid)))
             .filter(|p| started_by_root(p)),
     );
     let mut seen: HashSet<u32> = members.iter().map(|p| p.pid).collect();
@@ -965,28 +874,18 @@ fn kill_process(_sys: &System, pid: u32, start: u64) -> bool {
     use windows::Win32::{
         Foundation::{CloseHandle, FILETIME},
         System::Threading::{
-            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-            TerminateProcess,
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
         },
     };
     // SAFETY: Win32 calls on a handle this function opens and closes; the out-parameters are
     // valid locals.
     unsafe {
-        let Ok(handle) = OpenProcess(
-            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-            false,
-            pid,
-        ) else {
+        let Ok(handle) = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return false;
         };
-        let (mut created, mut exited, mut kernel, mut user) = (
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-            FILETIME::default(),
-        );
-        let same = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user)
-            .is_ok()
+        let (mut created, mut exited, mut kernel, mut user) =
+            (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let same = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user).is_ok()
             && same_start(filetime_to_unix_secs(created), start);
         let killed = same && TerminateProcess(handle, 1).is_ok();
         let _ = CloseHandle(handle);
@@ -1005,18 +904,13 @@ fn filetime_to_unix_secs(ft: windows::Win32::Foundation::FILETIME) -> u64 {
 
 #[cfg(not(windows))]
 fn kill_process(sys: &System, pid: u32, start: u64) -> bool {
-    sys.process(Pid::from_u32(pid))
-        .is_some_and(|p| same_start(p.start_time(), start) && p.kill())
+    sys.process(Pid::from_u32(pid)).is_some_and(|p| same_start(p.start_time(), start) && p.kill())
 }
 
 fn process_start_time(pid: u32) -> Option<u64> {
     let mut sys = System::new();
     let pid = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing());
     sys.process(pid).map(|p| p.start_time())
 }
 
@@ -1033,23 +927,16 @@ fn persist(dir: &Path, meta: &JobMeta) {
 }
 
 fn load_all(dir: &Path) -> Vec<JobMeta> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        match fs::read(&path)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| Ok(serde_json::from_slice::<JobMeta>(&b)?))
-        {
+        match fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Ok(serde_json::from_slice::<JobMeta>(&b)?)) {
             Ok(meta) => out.push(meta),
-            Err(e) => {
-                tracing::warn!(path = %path.display(), %e, "ignoring unreadable job metadata")
-            }
+            Err(e) => tracing::warn!(path = %path.display(), %e, "ignoring unreadable job metadata"),
         }
     }
     out
@@ -1059,23 +946,14 @@ fn load_all(dir: &Path) -> Vec<JobMeta> {
 /// boundaries: never starting inside a character and, while more output may follow
 /// (`more_coming`, or the read stopped before the end), never ending inside one. Returns the
 /// offset of the first byte returned, the bytes and the log's size.
-fn read_window(
-    path: &Path,
-    offset: i64,
-    max_bytes: usize,
-    more_coming: bool,
-) -> io::Result<(u64, Vec<u8>, u64)> {
+fn read_window(path: &Path, offset: i64, max_bytes: usize, more_coming: bool) -> io::Result<(u64, Vec<u8>, u64)> {
     let mut file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((0, Vec::new(), 0)),
         Err(e) => return Err(e),
     };
     let size = file.metadata()?.len();
-    let start = if offset < 0 {
-        size.saturating_sub(offset.unsigned_abs())
-    } else {
-        (offset as u64).min(size)
-    };
+    let start = if offset < 0 { size.saturating_sub(offset.unsigned_abs()) } else { (offset as u64).min(size) };
     let want = (size - start).min(max_bytes as u64) as usize;
     let mut buf = vec![0u8; want];
     file.seek(SeekFrom::Start(start))?;
@@ -1090,12 +968,7 @@ fn read_window(
 fn read_log(path: &Path, offset: i64, max_bytes: usize, more_coming: bool) -> io::Result<LogChunk> {
     let (start, bytes, size) = read_window(path, offset, max_bytes, more_coming)?;
     let len = fit_chars(&bytes, LOG_CHAR_BUDGET);
-    Ok(LogChunk {
-        offset: start,
-        next_offset: start + len as u64,
-        size,
-        text: command::decode(&bytes[..len]),
-    })
+    Ok(LogChunk { offset: start, next_offset: start + len as u64, size, text: command::decode(&bytes[..len]) })
 }
 
 /// The end of a log: at most its last `max_bytes`, and of those at most the last
@@ -1105,11 +978,7 @@ fn read_tail(path: &Path, max_bytes: u64, more_coming: bool) -> io::Result<Strin
     let (_, bytes, _) = read_window(path, -(max as i64), max as usize, more_coming)?;
     let text = command::decode(&bytes);
     let chars = text.chars().count();
-    Ok(if chars > LOG_CHAR_BUDGET {
-        text.chars().skip(chars - LOG_CHAR_BUDGET).collect()
-    } else {
-        text
-    })
+    Ok(if chars > LOG_CHAR_BUDGET { text.chars().skip(chars - LOG_CHAR_BUDGET).collect() } else { text })
 }
 
 /// `(skip, len)`: bytes to skip at the start (continuation bytes of a character that began
@@ -1117,11 +986,7 @@ fn read_tail(path: &Path, max_bytes: u64, more_coming: bool) -> io::Result<Strin
 /// when `hold_tail`).
 fn utf8_window(buf: &[u8], mid_file: bool, hold_tail: bool) -> (usize, usize) {
     let is_cont = |b: u8| b & 0xC0 == 0x80;
-    let skip = if mid_file {
-        buf.iter().take(3).take_while(|b| is_cont(**b)).count()
-    } else {
-        0
-    };
+    let skip = if mid_file { buf.iter().take(3).take_while(|b| is_cont(**b)).count() } else { 0 };
     let body = &buf[skip..];
     let mut len = body.len();
     if hold_tail {
@@ -1153,19 +1018,13 @@ fn fit_chars(bytes: &[u8], max_chars: usize) -> usize {
         return bytes.len();
     }
     match std::str::from_utf8(bytes) {
-        Ok(s) => s
-            .char_indices()
-            .nth(max_chars)
-            .map_or(bytes.len(), |(i, _)| i),
+        Ok(s) => s.char_indices().nth(max_chars).map_or(bytes.len(), |(i, _)| i),
         Err(_) => max_chars,
     }
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1255,10 +1114,7 @@ impl Tool for JobsStart {
             cwd: p.cwd,
             env: p.env,
             intent: p.intent,
-            owner: Owner {
-                name: ctx.session.peer.name.clone(),
-                principal: ctx.session.peer.principal.clone(),
-            },
+            owner: Owner { name: ctx.session.peer.name.clone(), principal: ctx.session.peer.principal.clone() },
         };
         Ok(super::json(ctx.host.jobs().start(req).await?))
     }
@@ -1307,9 +1163,7 @@ impl Tool for JobsStatus {
         let jobs = ctx.host.jobs();
         Ok(match p.id {
             Some(id) => {
-                let (status, tail) = jobs
-                    .status(&id, p.tail_bytes.unwrap_or(4096).min(65_536))
-                    .await?;
+                let (status, tail) = jobs.status(&id, p.tail_bytes.unwrap_or(4096).min(65_536)).await?;
                 status_result(status, tail)
             }
             None => super::json(jobs.list().await?),
@@ -1360,11 +1214,7 @@ impl Tool for JobsLog {
     async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: LogParams = parse(args)?;
         let max_bytes = p.max_bytes.unwrap_or(65_536).clamp(MIN_LOG_BYTES, 1 << 20);
-        let (chunk, running) = ctx
-            .host
-            .jobs()
-            .log(&p.id, p.offset.unwrap_or(0), max_bytes)
-            .await?;
+        let (chunk, running) = ctx.host.jobs().log(&p.id, p.offset.unwrap_or(0), max_bytes).await?;
         let header = json!({
             "id": p.id.trim(),
             "offset": chunk.offset,
@@ -1425,10 +1275,7 @@ impl Tool for JobsWait {
         if !ended {
             v["still_running"] = json!(true);
             v["hint"] = json!(if requested > MAX_WAIT {
-                format!(
-                    "waits are limited to {} s per call; call jobs_wait again to keep waiting",
-                    MAX_WAIT.as_secs()
-                )
+                format!("waits are limited to {} s per call; call jobs_wait again to keep waiting", MAX_WAIT.as_secs())
             } else {
                 "the job is still running; call jobs_wait again to keep waiting".to_string()
             });
@@ -1507,17 +1354,8 @@ mod tests {
         use ar_core::config::Action;
         for tool in tools() {
             let spec = tool.spec();
-            let expected = if spec.name == "jobs_start" {
-                Action::Ask
-            } else {
-                Action::Allow
-            };
-            assert_eq!(
-                (spec.level, spec.default_action),
-                (Level::Admin, expected),
-                "{}",
-                spec.name
-            );
+            let expected = if spec.name == "jobs_start" { Action::Ask } else { Action::Allow };
+            assert_eq!((spec.level, spec.default_action), (Level::Admin, expected), "{}", spec.name);
         }
     }
 
@@ -1527,9 +1365,7 @@ mod tests {
         for tool in super::super::Registry::builtin().iter() {
             let name = &tool.spec().name;
             let ok = (1..=64).contains(&name.len())
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
             assert!(ok, "invalid tool name '{name}'");
         }
     }
@@ -1542,13 +1378,7 @@ mod tests {
     }
 
     fn proc(pid: u32, parent: u32, start: u64) -> Proc {
-        Proc {
-            pid,
-            parent: Some(parent),
-            start,
-            session: None,
-            os_helper: false,
-        }
+        Proc { pid, parent: Some(parent), start, session: None, os_helper: false }
     }
 
     fn members(procs: &[Proc], root: Root) -> Vec<u32> {
@@ -1557,25 +1387,14 @@ mod tests {
         pids
     }
 
-    const LIVE_ROOT: Root = Root {
-        pid: 10,
-        start: 100,
-        alive_until: None,
-    };
+    const LIVE_ROOT: Root = Root { pid: 10, start: 100, alive_until: None };
     /// Root 10 started at 100 and is known to have run until 150.
-    const ENDED_ROOT: Root = Root {
-        pid: 10,
-        start: 100,
-        alive_until: Some(150),
-    };
+    const ENDED_ROOT: Root = Root { pid: 10, start: 100, alive_until: Some(150) };
 
     #[test]
     fn os_helpers_are_not_job_members() {
         // A console job's conhost (11) may outlive the job by a moment; it never counts as a leftover.
-        let conhost = Proc {
-            os_helper: true,
-            ..proc(11, 10, 101)
-        };
+        let conhost = Proc { os_helper: true, ..proc(11, 10, 101) };
         let procs = [conhost, proc(12, 10, 102)];
         assert_eq!(members(&procs, ENDED_ROOT), [12]);
         assert!(members(&[conhost], ENDED_ROOT).is_empty());
@@ -1584,13 +1403,7 @@ mod tests {
     #[test]
     fn live_root_takes_its_descendants_only() {
         // 10 -> 11 -> 12; 13 is a child of an older process that had pid 10; 30 is unrelated.
-        let procs = [
-            proc(10, 1, 100),
-            proc(11, 10, 101),
-            proc(12, 11, 102),
-            proc(13, 10, 50),
-            proc(30, 2, 10),
-        ];
+        let procs = [proc(10, 1, 100), proc(11, 10, 101), proc(12, 11, 102), proc(13, 10, 50), proc(30, 2, 10)];
         assert_eq!(members(&procs, LIVE_ROOT), [10, 11, 12]);
     }
 
@@ -1617,35 +1430,17 @@ mod tests {
     #[test]
     fn ended_root_without_a_known_lifetime_has_no_members() {
         let procs = [proc(11, 10, 120)];
-        assert_eq!(
-            members(
-                &procs,
-                Root {
-                    alive_until: None,
-                    ..ENDED_ROOT
-                }
-            ),
-            Vec::<u32>::new()
-        );
+        assert_eq!(members(&procs, Root { alive_until: None, ..ENDED_ROOT }), Vec::<u32>::new());
     }
 
     #[test]
     fn unix_orphans_are_found_through_their_session() {
         // 15 was reparented to init (pid 1) but kept the job's session; 16 is its child.
-        let orphan = Proc {
-            pid: 15,
-            parent: Some(1),
-            start: 130,
-            session: Some(10),
-            os_helper: false,
-        };
+        let orphan = Proc { pid: 15, parent: Some(1), start: 130, session: Some(10), os_helper: false };
         let procs = [orphan, proc(16, 15, 400)];
         assert_eq!(members(&procs, ENDED_ROOT), [15, 16]);
         // A session member that started after the root was last known alive is not attributed.
-        let late = Proc {
-            start: 160,
-            ..orphan
-        };
+        let late = Proc { start: 160, ..orphan };
         assert_eq!(members(&[late], ENDED_ROOT), Vec::<u32>::new());
     }
 
@@ -1656,35 +1451,16 @@ mod tests {
         let path = dir.join("x.log");
         fs::write(&path, "hello 世界\n").unwrap(); // 13 bytes
         let all = read_log(&path, 0, 1000, false).unwrap();
-        assert_eq!(
-            (all.offset, all.next_offset, all.size, all.text.as_str()),
-            (0, 13, 13, "hello 世界\n")
-        );
+        assert_eq!((all.offset, all.next_offset, all.size, all.text.as_str()), (0, 13, 13, "hello 世界\n"));
         let tail = read_log(&path, -4, 1000, false).unwrap();
-        assert_eq!(
-            (tail.offset, tail.text.as_str()),
-            (9, "界\n"),
-            "starts on a character boundary"
-        );
+        assert_eq!((tail.offset, tail.text.as_str()), (9, "界\n"), "starts on a character boundary");
         let part = read_log(&path, 0, 8, true).unwrap();
-        assert_eq!(
-            (part.next_offset, part.text.as_str()),
-            (6, "hello "),
-            "never ends inside 世"
-        );
+        assert_eq!((part.next_offset, part.text.as_str()), (6, "hello "), "never ends inside 世");
         let next = read_log(&path, part.next_offset as i64, 1000, false).unwrap();
         assert_eq!(next.text, "世界\n");
         let past = read_log(&path, 999, 10, false).unwrap();
-        assert_eq!(
-            (past.offset, past.next_offset, past.text.as_str()),
-            (13, 13, "")
-        );
-        assert_eq!(
-            read_log(&dir.join("missing.log"), 0, 10, false)
-                .unwrap()
-                .size,
-            0
-        );
+        assert_eq!((past.offset, past.next_offset, past.text.as_str()), (13, 13, ""));
+        assert_eq!(read_log(&dir.join("missing.log"), 0, 10, false).unwrap().size, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1731,17 +1507,11 @@ mod tests {
         assert_eq!(r.content.len(), 2);
         assert_eq!(r.content[1].as_text().unwrap().text, "tail\n");
         assert_eq!(r.structured_content.unwrap()["log_tail_chars"], 5);
-        assert_eq!(
-            status_result(json!({}), Some(String::new())).content.len(),
-            1
-        );
+        assert_eq!(status_result(json!({}), Some(String::new())).content.len(), 1);
     }
 
     fn owner() -> Owner {
-        Owner {
-            name: "test".into(),
-            principal: Some("eid:test".into()),
-        }
+        Owner { name: "test".into(), principal: Some("eid:test".into()) }
     }
 
     fn test_dir(name: &str) -> PathBuf {
@@ -1785,27 +1555,17 @@ mod tests {
             "echo 'line 1 世界'; echo err >&2; exit 7"
         };
         let id = start(&m, cmd).await;
-        assert!(
-            m.wait(&id, Duration::from_secs(60)).await.unwrap(),
-            "the job should end"
-        );
+        assert!(m.wait(&id, Duration::from_secs(60)).await.unwrap(), "the job should end");
         let (s, tail) = m.status(&id, 4096).await.unwrap();
         assert_eq!(s["state"], "exited");
         assert_eq!(s["exit_code"], 7);
         assert_eq!(s["leftover_processes"], 0);
         let tail = tail.unwrap();
-        assert!(
-            tail.contains("line 1 世界") && tail.contains("err"),
-            "{tail}"
-        );
+        assert!(tail.contains("line 1 世界") && tail.contains("err"), "{tail}");
         // Metadata survives on disk.
-        let saved: JobMeta =
-            serde_json::from_slice(&fs::read(dir.join(format!("{id}.json"))).unwrap()).unwrap();
+        let saved: JobMeta = serde_json::from_slice(&fs::read(dir.join(format!("{id}.json"))).unwrap()).unwrap();
         assert_eq!((saved.state, saved.exit_code), (JobState::Exited, Some(7)));
-        assert_eq!(
-            saved.alive_until, saved.ended_at,
-            "an observed end bounds the job's lifetime"
-        );
+        assert_eq!(saved.alive_until, saved.ended_at, "an observed end bounds the job's lifetime");
         assert_eq!(m.list().await.unwrap()["jobs"].as_array().unwrap().len(), 1);
         let err = m.status("nope", 0).await.unwrap_err().to_string();
         assert!(err.contains("no job with id 'nope'"), "{err}");
@@ -1837,11 +1597,7 @@ mod tests {
         for _ in 0..150 {
             let (chunk, _) = m.log(id, 0, 65_536).await.unwrap();
             if let Some(line) = chunk.text.lines().find(|l| l.starts_with("PIDS ")) {
-                return line
-                    .split_whitespace()
-                    .skip(1)
-                    .filter_map(|p| p.parse().ok())
-                    .collect();
+                return line.split_whitespace().skip(1).filter_map(|p| p.parse().ok()).collect();
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -1855,10 +1611,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!(
-            "still alive: {:?}",
-            pids.iter().filter(|p| alive(**p)).collect::<Vec<_>>()
-        );
+        panic!("still alive: {:?}", pids.iter().filter(|p| alive(**p)).collect::<Vec<_>>());
     }
 
     #[tokio::test]
@@ -1867,18 +1620,12 @@ mod tests {
         let m = JobManager::new(dir.clone());
         let id = start(&m, tree_job()).await;
         let pids = job_pids(&m, &id).await;
-        assert!(
-            !m.wait(&id, Duration::from_millis(300)).await.unwrap(),
-            "still running"
-        );
+        assert!(!m.wait(&id, Duration::from_millis(300)).await.unwrap(), "still running");
         let note = m.kill(&id).await.unwrap();
         assert!(note.starts_with("killed"), "{note}");
         let s = status(&m, &id).await;
         assert_eq!(s["state"], "killed", "{s}");
-        assert!(
-            !s["ended_at"].is_null(),
-            "the kill waits for the process to end: {s}"
-        );
+        assert!(!s["ended_at"].is_null(), "the kill waits for the process to end: {s}");
         assert_gone(&pids).await;
         drop(m);
         let _ = fs::remove_dir_all(&dir);
@@ -1897,20 +1644,13 @@ mod tests {
 
         let second = JobManager::new(dir.clone());
         let s = status(&second, &id).await;
-        assert_eq!(
-            (s["state"].as_str(), s["adopted"].as_bool()),
-            (Some("running"), Some(true)),
-            "{s}"
-        );
+        assert_eq!((s["state"].as_str(), s["adopted"].as_bool()), (Some("running"), Some(true)), "{s}");
         let note = second.kill(&id).await.unwrap();
         assert!(note.starts_with("killed"), "{note}");
         assert_gone(&pids).await;
         let s = status(&second, &id).await;
         assert_eq!(s["state"], "killed", "{s}");
-        assert!(
-            !s["ended_at"].is_null(),
-            "the kill waits for the process to end: {s}"
-        );
+        assert!(!s["ended_at"].is_null(), "the kill waits for the process to end: {s}");
         drop(second);
 
         // A third start sees the job as finished, not running.
@@ -1931,23 +1671,13 @@ mod tests {
         let own_pids = job_pids(&first, &own).await;
         let adopted_pids = job_pids(&first, &adopted).await;
         for id in [&own, &adopted] {
-            assert!(
-                first.wait(id, Duration::from_secs(60)).await.unwrap(),
-                "the main process exits at once"
-            );
+            assert!(first.wait(id, Duration::from_secs(60)).await.unwrap(), "the main process exits at once");
             let s = status(&first, id).await;
             assert_eq!(s["state"], "exited", "{s}");
             assert!(s["leftover_processes"].as_u64().unwrap() >= 1, "{s}");
         }
-        assert!(
-            alive(own_pids[1]) && alive(adopted_pids[1]),
-            "the children still run"
-        );
-        assert_eq!(
-            first.0.busy(&first.0.leftovers()),
-            2,
-            "jobs with leftovers take a running slot"
-        );
+        assert!(alive(own_pids[1]) && alive(adopted_pids[1]), "the children still run");
+        assert_eq!(first.0.busy(&first.0.leftovers()), 2, "jobs with leftovers take a running slot");
         assert_eq!(first.list().await.unwrap()["ended_with_leftovers"], 2);
 
         let note = first.kill(&own).await.unwrap();
@@ -1958,15 +1688,9 @@ mod tests {
         drop(first);
         let second = JobManager::new(dir.clone());
         let s = status(&second, &adopted).await;
-        assert!(
-            s["leftover_processes"].as_u64().unwrap() >= 1,
-            "found again after a restart: {s}"
-        );
+        assert!(s["leftover_processes"].as_u64().unwrap() >= 1, "found again after a restart: {s}");
         let note = second.kill(&adopted).await.unwrap();
-        assert!(
-            note.contains("already ended") && !note.contains("killed 0"),
-            "{note}"
-        );
+        assert!(note.contains("already ended") && !note.contains("killed 0"), "{note}");
         assert_gone(&adopted_pids[1..]).await;
         assert_eq!(status(&second, &adopted).await["leftover_processes"], 0);
         assert_eq!(second.0.busy(&second.0.leftovers()), 0);
@@ -1981,15 +1705,8 @@ mod tests {
         let pids = job_pids(&first, &id).await;
         drop(first);
         // The job ends while no manager is watching.
-        let root = Root {
-            pid: pids[0],
-            start: process_start_time(pids[0]).unwrap(),
-            alive_until: None,
-        };
-        assert!(
-            ProcTable::read().kill_job(&root) >= 2,
-            "the main process and its child"
-        );
+        let root = Root { pid: pids[0], start: process_start_time(pids[0]).unwrap(), alive_until: None };
+        assert!(ProcTable::read().kill_job(&root) >= 2, "the main process and its child");
         assert_gone(&pids).await;
         let second = JobManager::new(dir.clone());
         let s = status(&second, &id).await;
@@ -2004,11 +1721,7 @@ mod tests {
     async fn running_jobs_are_limited() {
         let dir = test_dir("limit");
         let m = JobManager::new(dir.clone());
-        let sleeper = if cfg!(windows) {
-            "Start-Sleep 120"
-        } else {
-            "sleep 120"
-        };
+        let sleeper = if cfg!(windows) { "Start-Sleep 120" } else { "sleep 120" };
         let mut ids = Vec::new();
         for _ in 0..MAX_RUNNING {
             ids.push(start(&m, sleeper).await);

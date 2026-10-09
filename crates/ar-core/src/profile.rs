@@ -47,8 +47,7 @@ impl Profile {
     /// Opens (and creates if needed) a profile at an explicit directory.
     pub fn at(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root)
-            .with_context(|| format!("create profile directory {}", root.display()))?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create profile directory {}", root.display()))?;
         // dunce keeps the plain `C:\...` form where it is equivalent: the `\\?\` form that
         // std::fs::canonicalize returns on Windows leaks into every path shown to users and
         // passed to tools, and cmd and many programs reject it.
@@ -121,11 +120,7 @@ impl Profile {
     pub fn control_endpoint(&self, role: Role) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            Ok(PathBuf::from(format!(
-                r"\\.\pipe\ai-remote-{}-{}",
-                role.as_str(),
-                self.instance_id()
-            )))
+            Ok(PathBuf::from(format!(r"\\.\pipe\ai-remote-{}-{}", role.as_str(), self.instance_id())))
         }
         #[cfg(not(windows))]
         {
@@ -148,8 +143,7 @@ mod tests {
     use super::*;
 
     fn temp_profile(name: &str) -> (PathBuf, Profile) {
-        let dir =
-            std::env::temp_dir().join(format!("ar-profile-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ar-profile-test-{name}-{}", std::process::id()));
         let profile = Profile::at(&dir).unwrap();
         (dir, profile)
     }

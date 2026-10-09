@@ -54,12 +54,7 @@ pub struct Check {
 
 impl Check {
     fn new(id: &str, grade: Grade, summary: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            grade,
-            summary: summary.into(),
-            fix: None,
-        }
+        Self { id: id.into(), grade, summary: summary.into(), fix: None }
     }
 
     fn fix(mut self, fix: impl Into<String>) -> Self {
@@ -90,20 +85,14 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
     checks.push(dpi_check(platform::dpi_awareness()));
     checks.push(match inputs.mesh {
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
-        None => Check::new(
-            "relay",
-            Grade::Skip,
-            "not checked: no host is running (start it and run doctor again)",
-        ),
+        None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(approval_check(platform::prompt_blocker()));
 
     let profile = inputs.profile.clone();
     let in_host = inputs.mesh.is_some();
     let blocking = tokio::task::spawn_blocking(move || {
-        let host_exe = std::env::current_exe()
-            .ok()
-            .map(|p| dunce::simplified(&p).to_path_buf());
+        let host_exe = std::env::current_exe().ok().map(|p| dunce::simplified(&p).to_path_buf());
         let status = install::status(&profile);
         let mut out = vec![
             firewall_check(&status, host_exe.as_deref(), in_host),
@@ -116,27 +105,14 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
     .await;
     match blocking {
         Ok(more) => checks.extend(more),
-        Err(e) => checks.push(Check::new(
-            "internal",
-            Grade::Warn,
-            format!("some checks did not run: {e}"),
-        )),
+        Err(e) => checks.push(Check::new("internal", Grade::Warn, format!("some checks did not run: {e}"))),
     }
-    Report {
-        overall: overall(&checks),
-        checked_in: if in_host { "host" } else { "cli" }.into(),
-        checks,
-    }
+    Report { overall: overall(&checks), checked_in: if in_host { "host" } else { "cli" }.into(), checks }
 }
 
 /// The worst grade of all checks (`ok` when everything was skipped).
 pub fn overall(checks: &[Check]) -> Grade {
-    checks
-        .iter()
-        .map(|c| c.grade)
-        .max()
-        .unwrap_or(Grade::Ok)
-        .max(Grade::Ok)
+    checks.iter().map(|c| c.grade).max().unwrap_or(Grade::Ok).max(Grade::Ok)
 }
 
 fn session_checks(s: &SessionState) -> Vec<Check> {
@@ -171,32 +147,19 @@ fn session_checks(s: &SessionState) -> Vec<Check> {
         None => out.push(Check::new("console", Grade::Skip, "not applicable on this platform")),
     }
     if s.desktop_usable {
-        let which = s
-            .input_desktop
-            .as_deref()
-            .map(|d| format!(" (input desktop: {d})"))
-            .unwrap_or_default();
-        out.push(Check::new(
-            "desktop",
-            Grade::Ok,
-            format!("desktop unlocked{which}"),
-        ));
+        let which = s.input_desktop.as_deref().map(|d| format!(" (input desktop: {d})")).unwrap_or_default();
+        out.push(Check::new("desktop", Grade::Ok, format!("desktop unlocked{which}")));
     } else {
-        let problem = s
-            .problem
-            .clone()
-            .unwrap_or_else(|| "the desktop is not usable".into());
+        let problem = s.problem.clone().unwrap_or_else(|| "the desktop is not usable".into());
         out.push(
-            Check::new(
-                "desktop",
-                Grade::Fail,
-                format!("{problem}: screenshots and input will not work"),
-            )
-            .fix("unlock the screen; on an unattended machine turn off automatic locking"),
+            Check::new("desktop", Grade::Fail, format!("{problem}: screenshots and input will not work"))
+                .fix("unlock the screen; on an unattended machine turn off automatic locking"),
         );
     }
     match s.elevated {
-        Some(true) => out.push(Check::new("elevation", Grade::Ok, "elevated: can operate windows of elevated programs")),
+        Some(true) => {
+            out.push(Check::new("elevation", Grade::Ok, "elevated: can operate windows of elevated programs"))
+        }
         Some(false) => out.push(
             Check::new(
                 "elevation",
@@ -214,11 +177,15 @@ fn session_checks(s: &SessionState) -> Vec<Check> {
 fn dpi_check(awareness: Option<&str>) -> Check {
     match awareness {
         None => Check::new("dpi", Grade::Skip, "not applicable on this platform"),
-        Some("per_monitor_v2") => Check::new("dpi", Grade::Ok, "per-monitor DPI aware (v2): screenshot and click coordinates agree"),
+        Some("per_monitor_v2") => {
+            Check::new("dpi", Grade::Ok, "per-monitor DPI aware (v2): screenshot and click coordinates agree")
+        }
         Some(other) => Check::new(
             "dpi",
             Grade::Fail,
-            format!("DPI awareness is '{other}', not per-monitor v2: clicks on scaled displays land in the wrong place"),
+            format!(
+                "DPI awareness is '{other}', not per-monitor v2: clicks on scaled displays land in the wrong place"
+            ),
         )
         .fix("remove any compatibility override of high-DPI scaling on the executable (Properties > Compatibility)"),
     }
@@ -227,14 +194,12 @@ fn dpi_check(awareness: Option<&str>) -> Check {
 fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
     match net {
         Err(e) => Check::new("relay", Grade::Warn, format!("cannot read the network state: {e}")),
-        Ok(None) => Check::new("relay", Grade::Warn, "the transport has not reported its network state yet; try again shortly"),
+        Ok(None) => {
+            Check::new("relay", Grade::Warn, "the transport has not reported its network state yet; try again shortly")
+        }
         Ok(Some(n)) if n.online => {
             let relay = n.home_relay.unwrap_or_else(|| "a relay".into());
-            Check::new(
-                "relay",
-                Grade::Ok,
-                format!("connected to {relay}; {} direct address(es)", n.direct_addrs.len()),
-            )
+            Check::new("relay", Grade::Ok, format!("connected to {relay}; {} direct address(es)", n.direct_addrs.len()))
         }
         Ok(Some(n)) if n.relays.is_empty() => Check::new(
             "relay",
@@ -247,7 +212,10 @@ fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
             Check::new(
                 "relay",
                 Grade::Warn,
-                format!("not connected to any relay ({}): controllers on other networks may not reach this host", urls.join(", ")),
+                format!(
+                    "not connected to any relay ({}): controllers on other networks may not reach this host",
+                    urls.join(", ")
+                ),
             )
             .fix("check internet access and outbound firewall or proxy rules; relays use HTTPS")
         }
@@ -272,30 +240,16 @@ fn host_program(status: &InstallStatus, host_exe: Option<&Path>, in_host: bool) 
         return host_exe.map(Path::to_path_buf);
     }
     let bins = install::Binaries::locate().ok()?;
-    Some(if status.installed || bins.hostw.is_file() {
-        bins.hostw
-    } else {
-        bins.cli
-    })
+    Some(if status.installed || bins.hostw.is_file() { bins.hostw } else { bins.cli })
 }
 
-fn firewall_check(
-    status: &anyhow::Result<InstallStatus>,
-    host_exe: Option<&Path>,
-    in_host: bool,
-) -> Check {
+fn firewall_check(status: &anyhow::Result<InstallStatus>, host_exe: Option<&Path>, in_host: bool) -> Check {
     if !cfg!(windows) {
         return Check::new("firewall", Grade::Skip, "not applicable on this platform");
     }
     let status = match status {
         Ok(s) => s,
-        Err(e) => {
-            return Check::new(
-                "firewall",
-                Grade::Warn,
-                format!("cannot read the firewall rules: {e:#}"),
-            );
-        }
+        Err(e) => return Check::new("firewall", Grade::Warn, format!("cannot read the firewall rules: {e:#}")),
     };
     if status.firewall_enabled == Some(false) {
         return Check::new(
@@ -306,34 +260,16 @@ fn firewall_check(
         );
     }
     if let Some(e) = &status.firewall_error {
-        return Check::new(
-            "firewall",
-            Grade::Warn,
-            format!("cannot read the firewall rules: {e}"),
-        );
+        return Check::new("firewall", Grade::Warn, format!("cannot read the firewall rules: {e}"));
     }
     let Some(program) = host_program(status, host_exe, in_host) else {
-        return Check::new(
-            "firewall",
-            Grade::Skip,
-            "cannot tell which program runs the host",
-        );
+        return Check::new("firewall", Grade::Skip, "cannot tell which program runs the host");
     };
-    let rules = match status
-        .firewall
-        .iter()
-        .find(|r| Path::new(&r.program) == program)
-    {
+    let rules = match status.firewall.iter().find(|r| Path::new(&r.program) == program) {
         Some(r) => r.clone(),
         None => match install::firewall_rules() {
             Ok(all) => install::rules_for(&all, &program),
-            Err(e) => {
-                return Check::new(
-                    "firewall",
-                    Grade::Warn,
-                    format!("cannot read the firewall rules: {e:#}"),
-                );
-            }
+            Err(e) => return Check::new("firewall", Grade::Warn, format!("cannot read the firewall rules: {e:#}")),
         },
     };
     grade_firewall(&rules)
@@ -377,23 +313,14 @@ fn grade_firewall(rules: &ProgramRules) -> Check {
         )
         .fix("run `ai-remote host install` from an elevated terminal; it adds the rule");
     }
-    Check::new(
-        "firewall",
-        Grade::Ok,
-        format!(
-            "inbound connections allowed for {program} ({})",
-            rules.allow.join(", ")
-        ),
-    )
+    Check::new("firewall", Grade::Ok, format!("inbound connections allowed for {program} ({})", rules.allow.join(", ")))
 }
 
 fn autostart_check(status: &anyhow::Result<InstallStatus>) -> Check {
     match status {
-        Err(e) if cfg!(any(windows, target_os = "macos")) => Check::new(
-            "autostart",
-            Grade::Warn,
-            format!("cannot read the autostart state: {e:#}"),
-        ),
+        Err(e) if cfg!(any(windows, target_os = "macos")) => {
+            Check::new("autostart", Grade::Warn, format!("cannot read the autostart state: {e:#}"))
+        }
         Err(_) => Check::new("autostart", Grade::Skip, "not available on this platform"),
         Ok(s) => grade_autostart(s),
     }
@@ -401,27 +328,18 @@ fn autostart_check(status: &anyhow::Result<InstallStatus>) -> Check {
 
 fn grade_autostart(s: &InstallStatus) -> Check {
     if !s.installed {
-        let why = s
-            .detail
-            .as_deref()
-            .map(|d| format!(" ({d})"))
-            .unwrap_or_default();
+        let why = s.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default();
         return Check::new(
             "autostart",
             Grade::Warn,
-            format!(
-                "no {} starts the host at login{why}: it runs only while started by hand",
-                s.kind
-            ),
+            format!("no {} starts the host at login{why}: it runs only while started by hand", s.kind),
         )
         .fix("run `ai-remote host install` (from an elevated terminal on Windows)");
     }
     match s.current {
-        Some(true) => Check::new(
-            "autostart",
-            Grade::Ok,
-            format!("{} {} starts the background host at login", s.kind, s.name),
-        ),
+        Some(true) => {
+            Check::new("autostart", Grade::Ok, format!("{} {} starts the background host at login", s.kind, s.name))
+        }
         _ => Check::new(
             "autostart",
             Grade::Warn,
@@ -439,39 +357,19 @@ fn grade_autostart(s: &InstallStatus) -> Check {
 fn audit_check(profile: &Profile) -> Check {
     let path = match profile.audit_log_path() {
         Ok(p) => p,
-        Err(e) => {
-            return Check::new(
-                "audit",
-                Grade::Fail,
-                format!("no audit log location: {e:#}"),
-            );
-        }
+        Err(e) => return Check::new("audit", Grade::Fail, format!("no audit log location: {e:#}")),
     };
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        Ok(_) => Check::new(
-            "audit",
-            Grade::Ok,
-            format!("audit log writable: {}", path.display()),
-        ),
-        Err(e) => Check::new(
-            "audit",
-            Grade::Fail,
-            format!("cannot write the audit log {}: {e}", path.display()),
-        )
-        .fix("fix the permissions of the profile directory, or choose another one with --home"),
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(_) => Check::new("audit", Grade::Ok, format!("audit log writable: {}", path.display())),
+        Err(e) => Check::new("audit", Grade::Fail, format!("cannot write the audit log {}: {e}", path.display()))
+            .fix("fix the permissions of the profile directory, or choose another one with --home"),
     }
 }
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
 fn disk_check(profile: &Profile) -> Check {
-    let dir = profile
-        .role_dir(Role::Host)
-        .unwrap_or_else(|_| profile.root().to_path_buf());
+    let dir = profile.role_dir(Role::Host).unwrap_or_else(|_| profile.root().to_path_buf());
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = disks
         .list()
@@ -480,19 +378,13 @@ fn disk_check(profile: &Profile) -> Check {
         .max_by_key(|d| d.mount_point().as_os_str().len());
     match disk {
         Some(d) => grade_disk(d.available_space(), &d.mount_point().display().to_string()),
-        None => Check::new(
-            "disk",
-            Grade::Skip,
-            format!("cannot tell which disk holds {}", dir.display()),
-        ),
+        None => Check::new("disk", Grade::Skip, format!("cannot tell which disk holds {}", dir.display())),
     }
 }
 
 fn starts_with_path(path: &Path, prefix: &Path) -> bool {
     if cfg!(windows) {
-        path.to_string_lossy()
-            .to_lowercase()
-            .starts_with(&prefix.to_string_lossy().to_lowercase())
+        path.to_string_lossy().to_lowercase().starts_with(&prefix.to_string_lossy().to_lowercase())
     } else {
         path.starts_with(prefix)
     }
@@ -502,12 +394,8 @@ fn starts_with_path(path: &Path, prefix: &Path) -> bool {
 fn grade_disk(free: u64, mount: &str) -> Check {
     let shown = format!("{:.1} GiB free on {mount}", free as f64 / GIB as f64);
     if free < GIB / 2 {
-        Check::new(
-            "disk",
-            Grade::Fail,
-            format!("{shown}: logs and the audit log may stop being written"),
-        )
-        .fix("free some disk space")
+        Check::new("disk", Grade::Fail, format!("{shown}: logs and the audit log may stop being written"))
+            .fix("free some disk space")
     } else if free < 5 * GIB {
         Check::new("disk", Grade::Warn, format!("{shown}: running low")).fix("free some disk space")
     } else {
@@ -528,10 +416,7 @@ mod tests {
     #[test]
     fn overall_is_the_worst_grade() {
         let c = |g| Check::new("x", g, "");
-        assert_eq!(
-            overall(&[c(Grade::Ok), c(Grade::Warn), c(Grade::Skip)]),
-            Grade::Warn
-        );
+        assert_eq!(overall(&[c(Grade::Ok), c(Grade::Warn), c(Grade::Skip)]), Grade::Warn);
         assert_eq!(overall(&[c(Grade::Fail), c(Grade::Warn)]), Grade::Fail);
         assert_eq!(overall(&[c(Grade::Skip)]), Grade::Ok);
         assert_eq!(overall(&[]), Grade::Ok);
@@ -549,12 +434,7 @@ mod tests {
         };
         assert_eq!(
             grades(&session_checks(&s)),
-            vec![
-                ("session", Grade::Ok),
-                ("console", Grade::Ok),
-                ("desktop", Grade::Ok),
-                ("elevation", Grade::Ok)
-            ]
+            vec![("session", Grade::Ok), ("console", Grade::Ok), ("desktop", Grade::Ok), ("elevation", Grade::Ok)]
         );
     }
 
@@ -578,27 +458,13 @@ mod tests {
                 ("elevation", Grade::Warn)
             ]
         );
-        assert!(
-            checks[1]
-                .fix
-                .as_deref()
-                .unwrap()
-                .contains("tscon 0 /dest:console")
-        );
-        assert!(
-            checks
-                .iter()
-                .filter(|c| c.grade != Grade::Ok)
-                .all(|c| c.fix.is_some())
-        );
+        assert!(checks[1].fix.as_deref().unwrap().contains("tscon 0 /dest:console"));
+        assert!(checks.iter().filter(|c| c.grade != Grade::Ok).all(|c| c.fix.is_some()));
     }
 
     #[test]
     fn other_platforms_skip_windows_session_facts() {
-        let s = SessionState {
-            desktop_usable: true,
-            ..Default::default()
-        };
+        let s = SessionState { desktop_usable: true, ..Default::default() };
         assert_eq!(
             grades(&session_checks(&s)),
             vec![
@@ -622,29 +488,13 @@ mod tests {
         let net = |online, relays: Vec<(&str, bool)>| NetworkStatus {
             online,
             home_relay: online.then(|| "https://relay.example:443".to_string()),
-            relays: relays
-                .into_iter()
-                .map(|(u, c)| RelayState {
-                    url: u.into(),
-                    connected: c,
-                })
-                .collect(),
+            relays: relays.into_iter().map(|(u, c)| RelayState { url: u.into(), connected: c }).collect(),
             direct_addrs: vec!["192.0.2.1:5000".into()],
         };
-        let ok = relay_check(Ok(Some(net(
-            true,
-            vec![("https://relay.example:443", true)],
-        ))));
+        let ok = relay_check(Ok(Some(net(true, vec![("https://relay.example:443", true)]))));
         assert_eq!(ok.grade, Grade::Ok);
         assert!(ok.summary.contains("relay.example"));
-        assert_eq!(
-            relay_check(Ok(Some(net(
-                false,
-                vec![("https://relay.example:443", false)]
-            ))))
-            .grade,
-            Grade::Warn
-        );
+        assert_eq!(relay_check(Ok(Some(net(false, vec![("https://relay.example:443", false)])))).grade, Grade::Warn);
         assert_eq!(relay_check(Ok(Some(net(false, vec![])))).grade, Grade::Warn);
         assert_eq!(relay_check(Ok(None)).grade, Grade::Warn);
         assert_eq!(relay_check(Err("boom".into())).grade, Grade::Warn);
@@ -658,20 +508,14 @@ mod tests {
             block: block.iter().map(|s| s.to_string()).collect(),
             block_all: Vec::new(),
         };
-        assert_eq!(
-            grade_firewall(&rules(&["UDP", "TCP"], &[])).grade,
-            Grade::Ok
-        );
+        assert_eq!(grade_firewall(&rules(&["UDP", "TCP"], &[])).grade, Grade::Ok);
         assert_eq!(grade_firewall(&rules(&["TCP"], &[])).grade, Grade::Warn);
         assert_eq!(grade_firewall(&rules(&[], &[])).grade, Grade::Warn);
         let blocked = grade_firewall(&rules(&["UDP"], &["ai-remote-hostw"]));
         assert_eq!(blocked.grade, Grade::Fail);
         assert!(blocked.summary.contains("\"ai-remote-hostw\""));
         // A block rule for every program beats our allow rule.
-        let everyone = ProgramRules {
-            block_all: vec!["no inbound udp".into()],
-            ..rules(&["UDP", "TCP"], &[])
-        };
+        let everyone = ProgramRules { block_all: vec!["no inbound udp".into()], ..rules(&["UDP", "TCP"], &[]) };
         let check = grade_firewall(&everyone);
         assert_eq!(check.grade, Grade::Warn);
         assert!(check.summary.contains("\"no inbound udp\""));
@@ -679,19 +523,9 @@ mod tests {
 
     #[test]
     fn firewall_switched_off_blocks_nothing() {
-        let off = InstallStatus {
-            firewall_enabled: Some(false),
-            ..Default::default()
-        };
+        let off = InstallStatus { firewall_enabled: Some(false), ..Default::default() };
         let check = firewall_check(&Ok(off), None, true);
-        assert_eq!(
-            check.grade,
-            if cfg!(windows) {
-                Grade::Ok
-            } else {
-                Grade::Skip
-            }
-        );
+        assert_eq!(check.grade, if cfg!(windows) { Grade::Ok } else { Grade::Skip });
     }
 
     #[test]
@@ -722,9 +556,6 @@ mod tests {
     #[test]
     fn approval_grades() {
         assert_eq!(approval_check(None).grade, Grade::Ok);
-        assert_eq!(
-            approval_check(Some("the desktop is locked".into())).grade,
-            Grade::Warn
-        );
+        assert_eq!(approval_check(Some("the desktop is locked".into())).grade, Grade::Warn);
     }
 }

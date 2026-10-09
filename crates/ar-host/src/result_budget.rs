@@ -25,11 +25,7 @@ const JPEG_QUALITY: u8 = 85;
 pub async fn apply(mut r: CallToolResult) -> CallToolResult {
     budget_structured(&mut r);
     budget_text(&mut r);
-    if !r
-        .content
-        .iter()
-        .any(|c| matches!(c, ContentBlock::Image(_)))
-    {
+    if !r.content.iter().any(|c| matches!(c, ContentBlock::Image(_))) {
         return r;
     }
     match tokio::task::spawn_blocking(move || {
@@ -47,9 +43,7 @@ pub async fn apply(mut r: CallToolResult) -> CallToolResult {
 }
 
 fn budget_structured(r: &mut CallToolResult) {
-    let Some(value) = &r.structured_content else {
-        return;
-    };
+    let Some(value) = &r.structured_content else { return };
     let json = serde_json::to_string(value).unwrap_or_default();
     let chars = json.chars().count();
     if chars <= TEXT_LIMIT {
@@ -80,17 +74,9 @@ fn budget_text(r: &mut CallToolResult) {
                     *text = budget::clip(text);
                     None
                 }
-                ResourceContents::BlobResourceContents {
-                    blob,
-                    mime_type,
-                    uri,
-                    ..
-                } if blob.len() > IMAGE_MAX_B64 => Some(omitted(
-                    "resource",
-                    blob.len(),
-                    mime_type.as_deref(),
-                    Some(uri),
-                )),
+                ResourceContents::BlobResourceContents { blob, mime_type, uri, .. } if blob.len() > IMAGE_MAX_B64 => {
+                    Some(omitted("resource", blob.len(), mime_type.as_deref(), Some(uri)))
+                }
                 _ => None,
             },
             ContentBlock::Audio(a) if a.data.len() > IMAGE_MAX_B64 => {
@@ -152,12 +138,7 @@ fn fit_image(data: &str, mime: &str, max_b64: usize, max_edge: u32) -> Fit {
     let Ok(bytes) = BASE64.decode(data.trim()) else {
         // Not valid base64: nothing to shrink. Small ones pass (the client will report them).
         if over_size {
-            return Fit::Dropped(dropped_note(
-                mime,
-                data.len(),
-                max_b64,
-                "it is not valid base64",
-            ));
+            return Fit::Dropped(dropped_note(mime, data.len(), max_b64, "it is not valid base64"));
         }
         return Fit::Unchanged;
     };
@@ -180,16 +161,10 @@ fn fit_image(data: &str, mime: &str, max_b64: usize, max_edge: u32) -> Fit {
     let (w, h) = (img.width(), img.height());
     let mut scale = (max_edge as f64 / w.max(h) as f64).min(1.0);
     for _ in 0..8 {
-        let (sw, sh) = (
-            (w as f64 * scale).round().max(1.0) as u32,
-            (h as f64 * scale).round().max(1.0) as u32,
-        );
+        let (sw, sh) = ((w as f64 * scale).round().max(1.0) as u32, (h as f64 * scale).round().max(1.0) as u32);
         let same_size = (sw, sh) == (w, h);
-        let encoded = if same_size {
-            encode_jpeg(&img)
-        } else {
-            encode_jpeg(&img.resize_exact(sw, sh, FilterType::Triangle))
-        };
+        let encoded =
+            if same_size { encode_jpeg(&img) } else { encode_jpeg(&img.resize_exact(sw, sh, FilterType::Triangle)) };
         let Some(encoded) = encoded else { break };
         let b64 = BASE64.encode(&encoded);
         if b64.len() <= max_b64 {
@@ -212,12 +187,7 @@ fn fit_image(data: &str, mime: &str, max_b64: usize, max_edge: u32) -> Fit {
         }
         scale *= 0.7;
     }
-    Fit::Dropped(dropped_note(
-        mime,
-        data.len(),
-        max_b64,
-        "it could not be made small enough",
-    ))
+    Fit::Dropped(dropped_note(mime, data.len(), max_b64, "it could not be made small enough"))
 }
 
 fn dropped_note(mime: &str, b64_len: usize, max_b64: usize, why: &str) -> String {
@@ -230,9 +200,7 @@ fn dropped_note(mime: &str, b64_len: usize, max_b64: usize, why: &str) -> String
 fn encode_jpeg(img: &DynamicImage) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     let encoder = JpegEncoder::new_with_quality(&mut buf, JPEG_QUALITY);
-    DynamicImage::ImageRgb8(img.to_rgb8())
-        .write_with_encoder(encoder)
-        .ok()?;
+    DynamicImage::ImageRgb8(img.to_rgb8()).write_with_encoder(encoder).ok()?;
     Some(buf)
 }
 
@@ -244,12 +212,7 @@ mod tests {
     use super::*;
 
     fn text_of(r: &CallToolResult) -> String {
-        r.content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .map(|t| t.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+        r.content.iter().filter_map(|c| c.as_text()).map(|t| t.text.as_str()).collect::<Vec<_>>().join("\n")
     }
 
     /// Deterministic noise: compresses badly in both PNG and JPEG.
@@ -306,18 +269,12 @@ mod tests {
         r.structured_content = Some(json!({ "elements": "e".repeat(200_000) }));
         let r = apply(r).await;
         assert!(r.structured_content.is_none());
-        assert!(
-            text_of(&r).starts_with("{\"elements\":\"eee"),
-            "head of the JSON stays readable"
-        );
+        assert!(text_of(&r).starts_with("{\"elements\":\"eee"), "head of the JSON stays readable");
     }
 
     #[test]
     fn large_audio_and_blobs_are_replaced_by_a_note() {
-        let mut r = CallToolResult::success(vec![ContentBlock::audio(
-            "A".repeat(IMAGE_MAX_B64 + 4),
-            "audio/wav",
-        )]);
+        let mut r = CallToolResult::success(vec![ContentBlock::audio("A".repeat(IMAGE_MAX_B64 + 4), "audio/wav")]);
         budget_text(&mut r);
         assert!(text_of(&r).contains("audio omitted (audio/wav)"));
     }
@@ -329,10 +286,7 @@ mod tests {
             panic!("expected a scaled image")
         };
         assert_eq!(decoded_dims(&data), (50, 25));
-        assert!(
-            note.contains("200x100 to 50x25") && note.contains("4.0000"),
-            "{note}"
-        );
+        assert!(note.contains("200x100 to 50x25") && note.contains("4.0000"), "{note}");
     }
 
     #[test]
@@ -342,41 +296,26 @@ mod tests {
         let jpeg = BASE64.encode(encode_jpeg(&img).unwrap());
         assert!(jpeg.len() < png.len(), "noise: JPEG is smaller than PNG");
         let limit = (png.len() + jpeg.len()) / 2;
-        let Fit::Replaced { data, note } = fit_image(&png, "image/png", limit, IMAGE_MAX_EDGE)
-        else {
+        let Fit::Replaced { data, note } = fit_image(&png, "image/png", limit, IMAGE_MAX_EDGE) else {
             panic!("expected JPEG")
         };
-        assert_eq!(
-            decoded_dims(&data),
-            (96, 96),
-            "same size: coordinates stay valid"
-        );
+        assert_eq!(decoded_dims(&data), (96, 96), "same size: coordinates stay valid");
         assert!(note.contains("coordinates in it are unchanged"), "{note}");
 
         // Too big even as JPEG at full size: scaled down until it fits.
-        let Fit::Replaced { data, note } =
-            fit_image(&png, "image/png", jpeg.len() / 3, IMAGE_MAX_EDGE)
-        else {
+        let Fit::Replaced { data, note } = fit_image(&png, "image/png", jpeg.len() / 3, IMAGE_MAX_EDGE) else {
             panic!("expected a scaled image")
         };
         assert!(data.len() <= jpeg.len() / 3);
-        assert!(
-            decoded_dims(&data).0 < 96 && note.contains("multiply pixel coordinates"),
-            "{note}"
-        );
+        assert!(decoded_dims(&data).0 < 96 && note.contains("multiply pixel coordinates"), "{note}");
     }
 
     #[test]
     fn undecodable_oversized_images_are_dropped() {
         let garbage = BASE64.encode(vec![7u8; 3000]);
         let fit = |data: &str, max_b64| fit_image(data, "image/webp", max_b64, IMAGE_MAX_EDGE);
-        assert!(
-            matches!(fit(&garbage, 100), Fit::Dropped(n) if n.contains("could not be decoded"))
-        );
-        assert!(
-            matches!(fit(&garbage, usize::MAX), Fit::Unchanged),
-            "small: passed on"
-        );
+        assert!(matches!(fit(&garbage, 100), Fit::Dropped(n) if n.contains("could not be decoded")));
+        assert!(matches!(fit(&garbage, usize::MAX), Fit::Unchanged), "small: passed on");
         assert!(matches!(fit("%%%", 1), Fit::Dropped(n) if n.contains("not valid base64")));
     }
 

@@ -6,8 +6,8 @@ use ar_core::VERSION;
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerConfig,
+        CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult, PaginatedRequestParams,
+        ServerCapabilities, ServerConfig,
     },
     service::RequestContext,
 };
@@ -41,10 +41,7 @@ impl HostServer {
 impl ServerHandler for HostServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                format!("ai-remote host: {}", self.host.name()),
-                VERSION,
-            ))
+            .with_server_info(Implementation::new(format!("ai-remote host: {}", self.host.name()), VERSION))
             .with_instructions(INSTRUCTIONS)
     }
 
@@ -73,8 +70,6 @@ impl ServerHandler for HostServer {
         let args = request.arguments.unwrap_or_default();
         // rmcp only cancels `context.ct` on the controller's `notifications/cancelled`; the gate
         // has to stop the tool itself.
-        gate::call(&self.host, &self.session, &request.name, args, &context.ct)
-            .await
-            .map(CallToolResponse::from)
+        gate::call(&self.host, &self.session, &request.name, args, &context.ct).await.map(CallToolResponse::from)
     }
 }

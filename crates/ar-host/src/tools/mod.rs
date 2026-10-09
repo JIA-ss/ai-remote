@@ -43,11 +43,7 @@ impl ToolSpec {
             description: description.to_string(),
             input_schema: schema_for::<P>(),
             level,
-            default_action: if level >= Level::Admin {
-                Action::Ask
-            } else {
-                Action::Allow
-            },
+            default_action: if level >= Level::Admin { Action::Ask } else { Action::Allow },
             read_only: level == Level::Observe,
             destructive: level != Level::Observe,
         }
@@ -79,15 +75,12 @@ impl ToolSpec {
 
     /// The MCP tool definition shown to controllers.
     pub fn to_mcp(&self) -> rmcp::model::Tool {
-        let mut annotations = ToolAnnotations::new()
-            .read_only(self.read_only)
-            .destructive(self.destructive);
+        let mut annotations = ToolAnnotations::new().read_only(self.read_only).destructive(self.destructive);
         if self.read_only {
             annotations = annotations.idempotent(true);
         }
         let description = format!("{} [requires level: {}]", self.description, self.level);
-        rmcp::model::Tool::new(self.name.clone(), description, self.input_schema.clone())
-            .annotate(annotations)
+        rmcp::model::Tool::new(self.name.clone(), description, self.input_schema.clone()).annotate(annotations)
     }
 }
 
@@ -117,9 +110,7 @@ pub fn shown_args(args: &JsonObject, secret: &[&str]) -> JsonObject {
         match v {
             Value::Null => Value::Null,
             Value::String(s) => Value::String(format!("<hidden: {} chars>", s.chars().count())),
-            Value::Object(o) => {
-                Value::Object(o.iter().map(|(k, v)| (k.clone(), hide(v))).collect())
-            }
+            Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), hide(v))).collect()),
             _ => Value::String("<hidden>".into()),
         }
     }
@@ -178,8 +169,7 @@ pub fn schema_for<P: JsonSchema + 'static>() -> Arc<JsonObject> {
 
 /// Parses tool arguments into `P`, with an error message an agent can act on.
 pub fn parse<P: DeserializeOwned>(args: JsonObject) -> Result<P> {
-    serde_json::from_value(serde_json::Value::Object(args))
-        .map_err(|e| anyhow::anyhow!("invalid arguments: {e}"))
+    serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| anyhow::anyhow!("invalid arguments: {e}"))
 }
 
 /// A successful result with one text block.
@@ -189,9 +179,8 @@ pub fn text(s: impl Into<String>) -> CallToolResult {
 
 /// A successful result with a JSON value rendered as text plus structured content.
 pub fn json(value: serde_json::Value) -> CallToolResult {
-    let mut r = CallToolResult::success(vec![ContentBlock::text(
-        serde_json::to_string_pretty(&value).unwrap_or_default(),
-    )]);
+    let mut r =
+        CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&value).unwrap_or_default())]);
     r.structured_content = Some(value);
     r
 }
@@ -214,10 +203,7 @@ mod tests {
             "stdin": "pässword",
             "text": 5,
         });
-        let shown = shown_args(
-            args.as_object().unwrap(),
-            &["env", "stdin", "text", "absent"],
-        );
+        let shown = shown_args(args.as_object().unwrap(), &["env", "stdin", "text", "absent"]);
         assert_eq!(
             serde_json::Value::Object(shown),
             json!({

@@ -63,10 +63,7 @@ pub struct HostSection {
 
 impl Default for HostSection {
     fn default() -> Self {
-        Self {
-            name: None,
-            approval_timeout_secs: default_approval_timeout(),
-        }
+        Self { name: None, approval_timeout_secs: default_approval_timeout() }
     }
 }
 
@@ -191,17 +188,9 @@ impl<'de> Deserialize<'de> for MountTool {
                 Level::deserialize(serde::de::value::StrDeserializer::new(v)).map(MountTool::Level)
             }
 
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> Result<MountTool, A::Error> {
-                let t =
-                    MountToolTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(MountTool::Detailed {
-                    level: t.level,
-                    approve: t.approve,
-                    description: t.description,
-                })
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<MountTool, A::Error> {
+                let t = MountToolTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(MountTool::Detailed { level: t.level, approve: t.approve, description: t.description })
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -226,11 +215,7 @@ impl MountTool {
     /// What the gate does when no policy rule matches: `approve` if set, otherwise the same default
     /// as built-in tools (admin tools ask, the rest run).
     pub fn action(&self) -> Action {
-        self.approve().unwrap_or(if self.level() >= Level::Admin {
-            Action::Ask
-        } else {
-            Action::Allow
-        })
+        self.approve().unwrap_or(if self.level() >= Level::Admin { Action::Ask } else { Action::Allow })
     }
 
     pub fn description(&self) -> Option<&str> {
@@ -262,9 +247,7 @@ pub const MOUNT_NAME_MAX: usize = 24;
 
 /// Mount names become tool-name prefixes, so they use the tool-name alphabet.
 pub fn validate_mount_name(name: &str) -> Result<()> {
-    let ok_chars = name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let ok_chars = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if name.is_empty() || name.len() > MOUNT_NAME_MAX || !ok_chars {
         bail!(
             "invalid mount name '{name}': use 1-{MOUNT_NAME_MAX} characters from A-Z, a-z, 0-9, '_' and '-' \
@@ -279,17 +262,11 @@ pub fn validate_mount_name(name: &str) -> Result<()> {
 pub fn add_mount(path: &Path, mount: &MountConfig) -> Result<()> {
     validate_mount_name(&mount.name)?;
     let text = read_or_empty(path)?;
-    let typed: HostConfig =
-        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    let typed: HostConfig = toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
     if typed.mounts.iter().any(|m| m.name == mount.name) {
-        bail!(
-            "a mount named '{0}' already exists; remove it first (ai-remote mount remove {0})",
-            mount.name
-        );
+        bail!("a mount named '{0}' already exists; remove it first (ai-remote mount remove {0})", mount.name);
     }
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .with_context(|| format!("parse {}", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("parse {}", path.display()))?;
     let table = mount_table(mount)?;
     match doc.get_mut("mount") {
         None => {
@@ -298,10 +275,7 @@ pub fn add_mount(path: &Path, mount: &MountConfig) -> Result<()> {
             doc.insert("mount", toml_edit::Item::ArrayOfTables(array));
         }
         Some(toml_edit::Item::ArrayOfTables(array)) => array.push(table),
-        Some(_) => bail!(
-            "`mount` in {} is not a list of [[mount]] tables; fix the file by hand",
-            path.display()
-        ),
+        Some(_) => bail!("`mount` in {} is not a list of [[mount]] tables; fix the file by hand", path.display()),
     }
     store::write_atomic(path, doc.to_string().as_bytes())
 }
@@ -309,19 +283,11 @@ pub fn add_mount(path: &Path, mount: &MountConfig) -> Result<()> {
 /// Removes the `[[mount]]` entry called `name`. Returns false when there is none.
 pub fn remove_mount(path: &Path, name: &str) -> Result<bool> {
     let text = read_or_empty(path)?;
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .with_context(|| format!("parse {}", path.display()))?;
-    let Some(array) = doc
-        .get_mut("mount")
-        .and_then(toml_edit::Item::as_array_of_tables_mut)
-    else {
+    let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("parse {}", path.display()))?;
+    let Some(array) = doc.get_mut("mount").and_then(toml_edit::Item::as_array_of_tables_mut) else {
         return Ok(false);
     };
-    let Some(index) = array
-        .iter()
-        .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
-    else {
+    let Some(index) = array.iter().position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name)) else {
         return Ok(false);
     };
     array.remove(index);
@@ -351,10 +317,7 @@ fn mount_table(mount: &MountConfig) -> Result<toml_edit::Table> {
     if let Some(env) = table.get_mut("env").and_then(toml_edit::Item::as_table_mut) {
         env.set_position(None);
     }
-    if let Some(tools) = table
-        .get_mut("tools")
-        .and_then(toml_edit::Item::as_table_mut)
-    {
+    if let Some(tools) = table.get_mut("tools").and_then(toml_edit::Item::as_table_mut) {
         tools.set_position(None);
         let names: Vec<String> = tools.iter().map(|(k, _)| k.to_string()).collect();
         for name in names {
@@ -366,9 +329,7 @@ fn mount_table(mount: &MountConfig) -> Result<toml_edit::Table> {
 
 /// Turns `table.key` from a `[section]` into `key = { ... }`.
 fn inline_subtable(table: &mut toml_edit::Table, key: &str) {
-    let Some(item) = table.get_mut(key) else {
-        return;
-    };
+    let Some(item) = table.get_mut(key) else { return };
     let Some(sub) = item.as_table() else { return };
     *item = toml_edit::value(sub.clone().into_inline_table());
     // The key was formatted as a section header; reset it to the `key = value` default spacing.
@@ -484,9 +445,7 @@ launch_app = { level = \"control\", aprove = \"ask\" }
                 "aprove",
             ),
         ] {
-            let err = toml::from_str::<HostConfig>(&format!("{base}{extra}"))
-                .unwrap_err()
-                .to_string();
+            let err = toml::from_str::<HostConfig>(&format!("{base}{extra}")).unwrap_err().to_string();
             assert!(err.contains(key), "the error must name `{key}`: {err}");
         }
         let err = toml::from_str::<HostConfig>(&format!(
@@ -550,24 +509,12 @@ click = {{ approve = \"ask\" }}
         add_mount(&path, &sample_mount("ui")).unwrap();
         add_mount(&path, &sample_mount("web")).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            text.starts_with(original),
-            "existing content must stay untouched:\n{text}"
-        );
-        assert!(
-            text.contains("launch_app = {"),
-            "tool entries are inline tables:\n{text}"
-        );
+        assert!(text.starts_with(original), "existing content must stay untouched:\n{text}");
+        assert!(text.contains("launch_app = {"), "tool entries are inline tables:\n{text}");
         let cfg = HostConfig::load(&path).unwrap();
         assert_eq!(cfg.host.name.as_deref(), Some("office-pc"));
         assert_eq!(cfg.rules.len(), 1);
-        assert_eq!(
-            cfg.mounts
-                .iter()
-                .map(|m| m.name.as_str())
-                .collect::<Vec<_>>(),
-            ["ui", "web"]
-        );
+        assert_eq!(cfg.mounts.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["ui", "web"]);
         let ui = &cfg.mounts[0];
         assert_eq!(ui.start, MountStart::Lazy);
         assert!(ui.needs_desktop);
@@ -576,10 +523,7 @@ click = {{ approve = \"ask\" }}
         assert_eq!(ui.tools["launch_app"].description(), Some("Start an app."));
         assert_eq!(ui.tools["click"].level(), Level::Control);
 
-        assert!(
-            add_mount(&path, &sample_mount("ui")).is_err(),
-            "duplicate names are refused"
-        );
+        assert!(add_mount(&path, &sample_mount("ui")).is_err(), "duplicate names are refused");
 
         assert!(remove_mount(&path, "ui").unwrap());
         assert!(!remove_mount(&path, "ui").unwrap());
@@ -588,10 +532,7 @@ click = {{ approve = \"ask\" }}
         assert_eq!(cfg.mounts[0].name, "web");
         assert!(remove_mount(&path, "web").unwrap());
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !text.contains("mount"),
-            "no empty mount list left behind:\n{text}"
-        );
+        assert!(!text.contains("mount"), "no empty mount list left behind:\n{text}");
         assert!(text.contains("# owner's notes"));
     }
 

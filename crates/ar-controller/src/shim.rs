@@ -30,10 +30,7 @@ pub async fn connect_agent_with(profile: &Profile, cli: &Path) -> Result<Conn> {
             Ok(conn) => return Ok(conn),
             Err(e) if tokio::time::Instant::now() >= deadline => {
                 let log = profile.log_path(Role::Controller)?;
-                return Err(anyhow!(
-                    "the controller agent did not start ({e}); see {}",
-                    log.display()
-                ));
+                return Err(anyhow!("the controller agent did not start ({e}); see {}", log.display()));
             }
             Err(_) => tokio::time::sleep(Duration::from_millis(150)).await,
         }
@@ -42,10 +39,7 @@ pub async fn connect_agent_with(profile: &Profile, cli: &Path) -> Result<Conn> {
 
 fn spawn_agent(profile: &Profile, cli: &Path) -> Result<()> {
     let log_path = profile.log_path(Role::Controller)?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
     let mut cmd = std::process::Command::new(cli);
     cmd.arg("agent")
         .env(ar_core::profile::HOME_ENV, profile.root())

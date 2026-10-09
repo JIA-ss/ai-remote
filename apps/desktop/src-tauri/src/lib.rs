@@ -67,14 +67,8 @@ async fn list_hosts(state: State<'_, AppState>) -> Result<Json, String> {
 /// Redeems a host's pairing ticket; returns the host's name, the safety code and the level.
 #[tauri::command]
 #[specta::specta]
-async fn pair(
-    state: State<'_, AppState>,
-    ticket: String,
-    name: Option<String>,
-) -> Result<Json, String> {
-    state
-        .request(json!({"op": "pair", "ticket": ticket, "name": name}))
-        .await
+async fn pair(state: State<'_, AppState>, ticket: String, name: Option<String>) -> Result<Json, String> {
+    state.request(json!({"op": "pair", "ticket": ticket, "name": name})).await
 }
 
 /// Forgets a host on this device.
@@ -87,20 +81,13 @@ async fn unpair(state: State<'_, AppState>, host: String) -> Result<Json, String
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
 #[tauri::command]
 #[specta::specta]
-async fn call_tool(
-    state: State<'_, AppState>,
-    host: Option<String>,
-    tool: String,
-    args: Json,
-) -> Result<Json, String> {
+async fn call_tool(state: State<'_, AppState>, host: Option<String>, tool: String, args: Json) -> Result<Json, String> {
     let args = match args.0 {
         Value::Null => json!({}),
         object @ Value::Object(_) => object,
         _ => return Err("tool arguments must be a JSON object".into()),
     };
-    state
-        .request(json!({"op": "call", "host": host, "tool": tool, "args": args}))
-        .await
+    state.request(json!({"op": "call", "host": host, "tool": tool, "args": args})).await
 }
 
 /// Subscribes to a host's live activity feed. Every event (one parsed JSON object) is sent on
@@ -113,9 +100,7 @@ async fn subscribe_events(
     on_event: Channel<Json>,
 ) -> Result<u32, String> {
     let mut conn = state.agent().await.map_err(text)?;
-    conn.request(&json!({"op": "events", "host": host}))
-        .await
-        .map_err(text)?;
+    conn.request(&json!({"op": "events", "host": host})).await.map_err(text)?;
     let (stream, buffered) = conn.into_raw();
     let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
     let task = tokio::spawn(async move {
@@ -163,11 +148,7 @@ fn find_cli() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("AI_REMOTE_CLI").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(path));
     }
-    let name = if cfg!(windows) {
-        "ai-remote.exe"
-    } else {
-        "ai-remote"
-    };
+    let name = if cfg!(windows) { "ai-remote.exe" } else { "ai-remote" };
     let exe = std::env::current_exe().context("locate this app")?;
     if let Some(dir) = exe.parent() {
         let beside = dir.join(name);
@@ -180,23 +161,14 @@ fn find_cli() -> Result<PathBuf> {
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
-        .ok_or_else(|| {
-            anyhow!(
-                "cannot find the ai-remote command next to this app or on PATH (set AI_REMOTE_CLI)"
-            )
-        })
+        .ok_or_else(|| anyhow!("cannot find the ai-remote command next to this app or on PATH (set AI_REMOTE_CLI)"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = builder();
     #[cfg(debug_assertions)]
-    builder
-        .export(
-            specta_typescript::Typescript::default(),
-            "../src/bindings.ts",
-        )
-        .expect("export TypeScript bindings");
+    builder.export(specta_typescript::Typescript::default(), "../src/bindings.ts").expect("export TypeScript bindings");
 
     let profile = Profile::open_default().expect("open the ai-remote profile");
     let cli = find_cli().unwrap_or_else(|e| {
@@ -204,12 +176,7 @@ pub fn run() {
         PathBuf::from("ai-remote")
     });
     tauri::Builder::default()
-        .manage(AppState {
-            profile,
-            cli,
-            feeds: Mutex::new(HashMap::new()),
-            next_feed: AtomicU32::new(1),
-        })
+        .manage(AppState { profile, cli, feeds: Mutex::new(HashMap::new()), next_feed: AtomicU32::new(1) })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -226,10 +193,7 @@ mod tests {
     #[test]
     fn export_typescript_bindings() {
         super::builder()
-            .export(
-                specta_typescript::Typescript::default(),
-                "../src/bindings.ts",
-            )
+            .export(specta_typescript::Typescript::default(), "../src/bindings.ts")
             .expect("export TypeScript bindings");
     }
 }
