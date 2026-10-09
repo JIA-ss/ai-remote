@@ -8,7 +8,8 @@ client share one identity and one set of pairings.
 Status: early. The main window (computers, the computer page, approvals, activity, pairing, first
 run) and the live session (video, the capsule, the turn line, the decision card, take over and hand
 back) follow the v2 design system. In a plain browser (`npm run dev`) the page runs on a demo backend
-with sample computers; `?empty` shows the first run, `?view=session&host=office-pc` a session.
+with sample computers; `?empty` shows the first run, `?view=empty&empty` the empty computer list after
+it, `?view=session&host=office-pc` a session.
 
 Debug builds can check the real app without showing it: `AI_REMOTE_SMOKE=out.png` runs it off screen
 and saves a picture of its window (see `smoke` in `src-tauri/src/lib.rs`).
@@ -34,7 +35,7 @@ TypeScript bindings for the Rust commands (`src/bindings.ts`) are regenerated on
 
 状态：早期。主窗口（电脑列表、电脑页、待批准、活动记录、配对、首次启动）和实时会话（画面、驾驶胶囊、轮次线、
 决定卡片、接管与交还）已按 v2 设计系统实现。在普通浏览器里（`npm run dev`）页面使用带示例电脑的演示后端；
-`?empty` 显示首次启动，`?view=session&host=office-pc` 显示会话。
+`?empty` 显示首次启动，`?view=empty&empty` 显示首次启动之后的空电脑列表，`?view=session&host=office-pc` 显示会话。
 
 调试版可以在不显示窗口的情况下检查真实应用：`AI_REMOTE_SMOKE=out.png` 会让它在屏幕外运行并保存窗口截图
 （见 `src-tauri/src/lib.rs` 里的 `smoke`）。

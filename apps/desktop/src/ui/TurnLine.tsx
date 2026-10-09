@@ -38,7 +38,10 @@ export function TurnLine({ spec, w, mini = false }: { spec: TurnSpec; w: number;
         <line key={`s${i}`} x1={x1 + 3} y1={y} x2={x2 - (mini ? 1 : 2)} y2={y} stroke={C.you} strokeWidth={mini ? 1.5 : 2} strokeDasharray={mini ? "3.5 3" : "6 5"} />,
       );
     else if (k === "waited")
-      parts.push(<line key={`s${i}`} x1={x1} y1={y} x2={x2} y2={y} stroke={C.you} strokeOpacity={0.7} strokeWidth={mini ? 1.2 : 1.5} />);
+      // 70% on dark grounds and the stage, full strength on light pages (--tl-waited-op), where 70% falls below 3:1.
+      parts.push(
+        <line key={`s${i}`} x1={x1} y1={y} x2={x2} y2={y} stroke={C.you} style={{ strokeOpacity: "var(--tl-waited-op, .7)" }} strokeWidth={mini ? 1.2 : 1.5} />,
+      );
     else if (k === "idle") parts.push(<line key={`s${i}`} x1={x1} y1={y} x2={x2} y2={y} stroke={C.idle} strokeWidth={1.5} />);
     else if (k === "break") {
       const m = (x1 + x2) / 2;
@@ -86,6 +89,46 @@ export function TurnLine({ spec, w, mini = false }: { spec: TurnSpec; w: number;
   );
 }
 
+/** The longest share of the line one wait or idle stretch may take: time spent waiting is compressed. */
+const SLOW_CAP = 0.22;
+
+/**
+ * Maps time to percent of the line, compressing each slow stretch (a wait, or nobody driving) to at
+ * most SLOW_CAP of the line, so a three-minute wait after one minute of work does not read as the
+ * whole story. Stretches with work stay proportional to their time.
+ */
+function timeScale(t0: number, now: number, slow: Array<[number, number]>): (t: number) => number {
+  const clamp = (t: number) => Math.min(now, Math.max(t0, t));
+  // Merge the slow intervals into disjoint runs.
+  const runs: Array<[number, number]> = [];
+  for (const [a, b] of slow.map(([a, b]) => [clamp(a), clamp(b)] as [number, number]).sort((x, y) => x[0] - y[0])) {
+    if (b <= a) continue;
+    const last = runs.at(-1);
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else runs.push([a, b]);
+  }
+  const fast = now - t0 - runs.reduce((n, [a, b]) => n + (b - a), 0);
+  // Visual lengths: each run at most SLOW_CAP of the whole (a fixed point: the whole shrinks as runs do).
+  let len = runs.map(([a, b]) => b - a);
+  if (fast > 0 && runs.length * SLOW_CAP < 1) {
+    for (let i = 0; i < 12; i++) {
+      const total = fast + len.reduce((n, l) => n + l, 0);
+      len = runs.map(([a, b]) => Math.min(b - a, SLOW_CAP * total));
+    }
+  }
+  const total = Math.max(fast + len.reduce((n, l) => n + l, 0), 1);
+  return (t: number) => {
+    const c = clamp(t);
+    let x = c - t0;
+    runs.forEach(([a, b], i) => {
+      if (c <= a) return;
+      const inside = Math.min(c, b) - a;
+      x += (inside / (b - a)) * len[i] - inside;
+    });
+    return Math.min(100, Math.max(0, (x / total) * 100));
+  };
+}
+
 /**
  * The turn line of a computer's feed: from its first step (or session) to now. Agent and person
  * stretches come from the driver changes, waits from the approvals.
@@ -98,8 +141,14 @@ export function turnSpec(feed: FeedState, now: number, online: boolean): TurnSpe
   ];
   if (starts.length === 0) return null;
   const t0 = Math.min(...starts);
-  const span = Math.max(now - t0, 1);
-  const P = (t: number) => Math.min(100, Math.max(0, ((t - t0) / span) * 100));
+  const waits: Array<[number, number]> = feed.steps
+    .filter((s) => s.approvalId)
+    .map((s) => [s.startedMs, s.state === "waiting" ? now : (s.decidedMs ?? s.startedMs)]);
+  const drives = feed.turns.filter((t) => t.driver);
+  const paused: Array<[number, number]> = drives.flatMap((t, i) =>
+    t.driver?.state === "paused" ? [[t.ts, drives[i + 1]?.ts ?? now] as [number, number]] : [],
+  );
+  const P = timeScale(t0, Math.max(now, t0 + 1), [...waits, ...paused]);
 
   // Who drove when: a list of [from, kind] changes.
   const changes: Array<[number, SegKind]> = [[t0, "agent"]];
@@ -113,12 +162,11 @@ export function turnSpec(feed: FeedState, now: number, online: boolean): TurnSpe
     if (end > at) segs.push([kind, P(at), P(end)]);
   });
   // Approvals overlay the agent's stretch: waited (answered) or wait (open).
-  for (const s of feed.steps) {
-    if (!s.approvalId) continue;
+  feed.steps.forEach((s) => {
+    if (!s.approvalId) return;
     const open = s.state === "waiting";
-    const end = open ? now : (s.decidedMs ?? s.startedMs);
-    segs.push([open ? "wait" : "waited", P(s.startedMs), P(end)]);
-  }
+    segs.push([open ? "wait" : "waited", P(s.startedMs), P(open ? now : (s.decidedMs ?? s.startedMs))]);
+  });
   const ticks: Array<[TickKind, number]> = feed.steps.map((s) => [
     s.approvalId && s.state !== "waiting" ? "dec" : s.byPerson ? "you" : "",
     P(s.decidedMs ?? s.startedMs),

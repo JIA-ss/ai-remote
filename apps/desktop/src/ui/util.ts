@@ -59,6 +59,17 @@ export function useSize<T extends HTMLElement>(): [RefObject<T | null>, { w: num
   return [ref, size];
 }
 
+/** Whether the window is shorter than `px` (layouts that tighten on 800 px tall screens). */
+export function useShortWindow(px = 860) {
+  const [short, setShort] = useState(() => window.innerHeight < px);
+  useEffect(() => {
+    const on = () => setShort(window.innerHeight < px);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, [px]);
+  return short;
+}
+
 /** The current time, ticking every `ms`. */
 export function useNow(ms = 1000) {
   const [now, setNow] = useState(Date.now());
