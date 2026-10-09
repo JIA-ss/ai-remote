@@ -1,0 +1,45 @@
+[package]
+name = "ar-host"
+description = "ai-remote host: serves this machine's capabilities as MCP tools behind permissions, approval and audit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ar-core.workspace = true
+ar-net.workspace = true
+anyhow.workspace = true
+arboard.workspace = true
+async-trait = "0.1"
+base64.workspace = true
+blake3.workspace = true
+enigo.workspace = true
+image.workspace = true
+process-wrap.workspace = true
+rfd.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+getrandom.workspace = true
+xcap.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
