@@ -36,7 +36,16 @@ export interface PendingApproval {
 
 /** One line of a host's activity feed: its audit records plus the stream's own notes. */
 export type FeedEvent =
-  | { kind: "hello"; host: string; device?: string; version: string; pending?: RawPending[]; driver?: Driver }
+  | {
+      kind: "hello";
+      host: string;
+      device?: string;
+      version: string;
+      /** `windows` or `macos` */
+      os?: string;
+      pending?: RawPending[];
+      driver?: Driver;
+    }
   | { kind: "session_start" | "session_end"; ts: number; session: string; peer: string; client?: "agent" | "person" }
   | ({ kind: "driver"; ts: number; by: string; note?: string } & Driver)
   | { kind: "note"; ts: number; from: string; text: string }
