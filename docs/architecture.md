@@ -2,8 +2,12 @@
 
 [中文](architecture.zh-CN.md) | English
 
-> Status: pre-alpha. Milestone M0 (CLI, Windows host, MCP bridge) is in progress. Sections marked
-> *(planned)* are not implemented yet.
+> Status: pre-alpha. The M0 scope (CLI, Windows host, MCP bridge) is implemented on the main branch,
+> but nothing is released and commands may still change. Sections marked *(planned)* are not
+> implemented yet.
+>
+> This page is the overview. For running hosts and controllers see [operations.md](operations.md);
+> for every tool, its parameters and the configuration formats see [tools.md](tools.md).
 
 ## 1. What ai-remote is
 
@@ -13,7 +17,7 @@ is a set of structured, permissioned and audited tools rather than a video strea
 
 | Role | Platforms | What it does |
 |---|---|---|
-| **Host** (the controlled machine) | Windows, macOS *(planned)* | Runs `ai-remote host`. Offers its capabilities (screen, input, UI, shell, jobs, mounted MCP servers) as MCP tools over an encrypted peer-to-peer connection. Enforces per-device levels, asks its owner before risky actions, writes an audit log. |
+| **Host** (the controlled machine) | Windows, macOS *(planned)* | Runs `ai-remote host` in a terminal, or `ai-remote-hostw` in the background from logon. Offers its capabilities (screen, input, windows, clipboard, shell, background jobs, mounted MCP servers) as MCP tools over an encrypted peer-to-peer connection. Enforces per-device levels, asks its owner before risky actions, writes an audit log. |
 | **Controller** | Windows, macOS, iOS *(planned)* | Pairs with hosts and operates them. `ai-remote mcp` lets any MCP client (Claude Code, Cursor, custom agents) drive every paired host. Human apps come later. |
 
 iOS can only be a controller: iOS does not let a third-party app control the device it runs on.
@@ -21,8 +25,9 @@ iOS can only be a controller: iOS does not let a third-party app control the dev
 ## 2. Principles
 
 1. **AI is a first-class client.** The host speaks the Model Context Protocol natively. Structured UI
-   (accessibility tree with element references) is the preferred way to act; mouse and keyboard are
-   the fallback. Screenshots are scaled for models and carry the geometry needed to map a point back.
+   (an accessibility tree with element references, from a mounted server such as cua-driver) is the
+   preferred way to act; mouse and keyboard are the fallback. Screenshots are scaled for models and
+   carry the geometry needed to map a point back to the screen.
 2. **People stay in charge.** Every paired device has a level, risky tools ask the owner, every call
    is audited, and the owner can revoke a device instantly. When nobody can answer a prompt, the
    answer is no.
@@ -40,14 +45,18 @@ flowchart LR
   subgraph Controller machine
     A[MCP client<br/>Claude Code, Cursor, ...] -- stdio --> S[ai-remote mcp<br/>shim]
     S -- local pipe --> G[controller agent<br/>identity, pairings,<br/>one connection per host]
+    CC[ai-remote CLI<br/>pair, hosts, call] -- local pipe --> G
   end
   subgraph Host machine
-    H[ai-remote host] --> GATE[gate: level, policy,<br/>approval, audit, budget]
+    HC[ai-remote CLI<br/>pair-code, peers, level, ...] -- local pipe --> H
+    H[ai-remote host<br/>or ai-remote-hostw] --> GATE[gate: level, policy,<br/>approval, audit, budget]
     GATE --> T[built-in tools]
     GATE --> M[mounted MCP servers]
   end
   G -- "iroh QUIC, end-to-end encrypted<br/>direct (hole punched) or relayed" --> H
 ```
+
+The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one per role and profile.
 
 ## 4. Identity, pairing and levels
 
@@ -55,21 +64,37 @@ flowchart LR
   (`identity.key`). We hold the key ourselves and hand it to the transport, so the device id would
   survive a change of transport library.
 - **Pairing.**
-  1. On the host: `ai-remote pair-code --level control` mints a single-use invite (expires within a
-     day). A fresh host prints one automatically.
-  2. On the controller: `ai-remote pair <ticket> --name office-pc`.
-  3. Both sides show the same three-word safety code; the person checks they match, which defeats a
-     swapped ticket.
+  1. On the host: `ai-remote pair-code --level control` asks the running host for a single-use
+     ticket that expires after 24 hours. A host started in a terminal with nobody paired prints one
+     itself; the background host never does, because a ticket is a credential and a log is no place
+     for it.
+  2. On the controller: `ai-remote pair <ticket> --name office-pc`. It prints a three-word safety
+     code and the level the host grants.
+  3. The host shows the same three words: in its terminal, and always in its log. Different words
+     mean someone else redeemed the ticket; the host owner removes that device with
+     `ai-remote forget <controller>`.
+
+  The ticket carries the host's public key, so the controller can only reach that host; the
+  transport authenticates both ends, so the host learns the controller's real key.
 - **Levels** (ordered):
 
   | Level | Allows |
   |---|---|
-  | `observe` | system info, screenshots, window list, UI tree |
-  | `control` | + mouse, keyboard, focus, clipboard, UI actions |
-  | `admin` | + shell, background jobs, files |
+  | `observe` | system info, doctor, screenshots, zoom, window list |
+  | `control` | + mouse, keyboard, focus, clipboard, UI actions of mounted servers |
+  | `admin` | + shell and background jobs (files are *(planned)*) |
 
-  `ai-remote level <peer> admin` changes a level; it applies to the next call, even inside a live
-  session. `ai-remote revoke <peer>` refuses the device and cuts its live connections immediately.
+- **Owner controls** (run on the host; each takes effect at once, even inside a live session):
+
+  | Command | Effect |
+  |---|---|
+  | `ai-remote level <peer> <level\|none>` | changes the level; the next call is checked against it |
+  | `ai-remote revoke <peer>` | refuses the device from now on, even with a new ticket, and cuts its live connections; the pairing is kept |
+  | `ai-remote unrevoke <peer>` | lifts a revocation (by device id once the pairing is gone) |
+  | `ai-remote forget <peer>` | removes the pairing and cuts live connections; the device can come back only with a new ticket |
+
+  The details, including what the controller hears in each case, are in
+  [operations.md](operations.md#6-levels-revoke-unrevoke-forget).
 
 ## 5. Transport and wire protocol
 
@@ -80,8 +105,21 @@ flowchart LR
 - **ALPN `app/ai-remote/mcp/1`.** One bidirectional stream per MCP session, newline-delimited
   JSON-RPC exactly like MCP's stdio framing. The controller is the MCP client, the host the server.
   The controller keeps one connection per host and opens a stream per session.
-- **Relays.** The public n0 relays by default (they only see ciphertext); self-hosted
-  [iroh-relay](https://github.com/n0-computer/iroh) servers via `[network] relays = [...]`.
+- **Refusals.** A host that will not serve a device closes the connection with a code and a reason:
+  the transport's 401 for unknown or revoked devices, the host's 403 for "not paired" or "no access
+  level", code 0 when the host stops. The controller turns them into plain language with the fix
+  ("access revoked by the host", "not paired", "no access level", "host offline or unreachable" with
+  the raw cause), does not redial into a refusal that only a person can lift, and remembers a
+  revocation, because later dials only meet the gate's generic 401. When the host owner has to act,
+  the message includes the controller's device id. The full list is in
+  [operations.md](operations.md#7-when-a-host-refuses).
+- **Calls in flight.** A call whose connection ends while it runs is never re-sent: its request may
+  already have run on the host, so the agent is told the outcome is unknown. Starting a session has
+  no side effects, so a session start on a kept connection that gets no answer within 8 seconds is
+  retried once on a fresh connection.
+- **Relays.** The public n0 relays by default (they only see ciphertext); a host can use
+  self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
+  `[network] relays = [...]`. The controller agent has no relay setting in M0.
 - *(planned)* `app/ai-remote/screen/1` for live video to people, `app/ai-remote/file/1` for bulk
   file transfer.
 
@@ -89,22 +127,30 @@ flowchart LR
 
 Every tool call, built-in or mounted, goes through the same pipeline on the host:
 
-1. **Level**: the caller's current level must reach the tool's level.
+1. **Level**: the caller's level is re-read on every call and must reach the tool's level. Tools
+   above the caller's level are also left out of the tool list it receives.
 2. **Policy**: rules in `ai-remote.toml`, first match wins; otherwise the tool's default
-   (observe and control tools run, admin tools ask). Annotations from mounted servers are hints, never
-   the authority.
+   (observe and control tools run, admin tools ask, except the job tools that only read or stop
+   jobs). Annotations from mounted servers are hints, never the authority.
 3. **Approval**: for `ask`, a native dialog on the host's desktop shows who asks, the tool, the stated
    intent and the arguments. No answer before the timeout, a locked desktop, or an unattended machine
-   all mean **denied**.
-4. **Audit**: a JSONL record before the call (decision) and after it (outcome, duration, size, error),
-   with a BLAKE3 hash of the arguments.
-5. **Call**: bounded by the session; when the controller disconnects or is revoked, the call is
-   cancelled and child processes are killed.
-6. **Budget**: large text is cut to its head and tail with a count of what was dropped, so one
-   result cannot flood an agent's context.
+   all mean **denied**. While a prompt is open, the input tools pause.
+4. **Audit**: a JSONL record of the decision, written before the call runs.
+5. **Call**: bounded by the session. When the controller disconnects, is revoked, or cancels the
+   request, the call is cancelled, child process trees are killed and a mounted server receives
+   `notifications/cancelled`.
+6. **Audit**: a record of the outcome (duration, size, error). Both records carry a BLAKE3 hash of
+   the arguments; values that may hold secrets (environment values, standard input, clipboard text)
+   appear in prompts and in the log only by size.
+7. **Budget**: text over 60,000 characters is cut to its head and tail with a count of what was
+   dropped, oversized structured content is dropped (its text form stays), and images are kept
+   within what model APIs accept, so one result cannot flood an agent's context.
+
+A refusal is a tool result with `isError` and a sentence that says what to do; agents are told not
+to retry refused or declined calls automatically.
 
 ```toml
-# ai-remote.toml (host)
+# ai-remote.toml (host), read when the host starts
 [host]
 name = "office-pc"
 approval_timeout_secs = 60
@@ -119,64 +165,99 @@ principal = "build-bot"
 action = "deny"
 ```
 
+The rule format is described in [tools.md](tools.md#8-policy-rules).
+
 ## 7. Host tools (M0)
 
 | Tool | Level | What it does |
 |---|---|---|
 | `system_info` | observe | OS, monitors, session state (interactive, console, locked, elevated), your level |
-| `doctor` | observe | graded checks with reasons and fixes *(in progress)* |
-| `screenshot` | observe | capture a monitor, downscale (default 1280 px), return image and geometry *(in progress)* |
-| `zoom` | observe | native-resolution crop of a region of a screenshot *(in progress)* |
-| `list_windows` | observe | top-level windows with app, pid, bounds, focus *(in progress)* |
-| `focus_window` | control | bring a window to the front *(in progress)* |
-| `mouse` | control | move, click, drag, scroll in screenshot coordinates *(in progress)* |
-| `keyboard` | control | type text, press keys and chords *(in progress)* |
-| `clipboard_read` / `clipboard_write` | control | text clipboard *(in progress)* |
-| `shell` | admin, asks | run a command with timeout and process-tree kill |
-| `jobs_*` | admin | background jobs with logs, wait, kill *(in progress)* |
-| `<mount>_<tool>` | per allowlist | tools of mounted MCP servers *(in progress)* |
+| `doctor` | observe | graded checks (ok, warn, fail) with reasons and fixes |
+| `screenshot` | observe | capture a monitor, downscale (default 1280 px long edge), return image and geometry |
+| `zoom` | observe | fresh native-resolution capture of a region of an earlier screenshot |
+| `list_windows` | observe | top-level windows with app, pid, bounds, monitor, focus and overlay flags |
+| `focus_window` | control | bring a window to the front, and report whether Windows allowed it |
+| `mouse` | control | move, click (single, double, triple, right, middle), drag, scroll |
+| `keyboard` | control | type text, press keys, chords and key sequences |
+| `clipboard_read` / `clipboard_write` | control | text clipboard (reading needs `control`: clipboards hold secrets) |
+| `shell` | admin, asks | run a command to completion with a timeout; its whole process tree dies with the call |
+| `jobs_start` | admin, asks | start a background command that logs to a file and outlives the session |
+| `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | follow, wait for and stop background jobs |
+| `<mount>_<tool>` | per allowlist | tools of mounted MCP servers |
+
+Through `ai-remote mcp` the controller adds `list_hosts`, `use_host` and a `host` argument on every
+host tool. Parameters, results and limits of each tool are in [tools.md](tools.md).
 
 Coordinates: `screenshot` returns an id; `mouse` takes points in that screenshot's pixels and the host
 maps them to the screen, so a model never deals with DPI scaling or multi-monitor offsets.
+
+### Input safety
+
+- A mouse or keyboard call is validated completely (key names, points inside the screenshot and on a
+  monitor, length limits) before its first event is sent.
+- A check runs before every event: the session is alive, no approval prompt is open, the desktop is
+  usable, and the target window is neither one of the host's own windows (its prompts, its terminal)
+  nor a window of a more privileged process, which Windows would silently ignore.
+- Chords that lock the machine or sign the user out (win+L, ctrl+alt+del) are refused.
+- Whatever happens, every key and button a call pressed is released before it returns, and input
+  calls run one at a time.
 
 ### Mounted MCP servers
 
 The host can start local MCP servers as child processes and expose an **allowlist** of their tools
 through the gate, named `<mount>_<tool>`. This is how ai-remote reuses existing work instead of
-rewriting it; the default accessibility provider is
-[cua-driver](https://github.com/trycua/cua) (MIT), which gives element-level UI actions on Windows
-and macOS. Tools a server adds in a later version stay hidden until allowlisted. The binary's
-SHA-256 is checked before every start.
+rewriting it; the curated profile for [cua-driver](https://github.com/trycua/cua) (MIT) gives
+element-level UI actions on Windows. Tools a server adds in a later version stay hidden until
+allowlisted, the executable's SHA-256 is checked before every start, and a crashed or hung server is
+restarted on the next call with backoff.
 
 ```toml
 [[mount]]
 name = "ui"
-command = "C:/Users/me/AppData/Local/ai-remote/data/host/mounts/cua-driver/cua-driver.exe"
+command = "C:/tools/cua-driver/cua-driver.exe"
 args = ["mcp"]
-sha256 = "..."
+sha256 = "<64 hex digits>"
+needs_desktop = true
 [mount.tools]
 get_window_state = "observe"
 click = "control"
 launch_app = { level = "control", approve = "ask" }
 ```
 
+`ai-remote mount add`, `add-profile`, `test`, `list` and `remove` manage these entries. The full
+description is in [tools.md](tools.md#7-mounted-mcp-servers).
+
 ## 8. Processes and platform rules
 
 - **The host runs in the logged-in user's interactive session, never as a service.** On Windows a
   service lives in session 0, which has no desktop: screenshots are black, input goes nowhere and no
-  approval prompt can appear. `ai-remote host install` *(in progress)* registers a task that starts
-  the host at logon with highest privileges and an interactive token, and pre-creates a firewall rule
-  so the first listen does not raise a prompt nobody answers. On macOS the equivalent is a per-user
-  LaunchAgent *(planned)*.
+  approval prompt can appear.
+- **Processes.**
+
+  | Process | Started by | Notes |
+  |---|---|---|
+  | `ai-remote host` | you, in a terminal | messages in the terminal; prints a pairing ticket while nobody is paired |
+  | `ai-remote-hostw` | the autostart entry, at logon | no console window, logs to `host/host.log`; on Windows a small supervisor that restarts the host after a crash |
+  | `ai-remote agent` | the CLI or `ai-remote mcp`, on demand | the controller daemon; exits after 30 idle minutes |
+  | `ai-remote mcp` | the MCP client | thin stdio shim; many shims share one agent |
+
+  Only one host runs per profile: a second start finds the profile's control pipe taken and quits.
+- **Install.** `ai-remote host install` registers the background host: on Windows a Task Scheduler
+  task at the user's logon with highest privileges and an interactive token, plus inbound firewall
+  rules so the first listen does not raise a prompt nobody answers; on macOS a per-user LaunchAgent
+  (the macOS host itself is *(planned)* for M1). `--dry-run` prints every change first. See
+  [operations.md](operations.md#3-running-the-host).
 - **Session state is reported, not guessed.** `system_info` and `doctor` say whether the process is in
   an interactive session, on the console, elevated, and whether the desktop is locked, so an agent can
   tell "I cannot see" from "there is nothing there".
-- **DPI.** The Windows host is per-monitor DPI aware, so capture, UI bounds and input share one
-  physical-pixel coordinate space.
-- **Controller process model.** `ai-remote agent` is a per-user daemon that owns the controller
-  identity and one connection per host. `ai-remote mcp` is a thin stdio shim that the MCP client
-  starts; it starts the agent on demand and relays to it. Many shims share one agent. The local pipe
-  is owner-only and never relies on half-close (a Windows named pipe does not deliver it).
+- **DPI.** The Windows host is per-monitor DPI aware (v2), so capture, window bounds and input share
+  one physical-pixel coordinate space.
+- **Child processes.** Everything the host starts (shell commands, jobs, mounted servers, system
+  tools) gets no console window, and shell commands and mounted servers die with their whole process
+  tree. Background jobs are the exception on purpose: they outlive the session and host restarts.
+- **Controller process model.** `ai-remote agent` owns the controller identity and one connection
+  per host. `ai-remote mcp` is the process the MCP client starts; it starts the agent on demand and
+  relays to it. The local pipe never relies on half-close (a Windows named pipe does not deliver it).
 - **Profiles.** Everything lives in a per-user profile directory (`--home` or `AI_REMOTE_HOME`
   overrides it), so several identities can run side by side for testing.
 
@@ -187,12 +268,15 @@ launch_app = { level = "control", approve = "ask" }
 | P2P QUIC, hole punching, relays | iroh (n0) | MIT / Apache-2.0 |
 | Pairing, gate, revocation, local pipes | mcpmesh-node (pinned; see below) | MIT / Apache-2.0 |
 | MCP protocol | rmcp (official Rust SDK) | Apache-2.0 |
-| Screen capture | xcap | Apache-2.0 |
+| Screen capture, window list | xcap | Apache-2.0 |
 | Input injection | enigo | MIT |
+| Clipboard | arboard | MIT / Apache-2.0 |
 | Image scaling and encoding | image | MIT / Apache-2.0 |
 | Process trees | process-wrap | MIT / Apache-2.0 |
 | Native dialogs | rfd | MIT |
 | System facts | sysinfo | MIT |
+| Firewall rules (reading) | windows_firewall | MIT / Apache-2.0 |
+| Log rotation | file-rotate | MIT |
 | Accessibility tree (mounted) | cua-driver | MIT |
 
 mcpmesh 0.58.0 pins iroh 1.2, rmcp 3.1 and a since-yanked iroh-blobs 0.103.0. ai-remote uses a fork
@@ -205,10 +289,12 @@ iroh without touching the rest of ai-remote.
 ```
 crates/
   ar-core/        profile layout, device key, levels, host config, result budgets
-  ar-net/         transport seam (mcpmesh + iroh), local IPC
-  ar-host/        host: gate, approval, audit, MCP server, tools, mounts, platform facts
+  ar-net/         transport seam (mcpmesh + iroh), refusal reasons, local IPC
+  ar-host/        host: gate, approval, audit, MCP server, tools, mounts, doctor,
+                  install (autostart + firewall), platform facts
+    profiles/     curated mount profiles (cua-driver)
   ar-controller/  agent, aggregated MCP server, stdio shim
-  ai-remote/      the `ai-remote` command
+  ai-remote/      the `ai-remote` command and the windowless `ai-remote-hostw`
 docs/
 assets/brand/     logo, banners, demo
 ```
@@ -217,7 +303,7 @@ assets/brand/     logo, banners, demo
 
 | Milestone | Scope |
 |---|---|
-| **M0** (now) | CLI; Windows host with screen, input, clipboard, shell, jobs, mounts and the gate; MCP bridge for agents; logon-task install; doctor |
+| **M0** (implemented, not released) | CLI; Windows host with screen, input, clipboard, shell, jobs, mounts and the gate; MCP bridge for agents; logon-task install; doctor |
 | M1 | macOS host (ScreenCaptureKit, accessibility, LaunchAgent), file transfer, interactive terminal, keys in the OS keystore, CI on real desktops |
 | M2 | live video for people (`screen/1`), desktop app with approvals and an "AI is operating" indicator |
 | M3 | iOS controller app (SwiftUI over the Rust core via UniFFI), App Store release |
