@@ -10,20 +10,12 @@ use super::{Action, Binaries, InstallStatus, Plan, current_user_id, launchd};
 const LAUNCHCTL: &str = "/bin/launchctl";
 
 fn label(profile: &Profile) -> String {
-    format!(
-        "io.github.jia-ss.ai-remote.host.{}",
-        &profile.instance_id()[..8]
-    )
+    format!("io.github.jia-ss.ai-remote.host.{}", &profile.instance_id()[..8])
 }
 
 fn plist_path(profile: &Profile) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")?;
-    Ok(home
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{}.plist", label(profile))))
+    let home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
+    Ok(home.join("Library").join("LaunchAgents").join(format!("{}.plist", label(profile))))
 }
 
 /// `gui/<uid>`: the launchd domain of this user's login session.
@@ -39,8 +31,7 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
     // Not the host log itself: the host rotates that file, and launchd would keep writing to the
     // renamed copy through the descriptor it holds.
     let stderr_log = profile.role_dir(Role::Host)?.join("host-stderr.log");
-    let plist =
-        launchd::launch_agent_plist(&label(profile), &bins.hostw, profile.root(), &stderr_log)?;
+    let plist = launchd::launch_agent_plist(&label(profile), &bins.hostw, profile.root(), &stderr_log)?;
     let target = format!("{domain}/{}", label(profile));
     Ok(Plan {
         summary: format!("Install autostart for the ai-remote host (profile {})", profile.root().display()),
@@ -67,20 +58,11 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
 pub fn uninstall_plan(profile: &Profile) -> Result<Plan> {
     let target = format!("{}/{}", gui_domain()?, label(profile));
     Ok(Plan {
-        summary: format!(
-            "Remove autostart for the ai-remote host (profile {})",
-            profile.root().display()
-        ),
+        summary: format!("Remove autostart for the ai-remote host (profile {})", profile.root().display()),
         notes: Vec::new(),
         actions: vec![
-            Action::run_tolerant(
-                LAUNCHCTL.into(),
-                &["bootout".into(), target],
-                "unload the LaunchAgent",
-            ),
-            Action::RemoveFile {
-                path: plist_path(profile)?,
-            },
+            Action::run_tolerant(LAUNCHCTL.into(), &["bootout".into(), target], "unload the LaunchAgent"),
+            Action::RemoveFile { path: plist_path(profile)? },
         ],
         needs_elevation: false,
         blocker: None,
@@ -89,21 +71,13 @@ pub fn uninstall_plan(profile: &Profile) -> Result<Plan> {
 
 pub fn start_action(profile: &Profile) -> Result<Action> {
     let target = format!("{}/{}", gui_domain()?, label(profile));
-    Ok(Action::run(
-        LAUNCHCTL.into(),
-        &["kickstart".into(), target],
-        "start the LaunchAgent now",
-    ))
+    Ok(Action::run(LAUNCHCTL.into(), &["kickstart".into(), target], "start the LaunchAgent now"))
 }
 
 pub fn status(profile: &Profile) -> Result<InstallStatus> {
     let bins = Binaries::locate()?;
     let path = plist_path(profile)?;
-    let mut st = InstallStatus {
-        kind: "LaunchAgent".into(),
-        name: path.display().to_string(),
-        ..Default::default()
-    };
+    let mut st = InstallStatus { kind: "LaunchAgent".into(), name: path.display().to_string(), ..Default::default() };
     match std::fs::read(&path) {
         Ok(bytes) => {
             st.installed = true;

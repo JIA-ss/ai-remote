@@ -35,10 +35,7 @@ impl Listener {
     pub async fn accept(&mut self) -> std::io::Result<Conn> {
         let stream = self.0.accept().await?;
         if !local::authorize_local_peer(&stream) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "peer is another user",
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer is another user"));
         }
         Ok(Conn::new(stream))
     }
@@ -51,9 +48,7 @@ pub struct Conn {
 
 impl Conn {
     fn new(stream: LocalStream) -> Self {
-        Self {
-            io: BufReader::new(stream),
-        }
+        Self { io: BufReader::new(stream) }
     }
 
     /// Connects to a daemon's endpoint. `NotFound` means no daemon is running.
@@ -82,17 +77,11 @@ impl Conn {
     /// Client side: sends a request and waits for its answer.
     pub async fn request(&mut self, req: &Value) -> Result<Value> {
         self.write_json(req).await?;
-        let resp = self
-            .read_json()
-            .await?
-            .context("daemon closed the connection without answering")?;
+        let resp = self.read_json().await?.context("daemon closed the connection without answering")?;
         if resp.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(resp.get("result").cloned().unwrap_or(Value::Null))
         } else {
-            let msg = resp
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error");
+            let msg = resp.get("error").and_then(Value::as_str).unwrap_or("unknown error");
             bail!("{msg}")
         }
     }
@@ -112,18 +101,14 @@ impl Conn {
 
 async fn read_json_line<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<Option<Value>> {
     let mut line = String::new();
-    let n = tokio::io::AsyncReadExt::take(&mut *r, MAX_LINE)
-        .read_line(&mut line)
-        .await?;
+    let n = tokio::io::AsyncReadExt::take(&mut *r, MAX_LINE).read_line(&mut line).await?;
     if n == 0 {
         return Ok(None);
     }
     if !line.ends_with('\n') && n as u64 >= MAX_LINE {
         bail!("control line too long");
     }
-    Ok(Some(
-        serde_json::from_str(line.trim()).context("malformed control line")?,
-    ))
+    Ok(Some(serde_json::from_str(line.trim()).context("malformed control line")?))
 }
 
 async fn write_json_line<W: AsyncWrite + Unpin>(w: &mut W, value: &Value) -> Result<()> {

@@ -6,27 +6,24 @@ use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, POINT},
     Globalization::{CP_OEMCP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar},
     Security::{
-        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_ELEVATION,
-        TOKEN_ELEVATION_TYPE, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-        TokenElevation, TokenElevationType, TokenElevationTypeDefault, TokenIntegrityLevel,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_ELEVATION, TOKEN_ELEVATION_TYPE,
+        TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenElevation, TokenElevationType,
+        TokenElevationTypeDefault, TokenIntegrityLevel,
     },
     System::{
         Console::GetConsoleWindow,
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{
-            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop,
-            UOI_NAME,
+            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME,
         },
         Threading::{
-            GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
-            PROCESS_QUERY_LIMITED_INFORMATION,
+            GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
     UI::{
         HiDpi::{
-            AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-            DPI_AWARENESS_PER_MONITOR_AWARE, DPI_AWARENESS_SYSTEM_AWARE,
-            GetAwarenessFromDpiAwarenessContext, GetDpiAwarenessContextForProcess,
+            AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_PER_MONITOR_AWARE,
+            DPI_AWARENESS_SYSTEM_AWARE, GetAwarenessFromDpiAwarenessContext, GetDpiAwarenessContextForProcess,
             SetProcessDpiAwarenessContext,
         },
         Input::KeyboardAndMouse::{
@@ -34,9 +31,9 @@ use windows::Win32::{
             MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput, VkKeyScanExW,
         },
         WindowsAndMessaging::{
-            GA_ROOT, GA_ROOTOWNER, GetAncestor, GetCursorPos, GetForegroundWindow,
-            GetSystemMetrics, GetWindowThreadProcessId, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, WindowFromPoint,
+            GA_ROOT, GA_ROOTOWNER, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
+            GetWindowThreadProcessId, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+            SetCursorPos, WindowFromPoint,
         },
     },
 };
@@ -61,31 +58,18 @@ pub fn session_state() -> SessionState {
 
     let problem = if session_id == Some(0) {
         Some("the host runs in the services session (session 0), which has no desktop; start it from the logged-in user's session".to_string())
-    } else if input_desktop
-        .as_deref()
-        .is_some_and(|d| !d.eq_ignore_ascii_case("Default"))
-        || input_desktop.is_none()
-    {
+    } else if input_desktop.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("Default")) || input_desktop.is_none() {
         Some("the desktop is locked or showing a security prompt".to_string())
     } else {
         None
     };
-    SessionState {
-        session_id,
-        on_console,
-        elevated,
-        input_desktop,
-        desktop_usable: problem.is_none(),
-        problem,
-    }
+    SessionState { session_id, on_console, elevated, input_desktop, desktop_usable: problem.is_none(), problem }
 }
 
 fn current_session_id() -> Option<u32> {
     let mut id = 0u32;
     // SAFETY: `id` is a valid out pointer.
-    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut id) }
-        .ok()
-        .map(|_| id)
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut id) }.ok().map(|_| id)
 }
 
 /// Reads one fixed-size piece of this process's token. `T` must be the structure Windows returns
@@ -247,10 +231,7 @@ pub fn move_pointer(x: i32, y: i32) -> Result<()> {
         // SAFETY: one fully initialised INPUT; the size argument matches the struct.
         let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
         if sent != 1 {
-            return Err(anyhow!(
-                "moving the pointer failed: {}",
-                std::io::Error::last_os_error()
-            ));
+            return Err(anyhow!("moving the pointer failed: {}", std::io::Error::last_os_error()));
         }
         // Injected moves are processed asynchronously; give it a moment before correcting it.
         for _ in 0..10 {
@@ -282,16 +263,10 @@ fn cursor_pos() -> Option<(i32, i32)> {
 /// layout of the foreground window, or `None` when no key on that layout produces it.
 pub fn char_key(c: char) -> Option<(u16, u8)> {
     let mut buf = [0u16; 2];
-    let [unit] = *c.encode_utf16(&mut buf) else {
-        return None;
-    };
+    let [unit] = *c.encode_utf16(&mut buf) else { return None };
     // SAFETY: plain queries; a null foreground window gives thread 0, i.e. this thread's layout.
-    let scan = unsafe {
-        VkKeyScanExW(
-            unit,
-            GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), None)),
-        )
-    } as u16;
+    let scan =
+        unsafe { VkKeyScanExW(unit, GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), None))) } as u16;
     let (vk, state) = ((scan & 0xff) as u8, (scan >> 8) as u8);
     // 0xff in both bytes means no key; other state bits (kana, IME states) are not keys we press.
     (vk != 0xff && state & !0x07 == 0).then_some((u16::from(vk), state))
@@ -323,11 +298,7 @@ pub fn check_input_target(target: InputTarget) -> InputTargetCheck {
     // SAFETY: `pid` is a valid out pointer; the rest are plain queries.
     let (root, console, own) = unsafe {
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        (
-            GetAncestor(hwnd, GA_ROOT),
-            GetConsoleWindow(),
-            GetCurrentProcessId(),
-        )
+        (GetAncestor(hwnd, GA_ROOT), GetConsoleWindow(), GetCurrentProcessId())
     };
     // Under ConPTY (Windows Terminal) the console window is a hidden pseudo window whose owner is the
     // visible terminal window, so compare against that owner too. Terminals that do not set the
@@ -346,9 +317,7 @@ pub fn check_input_target(target: InputTarget) -> InputTargetCheck {
                 .into(),
         );
     }
-    let Some(ours) = integrity_level(None) else {
-        return InputTargetCheck::Allowed;
-    };
+    let Some(ours) = integrity_level(None) else { return InputTargetCheck::Allowed };
     let Some(theirs) = integrity_level(Some(pid)) else {
         return InputTargetCheck::Doubtful(
             "the target window belongs to a process this host cannot inspect (it may run as SYSTEM or be \
@@ -387,21 +356,12 @@ fn integrity_level(pid: Option<u32>) -> Option<u32> {
         let mut len = 0u32;
         let _ = GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut len);
         let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-        let ok = GetTokenInformation(
-            token,
-            TokenIntegrityLevel,
-            Some(buf.as_mut_ptr().cast()),
-            len,
-            &mut len,
-        );
+        let ok = GetTokenInformation(token, TokenIntegrityLevel, Some(buf.as_mut_ptr().cast()), len, &mut len);
         let _ = CloseHandle(token);
         ok.ok()?;
         let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
         let count = *GetSidSubAuthorityCount(label.Label.Sid);
-        Some(*GetSidSubAuthority(
-            label.Label.Sid,
-            u32::from(count.checked_sub(1)?),
-        ))
+        Some(*GetSidSubAuthority(label.Label.Sid, u32::from(count.checked_sub(1)?)))
     }
 }
 
@@ -429,13 +389,7 @@ mod tests {
     #[test]
     fn virtualdesk_normalize_inverts_assumed_mapping() {
         // (-1440, -9, 8000, 2560): two portrait monitors around a 5120x2160 primary.
-        for desk in [
-            (-1440, -9, 8000, 2560),
-            (0, 0, 1920, 1080),
-            (0, 0, 1366, 768),
-            (-3, 5, 3, 7),
-            (0, 0, 65536, 1),
-        ] {
+        for desk in [(-1440, -9, 8000, 2560), (0, 0, 1920, 1080), (0, 0, 1366, 768), (-3, 5, 3, 7), (0, 0, 65536, 1)] {
             let (vx, vy, vw, vh) = desk;
             for x in vx..vx + vw {
                 let (nx, _) = virtualdesk_normalize(x, vy, desk).unwrap();
@@ -456,19 +410,13 @@ mod tests {
         // The primary monitor's origin sits 1440 px / 9 px into the virtual desktop.
         assert_eq!(virtualdesk_normalize(0, 0, desk), Some((11797, 231)));
         // The last pixel (6559, 2550) is 7999 / 2559 px in.
-        assert_eq!(
-            virtualdesk_normalize(6559, 2550, desk),
-            Some((65528, 65511))
-        );
+        assert_eq!(virtualdesk_normalize(6559, 2550, desk), Some((65528, 65511)));
     }
 
     #[test]
     fn virtualdesk_clamps_and_rejects() {
         let desk = (0, 0, 1920, 1080);
-        assert_eq!(
-            virtualdesk_normalize(-50, 5000, desk),
-            virtualdesk_normalize(0, 1079, desk)
-        );
+        assert_eq!(virtualdesk_normalize(-50, 5000, desk), virtualdesk_normalize(0, 1079, desk));
         assert_eq!(virtualdesk_normalize(0, 0, (0, 0, 70000, 1080)), None);
         assert_eq!(virtualdesk_normalize(0, 0, (0, 0, 0, 1080)), None);
     }
@@ -484,9 +432,6 @@ mod tests {
     fn rights_agree_with_elevation() {
         let r = rights();
         println!("rights: {r:?}");
-        assert_eq!(
-            r == crate::platform::Rights::Elevated,
-            is_elevated() == Some(true)
-        );
+        assert_eq!(r == crate::platform::Rights::Elevated, is_elevated() == Some(true));
     }
 }

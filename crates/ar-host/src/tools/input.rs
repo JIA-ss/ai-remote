@@ -173,9 +173,7 @@ impl MouseRequest {
             A::Drag if at.is_none() || to.is_none() => {
                 bail!("drag needs x and y (where it starts) and to_x and to_y (where it ends)")
             }
-            A::Scroll if p.direction.is_none() => {
-                bail!("scroll needs a direction: up, down, left or right")
-            }
+            A::Scroll if p.direction.is_none() => bail!("scroll needs a direction: up, down, left or right"),
             _ => {}
         }
         if p.action != A::Drag && to.is_some() {
@@ -206,13 +204,7 @@ impl MouseRequest {
                 })
             }
         };
-        Ok(Self {
-            action: p.action,
-            at,
-            to,
-            scroll,
-            modifiers,
-        })
+        Ok(Self { action: p.action, at, to, scroll, modifiers })
     }
 }
 
@@ -229,45 +221,26 @@ impl Rect {
     fn contains(&self, (x, y): (i32, i32)) -> bool {
         let (x, y) = (i64::from(x), i64::from(y));
         let (left, top) = (i64::from(self.x), i64::from(self.y));
-        x >= left
-            && y >= top
-            && x < left + i64::from(self.width)
-            && y < top + i64::from(self.height)
+        x >= left && y >= top && x < left + i64::from(self.width) && y < top + i64::from(self.height)
     }
 }
 
 fn monitors() -> Result<Vec<Rect>> {
     let all = xcap::Monitor::all().map_err(|e| anyhow!("cannot list the monitors: {e}"))?;
     all.iter()
-        .map(|m| {
-            Ok(Rect {
-                x: m.x()?,
-                y: m.y()?,
-                width: m.width()?,
-                height: m.height()?,
-            })
-        })
+        .map(|m| Ok(Rect { x: m.x()?, y: m.y()?, width: m.width()?, height: m.height()? }))
         .collect::<Result<Vec<_>, xcap::XCapError>>()
         .map_err(|e| anyhow!("cannot read the monitor layout: {e}"))
 }
 
 fn monitor_list(monitors: &[Rect]) -> String {
-    monitors
-        .iter()
-        .map(|m| format!("({}, {}) {}x{}", m.x, m.y, m.width, m.height))
-        .collect::<Vec<_>>()
-        .join(", ")
+    monitors.iter().map(|m| format!("({}, {}) {}x{}", m.x, m.y, m.width, m.height)).collect::<Vec<_>>().join(", ")
 }
 
 /// Fails when the monitor a screenshot was taken of is no longer where it was: its pixels would
 /// map to the wrong place.
 fn check_shot_current(id: &str, g: &ShotGeometry, monitors: &[Rect]) -> Result<()> {
-    let shot = Rect {
-        x: g.monitor_x,
-        y: g.monitor_y,
-        width: g.monitor_width,
-        height: g.monitor_height,
-    };
+    let shot = Rect { x: g.monitor_x, y: g.monitor_y, width: g.monitor_width, height: g.monitor_height };
     if monitors.contains(&shot) {
         Ok(())
     } else {
@@ -392,9 +365,7 @@ fn plan_mouse(req: &MouseRequest, at: Option<(i32, i32)>, to: Option<(i32, i32)>
             // Drag. Both ends are checked before the button goes down, and the end again before the
             // drop, in case a prompt opened on the way.
             let mut plan = Plan::new("drags");
-            let (Some(from), Some(to)) = (at, to) else {
-                return plan;
-            };
+            let (Some(from), Some(to)) = (at, to) else { return plan };
             let (start, end) = (InputTarget::At(from.0, from.1), InputTarget::At(to.0, to.1));
             plan.checked(Op::Verify, end);
             approach(&mut plan);
@@ -402,9 +373,7 @@ fn plan_mouse(req: &MouseRequest, at: Option<(i32, i32)>, to: Option<(i32, i32)>
             plan.checked(Op::PressButton(Button::Left), start);
             for i in 1..=DRAG_STEPS {
                 let lerp = |a: i32, b: i32| {
-                    (i64::from(a)
-                        + (i64::from(b) - i64::from(a)) * i64::from(i) / i64::from(DRAG_STEPS))
-                        as i32
+                    (i64::from(a) + (i64::from(b) - i64::from(a)) * i64::from(i) / i64::from(DRAG_STEPS)) as i32
                 };
                 plan.plain(Op::Pause(DRAG_PAUSE));
                 plan.plain(Op::MoveTo(lerp(from.0, to.0), lerp(from.1, to.1)));
@@ -452,9 +421,7 @@ impl Tool for Mouse {
             (Some(_), Space::Screenshot) => Some(find_shot(ctx, p.screenshot_id.as_deref())?),
             _ => None,
         };
-        let monitors = tokio::task::spawn_blocking(monitors)
-            .await
-            .context("listing the monitors")??;
+        let monitors = tokio::task::spawn_blocking(monitors).await.context("listing the monitors")??;
         let map = |point: Option<(f64, f64)>| -> Result<Option<(i32, i32)>> {
             let Some(point) = point else { return Ok(None) };
             let screen = match &shot {
@@ -537,19 +504,10 @@ fn plan_text(text: &str) -> Result<Plan> {
         bail!("text is empty");
     }
     if count > MAX_TEXT_CHARS {
-        bail!(
-            "text has {count} characters; at most {MAX_TEXT_CHARS} per call, so split it into several calls"
-        );
+        bail!("text has {count} characters; at most {MAX_TEXT_CHARS} per call, so split it into several calls");
     }
-    if let Some((i, c)) = text
-        .chars()
-        .enumerate()
-        .find(|(_, c)| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
-    {
-        bail!(
-            "text contains the control character U+{:04X} at position {i}; use keys for special keys",
-            u32::from(c)
-        );
+    if let Some((i, c)) = text.chars().enumerate().find(|(_, c)| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+        bail!("text contains the control character U+{:04X} at position {i}; use keys for special keys", u32::from(c));
     }
     let mut plan = Plan::new("characters");
     let mut run = String::new();
@@ -676,10 +634,7 @@ impl Tool for Keyboard {
             (None, Some(spec)) => {
                 let plan = plan_key_spec(spec, p.repeat.unwrap_or(1))?;
                 let chords = plan.total;
-                (
-                    plan,
-                    json!({ "ok": true, "pressed": spec, "chords": chords }),
-                )
+                (plan, json!({ "ok": true, "pressed": spec, "chords": chords }))
             }
         };
         ready(ctx)?;
@@ -710,10 +665,7 @@ fn desktop_ready() -> Result<()> {
     } else {
         bail!(
             "input cannot reach the host's desktop: {}. Check system_info, and ask the owner to unlock or log in.",
-            state
-                .problem
-                .as_deref()
-                .unwrap_or("the desktop is not usable")
+            state.problem.as_deref().unwrap_or("the desktop is not usable")
         )
     }
 }
@@ -755,9 +707,7 @@ async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
         let _one_at_a_time = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
         let mut backend = inject::EnigoBackend::new()?;
         let mut warnings = Vec::new();
-        inject::execute(&plan, &mut backend, &mut |target| {
-            check_step(&cancel, &prompts, target, &mut warnings)
-        })?;
+        inject::execute(&plan, &mut backend, &mut |target| check_step(&cancel, &prompts, target, &mut warnings))?;
         Ok(warnings)
     })
     .await
@@ -780,27 +730,16 @@ mod tests {
         assert!(err(json!({"action": "move"})).contains("move needs x and y"));
         assert!(err(json!({"action": "click", "x": 3})).contains("both x and y"));
         assert!(err(json!({"action": "drag", "x": 1, "y": 2})).contains("to_x and to_y"));
-        assert!(
-            err(json!({"action": "click", "x": 1, "y": 2, "to_x": 3, "to_y": 4}))
-                .contains("only apply to drag")
-        );
+        assert!(err(json!({"action": "click", "x": 1, "y": 2, "to_x": 3, "to_y": 4})).contains("only apply to drag"));
         assert!(err(json!({"action": "scroll"})).contains("needs a direction"));
         assert!(err(json!({"action": "click", "amount": 2})).contains("only apply to scroll"));
         assert!(err(json!({"action": "scroll", "direction": "up", "amount": 51})).contains("1-50"));
-        assert!(
-            err(json!({"action": "move", "x": 1, "y": 1, "modifiers": ["ctrl"]}))
-                .contains("not to move")
-        );
+        assert!(err(json!({"action": "move", "x": 1, "y": 1, "modifiers": ["ctrl"]})).contains("not to move"));
         assert!(err(json!({"action": "click", "modifiers": ["q"]})).contains("modifier 'q'"));
-        assert!(
-            err(json!({"action": "click", "space": "screen", "screenshot_id": "s1"}))
-                .contains("screenshot_id")
-        );
+        assert!(err(json!({"action": "click", "space": "screen", "screenshot_id": "s1"})).contains("screenshot_id"));
         assert!(err(json!({"action": "hover"})).contains("invalid arguments"));
 
-        let r =
-            mouse(json!({"action": "scroll", "direction": "left", "modifiers": ["Shift", "ctrl"]}))
-                .unwrap();
+        let r = mouse(json!({"action": "scroll", "direction": "left", "modifiers": ["Shift", "ctrl"]})).unwrap();
         assert_eq!(r.scroll, Some((-3, Axis::Horizontal)));
         assert_eq!(r.modifiers, vec![Modifier::Ctrl, Modifier::Shift]);
         assert_eq!(r.at, None);
@@ -820,49 +759,19 @@ mod tests {
     /// One 5120x2160 primary between two portrait monitors that start 9 px higher.
     fn layout() -> Vec<Rect> {
         vec![
-            Rect {
-                x: 0,
-                y: 0,
-                width: 5120,
-                height: 2160,
-            },
-            Rect {
-                x: -1440,
-                y: -9,
-                width: 1440,
-                height: 2560,
-            },
-            Rect {
-                x: 5120,
-                y: -9,
-                width: 1440,
-                height: 2560,
-            },
+            Rect { x: 0, y: 0, width: 5120, height: 2160 },
+            Rect { x: -1440, y: -9, width: 1440, height: 2560 },
+            Rect { x: 5120, y: -9, width: 1440, height: 2560 },
         ]
     }
 
     #[test]
     fn maps_screenshot_pixels_and_rejects_points_outside() {
-        assert_eq!(
-            image_to_screen((640.0, 270.0), "s1", &shot()).unwrap(),
-            (2562, 1082)
-        );
-        assert_eq!(
-            image_to_screen((1279.9, 539.9), "s1", &shot()).unwrap(),
-            (5119, 2159)
-        );
-        for bad in [
-            (-1.0, 3.0),
-            (1280.0, 3.0),
-            (3.0, 540.0),
-            (f64::NAN, 1.0),
-            (f64::INFINITY, 1.0),
-        ] {
+        assert_eq!(image_to_screen((640.0, 270.0), "s1", &shot()).unwrap(), (2562, 1082));
+        assert_eq!(image_to_screen((1279.9, 539.9), "s1", &shot()).unwrap(), (5119, 2159));
+        for bad in [(-1.0, 3.0), (1280.0, 3.0), (3.0, 540.0), (f64::NAN, 1.0), (f64::INFINITY, 1.0)] {
             let err = image_to_screen(bad, "s1", &shot()).unwrap_err().to_string();
-            assert!(
-                err.contains("outside screenshot s1") || err.contains("finite"),
-                "{bad:?}: {err}"
-            );
+            assert!(err.contains("outside screenshot s1") || err.contains("finite"), "{bad:?}: {err}");
         }
     }
 
@@ -870,13 +779,8 @@ mod tests {
     fn rejects_screen_points_on_no_monitor() {
         let monitors = layout();
         // Inside the virtual-desktop bounding box, but below the primary and between the portraits.
-        let err = check_on_monitor((100, 2300), &monitors)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("on no monitor") && err.contains("(-1440, -9) 1440x2560"),
-            "{err}"
-        );
+        let err = check_on_monitor((100, 2300), &monitors).unwrap_err().to_string();
+        assert!(err.contains("on no monitor") && err.contains("(-1440, -9) 1440x2560"), "{err}");
         check_on_monitor((-1440, -9), &monitors).unwrap();
         check_on_monitor((6559, 2550), &monitors).unwrap();
         assert!(check_on_monitor((6560, 0), &monitors).is_err());
@@ -888,18 +792,8 @@ mod tests {
     #[test]
     fn detects_stale_screenshots() {
         check_shot_current("s1", &shot(), &layout()).unwrap();
-        let moved = vec![Rect {
-            x: 0,
-            y: 0,
-            width: 3840,
-            height: 2160,
-        }];
-        assert!(
-            check_shot_current("s1", &shot(), &moved)
-                .unwrap_err()
-                .to_string()
-                .contains("take a new screenshot")
-        );
+        let moved = vec![Rect { x: 0, y: 0, width: 3840, height: 2160 }];
+        assert!(check_shot_current("s1", &shot(), &moved).unwrap_err().to_string().contains("take a new screenshot"));
     }
 
     fn calls(plan: &Plan) -> Vec<String> {
@@ -910,19 +804,12 @@ mod tests {
 
     #[test]
     fn plans_clicks_with_modifiers() {
-        let req = mouse(json!({"action": "double_click", "x": 1, "y": 1, "modifiers": ["shift"]}))
-            .unwrap();
+        let req = mouse(json!({"action": "double_click", "x": 1, "y": 1, "modifiers": ["shift"]})).unwrap();
         let plan = plan_mouse(&req, Some((10, 20)), None);
         assert_eq!((plan.unit, plan.total), ("clicks", 2));
         assert_eq!(
             calls(&plan),
-            [
-                "move 10,20",
-                "key Shift Press",
-                "button Left Click",
-                "button Left Click",
-                "key Shift Release"
-            ]
+            ["move 10,20", "key Shift Press", "button Left Click", "button Left Click", "key Shift Release"]
         );
         // Every click is checked against the window at the point.
         assert!(
@@ -943,38 +830,23 @@ mod tests {
 
     #[test]
     fn plans_scrolls_notch_by_notch() {
-        let req =
-            mouse(json!({"action": "scroll", "direction": "up", "amount": 2, "x": 0, "y": 0}))
-                .unwrap();
+        let req = mouse(json!({"action": "scroll", "direction": "up", "amount": 2, "x": 0, "y": 0})).unwrap();
         let plan = plan_mouse(&req, Some((5, 5)), None);
         assert_eq!((plan.unit, plan.total), ("notches", 2));
-        assert_eq!(
-            calls(&plan),
-            ["move 5,5", "scroll -1 Vertical", "scroll -1 Vertical"]
-        );
+        assert_eq!(calls(&plan), ["move 5,5", "scroll -1 Vertical", "scroll -1 Vertical"]);
     }
 
     #[test]
     fn plans_drags_checking_both_ends_first() {
         let req = mouse(json!({"action": "drag", "x": 0, "y": 0, "to_x": 1, "to_y": 1})).unwrap();
         let plan = plan_mouse(&req, Some((0, 0)), Some((100, -50)));
-        assert_eq!(
-            plan.steps[0],
-            inject::Step {
-                op: Op::Verify,
-                check: Some(InputTarget::At(100, -50)),
-                done: 0
-            }
-        );
+        assert_eq!(plan.steps[0], inject::Step { op: Op::Verify, check: Some(InputTarget::At(100, -50)), done: 0 });
         let calls = calls(&plan);
         assert_eq!(calls.first().unwrap(), "move 0,0");
         assert_eq!(calls[1], "button Left Press");
         assert_eq!(calls[calls.len() - 2], "move 100,-50");
         assert_eq!(calls.last().unwrap(), "button Left Release");
-        assert_eq!(
-            calls.iter().filter(|c| c.starts_with("move")).count(),
-            1 + DRAG_STEPS as usize
-        );
+        assert_eq!(calls.iter().filter(|c| c.starts_with("move")).count(), 1 + DRAG_STEPS as usize);
     }
 
     #[test]
@@ -997,17 +869,8 @@ mod tests {
         // Runs are cut by characters, so a surrogate pair never splits.
         let long: String = "\u{1F600}".repeat(TEXT_RUN + 1);
         let plan = plan_text(&long).unwrap();
-        let texts: Vec<_> = plan
-            .steps
-            .iter()
-            .filter_map(|s| {
-                if let Op::Text(t) = &s.op {
-                    Some(t)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let texts: Vec<_> =
+            plan.steps.iter().filter_map(|s| if let Op::Text(t) = &s.op { Some(t) } else { None }).collect();
         assert_eq!(texts.len(), 2);
         assert_eq!(texts[0].chars().count(), TEXT_RUN);
         assert_eq!(plan.total, TEXT_RUN + 1);
@@ -1016,19 +879,9 @@ mod tests {
     #[test]
     fn rejects_bad_text() {
         assert!(plan_text("").unwrap_err().to_string().contains("empty"));
-        assert!(
-            plan_text("a\u{7}b")
-                .unwrap_err()
-                .to_string()
-                .contains("U+0007 at position 1")
-        );
+        assert!(plan_text("a\u{7}b").unwrap_err().to_string().contains("U+0007 at position 1"));
         assert!(plan_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
-        assert!(
-            plan_text(&"x".repeat(MAX_TEXT_CHARS + 1))
-                .unwrap_err()
-                .to_string()
-                .contains("split it")
-        );
+        assert!(plan_text(&"x".repeat(MAX_TEXT_CHARS + 1)).unwrap_err().to_string().contains("split it"));
     }
 
     #[test]
@@ -1036,22 +889,14 @@ mod tests {
         let plan = plan_key_spec("ctrl+shift+t", 1).unwrap();
         assert_eq!(
             calls(&plan),
-            [
-                "key Control Press",
-                "key Shift Press",
-                "key T Click",
-                "key Shift Release",
-                "key Control Release"
-            ]
+            ["key Control Press", "key Shift Press", "key T Click", "key Shift Release", "key Control Release"]
         );
         let plan = plan_key_spec("Down Return", 3).unwrap();
         assert_eq!((plan.unit, plan.total), ("chords", 6));
         // Every press and tap is checked against the focused window; releases never wait on a check.
         for step in &plan.steps {
             match step.op {
-                Op::PressKey(_) | Op::TapKey(_) => {
-                    assert_eq!(step.check, Some(InputTarget::Focused))
-                }
+                Op::PressKey(_) | Op::TapKey(_) => assert_eq!(step.check, Some(InputTarget::Focused)),
                 _ => assert_eq!(step.check, None),
             }
         }

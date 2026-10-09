@@ -48,11 +48,7 @@ impl Shell {
     /// The shell named by a tool argument; `None` picks the platform default.
     pub fn parse(name: Option<&str>) -> Result<Self> {
         let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
-            return Ok(if cfg!(windows) {
-                Shell::PowerShell
-            } else {
-                Shell::Sh
-            });
+            return Ok(if cfg!(windows) { Shell::PowerShell } else { Shell::Sh });
         };
         let shell = match name.to_ascii_lowercase().as_str() {
             "powershell" if cfg!(windows) => Shell::PowerShell,
@@ -62,11 +58,8 @@ impl Shell {
             "bash" if !cfg!(windows) => Shell::Bash,
             "zsh" if !cfg!(windows) => Shell::Zsh,
             _ => {
-                let known = if cfg!(windows) {
-                    "powershell (default), pwsh or cmd"
-                } else {
-                    "sh (default), bash, zsh or pwsh"
-                };
+                let known =
+                    if cfg!(windows) { "powershell (default), pwsh or cmd" } else { "sh (default), bash, zsh or pwsh" };
                 bail!("unknown shell '{name}' on this host; use {known}")
             }
         };
@@ -183,19 +176,14 @@ pub fn build(spec: &CommandSpec<'_>) -> Result<tokio::process::Command> {
         for (name, value) in env {
             check_env_name(name)?;
             match value {
-                Some(v) if v.contains('\0') => {
-                    bail!("environment variable '{name}' contains a NUL character")
-                }
+                Some(v) if v.contains('\0') => bail!("environment variable '{name}' contains a NUL character"),
                 Some(v) => c.env(name, v),
                 None => c.env_remove(name),
             };
         }
     }
     if matches!(spec.shell, Shell::PowerShell | Shell::Pwsh) {
-        let term = match spec.env.and_then(|env| {
-            env.iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("TERM"))
-        }) {
+        let term = match spec.env.and_then(|env| env.iter().find(|(name, _)| name.eq_ignore_ascii_case("TERM"))) {
             Some((_, value)) => value.clone(),
             None => std::env::var("TERM").ok(),
         };
@@ -242,14 +230,9 @@ fn cmd_args(command: &str) -> Result<String> {
 
 fn check_env_name(name: &str) -> Result<()> {
     if name.is_empty() || name.contains(['=', '\0']) {
-        bail!(
-            "invalid environment variable name '{name}': it must be non-empty and contain no '=' or NUL"
-        );
+        bail!("invalid environment variable name '{name}': it must be non-empty and contain no '=' or NUL");
     }
-    if name
-        .get(..RESERVED_ENV_PREFIX.len())
-        .is_some_and(|p| p.eq_ignore_ascii_case(RESERVED_ENV_PREFIX))
-    {
+    if name.get(..RESERVED_ENV_PREFIX.len()).is_some_and(|p| p.eq_ignore_ascii_case(RESERVED_ENV_PREFIX)) {
         bail!("the environment variable name '{name}' is reserved by ai-remote");
     }
     Ok(())
@@ -271,9 +254,7 @@ fn raw_arg(_c: &mut tokio::process::Command, _args: &str) {
 /// wrapper also reaps the group. Callers decide themselves what happens to processes left behind.
 pub fn main_process(child: &mut dyn ChildWrapper) -> &mut tokio::process::Child {
     if (&*child as &dyn Any).is::<tokio::process::Child>() {
-        return (child as &mut dyn Any)
-            .downcast_mut()
-            .expect("the type was checked just above");
+        return (child as &mut dyn Any).downcast_mut().expect("the type was checked just above");
     }
     main_process(child.inner_mut())
 }
@@ -304,28 +285,18 @@ pub fn decode(bytes: &[u8]) -> String {
 
 #[cfg(windows)]
 fn decode_legacy(bytes: &[u8]) -> String {
-    use windows::Win32::Globalization::{
-        CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar,
-    };
+    use windows::Win32::Globalization::{CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar};
     if bytes.len() > i32::MAX as usize {
         return String::from_utf8_lossy(bytes).into_owned();
     }
     // SAFETY: the slices describe valid buffers; the first call only measures.
-    let needed =
-        unsafe { MultiByteToWideChar(CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), bytes, None) };
+    let needed = unsafe { MultiByteToWideChar(CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), bytes, None) };
     if needed <= 0 {
         return String::from_utf8_lossy(bytes).into_owned();
     }
     let mut wide = vec![0u16; needed as usize];
     // SAFETY: as above, with a buffer of the measured size.
-    let written = unsafe {
-        MultiByteToWideChar(
-            CP_ACP,
-            MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0),
-            bytes,
-            Some(&mut wide),
-        )
-    };
+    let written = unsafe { MultiByteToWideChar(CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), bytes, Some(&mut wide)) };
     String::from_utf16_lossy(&wide[..written.max(0) as usize])
 }
 
@@ -341,14 +312,7 @@ mod tests {
     #[test]
     fn default_and_unknown_shells() {
         let default = Shell::parse(None).unwrap();
-        assert_eq!(
-            default,
-            if cfg!(windows) {
-                Shell::PowerShell
-            } else {
-                Shell::Sh
-            }
-        );
+        assert_eq!(default, if cfg!(windows) { Shell::PowerShell } else { Shell::Sh });
         assert_eq!(Shell::parse(Some("  ")).unwrap(), default);
         assert_eq!(Shell::parse(Some("PWSH")).unwrap(), Shell::Pwsh);
         let err = Shell::parse(Some("fish")).unwrap_err().to_string();
@@ -358,38 +322,20 @@ mod tests {
     #[test]
     fn cmd_line_is_passed_verbatim_inside_outer_quotes() {
         let args = cmd_args(r#"echo "a & b" | findstr a & echo 100%"#).unwrap();
-        assert_eq!(
-            args,
-            r#"/d /s /c "chcp 65001 >nul & echo "a & b" | findstr a & echo 100%""#
-        );
+        assert_eq!(args, r#"/d /s /c "chcp 65001 >nul & echo "a & b" | findstr a & echo 100%""#);
         // A trailing newline is tolerated; an inner one is refused with advice.
         assert!(cmd_args("dir\r\n").is_ok());
         let err = cmd_args("echo a\necho b").unwrap_err().to_string();
         assert!(err.contains("single command line"), "{err}");
-        assert!(
-            cmd_args(&"x".repeat(9000))
-                .unwrap_err()
-                .to_string()
-                .contains("too long")
-        );
+        assert!(cmd_args(&"x".repeat(9000)).unwrap_err().to_string().contains("too long"));
     }
 
     #[test]
     fn powershell_payload_round_trips_and_has_a_limit() {
         let payload = powershell_payload("Write-Output 'héllo 世界'").unwrap();
-        let script = String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(payload)
-                .unwrap(),
-        )
-        .unwrap();
+        let script = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(payload).unwrap()).unwrap();
         assert_eq!(script, "Write-Output 'héllo 世界'");
-        assert!(
-            powershell_payload(&"x".repeat(30_000))
-                .unwrap_err()
-                .to_string()
-                .contains("too long")
-        );
+        assert!(powershell_payload(&"x".repeat(30_000)).unwrap_err().to_string().contains("too long"));
     }
 
     #[test]

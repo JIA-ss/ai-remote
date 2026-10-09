@@ -36,8 +36,7 @@ pub use control::HostRequest;
 /// Log filter for a running host when `AI_REMOTE_LOG` is not set: our own events, only problems
 /// from the transport and the MCP library (which logs every session's full peer info at info).
 /// The firewall reader warns about every rule it cannot model; not useful here.
-pub const DEFAULT_LOG_FILTER: &str =
-    "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn,windows_firewall=error";
+pub const DEFAULT_LOG_FILTER: &str = "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn,windows_firewall=error";
 
 /// Everything a running host shares between sessions.
 pub struct HostState {
@@ -111,10 +110,7 @@ impl HostState {
     /// The level this host grants `peer` right now (`None` when unpaired or no level).
     pub async fn current_level(&self, peer: &Peer) -> Option<Level> {
         let peers = self.mesh.peers().await.ok()?;
-        peers
-            .into_iter()
-            .find(|p| p.principal.is_some() && p.principal == peer.principal)
-            .and_then(|p| p.level)
+        peers.into_iter().find(|p| p.principal.is_some() && p.principal == peer.principal).and_then(|p| p.level)
     }
 }
 
@@ -152,11 +148,7 @@ pub struct AlreadyRunning(pub std::path::PathBuf);
 
 impl std::fmt::Display for AlreadyRunning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "a host is already running for this profile ({})",
-            self.0.display()
-        )
+        write!(f, "a host is already running for this profile ({})", self.0.display())
     }
 }
 
@@ -193,9 +185,7 @@ pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
 /// [`run`] with the profile's slot already claimed.
 pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> Result<()> {
     platform::init_process();
-    let owner = Owner {
-        background: opts.background,
-    };
+    let owner = Owner { background: opts.background };
     let config_path = profile.host_config_path()?;
     let config = HostConfig::load(&config_path)?;
     let name = config.host.name.clone().unwrap_or_else(machine_name);
@@ -216,9 +206,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 
     let state = Arc::new(HostState {
         audit: AuditLog::open(&profile.audit_log_path()?)?,
-        approver: Approver::new(Duration::from_secs(
-            config.host.approval_timeout_secs.max(5),
-        )),
+        approver: Approver::new(Duration::from_secs(config.host.approval_timeout_secs.max(5))),
         jobs: tools::jobs::JobManager::new(profile.jobs_dir()?),
         profile,
         name,
@@ -229,23 +217,13 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         stopping: CancellationToken::new(),
         live: protocol::LiveConns::default(),
     });
-    mesh.accept(
-        ALPN_MCP,
-        Arc::new(protocol::McpProtocol::new(state.clone())),
-    )?;
-    mesh.accept(
-        ALPN_EVENTS,
-        Arc::new(events::EventsProtocol::new(state.clone())),
-    )?;
+    mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
+    mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
     announce_pairings(&mesh, owner).await;
 
     let peers = mesh.peers().await.context("read paired devices")?;
-    owner.say(&format!(
-        "ai-remote host \"{}\" is running (device {}).",
-        state.name,
-        mesh.short_id()
-    ));
+    owner.say(&format!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id()));
     owner.say(&format!("  profile: {}", state.profile.root().display()));
     owner.say(&format!("  paired controllers: {}", peers.len()));
     owner.say(&format!("  audit log: {}", state.audit.path().display()));
@@ -261,10 +239,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         owner.say("");
         owner.say(&format!("  ai-remote pair {}", invite.line));
         owner.say("");
-        owner.say(&format!(
-            "It grants level \"control\" and is valid once, until {}.",
-            fmt_epoch(invite.expires_at)
-        ));
+        owner.say(&format!("It grants level \"control\" and is valid once, until {}.", fmt_epoch(invite.expires_at)));
         owner.say("Check that both machines show the same three-word safety code.");
     }
 
@@ -297,9 +272,7 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
     let mut watch = match mesh.watch_pairings().await {
         Ok(w) => w,
         Err(e) => {
-            tracing::warn!(
-                "cannot watch for new pairings ({e:#}); safety codes will not be shown here"
-            );
+            tracing::warn!("cannot watch for new pairings ({e:#}); safety codes will not be shown here");
             return;
         }
     };
@@ -307,10 +280,7 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
         loop {
             match watch.next().await {
                 Ok(Some(p)) => {
-                    let level = p
-                        .level
-                        .map(|l| l.to_string())
-                        .unwrap_or_else(|| "none".into());
+                    let level = p.level.map(|l| l.to_string()).unwrap_or_else(|| "none".into());
                     tracing::info!(peer = %p.peer, %level, sas = %p.sas, principal = ?p.principal, "controller paired");
                     if !owner.background {
                         println!();

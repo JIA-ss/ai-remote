@@ -68,8 +68,7 @@ impl ProtocolHandler for EventsProtocol {
                     return;
                 }
                 let (backlog, mut live) = host.audit().subscribe();
-                let hello =
-                    json!({"kind": "hello", "host": host.name(), "version": VERSION}).to_string();
+                let hello = json!({"kind": "hello", "host": host.name(), "version": VERSION}).to_string();
                 if send.write_all(&framed(&hello)).await.is_err() {
                     return;
                 }

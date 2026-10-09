@@ -17,9 +17,7 @@ use ar_net::{
         protocol::{AcceptError, ProtocolHandler},
     },
     // Shared with the controller, which turns them into plain language.
-    refusal::{
-        CLOSE_NO_ACCESS, REASON_NO_LEVEL, REASON_NOT_PAIRED, REASON_STOPPING, REASON_UNRESOLVED,
-    },
+    refusal::{CLOSE_NO_ACCESS, REASON_NO_LEVEL, REASON_NOT_PAIRED, REASON_STOPPING, REASON_UNRESOLVED},
 };
 use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
@@ -107,10 +105,7 @@ impl ProtocolHandler for McpProtocol {
             return Ok(());
         };
         tracing::info!(peer = %peer.name, %level, "controller connected");
-        let _registered = self
-            .host
-            .live()
-            .register(format!("eid:{remote}"), conn.clone());
+        let _registered = self.host.live().register(format!("eid:{remote}"), conn.clone());
 
         // Everything this connection started ends with it (including revocation, which closes it).
         let conn_cancel = CancellationToken::new();
@@ -140,15 +135,8 @@ impl ProtocolHandler for McpProtocol {
             let server = HostServer::new(self.host.clone(), session.clone());
             let host = self.host.clone();
             tokio::spawn(async move {
-                let (id, name, principal) = (
-                    &session.id,
-                    &session.peer.name,
-                    session.peer.principal.as_deref(),
-                );
-                match server
-                    .serve_with_ct((recv, send), session.cancel.clone())
-                    .await
-                {
+                let (id, name, principal) = (&session.id, &session.peer.name, session.peer.principal.as_deref());
+                match server.serve_with_ct((recv, send), session.cancel.clone()).await {
                     Ok(running) => {
                         host.audit().session("session_start", id, name, principal);
                         let _ = running.waiting().await;

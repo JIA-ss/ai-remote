@@ -8,9 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// Reads a JSON file, returning `T::default()` when it does not exist yet.
 pub fn read_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
     match std::fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
-        }
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
     }

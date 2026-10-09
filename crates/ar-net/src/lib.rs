@@ -18,8 +18,8 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result, anyhow, bail};
 use ar_core::Level;
 use mcpmesh_local_api::{
-    AuditKind, BackendSpec, ControlClient, RecentPairing, StatusResult, StreamFrame,
-    StreamSubscription, client::ClientError,
+    AuditKind, BackendSpec, ControlClient, RecentPairing, StatusResult, StreamFrame, StreamSubscription,
+    client::ClientError,
 };
 use mcpmesh_node::{Node, NodeBuilder, mcpmesh_trust::ed25519_dalek::SigningKey};
 use serde::{Deserialize, Serialize};
@@ -162,9 +162,7 @@ impl Mesh {
             .start()
             .await
             .map_err(|e| anyhow!("start transport node: {e}"))?;
-        let mesh = Self {
-            node: Arc::new(node),
-        };
+        let mesh = Self { node: Arc::new(node) };
         Ok(mesh)
     }
 
@@ -179,10 +177,7 @@ impl Mesh {
     }
 
     async fn control(&self) -> Result<ControlClient> {
-        self.node
-            .control()
-            .await
-            .map_err(|e| anyhow!("transport control: {e}"))
+        self.node.control().await.map_err(|e| anyhow!("transport control: {e}"))
     }
 
     /// Registers the three level marker services (idempotent). Hosts call this once at start.
@@ -213,41 +208,22 @@ impl Mesh {
     pub async fn invite(&self, level: Level, peer_name: Option<String>) -> Result<Invite> {
         let mut c = self.control().await?;
         let r = c
-            .invite_named(
-                vec![service_name(level)],
-                None,
-                None,
-                peer_name.map(|n| sanitize_name(&n)),
-            )
+            .invite_named(vec![service_name(level)], None, None, peer_name.map(|n| sanitize_name(&n)))
             .await
             .map_err(|e| anyhow!("mint invite: {e}"))?;
-        Ok(Invite {
-            line: r.invite_line,
-            expires_at: r.expires_at_epoch,
-            level,
-        })
+        Ok(Invite { line: r.invite_line, expires_at: r.expires_at_epoch, level })
     }
 
     /// Redeems an invite from a host. `name` is this device's local name for the host.
     pub async fn pair(&self, line: &str, name: Option<&str>) -> Result<Paired> {
         let mut c = self.control().await?;
-        let r = c
-            .pair_as(line.trim(), name.map(sanitize_name))
-            .await
-            .map_err(|e| anyhow!("pair: {e}"))?;
+        let r = c.pair_as(line.trim(), name.map(sanitize_name)).await.map_err(|e| anyhow!("pair: {e}"))?;
         let level = r
             .services
             .iter()
-            .filter_map(|s| {
-                s.strip_prefix(SERVICE_PREFIX)
-                    .and_then(|l| l.parse::<Level>().ok())
-            })
+            .filter_map(|s| s.strip_prefix(SERVICE_PREFIX).and_then(|l| l.parse::<Level>().ok()))
             .max();
-        Ok(Paired {
-            peer: r.peer_nickname,
-            sas: r.sas_code,
-            level,
-        })
+        Ok(Paired { peer: r.peer_nickname, sas: r.sas_code, level })
     }
 
     /// All paired peers with the level this node grants each.
@@ -264,14 +240,7 @@ impl Mesh {
         Ok(status.self_network.map(|n| NetworkStatus {
             online: n.online,
             home_relay: n.home_relay,
-            relays: n
-                .relays
-                .into_iter()
-                .map(|r| RelayState {
-                    url: r.url,
-                    connected: r.connected,
-                })
-                .collect(),
+            relays: n.relays.into_iter().map(|r| RelayState { url: r.url, connected: r.connected }).collect(),
             direct_addrs: n.direct_addrs,
         }))
     }
@@ -282,36 +251,21 @@ impl Mesh {
         let mut control = self.control().await?;
         let status = control.status().await.map_err(|e| anyhow!("status: {e}"))?;
         let announced = status.recent_pairings.iter().map(pairing_key).collect();
-        let events = self
-            .control()
-            .await?
-            .subscribe()
-            .await
-            .map_err(|e| anyhow!("subscribe to transport events: {e}"))?;
-        Ok(PairingWatch {
-            events,
-            control,
-            announced,
-        })
+        let events =
+            self.control().await?.subscribe().await.map_err(|e| anyhow!("subscribe to transport events: {e}"))?;
+        Ok(PairingWatch { events, control, announced })
     }
 
     /// The paired peer behind an authenticated connection, if any.
     pub async fn peer_for(&self, remote: &iroh::EndpointId) -> Result<Option<Peer>> {
         let principal = format!("eid:{remote}");
-        Ok(self
-            .peers()
-            .await?
-            .into_iter()
-            .find(|p| p.has_principal(&principal)))
+        Ok(self.peers().await?.into_iter().find(|p| p.has_principal(&principal)))
     }
 
     /// Finds a peer by local name, `eid:`/`b64u:` principal, or a unique prefix of either.
     pub async fn find_peer(&self, query: &str) -> Result<Peer> {
         let peers = self.peers().await?;
-        if let Some(p) = peers
-            .iter()
-            .find(|p| p.name == query || p.has_principal(query))
-        {
+        if let Some(p) = peers.iter().find(|p| p.name == query || p.has_principal(query)) {
             return Ok(p.clone());
         }
         let matches: Vec<&Peer> = peers
@@ -319,9 +273,7 @@ impl Mesh {
             .filter(|p| {
                 p.name.starts_with(query)
                     || p.principal.as_deref().is_some_and(|x| x.starts_with(query))
-                    || p.principal
-                        .as_deref()
-                        .is_some_and(|x| x.trim_start_matches("eid:").starts_with(query))
+                    || p.principal.as_deref().is_some_and(|x| x.trim_start_matches("eid:").starts_with(query))
             })
             .collect();
         match matches.as_slice() {
@@ -333,27 +285,17 @@ impl Mesh {
 
     /// Sets (or with `None`, removes) the level this node grants `peer`.
     pub async fn set_level(&self, peer: &Peer, level: Option<Level>) -> Result<()> {
-        let principal = peer
-            .user_id
-            .clone()
-            .or_else(|| peer.principal.clone())
-            .context("peer has no stable principal")?;
+        let principal =
+            peer.user_id.clone().or_else(|| peer.principal.clone()).context("peer has no stable principal")?;
         let mut c = self.control().await?;
         for l in Level::ALL {
             let name = service_name(l);
             if Some(l) == level {
-                c.service_allow_grant(&name, &principal)
-                    .await
-                    .map_err(|e| anyhow!("grant: {e}"))?;
+                c.service_allow_grant(&name, &principal).await.map_err(|e| anyhow!("grant: {e}"))?;
             } else {
                 // Drop both principal forms so an old grant cannot linger.
-                for p in [peer.user_id.as_deref(), peer.principal.as_deref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    c.service_allow_revoke(&name, p)
-                        .await
-                        .map_err(|e| anyhow!("revoke grant: {e}"))?;
+                for p in [peer.user_id.as_deref(), peer.principal.as_deref()].into_iter().flatten() {
+                    c.service_allow_revoke(&name, p).await.map_err(|e| anyhow!("revoke grant: {e}"))?;
                 }
             }
         }
@@ -362,23 +304,16 @@ impl Mesh {
 
     /// Refuses a peer's device from now on and cuts its live connections.
     pub async fn revoke(&self, peer: &Peer, reason: Option<String>) -> Result<()> {
-        let principal = peer
-            .principal
-            .clone()
-            .context("peer has no device principal")?;
+        let principal = peer.principal.clone().context("peer has no device principal")?;
         let mut c = self.control().await?;
-        c.peer_revoke(principal, reason)
-            .await
-            .map_err(|e| anyhow!("revoke: {e}"))?;
+        c.peer_revoke(principal, reason).await.map_err(|e| anyhow!("revoke: {e}"))?;
         Ok(())
     }
 
     /// Lifts the revocation of a device (`eid:` principal), paired or not.
     pub async fn unrevoke(&self, principal: &str) -> Result<()> {
         let mut c = self.control().await?;
-        c.peer_unrevoke(principal.to_string())
-            .await
-            .map_err(|e| anyhow!("unrevoke: {e}"))?;
+        c.peer_unrevoke(principal.to_string()).await.map_err(|e| anyhow!("unrevoke: {e}"))?;
         Ok(())
     }
 
@@ -389,21 +324,14 @@ impl Mesh {
         Ok(status
             .revoked
             .into_iter()
-            .map(|r| RevokedDevice {
-                principal: r.principal,
-                name: r.nickname,
-                reason: r.reason,
-            })
+            .map(|r| RevokedDevice { principal: r.principal, name: r.nickname, reason: r.reason })
             .collect())
     }
 
     /// Finds a refused device by name, `eid:` principal or a unique prefix of its id.
     pub async fn find_revoked(&self, query: &str) -> Result<Option<RevokedDevice>> {
         let devices = self.revoked_devices().await?;
-        if let Some(d) = devices
-            .iter()
-            .find(|d| d.principal == query || d.name.as_deref() == Some(query))
-        {
+        if let Some(d) = devices.iter().find(|d| d.principal == query || d.name.as_deref() == Some(query)) {
             return Ok(Some(d.clone()));
         }
         let id = query.trim_start_matches("eid:");
@@ -424,18 +352,12 @@ impl Mesh {
     /// a reason of your own if the peer should hear something else.
     pub async fn forget(&self, peer: &Peer) -> Result<()> {
         let mut c = self.control().await?;
-        c.peer_remove(&peer.name)
-            .await
-            .map_err(|e| anyhow!("remove peer: {e}"))?;
+        c.peer_remove(&peer.name).await.map_err(|e| anyhow!("remove peer: {e}"))?;
         Ok(())
     }
 
     /// Serves `alpn` with `handler`. Only paired, non-revoked peers ever reach the handler.
-    pub fn accept(
-        &self,
-        alpn: &[u8],
-        handler: Arc<dyn iroh::protocol::DynProtocolHandler>,
-    ) -> Result<()> {
+    pub fn accept(&self, alpn: &[u8], handler: Arc<dyn iroh::protocol::DynProtocolHandler>) -> Result<()> {
         self.node.accept_protocol(alpn, handler)
     }
 
@@ -457,9 +379,7 @@ impl Mesh {
     pub async fn shutdown(self) {
         match Arc::try_unwrap(self.node) {
             Ok(node) => node.shutdown().await,
-            Err(_) => {
-                tracing::warn!("transport node still shared at shutdown; not closed gracefully")
-            }
+            Err(_) => tracing::warn!("transport node still shared at shutdown; not closed gracefully"),
         }
     }
 }
@@ -473,10 +393,7 @@ fn peers_from_status(status: &StatusResult) -> Vec<Peer> {
             principal: p.principal.clone(),
             user_id: p.user_id.clone(),
             level: None,
-            revoked: p
-                .principal
-                .as_ref()
-                .is_some_and(|eid| status.revoked.iter().any(|r| &r.principal == eid)),
+            revoked: p.principal.as_ref().is_some_and(|eid| status.revoked.iter().any(|r| &r.principal == eid)),
         })
         .collect();
     for peer in &mut peers {
@@ -497,11 +414,7 @@ fn peers_from_status(status: &StatusResult) -> Vec<Peer> {
 
 /// Identity of one completed ceremony in the transport's recent-pairings ring.
 fn pairing_key(p: &RecentPairing) -> (String, String, u64) {
-    (
-        p.peer_nickname.clone(),
-        p.sas_code.clone(),
-        p.paired_at_epoch,
-    )
+    (p.peer_nickname.clone(), p.sas_code.clone(), p.paired_at_epoch)
 }
 
 /// Live feed of completed pairings, from [`Mesh::watch_pairings`].
@@ -528,8 +441,7 @@ impl PairingWatch {
             };
             let wanted = match frame {
                 StreamFrame::Event { record }
-                    if record.kind == AuditKind::Trust
-                        && record.event.as_deref() == Some("pair") =>
+                    if record.kind == AuditKind::Trust && record.event.as_deref() == Some("pair") =>
                 {
                     record.target
                 }
@@ -551,21 +463,13 @@ impl PairingWatch {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            let status = self
-                .control
-                .status()
-                .await
-                .map_err(|e| anyhow!("status: {e}"))?;
+            let status = self.control.status().await.map_err(|e| anyhow!("status: {e}"))?;
             let fresh = status.recent_pairings.iter().find(|p| {
-                !p.self_enroll
-                    && peer.is_none_or(|n| p.peer_nickname == n)
-                    && !self.announced.contains(&pairing_key(p))
+                !p.self_enroll && peer.is_none_or(|n| p.peer_nickname == n) && !self.announced.contains(&pairing_key(p))
             });
             if let Some(p) = fresh {
                 self.announced.insert(pairing_key(p));
-                let found = peers_from_status(&status)
-                    .into_iter()
-                    .find(|x| x.name == p.peer_nickname);
+                let found = peers_from_status(&status).into_iter().find(|x| x.name == p.peer_nickname);
                 return Ok(Some(PairingEvent {
                     peer: p.peer_nickname.clone(),
                     sas: p.sas_code.clone(),
@@ -581,27 +485,14 @@ impl PairingWatch {
 
 /// Nicknames become part of peers' local names; keep them short and shell-friendly.
 pub fn sanitize_name(name: &str) -> String {
-    let mut out: String = name
-        .trim()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    let mut out: String =
+        name.trim().chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
     while out.contains("--") {
         out = out.replace("--", "-");
     }
     let out = out.trim_matches('-');
     let out: String = out.chars().take(40).collect();
-    if out.is_empty() {
-        "device".to_string()
-    } else {
-        out
-    }
+    if out.is_empty() { "device".to_string() } else { out }
 }
 
 /// Writes our settings into the node's config file (read at start), keeping every other key the
@@ -611,9 +502,7 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join("config.toml");
     let mut doc: toml::Table = match std::fs::read_to_string(&path) {
-        Ok(text) => text
-            .parse()
-            .with_context(|| format!("parse {}", path.display()))?,
+        Ok(text) => text.parse().with_context(|| format!("parse {}", path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
@@ -627,23 +516,15 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
         network.insert("relay_mode".into(), "custom".into());
         network.insert(
             "relay_urls".into(),
-            toml::Value::Array(
-                opts.relays
-                    .iter()
-                    .map(|u| toml::Value::from(u.as_str()))
-                    .collect(),
-            ),
+            toml::Value::Array(opts.relays.iter().map(|u| toml::Value::from(u.as_str())).collect()),
         );
     }
-    std::fs::write(&path, toml::to_string(&doc)?)
-        .with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(&path, toml::to_string(&doc)?).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
 fn table_entry<'a>(doc: &'a mut toml::Table, key: &str) -> &'a mut toml::Table {
-    let entry = doc
-        .entry(key.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let entry = doc.entry(key.to_string()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
     if !entry.is_table() {
         *entry = toml::Value::Table(toml::Table::new());
     }

@@ -46,12 +46,7 @@ use crate::{
 };
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
-    vec![
-        Arc::new(Screenshot::new()),
-        Arc::new(Zoom::new()),
-        Arc::new(ListWindows::new()),
-        Arc::new(FocusWindow::new()),
-    ]
+    vec![Arc::new(Screenshot::new()), Arc::new(Zoom::new()), Arc::new(ListWindows::new()), Arc::new(FocusWindow::new())]
 }
 
 /// Default long edge of returned images: about 80 % of the standard vision budget, and the size
@@ -152,11 +147,7 @@ impl Tool for Screenshot {
             let (monitor, raw) = capture_monitor(p.monitor)?;
             let captured_ms = started.elapsed().as_millis();
             let image = process(raw, max_long_edge, format, Fit::Shrink)?;
-            Ok(Shot {
-                monitor,
-                image,
-                captured_ms,
-            })
+            Ok(Shot { monitor, image, captured_ms })
         })
         .await
         .context("capture task failed")??;
@@ -359,9 +350,7 @@ impl Tool for ListWindows {
     async fn call(&self, _ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: ListWindowsParams = parse(args)?;
         let started = Instant::now();
-        let list = tokio::task::spawn_blocking(move || window_list(&p))
-            .await
-            .context("window list task failed")??;
+        let list = tokio::task::spawn_blocking(move || window_list(&p)).await.context("window list task failed")??;
         let session = platform::session_state();
         let mut out = json!({
             "count": list.windows.len(),
@@ -382,9 +371,7 @@ impl Tool for ListWindows {
         if !session.desktop_usable {
             out["warning"] = json!(format!(
                 "{}; the list may be stale and nothing on it can be operated until that changes",
-                session
-                    .problem
-                    .unwrap_or_else(|| "the desktop is not usable".into())
+                session.problem.unwrap_or_else(|| "the desktop is not usable".into())
             ));
         }
         Ok(json(out))
@@ -414,22 +401,13 @@ fn window_traits(_id: u32) -> WindowTraits {
 
 fn window_list(p: &ListWindowsParams) -> Result<WindowList> {
     // Keep the positions of monitors whose geometry cannot be read, so indices match system_info.
-    let monitors: Vec<Option<MonitorGeom>> = xcap::Monitor::all()
-        .map(|ms| ms.iter().map(|m| MonitorGeom::of(m).ok()).collect())
-        .unwrap_or_default();
+    let monitors: Vec<Option<MonitorGeom>> =
+        xcap::Monitor::all().map(|ms| ms.iter().map(|m| MonitorGeom::of(m).ok()).collect()).unwrap_or_default();
     let windows = xcap::Window::all().map_err(|e| anyhow!("cannot list windows: {e}"))?;
-    let filter = p
-        .filter
-        .as_deref()
-        .map(str::to_lowercase)
-        .filter(|f| !f.is_empty());
+    let filter = p.filter.as_deref().map(str::to_lowercase).filter(|f| !f.is_empty());
     // `app_name` reads the executable's version resource on every call; one lookup per process.
     let mut app_names: HashMap<u32, String> = HashMap::new();
-    let mut list = WindowList {
-        windows: Vec::new(),
-        untitled_skipped: 0,
-        overlays_skipped: 0,
-    };
+    let mut list = WindowList { windows: Vec::new(), untitled_skipped: 0, overlays_skipped: 0 };
     // xcap lists windows in z order, front-most first. Its own `z()` re-enumerates every window
     // per call, so the position in the list is used instead.
     for (z_order, w) in windows.iter().enumerate() {
@@ -446,12 +424,7 @@ fn window_list(p: &ListWindowsParams) -> Result<WindowList> {
         }
         let pid = w.pid().ok();
         let app = pid
-            .map(|pid| {
-                app_names
-                    .entry(pid)
-                    .or_insert_with(|| w.app_name().unwrap_or_default())
-                    .clone()
-            })
+            .map(|pid| app_names.entry(pid).or_insert_with(|| w.app_name().unwrap_or_default()).clone())
             .unwrap_or_default();
         if let Some(f) = &filter
             && !title.to_lowercase().contains(f)
@@ -463,12 +436,7 @@ fn window_list(p: &ListWindowsParams) -> Result<WindowList> {
         // Windows parks minimized windows at about (-32000, -32000); those bounds mean nothing.
         let bounds = (!minimized)
             .then(|| {
-                Some(WindowBounds {
-                    x: w.x().ok()?,
-                    y: w.y().ok()?,
-                    width: w.width().ok()?,
-                    height: w.height().ok()?,
-                })
+                Some(WindowBounds { x: w.x().ok()?, y: w.y().ok()?, width: w.width().ok()?, height: w.height().ok()? })
             })
             .flatten();
         let monitor = bounds.and_then(|b| monitor_of(&monitors, b));
@@ -498,10 +466,7 @@ fn window_flags(t: WindowTraits, offscreen: bool) -> Vec<&'static str> {
         ("click_through", t.click_through),
         ("offscreen", offscreen),
     ];
-    flags
-        .into_iter()
-        .filter_map(|(name, set)| set.then_some(name))
-        .collect()
+    flags.into_iter().filter_map(|(name, set)| set.then_some(name)).collect()
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -515,12 +480,7 @@ struct WindowBounds {
 /// Index (as in system_info) of the monitor containing the window's centre, else the one it
 /// overlaps most. Monitors whose geometry is unknown (`None`) keep their index but never match.
 fn monitor_of(monitors: &[Option<MonitorGeom>], b: WindowBounds) -> Option<usize> {
-    let known = || {
-        monitors
-            .iter()
-            .enumerate()
-            .filter_map(|(i, m)| m.map(|m| (i, m)))
-    };
+    let known = || monitors.iter().enumerate().filter_map(|(i, m)| m.map(|m| (i, m)));
     let cx = b.x as i64 + b.width as i64 / 2;
     let cy = b.y as i64 + b.height as i64 / 2;
     if let Some((i, _)) = known().find(|(_, m)| m.contains(cx, cy)) {
@@ -528,15 +488,10 @@ fn monitor_of(monitors: &[Option<MonitorGeom>], b: WindowBounds) -> Option<usize
     }
     let overlap = |m: &MonitorGeom| {
         let w = (m.right().min(b.x as i64 + b.width as i64) - (m.x as i64).max(b.x as i64)).max(0);
-        let h =
-            (m.bottom().min(b.y as i64 + b.height as i64) - (m.y as i64).max(b.y as i64)).max(0);
+        let h = (m.bottom().min(b.y as i64 + b.height as i64) - (m.y as i64).max(b.y as i64)).max(0);
         w * h
     };
-    known()
-        .map(|(i, m)| (i, overlap(&m)))
-        .filter(|&(_, a)| a > 0)
-        .max_by_key(|&(_, a)| a)
-        .map(|(i, _)| i)
+    known().map(|(i, m)| (i, overlap(&m))).filter(|&(_, a)| a > 0).max_by_key(|&(_, a)| a).map(|(i, _)| i)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -616,9 +571,7 @@ async fn focus(window_id: u32) -> Result<CallToolResult> {
              the foreground window is still {} (\"{}\"). Click inside the window with the mouse tools instead, \
              or ask the user to switch to it.",
             outcome.title,
-            outcome
-                .foreground_window
-                .map_or_else(|| "none".to_string(), |id| id.to_string()),
+            outcome.foreground_window.map_or_else(|| "none".to_string(), |id| id.to_string()),
             outcome.foreground_title,
         );
     }
@@ -662,21 +615,11 @@ struct MonitorGeom {
 
 impl MonitorGeom {
     fn of(m: &xcap::Monitor) -> xcap::XCapResult<Self> {
-        Ok(Self {
-            x: m.x()?,
-            y: m.y()?,
-            width: m.width()?,
-            height: m.height()?,
-        })
+        Ok(Self { x: m.x()?, y: m.y()?, width: m.width()?, height: m.height()? })
     }
 
     fn of_shot(g: &ShotGeometry) -> Self {
-        Self {
-            x: g.monitor_x,
-            y: g.monitor_y,
-            width: g.monitor_width,
-            height: g.monitor_height,
-        }
+        Self { x: g.monitor_x, y: g.monitor_y, width: g.monitor_width, height: g.monitor_height }
     }
 
     fn right(&self) -> i64 {
@@ -709,9 +652,7 @@ struct MonitorInfo {
 fn capture_monitor(index: Option<usize>) -> Result<(MonitorInfo, RgbaImage)> {
     let monitors = xcap::Monitor::all().map_err(|e| anyhow!("cannot list monitors: {e}"))?;
     if monitors.is_empty() {
-        bail!(
-            "no monitor is attached to this session (a headless or disconnected session); nothing to capture"
-        );
+        bail!("no monitor is attached to this session (a headless or disconnected session); nothing to capture");
     }
     let index = match index {
         Some(i) if i < monitors.len() => i,
@@ -721,14 +662,10 @@ fn capture_monitor(index: Option<usize>) -> Result<(MonitorInfo, RgbaImage)> {
             monitors.len() - 1
         ),
         // `Monitor::all()` is not sorted, so the primary is not necessarily first.
-        None => monitors
-            .iter()
-            .position(|m| m.is_primary().unwrap_or(false))
-            .unwrap_or(0),
+        None => monitors.iter().position(|m| m.is_primary().unwrap_or(false)).unwrap_or(0),
     };
     let m = &monitors[index];
-    let geom = MonitorGeom::of(m)
-        .map_err(|e| anyhow!("cannot read the geometry of monitor {index}: {e}"))?;
+    let geom = MonitorGeom::of(m).map_err(|e| anyhow!("cannot read the geometry of monitor {index}: {e}"))?;
     let info = MonitorInfo {
         index,
         name: m.name().ok(),
@@ -753,19 +690,9 @@ fn capture_region(monitor: MonitorGeom, rect: Rect, shot_id: &str) -> Result<(us
         })?;
     // `region_to_monitor` keeps the rectangle inside the monitor; xcap's own bounds check uses
     // unchecked u32 additions, so never hand it anything unchecked.
-    debug_assert!(
-        rect.x
-            .checked_add(rect.width)
-            .is_some_and(|r| r <= monitor.width)
-    );
-    debug_assert!(
-        rect.y
-            .checked_add(rect.height)
-            .is_some_and(|b| b <= monitor.height)
-    );
-    let image = m
-        .capture_region(rect.x, rect.y, rect.width, rect.height)
-        .map_err(|e| capture_error(index, e))?;
+    debug_assert!(rect.x.checked_add(rect.width).is_some_and(|r| r <= monitor.width));
+    debug_assert!(rect.y.checked_add(rect.height).is_some_and(|b| b <= monitor.height));
+    let image = m.capture_region(rect.x, rect.y, rect.width, rect.height).map_err(|e| capture_error(index, e))?;
     Ok((index, image))
 }
 
@@ -821,9 +748,7 @@ enum Fit {
 fn process(raw: RgbaImage, max_long_edge: u32, format: Format, fit: Fit) -> Result<Processed> {
     let (native_width, native_height) = raw.dimensions();
     if native_width == 0 || native_height == 0 {
-        bail!(
-            "the capture came back empty ({native_width}x{native_height}); take a new screenshot"
-        );
+        bail!("the capture came back empty ({native_width}x{native_height}); take a new screenshot");
     }
     let (w, h) = match fit {
         Fit::Shrink => fit_size(native_width, native_height, max_long_edge),
@@ -842,23 +767,8 @@ fn process(raw: RgbaImage, max_long_edge: u32, format: Format, fit: Fit) -> Resu
     // Captures are opaque (alpha 255); dropping alpha shrinks PNG and is what JPEG needs anyway.
     let rgb = image::DynamicImage::ImageRgba8(resized).into_rgb8();
     let look = frame_look(&rgb);
-    let Encoded {
-        bytes,
-        format,
-        quality,
-        note,
-    } = encode(&rgb, format)?;
-    Ok(Processed {
-        width: w,
-        height: h,
-        native_width,
-        native_height,
-        format,
-        quality,
-        bytes,
-        look,
-        note,
-    })
+    let Encoded { bytes, format, quality, note } = encode(&rgb, format)?;
+    Ok(Processed { width: w, height: h, native_width, native_height, format, quality, bytes, look, note })
 }
 
 /// An encoded image and how it came out.
@@ -878,12 +788,7 @@ fn encode(img: &RgbImage, format: Format) -> Result<Encoded> {
     if format == Format::Png {
         let bytes = encode_png(img)?;
         if bytes.len() <= MAX_IMAGE_BYTES {
-            return Ok(Encoded {
-                bytes,
-                format: Format::Png,
-                quality: None,
-                note: None,
-            });
+            return Ok(Encoded { bytes, format: Format::Png, quality: None, note: None });
         }
         note = Some(format!(
             "PNG was {} KiB, over the {} KiB budget, so JPEG was sent instead; zoom into a region for lossless detail.",
@@ -898,24 +803,14 @@ fn encode(img: &RgbImage, format: Format) -> Result<Encoded> {
             if quality != JPEG_QUALITY {
                 note = Some(
                     note.map_or_else(String::new, |n| format!("{n} "))
-                        + &format!(
-                            "JPEG quality lowered to {quality} to stay within the byte budget."
-                        ),
+                        + &format!("JPEG quality lowered to {quality} to stay within the byte budget."),
                 );
             }
-            return Ok(Encoded {
-                bytes,
-                format: Format::Jpeg,
-                quality: Some(quality),
-                note,
-            });
+            return Ok(Encoded { bytes, format: Format::Jpeg, quality: Some(quality), note });
         }
     }
     // Still over budget at the lowest quality: send it anyway and say so.
-    let msg = format!(
-        "The image is {} KiB even at JPEG quality 40; use a smaller max_long_edge.",
-        bytes.len() / 1024
-    );
+    let msg = format!("The image is {} KiB even at JPEG quality 40; use a smaller max_long_edge.", bytes.len() / 1024);
     Ok(Encoded {
         bytes,
         format: Format::Jpeg,
@@ -927,21 +822,14 @@ fn encode(img: &RgbImage, format: Format) -> Result<Encoded> {
 fn encode_png(img: &RgbImage) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     PngEncoder::new_with_quality(&mut out, CompressionType::Fast, PngFilter::Adaptive)
-        .write_image(
-            img.as_raw(),
-            img.width(),
-            img.height(),
-            ExtendedColorType::Rgb8,
-        )
+        .write_image(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgb8)
         .context("PNG encoding failed")?;
     Ok(out)
 }
 
 fn encode_jpeg(img: &RgbImage, quality: u8) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    JpegEncoder::new_with_quality(&mut out, quality)
-        .encode_image(img)
-        .context("JPEG encoding failed")?;
+    JpegEncoder::new_with_quality(&mut out, quality).encode_image(img).context("JPEG encoding failed")?;
     Ok(out)
 }
 
@@ -960,12 +848,7 @@ fn token_budget(max_long_edge: u32) -> u64 {
 /// most `max_long_edge` and within [`token_budget`].
 fn fit_size(src_w: u32, src_h: u32, max_long_edge: u32) -> (u32, u32) {
     let long = src_w.max(src_h).max(1);
-    fit_scaled(
-        src_w,
-        src_h,
-        max_long_edge,
-        (max_long_edge as f64 / long as f64).min(1.0),
-    )
+    fit_scaled(src_w, src_h, max_long_edge, (max_long_edge as f64 / long as f64).min(1.0))
 }
 
 /// Output size for a zoom crop: like [`fit_size`], but a crop whose long edge is under
@@ -978,12 +861,7 @@ fn zoom_size(src_w: u32, src_h: u32, max_long_edge: u32) -> (u32, u32) {
     if long >= target {
         return fit_size(src_w, src_h, max_long_edge);
     }
-    fit_scaled(
-        src_w,
-        src_h,
-        max_long_edge,
-        (target as f64 / long as f64).min(MAX_ZOOM_ENLARGE),
-    )
+    fit_scaled(src_w, src_h, max_long_edge, (target as f64 / long as f64).min(MAX_ZOOM_ENLARGE))
 }
 
 /// `src_w` x `src_h` times `scale`, shrunk further until it fits `max_long_edge` and the token
@@ -1003,16 +881,12 @@ fn fit_scaled(src_w: u32, src_h: u32, max_long_edge: u32, mut scale: f64) -> (u3
 }
 
 fn clamp_long_edge(v: Option<u32>) -> u32 {
-    v.unwrap_or(DEFAULT_LONG_EDGE)
-        .clamp(MIN_LONG_EDGE, MAX_LONG_EDGE)
+    v.unwrap_or(DEFAULT_LONG_EDGE).clamp(MIN_LONG_EDGE, MAX_LONG_EDGE)
 }
 
 /// Screen units per image pixel along x and y.
 fn scales(g: &ShotGeometry) -> (f64, f64) {
-    (
-        g.monitor_width as f64 / g.image_width.max(1) as f64,
-        g.monitor_height as f64 / g.image_height.max(1) as f64,
-    )
+    (g.monitor_width as f64 / g.image_width.max(1) as f64, g.monitor_height as f64 / g.image_height.max(1) as f64)
 }
 
 fn round4(v: f64) -> f64 {
@@ -1040,11 +914,7 @@ fn region_to_monitor(g: &ShotGeometry, region: [f64; 4]) -> Result<Rect> {
     }
     let (iw, ih) = (g.image_width as f64, g.image_height as f64);
     if x0 >= iw || y0 >= ih {
-        bail!(
-            "region {region:?} starts outside the screenshot, which is {}x{} pixels",
-            g.image_width,
-            g.image_height
-        );
+        bail!("region {region:?} starts outside the screenshot, which is {}x{} pixels", g.image_width, g.image_height);
     }
     let (x1, y1) = (x1.min(iw), y1.min(ih));
     let (sx, sy) = scales(g);
@@ -1056,12 +926,7 @@ fn region_to_monitor(g: &ShotGeometry, region: [f64; 4]) -> Result<Rect> {
     let top = ((y0 * sy).floor() as u32).min(mh - 1);
     let right = ((x1 * sx).ceil() as u32).clamp(left + 1, mw);
     let bottom = ((y1 * sy).ceil() as u32).clamp(top + 1, mh);
-    Ok(Rect {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-    })
+    Ok(Rect { x: left, y: top, width: right - left, height: bottom - top })
 }
 
 /// Whether a frame looks like real screen content. A black or flat frame is information, not a
@@ -1140,8 +1005,7 @@ fn require_desktop(what: &str) -> Result<()> {
     bail!(
         "cannot {what}: {}. Retry once the user's desktop is unlocked and interactive; system_info shows the \
          session state.",
-        s.problem
-            .unwrap_or_else(|| "the desktop is not usable".into())
+        s.problem.unwrap_or_else(|| "the desktop is not usable".into())
     )
 }
 
@@ -1172,10 +1036,7 @@ mod tests {
         // 1280x1024 is 1702 tokens, over the standard tier's 1568.
         let (w, h) = fit_size(1280, 1024, 1280);
         assert!(image_tokens(w, h) <= 1568, "{w}x{h}");
-        assert!(
-            w >= 1200 && (w as f64 / h as f64 - 1.25).abs() < 0.01,
-            "{w}x{h}"
-        );
+        assert!(w >= 1200 && (w as f64 / h as f64 - 1.25).abs() < 0.01, "{w}x{h}");
         let (w, h) = fit_size(2576, 1932, 2576);
         assert!(image_tokens(w, h) <= 4784, "{w}x{h}");
     }
@@ -1224,30 +1085,14 @@ mod tests {
     fn maps_region_to_native_rect() {
         let g = geometry(5120, 2160, 1280, 540);
         let r = region_to_monitor(&g, [100.0, 50.0, 200.0, 100.0]).unwrap();
-        assert_eq!(
-            r,
-            Rect {
-                x: 400,
-                y: 200,
-                width: 400,
-                height: 200
-            }
-        );
+        assert_eq!(r, Rect { x: 400, y: 200, width: 400, height: 200 });
     }
 
     #[test]
     fn region_rounds_outward_and_clips_to_image() {
         let g = geometry(1000, 1000, 300, 300);
         let r = region_to_monitor(&g, [0.5, 0.5, 1.5, 1.5]).unwrap();
-        assert_eq!(
-            r,
-            Rect {
-                x: 1,
-                y: 1,
-                width: 4,
-                height: 4
-            }
-        );
+        assert_eq!(r, Rect { x: 1, y: 1, width: 4, height: 4 });
         let r = region_to_monitor(&g, [250.0, 250.0, 9_999.0, 9_999.0]).unwrap();
         assert_eq!((r.x + r.width, r.y + r.height), (1000, 1000));
     }
@@ -1271,14 +1116,8 @@ mod tests {
 
     #[test]
     fn detects_black_and_flat_frames() {
-        assert_eq!(
-            frame_look(&RgbImage::from_pixel(64, 32, image::Rgb([0, 0, 0]))),
-            FrameLook::Black
-        );
-        assert_eq!(
-            frame_look(&RgbImage::from_pixel(64, 32, image::Rgb([5, 8, 3]))),
-            FrameLook::Black
-        );
+        assert_eq!(frame_look(&RgbImage::from_pixel(64, 32, image::Rgb([0, 0, 0]))), FrameLook::Black);
+        assert_eq!(frame_look(&RgbImage::from_pixel(64, 32, image::Rgb([5, 8, 3]))), FrameLook::Black);
         assert_eq!(
             frame_look(&RgbImage::from_pixel(64, 32, image::Rgb([30, 120, 200]))),
             FrameLook::Uniform([30, 120, 200])
@@ -1318,10 +1157,7 @@ mod tests {
     fn process_downscales_and_reports_native_size() {
         let raw = RgbaImage::from_pixel(2560, 1440, image::Rgba([10, 200, 30, 255]));
         let p = process(raw, 1280, Format::Jpeg, Fit::Shrink).unwrap();
-        assert_eq!(
-            (p.width, p.height, p.native_width, p.native_height),
-            (1280, 720, 2560, 1440)
-        );
+        assert_eq!((p.width, p.height, p.native_width, p.native_height), (1280, 720, 2560, 1440));
         assert_eq!(p.quality, Some(JPEG_QUALITY));
         assert!(matches!(p.look, FrameLook::Uniform(_)));
     }
@@ -1330,10 +1166,7 @@ mod tests {
     fn process_enlarges_only_zoom_crops() {
         let crop = || RgbaImage::from_fn(100, 50, |x, _| image::Rgba([(x * 2) as u8, 0, 0, 255]));
         let p = process(crop(), 1280, Format::Png, Fit::Enlarge).unwrap();
-        assert_eq!(
-            (p.width, p.height, p.native_width, p.native_height),
-            (400, 200, 100, 50)
-        );
+        assert_eq!((p.width, p.height, p.native_width, p.native_height), (400, 200, 100, 50));
         let p = process(crop(), 1280, Format::Png, Fit::Shrink).unwrap();
         assert_eq!((p.width, p.height), (100, 50));
     }
@@ -1353,134 +1186,40 @@ mod tests {
     #[test]
     fn window_monitor_is_found_by_centre_or_overlap() {
         let monitors = [
-            Some(MonitorGeom {
-                x: -1440,
-                y: -9,
-                width: 1440,
-                height: 2560,
-            }),
-            Some(MonitorGeom {
-                x: 0,
-                y: 0,
-                width: 5120,
-                height: 2160,
-            }),
+            Some(MonitorGeom { x: -1440, y: -9, width: 1440, height: 2560 }),
+            Some(MonitorGeom { x: 0, y: 0, width: 5120, height: 2160 }),
         ];
-        assert_eq!(
-            monitor_of(
-                &monitors,
-                WindowBounds {
-                    x: 100,
-                    y: 100,
-                    width: 800,
-                    height: 600
-                }
-            ),
-            Some(1)
-        );
-        assert_eq!(
-            monitor_of(
-                &monitors,
-                WindowBounds {
-                    x: -1000,
-                    y: 0,
-                    width: 800,
-                    height: 600
-                }
-            ),
-            Some(0)
-        );
+        assert_eq!(monitor_of(&monitors, WindowBounds { x: 100, y: 100, width: 800, height: 600 }), Some(1));
+        assert_eq!(monitor_of(&monitors, WindowBounds { x: -1000, y: 0, width: 800, height: 600 }), Some(0));
         // Centre below the primary, but most of the window is on it.
-        assert_eq!(
-            monitor_of(
-                &monitors,
-                WindowBounds {
-                    x: 100,
-                    y: 1000,
-                    width: 800,
-                    height: 2400
-                }
-            ),
-            Some(1)
-        );
-        assert_eq!(
-            monitor_of(
-                &monitors,
-                WindowBounds {
-                    x: 90_000,
-                    y: 0,
-                    width: 10,
-                    height: 10
-                }
-            ),
-            None
-        );
+        assert_eq!(monitor_of(&monitors, WindowBounds { x: 100, y: 1000, width: 800, height: 2400 }), Some(1));
+        assert_eq!(monitor_of(&monitors, WindowBounds { x: 90_000, y: 0, width: 10, height: 10 }), None);
     }
 
     #[test]
     fn unreadable_monitor_keeps_later_indices() {
-        let monitors = [
-            None,
-            Some(MonitorGeom {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            }),
-        ];
-        assert_eq!(
-            monitor_of(
-                &monitors,
-                WindowBounds {
-                    x: 10,
-                    y: 10,
-                    width: 100,
-                    height: 100
-                }
-            ),
-            Some(1)
-        );
+        let monitors = [None, Some(MonitorGeom { x: 0, y: 0, width: 1920, height: 1080 })];
+        assert_eq!(monitor_of(&monitors, WindowBounds { x: 10, y: 10, width: 100, height: 100 }), Some(1));
     }
 
     #[test]
     fn window_flags_name_only_what_is_set() {
         assert!(window_flags(WindowTraits::default(), false).is_empty());
-        let hud = WindowTraits {
-            topmost: true,
-            click_through: true,
-            no_activate: false,
-        };
-        assert_eq!(
-            window_flags(hud, true),
-            ["topmost", "click_through", "offscreen"]
-        );
+        let hud = WindowTraits { topmost: true, click_through: true, no_activate: false };
+        assert_eq!(window_flags(hud, true), ["topmost", "click_through", "offscreen"]);
     }
 
     #[test]
     fn zoom_explains_ids_from_other_sessions() {
         let session = || {
-            let peer = ar_net::Peer {
-                name: "t".into(),
-                principal: None,
-                user_id: None,
-                level: None,
-                revoked: false,
-            };
-            Session::new(
-                peer,
-                Level::Observe,
-                tokio_util::sync::CancellationToken::new(),
-            )
+            let peer = ar_net::Peer { name: "t".into(), principal: None, user_id: None, level: None, revoked: false };
+            Session::new(peer, Level::Observe, tokio_util::sync::CancellationToken::new())
         };
         let (old, new) = (session(), session());
         let err = |s: &Session, id: Option<&str>| parent_shot(s, id).unwrap_err().to_string();
         assert!(err(&new, None).contains("no screenshot in this session"));
         let stale = old.remember_shot(geometry(1920, 1080, 1280, 720));
-        assert!(
-            err(&new, Some(&stale)).contains("another MCP session"),
-            "{}",
-            err(&new, Some(&stale))
-        );
+        assert!(err(&new, Some(&stale)).contains("another MCP session"), "{}", err(&new, Some(&stale)));
         assert!(err(&new, Some("s9")).contains("unknown screenshot_id"));
         let id = new.remember_shot(geometry(1920, 1080, 1280, 720));
         assert_eq!(parent_shot(&new, None).unwrap().0, id);
@@ -1493,16 +1232,9 @@ mod tests {
         let p: ScreenshotParams =
             parse(serde_json::from_value(json!({"monitor": 1, "format": "png"})).unwrap()).unwrap();
         assert_eq!((p.monitor, p.format), (Some(1), Some(Format::Png)));
-        assert!(
-            parse::<ScreenshotParams>(serde_json::from_value(json!({"format": "gif"})).unwrap())
-                .is_err()
-        );
-        assert!(
-            parse::<ZoomParams>(serde_json::from_value(json!({"region": [1, 2, 3]})).unwrap())
-                .is_err()
-        );
-        let z: ZoomParams =
-            parse(serde_json::from_value(json!({"region": [1, 2, 3, 4.5]})).unwrap()).unwrap();
+        assert!(parse::<ScreenshotParams>(serde_json::from_value(json!({"format": "gif"})).unwrap()).is_err());
+        assert!(parse::<ZoomParams>(serde_json::from_value(json!({"region": [1, 2, 3]})).unwrap()).is_err());
+        let z: ZoomParams = parse(serde_json::from_value(json!({"region": [1, 2, 3, 4.5]})).unwrap()).unwrap();
         assert_eq!(z.region, [1.0, 2.0, 3.0, 4.5]);
     }
 
@@ -1511,11 +1243,7 @@ mod tests {
         for t in tools() {
             let name = &t.spec().name;
             assert!(!name.is_empty() && name.len() <= 64);
-            assert!(
-                name.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-                "{name}"
-            );
+            assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{name}");
         }
     }
 }

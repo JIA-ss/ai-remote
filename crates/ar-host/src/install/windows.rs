@@ -13,8 +13,7 @@ use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role};
 
 use super::{
-    Action, Binaries, FIREWALL_RULE, FwRule, InstallStatus, Plan, Scope, current_user_id,
-    quote_arg, rules_for, task,
+    Action, Binaries, FIREWALL_RULE, FwRule, InstallStatus, Plan, Scope, current_user_id, quote_arg, rules_for, task,
 };
 
 /// The Task Scheduler folder every profile's task lives in.
@@ -27,9 +26,7 @@ pub fn task_name(profile: &Profile) -> String {
 
 /// A system tool by absolute path: `PATH` on many machines has look-alikes in front.
 fn system32(name: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
     root.join("System32").join(name)
 }
 
@@ -82,13 +79,9 @@ fn host_tasks_in(listing: &str) -> Vec<String> {
 /// Other profiles' logon tasks that start this installation's background host: they rely on the
 /// same program-scoped firewall rules.
 fn other_tasks_using(hostw: &Path, own: &str) -> Result<Vec<String>> {
-    let out = schtasks_read(&["/Query", "/FO", "CSV", "/NH"])
-        .map_err(|e| anyhow!("cannot run schtasks.exe: {e}"))?;
+    let out = schtasks_read(&["/Query", "/FO", "CSV", "/NH"]).map_err(|e| anyhow!("cannot run schtasks.exe: {e}"))?;
     if !out.status.success() {
-        bail!(
-            "schtasks.exe could not list the tasks: {}",
-            super::tool_output(&out)
-        );
+        bail!("schtasks.exe could not list the tasks: {}", super::tool_output(&out));
     }
     let own = format!(r"\{own}");
     let mut users = Vec::new();
@@ -98,9 +91,7 @@ fn other_tasks_using(hostw: &Path, own: &str) -> Result<Vec<String>> {
         }
         let out = query_task_xml(&name).map_err(|e| anyhow!("cannot run schtasks.exe: {e}"))?;
         let xml = crate::platform::decode_console_output(&out.stdout);
-        if out.status.success()
-            && task::read_exec(&xml).is_some_and(|(command, _)| super::same_path(&command, hostw))
-        {
+        if out.status.success() && task::read_exec(&xml).is_some_and(|(command, _)| super::same_path(&command, hostw)) {
             users.push(name);
         }
     }
@@ -175,51 +166,28 @@ fn firewall_actions(bins: &Binaries, notes: &mut Vec<String>) -> Vec<Action> {
     let rules = match firewall_rules() {
         Ok(r) => r,
         Err(e) => {
-            notes.push(format!("Could not read the current firewall rules ({e:#}); stale block rules are not removed."));
+            notes
+                .push(format!("Could not read the current firewall rules ({e:#}); stale block rules are not removed."));
             Vec::new()
         }
     };
     let mut actions = Vec::new();
     for program in bins.programs() {
-        actions.push(
-            Action::run_tolerant(
-                netsh(),
-                &netsh_delete_own(program),
-                "remove earlier ai-remote rules",
-            )
-            .admin(),
-        );
+        actions
+            .push(Action::run_tolerant(netsh(), &netsh_delete_own(program), "remove earlier ai-remote rules").admin());
         let found = rules_for(&rules, program);
         for block in found.block.iter().filter(|n| n.as_str() != FIREWALL_RULE) {
             if block.contains('"') {
-                notes.push(format!(
-                    "A block rule named {block} applies to {}; remove it by hand.",
-                    program.display()
-                ));
+                notes.push(format!("A block rule named {block} applies to {}; remove it by hand.", program.display()));
                 continue;
             }
-            notes.push(format!(
-                "Removes the firewall block rule \"{block}\" for {}.",
-                program.display()
-            ));
+            notes.push(format!("Removes the firewall block rule \"{block}\" for {}.", program.display()));
             actions.push(
-                Action::run_tolerant(
-                    netsh(),
-                    &netsh_delete_named(block, program),
-                    "remove a stale block rule",
-                )
-                .admin(),
+                Action::run_tolerant(netsh(), &netsh_delete_named(block, program), "remove a stale block rule").admin(),
             );
         }
         for protocol in ["UDP", "TCP"] {
-            actions.push(
-                Action::run(
-                    netsh(),
-                    &netsh_allow(program, protocol),
-                    "allow inbound connections",
-                )
-                .admin(),
-            );
+            actions.push(Action::run(netsh(), &netsh_allow(program, protocol), "allow inbound connections").admin());
         }
     }
     if let Some(rule) = rules_for(&rules, &bins.hostw).block_all.first() {
@@ -245,10 +213,7 @@ pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
             ),
         );
         return Ok(Plan {
-            summary: format!(
-                "Add the inbound firewall rules for the ai-remote host programs in {}",
-                dir_of(&bins)
-            ),
+            summary: format!("Add the inbound firewall rules for the ai-remote host programs in {}", dir_of(&bins)),
             notes,
             actions,
             needs_elevation: true,
@@ -261,11 +226,7 @@ pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     // The SID, not the name: it survives renames and needs no domain prefix.
     let sid = current_user_id()?;
     let user = std::env::var("USERNAME").unwrap_or_else(|_| sid.clone());
-    let work_dir = bins
-        .hostw
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
+    let work_dir = bins.hostw.parent().map(Path::to_path_buf).unwrap_or_default();
     let arguments = host_arguments(profile);
     let description = format!(
         "Starts the ai-remote host for {user} at logon (profile {}), so paired controllers can operate this machine.",
@@ -297,11 +258,7 @@ pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     });
 
     let mut actions = vec![
-        Action::WriteFile {
-            path: xml_path.clone(),
-            contents: task::utf16_file(&xml),
-            preview: xml,
-        },
+        Action::WriteFile { path: xml_path.clone(), contents: task::utf16_file(&xml), preview: xml },
         Action::run(
             schtasks(),
             &[
@@ -317,10 +274,7 @@ pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     ];
     actions.extend(firewall_actions(&bins, &mut notes));
     Ok(Plan {
-        summary: format!(
-            "Install autostart for the ai-remote host (profile {})",
-            profile.root().display()
-        ),
+        summary: format!("Install autostart for the ai-remote host (profile {})", profile.root().display()),
         notes,
         actions,
         needs_elevation: true,
@@ -341,12 +295,7 @@ pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
         ));
         actions.push(Action::run_tolerant(
             schtasks(),
-            &[
-                "/Delete".into(),
-                "/TN".into(),
-                quote_arg(&name),
-                "/F".into(),
-            ],
+            &["/Delete".into(), "/TN".into(), quote_arg(&name), "/F".into()],
             "delete the logon task",
         ));
     }
@@ -373,52 +322,29 @@ pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
         )),
     }
     if scope == Scope::All {
-        actions.push(Action::RemoveFile {
-            path: task_xml_path(profile)?,
-        });
+        actions.push(Action::RemoveFile { path: task_xml_path(profile)? });
     }
     let summary = match scope {
-        Scope::All => format!(
-            "Remove autostart for the ai-remote host (profile {})",
-            profile.root().display()
-        ),
-        Scope::FirewallOnly => format!(
-            "Remove the firewall rules for the ai-remote host programs in {}",
-            dir_of(&bins)
-        ),
+        Scope::All => format!("Remove autostart for the ai-remote host (profile {})", profile.root().display()),
+        Scope::FirewallOnly => {
+            format!("Remove the firewall rules for the ai-remote host programs in {}", dir_of(&bins))
+        }
     };
-    Ok(Plan {
-        summary,
-        notes,
-        actions,
-        needs_elevation: true,
-        blocker: None,
-    })
+    Ok(Plan { summary, notes, actions, needs_elevation: true, blocker: None })
 }
 
 fn dir_of(bins: &Binaries) -> String {
-    bins.hostw
-        .parent()
-        .map(|d| d.display().to_string())
-        .unwrap_or_default()
+    bins.hostw.parent().map(|d| d.display().to_string()).unwrap_or_default()
 }
 
 pub fn start_action(profile: &Profile) -> Action {
-    Action::run(
-        schtasks(),
-        &["/Run".into(), "/TN".into(), quote_arg(&task_name(profile))],
-        "start the task now",
-    )
+    Action::run(schtasks(), &["/Run".into(), "/TN".into(), quote_arg(&task_name(profile))], "start the task now")
 }
 
 pub fn status(profile: &Profile) -> Result<InstallStatus> {
     let bins = Binaries::locate()?;
     let name = task_name(profile);
-    let mut st = InstallStatus {
-        kind: "Task Scheduler task".into(),
-        name: format!(r"\{name}"),
-        ..Default::default()
-    };
+    let mut st = InstallStatus { kind: "Task Scheduler task".into(), name: format!(r"\{name}"), ..Default::default() };
 
     match query_task_xml(&name) {
         Ok(out) if out.status.success() => {
@@ -442,13 +368,7 @@ pub fn status(profile: &Profile) -> Result<InstallStatus> {
     }
 
     match firewall_rules() {
-        Ok(rules) => {
-            st.firewall = bins
-                .programs()
-                .iter()
-                .map(|p| rules_for(&rules, p))
-                .collect()
-        }
+        Ok(rules) => st.firewall = bins.programs().iter().map(|p| rules_for(&rules, p)).collect(),
         Err(e) => st.firewall_error = Some(format!("{e:#}")),
     }
     st.firewall_enabled = firewall_enabled().ok();
@@ -480,10 +400,7 @@ pub fn firewall_rules() -> Result<Vec<FwRule>> {
         .map_err(|_| anyhow!("reading the firewall rules panicked"))?
         .map_err(|e| anyhow!("read firewall rules: {e}"))?;
     // The API reports "any" as nothing, an empty string or `*`, depending on how the rule was made.
-    let specific = |v: &Option<String>| {
-        v.clone()
-            .filter(|s| !s.trim().is_empty() && s.trim() != "*")
-    };
+    let specific = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty() && s.trim() != "*");
     Ok(rules
         .into_iter()
         .map(|r| FwRule {
@@ -498,10 +415,7 @@ pub fn firewall_rules() -> Result<Vec<FwRule>> {
                 Some(other) => format!("{other:?}"),
             },
             service: specific(r.service_name()),
-            all_local_ports: r
-                .local_ports()
-                .as_ref()
-                .is_none_or(|p| p.is_empty() || p.contains(&Port::Any)),
+            all_local_ports: r.local_ports().as_ref().is_none_or(|p| p.is_empty() || p.contains(&Port::Any)),
         })
         .collect())
 }
@@ -514,14 +428,8 @@ mod tests {
     fn netsh_arguments_quote_names_and_programs() {
         let exe = Path::new(r"C:\Program Files\ai-remote\ai-remote-hostw.exe");
         let add = netsh_allow(exe, "UDP").join(" ");
-        assert!(add.starts_with(
-            "advfirewall firewall add rule name=\"ai-remote host\" dir=in action=allow"
-        ));
-        assert!(
-            add.contains(
-                r#"program="C:\Program Files\ai-remote\ai-remote-hostw.exe" protocol=UDP"#
-            )
-        );
+        assert!(add.starts_with("advfirewall firewall add rule name=\"ai-remote host\" dir=in action=allow"));
+        assert!(add.contains(r#"program="C:\Program Files\ai-remote\ai-remote-hostw.exe" protocol=UDP"#));
         let del = netsh_delete_named("ai-remote-hostw", exe).join(" ");
         assert_eq!(
             del,
@@ -534,14 +442,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ar-task-name-{}", std::process::id()));
         let profile = Profile::at(&dir).unwrap();
         let name = task_name(&profile);
-        assert!(
-            name.starts_with(r"ai-remote\host-") && name.len() == r"ai-remote\host-".len() + 8,
-            "{name}"
-        );
-        assert_eq!(
-            host_arguments(&profile),
-            format!("--home \"{}\"", profile.root().display())
-        );
+        assert!(name.starts_with(r"ai-remote\host-") && name.len() == r"ai-remote\host-".len() + 8, "{name}");
+        assert_eq!(host_arguments(&profile), format!("--home \"{}\"", profile.root().display()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -552,10 +454,7 @@ mod tests {
                        \"\\\u{8ba1}\u{5212}\u{4efb}\u{52a1}\u{66f4}\u{65b0}\",\"N/A\",\"Ready\"\r\nINFO: something\r\n";
         assert_eq!(
             host_tasks_in(listing),
-            vec![
-                r"\ai-remote\host-1a2b3c4d".to_string(),
-                r"\AI-REMOTE\host-99999999".to_string()
-            ]
+            vec![r"\ai-remote\host-1a2b3c4d".to_string(), r"\AI-REMOTE\host-99999999".to_string()]
         );
     }
 
@@ -563,24 +462,16 @@ mod tests {
     fn a_desktop_without_our_account_is_someone_elses() {
         let mine = "S-1-5-21-1-2-3-1001".to_string();
         let theirs = "S-1-5-21-1-2-3-1002".to_string();
-        assert!(desktop_owned_by_someone_else(
-            &mine,
-            std::slice::from_ref(&theirs)
-        ));
-        assert!(!desktop_owned_by_someone_else(
-            &mine,
-            &[theirs, mine.clone()]
-        ));
+        assert!(desktop_owned_by_someone_else(&mine, std::slice::from_ref(&theirs)));
+        assert!(!desktop_owned_by_someone_else(&mine, &[theirs, mine.clone()]));
         // Nobody logged on (e.g. installed over SSH before anyone logs in): nothing to compare.
         assert!(!desktop_owned_by_someone_else(&mine, &[]));
     }
 
     #[test]
     fn firewall_steps_are_tagged_for_an_administrator() {
-        let bins = Binaries {
-            cli: PathBuf::from(r"C:\x\ai-remote.exe"),
-            hostw: PathBuf::from(r"C:\x\ai-remote-hostw.exe"),
-        };
+        let bins =
+            Binaries { cli: PathBuf::from(r"C:\x\ai-remote.exe"), hostw: PathBuf::from(r"C:\x\ai-remote-hostw.exe") };
         let mut notes = Vec::new();
         let actions = firewall_actions(&bins, &mut notes);
         assert!(!actions.is_empty());

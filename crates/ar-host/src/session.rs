@@ -31,10 +31,7 @@ impl ShotGeometry {
         let y = self.monitor_y as f64 + (py + 0.5) * sy;
         let max_x = self.monitor_x + self.monitor_width as i32 - 1;
         let max_y = self.monitor_y + self.monitor_height as i32 - 1;
-        (
-            (x.floor() as i32).clamp(self.monitor_x, max_x),
-            (y.floor() as i32).clamp(self.monitor_y, max_y),
-        )
+        ((x.floor() as i32).clamp(self.monitor_x, max_x), (y.floor() as i32).clamp(self.monitor_y, max_y))
     }
 }
 
@@ -60,13 +57,7 @@ struct Shots {
 impl Session {
     pub fn new(peer: Peer, level: Level, cancel: CancellationToken) -> Self {
         let id = format!("{:08x}", rand_u32());
-        Self {
-            id,
-            peer,
-            level,
-            cancel,
-            shots: Mutex::new(Shots::default()),
-        }
+        Self { id, peer, level, cancel, shots: Mutex::new(Shots::default()) }
     }
 
     /// Records a screenshot's geometry and returns its id.
@@ -95,8 +86,7 @@ impl Session {
     /// Whether `id` looks like a screenshot id of another session (an earlier connection), so the
     /// caller can say why it is unknown.
     pub fn is_foreign_shot_id(&self, id: &str) -> bool {
-        id.split_once("-s")
-            .is_some_and(|(session, _)| session != self.id)
+        id.split_once("-s").is_some_and(|(session, _)| session != self.id)
     }
 
     /// Geometry of a screenshot by id, or of the latest one when `id` is `None`.
@@ -124,13 +114,8 @@ mod tests {
     use super::*;
 
     fn session() -> Session {
-        let peer = Peer {
-            name: "test".into(),
-            principal: None,
-            user_id: None,
-            level: Some(Level::Observe),
-            revoked: false,
-        };
+        let peer =
+            Peer { name: "test".into(), principal: None, user_id: None, level: Some(Level::Observe), revoked: false };
         Session::new(peer, Level::Observe, CancellationToken::new())
     }
 
