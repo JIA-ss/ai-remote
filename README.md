@@ -18,7 +18,7 @@
 ai-remote lets the AI agent you already use operate your other computers. Run a small host on the Windows PC or Mac you want to control and pair it with your own machine once. From then on, any MCP agent (Claude Code, Cursor, or one you wrote) can see the screen, read each window as a tree of named elements, and act on those elements. Your devices connect directly over an encrypted peer-to-peer link. You decide what each device allows, approve anything risky, and can take over at any moment.
 
 > [!NOTE]
-> **Pre-alpha.** Milestone M0 (CLI, Windows host, MCP bridge) is implemented and being tested. Nothing is released yet, it is not ready for real machines, and commands may change. Star or watch the repository to follow along, or open an issue to help shape the design.
+> **Pre-alpha.** Milestone M0 (CLI, Windows host, MCP bridge) is implemented and being tested, and the M2 desktop app is taking shape: live video, approvals from your own device with Windows Hello, and taking turns with the agent. Nothing is released yet, it is not ready for real machines, and commands may change. Star or watch the repository to follow along, or open an issue to help shape the design.
 
 <p align="center">
   <picture>
@@ -135,7 +135,7 @@ These are the default levels and may be refined before the first release.
 | :-- | :-- | :-- |
 | **M0** | CLI, Windows host, MCP bridge | Implemented, not released |
 | **M1** | macOS host, file tools | Planned |
-| **M2** | Desktop app with live view and approvals | Planned |
+| **M2** | Desktop app with live view and approvals | In progress: live video, remote approvals, take over / hand back, the app's main screens |
 | **M3** | iOS controller app on the App Store | Planned |
 | **M4** | Optional account service, self-hosted relay | Planned |
 
