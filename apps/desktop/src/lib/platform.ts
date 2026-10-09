@@ -14,7 +14,9 @@ const darkQuery = () => matchMedia("(prefers-color-scheme: dark)");
 export function applyPlatform(): () => void {
   const root = document.documentElement;
   root.dataset.os = detectOs();
-  const sync = () => (root.dataset.theme = darkQuery().matches ? "dark" : "light");
+  // `?shottheme=` pins the theme for screenshots of the page outside the app.
+  const pinned = new URLSearchParams(location.search).get("shottheme");
+  const sync = () => (root.dataset.theme = pinned === "light" || pinned === "dark" ? pinned : darkQuery().matches ? "dark" : "light");
   sync();
   const q = darkQuery();
   q.addEventListener("change", sync);
