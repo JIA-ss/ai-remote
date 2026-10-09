@@ -223,7 +223,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                 Some(h) => h,
                 None => aggregator.only_host().await?,
             };
-            let result = aggregator.call_on_host(&host, &tool, args).await?;
+            let result = aggregator.call_on_host(&host, &tool, args, &CancellationToken::new()).await?;
             serde_json::to_value(result)?
         }
         AgentRequest::Mcp => bail!("unreachable"),

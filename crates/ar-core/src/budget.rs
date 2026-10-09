@@ -1,10 +1,16 @@
-//! Tool-result budgets. One unbounded tool result can wipe out an agent's context, so large text
-//! is cut to its head and tail with an explicit count of what was dropped.
+//! Tool-result budgets. One unbounded tool result can wipe out an agent's context (or be refused by
+//! the model API outright), so large text is cut to its head and tail with an explicit count of
+//! what was dropped, and images are kept within what model APIs accept.
 
 /// Default total size above which text is cut.
 pub const TEXT_LIMIT: usize = 60_000;
 /// Characters kept from each end when cutting.
 pub const TEXT_KEEP: usize = 20_000;
+/// Largest image a result may carry, counted on its base64 text: model APIs reject bigger ones
+/// (the Claude API's per-image limit is 5 MB).
+pub const IMAGE_MAX_B64: usize = 5 * 1024 * 1024;
+/// Longest image side model APIs accept.
+pub const IMAGE_MAX_EDGE: u32 = 8000;
 
 /// Cuts `text` to `keep` characters from each end when it exceeds `limit` characters.
 pub fn head_tail(text: &str, limit: usize, keep: usize) -> String {

@@ -65,9 +65,11 @@ impl ServerHandler for HostServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let args = request.arguments.unwrap_or_default();
-        gate::call(&self.host, &self.session, &request.name, args).await.map(CallToolResponse::from)
+        // rmcp only cancels `context.ct` on the controller's `notifications/cancelled`; the gate
+        // has to stop the tool itself.
+        gate::call(&self.host, &self.session, &request.name, args, &context.ct).await.map(CallToolResponse::from)
     }
 }
