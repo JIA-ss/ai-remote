@@ -109,6 +109,60 @@ Tool names are stable API. Annotations follow MCP (`readOnlyHint`, `destructiveH
 Coordinates: `screenshot` returns the mapping from image pixels to screen coordinates; `mouse`
 accepts image-space coordinates by default so a model never has to do DPI or multi-monitor math.
 
+### Mounted MCP servers
+
+Rather than re-implementing every capability, the host can **mount** existing local MCP servers
+(stdio), for example [cua-driver](https://github.com/trycua/cua) for UI Automation trees. A mount's
+allowlisted tools appear next to the built-in ones as `<mount>_<tool>` (`ui_click`) and go through
+the same gate: level check, policy, owner approval, audit, result budget.
+
+```toml
+[[mount]]
+name = "ui"                       # tool-name prefix: 1-24 chars of A-Z a-z 0-9 _ -
+command = 'C:\tools\cua-driver\cua-driver.exe'
+args = ["mcp"]
+sha256 = "<64 hex digits>"        # checked before every start; a mismatch refuses to start
+start = "eager"                   # or "lazy"
+needs_desktop = true              # refuse calls while the desktop is locked
+[mount.env]
+CUA_DRIVER_RS_TELEMETRY_ENABLED = "false"
+[mount.tools]                     # the allowlist: anything else the server offers stays hidden
+get_window_state = "observe"
+click = "control"
+launch_app = { level = "control", approve = "ask", description = "Shorter text for the agent." }
+```
+
+- **Trust.** The server's tool list is untrusted input. Only allowlisted tools are exposed, with the
+  level and default action (`approve` = `allow` / `ask` / `deny`; without it, admin tools ask)
+  given by the owner. Tools a new upstream version adds stay hidden and are logged at host start,
+  as are allowlisted tools the server no longer offers. The server's annotations are passed on as
+  hints only. Policy rules match the prefixed names (`tool = "ui_*"`). A mount can never shadow a
+  built-in tool.
+- **Lifecycle.** The host starts each server with rmcp's child-process transport inside a Job
+  Object with kill-on-close (Windows) or its own process group (Unix), in the profile's
+  `host/mounts` directory, with stderr appended to `host/mounts/<name>.log`. Stopping the host,
+  or killing it outright, ends the server's whole process tree, including apps it started as its
+  own children. `eager` servers start with the host; `lazy` ones are started once at host start to
+  read their tool list, then on first use, and stopped after 10 minutes without calls. A server
+  that crashes is restarted on the next call (consecutive failures back off 1, 2, 4 ... 60 s, and
+  calls inside the window fail at once with the last error and stderr lines).
+- **Calls.** Results pass through unchanged (text, images, structured content, `isError`) before the
+  result budget. Mutating tools get an optional `intent` argument for approval prompts and the
+  audit log; it is removed before forwarding unless the server's schema declares it. When the gate
+  drops a call (session ended), the server receives `notifications/cancelled`; every call is also
+  capped at 10 minutes.
+- **CLI.** `ai-remote mount list | add | add-profile | remove | test` edit the host config (keeping
+  its comments) and take effect when the host restarts. `mount add` pins the executable's SHA-256;
+  `mount test <name>` starts the server once and lists every tool it offers with what is exposed.
+- **Profiles.** Reviewed allowlists for known servers ship as data in `crates/ar-host/profiles/`.
+  `ai-remote mount add-profile cua-driver --command <path>` applies the cua-driver one: 15 of its 59
+  tools (snapshots and verification at observe; input at control; `launch_app` asks; `kill_app` is
+  admin and asks), shortened descriptions (its own list is about 194k characters), telemetry and
+  update checks off. ai-remote does not download or bundle the server.
+- **Limits (M0).** Mounted servers cannot ask the user anything (no elicitation or sampling through
+  the host), their `instructions` are not passed on to controllers, and on Unix a hard kill of the
+  host leaves the server's own children running (the server itself exits on stdin EOF).
+
 ## 7. Safety model
 
 - **Permission levels** per peer (section 4).
