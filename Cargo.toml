@@ -33,6 +33,8 @@ directories = "6"
 # Canonical paths without the `\\?\` prefix on Windows (shown to people and passed to system tools).
 dunce = "1"
 enigo = "0.6"
+# Size-based rotation of the background host log.
+file-rotate = "0.8"
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # macOS LaunchAgent property lists (`ai-remote host install`).

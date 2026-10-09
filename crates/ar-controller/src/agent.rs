@@ -78,23 +78,40 @@ impl Agent {
     pub async fn connection(&self, host: &str) -> Result<Connection> {
         let mut conns = self.conns.lock().await;
         if let Some(c) = conns.get(host) {
-            match c.close_reason() {
-                None => return Ok(c.clone()),
-                Some(reason) => {
-                    self.note_refusal(host, Refusal::from_connection_error(&reason));
-                }
-            }
+            let Some(reason) = c.close_reason() else {
+                return Ok(c.clone());
+            };
             conns.remove(host);
+            // Report a refusal once instead of redialing straight into it; the next use dials
+            // again, so a fix on the host (unrevoke, a granted level) is picked up.
+            let refusal = Refusal::from_connection_error(&reason);
+            if refusal.is_final() {
+                return Err(self.refused(host, refusal));
+            }
+            self.note_refusal(host, refusal);
         }
         let conn = match self.mesh.dial(host, ALPN_MCP).await {
             Ok(conn) => conn,
             Err(e) => {
-                tracing::debug!(host, error = %format!("{e:#}"), "dial failed");
-                return Err(self.refused(host, Refusal::from_dial_error(&e)));
+                let cause = format!("{e:#}");
+                tracing::debug!(host, error = %cause, "dial failed");
+                let refusal = Refusal::from_dial_error(&e);
+                // "Unreachable" covers everything unrecognised: the raw cause tells this machine
+                // being offline from a blocked relay or a dial timeout.
+                if matches!(refusal, Refusal::Unreachable) {
+                    let err = self.refused(host, refusal);
+                    return Err(anyhow!("{err} (cause: {cause})"));
+                }
+                return Err(self.refused(host, refusal));
             }
         };
         conns.insert(host.to_string(), conn.clone());
         Ok(conn)
+    }
+
+    /// Whether a connection to `host` is kept from earlier and not known to be closed.
+    pub async fn has_connection(&self, host: &str) -> bool {
+        self.conns.lock().await.get(host).is_some_and(|c| c.close_reason().is_none())
     }
 
     /// Drops a cached connection (after a transport error) so the next use redials.
@@ -121,7 +138,24 @@ impl Agent {
     /// An error carrying the plain-language reason a host refused or could not be reached (callers
     /// name the host).
     pub fn refused(&self, host: &str, refusal: Refusal) -> anyhow::Error {
-        anyhow!("{}", self.note_refusal(host, refusal))
+        let refusal = self.note_refusal(host, refusal);
+        anyhow!("{refusal}{}", self.device_hint(&refusal))
+    }
+
+    /// Like [`refused`](Self::refused), for a call that was running when the connection ended.
+    pub fn refused_during_call(&self, host: &str, refusal: Refusal) -> anyhow::Error {
+        let refusal = self.note_refusal(host, refusal);
+        anyhow!("{}{}", refusal.during_call(), self.device_hint(&refusal))
+    }
+
+    /// The host owner finds this controller by its device id: its name on the host is the host's
+    /// choice, and a forgotten device has none left there.
+    fn device_hint(&self, refusal: &Refusal) -> String {
+        if refusal.needs_host_owner() {
+            format!(". This controller's device id: {}", self.mesh.principal())
+        } else {
+            String::new()
+        }
     }
 
     /// Paired hosts, by local name.
@@ -238,6 +272,9 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
         }),
         AgentRequest::Pair { ticket, name } => {
             let paired = agent.mesh.pair(&ticket, name.as_deref()).await?;
+            // A fresh pairing supersedes whatever this host refused before.
+            agent.clear_refusal(&paired.peer);
+            agent.invalidate(&paired.peer).await;
             let mut known = agent.known_hosts();
             known.upsert(KnownHost { name: paired.peer.clone(), level: paired.level, paired_at: unix_now() });
             known.save(&agent.hosts_path)?;
@@ -260,6 +297,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
         AgentRequest::Unpair { host } => {
             let peer = agent.mesh.find_peer(&host).await?;
             agent.invalidate(&peer.name).await;
+            agent.clear_refusal(&peer.name);
             agent.mesh.forget(&peer).await?;
             let mut known = agent.known_hosts();
             known.remove(&peer.name);

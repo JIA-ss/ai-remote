@@ -60,12 +60,26 @@ pub struct Peer {
     pub user_id: Option<String>,
     /// Highest level this node grants the peer, if any.
     pub level: Option<Level>,
+    /// This node refuses the peer's device (revoked) although the pairing is kept.
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 impl Peer {
     fn has_principal(&self, p: &str) -> bool {
         self.principal.as_deref() == Some(p) || self.user_id.as_deref() == Some(p)
     }
+}
+
+/// A device this node refuses, paired or not: revoking keeps the pairing, and a revoked device
+/// whose pairing was removed afterwards stays refused until it is unrevoked by its device id.
+#[derive(Debug, Clone, Serialize)]
+pub struct RevokedDevice {
+    /// The device principal, `eid:<hex>`.
+    pub principal: String,
+    /// This node's name for it while it is still paired.
+    pub name: Option<String>,
+    pub reason: Option<String>,
 }
 
 /// A freshly minted pairing invite.
@@ -303,16 +317,46 @@ impl Mesh {
         Ok(())
     }
 
-    /// Lifts a revocation.
-    pub async fn unrevoke(&self, peer: &Peer) -> Result<()> {
-        let principal = peer.principal.clone().context("peer has no device principal")?;
+    /// Lifts the revocation of a device (`eid:` principal), paired or not.
+    pub async fn unrevoke(&self, principal: &str) -> Result<()> {
         let mut c = self.control().await?;
-        c.peer_unrevoke(principal).await.map_err(|e| anyhow!("unrevoke: {e}"))?;
+        c.peer_unrevoke(principal.to_string()).await.map_err(|e| anyhow!("unrevoke: {e}"))?;
         Ok(())
     }
 
-    /// Forgets a peer entirely (its pairing and grants). Use [`revoke`](Self::revoke) to also
-    /// refuse it if it comes back.
+    /// Every device this node refuses, including revoked devices whose pairing is gone.
+    pub async fn revoked_devices(&self) -> Result<Vec<RevokedDevice>> {
+        let mut c = self.control().await?;
+        let status = c.status().await.map_err(|e| anyhow!("status: {e}"))?;
+        Ok(status
+            .revoked
+            .into_iter()
+            .map(|r| RevokedDevice { principal: r.principal, name: r.nickname, reason: r.reason })
+            .collect())
+    }
+
+    /// Finds a refused device by name, `eid:` principal or a unique prefix of its id.
+    pub async fn find_revoked(&self, query: &str) -> Result<Option<RevokedDevice>> {
+        let devices = self.revoked_devices().await?;
+        if let Some(d) = devices.iter().find(|d| d.principal == query || d.name.as_deref() == Some(query)) {
+            return Ok(Some(d.clone()));
+        }
+        let id = query.trim_start_matches("eid:");
+        let matches: Vec<&RevokedDevice> = devices
+            .iter()
+            .filter(|d| !id.is_empty() && d.principal.trim_start_matches("eid:").starts_with(id))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok(Some((*one).clone())),
+            [] => Ok(None),
+            _ => bail!("'{query}' matches several revoked devices; use the full device id"),
+        }
+    }
+
+    /// Forgets a peer entirely (its pairing and grants). The device can come back only by
+    /// redeeming a new invite; use [`revoke`](Self::revoke) to refuse even that. The transport cuts
+    /// the peer's live connections with its generic "access revoked" reason: close them first with
+    /// a reason of your own if the peer should hear something else.
     pub async fn forget(&self, peer: &Peer) -> Result<()> {
         let mut c = self.control().await?;
         c.peer_remove(&peer.name).await.map_err(|e| anyhow!("remove peer: {e}"))?;
@@ -351,7 +395,13 @@ fn peers_from_status(status: &StatusResult) -> Vec<Peer> {
     let mut peers: Vec<Peer> = status
         .peers
         .iter()
-        .map(|p| Peer { name: p.name.clone(), principal: p.principal.clone(), user_id: p.user_id.clone(), level: None })
+        .map(|p| Peer {
+            name: p.name.clone(),
+            principal: p.principal.clone(),
+            user_id: p.user_id.clone(),
+            level: None,
+            revoked: p.principal.as_ref().is_some_and(|eid| status.revoked.iter().any(|r| &r.principal == eid)),
+        })
         .collect();
     for peer in &mut peers {
         for level in Level::ALL {

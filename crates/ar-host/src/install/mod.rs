@@ -94,16 +94,32 @@ pub enum Action {
         why: String,
         /// A failure is reported but does not stop the plan (for "delete if present" steps).
         tolerate_failure: bool,
+        /// Only an administrator can do this (machine-wide firewall rules), whoever the plan is for.
+        admin: bool,
     },
 }
 
 impl Action {
     fn run(program: PathBuf, args: &[String], why: &str) -> Self {
-        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: false }
+        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: false, admin: false }
     }
 
     fn run_tolerant(program: PathBuf, args: &[String], why: &str) -> Self {
-        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: true }
+        Action::Run { program, args: args.to_vec(), why: why.to_string(), tolerate_failure: true, admin: false }
+    }
+
+    /// Marks a step that needs an administrator.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn admin(mut self) -> Self {
+        if let Action::Run { admin, .. } = &mut self {
+            *admin = true;
+        }
+        self
+    }
+
+    /// Whether only an administrator can perform this step.
+    pub fn needs_admin(&self) -> bool {
+        matches!(self, Action::Run { admin: true, .. })
     }
 
     /// One line saying what this does.
@@ -111,13 +127,14 @@ impl Action {
         match self {
             Action::WriteFile { path, .. } => format!("write {}", path.display()),
             Action::RemoveFile { path } => format!("remove {}", path.display()),
-            Action::Run { program, args, why, .. } => {
+            Action::Run { program, args, why, admin, .. } => {
                 let mut line = display_arg(&program.to_string_lossy());
                 for a in args {
                     line.push(' ');
                     line.push_str(&display_arg(a));
                 }
-                format!("{why}:\n    {line}")
+                let who = if *admin { " (administrator)" } else { "" };
+                format!("{why}{who}:\n    {line}")
             }
         }
     }
@@ -142,14 +159,13 @@ impl Action {
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     for a in args {
                         cmd.raw_arg(a);
                     }
-                    cmd.creation_flags(CREATE_NO_WINDOW);
                 }
                 #[cfg(not(windows))]
                 cmd.args(args);
+                crate::platform::no_console_window(&mut cmd);
                 let out = cmd
                     .stdin(std::process::Stdio::null())
                     .output()
@@ -192,6 +208,27 @@ pub struct Plan {
     pub actions: Vec<Action>,
     /// Some actions only work from an elevated (administrator) process.
     pub needs_elevation: bool,
+    /// Why running this plan from here would produce a broken result (shown, and the plan is
+    /// refused unless forced).
+    pub blocker: Option<String>,
+}
+
+impl Plan {
+    /// Whether any step needs an administrator.
+    pub fn has_admin_steps(&self) -> bool {
+        self.actions.iter().any(Action::needs_admin)
+    }
+}
+
+/// Which part of the autostart setup a plan covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scope {
+    /// The autostart entry and, on Windows, the firewall rules.
+    #[default]
+    All,
+    /// Only the firewall rules (Windows): what an administrator adds for a standard user, whose
+    /// own install registers the logon task without them.
+    FirewallOnly,
 }
 
 /// Autostart and firewall state of this profile's host.
@@ -221,15 +258,37 @@ pub struct InstallStatus {
     pub firewall_enabled: Option<bool>,
 }
 
-/// One inbound firewall rule, reduced to what matters here.
+/// One inbound firewall rule, reduced to what matters here. Remote-address and network-profile
+/// scoping are not modelled (the reader cannot represent every profile combination).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FwRule {
     pub name: String,
+    /// The program the rule is limited to, as written in the rule (may contain `%VARIABLES%`);
+    /// `None` for every program.
     pub program: Option<String>,
     pub allow: bool,
     pub enabled: bool,
     /// `TCP`, `UDP`, `any`, ...
     pub protocol: String,
+    /// The service the rule is limited to; `None` for any.
+    #[serde(default)]
+    pub service: Option<String>,
+    /// The rule covers every local port.
+    #[serde(default)]
+    pub all_local_ports: bool,
+}
+
+impl FwRule {
+    /// An enabled block rule that refuses inbound UDP for every program and port. Block rules beat
+    /// allow rules, so it overrides ours.
+    fn blocks_all_udp(&self) -> bool {
+        self.enabled
+            && !self.allow
+            && self.program.is_none()
+            && self.service.is_none()
+            && self.all_local_ports
+            && (self.protocol == "UDP" || self.protocol == "any")
+    }
 }
 
 /// The enabled inbound rules that apply to one program.
@@ -240,6 +299,9 @@ pub struct ProgramRules {
     pub allow: Vec<String>,
     /// Names of block rules (any protocol).
     pub block: Vec<String>,
+    /// Names of block rules for every program that cover inbound UDP on every port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_all: Vec<String>,
 }
 
 impl ProgramRules {
@@ -249,18 +311,50 @@ impl ProgramRules {
     }
 }
 
-/// Collects the enabled inbound rules that name `program`.
+/// Collects the enabled inbound rules that name `program` (paths written with `%VARIABLES%`, as
+/// installers and group policies often write them, are expanded first), plus the block rules that
+/// cover every program.
 pub fn rules_for(rules: &[FwRule], program: &Path) -> ProgramRules {
     let mut out = ProgramRules { program: program.display().to_string(), ..Default::default() };
-    for r in rules.iter().filter(|r| r.enabled && r.program.as_deref().is_some_and(|p| same_path(p, program))) {
-        if r.allow {
-            if !out.allow.contains(&r.protocol) {
-                out.allow.push(r.protocol.clone());
+    let names_program = |r: &FwRule| {
+        r.program.as_deref().is_some_and(|p| same_path(&expand_env(p, |v| std::env::var(v).ok()), program))
+    };
+    for r in rules.iter().filter(|r| r.enabled) {
+        if names_program(r) {
+            if r.allow {
+                if !out.allow.contains(&r.protocol) {
+                    out.allow.push(r.protocol.clone());
+                }
+            } else if !out.block.contains(&r.name) {
+                out.block.push(r.name.clone());
             }
-        } else if !out.block.contains(&r.name) {
-            out.block.push(r.name.clone());
+        } else if r.blocks_all_udp() && !out.block_all.contains(&r.name) {
+            out.block_all.push(r.name.clone());
         }
     }
+    out
+}
+
+/// Replaces `%NAME%` with the value `lookup` gives; unknown names stay as written.
+fn expand_env(text: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let value = after.find('%').filter(|&end| end > 0).and_then(|end| Some((end, lookup(&after[..end])?)));
+        match value {
+            Some((end, value)) => {
+                out.push_str(&value);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -301,37 +395,47 @@ pub fn firewall_rules() -> Result<Vec<FwRule>> {
 }
 
 /// The plan for `ai-remote host install`.
-pub fn install_plan(profile: &Profile) -> Result<Plan> {
+pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     #[cfg(windows)]
     {
-        windows::install_plan(profile)
+        windows::install_plan(profile, scope)
     }
     #[cfg(target_os = "macos")]
     {
+        no_firewall_scope(scope)?;
         macos::install_plan(profile)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = profile;
+        let _ = (profile, scope);
         bail!("autostart is available on Windows and macOS only")
     }
 }
 
 /// The plan for `ai-remote host uninstall`.
-pub fn uninstall_plan(profile: &Profile) -> Result<Plan> {
+pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     #[cfg(windows)]
     {
-        windows::uninstall_plan(profile)
+        windows::uninstall_plan(profile, scope)
     }
     #[cfg(target_os = "macos")]
     {
+        no_firewall_scope(scope)?;
         macos::uninstall_plan(profile)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = profile;
+        let _ = (profile, scope);
         bail!("autostart is available on Windows and macOS only")
     }
+}
+
+#[cfg(target_os = "macos")]
+fn no_firewall_scope(scope: Scope) -> Result<()> {
+    if scope == Scope::FirewallOnly {
+        bail!("--firewall-only applies to Windows only; macOS needs no firewall rules for the host");
+    }
+    Ok(())
 }
 
 /// Starts the installed autostart entry now (after an install), instead of waiting for a login.
@@ -374,7 +478,15 @@ mod tests {
     use super::*;
 
     fn rule(name: &str, program: &str, allow: bool, enabled: bool, protocol: &str) -> FwRule {
-        FwRule { name: name.into(), program: Some(program.into()), allow, enabled, protocol: protocol.into() }
+        FwRule {
+            name: name.into(),
+            program: Some(program.into()),
+            allow,
+            enabled,
+            protocol: protocol.into(),
+            service: None,
+            all_local_ports: true,
+        }
     }
 
     #[test]
@@ -395,10 +507,34 @@ mod tests {
     }
 
     #[test]
+    fn rule_paths_with_variables_are_expanded() {
+        let lookup = |v: &str| v.eq_ignore_ascii_case("ProgramFiles").then(|| r"C:\Program Files".to_string());
+        assert_eq!(expand_env(r"%ProgramFiles%\ai-remote\x.exe", lookup), r"C:\Program Files\ai-remote\x.exe");
+        assert_eq!(expand_env(r"%NOPE%\x.exe", lookup), r"%NOPE%\x.exe");
+        assert_eq!(expand_env("100% sure", lookup), "100% sure");
+        assert_eq!(expand_env("%%", lookup), "%%");
+        assert_eq!(expand_env(r"C:\plain.exe", lookup), r"C:\plain.exe");
+    }
+
+    #[test]
+    fn block_rules_for_every_program_are_reported() {
+        let exe = if cfg!(windows) { r"C:\Tools\ai-remote-hostw.exe" } else { "/opt/ai-remote-hostw" };
+        let everything = FwRule { program: None, ..rule("block all udp", exe, false, true, "UDP") };
+        let one_port = FwRule { all_local_ports: false, ..everything.clone() };
+        let a_service = FwRule { service: Some("Dnscache".into()), ..everything.clone() };
+        let tcp = FwRule { protocol: "TCP".into(), ..everything.clone() };
+        let off = FwRule { enabled: false, ..everything.clone() };
+        let allow = FwRule { allow: true, ..everything.clone() };
+        let r = rules_for(&[everything, one_port, a_service, tcp, off, allow], Path::new(exe));
+        assert_eq!(r.block_all, vec!["block all udp".to_string()]);
+        assert!(r.block.is_empty());
+    }
+
+    #[test]
     fn tcp_only_allow_does_not_cover_quic() {
-        let r = ProgramRules { program: "x".into(), allow: vec!["TCP".into()], block: vec![] };
+        let r = ProgramRules { program: "x".into(), allow: vec!["TCP".into()], ..Default::default() };
         assert!(!r.allows_udp());
-        let any = ProgramRules { program: "x".into(), allow: vec!["any".into()], block: vec![] };
+        let any = ProgramRules { program: "x".into(), allow: vec!["any".into()], ..Default::default() };
         assert!(any.allows_udp());
     }
 

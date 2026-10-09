@@ -153,7 +153,8 @@ mod tests {
     fn root_is_canonical_without_verbatim_prefix() {
         let (dir, profile) = temp_profile("root");
         let shown = profile.root().display().to_string();
-        assert!(!shown.starts_with(r"\?\"), "{shown}");
+        // The verbatim prefix is `\\?\` (two backslashes).
+        assert!(!shown.starts_with(r"\\?\"), "{shown}");
         assert!(profile.root().is_absolute());
         std::fs::remove_dir_all(&dir).unwrap();
     }

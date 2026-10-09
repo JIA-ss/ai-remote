@@ -28,7 +28,10 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
     bins.require_hostw()?;
     let path = plist_path(profile)?;
     let domain = gui_domain()?;
-    let plist = launchd::launch_agent_plist(&label(profile), &bins.hostw, profile.root(), &profile.log_path(Role::Host)?)?;
+    // Not the host log itself: the host rotates that file, and launchd would keep writing to the
+    // renamed copy through the descriptor it holds.
+    let stderr_log = profile.role_dir(Role::Host)?.join("host-stderr.log");
+    let plist = launchd::launch_agent_plist(&label(profile), &bins.hostw, profile.root(), &stderr_log)?;
     let target = format!("{domain}/{}", label(profile));
     Ok(Plan {
         summary: format!("Install autostart for the ai-remote host (profile {})", profile.root().display()),
@@ -48,6 +51,7 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
             ),
         ],
         needs_elevation: false,
+        blocker: None,
     })
 }
 
@@ -61,6 +65,7 @@ pub fn uninstall_plan(profile: &Profile) -> Result<Plan> {
             Action::RemoveFile { path: plist_path(profile)? },
         ],
         needs_elevation: false,
+        blocker: None,
     })
 }
 
