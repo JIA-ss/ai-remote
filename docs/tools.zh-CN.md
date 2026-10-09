@@ -43,7 +43,7 @@
 
 - **级别**：能调用该工具的最低设备级别。控制端只能看到它的级别允许的工具，被控端每次调用时都会重新检查级别。
 - **默认动作**：没有策略规则命中时生效：`allow` 直接执行，`ask` 先弹审批框问机主
-  （见 [operations.zh-CN.md](operations.zh-CN.md#9-审批对话框)）。规则可以改变它（第 8 节）。
+  （见 [operations.zh-CN.md](operations.zh-CN.md#9-审批)）。规则可以改变它（第 8 节）。
 - **标注**：给客户端看的 MCP 标注（`readOnlyHint`、`destructiveHint`）。被控端从不依据标注做任何决定。
 - 每个被控端工具（包括挂载工具）的描述末尾都有 `[requires level: <level>]`。
 

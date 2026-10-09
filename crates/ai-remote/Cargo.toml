@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "ai-remote-hostw"
 path = "src/bin/ai-remote-hostw.rs"
 
+[features]
+# Plain key file as the approver key, for automated tests only (see ar-controller).
+software-approver = ["ar-controller/software-approver"]
+
 [dependencies]
 ar-core.workspace = true
 ar-net.workspace = true

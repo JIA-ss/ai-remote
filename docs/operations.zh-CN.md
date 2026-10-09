@@ -21,7 +21,7 @@
 6. [权限级别与访问控制](#6-权限级别与访问控制)
 7. [被控端拒绝了怎么办](#7-被控端拒绝了怎么办)
 8. [体检（doctor）](#8-体检doctor)
-9. [审批对话框](#9-审批对话框)
+9. [审批](#9-审批)
 10. [审计日志](#10-审计日志)
 11. [被控端配置文件](#11-被控端配置文件)
 12. [自建中继](#12-自建中继)
@@ -48,6 +48,7 @@
 | `ai-remote revoke <设备>` / `unrevoke <设备>` | 拒绝某个控制端，或解除拒绝 |
 | `ai-remote forget <设备>` | 删除某个控制端的配对 |
 | `ai-remote stop-host` | 停止正在运行的被控端 |
+| `ai-remote approvers [add\|remove]` | 审批密钥：哪些人可以在已配对设备上审批（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | 管理挂载的 MCP server（见 [tools.zh-CN.md](tools.zh-CN.md#7-挂载-mcp-server)） |
 
 **控制端上：**
@@ -58,6 +59,9 @@
 | `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别 |
 | `ai-remote unpair <被控端>` | 在本控制端上忘掉某台被控端 |
 | `ai-remote call <工具> ['{JSON 参数}'] [--host H]` | 调用一个工具并打印结果 |
+| `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
+| `ai-remote approvals` / `approve <id>` / `deny <id>` | 列出、允许或拒绝等待审批的调用（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
+| `ai-remote approver [--enroll <被控端>]` | 本设备的审批密钥，或把它提交给被控端 |
 | `ai-remote mcp` | 给 MCP 客户端用的 stdio MCP server |
 | `ai-remote agent` / `stop-agent` | 在前台运行控制端常驻进程，或停止它 |
 
@@ -415,13 +419,18 @@ Overall: warn
 
 防火墙检查看的是运行被控端的那个程序：有被控端在运行时，看它的可执行文件；没有时，看自启项将要运行的那个。
 
-## 9. 审批对话框
+## 9. 审批
 
 调用的动作为 `ask` 时需要审批。这是 `shell` 和 `jobs_start` 的默认动作，也是两类挂载工具的默认动作：
 没有 `approve` 设置的 admin 级挂载工具，以及设置了 `approve = "ask"` 的挂载工具。此外，任何策略规则写了 `ask`
 时同样需要审批（见 [tools.zh-CN.md](tools.zh-CN.md#8-策略规则)）。
 
-被控端会在自己的桌面上弹出一个原生警告对话框，标题为“ai-remote: approve an action”：
+能回答的人有两类，先到的回答生效：被控端前的人，在它桌面上的对话框里回答（9.1）；机主，在被控端接受了其审批密钥的
+已配对设备上回答（9.2）。
+
+### 9.1 在被控端审批
+
+除非设置了 `approval_prompt = false`，被控端会在自己的桌面上弹出一个原生警告对话框，标题为“ai-remote: approve an action”：
 
 ```
 "laptop" wants to run: shell
@@ -435,14 +444,38 @@ Allow this once? (No answer within 60 s counts as No.)
 ```
 
 - **是**：只执行这一次调用。没有“总是允许”按钮，需要的话用策略规则。
-- **否**、在 `approval_timeout_secs`（默认 60，最少 5）内没有回答，或者根本弹不出对话框（桌面锁定、安全桌面、
-  没有交互会话），都会拒绝这次调用，并告诉 Agent 是哪一种情况。超时后对话框可能还留在屏幕上，但它的回答会被忽略。
+- **否**，或在 `approval_timeout_secs`（默认 60，最少 5）内没有回答，都会拒绝这次调用，并告诉 Agent 是哪一种情况。
+  弹不出对话框时（桌面锁定、安全桌面、没有交互会话），只有审批设备能回答；一台都没有就立即拒绝。
+  超时后，或者设备先回答了，对话框可能还留在屏幕上，但它的回答会被忽略。
 - 调用方能控制的文本会被安全地显示：控制字符会转义，理由截断到 600 个字符，参数预览约 400 个字符。
   机密值（环境变量的值、标准输入、剪贴板文本）只显示长度，比如 `<hidden: 12 chars>`。
 - 只要有审批框在等回答，所有控制端的所有鼠标和键盘调用都会被拒绝，而且输入永远不能对准被控端自己的窗口，
   所以控制端没法自己批准自己的请求。
-- 无人值守的机器上没人能回答。要么只给这类设备它真正需要的工具，要么用规则为特定设备放行特定工具
-  （`action = "allow"` 会跳过审批）。
+- 无人值守的机器上没人能在被控端回答。可以改在设备上审批（9.2），或者只给这类设备它真正需要的工具，
+  或者用规则为特定设备放行特定工具（`action = "allow"` 会跳过审批）。
+
+### 9.2 在已配对设备上审批
+
+机主可以在已配对设备上允许或拒绝。允许需要这台设备的审批密钥，它由操作系统保管、受 Windows Hello 保护
+（macOS 和 iPhone 应用上是 Touch ID 和 Face ID），所以跑在同一台设备上的 Agent 批准不了自己的请求。拒绝不需要密钥。
+只需设置一次：
+
+```bash
+# 在控制端设备上：生成密钥（Windows Hello 会请你确认），并提交给被控端
+ai-remote approver --enroll office-pc
+```
+
+被控端前的人在提示里确认这把新密钥。如果那边桌面不可用，就在设备上用 `ai-remote approver` 打印密钥，再到被控端的终端里
+添加：`ai-remote approvers add <设备> <算法>:<密钥>`。之后：
+
+```bash
+ai-remote approvals                                  # 正在等待的审批及其 id
+ai-remote approve 3f9c2a                             # 通过 Windows Hello 后，调用开始执行
+ai-remote deny 3f9c2a --note "use the recycle bin"   # Agent 会收到这句话
+```
+
+没人坐着的机器可以设置 `approval_prompt = false`，并调长 `approval_timeout_secs`。设计、签名的消息和威胁模型见
+[approvals.zh-CN.md](approvals.zh-CN.md)。
 
 ## 10. 审计日志
 
@@ -483,7 +516,8 @@ ai-remote 不会轮转或清理审计日志，文件变大时请自行归档。�
 ```toml
 [host]
 name = "office-pc"           # 显示给控制端的名称；默认用机器名
-approval_timeout_secs = 60   # 审批框等待多久；最少 5
+approval_timeout_secs = 60   # 审批等待多久；最少 5
+approval_prompt = true       # false：本机不弹对话框，只在设备上审批（9.2 节）
 
 [network]
 relays = []                  # 留空：使用默认的公共中继（第 12 节）

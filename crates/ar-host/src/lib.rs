@@ -7,6 +7,7 @@
 //! `ai-remote host install` registers (see [`install`]).
 
 mod approval;
+mod approvers;
 mod audit;
 mod control;
 pub mod doctor;
@@ -94,11 +95,11 @@ impl HostState {
         &self.live
     }
 
-    fn audit(&self) -> &AuditLog {
+    pub(crate) fn audit(&self) -> &AuditLog {
         &self.audit
     }
 
-    fn approver(&self) -> &Approver {
+    pub(crate) fn approver(&self) -> &Approver {
         &self.approver
     }
 
@@ -206,7 +207,11 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 
     let state = Arc::new(HostState {
         audit: AuditLog::open(&profile.audit_log_path()?)?,
-        approver: Approver::new(Duration::from_secs(config.host.approval_timeout_secs.max(5))),
+        approver: Approver::new(
+            Duration::from_secs(config.host.approval_timeout_secs.max(5)),
+            config.host.approval_prompt,
+            approvers::ApproverKeys::open(&profile.approvers_path()?)?,
+        ),
         jobs: tools::jobs::JobManager::new(profile.jobs_dir()?),
         profile,
         name,
@@ -227,10 +232,19 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     owner.say(&format!("  profile: {}", state.profile.root().display()));
     owner.say(&format!("  paired controllers: {}", peers.len()));
     owner.say(&format!("  audit log: {}", state.audit.path().display()));
-    if let Some(reason) = platform::prompt_blocker() {
-        owner.say(&format!(
-            "  warning: approval prompts cannot be shown ({reason}); actions that need approval will be refused"
-        ));
+    let approvers = state.approver.keys().list().len();
+    if approvers > 0 {
+        owner.say(&format!("  approver keys: {approvers}"));
+    }
+    if !state.config.host.approval_prompt {
+        if approvers == 0 {
+            owner.say(
+                "  warning: approval_prompt = false and no approver keys; actions that need approval will be refused",
+            );
+        }
+    } else if let Some(reason) = platform::prompt_blocker() {
+        let then = if approvers > 0 { "only approver devices can answer" } else { "they will be refused" };
+        owner.say(&format!("  warning: approval prompts cannot be shown ({reason}); {then}"));
     }
     if peers.is_empty() && opts.pair_code_if_unpaired && !opts.background {
         let invite = mesh.invite(Level::Control, None).await?;

@@ -8,6 +8,7 @@
 
 mod agent;
 mod aggregator;
+pub mod approver;
 mod hosts;
 mod shim;
 

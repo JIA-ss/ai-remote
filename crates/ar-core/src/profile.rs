@@ -96,6 +96,11 @@ impl Profile {
         Ok(self.role_dir(Role::Host)?.join("audit.jsonl"))
     }
 
+    /// Host: approver keys accepted from paired devices.
+    pub fn approvers_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Host)?.join("approvers.json"))
+    }
+
     /// Host: background job logs and metadata.
     pub fn jobs_dir(&self) -> Result<PathBuf> {
         let dir = self.role_dir(Role::Host)?.join("jobs");

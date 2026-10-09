@@ -122,7 +122,7 @@ ai-remote treats the agent as a guest on your machine. The owner sets the rules,
 
 Give each device the lowest level that does the job: `observe` to ask about the screen, `control` to operate apps, `admin` for setup and maintenance.
 
-- **Approvals.** Risky actions, such as a shell command that deletes files, pause until the owner approves or denies them in a native prompt on the host. Nobody there, or no answer in time, means no. Approving from the desktop app and your phone comes later.
+- **Approvals.** Risky actions, such as a shell command that deletes files, pause until the owner approves or denies them: in a native prompt on the host, or from a paired device, where allowing needs Windows Hello so an agent can never approve its own request ([how it works](docs/approvals.md)). No answer in time means no. Approval cards in the desktop app and on your phone come next.
 - **Audit log.** Every action is recorded with who did it, what it touched, and the result.
 - **Take over and revoke.** You can take the controls back at any moment, and unpair a device to cut its access completely.
 - **Pairing and encryption.** Devices pair with a one-time ticket and are identified by their keys. Traffic is end-to-end encrypted, including when it passes through a relay.

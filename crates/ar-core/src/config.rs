@@ -4,6 +4,7 @@
 //! [host]
 //! name = "office-pc"
 //! approval_timeout_secs = 60
+//! approval_prompt = true # false: only approvers on paired devices can answer
 //!
 //! [network]
 //! relays = []            # empty: the default public relays
@@ -59,12 +60,20 @@ pub struct HostSection {
     /// How long an approval prompt waits before it counts as "denied".
     #[serde(default = "default_approval_timeout")]
     pub approval_timeout_secs: u64,
+    /// Ask on this computer's desktop as well as on approver devices. `false` leaves approvals to
+    /// the devices whose approver keys this host accepted (for a machine nobody sits at).
+    #[serde(default = "default_true")]
+    pub approval_prompt: bool,
 }
 
 impl Default for HostSection {
     fn default() -> Self {
-        Self { name: None, approval_timeout_secs: default_approval_timeout() }
+        Self { name: None, approval_timeout_secs: default_approval_timeout(), approval_prompt: true }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_approval_timeout() -> u64 {

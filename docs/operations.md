@@ -22,7 +22,7 @@ the configuration formats.
 6. [Levels, revoke, unrevoke, forget](#6-levels-revoke-unrevoke-forget)
 7. [When a host refuses](#7-when-a-host-refuses)
 8. [Doctor](#8-doctor)
-9. [Approval prompts](#9-approval-prompts)
+9. [Approvals](#9-approvals)
 10. [Audit log](#10-audit-log)
 11. [Host configuration file](#11-host-configuration-file)
 12. [Self-hosted relays](#12-self-hosted-relays)
@@ -49,6 +49,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote revoke <peer>` / `unrevoke <peer>` | refuse a controller, or lift that |
 | `ai-remote forget <peer>` | remove a controller's pairing |
 | `ai-remote stop-host` | stop the running host |
+| `ai-remote approvers [add\|remove]` | approver keys: people who may approve from a paired device ([approvals.md](approvals.md)) |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | manage mounted MCP servers ([tools.md](tools.md#7-mounted-mcp-servers)) |
 
 **On the controller:**
@@ -59,6 +60,9 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote hosts` | paired hosts and the level each granted at pairing |
 | `ai-remote unpair <host>` | forget a host on this controller |
 | `ai-remote call <tool> ['{json args}'] [--host H]` | call one tool and print the result |
+| `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
+| `ai-remote approvals` / `approve <id>` / `deny <id>` | list, allow or deny calls waiting for approval ([approvals.md](approvals.md)) |
+| `ai-remote approver [--enroll <host>]` | this device's approver key, or offer it to a host |
 | `ai-remote mcp` | stdio MCP server for an MCP client |
 | `ai-remote agent` / `stop-agent` | run the controller agent in the foreground, or stop it |
 
@@ -461,13 +465,19 @@ Overall: warn
 The firewall check looks at the program that runs the host: the running host's executable, or
 without a host the one autostart would run.
 
-## 9. Approval prompts
+## 9. Approvals
 
 A call needs approval when its action is `ask`: the default for `shell` and `jobs_start`, for admin
 tools of mounted servers without an `approve` setting and for mounted tools with `approve = "ask"`,
 or whenever a policy rule says `ask` (see [tools.md](tools.md#8-policy-rules)).
 
-The host shows a native warning dialog on its desktop, titled "ai-remote: approve an action":
+Two kinds of people can answer, and the first answer wins: someone at the host, in a dialog on its
+desktop (9.1), and the owner on a paired device whose approver key the host accepted (9.2).
+
+### 9.1 At the host
+
+Unless `approval_prompt = false`, the host shows a native warning dialog on its desktop, titled
+"ai-remote: approve an action":
 
 ```
 "laptop" wants to run: shell
@@ -481,18 +491,44 @@ Allow this once? (No answer within 60 s counts as No.)
 ```
 
 - **Yes** runs this one call. There is no "always allow" button; use a policy rule for that.
-- **No**, no answer within `approval_timeout_secs` (default 60, at least 5), or no way to show the
-  dialog (locked desktop, secure desktop, no interactive session) all refuse the call, and the agent
-  is told which of these happened. After a timeout the dialog may stay on screen, but its answer is
-  ignored.
+- **No**, or no answer within `approval_timeout_secs` (default 60, at least 5), refuses the call, and
+  the agent is told which of these happened. When the dialog cannot be shown (locked desktop, secure
+  desktop, no interactive session), only approver devices can answer; without any, the call is refused
+  at once. After a timeout, or when a device answered first, the dialog may stay on screen, but its
+  answer is ignored.
 - The text the caller controls is shown safely: control characters are escaped, the intent is cut at
   600 characters and the arguments preview at about 400. Secret values (environment values, standard
   input, clipboard text) appear only by size, such as `<hidden: 12 chars>`.
 - While any prompt waits for its answer, every mouse and keyboard call from every controller is
   refused, and input can never be aimed at the host's own windows, so a controller cannot answer its
   own prompt.
-- On an unattended machine nobody can answer. Either give such devices only the tools they need, or
-  allow specific tools for a specific device with a rule (`action = "allow"` skips the prompt).
+- On an unattended machine nobody can answer at the host. Approve from a device (9.2), give such
+  devices only the tools they need, or allow specific tools for a specific device with a rule
+  (`action = "allow"` skips the prompt).
+
+### 9.2 From a paired device
+
+The owner can allow or deny from a paired device. Allowing needs that device's approver key, which the
+OS keeps behind Windows Hello (Touch ID and Face ID with the macOS and iPhone apps), so an agent running
+on the same device cannot approve its own request. Denying needs no key. Set it up once:
+
+```bash
+# on the controller device: create the key (Windows Hello asks you) and offer it to the host
+ai-remote approver --enroll office-pc
+```
+
+Someone at the host confirms the new key in a prompt. Without a usable desktop there, print the key
+with `ai-remote approver` on the device and add it in the host's terminal:
+`ai-remote approvers add <device> <scheme>:<key>`. Then:
+
+```bash
+ai-remote approvals                                  # what is waiting, with ids
+ai-remote approve 3f9c2a                             # Windows Hello, then the call runs
+ai-remote deny 3f9c2a --note "use the recycle bin"   # the agent receives the note
+```
+
+A machine nobody sits at can set `approval_prompt = false` and a longer `approval_timeout_secs`. The
+design, the signed message and the threat model are in [approvals.md](approvals.md).
 
 ## 10. Audit log
 
@@ -537,7 +573,8 @@ fixed file is picked up within at most 5 minutes).
 ```toml
 [host]
 name = "office-pc"           # shown to controllers; default: the machine name
-approval_timeout_secs = 60   # how long a prompt waits; at least 5
+approval_timeout_secs = 60   # how long an approval waits; at least 5
+approval_prompt = true       # false: no dialog here, approve only from devices (section 9.2)
 
 [network]
 relays = []                  # empty: the default public relays (section 12)

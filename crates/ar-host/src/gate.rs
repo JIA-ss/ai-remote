@@ -2,7 +2,8 @@
 //!
 //! 1. the caller's current level (re-read on every call, so a downgrade applies immediately);
 //! 2. policy (`allow` / `ask` / `deny`);
-//! 3. owner approval when the policy says `ask`;
+//! 3. owner approval when the policy says `ask`, at the host or on an approver device (see
+//!    [`crate::approval`]);
 //! 4. audit record of the decision;
 //! 5. the call itself, cancelled when the session or connection ends or the controller cancels the
 //!    request;
@@ -21,12 +22,31 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     HostState,
-    approval::{ApprovalRequest, Verdict},
+    approval::{ApprovalRequest, Resolution, Verdict},
     audit::{AuditRecord, now_ms},
     policy, result_budget,
     session::{Session, ToolCtx},
     tools,
 };
+
+/// What the agent is told when an approval did not end in "approved".
+fn declined(tool: &str, r: &Resolution) -> String {
+    let who = match r.by.as_deref() {
+        Some("host") => "The person at the host".to_string(),
+        Some(device) => format!("The owner (on {device})"),
+        None => "The owner".to_string(),
+    };
+    let first = match r.verdict {
+        Verdict::Denied => format!("{who} declined '{tool}'."),
+        Verdict::Timeout => format!("Nobody approved '{tool}' in time, so it was declined."),
+        _ => format!(
+            "Nobody can approve '{tool}' right now (the host's desktop is locked or unattended and no approver \
+             device is set up), so it was declined."
+        ),
+    };
+    let note = r.note.as_deref().map(|n| format!(" They said: \"{n}\"")).unwrap_or_default();
+    format!("{first}{note} Do not retry automatically; tell the user what you wanted to do.")
+}
 
 /// `cancel` is the request's own token (cancelled by the controller's `notifications/cancelled`).
 pub async fn call(
@@ -55,6 +75,8 @@ pub async fn call(
         principal: session.peer.principal.as_deref(),
         tool: name,
         decision: None,
+        approval: None,
+        by: None,
         intent: intent.as_deref(),
         args_hash: &args_hash,
         args_preview: None,
@@ -90,6 +112,7 @@ pub async fn call(
     }
 
     // 2-3. Policy and approval.
+    let (mut approval, mut approved_by) = (None::<String>, None::<String>);
     let action = policy::decide(&host.config().rules, name, &session.peer, spec.default_action);
     let decision = match action {
         Action::Allow => "allow",
@@ -102,38 +125,46 @@ pub async fn call(
             return Ok(refusal(&format!("The host's policy does not allow '{name}'.")));
         }
         Action::Ask => {
-            let verdict = host
+            let r = host
                 .approver()
-                .ask(ApprovalRequest {
-                    peer: session.peer.name.clone(),
-                    tool: name.to_string(),
-                    intent: intent.clone(),
-                    args_preview: preview.clone(),
-                })
+                .ask(
+                    &host.mesh().principal(),
+                    host.audit(),
+                    ApprovalRequest {
+                        session: session.id.clone(),
+                        peer: session.peer.name.clone(),
+                        principal: session.peer.principal.clone(),
+                        tool: name.to_string(),
+                        intent: intent.clone(),
+                        args_preview: preview.clone(),
+                        args_hash: args_hash.clone(),
+                    },
+                )
                 .await;
-            if verdict != Verdict::Approved {
+            approval = r.id.clone();
+            approved_by = r.by.clone();
+            if r.verdict != Verdict::Approved {
                 host.audit().write(&AuditRecord {
-                    decision: Some(verdict.as_str()),
+                    decision: Some(r.verdict.as_str()),
+                    approval: approval.as_deref(),
+                    by: approved_by.as_deref(),
                     args_preview: Some(&preview),
                     ..record("decision")
                 });
-                let why = match verdict {
-                    Verdict::Denied => "The host owner declined",
-                    Verdict::Timeout => "Nobody approved it on the host in time for",
-                    _ => {
-                        "No one can approve actions on the host right now (desktop locked or unattended), so it refused"
-                    }
-                };
-                return Ok(refusal(&format!(
-                    "{why} '{name}'. Do not retry automatically; tell the user what you wanted to do."
-                )));
+                return Ok(refusal(&declined(name, &r)));
             }
             "approved"
         }
     };
 
     // 4. Decision record.
-    host.audit().write(&AuditRecord { decision: Some(decision), args_preview: Some(&preview), ..record("decision") });
+    host.audit().write(&AuditRecord {
+        decision: Some(decision),
+        approval: approval.as_deref(),
+        by: approved_by.as_deref(),
+        args_preview: Some(&preview),
+        ..record("decision")
+    });
 
     // 5. The call, bounded by the session's lifetime and the request's own cancellation.
     let started = Instant::now();

@@ -12,7 +12,10 @@ authors.workspace = true
 ar-core.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true
+blake3.workspace = true
+data-encoding.workspace = true
 futures.workspace = true
+ring = { workspace = true, optional = true }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,5 +23,19 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
+[features]
+# Accept a plain key file as the approver key (AI_REMOTE_SOFTWARE_APPROVER=1). It has no presence
+# check: for automated tests only, never in release builds.
+software-approver = ["dep:ring"]
+
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Security_Credentials",
+  "Security_Cryptography",
+  "Security_Cryptography_Core",
+  "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_System_Console",
+] }
+windows-core = "0.62"
