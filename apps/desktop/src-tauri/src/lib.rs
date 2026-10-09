@@ -120,6 +120,78 @@ async fn subscribe_events(
     Ok(id)
 }
 
+/// A call waiting for a person on a host.
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApproval {
+    pub id: String,
+    /// The device whose agent asked.
+    pub peer: String,
+    pub tool: String,
+    pub intent: Option<String>,
+    pub args_preview: String,
+    /// When the host stops waiting (milliseconds since the Unix epoch).
+    pub expires_ms: f64,
+}
+
+/// What is waiting for approval on a host (or the only paired host), and that host's name.
+#[tauri::command]
+#[specta::specta]
+async fn pending_approvals(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<(String, Vec<PendingApproval>), String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    let (host, waiting) = ar_controller::approver::pending(&mut conn, host.as_deref()).await.map_err(text)?;
+    let waiting = waiting
+        .into_iter()
+        .map(|w| PendingApproval {
+            id: w.id,
+            peer: w.peer,
+            tool: w.tool,
+            intent: w.intent,
+            args_preview: w.args_preview,
+            expires_ms: w.expires_ms as f64,
+        })
+        .collect();
+    Ok((host, waiting))
+}
+
+/// Allows one waiting call. Windows Hello asks the person first (over this window); the host checks
+/// the signature against this device's accepted approver key.
+#[tauri::command]
+#[specta::specta]
+async fn approve(state: State<'_, AppState>, host: String, id: String) -> Result<(), String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    let (host, waiting) = ar_controller::approver::find(&mut conn, Some(&host), &id).await.map_err(text)?;
+    ar_controller::approver::allow(&mut conn, &state.profile, &host, &waiting).await.map_err(text)
+}
+
+/// Denies one waiting call; `note` is passed to the agent ("Tell the agent instead").
+#[tauri::command]
+#[specta::specta]
+async fn deny(state: State<'_, AppState>, host: String, id: String, note: Option<String>) -> Result<(), String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::deny(&mut conn, &host, &id, note.as_deref()).await.map_err(text)
+}
+
+/// Whether `host` accepted this device's approver key: `null` when this device has none yet.
+#[tauri::command]
+#[specta::specta]
+async fn approver_status(state: State<'_, AppState>, host: Option<String>) -> Result<Option<bool>, String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::accepted(&mut conn, &state.profile, host.as_deref()).await.map_err(text)
+}
+
+/// Creates this device's approver key if needed (Windows Hello confirms) and offers it to `host`;
+/// resolves once someone at the host accepted or declined it.
+#[tauri::command]
+#[specta::specta]
+async fn enroll_approver(state: State<'_, AppState>, host: String) -> Result<Json, String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::enroll(&mut conn, &state.profile, Some(&host)).await.map(Json).map_err(text)
+}
+
 /// Ends a feed started by [`subscribe_events`].
 #[tauri::command]
 #[specta::specta]
@@ -139,6 +211,11 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         call_tool,
         subscribe_events,
         unsubscribe_events,
+        pending_approvals,
+        approve,
+        deny,
+        approver_status,
+        enroll_approver,
     ])
 }
 
