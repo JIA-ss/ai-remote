@@ -69,7 +69,8 @@ impl Tool for ClipboardRead {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct WriteParams {
-    /// Text to put on the clipboard (replaces what is there).
+    /// Text to put on the clipboard (replaces what is there). Not shown in approval prompts or the
+    /// audit log (only its length): clipboards often carry passwords.
     text: String,
     /// Why you are changing the clipboard; shown to the host owner in approval prompts and the audit log.
     #[serde(default)]
@@ -98,6 +99,10 @@ impl ClipboardWrite {
 impl Tool for ClipboardWrite {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    fn secret_args(&self) -> &'static [&'static str] {
+        &["text"]
     }
 
     async fn call(&self, _ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
