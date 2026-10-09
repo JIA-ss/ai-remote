@@ -12,6 +12,10 @@ pub mod store;
 pub use level::Level;
 pub use profile::{Profile, Role};
 
+/// The MCP client name a controller gives the sessions it opens for a person at its keyboard (the
+/// desktop app while someone drives); every other session is an agent's.
+pub const PERSON_CLIENT: &str = "ai-remote person";
+
 /// Version of this build, reported to peers in `system_info`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

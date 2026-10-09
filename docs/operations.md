@@ -63,6 +63,9 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | list, allow or deny calls waiting for approval ([approvals.md](approvals.md)) |
 | `ai-remote approver [--enroll <host>]` | this device's approver key, or offer it to a host |
+| `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | take the controls from the agent, and give them back (section 9.3) |
+| `ai-remote pause` / `resume` | stop the agent on a host until you resume it |
+| `ai-remote tell <text>` | leave a message for the agent; it arrives with its next result |
 | `ai-remote mcp` | stdio MCP server for an MCP client |
 | `ai-remote agent` / `stop-agent` | run the controller agent in the foreground, or stop it |
 
@@ -529,6 +532,28 @@ ai-remote deny 3f9c2a --note "use the recycle bin"   # the agent receives the no
 
 A machine nobody sits at can set `approval_prompt = false` and a longer `approval_timeout_secs`. The
 design, the signed message and the threat model are in [approvals.md](approvals.md).
+
+### 9.3 Taking over, pausing, and messages to the agent
+
+An agent and a person take turns on one computer. From a paired device with level `control` or above:
+
+```bash
+ai-remote take-over             # you drive; the agent's next call is refused with "a person took over"
+ai-remote take-over --let-watch # same, but the agent may keep looking (observe-level tools only)
+ai-remote hand-back --note "I fixed the chart title"
+ai-remote pause                 # nobody drives; any paired device may pause
+ai-remote resume
+ai-remote tell "Use the D: drive for the export"
+```
+
+- While you drive, only your own calls run: those the desktop app makes for you, or
+  `ai-remote call ... --person`. What you type is logged by size only.
+- Handing back, and every `tell`, queues a message that is added to the agent's next call result
+  ("Messages from the owner while you worked: ..."), so the agent knows the screen may have changed.
+- Each change is an audit line (`driver`: `agent`, `person` or `paused`, who, and the note), and
+  every session records whether it is an agent's or a person's (`client` on `session_start`).
+- Turns coordinate people and agents; they are not a security boundary (an agent on the same device
+  could make calls marked as a person's). Levels, policy and approvals are what limit an agent.
 
 ## 10. Audit log
 

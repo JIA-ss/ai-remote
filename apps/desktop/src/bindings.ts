@@ -12,8 +12,12 @@ export const commands = {
 	pair: (ticket: string, name: string | null) => typedError<Json, string>(__TAURI_INVOKE("pair", { ticket, name })),
 	/**  Forgets a host on this device. */
 	unpair: (host: string) => typedError<Json, string>(__TAURI_INVOKE("unpair", { host })),
-	/**  Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`). */
-	callTool: (host: string | null, tool: string, args: Json) => typedError<Json, string>(__TAURI_INVOKE("call_tool", { host, tool, args })),
+	/**
+	 *  Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
+	 *  `person`: the person at this device makes the call (while they drive), so it runs after they
+	 *  took over; everything else is treated like the agent.
+	 */
+	callTool: (host: string | null, tool: string, args: Json, person: boolean) => typedError<Json, string>(__TAURI_INVOKE("call_tool", { host, tool, args, person })),
 	/**
 	 *  Subscribes to a host's live activity feed. Every event (one parsed JSON object) is sent on
 	 *  `on_event`; returns an id for [`unsubscribe_events`].
@@ -37,6 +41,13 @@ export const commands = {
 	 *  resolves once someone at the host accepted or declined it.
 	 */
 	enrollApprover: (host: string) => typedError<Json, string>(__TAURI_INVOKE("enroll_approver", { host })),
+	/**
+	 *  Changes who drives `host`: `take_over` (with `agentMayWatch`), `hand_back` (with an optional
+	 *  note for the agent), `pause` or `resume`. Returns the new driver.
+	 */
+	setTurn: (host: string, action: string, agentMayWatch: boolean, note: string | null) => typedError<Json, string>(__TAURI_INVOKE("set_turn", { host, action, agentMayWatch, note })),
+	/**  Leaves a message for the agent working on `host`; it arrives with its next call result. */
+	tellAgent: (host: string, message: string) => typedError<null, string>(__TAURI_INVOKE("tell_agent", { host, message })),
 };
 
 /* Types */

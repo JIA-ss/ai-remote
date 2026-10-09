@@ -62,6 +62,9 @@
 | `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | 列出、允许或拒绝等待审批的调用（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
 | `ai-remote approver [--enroll <被控端>]` | 本设备的审批密钥，或把它提交给被控端 |
+| `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | 从 Agent 手里接管，以及交还控制（9.3 节） |
+| `ai-remote pause` / `resume` | 暂停某台被控端上的 Agent，直到你恢复 |
+| `ai-remote tell <文字>` | 给 Agent 留言；它会随下一次调用结果送达 |
 | `ai-remote mcp` | 给 MCP 客户端用的 stdio MCP server |
 | `ai-remote agent` / `stop-agent` | 在前台运行控制端常驻进程，或停止它 |
 
@@ -476,6 +479,27 @@ ai-remote deny 3f9c2a --note "use the recycle bin"   # Agent 会收到这句话
 
 没人坐着的机器可以设置 `approval_prompt = false`，并调长 `approval_timeout_secs`。设计、签名的消息和威胁模型见
 [approvals.zh-CN.md](approvals.zh-CN.md)。
+
+### 9.3 接管、暂停和给 Agent 留言
+
+Agent 和人在同一台电脑上轮流操作。在级别为 `control` 或以上的已配对设备上：
+
+```bash
+ai-remote take-over             # 由你操作；Agent 的下一次调用会被拒绝，提示“有人接管了”
+ai-remote take-over --let-watch # 同上，但 Agent 还可以继续看（只限 observe 级工具）
+ai-remote hand-back --note "I fixed the chart title"
+ai-remote pause                 # 暂停，谁都不操作；任何已配对设备都可以暂停
+ai-remote resume
+ai-remote tell "Use the D: drive for the export"
+```
+
+- 你操作期间只有你自己的调用会执行：桌面应用替你发出的调用，或者 `ai-remote call ... --person`。你键入的内容在日志里只记录长度。
+- 交还控制以及每条 `tell` 都会排队一条留言，附在 Agent 下一次调用的结果里（“Messages from the owner while you worked: ...”），
+  让 Agent 知道屏幕可能变了。
+- 每次切换都是一条审计记录（`driver`：`agent`、`person` 或 `paused`，谁操作的，附言），每个会话也会记录它属于 Agent 还是人
+  （`session_start` 里的 `client`）。
+- 轮流操作是为了协调人和 Agent，不是安全边界（同一台设备上的 Agent 也能发出标记为“人”的调用）。真正限制 Agent 的是
+  权限级别、策略和审批。
 
 ## 10. 审计日志
 

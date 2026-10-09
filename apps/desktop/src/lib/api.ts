@@ -4,7 +4,9 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
 import { demoBackend } from "./demo";
-import type { AgentStatus, FeedEvent, Host, Level, PathKind, PendingApproval } from "./types";
+import type { AgentStatus, Driver, FeedEvent, Host, Level, PathKind, PendingApproval } from "./types";
+
+export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
 export interface ToolContent {
   type: "text" | "image" | string;
@@ -32,7 +34,8 @@ export interface Backend {
   hosts(): Promise<Host[]>;
   pair(ticket: string, name?: string): Promise<Paired>;
   unpair(host: string): Promise<void>;
-  callTool(host: string, tool: string, args?: Record<string, unknown>): Promise<ToolResult>;
+  /** `person`: the person at this device makes the call (it runs while they have taken over). */
+  callTool(host: string, tool: string, args?: Record<string, unknown>, person?: boolean): Promise<ToolResult>;
   /** Follows a host's activity; returns a function that stops it. */
   subscribe(host: string, onEvent: (e: FeedEvent) => void): Promise<() => void>;
   pending(host: string): Promise<PendingApproval[]>;
@@ -42,6 +45,10 @@ export interface Backend {
   /** Whether the host accepted this device's approver key (`null`: no key on this device yet). */
   approverStatus(host: string): Promise<boolean | null>;
   enrollApprover(host: string): Promise<void>;
+  /** Take over (optionally letting the agent watch), hand back (with a note), pause or resume. */
+  setTurn(host: string, action: TurnAction, opts?: { agentMayWatch?: boolean; note?: string }): Promise<Driver>;
+  /** A message for the agent; it arrives with its next call result. */
+  tellAgent(host: string, text: string): Promise<void>;
 }
 
 class BridgeError extends Error {}
@@ -73,8 +80,8 @@ const tauriBackend: Backend = {
   async unpair(host) {
     unwrap(await commands.unpair(host));
   },
-  async callTool(host, tool, args = {}) {
-    return unwrap(await commands.callTool(host, tool, args)) as ToolResult;
+  async callTool(host, tool, args = {}, person = false) {
+    return unwrap(await commands.callTool(host, tool, args, person)) as ToolResult;
   },
   async subscribe(host, onEvent) {
     const channel = new Channel<unknown>();
@@ -97,6 +104,15 @@ const tauriBackend: Backend = {
   },
   async enrollApprover(host) {
     unwrap(await commands.enrollApprover(host));
+  },
+  async setTurn(host, action, opts = {}) {
+    const v = unwrap(await commands.setTurn(host, action, opts.agentMayWatch ?? false, opts.note ?? null)) as {
+      driver: Driver;
+    };
+    return v.driver;
+  },
+  async tellAgent(host, text) {
+    unwrap(await commands.tellAgent(host, text));
   },
 };
 

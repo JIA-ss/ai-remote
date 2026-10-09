@@ -40,11 +40,15 @@ pub enum AgentRequest {
     Unpair {
         host: String,
     },
-    /// Call one tool on one host and return the result (for the CLI and scripts).
+    /// Call one tool on one host and return the result (for the CLI, scripts and the app).
     Call {
         host: Option<String>,
         tool: String,
         args: serde_json::Map<String, Value>,
+        /// The call comes from a person at this device (the app while someone drives), so it runs
+        /// while they have taken over.
+        #[serde(default)]
+        person: bool,
     },
     /// Upgrade this connection to an aggregated MCP session.
     Mcp,
@@ -52,11 +56,11 @@ pub enum AgentRequest {
     Events {
         host: Option<String>,
     },
-    /// One request on a host's approval channel, returning the host's reply: `{"pending":true}`,
-    /// `{"answer":{...}}`, `{"enroll":{...}}` or `{"approver_status":{...}}` (see the host's events
-    /// protocol). Allowing needs a signature the caller made with the person's approver key; the
-    /// agent never signs and no MCP tool reaches this.
-    Approvals {
+    /// One request on a host's events channel, returning the host's reply: approvals (`pending`,
+    /// `answer`, `enroll`, `approver_status`) and turns (`turn`, `tell`); see the host's events
+    /// protocol. Allowing needs a signature the caller made with the person's approver key; the
+    /// agent never signs, and no MCP tool reaches this.
+    Channel {
         host: Option<String>,
         request: Value,
     },
@@ -343,8 +347,9 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             known.save(&agent.hosts_path)?;
             json!({"host": peer.name, "unpaired": true})
         }
-        AgentRequest::Call { host, tool, args } => {
-            let aggregator = Aggregator::new(agent.clone());
+        AgentRequest::Call { host, tool, args, person } => {
+            let aggregator =
+                if person { Aggregator::for_person(agent.clone()) } else { Aggregator::new(agent.clone()) };
             let host = match host {
                 Some(h) => h,
                 None => aggregator.only_host().await?,
@@ -355,7 +360,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                 .map_err(|e| anyhow!("host '{host}': {e:#}"))?;
             serde_json::to_value(result)?
         }
-        AgentRequest::Approvals { host, request } => approvals_request(agent, host, &request).await?,
+        AgentRequest::Channel { host, request } => channel_request(agent, host, &request).await?,
         AgentRequest::Mcp | AgentRequest::Events { .. } => bail!("unreachable"),
         AgentRequest::Shutdown => {
             shutdown.cancel();
@@ -364,16 +369,16 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
     })
 }
 
-/// Longest reply accepted on the approval channel.
-const MAX_APPROVALS_REPLY: u64 = 1 << 20;
+/// Longest reply accepted on the events channel.
+const MAX_CHANNEL_REPLY: u64 = 1 << 20;
 
-/// Sends one request on `host`'s approval channel and returns its reply (with the host's name
-/// added). An `enroll` waits for someone at the host to confirm, so the wait is long.
-async fn approvals_request(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<Value> {
-    const ALLOWED: [&str; 4] = ["pending", "answer", "enroll", "approver_status"];
+/// Sends one request on `host`'s events channel and returns its reply (with the host's name added).
+/// An `enroll` waits for someone at the host to confirm, so the wait is long.
+async fn channel_request(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<Value> {
+    const ALLOWED: [&str; 6] = ["pending", "answer", "enroll", "approver_status", "turn", "tell"];
     let kind = request.as_object().filter(|o| o.len() == 1).and_then(|o| o.keys().next().cloned());
     if !kind.as_deref().is_some_and(|k| ALLOWED.contains(&k)) {
-        bail!("approval requests are one of: {}", ALLOWED.join(", "));
+        bail!("host channel requests are one of: {}", ALLOWED.join(", "));
     }
     let host = match host {
         Some(h) => agent.mesh.find_peer(&h).await?.name,
@@ -392,10 +397,7 @@ async fn approvals_request(agent: &Arc<Agent>, host: Option<String>, request: &V
     let mut reply = String::new();
     let read = tokio::time::timeout(
         Duration::from_secs(30 * 60),
-        tokio::io::AsyncBufReadExt::read_line(
-            &mut tokio::io::BufReader::new(recv.take(MAX_APPROVALS_REPLY)),
-            &mut reply,
-        ),
+        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(recv.take(MAX_CHANNEL_REPLY)), &mut reply),
     )
     .await;
     conn.close(0u32.into(), b"done");

@@ -125,7 +125,8 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   a stream per request and writes one JSON line: `{"subscribe":true}` returns the host's recent audit
   lines and then every new one (tool decisions and outcomes, sessions, approvals), which `ai-remote
   watch` and the apps turn into the agent's timeline; `pending`, `answer`, `enroll` and
-  `approver_status` serve remote approvals ([approvals.md](approvals.md#wire-format)).
+  `approver_status` serve remote approvals ([approvals.md](approvals.md#wire-format)); `turn` (take
+  over, hand back, pause, resume) and `tell` (a message for the agent) serve turn-taking.
 - *(planned)* `app/ai-remote/screen/1` for live video to people, `app/ai-remote/file/1` for bulk
   file transfer.
 
@@ -133,8 +134,10 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
 
 Every tool call, built-in or mounted, goes through the same pipeline on the host:
 
-1. **Level**: the caller's level is re-read on every call and must reach the tool's level. Tools
-   above the caller's level are also left out of the tool list it receives.
+1. **Level and turn**: the caller's level is re-read on every call and must reach the tool's level.
+   Tools above the caller's level are also left out of the tool list it receives. While a person has
+   taken over or paused the agent, an agent's calls are refused with a sentence saying so
+   ([operations.md](operations.md#93-taking-over-pausing-and-messages-to-the-agent)).
 2. **Policy**: rules in `ai-remote.toml`, first match wins; otherwise the tool's default
    (observe and control tools run, admin tools ask, except the job tools that only read or stop
    jobs). Annotations from mounted servers are hints, never the authority.

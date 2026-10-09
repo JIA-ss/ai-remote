@@ -1,6 +1,12 @@
 //! Per-session state and the context every tool call receives.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use ar_core::Level;
 use ar_net::Peer;
@@ -44,6 +50,9 @@ pub struct Session {
     pub level: Level,
     /// Cancelled when the session or the whole connection ends (and on revocation).
     pub cancel: CancellationToken,
+    /// A person's session (the desktop app while someone drives), not an agent's; set once the
+    /// controller introduced itself.
+    person: AtomicBool,
     shots: Mutex<Shots>,
 }
 
@@ -57,7 +66,15 @@ struct Shots {
 impl Session {
     pub fn new(peer: Peer, level: Level, cancel: CancellationToken) -> Self {
         let id = format!("{:08x}", rand_u32());
-        Self { id, peer, level, cancel, shots: Mutex::new(Shots::default()) }
+        Self { id, peer, level, cancel, person: AtomicBool::new(false), shots: Mutex::new(Shots::default()) }
+    }
+
+    pub fn person(&self) -> bool {
+        self.person.load(Ordering::Relaxed)
+    }
+
+    pub fn set_person(&self, person: bool) {
+        self.person.store(person, Ordering::Relaxed);
     }
 
     /// Records a screenshot's geometry and returns its id.

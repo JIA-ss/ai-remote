@@ -93,14 +93,16 @@ impl AuditLog {
         }
     }
 
-    /// Records that a controller's MCP session started (`session_start`) or ended (`session_end`).
-    pub fn session(&self, kind: &str, session: &str, peer: &str, principal: Option<&str>) {
+    /// Records that a controller's MCP session started (`session_start`) or ended (`session_end`);
+    /// `client` is `agent` or `person` (the desktop app while someone drives).
+    pub fn session(&self, kind: &str, session: &str, peer: &str, principal: Option<&str>, client: &str) {
         let value = serde_json::json!({
             "ts": now_ms(),
             "kind": kind,
             "session": session,
             "peer": peer,
             "principal": principal,
+            "client": client,
         });
         self.append(value.to_string());
     }
@@ -182,11 +184,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "{\"old\":1}\n{\"old\":2}\n").unwrap();
         let log = AuditLog::open(&path).unwrap();
-        log.session("session_start", "s1", "peer", None);
+        log.session("session_start", "s1", "peer", None, "agent");
         let (backlog, mut rx) = log.subscribe();
         assert_eq!(backlog.len(), 3, "{backlog:?}");
         assert!(backlog[2].contains("session_start"));
-        log.session("session_end", "s1", "peer", None);
+        log.session("session_end", "s1", "peer", None, "agent");
         assert!(rx.recv().await.unwrap().contains("session_end"));
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 4);
         std::fs::remove_dir_all(&dir).unwrap();
