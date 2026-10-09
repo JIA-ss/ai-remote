@@ -31,7 +31,16 @@ function seedOffice() {
   const start = Date.now() - 2 * minute - 9_000;
   const s = "s-7f3a";
   const peer = "home-laptop";
-  const ev: FeedEvent[] = [{ kind: "session_start", ts: start, session: s, peer, client: "agent", agent: "claude-code" }];
+  const ev: FeedEvent[] = [
+    { kind: "session_start", ts: start, session: s, peer, client: "agent", agent: "claude-code" },
+    {
+      kind: "task",
+      ts: start + 400,
+      session: s,
+      peer,
+      task: "Export the Q3 report as a PDF, delete the old drafts, and share the report with Finance.",
+    },
+  ];
   const call = (at: number, tool: string, hash: string, intent: string, args: string, ms: number) => {
     ev.push({ kind: "decision", ts: start + at, session: s, peer, tool, decision: "allow", intent, args_hash: hash, args_preview: args });
     ev.push({ kind: "outcome", ts: start + at + ms, session: s, peer, tool, args_hash: hash, outcome: "ok", duration_ms: ms });

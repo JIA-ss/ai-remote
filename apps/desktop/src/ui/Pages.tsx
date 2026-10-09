@@ -132,11 +132,17 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
       </div>
       <div className="cp-cols">
         <div>
-          <div className="colh">{t("agent_l")}</div>
-          <div className="body">{c.feed.agent ? agent : "—"}</div>
-          <div className="cap c3" style={{ marginTop: 6 }}>
-            {Object.values(c.feed.sessions).find((s) => !s.person)?.peer ?? ""}
-          </div>
+          <div className="colh">{t("cur_task")}</div>
+          {c.feed.task ? (
+            <>
+              <div className="body">{c.feed.task.text}</div>
+              <div className="cap c3" style={{ marginTop: 6 }}>
+                {t("cur_task_by", { agent, time: clock(c.feed.task.ts, false), device: c.feed.task.peer })}
+              </div>
+            </>
+          ) : (
+            <div className="body c3">{c.feed.agent ? agent : "—"}</div>
+          )}
         </div>
         <div>
           <div className="colh">

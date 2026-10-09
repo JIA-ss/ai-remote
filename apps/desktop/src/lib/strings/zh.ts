@@ -74,6 +74,10 @@ export const zh: Record<keyof typeof en, string> = {
   back_computers: "返回电脑列表",
   try_again: "重试",
 
+  task_l: "任务",
+  task_from: "来自 {device} 上的 {agent}",
+  cur_task: "当前任务",
+  cur_task_by: "{agent} 于 {time} 在 {device} 上发起",
   tab_steps: "步骤",
   tab_sees: "智能体视角",
   now: "现在",

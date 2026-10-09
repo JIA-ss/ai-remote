@@ -1,4 +1,5 @@
-//! `system_info`: what an agent needs to know before it starts operating this machine.
+//! `system_info`: what an agent needs to know before it starts operating this machine; `set_task`:
+//! what it is about to do, for the owner watching.
 
 use std::sync::Arc;
 
@@ -12,7 +13,54 @@ use super::{NoParams, Tool, ToolSpec, json};
 use crate::{platform, session::ToolCtx};
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
-    vec![Arc::new(SystemInfo::new()), Arc::new(Doctor::new())]
+    vec![Arc::new(SystemInfo::new()), Arc::new(Doctor::new()), Arc::new(SetTask::new())]
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SetTaskParams {
+    /// The task in one or two sentences, as the user gave it ("Export the Q3 report as a PDF, delete
+    /// the old drafts and share the report with Finance."). At most 500 characters.
+    task: String,
+}
+
+/// `set_task`: the agent says what it is working on; the owner's app shows it above the steps.
+struct SetTask {
+    spec: ToolSpec,
+}
+
+impl SetTask {
+    fn new() -> Self {
+        Self {
+            spec: ToolSpec::new::<SetTaskParams>(
+                "set_task",
+                Level::Observe,
+                "Tell the owner what you are working on before you start, in one or two sentences as the user asked \
+                 it. Their app shows it above your steps. Call it again when the task changes.",
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for SetTask {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let p: SetTaskParams = super::parse(args)?;
+        let task: String = p.task.trim().chars().filter(|c| !c.is_control()).take(500).collect();
+        if task.is_empty() {
+            anyhow::bail!("say what the task is");
+        }
+        ctx.host.audit().event(json!({
+            "kind": "task",
+            "session": ctx.session.id,
+            "peer": ctx.session.peer.name,
+            "task": task,
+        }));
+        Ok(json(json!({"ok": true})))
+    }
 }
 
 /// `doctor`: the graded preflight (see [`crate::doctor`]), run inside the host.

@@ -475,12 +475,25 @@ export function SessionPage({
               </div>
             ) : (
               <>
+                {c.feed.task && (
+                  <div className="lr head">
+                    <span className="t">
+                      <b>{t("task_l")}</b>
+                      {clock(c.feed.task.ts, false)}
+                    </span>
+                    <span className="r" />
+                    <div className="x">
+                      {c.feed.task.text}
+                      <span className="sub">{t("task_from", { agent, device: c.feed.task.peer })}</span>
+                    </div>
+                  </div>
+                )}
                 {pending && (
-                  <div ref={cardRef}>
+                  <div ref={cardRef} style={{ marginTop: c.feed.task ? 24 : 0 }}>
                     <DecisionCard p={pending} host={host} agent={agent} askedMs={askedStep?.startedMs} />
                   </div>
                 )}
-                <div className="log" style={{ marginTop: pending ? 20 : 0 }}>
+                <div className="log" style={{ marginTop: pending ? 20 : c.feed.task ? 28 : 0 }}>
                   {running && (
                     <div className="lr now d-agent n-live">
                       <span className="t">

@@ -76,6 +76,10 @@ export const en = {
   try_again: "Try again",
 
   // the rail
+  task_l: "Task",
+  task_from: "From {agent} on {device}",
+  cur_task: "Current task",
+  cur_task_by: "{agent} started it at {time}, from {device}.",
   tab_steps: "Steps",
   tab_sees: "What the agent sees",
   now: "Now",
