@@ -1,0 +1,22 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "ai-remote",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "visible": false,
+        "label": "main",
+        "decorations": false,
+        "transparent": true,
+        "windowEffects": {
+          "effects": [
+            "mica"
+          ]
+        }
+      }
+    ]
+  }
+}

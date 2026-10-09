@@ -17,12 +17,20 @@
         "height": 800,
         "minWidth": 960,
         "minHeight": 600,
-        "visible": true
+        "visible": false,
+        "label": "main",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 24
+        }
       }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,

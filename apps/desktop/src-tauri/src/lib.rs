@@ -288,6 +288,10 @@ pub fn run() {
         PathBuf::from("ai-remote")
     });
     tauri::Builder::default()
+        // Windows: our page draws the 48 px title bar; the plugin adds the caption buttons and the
+        // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
+        // the page after its first paint (no white flash).
+        .plugin(tauri_plugin_frame::FramePluginBuilder::new().auto_titlebar(true).titlebar_height(48).build())
         .manage(AppState { profile, cli, feeds: Mutex::new(HashMap::new()), next_feed: AtomicU32::new(1) })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
