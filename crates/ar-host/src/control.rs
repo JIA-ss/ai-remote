@@ -1,10 +1,10 @@
 //! Local control channel of a running host, used by `ai-remote pair-code`, `peers`, `level`,
-//! `revoke` and friends on the same machine.
+//! `revoke`, `approvers` and friends on the same machine.
 
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use ar_core::{Level, VERSION};
+use ar_core::{Level, VERSION, approval::KeyAlg};
 use ar_net::{
     ipc::Conn,
     refusal::{CLOSE_NO_ACCESS, REASON_NOT_PAIRED},
@@ -38,6 +38,25 @@ pub enum HostRequest {
     },
     Forget {
         peer: String,
+    },
+    /// Approver keys this host accepted.
+    Approvers,
+    /// Accept an approver key for a paired device without a prompt (`ai-remote approvers add`, run
+    /// by someone at this computer).
+    AddApprover {
+        peer: String,
+        alg: KeyAlg,
+        /// Base64 DER SubjectPublicKeyInfo.
+        key: String,
+        #[serde(default)]
+        label: Option<String>,
+    },
+    /// Remove a device's approver keys: all of them, or the one whose fingerprint starts with
+    /// `fingerprint`.
+    RemoveApprover {
+        peer: String,
+        #[serde(default)]
+        fingerprint: Option<String>,
     },
     /// Run the graded preflight from inside the host (its session, token and network).
     Doctor,
@@ -107,6 +126,11 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
                 mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
             let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
             mesh.forget(&p).await?;
+            // A forgotten device's approver keys go with it; pairing again starts from nothing.
+            let mut approver_keys = 0;
+            for device in &devices {
+                approver_keys += host.approver().keys().remove(device, None)?;
+            }
             // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
             json!({
                 "peer": p.name,
@@ -114,7 +138,64 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
                 "forgotten": true,
                 "closed_connections": closed,
                 "still_revoked": p.revoked,
+                "approver_keys_removed": approver_keys,
             })
+        }
+        HostRequest::Approvers => {
+            let keys = host.approver().keys().list();
+            let keys: Vec<Value> = keys
+                .iter()
+                .map(|k| {
+                    json!({
+                        "device": k.device,
+                        "principal": k.principal,
+                        "alg": k.alg,
+                        "label": k.label,
+                        "fingerprint": k.fingerprint(),
+                        "added": k.added,
+                    })
+                })
+                .collect();
+            json!({"approvers": keys, "approval_prompt": host.config().host.approval_prompt})
+        }
+        HostRequest::AddApprover { peer, alg, key, label } => {
+            let p = mesh.find_peer(&peer).await?;
+            let principal = p.principal.as_deref().ok_or_else(|| anyhow!("that peer has no device id"))?;
+            let der = data_encoding::BASE64
+                .decode(key.trim().as_bytes())
+                .map_err(|_| anyhow!("the key is not base64 (copy it from `ai-remote approver` on that device)"))?;
+            let k = crate::approvers::ApproverKey::new(principal, &p.name, alg, &der, label.as_deref().unwrap_or(""))?;
+            let fingerprint = k.fingerprint();
+            let added = host.approver().keys().add(k)?;
+            host.audit().event(json!({
+                "kind": "approver_added",
+                "peer": p.name,
+                "principal": principal,
+                "alg": alg,
+                "fingerprint": fingerprint,
+                "via": "host command",
+            }));
+            json!({"peer": p.name, "fingerprint": fingerprint, "added": added})
+        }
+        HostRequest::RemoveApprover { peer, fingerprint } => {
+            // By pairing name or device id; a device whose pairing is gone is matched by its id or
+            // the name it had when its key was added.
+            let principal = match mesh.find_peer(&peer).await {
+                Ok(p) => p.principal.ok_or_else(|| anyhow!("that peer has no device id"))?,
+                Err(e) => host
+                    .approver()
+                    .keys()
+                    .list()
+                    .into_iter()
+                    .find(|k| k.device == peer || k.principal == peer)
+                    .map(|k| k.principal)
+                    .ok_or_else(|| anyhow!("{e:#}; no approver key matches '{peer}' either"))?,
+            };
+            let removed = host.approver().keys().remove(&principal, fingerprint.as_deref())?;
+            if removed > 0 {
+                host.audit().event(json!({"kind": "approver_removed", "principal": principal, "removed": removed}));
+            }
+            json!({"peer": peer, "removed": removed})
         }
         HostRequest::Shutdown => {
             shutdown.cancel();

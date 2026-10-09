@@ -54,6 +54,7 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
+ring.workspace = true
 tempfile.workspace = true
 
 # Mounted-server end-to-end test. It has its own main: the same binary also plays the mock MCP

@@ -1,5 +1,6 @@
 //! Append-only audit log: one JSON line per tool call, written before the call runs (decision)
-//! and after it finishes (outcome), plus the start and end of every controller session.
+//! and after it finishes (outcome), plus the start and end of every controller session, approval
+//! requests and their answers, and approver keys added.
 //!
 //! Every line is also published to live subscribers (the events protocol, which feeds a
 //! controller's activity timeline), after a backlog of the most recent lines. The backlog is seeded
@@ -47,6 +48,12 @@ pub struct AuditRecord<'a> {
     /// allow | approved | denied | timeout | unavailable | level | policy
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<&'a str>,
+    /// The approval request this decision came from (see the `approval` lines).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<&'a str>,
+    /// Who answered it: `host` or a device name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent: Option<&'a str>,
     /// BLAKE3 of the canonical argument JSON (lets you match calls without storing values).
@@ -95,6 +102,15 @@ impl AuditLog {
             "peer": peer,
             "principal": principal,
         });
+        self.append(value.to_string());
+    }
+
+    /// Records any other event (approvals, approver keys): `kind` and the other fields as given,
+    /// with the time added.
+    pub fn event(&self, mut value: serde_json::Value) {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("ts".into(), serde_json::json!(now_ms()));
+        }
         self.append(value.to_string());
     }
 

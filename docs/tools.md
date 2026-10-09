@@ -45,7 +45,7 @@ behaviour on macOS is *(planned)*. For installing and running hosts see
 - **Level** is the lowest device level that may call the tool. A controller only sees the tools its
   level allows, and the host re-checks the level on every call.
 - **Default action** applies when no policy rule matches: `allow` runs, `ask` shows the owner an
-  approval prompt first ([operations.md](operations.md#9-approval-prompts)). Rules can change it
+  approval prompt first ([operations.md](operations.md#9-approvals)). Rules can change it
   (section 8).
 - **Hint** is the MCP annotation (`readOnlyHint`, `destructiveHint`) for clients. The host never
   decides anything from annotations.

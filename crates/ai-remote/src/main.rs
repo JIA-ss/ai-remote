@@ -64,6 +64,12 @@ enum Command {
     Forget { peer: String },
     /// [host] Stop the running host.
     StopHost,
+    /// [host] People allowed to approve actions from a paired device: list their approver keys, or
+    /// add / remove one.
+    Approvers {
+        #[command(subcommand)]
+        command: Option<ApproversCommand>,
+    },
     /// [host] Manage mounted MCP servers (edits the host config; restart the host to apply).
     Mount {
         #[command(subcommand)]
@@ -87,6 +93,35 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
+    /// [controller] Show this device's approver key (created on first use; Windows Hello confirms
+    /// it), or offer it to a host with --enroll. With an accepted key you can allow actions from here.
+    Approver {
+        /// Offer the key to this host; someone there confirms it.
+        #[arg(long, value_name = "HOST")]
+        enroll: Option<String>,
+    },
+    /// [controller] List actions waiting for approval on a host.
+    Approvals {
+        /// Host name (optional when only one host is paired).
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// [controller] Allow one waiting action (Windows Hello asks you first).
+    Approve {
+        /// The approval id from `ai-remote approvals` (or its first 6+ characters).
+        id: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// [controller] Deny one waiting action.
+    Deny {
+        id: String,
+        #[arg(long)]
+        host: Option<String>,
+        /// Tell the agent why, or what to do instead.
+        #[arg(long)]
+        note: Option<String>,
+    },
     /// [controller] Call one tool on a host and print the result.
     Call {
         /// Tool name, e.g. system_info.
@@ -106,6 +141,26 @@ enum Command {
     StopAgent,
     /// Show this machine's device ids and whether the host and agent are running.
     Status,
+}
+
+#[derive(Subcommand)]
+enum ApproversCommand {
+    /// Accept a paired device's approver key without a prompt (the key printed by `ai-remote approver`
+    /// on that device). Run it here, at the host.
+    Add {
+        /// The device's name or id on this host (`ai-remote peers`).
+        peer: String,
+        /// `<scheme>:<base64 key>` exactly as `ai-remote approver` prints it.
+        key: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Remove a device's approver keys (all, or the one with this fingerprint).
+    Remove {
+        peer: String,
+        #[arg(long)]
+        fingerprint: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -301,6 +356,38 @@ async fn run(cli: Cli) -> Result<()> {
             print_result(json_out, &v, "host is stopping")
         }
         Command::Mount { command } => mount_command(&profile, command, json_out).await,
+        Command::Approvers { command } => approvers_command(&profile, command, json_out).await,
+        Command::Approver { enroll } => approver_command(&profile, enroll, json_out).await,
+        Command::Approvals { host } => {
+            let mut agent = ar_controller::connect_agent(&profile).await?;
+            let (host, waiting) = ar_controller::approver::pending(&mut agent, host.as_deref()).await?;
+            if json_out {
+                return print_json(&json!({"host": host, "pending": waiting}));
+            }
+            if waiting.is_empty() {
+                println!("Nothing is waiting for approval on {host}.");
+            }
+            for w in waiting {
+                print_waiting(&w);
+            }
+            Ok(())
+        }
+        Command::Approve { id, host } => {
+            let mut agent = ar_controller::connect_agent(&profile).await?;
+            let (host, waiting) = ar_controller::approver::find(&mut agent, host.as_deref(), &id).await?;
+            if !json_out {
+                print_waiting(&waiting);
+                println!("Confirm with Windows Hello to allow it once...");
+            }
+            ar_controller::approver::allow(&mut agent, &profile, &host, &waiting).await?;
+            print_result(json_out, &json!({"host": host, "id": waiting.id, "allowed": true}), "allowed once")
+        }
+        Command::Deny { id, host, note } => {
+            let mut agent = ar_controller::connect_agent(&profile).await?;
+            let (host, waiting) = ar_controller::approver::find(&mut agent, host.as_deref(), &id).await?;
+            ar_controller::approver::deny(&mut agent, &host, &waiting.id, note.as_deref()).await?;
+            print_result(json_out, &json!({"host": host, "id": waiting.id, "denied": true}), "denied")
+        }
         Command::Pair { ticket, name } => {
             let v = agent_request(&profile, json!({"op": "pair", "ticket": ticket, "name": name})).await?;
             if json_out {
@@ -377,6 +464,98 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Status => status(&profile, json_out).await,
     }
+}
+
+fn print_waiting(w: &ar_controller::approver::Waiting) {
+    let left = (w.expires_ms as i64 - chrono::Utc::now().timestamp_millis()).max(0) / 1000;
+    println!("{}  {} wants to run {}  ({left} s left)", &w.id[..12.min(w.id.len())], w.peer, w.tool);
+    if let Some(intent) = &w.intent {
+        println!("    why: {intent}");
+    }
+    println!("    {}", w.args_preview);
+}
+
+async fn approvers_command(profile: &Profile, command: Option<ApproversCommand>, json_out: bool) -> Result<()> {
+    match command {
+        None => {
+            let v = host_request(profile, HostRequest::Approvers).await?;
+            if json_out {
+                return print_json(&v);
+            }
+            let keys = v["approvers"].as_array().cloned().unwrap_or_default();
+            if keys.is_empty() {
+                println!(
+                    "No approver keys: only someone at this computer can approve. On a paired device, run \
+                     `ai-remote approver --enroll <this host>` to add one."
+                );
+            }
+            for k in keys {
+                let label = k["label"].as_str().filter(|l| !l.is_empty()).unwrap_or("(added at the host)");
+                println!(
+                    "{:<24} {}  {label}",
+                    k["device"].as_str().unwrap_or("?"),
+                    k["fingerprint"].as_str().unwrap_or("?")
+                );
+            }
+            if v["approval_prompt"] == false {
+                println!("Prompts on this computer are off (approval_prompt = false).");
+            }
+            Ok(())
+        }
+        Some(ApproversCommand::Add { peer, key, label }) => {
+            let (alg, key) = key.split_once(':').ok_or_else(|| anyhow!("expected <scheme>:<base64 key>"))?;
+            let alg: ar_core::approval::KeyAlg =
+                serde_json::from_value(json!(alg)).map_err(|_| anyhow!("unknown key scheme '{alg}'"))?;
+            let v = host_request(profile, HostRequest::AddApprover { peer, alg, key: key.to_string(), label }).await?;
+            let msg = if v["added"] == true {
+                format!(
+                    "{} can now approve from that device (key {})",
+                    v["peer"].as_str().unwrap_or("?"),
+                    v["fingerprint"].as_str().unwrap_or("?")
+                )
+            } else {
+                "that key was already accepted".to_string()
+            };
+            print_result(json_out, &v, &msg)
+        }
+        Some(ApproversCommand::Remove { peer, fingerprint }) => {
+            let v = host_request(profile, HostRequest::RemoveApprover { peer, fingerprint }).await?;
+            print_result(json_out, &v, &format!("removed {} approver key(s)", v["removed"]))
+        }
+    }
+}
+
+async fn approver_command(profile: &Profile, enroll: Option<String>, json_out: bool) -> Result<()> {
+    let p = profile.clone();
+    let key = tokio::task::spawn_blocking(move || ar_controller::approver::get_or_create(&p)).await??;
+    let shown = json!({
+        "label": key.label,
+        "fingerprint": key.fingerprint(),
+        "key": format!("{}:{}", key.alg.as_str(), key.public_key_b64()),
+    });
+    let Some(host) = enroll else {
+        if json_out {
+            return print_json(&shown);
+        }
+        println!("Approver key: {} ({})", key.label, key.fingerprint());
+        println!("\nTo accept it on a host, either run here:\n\n  ai-remote approver --enroll <host>\n");
+        println!(
+            "or, at the host:\n\n  ai-remote approvers add <this device's name there> {}",
+            shown["key"].as_str().unwrap_or("")
+        );
+        return Ok(());
+    };
+    if !json_out {
+        println!("Asking someone at {host} to accept approver key {} ...", key.fingerprint());
+    }
+    let mut agent = ar_controller::connect_agent(profile).await?;
+    let v = ar_controller::approver::enroll(&mut agent, profile, Some(&host)).await?;
+    let msg = if v["added"] == true {
+        format!("{host} accepted this device's approver key. You can now allow its actions from here.")
+    } else {
+        format!("{host} had already accepted this key.")
+    };
+    print_result(json_out, &v, &msg)
 }
 
 async fn host_request(profile: &Profile, req: HostRequest) -> Result<Value> {

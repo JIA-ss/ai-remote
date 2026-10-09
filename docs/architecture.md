@@ -121,6 +121,11 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
 - **Relays.** The public n0 relays by default (they only see ciphertext); a host can use
   self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
   `[network] relays = [...]`. The controller agent has no relay setting in M0.
+- **ALPN `app/ai-remote/events/1`.** The activity feed and the approval channel. A controller opens
+  a stream per request and writes one JSON line: `{"subscribe":true}` returns the host's recent audit
+  lines and then every new one (tool decisions and outcomes, sessions, approvals), which `ai-remote
+  watch` and the apps turn into the agent's timeline; `pending`, `answer`, `enroll` and
+  `approver_status` serve remote approvals ([approvals.md](approvals.md#wire-format)).
 - *(planned)* `app/ai-remote/screen/1` for live video to people, `app/ai-remote/file/1` for bulk
   file transfer.
 
@@ -133,9 +138,11 @@ Every tool call, built-in or mounted, goes through the same pipeline on the host
 2. **Policy**: rules in `ai-remote.toml`, first match wins; otherwise the tool's default
    (observe and control tools run, admin tools ask, except the job tools that only read or stop
    jobs). Annotations from mounted servers are hints, never the authority.
-3. **Approval**: for `ask`, a native dialog on the host's desktop shows who asks, the tool, the stated
-   intent and the arguments. No answer before the timeout, a locked desktop, or an unattended machine
-   all mean **denied**. While a prompt is open, every mouse and keyboard call is refused.
+3. **Approval**: for `ask`, a person decides: in a native dialog on the host's desktop (who asks, the
+   tool, the stated intent and the arguments), or on a paired device whose approver key the host
+   accepted, where allowing needs a Windows Hello (Touch ID, Face ID) signature over exactly this call
+   ([approvals.md](approvals.md)). The first answer wins. No answer before the timeout, or nobody who
+   could answer, means **denied**. While a dialog is open, every mouse and keyboard call is refused.
 4. **Audit**: a JSONL record of the decision, written before the call runs.
 5. **Call**: bounded by the session. When the controller disconnects, is revoked, or cancels the
    request, the call is cancelled, child process trees are killed and a mounted server receives
@@ -155,6 +162,7 @@ to retry refused or declined calls automatically.
 [host]
 name = "office-pc"
 approval_timeout_secs = 60
+approval_prompt = true      # false: approve only from approver devices
 
 [[rule]]
 tool = "shell"

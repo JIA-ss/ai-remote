@@ -52,6 +52,14 @@ pub enum AgentRequest {
     Events {
         host: Option<String>,
     },
+    /// One request on a host's approval channel, returning the host's reply: `{"pending":true}`,
+    /// `{"answer":{...}}`, `{"enroll":{...}}` or `{"approver_status":{...}}` (see the host's events
+    /// protocol). Allowing needs a signature the caller made with the person's approver key; the
+    /// agent never signs and no MCP tool reaches this.
+    Approvals {
+        host: Option<String>,
+        request: Value,
+    },
     Shutdown,
 }
 
@@ -311,10 +319,13 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
         AgentRequest::Hosts => {
             let known = agent.known_hosts();
             let mut out = Vec::new();
+            let peers = agent.mesh.peers().await?;
             for name in agent.host_names().await? {
                 let k = known.get(&name);
+                let device = peers.iter().find(|p| p.name == name).and_then(|p| p.principal.clone());
                 out.push(json!({
                     "name": name,
+                    "device": device,
                     "level_at_pairing": k.and_then(|k| k.level),
                     "paired_at": k.map(|k| k.paired_at),
                     "path": agent.path_of(&name).await,
@@ -344,12 +355,63 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                 .map_err(|e| anyhow!("host '{host}': {e:#}"))?;
             serde_json::to_value(result)?
         }
+        AgentRequest::Approvals { host, request } => approvals_request(agent, host, &request).await?,
         AgentRequest::Mcp | AgentRequest::Events { .. } => bail!("unreachable"),
         AgentRequest::Shutdown => {
             shutdown.cancel();
             json!({"stopping": true})
         }
     })
+}
+
+/// Longest reply accepted on the approval channel.
+const MAX_APPROVALS_REPLY: u64 = 1 << 20;
+
+/// Sends one request on `host`'s approval channel and returns its reply (with the host's name
+/// added). An `enroll` waits for someone at the host to confirm, so the wait is long.
+async fn approvals_request(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<Value> {
+    const ALLOWED: [&str; 4] = ["pending", "answer", "enroll", "approver_status"];
+    let kind = request.as_object().filter(|o| o.len() == 1).and_then(|o| o.keys().next().cloned());
+    if !kind.as_deref().is_some_and(|k| ALLOWED.contains(&k)) {
+        bail!("approval requests are one of: {}", ALLOWED.join(", "));
+    }
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).only_host().await?,
+    };
+    let conn = agent
+        .mesh
+        .dial(&host, ALPN_EVENTS)
+        .await
+        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
+    let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let mut line = request.to_string();
+    line.push('\n');
+    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let _ = send.finish();
+    let mut reply = String::new();
+    let read = tokio::time::timeout(
+        Duration::from_secs(30 * 60),
+        tokio::io::AsyncBufReadExt::read_line(
+            &mut tokio::io::BufReader::new(recv.take(MAX_APPROVALS_REPLY)),
+            &mut reply,
+        ),
+    )
+    .await;
+    conn.close(0u32.into(), b"done");
+    match read {
+        Ok(Ok(n)) if n > 0 => {}
+        Ok(Ok(_)) => bail!("host '{host}' closed the request without an answer (an older host?)"),
+        Ok(Err(e)) => bail!("host '{host}': {e}"),
+        Err(_) => bail!("host '{host}' did not answer in time"),
+    }
+    let mut reply: Value = serde_json::from_str(&reply).map_err(|e| anyhow!("host '{host}' sent a bad reply: {e}"))?;
+    if reply["ok"] != true {
+        let error = reply["error"].as_str().unwrap_or("refused");
+        bail!("host '{host}': {error}");
+    }
+    reply["host"] = host.into();
+    Ok(reply)
 }
 
 /// A subscribed activity feed of one host.

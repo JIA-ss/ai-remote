@@ -208,7 +208,10 @@ dependencies = [
  "anyhow",
  "ar-core",
  "ar-net",
+ "blake3",
+ "data-encoding",
  "futures",
+ "ring",
  "rmcp",
  "serde",
  "serde_json",
@@ -216,6 +219,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -227,8 +231,10 @@ dependencies = [
  "directories",
  "dunce",
  "getrandom 0.3.4",
+ "ring",
  "serde",
  "serde_json",
+ "spki 0.8.1",
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.25.17+spec-1.1.0",
@@ -255,6 +261,7 @@ dependencies = [
  "process-wrap",
  "quick-xml 0.42.0",
  "rfd",
+ "ring",
  "rmcp",
  "schemars 1.2.2",
  "serde",

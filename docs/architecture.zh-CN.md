@@ -105,6 +105,10 @@ flowchart LR
   （被控端明确拒绝了这台设备时除外）。
 - **中继。** 默认使用 n0 的公共中继（只能看到密文）；被控端可以通过 `[network] relays = [...]` 改用自建的
   [iroh-relay](https://github.com/n0-computer/iroh)。M0 中控制端常驻进程没有中继设置。
+- **ALPN `app/ai-remote/events/1`。** 活动流和审批通道。控制端每个请求开一条流、写一行 JSON：
+  `{"subscribe":true}` 返回被控端最近的审计记录，之后是每条新记录（工具的决策和结果、会话、审批），
+  `ai-remote watch` 和应用把它变成 Agent 的操作时间线；`pending`、`answer`、`enroll`、`approver_status`
+  用于远程审批（见 [approvals.zh-CN.md](approvals.zh-CN.md#通信格式)）。
 - （规划中）`app/ai-remote/screen/1` 用于给人看的实时画面，`app/ai-remote/file/1` 用于大文件传输。
 
 ## 6. 闸门
@@ -116,8 +120,10 @@ flowchart LR
 2. **策略**：按顺序匹配 `ai-remote.toml` 里的规则，第一条命中的生效；都不命中就用工具自身的默认动作
    （observe、control 级直接执行，admin 级先询问，只读取或停止后台任务的那几个 job 工具除外）。
    挂载 server 自带的工具标注只作参考，从不作为依据。
-3. **审批**：动作为 `ask` 时，在被控端桌面弹出原生对话框，显示是谁、要调用哪个工具、给出的理由和参数。
-   超时没人回答、桌面已锁定、机器无人值守，都按**拒绝**处理。审批框开着的时候，所有鼠标和键盘调用一律拒绝。
+3. **审批**：动作为 `ask` 时由人来决定：可以在被控端桌面的原生对话框里（显示是谁、要调用哪个工具、给出的理由和参数），
+   也可以在被控端接受了其审批密钥的已配对设备上，允许时必须用 Windows Hello（Touch ID、Face ID）对这一次调用签名
+   （见 [approvals.zh-CN.md](approvals.zh-CN.md)）。先到的回答生效。截止前没人回答、或者没有人能回答，都按**拒绝**处理。
+   对话框开着的时候，所有鼠标和键盘调用一律拒绝。
 4. **审计**：调用执行前，先写一条 JSONL 格式的决策记录。
 5. **执行**：受会话生命周期约束。控制端断开、被撤销或取消请求时，调用随之取消，子进程连同整棵进程树一起结束，
    挂载的 server 会收到 `notifications/cancelled`。
@@ -133,6 +139,7 @@ flowchart LR
 [host]
 name = "office-pc"
 approval_timeout_secs = 60
+approval_prompt = true      # false：只在审批设备上审批
 
 [[rule]]
 tool = "shell"

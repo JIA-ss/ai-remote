@@ -14,8 +14,10 @@ data-encoding.workspace = true
 directories.workspace = true
 dunce.workspace = true
 getrandom.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+spki.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 

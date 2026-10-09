@@ -1,6 +1,7 @@
 //! Shared basics for every ai-remote component: where state lives, the device key, permission
-//! levels, the host configuration file and tool-result budgets.
+//! levels, the host configuration file, tool-result budgets and remote-approval signatures.
 
+pub mod approval;
 pub mod budget;
 pub mod config;
 pub mod identity;
