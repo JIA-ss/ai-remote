@@ -56,6 +56,7 @@ export const en = {
   pause_agent: "Pause agent",
   resume: "Resume",
   live: "Live",
+  watch_live: "Watch live",
 
   // under the picture
   waiting_for_you: "Waiting for you",
@@ -113,6 +114,14 @@ export const en = {
   what_changed: "What did you change?",
   optional_sent: "Optional. The agent gets it when you hand back.",
   handback_note: "After you hand back, the agent reads the screen again before its next step.",
+
+  recent_steps: "Recent steps",
+  this_computer: "This computer",
+  connection: "Connection",
+  conn_direct: "Direct, encrypted end to end",
+  conn_relayed: "Relayed, encrypted end to end",
+  agent_l: "Agent",
+  device_key: "Device key",
 
   // the decision
   wants_tool: "{agent} wants to run {tool} on {host}",
