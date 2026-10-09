@@ -23,6 +23,7 @@ mcpmesh-local-api = { version = "=0.58.0", features = ["client", "service"] }
 rmcp = { version = "=3.5.1", default-features = false, features = ["base64", "server", "client", "macros", "transport-async-rw", "transport-io", "transport-child-process"] }
 
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures = "0.3"
 arboard = "3"
 base64 = "0.22"
