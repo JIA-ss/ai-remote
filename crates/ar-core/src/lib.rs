@@ -25,10 +25,10 @@ pub fn unix_now() -> u64 {
 /// Best-effort display name of this machine.
 pub fn machine_name() -> String {
     for var in ["COMPUTERNAME", "HOSTNAME"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.trim().is_empty() {
-                return v.trim().to_string();
-            }
+        if let Ok(v) = std::env::var(var)
+            && !v.trim().is_empty()
+        {
+            return v.trim().to_string();
         }
     }
     std::process::Command::new("hostname")

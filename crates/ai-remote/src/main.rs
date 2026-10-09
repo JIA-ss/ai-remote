@@ -1,5 +1,7 @@
 //! `ai-remote`: run a host, pair with hosts, and bridge AI agents to them over MCP.
 
+mod hostops;
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -27,12 +29,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the host on this machine (in the foreground) so paired controllers can operate it.
+    /// Run the host on this machine (in the foreground) so paired controllers can operate it;
+    /// `host install` starts it automatically at login instead.
+    #[command(args_conflicts_with_subcommands = true)]
     Host {
+        #[command(subcommand)]
+        action: Option<HostAction>,
         /// Do not print a pairing ticket when no controller is paired yet.
         #[arg(long)]
         no_pair_code: bool,
     },
+    /// Check whether this machine can be operated as a host (session, desktop, elevation, network,
+    /// firewall, autostart, ...). Asks the running host; checks from here when none runs.
+    Doctor,
     /// [host] Print a one-time pairing ticket for a new controller.
     PairCode {
         /// Level to grant: observe, control or admin.
@@ -46,11 +55,12 @@ enum Command {
     Peers,
     /// [host] Change a controller's level (observe, control, admin or none).
     Level { peer: String, level: String },
-    /// [host] Refuse a controller from now on and cut its live sessions.
+    /// [host] Refuse a controller from now on (even with a new ticket) and cut its live sessions.
     Revoke { peer: String },
-    /// [host] Lift a revocation.
+    /// [host] Lift a revocation (by name, or by device id once the pairing was forgotten).
     Unrevoke { peer: String },
-    /// [host] Remove a controller's pairing entirely.
+    /// [host] Remove a controller's pairing and cut its live sessions; it can come back only with
+    /// a new ticket.
     Forget { peer: String },
     /// [host] Stop the running host.
     StopHost,
@@ -139,6 +149,42 @@ enum MountCommand {
     Test { name: String },
 }
 
+#[derive(Subcommand)]
+enum HostAction {
+    /// Start the host automatically at login, in the background (Windows: a logon task with
+    /// highest privileges plus firewall rules; macOS: a LaunchAgent). On Windows an administrator
+    /// runs it elevated; a standard user runs it unelevated and leaves the firewall rules to an
+    /// administrator (`--firewall-only`).
+    Install {
+        /// Print every change without making it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not start the background host right away.
+        #[arg(long)]
+        no_start: bool,
+        /// Only add the inbound firewall rules for this installation's host programs (Windows,
+        /// elevated; they apply to every account).
+        #[arg(long, conflicts_with = "no_start")]
+        firewall_only: bool,
+        /// Install even though another account uses the desktop (the host then starts at this
+        /// account's next logon).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
+    /// another profile's autostart still uses them.
+    Uninstall {
+        /// Print every change without making it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only remove the firewall rules (Windows, elevated).
+        #[arg(long)]
+        firewall_only: bool,
+    },
+    /// Show whether autostart is installed, the firewall rules, and whether the host runs.
+    Status,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(home) = &cli.home {
@@ -153,8 +199,10 @@ fn main() -> Result<()> {
 fn init_logging(command: &Command) {
     // stdout belongs to the MCP protocol in `mcp`; logs always go to stderr.
     let default = match command {
-        Command::Host { .. } | Command::Agent => "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn",
-        _ => "warn",
+        Command::Host { action: None, .. } => ar_host::DEFAULT_LOG_FILTER,
+        Command::Agent => "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn",
+        // The firewall reader warns about every rule it cannot model.
+        _ => "warn,windows_firewall=error",
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("AI_REMOTE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
@@ -165,9 +213,19 @@ async fn run(cli: Cli) -> Result<()> {
     let profile = Profile::open_default()?;
     let json_out = cli.json;
     match cli.command {
-        Command::Host { no_pair_code } => {
-            ar_host::run(profile, ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code }).await
+        Command::Host { action: None, no_pair_code } => {
+            let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
+            ar_host::run(profile, opts).await
         }
+        Command::Host { action: Some(HostAction::Install { dry_run, no_start, firewall_only, force }), .. } => {
+            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force };
+            hostops::host_install(&profile, flags).await
+        }
+        Command::Host { action: Some(HostAction::Uninstall { dry_run, firewall_only }), .. } => {
+            hostops::host_uninstall(&profile, dry_run, firewall_only).await
+        }
+        Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Doctor => hostops::doctor(&profile, json_out).await,
         Command::PairCode { level, name } => {
             let v = host_request(&profile, HostRequest::PairCode { level, name }).await?;
             if json_out {
@@ -189,10 +247,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for p in peers {
                 println!(
-                    "{:<24} level={:<8} {}",
+                    "{:<24} level={:<8} {}{}",
                     p["name"].as_str().unwrap_or("?"),
                     p["level"].as_str().unwrap_or("none"),
-                    p["principal"].as_str().unwrap_or("")
+                    p["principal"].as_str().unwrap_or(""),
+                    if p["revoked"].as_bool() == Some(true) { "  REVOKED" } else { "" }
                 );
             }
             Ok(())
@@ -211,11 +270,24 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Unrevoke { peer } => {
             let v = host_request(&profile, HostRequest::Unrevoke { peer }).await?;
-            print_result(json_out, &v, &format!("{} is no longer revoked", v["peer"].as_str().unwrap_or("?")))
+            let mut msg = format!("{} is no longer revoked", v["peer"].as_str().unwrap_or("?"));
+            if v["paired"].as_bool() == Some(false) {
+                msg.push_str("; it is not paired, so it needs a new ticket (`ai-remote pair-code`) to connect again");
+            }
+            print_result(json_out, &v, &msg)
         }
         Command::Forget { peer } => {
             let v = host_request(&profile, HostRequest::Forget { peer }).await?;
-            print_result(json_out, &v, &format!("forgot {}", v["peer"].as_str().unwrap_or("?")))
+            let name = v["peer"].as_str().unwrap_or("?");
+            let mut msg = format!("forgot {name}; it can come back only with a new ticket");
+            if v["still_revoked"].as_bool() == Some(true) {
+                msg = format!(
+                    "forgot {name}. Its device stays refused because it was revoked; to let it pair again later, run: \
+                     ai-remote unrevoke {}",
+                    v["device"].as_str().unwrap_or("<device id>")
+                );
+            }
+            print_result(json_out, &v, &msg)
         }
         Command::StopHost => {
             let v = host_request(&profile, HostRequest::Shutdown).await?;

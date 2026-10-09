@@ -13,7 +13,7 @@ use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use ar_core::{Level, budget};
 use async_trait::async_trait;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::tokio::ChildWrapper;
 use rmcp::model::{CallToolResult, JsonObject};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -142,18 +142,9 @@ pub(crate) async fn run(spec: &CommandSpec<'_>, stdin: Option<&str>, timeout: Du
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut wrap = CommandWrap::from(cmd);
-    wrap.wrap(KillOnDrop);
-    #[cfg(windows)]
-    {
-        // Through the wrapper: the JobObject wrapper replaces flags set directly on the command,
-        // which would let a console window flash up for every call from a windowless host.
-        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-        wrap.wrap(process_wrap::tokio::CreationFlags(CREATE_NO_WINDOW));
-        wrap.wrap(process_wrap::tokio::JobObject);
-    }
-    #[cfg(unix)]
-    wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+    // No console window (the background host has none to share) and the whole tree dies with the
+    // child handle.
+    let mut wrap = crate::platform::process_tree(cmd);
 
     let started = std::time::Instant::now();
     let child = wrap.spawn().with_context(|| format!("start {}", spec.shell.name()))?;
