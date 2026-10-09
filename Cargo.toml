@@ -34,7 +34,7 @@ dunce = "1"
 enigo = "0.6"
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-# Same major as rmcp's child-process transport, so the CommandWrap we build is the one it accepts.
+# Same major as rmcp's child-process transport, so the build carries one copy.
 process-wrap = { version = "10", features = ["tokio1"] }
 rfd = "0.17"
 schemars = "1"

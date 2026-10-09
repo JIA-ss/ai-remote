@@ -48,8 +48,16 @@ fn main() {
     type Case = fn(PathBuf) -> Pin<Box<dyn Future<Output = Result<()>>>>;
     let cases: &[(&str, Case)] = &[
         ("extend_exposes_only_allowlisted_tools", |d| Box::pin(extend_exposes_only_allowlisted_tools(d))),
+        ("failed_discovery_uses_the_saved_tool_list", |d| Box::pin(failed_discovery_uses_the_saved_tool_list(d))),
         ("forwards_text_structured_image_and_errors", |d| Box::pin(forwards_text_structured_image_and_errors(d))),
         ("restarts_after_a_crash", |d| Box::pin(restarts_after_a_crash(d))),
+        ("crash_is_noticed_while_a_helper_holds_its_stdout", |d| {
+            Box::pin(crash_is_noticed_while_a_helper_holds_its_stdout(d))
+        }),
+        ("hung_server_is_restarted_after_a_timed_out_call", |d| {
+            Box::pin(hung_server_is_restarted_after_a_timed_out_call(d))
+        }),
+        ("oversized_results_are_budgeted", |d| Box::pin(oversized_results_are_budgeted(d))),
         ("backs_off_when_start_keeps_failing", |d| Box::pin(backs_off_when_start_keeps_failing(d))),
         ("dropped_call_is_cancelled_and_client_stays_usable", |d| {
             Box::pin(dropped_call_is_cancelled_and_client_stays_usable(d))
@@ -160,7 +168,8 @@ async fn extend_exposes_only_allowlisted_tools(dir: PathBuf) -> Result<()> {
             ("not_offered", observe()),
         ],
     );
-    // "system" + "info" would shadow the built-in system_info: refused.
+    // "system" + "info" would shadow the built-in system_info (the mock does offer `info`): refused,
+    // while the mount's other tools are still exposed.
     let shadow = mock_mount("system", &dir, &[("info", observe()), ("echo", observe())]);
     // A broken mount must not stop the others.
     let mut broken = mock_mount("broken", &dir, &[("echo", observe())]);
@@ -180,7 +189,13 @@ async fn extend_exposes_only_allowlisted_tools(dir: PathBuf) -> Result<()> {
     }
     ensure!(names.len() == builtin_count + 5, "unexpected tool set {names:?}");
     let system_info = registry.get("system_info").context("system_info")?;
-    ensure!(system_info.spec().level == Level::Observe && !system_info.spec().description.contains("mock"));
+    let builtin_info = Registry::builtin().get("system_info").context("built-in system_info")?;
+    ensure!(
+        system_info.spec().description == builtin_info.spec().description
+            && !system_info.spec().description.contains("mock"),
+        "a mount replaced the built-in system_info: {:?}",
+        system_info.spec().description
+    );
 
     let add = registry.get("mock_add").unwrap();
     let add = add.spec();
@@ -194,6 +209,30 @@ async fn extend_exposes_only_allowlisted_tools(dir: PathBuf) -> Result<()> {
     let echo = registry.get("mock_echo").unwrap();
     ensure!(echo.spec().read_only, "the server's read-only hint is passed on");
     ensure!(echo.spec().to_mcp().description.unwrap_or_default().contains("[requires level: observe]"));
+    Ok(())
+}
+
+async fn failed_discovery_uses_the_saved_tool_list(dir: PathBuf) -> Result<()> {
+    let profile = Profile::at(dir.join("profile"))?;
+    let mut cfg = mock_mount("mock", &dir, &[("echo", observe())]);
+    let mut registry = Registry::default();
+    mounts::extend(&mut registry, &HostConfig { mounts: vec![cfg.clone()], ..Default::default() }, &profile).await;
+    ensure!(registry.get("mock_echo").is_some());
+    let cache = profile.mounts_dir()?.join("mock.tools.json");
+    ensure!(cache.exists(), "the discovered tool list is saved");
+
+    // The server fails to start at the next host start: its tools are still exposed, from the cache.
+    cfg.env.insert("AR_MOCK_EXIT_AT_START".into(), "1".into());
+    let mut registry = Registry::default();
+    mounts::extend(&mut registry, &HostConfig { mounts: vec![cfg.clone()], ..Default::default() }, &profile).await;
+    let echo = registry.get("mock_echo").context("mock_echo from the saved tool list")?;
+    ensure!(echo.spec().read_only && echo.spec().description.contains("Echo"));
+
+    // A cache saved for another command is not used.
+    cfg.args = vec!["--other".into()];
+    let mut registry = Registry::default();
+    mounts::extend(&mut registry, &HostConfig { mounts: vec![cfg], ..Default::default() }, &profile).await;
+    ensure!(registry.get("mock_echo").is_none(), "a cache for other arguments must be ignored");
     Ok(())
 }
 
@@ -246,6 +285,74 @@ async fn restarts_after_a_crash(dir: PathBuf) -> Result<()> {
     let _ = mount.call("crash", JsonObject::new()).await;
     let third = pid_of(&mount).await?;
     ensure!(third != second);
+    mount.stop().await;
+    Ok(())
+}
+
+async fn crash_is_noticed_while_a_helper_holds_its_stdout(dir: PathBuf) -> Result<()> {
+    let mount = mounts::Mount::new(mock_mount("mock", &dir, &[]), &dir);
+    let first = pid_of(&mount).await?;
+    // A helper with the server's stdout keeps the pipe open after the server is gone.
+    let r = mount.call("spawn_child", args(json!({"inherit_stdout": true}))).await?;
+    let helper: u32 = text_of(&r).trim().parse()?;
+    ensure!(alive(helper));
+
+    let started = Instant::now();
+    let e = mount.call("crash", JsonObject::new()).await.unwrap_err().to_string();
+    let took = started.elapsed();
+    ensure!(took < Duration::from_secs(5), "the crash was noticed only after {took:?}: {e}");
+    ensure!(e.contains("stopped while handling 'crash'") && e.contains("mock: about to crash"), "{e}");
+    ensure!(e.contains("exit"), "the error carries the exit status: {e}");
+    ensure!(wait_until(Duration::from_secs(10), || !alive(helper)).await, "the helper outlived its server");
+
+    let started = Instant::now();
+    let second = pid_of(&mount).await?;
+    ensure!(second != first, "expected a new process");
+    ensure!(started.elapsed() < Duration::from_secs(5), "restart took {:?}", started.elapsed());
+    mount.stop().await;
+    Ok(())
+}
+
+async fn hung_server_is_restarted_after_a_timed_out_call(dir: PathBuf) -> Result<()> {
+    let mut cfg = mock_mount("mock", &dir, &[]);
+    // One runtime thread, so `freeze` stops it from answering anything.
+    cfg.env.insert("AR_MOCK_SINGLE_THREAD".into(), "1".into());
+    let mount = mounts::Mount::with_call_timeout(cfg, &dir, Duration::from_secs(1));
+    let first = pid_of(&mount).await?;
+
+    // A slow call on a server that still answers: cancelled, the session is kept.
+    let e = format!("{:#}", mount.call("sleep", args(json!({"ms": 30_000}))).await.unwrap_err());
+    ensure!(e.contains("did not finish within 1 s and was cancelled"), "{e}");
+    ensure!(pid_of(&mount).await? == first, "a responsive server must not be restarted");
+
+    // A server that stops answering altogether: stopped, and started again on the next call.
+    let started = Instant::now();
+    let e = format!("{:#}", mount.call("freeze", JsonObject::new()).await.unwrap_err());
+    ensure!(e.contains("no longer answers"), "{e}");
+    ensure!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+    ensure!(wait_until(Duration::from_secs(10), || !alive(first)).await, "the hung server kept running");
+    let second = pid_of(&mount).await?;
+    ensure!(second != first, "expected a new process");
+    mount.stop().await;
+    Ok(())
+}
+
+async fn oversized_results_are_budgeted(dir: PathBuf) -> Result<()> {
+    let mount = mounts::Mount::new(mock_mount("mock", &dir, &[]), &dir);
+    let big = "x".repeat(200_000);
+    let raw = mount.call("echo", args(json!({"text": big}))).await?;
+    ensure!(raw.structured_content.is_some(), "the mount passes results through unchanged");
+
+    let r = ar_host::result_budget::apply(raw).await;
+    ensure!(r.structured_content.is_none(), "oversized structured content must not reach the agent");
+    let size = serde_json::to_string(&r)?.len();
+    ensure!(size < 2 * ar_core::budget::TEXT_LIMIT, "budgeted result is still {size} bytes");
+    let text = text_of(&r);
+    ensure!(
+        text.contains("characters omitted") && text.contains("structured content omitted"),
+        "{}",
+        text.chars().take(300).collect::<String>()
+    );
     mount.stop().await;
     Ok(())
 }
@@ -407,7 +514,11 @@ mod mock {
             let _ = std::fs::write(dir.join(format!("started-{}", std::process::id())), b"");
         }
         eprintln!("mock: serving");
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let rt = if std::env::var_os("AR_MOCK_SINGLE_THREAD").is_some() {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        } else {
+            tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+        };
         rt.block_on(async {
             let running = Mock.serve(rmcp::transport::stdio()).await.expect("serve");
             let _ = running.waiting().await;
@@ -434,6 +545,13 @@ mod mock {
     #[derive(Debug, Deserialize, JsonSchema)]
     struct SleepArgs {
         ms: u64,
+    }
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct SpawnArgs {
+        /// Give the child this server's stdout, as a helper that inherits it would have.
+        #[serde(default)]
+        inherit_stdout: bool,
     }
 
     #[derive(Debug, Deserialize, JsonSchema)]
@@ -491,16 +609,29 @@ mod mock {
         }
 
         #[tool(description = "Start a long-running child process and return its pid")]
-        async fn spawn_child(&self) -> Result<String, ErrorData> {
+        async fn spawn_child(&self, Parameters(a): Parameters<SpawnArgs>) -> Result<String, ErrorData> {
+            let stdout =
+                if a.inherit_stdout { std::process::Stdio::inherit() } else { std::process::Stdio::null() };
             let child = std::process::Command::new(std::env::current_exe().unwrap())
                 .env_remove("AR_MOCK_MCP")
                 .env("AR_MOCK_SLEEPER", "1")
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
+                .stdout(stdout)
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             Ok(child.id().to_string())
+        }
+
+        #[tool(description = "Block the runtime thread for a minute (with AR_MOCK_SINGLE_THREAD: the whole server)")]
+        async fn freeze(&self) -> String {
+            std::thread::sleep(Duration::from_secs(60));
+            "thawed".into()
+        }
+
+        #[tool(description = "mock info: must never replace the built-in system_info")]
+        async fn info(&self) -> String {
+            "mock".into()
         }
 
         #[tool(description = "Report the intent it was given")]

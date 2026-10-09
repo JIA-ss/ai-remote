@@ -96,7 +96,10 @@ pub struct PolicyRule {
     pub principal: Option<String>,
 }
 
+/// Unknown keys are errors: a misspelled `sha256`, `needs_desktop` or `approve` would otherwise
+/// switch off a safeguard without a word.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MountConfig {
     /// Prefix for the mount's tools: `<name>_<tool>`.
     pub name: String,
@@ -138,7 +141,7 @@ impl MountStart {
 }
 
 /// Either a bare level (`click = "control"`) or a table with more settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum MountTool {
     Level(Level),
@@ -150,6 +153,42 @@ pub enum MountTool {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+}
+
+/// The table form of [`MountTool`], strict about its keys.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MountToolTable {
+    level: Level,
+    #[serde(default)]
+    approve: Option<Action>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+// Written out rather than `#[serde(untagged)]`, whose error for a bad table is only "did not match
+// any variant": this one names the unknown or missing key.
+impl<'de> Deserialize<'de> for MountTool {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = MountTool;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"a level ("observe", "control", "admin") or a table such as { level = "control" }"#)
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<MountTool, E> {
+                Level::deserialize(serde::de::value::StrDeserializer::new(v)).map(MountTool::Level)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<MountTool, A::Error> {
+                let t = MountToolTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(MountTool::Detailed { level: t.level, approve: t.approve, description: t.description })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 impl MountTool {
@@ -346,6 +385,38 @@ mod tests {
         assert_eq!(tools["launch_app"].approve(), Some(Action::Ask));
         assert_eq!(cfg.mounts[0].start, MountStart::Eager);
         assert!(!cfg.mounts[0].needs_desktop);
+    }
+
+    #[test]
+    fn misspelled_mount_keys_are_errors() {
+        let base = "[[mount]]
+name = \"ui\"
+command = \"server.exe\"
+";
+        for (extra, key) in [
+            ("sha265 = \"00\"
+", "sha265"),
+            ("needs_dekstop = true
+", "needs_dekstop"),
+            ("[mount.tools]
+launch_app = { level = \"control\", aprove = \"ask\" }
+", "aprove"),
+        ] {
+            let err = toml::from_str::<HostConfig>(&format!("{base}{extra}")).unwrap_err().to_string();
+            assert!(err.contains(key), "the error must name `{key}`: {err}");
+        }
+        let err = toml::from_str::<HostConfig>(&format!("{base}[mount.tools]
+click = \"contrl\"
+"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("contrl"), "{err}");
+        let err = toml::from_str::<HostConfig>(&format!("{base}[mount.tools]
+click = {{ approve = \"ask\" }}
+"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("level"), "{err}");
     }
 
     #[test]

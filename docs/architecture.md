@@ -137,20 +137,38 @@ launch_app = { level = "control", approve = "ask", description = "Shorter text f
   given by the owner. Tools a new upstream version adds stay hidden and are logged at host start,
   as are allowlisted tools the server no longer offers. The server's annotations are passed on as
   hints only. Policy rules match the prefixed names (`tool = "ui_*"`). A mount can never shadow a
-  built-in tool.
-- **Lifecycle.** The host starts each server with rmcp's child-process transport inside a Job
-  Object with kill-on-close (Windows) or its own process group (Unix), in the profile's
-  `host/mounts` directory, with stderr appended to `host/mounts/<name>.log`. Stopping the host,
+  built-in tool or an earlier mount's tool (`mount add` refuses such names, `mount list` marks
+  them). Unknown keys in a `[[mount]]` or tool table are errors, so a misspelled `sha256`,
+  `needs_desktop` or `approve` cannot switch a safeguard off silently.
+- **What agents read.** The allowlist names tools; their descriptions (unless the allowlist sets
+  `description`) and input schemas come from the server. Each successful start saves the tool list
+  as `host/mounts/<name>.tools.json`, and the host logs a warning when an allowlisted tool's
+  description or schema differs from the last start; it does not block the tool. An unpinned mount
+  (`--no-pin`, for example an `npx` package) can change on every start: pin the executable and set
+  descriptions to freeze what agents see.
+- **Lifecycle.** The host spawns each server (process-wrap) inside a Job Object with kill-on-close
+  (Windows) or its own process group (Unix), in the profile's `host/mounts` directory, with stderr
+  appended to `host/mounts/<name>.log`, and speaks MCP to it over stdio (rmcp). Stopping the host,
   or killing it outright, ends the server's whole process tree, including apps it started as its
   own children. `eager` servers start with the host; `lazy` ones are started once at host start to
-  read their tool list, then on first use, and stopped after 10 minutes without calls. A server
-  that crashes is restarted on the next call (consecutive failures back off 1, 2, 4 ... 60 s, and
-  calls inside the window fail at once with the last error and stderr lines).
-- **Calls.** Results pass through unchanged (text, images, structured content, `isError`) before the
-  result budget. Mutating tools get an optional `intent` argument for approval prompts and the
-  audit log; it is removed before forwarding unless the server's schema declares it. When the gate
-  drops a call (session ended), the server receives `notifications/cancelled`; every call is also
-  capped at 10 minutes.
+  read their tool list, then on first use, and stopped after 10 minutes without calls. A
+  supervisor task waits for the server process itself rather than for its stdout to close (a
+  helper it started may hold a copy of that pipe), so a crash is noticed at once: calls in flight
+  fail, the rest of the tree is ended, and the next call starts the server again (consecutive
+  failures back off 1, 2, 4 ... 60 s, and calls inside the window fail at once with the last error
+  and stderr lines). A call that hits the 10-minute cap is followed by a ping; a server that does
+  not answer that either counts as hung and is restarted. If a server cannot be started at host
+  start, the tool list saved at its last start is exposed (same command, arguments and pin), and
+  calls start it with the same backoff.
+- **Calls.** Results are passed on unchanged (text, images, structured content, `isError`) and then
+  go through the result budget like every tool result: text over 60,000 characters is cut to head
+  and tail, structured content over that size is dropped (its text form stays, cut the same way),
+  and images over what model APIs accept (5 MB of base64, 8000 pixels a side) are re-encoded as
+  JPEG or scaled down, with a note giving the scale factor for coordinates. Mutating tools get an
+  optional `intent` argument for approval prompts and the audit log; it is removed before
+  forwarding unless the server's schema declares it. When the gate drops a call (the session ended
+  or the controller cancelled the request), the server receives `notifications/cancelled`; every
+  call is also capped at 10 minutes.
 - **CLI.** `ai-remote mount list | add | add-profile | remove | test` edit the host config (keeping
   its comments) and take effect when the host restarts. `mount add` pins the executable's SHA-256;
   `mount test <name>` starts the server once and lists every tool it offers with what is exposed.

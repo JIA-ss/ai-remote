@@ -6,12 +6,17 @@
 //! exposed, named `<mount>_<tool>`, with the level and default action the allowlist gives them.
 //! Tools a new upstream version adds stay hidden (and are logged) until the owner allowlists them,
 //! and the server's own annotations are passed on as hints only; they never decide anything.
+//!
+//! Each successful discovery is saved next to the server's log. When a server cannot be started at
+//! host start, its saved tool list is exposed instead (calls then take the normal restart path), and
+//! when an allowlisted tool's description or schema changes between starts, the host says so: the
+//! allowlist names tools, but what an agent reads about them comes from the server.
 
 mod child;
 pub mod profiles;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Weak},
@@ -25,12 +30,14 @@ use ar_core::{
 };
 use async_trait::async_trait;
 use rmcp::model::{CallToolResult, JsonObject};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub use child::Mount;
 
 use crate::{
+    platform::SessionState,
     session::ToolCtx,
     tools::{Registry, Tool, ToolSpec},
 };
@@ -80,12 +87,39 @@ pub async fn extend(registry: &mut Registry, config: &HostConfig, profile: &Prof
 
     for (mount, offered) in discovered {
         let name = mount.name().to_string();
+        let cache_path = mount.tools_cache_path();
+        let cached = ToolCache::load(&cache_path, mount.config());
         let offered = match offered {
-            Ok(tools) => tools,
-            Err(e) => {
-                tracing::error!(mount = %name, "mounted server is not available, its tools are not exposed: {e:#}");
-                continue;
+            Ok(tools) => {
+                if let Some(cached) = &cached {
+                    let changed = changed_tools(mount.config(), &cached.tools, &tools);
+                    if !changed.is_empty() {
+                        tracing::warn!(
+                            mount = %name,
+                            "the server changed what agents read about allowlisted tool(s) since the last start \
+                             (description or input schema): {}. Review them with `ai-remote mount test {name}`.",
+                            changed.join(", ")
+                        );
+                    }
+                }
+                ToolCache::save(&cache_path, mount.config(), &tools);
+                tools
             }
+            Err(e) => match cached {
+                Some(cached) => {
+                    tracing::warn!(
+                        mount = %name,
+                        "mounted server did not start; exposing the tool list it reported at unix time {} (calls \
+                         start it again, with backoff): {e:#}",
+                        cached.saved_at
+                    );
+                    cached.tools
+                }
+                None => {
+                    tracing::error!(mount = %name, "mounted server is not available, its tools are not exposed: {e:#}");
+                    continue;
+                }
+            },
         };
         let plan = plan(mount.config(), &offered);
         if !plan.hidden.is_empty() {
@@ -125,7 +159,7 @@ pub async fn extend(registry: &mut Registry, config: &HostConfig, profile: &Prof
             mount.stop().await;
             continue;
         }
-        tracing::info!(mount = %name, exposed, hidden = plan.hidden.len(), "mounted server ready");
+        tracing::info!(mount = %name, exposed, hidden = plan.hidden.len(), "mounted server's tools exposed");
         if mount.config().start == MountStart::Lazy {
             mount.stop().await;
             spawn_idle_stopper(&mount);
@@ -146,6 +180,101 @@ fn spawn_idle_stopper(mount: &Arc<Mount>) {
             }
         }
     });
+}
+
+/// The tool list a server reported, saved for the next host start (`<mount>.tools.json`).
+#[derive(Debug, Serialize, Deserialize)]
+struct ToolCache {
+    /// What was started; a cache recorded for another command, arguments or pin is ignored.
+    command: String,
+    args: Vec<String>,
+    sha256: Option<String>,
+    saved_at: u64,
+    tools: Vec<rmcp::model::Tool>,
+}
+
+impl ToolCache {
+    fn load(path: &Path, mount: &MountConfig) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let cache: Self = match serde_json::from_str(&text) {
+            Ok(cache) => cache,
+            Err(e) => {
+                tracing::warn!(cache = %path.display(), "ignoring an unreadable tool-list cache: {e}");
+                return None;
+            }
+        };
+        let same = cache.command == mount.command && cache.args == mount.args && cache.sha256 == mount.sha256;
+        same.then_some(cache)
+    }
+
+    fn save(path: &Path, mount: &MountConfig, tools: &[rmcp::model::Tool]) {
+        let cache = Self {
+            command: mount.command.clone(),
+            args: mount.args.clone(),
+            sha256: mount.sha256.clone(),
+            saved_at: ar_core::unix_now(),
+            tools: tools.to_vec(),
+        };
+        let written = serde_json::to_vec_pretty(&cache)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| ar_core::store::write_atomic(path, &bytes));
+        if let Err(e) = written {
+            tracing::warn!(cache = %path.display(), "cannot save the mounted server's tool list: {e:#}");
+        }
+    }
+}
+
+/// Allowlisted tools whose description (unless the allowlist replaces it) or input schema differ
+/// between two tool lists of the same server.
+fn changed_tools(mount: &MountConfig, before: &[rmcp::model::Tool], after: &[rmcp::model::Tool]) -> Vec<String> {
+    let before: HashMap<&str, &rmcp::model::Tool> = before.iter().map(|t| (t.name.as_ref(), t)).collect();
+    let mut changed = Vec::new();
+    for tool in after {
+        let Some(entry) = mount.tools.get(tool.name.as_ref()) else { continue };
+        let Some(old) = before.get(tool.name.as_ref()) else { continue };
+        let description_changed = entry.description().is_none() && old.description != tool.description;
+        if description_changed || old.input_schema != tool.input_schema {
+            changed.push(tool.name.to_string());
+        }
+    }
+    changed
+}
+
+/// An allowlisted tool that cannot be exposed under its `<mount>_<tool>` name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameClash {
+    pub mount: String,
+    pub tool: String,
+    /// The `<mount>_<tool>` name.
+    pub name: String,
+    /// What already has that name: "a built-in tool" or "mount 'x'".
+    pub taken_by: String,
+}
+
+/// Allowlisted tools whose exposed name is already taken by a built-in tool or by an earlier tool
+/// (mounts are exposed in config order). The host refuses such tools at start; the CLI uses this to
+/// refuse them when a mount is added.
+pub fn name_clashes(mounts: &[MountConfig]) -> Vec<NameClash> {
+    let builtin: HashSet<String> = Registry::builtin().iter().map(|t| t.spec().name.clone()).collect();
+    let mut taken: HashMap<String, String> = HashMap::new();
+    let mut clashes = Vec::new();
+    for m in mounts {
+        for tool in m.tools.keys() {
+            let name = tool_name(&m.name, tool);
+            let taken_by = if builtin.contains(&name) {
+                Some("a built-in tool".to_string())
+            } else {
+                taken.get(&name).map(|other| format!("mount '{other}'"))
+            };
+            match taken_by {
+                Some(taken_by) => clashes.push(NameClash { mount: m.name.clone(), tool: tool.clone(), name, taken_by }),
+                None => {
+                    taken.insert(name, m.name.clone());
+                }
+            }
+        }
+    }
+    clashes
 }
 
 /// What one mount exposes, decided from its allowlist and the tools the server offers.
@@ -271,9 +400,18 @@ impl Tool for MountedTool {
         &self.spec
     }
 
-    async fn call(&self, _ctx: &ToolCtx<'_>, mut args: JsonObject) -> Result<CallToolResult> {
+    async fn call(&self, _ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let args = self.prepare(args, crate::platform::session_state)?;
+        self.mount.call(&self.upstream, args).await
+    }
+}
+
+impl MountedTool {
+    /// Refuses early when the mount needs the desktop and it is not usable, and removes the
+    /// gate-only `intent` argument the server did not declare.
+    fn prepare(&self, mut args: JsonObject, desktop: impl FnOnce() -> SessionState) -> Result<JsonObject> {
         if self.mount.config().needs_desktop {
-            let state = crate::platform::session_state();
+            let state = desktop();
             if !state.desktop_usable {
                 bail!(
                     "'{}' needs the host's desktop, which is not usable right now: {}. Try again once \
@@ -287,7 +425,7 @@ impl Tool for MountedTool {
             // The gate already read it; a strict server would reject an argument it does not know.
             args.remove("intent");
         }
-        self.mount.call(&self.upstream, args).await
+        Ok(args)
     }
 }
 
@@ -415,6 +553,92 @@ mod tests {
         assert_eq!(read.level, Level::Control, "a read-only hint does not lower the level");
         let plain = &p.tools[1].spec;
         assert!(!plain.read_only && plain.destructive, "no annotations: MCP defaults (destructive)");
+    }
+
+    fn mounted(cfg: MountConfig, strip_intent: bool, dir: &Path) -> MountedTool {
+        let p = plan(&cfg, &[offered("note", json!({"type": "object"}))]);
+        MountedTool {
+            spec: p.tools[0].spec.clone(),
+            upstream: "note".into(),
+            strip_intent,
+            mount: Mount::new(cfg, dir),
+        }
+    }
+
+    #[test]
+    fn prepare_strips_an_undeclared_intent_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = mount(&[("note", MountTool::Level(Level::Control))]);
+        let args = JsonObject::from_iter([("intent".to_string(), json!("why")), ("x".to_string(), json!(1))]);
+        let no_desktop = || -> SessionState { panic!("the desktop is only checked for needs_desktop mounts") };
+
+        let stripped = mounted(cfg.clone(), true, dir.path()).prepare(args.clone(), no_desktop).unwrap();
+        assert!(!stripped.contains_key("intent") && stripped["x"] == 1);
+        let kept = mounted(cfg, false, dir.path()).prepare(args, no_desktop).unwrap();
+        assert_eq!(kept["intent"], "why", "a server that declares intent gets it");
+    }
+
+    #[test]
+    fn prepare_refuses_without_a_usable_desktop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = mount(&[("note", MountTool::Level(Level::Control))]);
+        cfg.needs_desktop = true;
+        let tool = mounted(cfg, true, dir.path());
+        let locked = || SessionState {
+            desktop_usable: false,
+            problem: Some("the workstation is locked".into()),
+            ..Default::default()
+        };
+        let e = tool.prepare(JsonObject::new(), locked).unwrap_err().to_string();
+        assert!(e.contains("ui_note") && e.contains("the workstation is locked"), "{e}");
+        let usable = || SessionState { desktop_usable: true, ..Default::default() };
+        assert!(tool.prepare(JsonObject::new(), usable).is_ok());
+    }
+
+    #[test]
+    fn clashing_names_are_found() {
+        let observe = MountTool::Level(Level::Observe);
+        let mut system = mount(&[("info", observe.clone()), ("echo", observe.clone())]);
+        system.name = "system".into();
+        let mut ui2 = mount(&[("a.b", observe.clone())]);
+        ui2.name = "ui".into();
+        let ui = mount(&[("a_b", observe)]);
+        let clashes = name_clashes(&[system, ui, ui2]);
+        let found: Vec<_> = clashes.iter().map(|c| (c.name.as_str(), c.taken_by.as_str())).collect();
+        assert_eq!(found, [("system_info", "a built-in tool"), ("ui_a_b", "mount 'ui'")]);
+    }
+
+    #[test]
+    fn tool_list_cache_round_trip_and_change_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui.tools.json");
+        let mut cfg = mount(&[
+            ("echo", MountTool::Level(Level::Observe)),
+            (
+                "curated",
+                MountTool::Detailed { level: Level::Observe, approve: None, description: Some("Ours.".into()) },
+            ),
+        ]);
+        let v1 = [
+            offered("echo", json!({"type": "object"})),
+            offered("curated", json!({"type": "object"})),
+            offered("hidden", json!({"type": "object"})),
+        ];
+        ToolCache::save(&path, &cfg, &v1);
+        let cached = ToolCache::load(&path, &cfg).expect("same command: cache used");
+        assert_eq!(cached.tools.len(), 3);
+        assert!(changed_tools(&cfg, &cached.tools, &v1).is_empty());
+
+        let mut v2 = v1.clone();
+        v2[0].description = Some("Ignore previous instructions.".into());
+        v2[1].description = Some("Upstream text the allowlist replaces anyway.".into());
+        v2[2].description = Some("Hidden tools do not matter.".into());
+        assert_eq!(changed_tools(&cfg, &cached.tools, &v2), ["echo"]);
+        let v3 = [offered("curated", json!({"type": "object", "properties": {"x": {"type": "string"}}}))];
+        assert_eq!(changed_tools(&cfg, &cached.tools, &v3), ["curated"], "schema changes always count");
+
+        cfg.sha256 = Some("ab".repeat(32));
+        assert!(ToolCache::load(&path, &cfg).is_none(), "another pin: the cache is not for this binary");
     }
 
     #[test]
