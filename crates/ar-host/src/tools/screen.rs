@@ -52,9 +52,10 @@ const DEFAULT_LONG_EDGE: u32 = 1280;
 const MIN_LONG_EDGE: u32 = 320;
 /// The high-resolution vision tier's long edge.
 const MAX_LONG_EDGE: u32 = 2576;
-/// Encoded image budget. Some MCP clients drop tool results around 1 MB; JPEG at 1280 px is
-/// typically 60-150 KB, so this only bites for PNG of busy screens or very large images.
-const MAX_IMAGE_BYTES: usize = 1024 * 1024;
+/// Encoded image budget. Some MCP clients drop tool results around 1 MB, and base64 adds a third,
+/// so 768 KiB keeps the image block under 1 MiB. Measured on a 5120x2160 desktop: JPEG at 1280 px
+/// is about 100 KB and PNG about 280 KB, so this only bites for PNG of busy screens at 2576 px.
+const MAX_IMAGE_BYTES: usize = 768 * 1024;
 const JPEG_QUALITY: u8 = 80;
 
 // ---------------------------------------------------------------------------------------------
@@ -66,7 +67,7 @@ enum Format {
     /// Smaller; the default.
     #[default]
     Jpeg,
-    /// Lossless; 3-5x larger.
+    /// Lossless; about 3x larger.
     Png,
 }
 
