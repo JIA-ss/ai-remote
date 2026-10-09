@@ -61,7 +61,7 @@ const levelName = { observe: "lvl_observe", control: "lvl_control", admin: "lvl_
 export function computerFacts(c: Computer): Array<[ReactNode, string]> {
   const out: Array<[ReactNode, string]> = [];
   if (c.os) out.push([<OsGlyph key="os" os={c.os} size={12} />, t(c.os === "mac" ? "mac" : "win")]);
-  const lvl = c.host.levelAtPairing;
+  const lvl = c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing;
   if (lvl) out.push([<Glyph key="lvl" name={levelGlyph[lvl]} size={12} />, t(levelName[lvl])]);
   if (c.host.path === "direct" || c.host.path === "relay")
     out.push([<Glyph key="p" name={c.host.path === "relay" ? "relayed" : "direct"} size={12} />, t(c.host.path === "relay" ? "relayed" : "direct")]);

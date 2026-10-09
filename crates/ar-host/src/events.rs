@@ -4,7 +4,7 @@
 //! stream is for (a QUIC stream only reaches the host once something is written):
 //!
 //! - `{"subscribe":true}`: the feed. The host answers with a `{"kind":"hello",...}` line (its device
-//!   id and the approvals waiting right now), the backlog of recent audit lines, then every new line
+//!   id, this device's level and the approvals waiting right now), the backlog of recent audit lines, then every new line
 //!   as it is written (tool decisions and outcomes, session start and end, approval requests and
 //!   answers), one JSON object per line, until either side closes. A controller app turns this into
 //!   the agent's step timeline and its approval cards.
@@ -16,6 +16,13 @@
 //! - `{"turn":{"action":"take_over"|"hand_back"|"pause"|"resume",...}}`: change who drives (see
 //!   [`crate::turns`]); `take_over` takes `agent_may_watch`, `hand_back` an optional `note`.
 //! - `{"tell":{"text":".."}}`: a message for the agent, delivered with its next call result.
+//! - `{"access":true}`: what this device may do here: its level, the standing rules that concern it,
+//!   the devices paired with this computer (all of them for an admin, otherwise only itself) and
+//!   the tools on offer, built in and mounted, with the level each needs and whether it asks first.
+//! - `{"lower":{"level":".."}}`: lower this device's own level. Raising it takes someone at this
+//!   computer (`ai-remote level`), so a stolen controller cannot climb back.
+//! - `{"leave":true}`: remove this device's pairing here (unpairing from the controller's side);
+//!   the reply comes first, then the connections close.
 //!
 //! Requests other than `subscribe` get one `{"ok":true,...}` or `{"ok":false,"error":"..."}` line.
 //! Any device with a level may use the stream; the feed carries what the audit log carries (argument
@@ -23,7 +30,7 @@
 
 use std::sync::Arc;
 
-use ar_core::{Level, VERSION, approval::KeyAlg};
+use ar_core::{Level, VERSION, approval::KeyAlg, config::MountStart};
 use ar_net::{
     Peer,
     iroh::{
@@ -56,6 +63,15 @@ enum Request {
     ApproverStatus(KeyRef),
     Turn(Turn),
     Tell(Tell),
+    Access(IgnoredAny),
+    Lower(Lower),
+    Leave(IgnoredAny),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Lower {
+    level: Level,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,11 +154,19 @@ impl ProtocolHandler for EventsProtocol {
                 if reader.read_line(&mut first).await.unwrap_or(0) == 0 {
                     return;
                 }
-                let reply = match serde_json::from_str::<Request>(&first) {
-                    Ok(Request::Subscribe(_)) => return feed(&host, send).await,
+                let request = serde_json::from_str::<Request>(&first);
+                // Changing this device's own access cuts its connections, so it happens after the reply.
+                let after = match &request {
+                    Ok(Request::Lower(l)) => Some(After::Lower(l.level)),
+                    Ok(Request::Leave(_)) => Some(After::Leave),
+                    _ => None,
+                };
+                let reply = match request {
+                    Ok(Request::Subscribe(_)) => return feed(&host, &peer, send).await,
                     Ok(req) => handle(&host, &peer, req).await,
                     Err(e) => Err(anyhow::anyhow!("bad request: {e}")),
                 };
+                let after = after.filter(|_| reply.is_ok());
                 let line = match reply {
                     Ok(mut v) => {
                         v["ok"] = true.into();
@@ -155,6 +179,9 @@ impl ProtocolHandler for EventsProtocol {
                     // Let the reply reach the controller before the stream is dropped.
                     let _ = send.stopped().await;
                 }
+                if let Some(after) = after {
+                    apply(&host, &peer, after).await;
+                }
             });
         }
         Ok(())
@@ -163,6 +190,8 @@ impl ProtocolHandler for EventsProtocol {
 
 async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<Value> {
     let approver = host.approver();
+    // The level now, not when this connection opened: it may have been lowered since.
+    let level = host.current_level(peer).await;
     Ok(match req {
         Request::Subscribe(_) => unreachable!("served as a feed"),
         Request::Pending(_) => json!({"device": host.mesh().principal(), "pending": approver.pending()}),
@@ -184,7 +213,7 @@ async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<V
         }
         Request::Turn(t) => {
             // Anyone paired may stop the agent; taking the controls or letting it go on needs control.
-            if !matches!(t.action, TurnAction::Pause) && peer.level < Some(Level::Control) {
+            if !matches!(t.action, TurnAction::Pause) && level < Some(Level::Control) {
                 anyhow::bail!("this device's level does not allow that (it needs control)");
             }
             let turns = host.turns();
@@ -202,20 +231,115 @@ async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<V
             json!({"driver": driver})
         }
         Request::Tell(t) => {
-            if peer.level < Some(Level::Control) {
+            if level < Some(Level::Control) {
                 anyhow::bail!("this device's level does not allow messages to the agent (it needs control)");
             }
             host.turns().tell(&peer.name, &t.text)?;
             host.audit().event(json!({"kind": "note", "from": peer.name, "text": t.text}));
             json!({})
         }
+        Request::Access(_) => access(host, peer, level).await?,
+        Request::Lower(l) => {
+            let Some(current) = level else { anyhow::bail!("this device has no level here") };
+            if l.level > current {
+                anyhow::bail!(
+                    "raising a level takes someone at this computer (ai-remote level {} {})",
+                    peer.name,
+                    l.level.as_str()
+                );
+            }
+            // Applied after the reply: see `After`.
+            json!({"level": l.level})
+        }
+        Request::Leave(_) => json!({"leaving": true}),
     })
 }
 
+/// A change to the requesting device's own access, made once its reply is on the way (the
+/// transport cuts the device's connections when its grant changes).
+enum After {
+    Lower(Level),
+    Leave,
+}
+
+async fn apply(host: &HostState, peer: &Peer, after: After) {
+    match after {
+        After::Lower(level) => match host.mesh().set_level(peer, Some(level)).await {
+            Ok(()) => host.audit().event(json!({"kind": "level", "peer": peer.name, "level": level, "by": peer.name})),
+            Err(e) => {
+                tracing::warn!("{} asked to lower its level to {}, but it failed: {e:#}", peer.name, level.as_str())
+            }
+        },
+        After::Leave => match crate::control::forget(host, peer).await {
+            Ok(_) => host.audit().event(json!({"kind": "unpaired", "peer": peer.name, "by": peer.name})),
+            Err(e) => tracing::warn!("{} asked to unpair, but it failed: {e:#}", peer.name),
+        },
+    }
+}
+
+/// What `peer` may do on this computer; see `{"access":true}` in the module docs.
+async fn access(host: &HostState, peer: &Peer, level: Option<Level>) -> anyhow::Result<Value> {
+    let rules = &host.config().rules;
+    let standing: Vec<Value> = rules
+        .iter()
+        .filter(|r| crate::policy::applies(r, peer))
+        .map(|r| json!({"tool": r.tool, "action": r.action, "scope": if r.principal.is_some() { "you" } else { "everyone" }}))
+        .collect();
+    let admin = level == Some(Level::Admin);
+    let devices: Vec<Value> = host
+        .mesh()
+        .peers()
+        .await?
+        .into_iter()
+        .filter(|p| admin || (p.principal.is_some() && p.principal == peer.principal))
+        .map(|p| {
+            let you = p.principal.is_some() && p.principal == peer.principal;
+            json!({"name": p.name, "level": p.level, "revoked": p.revoked, "you": you})
+        })
+        .collect();
+    let tool = |name: &str| {
+        host.registry().get(name).map(|t| {
+            let spec = t.spec();
+            let action = crate::policy::decide(rules, &spec.name, peer, spec.default_action);
+            json!({"name": spec.name, "description": spec.description, "level": spec.level, "action": action})
+        })
+    };
+    let mut mounted = std::collections::HashSet::new();
+    let mounts: Vec<Value> = host
+        .config()
+        .mounts
+        .iter()
+        .map(|m| {
+            let names: Vec<String> = m.tools.keys().map(|t| crate::mounts::tool_name(&m.name, t)).collect();
+            mounted.extend(names.iter().cloned());
+            let tools: Vec<Value> = names.iter().filter_map(|n| tool(n)).collect();
+            json!({"name": m.name, "tools": tools, "needs_desktop": m.needs_desktop, "lazy": m.start == MountStart::Lazy})
+        })
+        .collect();
+    let builtin: Vec<Value> = host
+        .registry()
+        .iter()
+        .map(|t| t.spec().name.clone())
+        .filter(|n| !mounted.contains(n))
+        .filter_map(|n| tool(&n))
+        .collect();
+    Ok(json!({
+        "host": host.name(),
+        "you": peer.name,
+        "level": level,
+        "rules": standing,
+        "devices": devices,
+        "builtin": builtin,
+        "mounts": mounts,
+    }))
+}
+
 /// Serves a feed subscription until either side closes or the host stops.
-async fn feed(host: &HostState, mut send: SendStream) {
+async fn feed(host: &HostState, peer: &Peer, mut send: SendStream) {
     let (backlog, mut live) = host.audit().subscribe();
     let hello = json!({
+        // This device's level now (a change cuts the connection, so a new feed brings the new one).
+        "level": host.current_level(peer).await,
         "kind": "hello",
         "host": host.name(),
         "device": host.mesh().principal(),

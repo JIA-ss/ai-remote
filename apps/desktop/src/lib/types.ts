@@ -14,6 +14,28 @@ export interface Host {
   path: PathKind | null;
 }
 
+/** A tool a host offers, with the level it needs and what the gate does with it for this device. */
+export interface HostTool {
+  name: string;
+  description: string;
+  level: Level;
+  action: "allow" | "ask" | "deny";
+}
+
+/** What this device may do on a host (the host's `{"access":true}` reply). */
+export interface HostAccess {
+  /** This device's level there now (`null`: none). */
+  level: Level | null;
+  /** This device's name on the host. */
+  you: string;
+  /** The host's policy rules that concern this device, in order. */
+  rules: Array<{ tool: string; action: "allow" | "ask" | "deny"; scope: "you" | "everyone" }>;
+  /** Paired devices: all of them for an admin, otherwise only this one. */
+  devices: Array<{ name: string; level: Level | null; revoked: boolean; you: boolean }>;
+  builtin: HostTool[];
+  mounts: Array<{ name: string; tools: HostTool[]; needs_desktop: boolean; lazy: boolean }>;
+}
+
 export interface AgentStatus {
   device: string;
   version: string;
@@ -45,6 +67,8 @@ export type FeedEvent =
       os?: string;
       pending?: RawPending[];
       driver?: Driver;
+      /** This device's level on the host now. */
+      level?: Level | null;
     }
   | {
       kind: "session_start" | "session_end";

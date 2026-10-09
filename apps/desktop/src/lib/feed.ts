@@ -1,6 +1,6 @@
 // Turns a host's activity feed into the agent's timeline and the approvals waiting for a person.
 
-import type { Driver, FeedEvent, PendingApproval, RawPending, Step } from "./types";
+import type { Driver, FeedEvent, Level, PendingApproval, RawPending, Step } from "./types";
 
 export interface FeedState {
   host: string | null;
@@ -16,6 +16,8 @@ export interface FeedState {
   driver: Driver;
   /** Changes of driver and messages to the agent, for the timeline. */
   turns: Array<{ ts: number; driver?: Driver; by: string; note?: string; message?: string }>;
+  /** This device's level on the host as the host last said (`undefined`: not said yet). */
+  level?: Level | null;
   /** False once the feed ended (host stopped, connection lost). */
   live: boolean;
   missed: number;
@@ -71,6 +73,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
         live: true,
         pending: (e.pending ?? []).map(toPending),
         driver: e.driver ?? state.driver,
+        level: e.level !== undefined ? e.level : state.level,
       };
     case "session_start":
       return {

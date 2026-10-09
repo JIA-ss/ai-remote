@@ -57,7 +57,9 @@
 |---|---|
 | `ai-remote pair <票据> [--name N]` | 与被控端配对 |
 | `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别 |
-| `ai-remote unpair <被控端>` | 在本控制端上忘掉某台被控端 |
+| `ai-remote unpair <被控端> [--local]` | 解除配对：能连上时被控端也会删掉本设备，然后本控制端忘掉它（`--local`：只在本机忘掉） |
+| `ai-remote access [--host H]` | 本设备在某台被控端上能做什么：你的级别、与你有关的长期规则、已配对的设备（管理级别能看到全部）和可用的工具 |
+| `ai-remote lower <级别> [--host H]` | 降低本设备在某台被控端上的级别；要再提升，需要那台电脑前的人执行 `ai-remote level` |
 | `ai-remote call <工具> ['{JSON 参数}'] [--host H]` | 调用一个工具并打印结果 |
 | `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | 观看被控端屏幕一段时间并报告视频流情况（帧数、尺寸、帧率）；`--out` 保存 H.264 |

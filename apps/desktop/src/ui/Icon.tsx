@@ -14,6 +14,7 @@ import {
   History,
   Info,
   Keyboard,
+  Laptop,
   Link,
   Menu,
   MessageSquare,
@@ -22,16 +23,19 @@ import {
   Pause,
   Play,
   Plus,
+  Puzzle,
   QrCode,
   RefreshCw,
   Search,
   Send,
   Settings,
   Shield,
+  Smartphone,
   Square,
   Terminal,
   Trash2,
   TriangleAlert,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -70,6 +74,10 @@ const FLUENT = {
   shield: "EA18",
   bell: "EA8F",
   monitor: "E7F4",
+  laptop: "E7F8",
+  phone: "E8EA",
+  puzzle: "EA86",
+  wrench: "E90F",
 } as const;
 
 export type IconName = keyof typeof FLUENT;
@@ -106,6 +114,10 @@ const LUCIDE: Record<IconName, LucideIcon> = {
   shield: Shield,
   bell: Bell,
   monitor: Monitor,
+  laptop: Laptop,
+  phone: Smartphone,
+  puzzle: Puzzle,
+  wrench: Wrench,
 };
 
 const mac = detectOs() === "mac";

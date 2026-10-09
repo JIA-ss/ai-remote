@@ -84,8 +84,26 @@ enum Command {
     },
     /// [controller] List paired hosts.
     Hosts,
-    /// [controller] Forget a host.
-    Unpair { host: String },
+    /// [controller] Unpair a host: it removes this device's pairing too (when it can be reached), then
+    /// this device forgets it. --local only forgets it here.
+    Unpair {
+        host: String,
+        #[arg(long)]
+        local: bool,
+    },
+    /// [controller] What this device may do on a host: your level, the standing rules that concern
+    /// you, the paired devices (all of them for an admin) and the tools on offer.
+    Access {
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// [controller] Lower this device's level on a host (observe, control). Raising it takes someone
+    /// at that computer.
+    Lower {
+        level: Level,
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// [controller] Follow a host's activity live: every tool call (decision and outcome) and every
     /// session, starting with recent history. --json prints the raw events.
     Watch {
@@ -497,9 +515,65 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Unpair { host } => {
-            let v = agent_request(&profile, json!({"op": "unpair", "host": host})).await?;
-            print_result(json_out, &v, &format!("unpaired {}", v["host"].as_str().unwrap_or("?")))
+        Command::Unpair { host, local } => {
+            // Ask the host to drop this device first: after the local unpair it could not be reached.
+            let left =
+                if local { None } else { Some(channel(&profile, Some(host.clone()), json!({"leave": true})).await) };
+            let mut v = agent_request(&profile, json!({"op": "unpair", "host": host})).await?;
+            let name = v["host"].as_str().unwrap_or("?").to_string();
+            let text = match &left {
+                None => format!(
+                    "unpaired {name} here; it still lists this device until someone there runs ai-remote forget"
+                ),
+                Some(Ok(_)) => format!("unpaired {name}; it no longer lists this device"),
+                Some(Err(e)) => format!(
+                    "unpaired {name} here; it could not be reached ({e:#}), so it still lists this device until someone there runs ai-remote forget"
+                ),
+            };
+            v["host_forgot_this_device"] = matches!(left, Some(Ok(_))).into();
+            print_result(json_out, &v, &text)
+        }
+        Command::Access { host } => {
+            let v = channel(&profile, host, json!({"access": true})).await?;
+            if json_out {
+                return print_json(&v);
+            }
+            let s = |v: &Value| v.as_str().unwrap_or("-").to_string();
+            println!("{}: you are {} with level {}", s(&v["host"]), s(&v["you"]), s(&v["level"]));
+            let rules = v["rules"].as_array().cloned().unwrap_or_default();
+            if rules.is_empty() {
+                println!("standing rules: none (each tool's default applies)");
+            }
+            for r in rules {
+                println!("rule: {} {} (for {})", s(&r["action"]), s(&r["tool"]), s(&r["scope"]));
+            }
+            for d in v["devices"].as_array().cloned().unwrap_or_default() {
+                let you = if d["you"].as_bool() == Some(true) { " (this device)" } else { "" };
+                let revoked = if d["revoked"].as_bool() == Some(true) { ", revoked" } else { "" };
+                println!("device: {}{you}: {}{revoked}", s(&d["name"]), s(&d["level"]));
+            }
+            let tools = |list: &Value| {
+                list.as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|t| {
+                                let asks = if t["action"] == "ask" { ", asks" } else { "" };
+                                format!("{} ({}{asks})", s(&t["name"]), s(&t["level"]))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+            };
+            println!("built in: {}", tools(&v["builtin"]));
+            for m in v["mounts"].as_array().cloned().unwrap_or_default() {
+                println!("mount {}: {}", s(&m["name"]), tools(&m["tools"]));
+            }
+            Ok(())
+        }
+        Command::Lower { level, host } => {
+            let v = channel(&profile, host, json!({"lower": {"level": level}})).await?;
+            print_result(json_out, &v, &format!("Your level on {} is {} now.", s_or(&v["host"]), level.as_str()))
         }
         Command::Call { tool, args, host, person } => {
             let args: Value = serde_json::from_str(&args).context("arguments must be a JSON object")?;
@@ -638,6 +712,10 @@ async fn approver_command(profile: &Profile, enroll: Option<String>, json_out: b
         format!("{host} had already accepted this key.")
     };
     print_result(json_out, &v, &msg)
+}
+
+fn s_or(v: &Value) -> &str {
+    v.as_str().unwrap_or("?")
 }
 
 async fn channel(profile: &Profile, host: Option<String>, request: Value) -> Result<Value> {

@@ -89,11 +89,36 @@ async fn pair(state: State<'_, AppState>, ticket: String, name: Option<String>) 
     state.request(json!({"op": "pair", "ticket": ticket, "name": name})).await
 }
 
-/// Forgets a host on this device.
+/// Unpairs a host: asks it to drop this device first (when it can be reached), then forgets it here.
+/// The reply's `host_forgot_this_device` says whether the host took part.
 #[tauri::command]
 #[specta::specta]
 async fn unpair(state: State<'_, AppState>, host: String) -> Result<Json, String> {
-    state.request(json!({"op": "unpair", "host": host})).await
+    let left = match state.agent().await {
+        Ok(mut conn) => ar_controller::approver::channel(&mut conn, Some(&host), json!({"leave": true})).await.is_ok(),
+        Err(_) => false,
+    };
+    let mut reply = state.request(json!({"op": "unpair", "host": host})).await?;
+    reply.0["host_forgot_this_device"] = left.into();
+    Ok(reply)
+}
+
+/// What this device may do on `host`: its level, the standing rules that concern it, the paired
+/// devices (all of them for an admin) and the tools on offer, built in and mounted.
+#[tauri::command]
+#[specta::specta]
+async fn host_access(state: State<'_, AppState>, host: String) -> Result<Json, String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::channel(&mut conn, Some(&host), json!({"access": true})).await.map(Json).map_err(text)
+}
+
+/// Lowers this device's level on `host` (`observe` or `control`); raising it takes someone there.
+#[tauri::command]
+#[specta::specta]
+async fn lower_level(state: State<'_, AppState>, host: String, level: String) -> Result<(), String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::channel(&mut conn, Some(&host), json!({"lower": {"level": level}})).await.map_err(text)?;
+    Ok(())
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -349,6 +374,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         enroll_approver,
         set_turn,
         tell_agent,
+        host_access,
+        lower_level,
         watch_screen,
         request_keyframe,
         stop_screen,

@@ -2,7 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
-import type { Driver, FeedEvent, Host, PendingApproval, RawPending } from "./types";
+import type { Driver, FeedEvent, Host, HostAccess, HostTool, Level, PendingApproval, RawPending } from "./types";
 
 const minute = 60_000;
 
@@ -194,6 +194,66 @@ export const demoBackend: Backend = {
   async tellAgent(host, text) {
     reachable(host);
     emit(host, { kind: "note", ts: Date.now(), from: "home-laptop", text });
+  },
+  async access(host) {
+    reachable(host);
+    await wait(150);
+    const h = hosts.find((x) => x.name === host);
+    const level = h?.levelAtPairing ?? null;
+    const tool = (name: string, level: Level, action: HostTool["action"], description: string): HostTool => ({
+      name,
+      level,
+      action,
+      description,
+    });
+    return {
+      level,
+      you: "home-laptop",
+      rules: [{ tool: "git_*", action: "allow", scope: "you" }],
+      devices: [
+        { name: "home-laptop", level, revoked: false, you: true },
+        ...(level === "admin" ? [{ name: "iphone", level: "control" as Level, revoked: false, you: false }] : []),
+      ],
+      builtin: [
+        tool("system_info", "observe", "allow", "Machine name, OS, screens and whether the desktop can be used."),
+        tool("screenshot", "observe", "allow", "A picture of one screen."),
+        tool("list_windows", "observe", "allow", "Open windows with their titles."),
+        tool("mouse", "control", "allow", "Move, click and drag."),
+        tool("keyboard", "control", "allow", "Type text and press keys."),
+        tool("clipboard_read", "control", "allow", "Read the clipboard."),
+        tool("shell", "admin", "ask", "Run a PowerShell command."),
+        tool("jobs_start", "admin", "ask", "Start a long-running command in the background."),
+      ],
+      mounts: [
+        {
+          name: "git",
+          needs_desktop: false,
+          lazy: true,
+          tools: [
+            tool("git_status", "admin", "allow", "Show the working tree status."),
+            tool("git_log", "admin", "allow", "Show commit history."),
+            tool("git_diff", "admin", "allow", "Show changes."),
+            tool("git_commit", "admin", "allow", "Record staged changes."),
+            tool("git_push", "admin", "ask", "Send commits to a remote."),
+          ],
+        },
+        {
+          name: "ui",
+          needs_desktop: true,
+          lazy: false,
+          tools: [
+            tool("ui_tree", "observe", "allow", "The window's accessibility tree with element ids."),
+            tool("ui_click", "control", "allow", "Click an element by id."),
+            tool("ui_launch_app", "control", "ask", "Start an app."),
+          ],
+        },
+      ],
+    } satisfies HostAccess;
+  },
+  async lowerLevel(host, level) {
+    reachable(host);
+    const h = hosts.find((x) => x.name === host);
+    if (h) h.levelAtPairing = level;
   },
   async watchScreen(host) {
     reachable(host);

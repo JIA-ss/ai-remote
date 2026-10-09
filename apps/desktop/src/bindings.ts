@@ -10,7 +10,10 @@ export const commands = {
 	listHosts: () => typedError<Json, string>(__TAURI_INVOKE("list_hosts")),
 	/**  Redeems a host's pairing ticket; returns the host's name, the safety code and the level. */
 	pair: (ticket: string, name: string | null) => typedError<Json, string>(__TAURI_INVOKE("pair", { ticket, name })),
-	/**  Forgets a host on this device. */
+	/**
+	 *  Unpairs a host: asks it to drop this device first (when it can be reached), then forgets it here.
+	 *  The reply's `host_forgot_this_device` says whether the host took part.
+	 */
 	unpair: (host: string) => typedError<Json, string>(__TAURI_INVOKE("unpair", { host })),
 	/**
 	 *  Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -48,6 +51,13 @@ export const commands = {
 	setTurn: (host: string, action: string, agentMayWatch: boolean, note: string | null) => typedError<Json, string>(__TAURI_INVOKE("set_turn", { host, action, agentMayWatch, note })),
 	/**  Leaves a message for the agent working on `host`; it arrives with its next call result. */
 	tellAgent: (host: string, message: string) => typedError<null, string>(__TAURI_INVOKE("tell_agent", { host, message })),
+	/**
+	 *  What this device may do on `host`: its level, the standing rules that concern it, the paired
+	 *  devices (all of them for an admin) and the tools on offer, built in and mounted.
+	 */
+	hostAccess: (host: string) => typedError<Json, string>(__TAURI_INVOKE("host_access", { host })),
+	/**  Lowers this device's level on `host` (`observe` or `control`); raising it takes someone there. */
+	lowerLevel: (host: string, level: string) => typedError<null, string>(__TAURI_INVOKE("lower_level", { host, level })),
 	/**
 	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
 	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
