@@ -93,6 +93,20 @@ impl AuditLog {
         }
     }
 
+    /// Records that a controller's MCP session started, with the MCP client it serves (`agent`).
+    pub fn session_start(&self, session: &str, peer: &str, principal: Option<&str>, client: &str, agent: Option<&str>) {
+        let value = serde_json::json!({
+            "ts": now_ms(),
+            "kind": "session_start",
+            "session": session,
+            "peer": peer,
+            "principal": principal,
+            "client": client,
+            "agent": agent,
+        });
+        self.append(value.to_string());
+    }
+
     /// Records that a controller's MCP session started (`session_start`) or ended (`session_end`);
     /// `client` is `agent` or `person` (the desktop app while someone drives).
     pub fn session(&self, kind: &str, session: &str, peer: &str, principal: Option<&str>, client: &str) {

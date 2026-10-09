@@ -1,51 +1,6 @@
-@import "tailwindcss";
+/* The design system (synced from the design files), then the app's glue. */
 @import "./styles/tokens.css";
-
-/* Expose the design tokens to Tailwind utilities (bg-canvas, text-text-2, border-stroke-1, ...). */
-@theme inline {
-  --color-canvas: var(--canvas);
-  --color-layer: var(--layer);
-  --color-card: var(--card);
-  --color-raised: var(--raised);
-  --color-well: var(--well);
-  --color-stroke-1: var(--stroke-1);
-  --color-stroke-2: var(--stroke-2);
-  --color-text-1: var(--text-1);
-  --color-text-2: var(--text-2);
-  --color-text-3: var(--text-3);
-  --color-ink: var(--ink);
-  --color-ink-on: var(--ink-on);
-  --color-agent: var(--agent);
-  --color-agent-on: var(--agent-on);
-  --color-agent-soft: var(--agent-soft);
-  --color-you: var(--you);
-  --color-you-text: var(--you-text);
-  --color-you-soft: var(--you-soft);
-  --color-danger: var(--danger);
-  --color-success: var(--success);
-  --font-sans: var(--font-text);
-  --font-mono: var(--font-data);
-}
-
-html,
-body,
-#root {
-  height: 100%;
-}
-
-/* Windows: the frame plugin's strip is full width; keep it to the caption buttons so our own title
-   bar (back, computer name, chips) stays clickable. Our bar marks its empty parts as drag regions. */
-[data-tauri-frame-tb] {
-  left: auto !important;
-  right: 0;
-  width: var(--tauri-frame-controls-width, 138px) !important;
-}
-
-body {
-  margin: 0;
-  background: var(--canvas);
-  color: var(--text-1);
-  font: var(--fs-body) / var(--lh-body) var(--font-text);
-  -webkit-font-smoothing: antialiased;
-  user-select: none;
-}
+@import "./styles/base.css";
+@import "./styles/v2.css";
+@import "./styles/v2-pages.css";
+@import "./styles/app.css";

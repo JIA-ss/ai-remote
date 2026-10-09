@@ -46,7 +46,15 @@ export type FeedEvent =
       pending?: RawPending[];
       driver?: Driver;
     }
-  | { kind: "session_start" | "session_end"; ts: number; session: string; peer: string; client?: "agent" | "person" }
+  | {
+      kind: "session_start" | "session_end";
+      ts: number;
+      session: string;
+      peer: string;
+      client?: "agent" | "person";
+      /** The MCP client behind the session (`claude-code`). */
+      agent?: string | null;
+    }
   | ({ kind: "driver"; ts: number; by: string; note?: string } & Driver)
   | { kind: "note"; ts: number; from: string; text: string }
   | {
@@ -114,6 +122,8 @@ export interface Step {
   answeredBy: string | null;
   note: string | null;
   startedMs: number;
+  /** When an approval was answered (or timed out). */
+  decidedMs: number | null;
   durationMs: number | null;
   error: string | null;
 }

@@ -1,0 +1,67 @@
+/* Synced from the design system (final-v2/lib/v2-host.css). Do not edit here. */
+/* ai-remote v2.1 (final-v2): host surfaces. Opaque, no material, no glow: they hold over Remote Desktop and in VMs. */
+
+/* ---------- H3 approval prompt: one opaque surface, requester first, no default button ---------- */
+.hp { position: relative; width: 520px; height: 360px; background: var(--card); overflow: hidden; display: flex; flex-direction: column; padding: 20px 24px 0;
+  box-shadow: inset 0 0 0 1px var(--stroke-2); }
+[data-theme="dark"] .hp { background: #1D2127; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .1); }
+.hp .req { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; align-items: start; font-size: 14px; line-height: var(--lh-body); color: var(--text-2); }
+.hp .req .mark { margin-top: 1px; }
+.hp .req b { color: var(--text-1); font-weight: var(--w-strong); }
+.hp .q { margin-top: 10px; }
+.hp .says { margin-top: 4px; font-size: 14px; line-height: var(--lh-body); color: var(--text-2); }
+.hp .says .l { display: block; font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); color: var(--text-3); }
+.hp .payload { margin-top: 10px; padding: 7px 12px; }
+.hp .conseq { margin-top: 8px; }
+.hp .lvls { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.hp .lvls span { display: inline-flex; align-items: center; gap: 6px; }
+.hp .lvls .g { color: var(--text-2); }
+.hp .prov { margin-top: 8px; display: flex; gap: 10px; align-items: center; padding: 0; background: none; box-shadow: none; font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); color: var(--text-3); }
+.hp .prov .fi { font-size: 12px; width: 16px; margin: 0; color: var(--text-3); }
+.hp .foot { margin-top: auto; border-top: 1px solid var(--stroke-1); padding: 12px 0 0; display: flex; align-items: center; gap: 16px; }
+.hp .foot .once { display: flex; flex-direction: column; min-width: 0; }
+.hp .foot .once b { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text-1); }
+.hp .foot .once span { font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); color: var(--text-2); }
+.hp .foot .btns { margin-left: auto; display: flex; gap: 8px; flex: none; }
+.hp .foot .btns .btn { height: 36px; padding: 0 16px; }
+.hp .quiet { display: flex; align-items: center; gap: 8px; padding: 10px 0 12px; font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); color: var(--text-2); white-space: nowrap; }
+.hp .quiet .fi { font-size: 12px; color: var(--text-3); }
+.hp .quiet .end { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--text-3); }
+
+/* ---------- H2 overlay: the screen edge grows an opaque tab inward from the top ---------- */
+.hostscreen { position: absolute; inset: 0; overflow: hidden; }
+.edge { position: absolute; inset: 0; z-index: 20; pointer-events: none; }
+.edgetab { position: absolute; z-index: 21; top: 0; height: 58px; display: flex; align-items: center; gap: 12px; padding: 0 10px 3px 12px;
+  --text-1: #E6EDF3; --text-2: #A8B0BA; --text-3: #8A919C; --seat-you: #F3B53F; --agent: #6F9BFF; --you: #F3B53F; --seat-grey: #8A919C; color: var(--text-1); }
+.edgetab .disc { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgb(255 255 255 / .07); box-shadow: inset 0 1px 0 rgb(255 255 255 / .06); flex: none; }
+.edgetab .l1 { font-size: 14px; line-height: 18px; font-weight: 600; white-space: nowrap; }
+.edgetab .l2 { font-family: var(--font-small); font-size: 12px; line-height: 16px; color: #A8B0BA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.edgetab .pill { height: 36px; padding: 0 16px; border-radius: 18px; display: inline-flex; align-items: center; gap: 8px; background: #E6EDF3; color: #15181D; font-weight: 600; font-size: 14px; white-space: nowrap; flex: none; }
+.edgetab .pill .g { color: inherit; }
+
+/* ---------- H1 tray flyout ---------- */
+.flyout { position: absolute; z-index: 30; width: 360px; border-radius: 8px; background: var(--raised); overflow: hidden; box-shadow: var(--shadow-dialog); }
+[data-theme="dark"] .flyout { background: #22262D; }
+.flyout .fh { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; font-family: var(--font-small); font-size: 12px; color: var(--text-2); }
+.flyout .fh .end { margin-left: auto; }
+.flyout .st { padding: 12px 20px 0; }
+.flyout .st .sub { margin-top: 4px; font-size: 14px; line-height: var(--lh-body); color: var(--text-2); }
+.flyout .big { margin: 18px 20px 0; height: 48px; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 14px; font-weight: 600; background: var(--ink); color: var(--ink-on); }
+.flyout .big .kbd { color: inherit; opacity: .7; box-shadow: inset 0 0 0 1px currentColor; }
+.flyout .rows { margin: 12px 8px 0; }
+.flyout .mi { height: 36px; padding: 0 12px; border-radius: 4px; display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.flyout .mi .fi { font-size: 16px; color: var(--text-2); }
+.flyout .ff { margin-top: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--stroke-1); font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); color: var(--text-2); }
+
+/* ---------- host windows (ticket H4, pause H5) ---------- */
+.hwin { border-radius: 8px; overflow: hidden; background: var(--canvas); display: flex; flex-direction: column; box-shadow: var(--shadow-dialog); }
+.hwin .in { flex: 1; display: flex; flex-direction: column; padding: 8px 32px 24px; }
+
+/* ---------- host states sheet ---------- */
+.hs-tile { position: relative; height: 150px; border-radius: 8px; overflow: hidden; }
+.hs-tile .wp { position: absolute; inset: 0; }
+.hs-cap { font-family: var(--font-small); font-size: 12px; color: var(--text-2); margin: 16px 0 6px; }
+.trays { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.tray { border-radius: 8px; padding: 12px 4px 10px; display: flex; flex-direction: column; align-items: center; gap: 10px; background: var(--card); box-shadow: inset 0 0 0 1px var(--stroke-1); }
+[data-theme="light"] .tray { box-shadow: 0 0 0 1px rgb(15 20 30 / .07), 0 1px 2px rgb(15 20 30 / .04); }
+.tray .bar { width: calc(100% - 8px); height: 40px; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 14px; }

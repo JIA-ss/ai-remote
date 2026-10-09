@@ -16,6 +16,10 @@ pub use profile::{Profile, Role};
 /// desktop app while someone drives); every other session is an agent's.
 pub const PERSON_CLIENT: &str = "ai-remote person";
 
+/// Separates the controller's own name from the MCP client it serves in the client name of a host
+/// session: `ai-remote controller (laptop) agent=claude-code`.
+pub const AGENT_MARK: &str = " agent=";
+
 /// Version of this build, reported to peers in `system_info`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

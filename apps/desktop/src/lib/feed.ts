@@ -7,7 +7,9 @@ export interface FeedState {
   steps: Step[];
   pending: PendingApproval[];
   /** Sessions open right now, by id, with the device that opened them. */
-  sessions: Record<string, { peer: string; since: number; person: boolean }>;
+  sessions: Record<string, { peer: string; since: number; person: boolean; agent: string | null }>;
+  /** The MCP client of the newest agent session seen (`claude-code`), kept after it ends. */
+  agent: string | null;
   /** Who drives the host now. */
   driver: Driver;
   /** Changes of driver and messages to the agent, for the timeline. */
@@ -24,6 +26,7 @@ export const emptyFeed: FeedState = {
   sessions: {},
   driver: { state: "agent" },
   turns: [],
+  agent: null,
   live: true,
   missed: 0,
 };
@@ -69,7 +72,11 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
     case "session_start":
       return {
         ...state,
-        sessions: { ...state.sessions, [e.session]: { peer: e.peer, since: e.ts, person: e.client === "person" } },
+        sessions: {
+          ...state.sessions,
+          [e.session]: { peer: e.peer, since: e.ts, person: e.client === "person", agent: e.agent ?? null },
+        },
+        agent: e.client !== "person" && e.agent ? e.agent : state.agent,
       };
     case "driver": {
       const { kind: _k, ts, by, note, ...driver } = e;
@@ -101,6 +108,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
         answeredBy: null,
         note: null,
         startedMs: e.ts,
+        decidedMs: null,
         durationMs: null,
         error: null,
       });
@@ -126,6 +134,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
           state: refused ? "refused" : "running",
           decision: e.decision,
           answeredBy: e.by ?? null,
+          decidedMs: e.ts,
         };
       } else {
         steps.push({
@@ -142,6 +151,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
           answeredBy: e.by ?? null,
           note: null,
           startedMs: e.ts,
+          decidedMs: null,
           durationMs: null,
           error: null,
         });

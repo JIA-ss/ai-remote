@@ -1,0 +1,23 @@
+/* App glue on top of the design system: real controls take the look of the prototype's elements. */
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; text-align: inherit; }
+button:disabled { cursor: default; }
+.btn:disabled, .pill:disabled { opacity: .55; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+#root { width: 100vw; height: 100vh; }
+
+/* The session rail: 336 px, 360 px from 1400 px wide. */
+.rail.session-rail { width: 336px; }
+@media (min-width: 1400px) { .rail.session-rail { width: 360px; } }
+
+/* Text fields drawn like the prototype's composer and note boxes. */
+.ph-input { all: unset; display: block; width: 100%; color: var(--text-1); font-size: 14px; line-height: 20px; }
+.ph-input::placeholder { color: var(--text-2); }
+textarea.ta-input { display: block; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0; font: inherit; font-size: 14px; line-height: var(--lh-body);
+  color: var(--text-1); padding: 8px 12px; border-radius: 6px; background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--stroke-1), inset 0 -2px 0 var(--ink); margin-top: 6px; }
+[data-theme="light"] textarea.ta-input { background: #FFFFFF; box-shadow: inset 0 0 0 1px rgb(15 20 30 / .12), inset 0 -2px 0 var(--ink); }
+.composer .send:disabled { opacity: .5; }
+
+/* Scrollbars that stay out of the way. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--stroke-2); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }

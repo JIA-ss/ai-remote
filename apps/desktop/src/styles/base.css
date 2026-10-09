@@ -1,0 +1,113 @@
+/* Synced from the design system (final-v2/lib/base.css). Do not edit here. */
+/* ai-remote v2.1: base layer. Reset, fonts, icons, generic controls. Built on lib/tokens.css (generated from tokens.json). */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; overflow: hidden; }
+body {
+  font-family: var(--font-text); font-size: 14px; line-height: var(--lh-body);
+  color: var(--text-1); background: var(--canvas);
+  font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+  cursor: default; user-select: none; font-kerning: normal; text-rendering: optimizeLegibility;
+  text-wrap: pretty;
+}
+/* Chinese: break between words, never inside them (BudouX phrase marks become <wbr> at build time); no palt. */
+:lang(zh-CN) body { word-break: keep-all; overflow-wrap: anywhere; text-spacing-trim: trim-start; }
+
+/* ---------- type ---------- */
+.cap  { font-family: var(--font-small); font-size: 12px; line-height: var(--lh-cap); }
+.body { font-size: 14px; line-height: var(--lh-body); }
+.lede { font-size: 16px; line-height: var(--lh-lede); }
+.ttl  { font-family: var(--font-display); font-size: 20px; line-height: var(--lh-ttl); font-weight: var(--w-title); letter-spacing: var(--tr-20); }
+.hd   { font-family: var(--font-display); font-size: 28px; line-height: var(--lh-hd); font-weight: var(--w-display); letter-spacing: var(--tr-28); }
+.dsp  { font-family: var(--font-display); font-size: 40px; line-height: var(--lh-dsp); font-weight: var(--w-display); letter-spacing: var(--tr-40); }
+.hero { font-family: var(--font-display); font-size: 56px; line-height: var(--lh-hero); font-weight: var(--w-display); letter-spacing: var(--tr-56); }
+:lang(zh-CN) .hero { font-size: 40px; line-height: 52px; }
+.strong { font-weight: var(--w-strong); }
+.safety { font-weight: 600; }
+.c1 { color: var(--text-1); } .c2 { color: var(--text-2); } .c3 { color: var(--text-3); }
+.c-agent { color: var(--agent); } .c-you { color: var(--you-text); } .c-danger { color: var(--danger); }
+.nw { white-space: nowrap; }
+.ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tnum { font-variant-numeric: tabular-nums; }
+.mono, code { font-family: var(--font-data); font-size: 13px; line-height: 20px; letter-spacing: 0; font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+.row { display: flex; align-items: center; }
+.col { display: flex; flex-direction: column; }
+.grow { flex: 1 1 auto; min-width: 0; }
+
+/* ---------- icons ---------- */
+.fi { font-family: "Segoe Fluent Icons"; font-style: normal; font-weight: 400; line-height: 1; display: inline-flex; align-items: center; justify-content: center; width: 1em; height: 1em; flex: none; }
+.fi.s10 { font-size: 10px; } .fi.s12 { font-size: 12px; } .fi.s14 { font-size: 14px; } .fi.s16 { font-size: 16px; } .fi.s20 { font-size: 20px; }
+.g { display: inline-block; flex: none; vertical-align: middle; overflow: visible; }
+.g-stroke { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- focus: 2 px ink ring, 2 px offset ---------- */
+.focus { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* ---------- buttons (Windows metrics: 32 px, 4 px radius; large 40) ---------- */
+.btn { height: 32px; padding: 0 14px; border-radius: var(--r-control); border: 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap;
+  font: inherit; font-size: 14px; line-height: 20px; font-weight: 400; color: var(--text-1); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--stroke-1); }
+[data-theme="light"] .btn { background: #FFFFFF; box-shadow: inset 0 0 0 1px rgb(15 20 30 / .10), inset 0 -1px 0 rgb(15 20 30 / .12); }
+.btn .fi { font-size: 14px; }
+.btn.lg { height: 40px; padding: 0 18px; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.btn.primary { background: var(--ink); color: var(--ink-on); font-weight: 600; box-shadow: inset 0 -1px 0 rgb(0 0 0 / .22); }
+[data-theme="light"] .btn.primary { box-shadow: inset 0 0 0 1px rgb(255 255 255 / .06), inset 0 -1px 0 rgb(0 0 0 / .35); }
+.btn.danger { background: var(--danger-fill); color: var(--danger-on); font-weight: 600; box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), inset 0 -1px 0 rgb(0 0 0 / .22); }
+.btn.you { background: var(--you); color: var(--you-on); font-weight: 600; box-shadow: inset 0 1px 0 rgb(255 255 255 / .4), inset 0 -1px 0 rgb(0 0 0 / .18); }
+.btn.subtle { background: transparent; box-shadow: none; color: var(--text-2); padding: 0 10px; }
+.btn.danger-text { color: var(--danger); }
+.btn.icon { width: 32px; padding: 0; }
+.kbd { font-family: var(--font-small); font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 3px; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--stroke-2); font-weight: 400; white-space: nowrap; }
+.btn .kbd { margin-left: 2px; }
+.btn.danger .kbd, .btn.primary .kbd { color: inherit; opacity: .75; box-shadow: inset 0 0 0 1px currentColor; }
+.btn.split { padding-right: 0; gap: 0; }
+.btn.split .sg { padding-right: 12px; display: inline-flex; align-items: center; gap: 8px; height: 100%; }
+.btn.split .chev { width: 32px; height: 100%; display: grid; place-items: center; border-left: 1px solid rgb(255 255 255 / .18); }
+[data-theme="dark"] .btn.primary.split .chev { border-left-color: rgb(0 0 0 / .18); }
+
+/* ---------- segmented control (Windows SelectorBar idiom, 36 px track) ---------- */
+.seg { display: flex; height: 36px; padding: 3px; border-radius: var(--r-segment-track); background: var(--fill-1); gap: 2px; }
+.seg > span { flex: 1; display: grid; place-items: center; border-radius: var(--r-segment); font-size: 14px; color: var(--text-2); white-space: nowrap; padding: 0 14px; }
+.seg > span.sel { background: var(--raised); color: var(--text-1); font-weight: var(--w-strong); box-shadow: 0 0 0 1px rgb(0 0 0 / .35), 0 1px 2px rgb(0 0 0 / .3); }
+[data-theme="light"] .seg > span.sel { background: #FFFFFF; box-shadow: 0 0 0 1px rgb(15 20 30 / .08), 0 1px 3px rgb(15 20 30 / .1); }
+.seg.fit > span { flex: none; }
+.seg.sm { height: 32px; } .seg.sm > span { font-size: 14px; padding: 0 12px; }
+
+/* ---------- fields ---------- */
+.field { height: 32px; border-radius: var(--r-control); display: flex; align-items: center; gap: 10px; padding: 0 10px; color: var(--text-3); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--stroke-1), inset 0 -1px 0 var(--stroke-input); font-size: 14px; }
+[data-theme="light"] .field { background: #FFFFFF; box-shadow: inset 0 0 0 1px rgb(15 20 30 / .10), inset 0 -1px 0 var(--stroke-input); }
+.field .fi { font-size: 14px; color: var(--text-2); }
+.field .val { color: var(--text-1); }
+.field.lg { height: 40px; }
+.dd { height: 32px; padding: 0 10px 0 12px; border-radius: var(--r-control); display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; font-size: 14px; color: var(--text-1); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--stroke-1); }
+[data-theme="light"] .dd { background: #FFFFFF; box-shadow: inset 0 0 0 1px rgb(15 20 30 / .10), inset 0 -1px 0 rgb(15 20 30 / .12); }
+.dd .fi { font-size: 12px; color: var(--text-2); }
+.cmdline { height: 40px; border-radius: var(--r-payload); display: flex; align-items: center; gap: 12px; padding: 0 4px 0 14px; background: var(--well); box-shadow: inset 0 0 0 1px var(--stroke-1); }
+.cmdline .mono { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-1); }
+.cmdline .btn { height: 32px; }
+
+/* ---------- switches, radio, check ---------- */
+.switch { width: 40px; height: 20px; border-radius: 10px; position: relative; flex: none; box-shadow: inset 0 0 0 1px var(--text-3); }
+.switch:after { content: ""; position: absolute; left: 4px; top: 4px; width: 12px; height: 12px; border-radius: 6px; background: var(--text-2); }
+.switch.on { background: var(--ink); box-shadow: none; }
+.switch.on:after { left: 23px; top: 3px; width: 14px; height: 14px; border-radius: 7px; background: var(--ink-on); }
+.radio { width: 20px; height: 20px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px var(--text-3); position: relative; }
+.radio.on { background: var(--ink); box-shadow: none; }
+.radio.on:after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--ink-on); }
+.check { width: 20px; height: 20px; border-radius: 4px; flex: none; box-shadow: inset 0 0 0 1px var(--text-3); display: grid; place-items: center; color: var(--ink-on); font-size: 12px; }
+.check.on { background: var(--ink); box-shadow: none; }
+
+/* ---------- chips that survive: ref, badge ---------- */
+.ref { font-family: var(--font-data); font-size: 12px; line-height: 16px; height: 18px; padding: 0 4px; border-radius: var(--r-ref); display: inline-flex; align-items: center;
+  color: var(--agent); background: color-mix(in srgb, var(--agent) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent) 45%, transparent);
+  font-weight: 400; vertical-align: 1px; letter-spacing: 0; font-variant-ligatures: none; }
+.ref.solid { background: var(--agent); color: var(--agent-on); box-shadow: none; }
+.badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-family: var(--font-small); font-size: 12px; line-height: 16px; font-weight: 600; background: var(--you); color: var(--you-on); }
+
+.hr { height: 1px; background: var(--stroke-1); }
+.vr { width: 1px; align-self: stretch; background: var(--stroke-1); }
+.ring { position: relative; flex: none; }
+.ring svg { display: block; transform: rotate(-90deg); }
+.ring .v { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--font-display); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+/* Reduced motion: every transition is a crossfade or nothing. Nothing loops or pulses, in any mode. */
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: 120ms !important; transition-property: opacity, color, background-color, border-color !important; } }

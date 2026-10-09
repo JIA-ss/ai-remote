@@ -144,7 +144,11 @@ impl ProtocolHandler for McpProtocol {
                             .is_some_and(|i| i.client_info.name.starts_with(ar_core::PERSON_CLIENT));
                         session.set_person(person);
                         let client = if person { "person" } else { "agent" };
-                        host.audit().session("session_start", id, name, principal, client);
+                        // The MCP client behind the controller (`claude-code`), when it said.
+                        let agent = running.peer().peer_info().and_then(|i| {
+                            i.client_info.name.split_once(ar_core::AGENT_MARK).map(|(_, a)| a.to_string())
+                        });
+                        host.audit().session_start(id, name, principal, client, agent.as_deref());
                         let _ = running.waiting().await;
                         host.audit().session("session_end", id, name, principal, client);
                     }
