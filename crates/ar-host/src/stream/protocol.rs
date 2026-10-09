@@ -2,7 +2,8 @@
 //!
 //! The controller opens a bi-stream and writes one JSON line:
 //! `{"monitor":null,"max_fps":30,"max_long_edge":1920,"bitrate_kbps":6000}` (every field optional).
-//! The host answers with one JSON line (`{"ok":true,"monitors":[...]}` or `{"ok":false,"error":..}`)
+//! The host answers with one JSON line (`{"ok":true,"monitors":[...],"screen":{x,y,width,height}}`,
+//! the streamed monitor's place in screen coordinates, or `{"ok":false,"error":..}`)
 //! and then binary frames until either side closes:
 //!
 //! ```text
@@ -164,7 +165,10 @@ async fn serve(
     };
     let list: Vec<_> =
         monitors.iter().map(|(i, w, h, p)| json!({"index": i, "width": w, "height": h, "primary": p})).collect();
-    if !reply(&mut send, json!({"ok": true, "monitors": list})).await {
+    // Where the streamed monitor is on the screen, so a viewer can turn a point of the picture into
+    // screen coordinates for the mouse tool.
+    let screen = capture::geometry(req.monitor).map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
+    if !reply(&mut send, json!({"ok": true, "monitors": list, "screen": screen})).await {
         return;
     }
     let audit_line =

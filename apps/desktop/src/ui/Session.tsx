@@ -10,6 +10,7 @@ import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
 import { createDecoder } from "../lib/video";
 import { DecisionCard } from "./Decide";
+import { RemoteInput, type ScreenRect } from "./RemoteInput";
 import { Glyph, Pointer, SeatMark, type Seat } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, NavRail, TitleBar, type Nav } from "./Shell";
@@ -131,10 +132,13 @@ export function Stream({
   onSize,
   maxFps,
   maxLongEdge,
+  onScreen,
 }: {
   host: string;
   onFrame?: () => void;
   onSize?: (w: number, h: number) => void;
+  /** Where the streamed monitor is in screen coordinates (for your input while you drive). */
+  onScreen?: (r: ScreenRect | null) => void;
   /** A small preview asks for less: fewer frames, a smaller picture. */
   maxFps?: number;
   maxLongEdge?: number;
@@ -160,7 +164,10 @@ export function Stream({
       .watchScreen(host, (f) => decoder.push(f), { maxFps, maxLongEdge })
       .then((v) => {
         if (stopped) v?.stop();
-        else view = v;
+        else {
+          view = v;
+          onScreen?.(v?.screen ?? null);
+        }
       })
       .catch(() => {});
     return () => {
@@ -171,7 +178,7 @@ export function Stream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [host]);
   if (api.kind !== "tauri") {
-    return <img className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { onSize?.(1600, 1000); onFrame?.(); }} />;
+    return <img className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { onSize?.(1600, 1000); onFrame?.(); onScreen?.({ x: 0, y: 0, width: 1600, height: 1000 }); }} />;
   }
   return <canvas ref={canvas} className="rd-holder" style={{ width: "100%", height: "100%" }} />;
 }
@@ -299,6 +306,7 @@ export function SessionPage({
   const [stageRef, stage] = useSize<HTMLDivElement>();
   const [aspect, setAspect] = useState(16 / 10);
   const [hasFrame, setHasFrame] = useState(false);
+  const [screen, setScreen] = useState<ScreenRect | null>(null);
   const [tab, setTab] = useState<"steps" | "sees">("steps");
   const [message, setMessage] = useState("");
   const [sent, setSent] = useState(false);
@@ -381,7 +389,10 @@ export function SessionPage({
             <div className={cx("frame", drive)} style={{ left, top, width: sw, height: sh }} />
             <div className={cx("stream", bar === "offline" && "desat")} style={{ left, top, width: sw, height: sh }}>
               {c.online !== false && (
-                <Stream host={host} onFrame={() => setHasFrame(true)} onSize={(w, h) => setAspect(w / h)} />
+                <Stream host={host} onFrame={() => setHasFrame(true)} onSize={(w, h) => setAspect(w / h)} onScreen={setScreen} />
+              )}
+              {bar === "you" && (
+                <RemoteInput host={host} screen={screen} mac={c.os === "mac"} onHandBack={() => void act("hand_back")} />
               )}
             </div>
             {turn && (
