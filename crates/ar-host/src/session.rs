@@ -61,18 +61,32 @@ impl Session {
     }
 
     /// Records a screenshot's geometry and returns its id.
+    ///
+    /// Ids carry the session id (`<session>-s<n>`): a controller that reconnects gets a new session
+    /// whose counter starts again, and an id held over from the old one must fail as unknown
+    /// instead of silently naming a different screenshot (maybe on another monitor).
     pub fn remember_shot(&self, geometry: ShotGeometry) -> String {
         let mut s = self.shots.lock().unwrap();
         s.next += 1;
-        let id = format!("s{}", s.next);
+        let id = self.shot_id(s.next);
         s.by_id.insert(id.clone(), geometry);
         s.last = Some(id.clone());
         // Keep memory bounded on long sessions.
         if s.by_id.len() > 64 {
-            let oldest = format!("s{}", s.next - 64);
+            let oldest = self.shot_id(s.next - 64);
             s.by_id.remove(&oldest);
         }
         id
+    }
+
+    fn shot_id(&self, n: u32) -> String {
+        format!("{}-s{n}", self.id)
+    }
+
+    /// Whether `id` looks like a screenshot id of another session (an earlier connection), so the
+    /// caller can say why it is unknown.
+    pub fn is_foreign_shot_id(&self, id: &str) -> bool {
+        id.split_once("-s").is_some_and(|(session, _)| session != self.id)
     }
 
     /// Geometry of a screenshot by id, or of the latest one when `id` is `None`.
@@ -98,6 +112,50 @@ fn rand_u32() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session() -> Session {
+        let peer = Peer { name: "test".into(), principal: None, user_id: None, level: Some(Level::Observe) };
+        Session::new(peer, Level::Observe, CancellationToken::new())
+    }
+
+    fn any_geometry(image_width: u32) -> ShotGeometry {
+        ShotGeometry {
+            monitor_x: 0,
+            monitor_y: 0,
+            monitor_width: 1920,
+            monitor_height: 1080,
+            image_width,
+            image_height: 720,
+        }
+    }
+
+    #[test]
+    fn shot_ids_are_unique_across_sessions() {
+        let (a, b) = (session(), session());
+        let id_a = a.remember_shot(any_geometry(1280));
+        let id_b = b.remember_shot(any_geometry(640));
+        assert_ne!(id_a, id_b);
+        assert!(id_a.starts_with(&a.id) && id_a.ends_with("-s1"), "{id_a}");
+        // An id from the other session is unknown here, and recognisably foreign.
+        assert!(a.shot(Some(&id_b)).is_none());
+        assert!(a.is_foreign_shot_id(&id_b) && !a.is_foreign_shot_id(&id_a));
+        assert!(!a.is_foreign_shot_id("s1"));
+        let (latest, g) = a.shot(None).unwrap();
+        assert_eq!((latest, g.image_width), (id_a, 1280));
+    }
+
+    #[test]
+    fn keeps_the_latest_64_shots() {
+        let s = session();
+        let first = s.remember_shot(any_geometry(1));
+        for i in 2..=65 {
+            s.remember_shot(any_geometry(i));
+        }
+        assert!(s.shot(Some(&first)).is_none());
+        let (latest, g) = s.shot(None).unwrap();
+        assert!(latest.ends_with("-s65") && g.image_width == 65);
+        assert!(s.shot(Some(&format!("{}-s2", s.id))).is_some());
+    }
 
     #[test]
     fn maps_downscaled_point_to_screen() {
