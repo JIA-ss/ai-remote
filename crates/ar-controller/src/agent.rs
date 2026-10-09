@@ -12,7 +12,10 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
-use ar_net::{ALPN_EVENTS, ALPN_MCP, Mesh, MeshOptions, PathKind, iroh::endpoint::Connection, ipc, refusal::Refusal};
+use ar_net::{
+    ALPN_EVENTS, ALPN_MCP, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection,
+    refusal::Refusal,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, sync::Mutex};
@@ -31,16 +34,27 @@ const IDLE_EXIT: Duration = Duration::from_secs(30 * 60);
 pub enum AgentRequest {
     Status,
     /// Redeem a host's pairing ticket.
-    Pair { ticket: String, name: Option<String> },
+    Pair {
+        ticket: String,
+        name: Option<String>,
+    },
     Hosts,
     /// Forget a host (its pairing on this controller).
-    Unpair { host: String },
+    Unpair {
+        host: String,
+    },
     /// Call one tool on one host and return the result (for the CLI and scripts).
-    Call { host: Option<String>, tool: String, args: serde_json::Map<String, Value> },
+    Call {
+        host: Option<String>,
+        tool: String,
+        args: serde_json::Map<String, Value>,
+    },
     /// Upgrade this connection to an aggregated MCP session.
     Mcp,
     /// Upgrade this connection to a host's live activity feed (one JSON line per event).
-    Events { host: Option<String> },
+    Events {
+        host: Option<String>,
+    },
     Shutdown,
 }
 
@@ -113,7 +127,11 @@ impl Agent {
 
     /// Whether a connection to `host` is kept from earlier and not known to be closed.
     pub async fn has_connection(&self, host: &str) -> bool {
-        self.conns.lock().await.get(host).is_some_and(|c| c.close_reason().is_none())
+        self.conns
+            .lock()
+            .await
+            .get(host)
+            .is_some_and(|c| c.close_reason().is_none())
     }
 
     /// Drops a cached connection (after a transport error) so the next use redials.
@@ -162,7 +180,13 @@ impl Agent {
 
     /// Paired hosts, by local name.
     pub async fn host_names(&self) -> Result<Vec<String>> {
-        Ok(self.mesh.peers().await?.into_iter().map(|p| p.name).collect())
+        Ok(self
+            .mesh
+            .peers()
+            .await?
+            .into_iter()
+            .map(|p| p.name)
+            .collect())
     }
 
     pub fn known_hosts(&self) -> KnownHosts {
@@ -244,7 +268,11 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
     Ok(())
 }
 
-async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &CancellationToken) -> Result<()> {
+async fn serve_client(
+    agent: &Arc<Agent>,
+    mut conn: ipc::Conn,
+    shutdown: &CancellationToken,
+) -> Result<()> {
     while let Some(line) = conn.read_json().await? {
         agent.touch();
         let req: AgentRequest = match serde_json::from_value(line) {
@@ -263,7 +291,8 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
             // Connect first, so a failure is still an ordinary error reply.
             match open_events(agent, host).await {
                 Ok(feed) => {
-                    conn.reply(Ok(json!({"events": true, "host": feed.host}))).await?;
+                    conn.reply(Ok(json!({"events": true, "host": feed.host})))
+                        .await?;
                     let (stream, _) = conn.into_raw();
                     feed.relay(stream).await;
                     return Ok(());
@@ -280,7 +309,11 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
     Ok(())
 }
 
-async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationToken) -> Result<Value> {
+async fn handle(
+    agent: &Arc<Agent>,
+    req: AgentRequest,
+    shutdown: &CancellationToken,
+) -> Result<Value> {
     Ok(match req {
         AgentRequest::Status => json!({
             "device": agent.mesh.principal(),
@@ -293,7 +326,11 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             agent.clear_refusal(&paired.peer);
             agent.invalidate(&paired.peer).await;
             let mut known = agent.known_hosts();
-            known.upsert(KnownHost { name: paired.peer.clone(), level: paired.level, paired_at: unix_now() });
+            known.upsert(KnownHost {
+                name: paired.peer.clone(),
+                level: paired.level,
+                paired_at: unix_now(),
+            });
             known.save(&agent.hosts_path)?;
             serde_json::to_value(paired)?
         }
@@ -355,21 +392,34 @@ async fn open_events(agent: &Arc<Agent>, host: Option<String>) -> Result<EventFe
         Some(h) => agent.mesh.find_peer(&h).await?.name,
         None => Aggregator::new(agent.clone()).only_host().await?,
     };
-    let conn = agent
-        .mesh
-        .dial(&host, ALPN_EVENTS)
+    let conn = agent.mesh.dial(&host, ALPN_EVENTS).await.map_err(|e| {
+        anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}")
+    })?;
+    let (mut send, recv) = conn
+        .open_bi()
         .await
-        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
-    let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+        .map_err(|e| anyhow!("host '{host}': {e}"))?;
     // A QUIC stream reaches the host only once something is written on it.
-    send.write_all(b"{\"subscribe\":true}\n").await.map_err(|e| anyhow!("host '{host}': {e}"))?;
-    Ok(EventFeed { host, conn, send, recv })
+    send.write_all(b"{\"subscribe\":true}\n")
+        .await
+        .map_err(|e| anyhow!("host '{host}': {e}"))?;
+    Ok(EventFeed {
+        host,
+        conn,
+        send,
+        recv,
+    })
 }
 
 impl EventFeed {
     /// Copies the feed to the local client until the host ends it or the client goes away.
     async fn relay(self, local: ipc::LocalStream) {
-        let EventFeed { conn, send, mut recv, .. } = self;
+        let EventFeed {
+            conn,
+            send,
+            mut recv,
+            ..
+        } = self;
         let (mut local_read, mut local_write) = tokio::io::split(local);
         let client_gone = async {
             let mut buf = [0u8; 256];

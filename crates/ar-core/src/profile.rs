@@ -121,7 +121,11 @@ impl Profile {
     pub fn control_endpoint(&self, role: Role) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            Ok(PathBuf::from(format!(r"\\.\pipe\ai-remote-{}-{}", role.as_str(), self.instance_id())))
+            Ok(PathBuf::from(format!(
+                r"\\.\pipe\ai-remote-{}-{}",
+                role.as_str(),
+                self.instance_id()
+            )))
         }
         #[cfg(not(windows))]
         {
@@ -144,7 +148,8 @@ mod tests {
     use super::*;
 
     fn temp_profile(name: &str) -> (PathBuf, Profile) {
-        let dir = std::env::temp_dir().join(format!("ar-profile-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ar-profile-test-{name}-{}", std::process::id()));
         let profile = Profile::at(&dir).unwrap();
         (dir, profile)
     }

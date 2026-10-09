@@ -27,13 +27,16 @@ use windows::Win32::{
     Foundation::HWND,
     System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId},
     UI::{
-        Input::KeyboardAndMouse::{INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEINPUT, SendInput},
+        Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEINPUT, SendInput,
+        },
         WindowsAndMessaging::{
             GA_ROOT, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindowLongW,
-            GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOP, IsHungAppWindow, IsIconic,
-            IsWindow, IsWindowVisible, MSG, PM_NOREMOVE, PeekMessageW, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE,
-            SWP_NOSIZE, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-            WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+            GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOP,
+            IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, MSG, PM_NOREMOVE, PeekMessageW,
+            SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow,
+            SetWindowPos, ShowWindowAsync, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
+            WS_EX_TRANSPARENT,
         },
     },
 };
@@ -63,7 +66,9 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
     // fail or return FALSE); out pointers point to locals.
     unsafe {
         if id == 0 || !IsWindow(Some(hwnd)).as_bool() {
-            bail!("window {id} does not exist (it may have closed); call list_windows for current ids");
+            bail!(
+                "window {id} does not exist (it may have closed); call list_windows for current ids"
+            );
         }
         // Only top-level windows can be foreground; an id of a child window means its top level.
         let root = GetAncestor(hwnd, GA_ROOT);
@@ -71,7 +76,9 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == GetCurrentProcessId() {
-            bail!("window {id} belongs to the ai-remote host itself and cannot be focused by a controller");
+            bail!(
+                "window {id} belongs to the ai-remote host itself and cannot be focused by a controller"
+            );
         }
         if !IsWindowVisible(hwnd).as_bool() {
             bail!("window {id} is hidden; only visible windows from list_windows can be focused");
@@ -113,7 +120,11 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
             method,
             title,
             foreground_window: (!fg.is_invalid()).then(|| id_from_hwnd(fg)),
-            foreground_title: if fg.is_invalid() { String::new() } else { window_title(fg) },
+            foreground_title: if fg.is_invalid() {
+                String::new()
+            } else {
+                window_title(fg)
+            },
         })
     }
 }
@@ -155,7 +166,17 @@ fn wait_until(wait: Duration, mut done: impl FnMut() -> bool) -> bool {
 /// `BringWindowToTop` without waiting: the request is posted to the window's thread.
 fn raise(hwnd: HWND) {
     // SAFETY: handle by value; no pointers.
-    let _ = unsafe { SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS) };
+    let _ = unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS,
+        )
+    };
 }
 
 /// One mouse input with no movement and no buttons. Nothing happens on screen, but this process
@@ -185,13 +206,17 @@ fn attach_and_activate(hwnd: HWND) {
     // SAFETY: handles by value; `msg` is a local out parameter; attach and detach are paired.
     unsafe {
         let fg = GetForegroundWindow();
-        let fg_thread =
-            if fg.is_invalid() || IsHungAppWindow(fg).as_bool() { 0 } else { GetWindowThreadProcessId(fg, None) };
+        let fg_thread = if fg.is_invalid() || IsHungAppWindow(fg).as_bool() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
         let me = GetCurrentThreadId();
         // AttachThreadInput needs a message queue on this thread; peeking creates one.
         let mut msg = MSG::default();
         let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
-        let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
+        let attached =
+            fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
         raise(hwnd);
         let _ = SetForegroundWindow(hwnd);
         if attached {
@@ -255,15 +280,27 @@ mod tests {
 
     #[test]
     fn high_ids_are_sign_extended() {
-        assert_eq!(hwnd_from_id(0x8001_0000).0 as isize, 0x8001_0000u32 as i32 as isize);
+        assert_eq!(
+            hwnd_from_id(0x8001_0000).0 as isize,
+            0x8001_0000u32 as i32 as isize
+        );
         assert!((hwnd_from_id(0x8001_0000).0 as isize) < 0);
     }
 
     #[test]
     fn overlay_traits_come_from_the_extended_style() {
         assert_eq!(traits_from_ex_style(0), WindowTraits::default());
-        let hud = traits_from_ex_style(WS_EX_TOPMOST.0 | WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0);
-        assert_eq!(hud, WindowTraits { topmost: true, click_through: true, no_activate: true });
+        let hud = traits_from_ex_style(
+            WS_EX_TOPMOST.0 | WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0,
+        );
+        assert_eq!(
+            hud,
+            WindowTraits {
+                topmost: true,
+                click_through: true,
+                no_activate: true
+            }
+        );
         // Layered alone (fades, rounded corners) or transparent alone does not pass clicks through.
         assert!(!traits_from_ex_style(WS_EX_LAYERED.0).click_through);
         assert!(!traits_from_ex_style(WS_EX_TRANSPARENT.0).click_through);

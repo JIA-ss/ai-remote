@@ -15,7 +15,11 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(name = "ai-remote", version, about = "Remote control where AI agents are first-class operators.")]
+#[command(
+    name = "ai-remote",
+    version,
+    about = "Remote control where AI agents are first-class operators."
+)]
 struct Cli {
     /// Profile directory (default: the platform's local data directory; env AI_REMOTE_HOME).
     #[arg(long, global = true, value_name = "DIR")]
@@ -199,7 +203,9 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var(ar_core::profile::HOME_ENV, home) };
     }
     init_logging(&cli.command);
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(run(cli))
 }
 
@@ -213,25 +219,56 @@ fn init_logging(command: &Command) {
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("AI_REMOTE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
-    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 async fn run(cli: Cli) -> Result<()> {
     let profile = Profile::open_default()?;
     let json_out = cli.json;
     match cli.command {
-        Command::Host { action: None, no_pair_code } => {
-            let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
+        Command::Host {
+            action: None,
+            no_pair_code,
+        } => {
+            let opts = ar_host::HostOptions {
+                pair_code_if_unpaired: !no_pair_code,
+                background: false,
+            };
             ar_host::run(profile, opts).await
         }
-        Command::Host { action: Some(HostAction::Install { dry_run, no_start, firewall_only, force }), .. } => {
-            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force };
+        Command::Host {
+            action:
+                Some(HostAction::Install {
+                    dry_run,
+                    no_start,
+                    firewall_only,
+                    force,
+                }),
+            ..
+        } => {
+            let flags = hostops::InstallFlags {
+                dry_run,
+                no_start,
+                firewall_only,
+                force,
+            };
             hostops::host_install(&profile, flags).await
         }
-        Command::Host { action: Some(HostAction::Uninstall { dry_run, firewall_only }), .. } => {
-            hostops::host_uninstall(&profile, dry_run, firewall_only).await
-        }
-        Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Host {
+            action:
+                Some(HostAction::Uninstall {
+                    dry_run,
+                    firewall_only,
+                }),
+            ..
+        } => hostops::host_uninstall(&profile, dry_run, firewall_only).await,
+        Command::Host {
+            action: Some(HostAction::Status),
+            ..
+        } => hostops::host_status(&profile, json_out).await,
         Command::Doctor => hostops::doctor(&profile, json_out).await,
         Command::PairCode { level, name } => {
             let v = host_request(&profile, HostRequest::PairCode { level, name }).await?;
@@ -240,7 +277,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let line = v["line"].as_str().unwrap_or_default();
             println!("On the controlling machine, run:\n\n  ai-remote pair {line}\n");
-            println!("Grants level \"{level}\". Valid once. Check that both machines show the same safety code.");
+            println!(
+                "Grants level \"{level}\". Valid once. Check that both machines show the same safety code."
+            );
             Ok(())
         }
         Command::Peers => {
@@ -258,7 +297,11 @@ async fn run(cli: Cli) -> Result<()> {
                     p["name"].as_str().unwrap_or("?"),
                     p["level"].as_str().unwrap_or("none"),
                     p["principal"].as_str().unwrap_or(""),
-                    if p["revoked"].as_bool() == Some(true) { "  REVOKED" } else { "" }
+                    if p["revoked"].as_bool() == Some(true) {
+                        "  REVOKED"
+                    } else {
+                        ""
+                    }
                 );
             }
             Ok(())
@@ -269,11 +312,23 @@ async fn run(cli: Cli) -> Result<()> {
                 other => Some(other.parse::<Level>().map_err(anyhow::Error::msg)?),
             };
             let v = host_request(&profile, HostRequest::SetLevel { peer, level }).await?;
-            print_result(json_out, &v, &format!("{} now has level {}", v["peer"].as_str().unwrap_or("?"), v["level"]))
+            print_result(
+                json_out,
+                &v,
+                &format!(
+                    "{} now has level {}",
+                    v["peer"].as_str().unwrap_or("?"),
+                    v["level"]
+                ),
+            )
         }
         Command::Revoke { peer } => {
             let v = host_request(&profile, HostRequest::Revoke { peer }).await?;
-            print_result(json_out, &v, &format!("revoked {}", v["peer"].as_str().unwrap_or("?")))
+            print_result(
+                json_out,
+                &v,
+                &format!("revoked {}", v["peer"].as_str().unwrap_or("?")),
+            )
         }
         Command::Unrevoke { peer } => {
             let v = host_request(&profile, HostRequest::Unrevoke { peer }).await?;
@@ -302,12 +357,22 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Mount { command } => mount_command(&profile, command, json_out).await,
         Command::Pair { ticket, name } => {
-            let v = agent_request(&profile, json!({"op": "pair", "ticket": ticket, "name": name})).await?;
+            let v = agent_request(
+                &profile,
+                json!({"op": "pair", "ticket": ticket, "name": name}),
+            )
+            .await?;
             if json_out {
                 return print_json(&v);
             }
-            println!("Paired with host \"{}\".", v["peer"].as_str().unwrap_or("?"));
-            println!("Safety code: {}  (the host must show the same words)", v["sas"].as_str().unwrap_or("?"));
+            println!(
+                "Paired with host \"{}\".",
+                v["peer"].as_str().unwrap_or("?")
+            );
+            println!(
+                "Safety code: {}  (the host must show the same words)",
+                v["sas"].as_str().unwrap_or("?")
+            );
             if let Some(level) = v["level"].as_str() {
                 println!("Granted level: {level}");
             }
@@ -320,7 +385,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let hosts = v.as_array().cloned().unwrap_or_default();
             if hosts.is_empty() {
-                println!("No host is paired. On the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here.");
+                println!(
+                    "No host is paired. On the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here."
+                );
             }
             for h in hosts {
                 println!(
@@ -333,12 +400,23 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Unpair { host } => {
             let v = agent_request(&profile, json!({"op": "unpair", "host": host})).await?;
-            print_result(json_out, &v, &format!("unpaired {}", v["host"].as_str().unwrap_or("?")))
+            print_result(
+                json_out,
+                &v,
+                &format!("unpaired {}", v["host"].as_str().unwrap_or("?")),
+            )
         }
         Command::Call { tool, args, host } => {
-            let args: Value = serde_json::from_str(&args).context("arguments must be a JSON object")?;
-            let Value::Object(args) = args else { bail!("arguments must be a JSON object") };
-            let v = agent_request(&profile, json!({"op": "call", "host": host, "tool": tool, "args": args})).await?;
+            let args: Value =
+                serde_json::from_str(&args).context("arguments must be a JSON object")?;
+            let Value::Object(args) = args else {
+                bail!("arguments must be a JSON object")
+            };
+            let v = agent_request(
+                &profile,
+                json!({"op": "call", "host": host, "tool": tool, "args": args}),
+            )
+            .await?;
             if json_out {
                 return print_json(&v);
             }
@@ -379,9 +457,9 @@ async fn run(cli: Cli) -> Result<()> {
 
 async fn host_request(profile: &Profile, req: HostRequest) -> Result<Value> {
     let endpoint = profile.control_endpoint(Role::Host)?;
-    let mut conn = Conn::connect(&endpoint)
-        .await
-        .map_err(|_| anyhow::anyhow!("the host is not running for this profile; start it with `ai-remote host`"))?;
+    let mut conn = Conn::connect(&endpoint).await.map_err(|_| {
+        anyhow::anyhow!("the host is not running for this profile; start it with `ai-remote host`")
+    })?;
     conn.request(&serde_json::to_value(req)?).await
 }
 
@@ -405,11 +483,20 @@ async fn status(profile: &Profile, json_out: bool) -> Result<()> {
     }
     println!("profile: {}", profile.root().display());
     match host {
-        Some(h) => println!("host:    running as \"{}\" ({}), {} paired controller(s)", h["name"].as_str().unwrap_or("?"), h["device"].as_str().unwrap_or("?"), h["peers"]),
+        Some(h) => println!(
+            "host:    running as \"{}\" ({}), {} paired controller(s)",
+            h["name"].as_str().unwrap_or("?"),
+            h["device"].as_str().unwrap_or("?"),
+            h["peers"]
+        ),
         None => println!("host:    not running"),
     }
     match agent {
-        Some(a) => println!("agent:   running ({}), hosts: {}", a["device"].as_str().unwrap_or("?"), a["hosts"]),
+        Some(a) => println!(
+            "agent:   running ({}), hosts: {}",
+            a["device"].as_str().unwrap_or("?"),
+            a["hosts"]
+        ),
         None => println!("agent:   not running (starts automatically when needed)"),
     }
     Ok(())
@@ -424,7 +511,9 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                 return print_json(&serde_json::to_value(&cfg.mounts)?);
             }
             if cfg.mounts.is_empty() {
-                println!("No mounted servers. Add one with `ai-remote mount add-profile cua-driver --command <path>`");
+                println!(
+                    "No mounted servers. Add one with `ai-remote mount add-profile cua-driver --command <path>`"
+                );
                 println!("or `ai-remote mount add <name> --command <path> --tool <name>=<level>`.");
             }
             let clashes = mounts::name_clashes(&cfg.mounts);
@@ -433,17 +522,42 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                 println!(
                     "  command: {}{}",
                     m.command,
-                    if m.args.is_empty() { String::new() } else { format!(" {}", m.args.join(" ")) }
+                    if m.args.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", m.args.join(" "))
+                    }
                 );
-                let pin = if m.sha256.is_some() { "sha256 pinned" } else { "not pinned" };
-                let start = if m.start == MountStart::Lazy { "lazy start" } else { "starts with the host" };
-                println!("  {pin}, {start}{}", if m.needs_desktop { ", needs the desktop" } else { "" });
+                let pin = if m.sha256.is_some() {
+                    "sha256 pinned"
+                } else {
+                    "not pinned"
+                };
+                let start = if m.start == MountStart::Lazy {
+                    "lazy start"
+                } else {
+                    "starts with the host"
+                };
+                println!(
+                    "  {pin}, {start}{}",
+                    if m.needs_desktop {
+                        ", needs the desktop"
+                    } else {
+                        ""
+                    }
+                );
                 if m.tools.is_empty() {
-                    println!("  no tools allowlisted: it exposes nothing (see `ai-remote mount test {}`)", m.name);
+                    println!(
+                        "  no tools allowlisted: it exposes nothing (see `ai-remote mount test {}`)",
+                        m.name
+                    );
                 }
                 for (tool, entry) in &m.tools {
-                    let clash = clashes.iter().find(|c| c.mount == m.name && &c.tool == tool);
-                    let note = clash.map(|c| format!("  (not exposed: the name is taken by {})", c.taken_by));
+                    let clash = clashes
+                        .iter()
+                        .find(|c| c.mount == m.name && &c.tool == tool);
+                    let note = clash
+                        .map(|c| format!("  (not exposed: the name is taken by {})", c.taken_by));
                     println!(
                         "  {:<32} {}{}",
                         mounts::tool_name(&m.name, tool),
@@ -455,7 +569,16 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
             println!("\nconfig: {}", path.display());
             Ok(())
         }
-        MountCommand::Add { name, command, args, env, tools, lazy, needs_desktop, no_pin } => {
+        MountCommand::Add {
+            name,
+            command,
+            args,
+            env,
+            tools,
+            lazy,
+            needs_desktop,
+            no_pin,
+        } => {
             let (command, sha256) = pin_command(&command, no_pin)?;
             let env = env
                 .iter()
@@ -465,14 +588,21 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                         .ok_or_else(|| anyhow!("--env '{kv}': expected KEY=VALUE"))
                 })
                 .collect::<Result<BTreeMap<_, _>>>()?;
-            let tools = tools.iter().map(|t| parse_tool_entry(t)).collect::<Result<BTreeMap<_, _>>>()?;
+            let tools = tools
+                .iter()
+                .map(|t| parse_tool_entry(t))
+                .collect::<Result<BTreeMap<_, _>>>()?;
             let mount = MountConfig {
                 name,
                 command,
                 args,
                 env,
                 sha256,
-                start: if lazy { MountStart::Lazy } else { MountStart::Eager },
+                start: if lazy {
+                    MountStart::Lazy
+                } else {
+                    MountStart::Eager
+                },
                 needs_desktop,
                 tools,
             };
@@ -487,12 +617,19 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                     "No tools are allowlisted yet, so it exposes nothing. `ai-remote mount test {}` lists",
                     mount.name
                 );
-                println!("the server's tools; add them under [mount.tools] in {}.", path.display());
+                println!(
+                    "the server's tools; add them under [mount.tools] in {}.",
+                    path.display()
+                );
             }
             restart_hint(profile).await;
             Ok(())
         }
-        MountCommand::AddProfile { profile: id, command, name } => {
+        MountCommand::AddProfile {
+            profile: id,
+            command,
+            name,
+        } => {
             let curated = mounts::profiles::get(&id)?;
             let (about, checked) = (curated.about.clone(), curated.checked_version.clone());
             let (command, sha256) = pin_command(&command, false)?;
@@ -502,8 +639,14 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
             if json_out {
                 return print_json(&serde_json::to_value(&mount)?);
             }
-            println!("Added mount '{}' from profile '{id}' ({about}).", mount.name);
-            println!("{} tools allowlisted; the profile was checked against version {checked}.", mount.tools.len());
+            println!(
+                "Added mount '{}' from profile '{id}' ({about}).",
+                mount.name
+            );
+            println!(
+                "{} tools allowlisted; the profile was checked against version {checked}.",
+                mount.tools.len()
+            );
             println!(
                 "Run `ai-remote mount test {}` to compare it with the tools of the installed version.",
                 mount.name
@@ -513,7 +656,10 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
         }
         MountCommand::Remove { name } => {
             if !config::remove_mount(&path, &name)? {
-                bail!("no mount named '{name}' in {} (see `ai-remote mount list`)", path.display());
+                bail!(
+                    "no mount named '{name}' in {} (see `ai-remote mount list`)",
+                    path.display()
+                );
             }
             if json_out {
                 return print_json(&json!({"removed": name}));
@@ -525,7 +671,10 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
         MountCommand::Test { name } => {
             let cfg = HostConfig::load(&path)?;
             let Some(mc) = cfg.mounts.iter().find(|m| m.name == name) else {
-                bail!("no mount named '{name}' in {} (see `ai-remote mount list`)", path.display());
+                bail!(
+                    "no mount named '{name}' in {} (see `ai-remote mount list`)",
+                    path.display()
+                );
             };
             let mount = mounts::Mount::new(mc.clone(), &profile.mounts_dir()?);
             eprintln!("starting {} ...", mount.command().display());
@@ -548,7 +697,9 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                         })
                     })
                     .collect();
-                return print_json(&json!({"mount": name, "tools": tools, "allowlisted_but_missing": plan.missing}));
+                return print_json(
+                    &json!({"mount": name, "tools": tools, "allowlisted_but_missing": plan.missing}),
+                );
             }
             println!(
                 "{} offers {} tools; {} are exposed, {} stay hidden:",
@@ -559,10 +710,20 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
             );
             for t in &offered {
                 let status = match plan.tools.iter().find(|p| p.upstream == t.name.as_ref()) {
-                    Some(p) => format!("-> {} ({})", p.spec.name, describe_action(p.spec.level, p.spec.default_action)),
+                    Some(p) => format!(
+                        "-> {} ({})",
+                        p.spec.name,
+                        describe_action(p.spec.level, p.spec.default_action)
+                    ),
                     None => "hidden".to_string(),
                 };
-                let summary = t.description.as_deref().unwrap_or("").lines().next().unwrap_or("");
+                let summary = t
+                    .description
+                    .as_deref()
+                    .unwrap_or("")
+                    .lines()
+                    .next()
+                    .unwrap_or("");
                 println!("  {:<28} {:<44} {}", t.name, status, clip(summary, 60));
             }
             for missing in &plan.missing {
@@ -602,7 +763,11 @@ fn pin_command(command: &str, no_pin: bool) -> Result<(String, Option<String>)> 
         // A bare program name stays as it is and is looked up on PATH when the server starts.
         let bare = given.components().count() <= 1 && !given.is_absolute();
         return Ok((
-            if bare { command.to_string() } else { absolute.unwrap_or(given.into()).display().to_string() },
+            if bare {
+                command.to_string()
+            } else {
+                absolute.unwrap_or(given.into()).display().to_string()
+            },
             None,
         ));
     }
@@ -628,7 +793,9 @@ fn parse_tool_entry(spec: &str) -> Result<(String, MountTool)> {
         Some((level, approve)) => (level, Some(approve)),
         None => (rest, None),
     };
-    let level: Level = level.parse().map_err(|e: String| anyhow!("--tool '{spec}': {e}"))?;
+    let level: Level = level
+        .parse()
+        .map_err(|e: String| anyhow!("--tool '{spec}': {e}"))?;
     let entry = match approve.map(|a| a.trim().to_ascii_lowercase()) {
         None => MountTool::Level(level),
         Some(a) => {
@@ -638,7 +805,11 @@ fn parse_tool_entry(spec: &str) -> Result<(String, MountTool)> {
                 "deny" => Action::Deny,
                 _ => return Err(usage()),
             };
-            MountTool::Detailed { level, approve: Some(approve), description: None }
+            MountTool::Detailed {
+                level,
+                approve: Some(approve),
+                description: None,
+            }
         }
     };
     Ok((name.to_string(), entry))
@@ -657,7 +828,11 @@ fn describe_action(level: Level, action: Action) -> String {
 }
 
 fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() } else { format!("{}...", s.chars().take(max - 3).collect::<String>()) }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(max - 3).collect::<String>())
+    }
 }
 
 /// Mount changes are read when the host starts.
@@ -667,7 +842,9 @@ async fn restart_hint(profile: &Profile) {
         Err(_) => false,
     };
     if running {
-        println!("The host is running: restart it to apply (ai-remote stop-host, then ai-remote host).");
+        println!(
+            "The host is running: restart it to apply (ai-remote stop-host, then ai-remote host)."
+        );
     } else {
         println!("Takes effect the next time the host starts.");
     }
@@ -679,7 +856,9 @@ fn print_json(v: &Value) -> Result<()> {
 }
 
 fn print_result(json_out: bool, v: &Value, human: &str) -> Result<()> {
-    if json_out { print_json(v) } else {
+    if json_out {
+        print_json(v)
+    } else {
         println!("{human}");
         Ok(())
     }
@@ -691,14 +870,21 @@ async fn watch(profile: &Profile, host: Option<String>, json_out: bool) -> Resul
     let mut conn = ar_controller::connect_agent(profile).await?;
     let v = conn.request(&json!({"op": "events", "host": host})).await?;
     if !json_out {
-        eprintln!("Watching {}. Press Ctrl+C to stop.", v["host"].as_str().unwrap_or("the host"));
+        eprintln!(
+            "Watching {}. Press Ctrl+C to stop.",
+            v["host"].as_str().unwrap_or("the host")
+        );
     }
     let (stream, buffered) = conn.into_raw();
     let mut lines = BufReader::new(std::io::Cursor::new(buffered).chain(stream)).lines();
     while let Some(line) = lines.next_line().await? {
         if json_out {
             println!("{line}");
-        } else if let Some(text) = serde_json::from_str::<Value>(&line).ok().as_ref().and_then(describe_event) {
+        } else if let Some(text) = serde_json::from_str::<Value>(&line)
+            .ok()
+            .as_ref()
+            .and_then(describe_event)
+        {
             println!("{text}");
         }
     }
@@ -710,7 +896,11 @@ fn describe_event(v: &Value) -> Option<String> {
     let time = v["ts"]
         .as_u64()
         .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
-        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string()
+        })
         .unwrap_or_else(|| "--:--:--".into());
     let peer = v["peer"].as_str().unwrap_or("?");
     let tool = v["tool"].as_str().unwrap_or("?");
@@ -726,8 +916,14 @@ fn describe_event(v: &Value) -> Option<String> {
         }
         "outcome" => {
             let outcome = v["outcome"].as_str().unwrap_or("?");
-            let ms = v["duration_ms"].as_u64().map(|d| format!("  {d} ms")).unwrap_or_default();
-            let error = v["error"].as_str().map(|e| format!("  {e}")).unwrap_or_default();
+            let ms = v["duration_ms"]
+                .as_u64()
+                .map(|d| format!("  {d} ms"))
+                .unwrap_or_default();
+            let error = v["error"]
+                .as_str()
+                .map(|e| format!("  {e}"))
+                .unwrap_or_default();
             format!("{peer}  {tool}  {outcome}{ms}{error}")
         }
         "lagged" => format!("(missed {} events: this terminal fell behind)", v["missed"]),
@@ -749,7 +945,10 @@ mod tests {
         let (_, entry) = parse_tool_entry("launch_app=control:ask").unwrap();
         assert_eq!(entry.approve(), Some(Action::Ask));
         let (_, entry) = parse_tool_entry("kill_app=admin:DENY").unwrap();
-        assert_eq!((entry.level(), entry.approve()), (Level::Admin, Some(Action::Deny)));
+        assert_eq!(
+            (entry.level(), entry.approve()),
+            (Level::Admin, Some(Action::Deny))
+        );
         for bad in ["click", "=control", "click=root", "click=control:maybe"] {
             assert!(parse_tool_entry(bad).is_err(), "{bad}");
         }

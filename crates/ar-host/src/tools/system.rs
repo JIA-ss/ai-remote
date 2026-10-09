@@ -42,8 +42,11 @@ impl Tool for Doctor {
     }
 
     async fn call(&self, ctx: &ToolCtx<'_>, _args: JsonObject) -> Result<CallToolResult> {
-        let report =
-            crate::doctor::run(crate::doctor::Inputs { profile: ctx.host.profile(), mesh: Some(ctx.host.mesh()) }).await;
+        let report = crate::doctor::run(crate::doctor::Inputs {
+            profile: ctx.host.profile(),
+            mesh: Some(ctx.host.mesh()),
+        })
+        .await;
         Ok(json(serde_json::to_value(report)?))
     }
 }
@@ -72,7 +75,9 @@ impl Tool for SystemInfo {
     }
 
     async fn call(&self, ctx: &ToolCtx<'_>, _args: JsonObject) -> Result<CallToolResult> {
-        let monitors = tokio::task::spawn_blocking(monitor_list).await.unwrap_or_default();
+        let monitors = tokio::task::spawn_blocking(monitor_list)
+            .await
+            .unwrap_or_default();
         let session = platform::session_state();
         let level = ctx.host.current_level(&ctx.session.peer).await;
         Ok(json(json!({
@@ -99,7 +104,9 @@ impl Tool for SystemInfo {
 }
 
 fn monitor_list() -> Vec<serde_json::Value> {
-    let Ok(monitors) = xcap::Monitor::all() else { return Vec::new() };
+    let Ok(monitors) = xcap::Monitor::all() else {
+        return Vec::new();
+    };
     monitors
         .iter()
         .enumerate()

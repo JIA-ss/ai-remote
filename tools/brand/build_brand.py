@@ -48,7 +48,19 @@ def logos():
     for name, (a, h) in variants.items():
         out.append(write(name, svg_doc(256, 256, "ai-remote logo", mark(256, 0, 0, a, h),
                                        desc="Two cursors meeting tip to tip: the agent's pointer and yours.", classes=())))
+    out.append(write("app-icon.svg", app_icon()))
     return out
+
+
+def app_icon():
+    """The app icon source (1024, the size `tauri icon` expects): the mark on a dark tile laid out on the
+    macOS icon grid (824 tile, 100 margin), so it sits right in the Dock and still reads on Windows."""
+    tile = ('<defs><linearGradient id="t" x1="0" y1="0" x2="0" y2="1">'
+            '<stop offset="0" stop-color="#252C38"/><stop offset="1" stop-color="#11151B"/></linearGradient></defs>'
+            '<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#t)"/>'
+            '<rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>')
+    return svg_doc(1024, 1024, "ai-remote", tile + mark(560, 232, 232, PAL["dark"]["agent"], PAL["dark"]["human"]),
+                   desc="The ai-remote app icon: two cursors meeting tip to tip on a dark tile.", classes=())
 
 
 def trails(p, cx, top, sc, g):

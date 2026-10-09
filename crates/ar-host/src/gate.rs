@@ -37,15 +37,22 @@ pub async fn call(
     cancel: &CancellationToken,
 ) -> Result<CallToolResult, ErrorData> {
     let Some(tool) = host.registry().get(name) else {
-        return Err(ErrorData::invalid_params(format!("unknown tool '{name}'"), None));
+        return Err(ErrorData::invalid_params(
+            format!("unknown tool '{name}'"),
+            None,
+        ));
     };
     let spec = tool.spec().clone();
     let canonical = serde_json::to_string(&args).unwrap_or_default();
     let args_hash = blake3::hash(canonical.as_bytes()).to_hex().to_string();
     // What the owner sees (prompt, audit log): secret values only by size; the hash covers them.
-    let shown = serde_json::to_string(&tools::shown_args(&args, tool.secret_args())).unwrap_or_default();
+    let shown =
+        serde_json::to_string(&tools::shown_args(&args, tool.secret_args())).unwrap_or_default();
     let preview = budget::head_tail(&shown, 400, 190);
-    let intent = args.get("intent").and_then(|v| v.as_str()).map(str::to_string);
+    let intent = args
+        .get("intent")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     let record = |kind: &'static str| AuditRecord {
         ts: now_ms(),
@@ -68,12 +75,20 @@ pub async fn call(
     let level = match host.current_level(&session.peer).await {
         Some(level) => level,
         None => {
-            host.audit().write(&AuditRecord { decision: Some("level"), args_preview: Some(&preview), ..record("decision") });
+            host.audit().write(&AuditRecord {
+                decision: Some("level"),
+                args_preview: Some(&preview),
+                ..record("decision")
+            });
             return Ok(refusal("This device no longer has access to this host."));
         }
     };
     if level < spec.level {
-        host.audit().write(&AuditRecord { decision: Some("level"), args_preview: Some(&preview), ..record("decision") });
+        host.audit().write(&AuditRecord {
+            decision: Some("level"),
+            args_preview: Some(&preview),
+            ..record("decision")
+        });
         return Ok(refusal(&format!(
             "'{name}' requires level '{}', but this device has '{level}'. Ask the host owner to raise it \
              (on the host: ai-remote level <this-device> {}).",
@@ -82,12 +97,23 @@ pub async fn call(
     }
 
     // 2-3. Policy and approval.
-    let action = policy::decide(&host.config().rules, name, &session.peer, spec.default_action);
+    let action = policy::decide(
+        &host.config().rules,
+        name,
+        &session.peer,
+        spec.default_action,
+    );
     let decision = match action {
         Action::Allow => "allow",
         Action::Deny => {
-            host.audit().write(&AuditRecord { decision: Some("policy"), args_preview: Some(&preview), ..record("decision") });
-            return Ok(refusal(&format!("The host's policy does not allow '{name}'.")));
+            host.audit().write(&AuditRecord {
+                decision: Some("policy"),
+                args_preview: Some(&preview),
+                ..record("decision")
+            });
+            return Ok(refusal(&format!(
+                "The host's policy does not allow '{name}'."
+            )));
         }
         Action::Ask => {
             let verdict = host
@@ -108,7 +134,9 @@ pub async fn call(
                 let why = match verdict {
                     Verdict::Denied => "The host owner declined",
                     Verdict::Timeout => "Nobody approved it on the host in time for",
-                    _ => "No one can approve actions on the host right now (desktop locked or unattended), so it refused",
+                    _ => {
+                        "No one can approve actions on the host right now (desktop locked or unattended), so it refused"
+                    }
                 };
                 return Ok(refusal(&format!(
                     "{why} '{name}'. Do not retry automatically; tell the user what you wanted to do."
@@ -119,7 +147,11 @@ pub async fn call(
     };
 
     // 4. Decision record.
-    host.audit().write(&AuditRecord { decision: Some(decision), args_preview: Some(&preview), ..record("decision") });
+    host.audit().write(&AuditRecord {
+        decision: Some(decision),
+        args_preview: Some(&preview),
+        ..record("decision")
+    });
 
     // 5. The call, bounded by the session's lifetime and the request's own cancellation.
     let started = Instant::now();
@@ -134,14 +166,32 @@ pub async fn call(
 
     // 6-7. Outcome and budget.
     let (outcome, result) = match result {
-        Err(why) => ("cancelled", CallToolResult::error(vec![ContentBlock::text(why)])),
+        Err(why) => (
+            "cancelled",
+            CallToolResult::error(vec![ContentBlock::text(why)]),
+        ),
         Ok(Ok(r)) => ("ok", result_budget::apply(r).await),
-        Ok(Err(e)) => ("error", CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])),
+        Ok(Err(e)) => (
+            "error",
+            CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]),
+        ),
     };
-    let outcome = if outcome == "ok" && result.is_error == Some(true) { "error" } else { outcome };
-    let bytes = serde_json::to_vec(&result.content).map(|v| v.len()).unwrap_or(0);
+    let outcome = if outcome == "ok" && result.is_error == Some(true) {
+        "error"
+    } else {
+        outcome
+    };
+    let bytes = serde_json::to_vec(&result.content)
+        .map(|v| v.len())
+        .unwrap_or(0);
     let error_text = (outcome == "error")
-        .then(|| result.content.first().and_then(|c| c.as_text()).map(|t| budget::head_tail(&t.text, 300, 140)))
+        .then(|| {
+            result
+                .content
+                .first()
+                .and_then(|c| c.as_text())
+                .map(|t| budget::head_tail(&t.text, 300, 140))
+        })
         .flatten();
     host.audit().write(&AuditRecord {
         outcome: Some(outcome),

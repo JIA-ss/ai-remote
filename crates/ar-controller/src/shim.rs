@@ -1,7 +1,7 @@
 //! `ai-remote mcp`: the process an MCP client starts. It relays stdio to the controller agent
 //! (starting the agent if needed) and exits when the client closes stdin.
 
-use std::{process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Profile, Role};
@@ -9,13 +9,21 @@ use ar_net::ipc::Conn;
 use serde_json::json;
 use tokio::io::{AsyncWriteExt, copy};
 
-/// Connects to the profile's agent, starting it in the background when it is not running.
+/// Connects to the profile's agent, starting it in the background when it is not running. The agent
+/// is this executable's `agent` command, so this is for the `ai-remote` CLI itself; other programs
+/// (the desktop app) use [`connect_agent_with`].
 pub async fn connect_agent(profile: &Profile) -> Result<Conn> {
+    let exe = std::env::current_exe().context("locate the ai-remote executable")?;
+    connect_agent_with(profile, &exe).await
+}
+
+/// [`connect_agent`], starting the agent with `cli` (an `ai-remote` executable) when needed.
+pub async fn connect_agent_with(profile: &Profile, cli: &Path) -> Result<Conn> {
     let endpoint = profile.control_endpoint(Role::Controller)?;
     if let Ok(conn) = Conn::connect(&endpoint).await {
         return Ok(conn);
     }
-    spawn_agent(profile)?;
+    spawn_agent(profile, cli)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         match Conn::connect(&endpoint).await {
@@ -32,11 +40,13 @@ pub async fn connect_agent(profile: &Profile) -> Result<Conn> {
     }
 }
 
-fn spawn_agent(profile: &Profile) -> Result<()> {
-    let exe = std::env::current_exe().context("locate the ai-remote executable")?;
+fn spawn_agent(profile: &Profile, cli: &Path) -> Result<()> {
     let log_path = profile.log_path(Role::Controller)?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
-    let mut cmd = std::process::Command::new(exe);
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let mut cmd = std::process::Command::new(cli);
     cmd.arg("agent")
         .env(ar_core::profile::HOME_ENV, profile.root())
         .stdin(Stdio::null())

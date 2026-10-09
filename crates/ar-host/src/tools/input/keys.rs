@@ -182,7 +182,10 @@ impl fmt::Display for KeyName {
             KeyName::F(n) => write!(f, "f{n}"),
             KeyName::Char(c) => write!(f, "{c}"),
             other => {
-                let name = NAMES.iter().find(|(_, k)| k == other).map_or("?", |(n, _)| n);
+                let name = NAMES
+                    .iter()
+                    .find(|(_, k)| k == other)
+                    .map_or("?", |(n, _)| n);
                 f.write_str(name)
             }
         }
@@ -214,20 +217,34 @@ pub fn parse_key_name(raw: &str) -> Result<KeyName> {
             bail!("{c:?} is not a key name; use names such as enter, tab or space");
         }
         // A letter means the key, not an upper-case character: shift must be explicit.
-        let lower = c.to_lowercase().next().filter(|_| c.to_lowercase().count() == 1).unwrap_or(c);
+        let lower = c
+            .to_lowercase()
+            .next()
+            .filter(|_| c.to_lowercase().count() == 1)
+            .unwrap_or(c);
         return Ok(KeyName::Char(lower));
     }
-    let norm: String = raw.chars().filter(|c| !matches!(c, '_' | '-' | ' ')).flat_map(char::to_lowercase).collect();
+    let norm: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '_' | '-' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect();
     if let Some(&(_, key)) = NAMES.iter().find(|(name, _)| *name == norm) {
         return Ok(key);
     }
-    if let Some(n) = norm.strip_prefix('f').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+    if let Some(n) = norm
+        .strip_prefix('f')
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    {
         return match n.parse::<u8>() {
             Ok(n @ 1..=24) => Ok(KeyName::F(n)),
             _ => bail!("unknown key '{raw}': function keys go from f1 to f24"),
         };
     }
-    bail!("unknown key '{raw}'. Use a single character (a, 7, /) or one of: {}", known_names())
+    bail!(
+        "unknown key '{raw}'. Use a single character (a, 7, /) or one of: {}",
+        known_names()
+    )
 }
 
 fn known_names() -> String {
@@ -252,12 +269,18 @@ fn chord_parts(token: &str) -> Result<Vec<&str>> {
         Some(body) => (body, true),
         None => (token, false),
     };
-    let mut parts: Vec<&str> = if body.is_empty() { Vec::new() } else { body.split('+').collect() };
+    let mut parts: Vec<&str> = if body.is_empty() {
+        Vec::new()
+    } else {
+        body.split('+').collect()
+    };
     if plus_key {
         parts.push("+");
     }
     if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
-        bail!("'{token}' is not a valid chord: join keys with '+' (ctrl+shift+t) and separate chords with spaces");
+        bail!(
+            "'{token}' is not a valid chord: join keys with '+' (ctrl+shift+t) and separate chords with spaces"
+        );
     }
     Ok(parts)
 }
@@ -265,7 +288,9 @@ fn chord_parts(token: &str) -> Result<Vec<&str>> {
 /// Parses a chord such as `ctrl+shift+t`: every part but the last must be a modifier.
 pub fn parse_chord(token: &str) -> Result<Chord> {
     let parts = chord_parts(token)?;
-    let (last, rest) = parts.split_last().expect("chord_parts never returns an empty list");
+    let (last, rest) = parts
+        .split_last()
+        .expect("chord_parts never returns an empty list");
     let mut modifiers = Vec::with_capacity(rest.len());
     for part in rest {
         match parse_key_name(part)? {
@@ -289,10 +314,15 @@ pub fn parse_chord(token: &str) -> Result<Chord> {
 pub fn parse_keys(spec: &str) -> Result<Vec<Chord>> {
     let tokens: Vec<&str> = spec.split_whitespace().collect();
     if tokens.is_empty() {
-        bail!("keys is empty: give a chord such as \"ctrl+l\" or a sequence such as \"Down Down Return\"");
+        bail!(
+            "keys is empty: give a chord such as \"ctrl+l\" or a sequence such as \"Down Down Return\""
+        );
     }
     if tokens.len() > MAX_CHORDS {
-        bail!("keys has {} chords; at most {MAX_CHORDS} per call", tokens.len());
+        bail!(
+            "keys has {} chords; at most {MAX_CHORDS} per call",
+            tokens.len()
+        );
     }
     tokens.into_iter().map(parse_chord).collect()
 }
@@ -303,7 +333,9 @@ pub fn parse_modifiers(names: &[String]) -> Result<Vec<Modifier>> {
     for name in names {
         match parse_key_name(name)? {
             KeyName::Modifier(m) => out.push(m),
-            _ => bail!("modifier '{name}' is not one of ctrl, shift, alt (option) or win (super, meta, cmd)"),
+            _ => bail!(
+                "modifier '{name}' is not one of ctrl, shift, alt (option) or win (super, meta, cmd)"
+            ),
         }
     }
     out.sort();
@@ -544,8 +576,18 @@ fn resolve_char(c: char) -> Result<(Key, Vec<Modifier>)> {
         Key::Y,
         Key::Z,
     ];
-    const DIGITS: [Key; 10] =
-        [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    const DIGITS: [Key; 10] = [
+        Key::Num0,
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ];
     // Letter and digit virtual keys are what shortcuts match on, on every layout (ctrl+c works on a
     // Cyrillic layout too), so they bypass the layout lookup.
     if c.is_ascii_lowercase() {
@@ -555,10 +597,16 @@ fn resolve_char(c: char) -> Result<(Key, Vec<Modifier>)> {
         return Ok((DIGITS[usize::from(c as u8 - b'0')], Vec::new()));
     }
     let Some((vk, state)) = crate::platform::char_key(c) else {
-        bail!("no key on the current keyboard layout types '{c}'; to enter the character, use text instead of keys");
+        bail!(
+            "no key on the current keyboard layout types '{c}'; to enter the character, use text instead of keys"
+        );
     };
     let mut extra = Vec::new();
-    for (bit, m) in [(1, Modifier::Shift), (2, Modifier::Ctrl), (4, Modifier::Alt)] {
+    for (bit, m) in [
+        (1, Modifier::Shift),
+        (2, Modifier::Ctrl),
+        (4, Modifier::Alt),
+    ] {
         if state & bit != 0 {
             extra.push(m);
         }
@@ -583,30 +631,138 @@ mod tests {
 
     #[test]
     fn parses_chords() {
-        assert_eq!(chord("ctrl+l"), Chord { modifiers: vec![M::Ctrl], key: K::Char('l') });
-        assert_eq!(chord("Shift+Ctrl+T"), Chord { modifiers: vec![M::Ctrl, M::Shift], key: K::Char('t') });
-        assert_eq!(chord("cmd+space"), Chord { modifiers: vec![M::Meta], key: K::Space });
-        assert_eq!(chord("option+Tab"), Chord { modifiers: vec![M::Alt], key: K::Tab });
-        assert_eq!(chord("super+Page_Down"), Chord { modifiers: vec![M::Meta], key: K::PageDown });
-        assert_eq!(chord("alt+F4"), Chord { modifiers: vec![M::Alt], key: K::F(4) });
-        assert_eq!(chord("ctrl+control+c"), Chord { modifiers: vec![M::Ctrl], key: K::Char('c') });
-        assert_eq!(chord("Return"), Chord { modifiers: vec![], key: K::Enter });
+        assert_eq!(
+            chord("ctrl+l"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('l')
+            }
+        );
+        assert_eq!(
+            chord("Shift+Ctrl+T"),
+            Chord {
+                modifiers: vec![M::Ctrl, M::Shift],
+                key: K::Char('t')
+            }
+        );
+        assert_eq!(
+            chord("cmd+space"),
+            Chord {
+                modifiers: vec![M::Meta],
+                key: K::Space
+            }
+        );
+        assert_eq!(
+            chord("option+Tab"),
+            Chord {
+                modifiers: vec![M::Alt],
+                key: K::Tab
+            }
+        );
+        assert_eq!(
+            chord("super+Page_Down"),
+            Chord {
+                modifiers: vec![M::Meta],
+                key: K::PageDown
+            }
+        );
+        assert_eq!(
+            chord("alt+F4"),
+            Chord {
+                modifiers: vec![M::Alt],
+                key: K::F(4)
+            }
+        );
+        assert_eq!(
+            chord("ctrl+control+c"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('c')
+            }
+        );
+        assert_eq!(
+            chord("Return"),
+            Chord {
+                modifiers: vec![],
+                key: K::Enter
+            }
+        );
         // A modifier as the key itself is a tap of that modifier.
-        assert_eq!(chord("win"), Chord { modifiers: vec![], key: K::Modifier(M::Meta) });
-        assert_eq!(chord("ctrl+shift"), Chord { modifiers: vec![M::Ctrl], key: K::Modifier(M::Shift) });
-        assert_eq!(chord("shift+shift"), Chord { modifiers: vec![], key: K::Modifier(M::Shift) });
+        assert_eq!(
+            chord("win"),
+            Chord {
+                modifiers: vec![],
+                key: K::Modifier(M::Meta)
+            }
+        );
+        assert_eq!(
+            chord("ctrl+shift"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Modifier(M::Shift)
+            }
+        );
+        assert_eq!(
+            chord("shift+shift"),
+            Chord {
+                modifiers: vec![],
+                key: K::Modifier(M::Shift)
+            }
+        );
     }
 
     #[test]
     fn parses_plus_and_punctuation() {
-        assert_eq!(chord("ctrl++"), Chord { modifiers: vec![M::Ctrl], key: K::Char('+') });
-        assert_eq!(chord("+"), Chord { modifiers: vec![], key: K::Char('+') });
-        assert_eq!(chord("++"), Chord { modifiers: vec![], key: K::Char('+') });
+        assert_eq!(
+            chord("ctrl++"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('+')
+            }
+        );
+        assert_eq!(
+            chord("+"),
+            Chord {
+                modifiers: vec![],
+                key: K::Char('+')
+            }
+        );
+        assert_eq!(
+            chord("++"),
+            Chord {
+                modifiers: vec![],
+                key: K::Char('+')
+            }
+        );
         assert_eq!(chord("ctrl+plus"), chord("ctrl++"));
-        assert_eq!(chord("ctrl+-"), Chord { modifiers: vec![M::Ctrl], key: K::Char('-') });
-        assert_eq!(chord("ctrl+/"), Chord { modifiers: vec![M::Ctrl], key: K::Char('/') });
-        assert_eq!(chord("ctrl+bracket_left"), Chord { modifiers: vec![M::Ctrl], key: K::Char('[') });
-        assert_eq!(chord("7"), Chord { modifiers: vec![], key: K::Char('7') });
+        assert_eq!(
+            chord("ctrl+-"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('-')
+            }
+        );
+        assert_eq!(
+            chord("ctrl+/"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('/')
+            }
+        );
+        assert_eq!(
+            chord("ctrl+bracket_left"),
+            Chord {
+                modifiers: vec![M::Ctrl],
+                key: K::Char('[')
+            }
+        );
+        assert_eq!(
+            chord("7"),
+            Chord {
+                modifiers: vec![],
+                key: K::Char('7')
+            }
+        );
     }
 
     #[test]
@@ -635,7 +791,10 @@ mod tests {
     #[test]
     fn parses_sequences() {
         let seq = parse_keys("Down  Down\tReturn").unwrap();
-        assert_eq!(seq.iter().map(|c| c.key).collect::<Vec<_>>(), vec![K::Down, K::Down, K::Enter]);
+        assert_eq!(
+            seq.iter().map(|c| c.key).collect::<Vec<_>>(),
+            vec![K::Down, K::Down, K::Enter]
+        );
         let seq = parse_keys("ctrl+a ctrl+c").unwrap();
         assert_eq!(seq.len(), 2);
         assert!(parse_keys(&"a ".repeat(MAX_CHORDS)).is_ok());
@@ -653,12 +812,19 @@ mod tests {
         assert!(err("f25").contains("f1 to f24"));
         assert!(err("f0").contains("f1 to f24"));
         let unknown = err("hyper+x");
-        assert!(unknown.contains("unknown key 'hyper'") && unknown.contains("pagedown") && unknown.contains("f1-f24"));
+        assert!(
+            unknown.contains("unknown key 'hyper'")
+                && unknown.contains("pagedown")
+                && unknown.contains("f1-f24")
+        );
     }
 
     #[test]
     fn displays_canonical_names() {
-        assert_eq!(chord("Control+Shift+Page_Down").to_string(), "ctrl+shift+pagedown");
+        assert_eq!(
+            chord("Control+Shift+Page_Down").to_string(),
+            "ctrl+shift+pagedown"
+        );
         assert_eq!(chord("Return").to_string(), "enter");
         assert_eq!(chord("alt+F4").to_string(), "alt+f4");
         assert_eq!(chord("ctrl++").to_string(), "ctrl++");
@@ -671,7 +837,10 @@ mod tests {
             K::Char(ch) => Key::Unicode(ch),
             other => named_key(other).unwrap(),
         };
-        Pressed { key, modifiers: c.modifiers }
+        Pressed {
+            key,
+            modifiers: c.modifiers,
+        }
     }
 
     #[test]
@@ -696,9 +865,22 @@ mod tests {
 
     #[test]
     fn parses_mouse_modifiers() {
-        let names = ["Shift".to_string(), "ctrl".to_string(), "cmd".to_string(), "control".to_string()];
-        assert_eq!(parse_modifiers(&names).unwrap(), vec![M::Ctrl, M::Shift, M::Meta]);
-        assert!(parse_modifiers(&["a".to_string()]).unwrap_err().to_string().contains("modifier 'a'"));
+        let names = [
+            "Shift".to_string(),
+            "ctrl".to_string(),
+            "cmd".to_string(),
+            "control".to_string(),
+        ];
+        assert_eq!(
+            parse_modifiers(&names).unwrap(),
+            vec![M::Ctrl, M::Shift, M::Meta]
+        );
+        assert!(
+            parse_modifiers(&["a".to_string()])
+                .unwrap_err()
+                .to_string()
+                .contains("modifier 'a'")
+        );
     }
 
     #[test]
@@ -712,11 +894,24 @@ mod tests {
     #[test]
     fn refuses_resolved_chords_however_spelled() {
         let refused = |key, modifiers: &[Modifier]| {
-            forbidden(&Pressed { key, modifiers: modifiers.to_vec() }, Os::Windows).is_some()
+            forbidden(
+                &Pressed {
+                    key,
+                    modifiers: modifiers.to_vec(),
+                },
+                Os::Windows,
+            )
+            .is_some()
         };
         // Letters resolve to their virtual key.
         let win_l = resolve_chord(&chord("win+l")).unwrap();
-        assert_eq!(win_l, Pressed { key: Key::L, modifiers: vec![M::Meta] });
+        assert_eq!(
+            win_l,
+            Pressed {
+                key: Key::L,
+                modifiers: vec![M::Meta]
+            }
+        );
         assert!(forbidden(&win_l, Os::Windows).is_some());
         // A character the layout types as AltGr+L ('ł' on Polish layouts) resolves to VK_L plus ctrl+alt.
         assert!(refused(Key::Other(0x4c), &[M::Ctrl, M::Alt, M::Meta]));
@@ -731,7 +926,13 @@ mod tests {
     #[test]
     fn resolve_chord_merges_modifiers() {
         let p = resolve_chord(&chord("shift+ctrl+enter")).unwrap();
-        assert_eq!(p, Pressed { key: Key::Return, modifiers: vec![M::Ctrl, M::Shift] });
+        assert_eq!(
+            p,
+            Pressed {
+                key: Key::Return,
+                modifiers: vec![M::Ctrl, M::Shift]
+            }
+        );
     }
 
     #[cfg(windows)]

@@ -21,7 +21,10 @@ use super::{NoParams, Tool, ToolSpec, json, parse};
 use crate::{platform, session::ToolCtx};
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
-    vec![Arc::new(ClipboardRead::new()), Arc::new(ClipboardWrite::new())]
+    vec![
+        Arc::new(ClipboardRead::new()),
+        Arc::new(ClipboardWrite::new()),
+    ]
 }
 
 /// Largest text `clipboard_write` accepts.
@@ -54,9 +57,13 @@ impl Tool for ClipboardRead {
 
     async fn call(&self, _ctx: &ToolCtx<'_>, _args: JsonObject) -> Result<CallToolResult> {
         require_desktop()?;
-        let text = tokio::task::spawn_blocking(read_text).await.map_err(|e| anyhow!("clipboard task failed: {e}"))??;
+        let text = tokio::task::spawn_blocking(read_text)
+            .await
+            .map_err(|e| anyhow!("clipboard task failed: {e}"))??;
         Ok(match text {
-            None => json(json!({ "text": null, "note": "the clipboard holds no text (it is empty or holds an image or files)" })),
+            None => json(
+                json!({ "text": null, "note": "the clipboard holds no text (it is empty or holds an image or files)" }),
+            ),
             // Raw text in its own block reads better than a JSON string and is cut cleanly to its
             // head and tail by the result budget when it is huge.
             Some(text) => CallToolResult::success(vec![
@@ -108,11 +115,16 @@ impl Tool for ClipboardWrite {
     async fn call(&self, _ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: WriteParams = parse(args)?;
         if p.text.len() > MAX_WRITE_BYTES {
-            bail!("text is too long for the clipboard ({} bytes; the limit is {MAX_WRITE_BYTES})", p.text.len());
+            bail!(
+                "text is too long for the clipboard ({} bytes; the limit is {MAX_WRITE_BYTES})",
+                p.text.len()
+            );
         }
         require_desktop()?;
         let chars = p.text.chars().count();
-        tokio::task::spawn_blocking(move || write_text(&p.text)).await.map_err(|e| anyhow!("clipboard task failed: {e}"))??;
+        tokio::task::spawn_blocking(move || write_text(&p.text))
+            .await
+            .map_err(|e| anyhow!("clipboard task failed: {e}"))??;
         Ok(json(json!({ "ok": true, "chars": chars })))
     }
 }
@@ -122,7 +134,9 @@ fn require_desktop() -> Result<()> {
     if !state.desktop_usable {
         bail!(
             "cannot use the clipboard: {}",
-            state.problem.unwrap_or_else(|| "the desktop is not usable".into())
+            state
+                .problem
+                .unwrap_or_else(|| "the desktop is not usable".into())
         );
     }
     Ok(())

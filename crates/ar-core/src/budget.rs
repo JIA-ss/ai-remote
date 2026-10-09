@@ -20,7 +20,10 @@ pub fn head_tail(text: &str, limit: usize, keep: usize) -> String {
     }
     let head: String = text.chars().take(keep).collect();
     let tail: String = text.chars().skip(total - keep).collect();
-    format!("{head}\n\n[... {} characters omitted ...]\n\n{tail}", total - 2 * keep)
+    format!(
+        "{head}\n\n[... {} characters omitted ...]\n\n{tail}",
+        total - 2 * keep
+    )
 }
 
 /// [`head_tail`] with the default limits.

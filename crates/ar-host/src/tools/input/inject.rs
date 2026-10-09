@@ -57,17 +57,29 @@ pub struct Plan {
 
 impl Plan {
     pub fn new(unit: &'static str) -> Self {
-        Self { steps: Vec::new(), unit, total: 0 }
+        Self {
+            steps: Vec::new(),
+            unit,
+            total: 0,
+        }
     }
 
     /// Adds an op that runs only if the check on `target` passes.
     pub fn checked(&mut self, op: Op, target: InputTarget) {
-        self.steps.push(Step { op, check: Some(target), done: self.total });
+        self.steps.push(Step {
+            op,
+            check: Some(target),
+            done: self.total,
+        });
     }
 
     /// Adds an op that runs without a check.
     pub fn plain(&mut self, op: Op) {
-        self.steps.push(Step { op, check: None, done: self.total });
+        self.steps.push(Step {
+            op,
+            check: None,
+            done: self.total,
+        });
     }
 
     /// Counts `n` more units as complete once the last step so far has run.
@@ -98,7 +110,11 @@ pub fn execute<B: Backend>(
     backend: &mut B,
     check: &mut dyn FnMut(InputTarget) -> Result<()>,
 ) -> Result<()> {
-    let mut held = Held { backend, keys: Vec::new(), buttons: Vec::new() };
+    let mut held = Held {
+        backend,
+        keys: Vec::new(),
+        buttons: Vec::new(),
+    };
     let mut done = 0;
     for step in &plan.steps {
         let result = match step.check {
@@ -107,9 +123,16 @@ pub fn execute<B: Backend>(
         }
         .and_then(|()| held.apply(&step.op));
         if let Err(e) = result {
-            let released =
-                if held.is_empty() { "" } else { " The keys and buttons it was holding have been released." };
-            return Err(anyhow!("stopped after {done} of {} {}: {e:#}.{released}", plan.total, plan.unit));
+            let released = if held.is_empty() {
+                ""
+            } else {
+                " The keys and buttons it was holding have been released."
+            };
+            return Err(anyhow!(
+                "stopped after {done} of {} {}: {e:#}.{released}",
+                plan.total,
+                plan.unit
+            ));
         }
         done = step.done;
     }
@@ -204,7 +227,9 @@ impl EnigoBackend {
 }
 
 fn send_failed(e: enigo::InputError) -> anyhow::Error {
-    anyhow!("sending input failed ({e}); the desktop may have locked, or the target window belongs to an elevated app")
+    anyhow!(
+        "sending input failed ({e}); the desktop may have locked, or the target window belongs to an elevated app"
+    )
 }
 
 impl Backend for EnigoBackend {
@@ -223,7 +248,8 @@ impl Backend for EnigoBackend {
         }
         #[cfg(not(windows))]
         {
-            enigo::Mouse::move_mouse(&mut self.enigo, x, y, enigo::Coordinate::Abs).map_err(send_failed)
+            enigo::Mouse::move_mouse(&mut self.enigo, x, y, enigo::Coordinate::Abs)
+                .map_err(send_failed)
         }
     }
 
@@ -251,7 +277,11 @@ pub mod tests {
         fn record(&mut self, call: String) -> Result<()> {
             let index = self.calls.len();
             self.calls.push(call);
-            if self.fail_at == Some(index) { Err(anyhow!("injected failure")) } else { Ok(()) }
+            if self.fail_at == Some(index) {
+                Err(anyhow!("injected failure"))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -312,19 +342,36 @@ pub mod tests {
 
     #[test]
     fn releases_everything_held_when_a_step_fails() {
-        let mut rec = Recorder { fail_at: Some(3), ..Default::default() };
-        let err = execute(&ctrl_drag(), &mut rec, &mut |_| Ok(())).unwrap_err().to_string();
-        assert!(err.contains("stopped after 0 of 1 drags: injected failure"), "{err}");
+        let mut rec = Recorder {
+            fail_at: Some(3),
+            ..Default::default()
+        };
+        let err = execute(&ctrl_drag(), &mut rec, &mut |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("stopped after 0 of 1 drags: injected failure"),
+            "{err}"
+        );
         assert!(err.contains("have been released"), "{err}");
         // The failing move, then the button and the key, in that order.
-        assert_eq!(&rec.calls[3..], ["move 5,5", "button Left Release", "key Control Release"]);
+        assert_eq!(
+            &rec.calls[3..],
+            ["move 5,5", "button Left Release", "key Control Release"]
+        );
     }
 
     #[test]
     fn releases_a_press_that_itself_failed() {
-        let mut rec = Recorder { fail_at: Some(1), ..Default::default() };
+        let mut rec = Recorder {
+            fail_at: Some(1),
+            ..Default::default()
+        };
         execute(&ctrl_drag(), &mut rec, &mut |_| Ok(())).unwrap_err();
-        assert_eq!(rec.calls, ["move 1,1", "key Control Press", "key Control Release"]);
+        assert_eq!(
+            rec.calls,
+            ["move 1,1", "key Control Press", "key Control Release"]
+        );
     }
 
     #[test]
@@ -340,11 +387,18 @@ pub mod tests {
         let mut checks = 0;
         let err = execute(&plan, &mut rec, &mut |_| {
             checks += 1;
-            if checks == 4 { Err(anyhow!("a prompt opened")) } else { Ok(()) }
+            if checks == 4 {
+                Err(anyhow!("a prompt opened"))
+            } else {
+                Ok(())
+            }
         })
         .unwrap_err()
         .to_string();
-        assert!(err.starts_with("stopped after 1 of 3 chords: a prompt opened"), "{err}");
+        assert!(
+            err.starts_with("stopped after 1 of 3 chords: a prompt opened"),
+            "{err}"
+        );
         // Chord 2 pressed shift, then its tap was refused: shift is released, nothing else is sent.
         assert_eq!(rec.calls.len(), 5);
         assert_eq!(rec.calls[3..], ["key Shift Press", "key Shift Release"]);

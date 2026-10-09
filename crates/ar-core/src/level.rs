@@ -43,7 +43,9 @@ impl FromStr for Level {
             "observe" => Ok(Level::Observe),
             "control" => Ok(Level::Control),
             "admin" => Ok(Level::Admin),
-            other => Err(format!("unknown level '{other}' (expected observe, control or admin)")),
+            other => Err(format!(
+                "unknown level '{other}' (expected observe, control or admin)"
+            )),
         }
     }
 }

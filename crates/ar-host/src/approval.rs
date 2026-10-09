@@ -83,7 +83,10 @@ pub struct Approver {
 
 impl Approver {
     pub fn new(timeout: Duration) -> Self {
-        Self { timeout, open: OpenPrompts::default() }
+        Self {
+            timeout,
+            open: OpenPrompts::default(),
+        }
     }
 
     pub fn open_prompts(&self) -> OpenPrompts {
@@ -103,7 +106,9 @@ impl Approver {
             body.push_str(&format!("\nWhy: {}\n", escape(intent)));
         }
         body.push_str(&format!("\nDetails:\n{}\n", escape(&req.args_preview)));
-        body.push_str(&format!("\nAllow this once? (No answer within {secs} s counts as No.)"));
+        body.push_str(&format!(
+            "\nAllow this once? (No answer within {secs} s counts as No.)"
+        ));
         let dialog = tokio::task::spawn_blocking(move || {
             MessageDialog::new()
                 .set_level(MessageLevel::Warning)
