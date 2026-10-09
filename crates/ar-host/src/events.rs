@@ -220,6 +220,7 @@ async fn feed(host: &HostState, mut send: SendStream) {
         "host": host.name(),
         "device": host.mesh().principal(),
         "version": VERSION,
+        "os": std::env::consts::OS,
         "pending": host.approver().pending(),
         "driver": crate::turns::hello(&host.turns().driver()),
     })
