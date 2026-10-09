@@ -120,6 +120,8 @@ export const demoBackend: Backend = {
     return { device: "eid:demo-home-laptop", version: "demo" };
   },
   async hosts() {
+    // `?empty` shows the first run.
+    if (new URLSearchParams(location.search).has("empty")) return [];
     return hosts.map((h) => ({ ...h }));
   },
   async pair(ticket) {

@@ -10,12 +10,16 @@ export type Key = keyof typeof en;
 const catalogs: Record<Lang, Record<Key, string>> = { en, zh };
 
 export function detectLang(): Lang {
+  // `?shotlang=` pins the language for screenshots of the page outside the app.
+  const pinned = new URLSearchParams(location.search).get("shotlang");
+  if (pinned === "en" || pinned === "zh") return pinned;
   const saved = localStorage.getItem("ai-remote.lang");
   if (saved === "en" || saved === "zh") return saved;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
 let lang: Lang = detectLang();
+document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
 
 export function currentLang(): Lang {
   return lang;
@@ -24,7 +28,7 @@ export function currentLang(): Lang {
 export function setLang(next: Lang) {
   lang = next;
   localStorage.setItem("ai-remote.lang", next);
-  document.documentElement.lang = next === "zh" ? "zh-Hans" : "en";
+  document.documentElement.lang = next === "zh" ? "zh-CN" : "en";
 }
 
 /** The string for `key`, with `{name}` placeholders filled from `vars`. */
