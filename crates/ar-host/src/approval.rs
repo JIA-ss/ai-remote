@@ -3,8 +3,18 @@
 //! A host on an unattended machine has nobody to ask, so "cannot ask" always means "denied": when
 //! the desktop is locked or on the secure desktop, when no dialog can be shown, or when nobody
 //! answers before the timeout.
+//!
+//! While a prompt is waiting for its answer, [`OpenPrompts`] counts it, and the input tools refuse to
+//! inject anything: a controller must never be able to answer its own prompt, not even with a key
+//! sequence that started before the prompt appeared.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 
@@ -38,13 +48,46 @@ pub struct ApprovalRequest {
     pub args_preview: String,
 }
 
+/// Number of approval prompts whose answer is still awaited. Cheap to clone; all clones share one
+/// count.
+#[derive(Clone, Default)]
+pub struct OpenPrompts(Arc<AtomicUsize>);
+
+impl OpenPrompts {
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Counts one prompt until the returned guard is dropped.
+    fn open(&self) -> PromptOpen {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        PromptOpen(self.0.clone())
+    }
+}
+
+/// One counted prompt. Dropped when its answer arrives, when it times out (the dialog may stay on
+/// screen, but its answer is ignored, so input landing on it changes nothing) and when the call that
+/// asked is cancelled.
+struct PromptOpen(Arc<AtomicUsize>);
+
+impl Drop for PromptOpen {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub struct Approver {
     timeout: Duration,
+    open: OpenPrompts,
 }
 
 impl Approver {
     pub fn new(timeout: Duration) -> Self {
-        Self { timeout }
+        Self { timeout, open: OpenPrompts::default() }
+    }
+
+    pub fn open_prompts(&self) -> OpenPrompts {
+        self.open.clone()
     }
 
     pub async fn ask(&self, req: ApprovalRequest) -> Verdict {
@@ -52,6 +95,8 @@ impl Approver {
             tracing::info!(%reason, tool = %req.tool, "approval unavailable");
             return Verdict::Unavailable;
         }
+        // Counted before the dialog can exist, so input checked after this point never reaches it.
+        let _open = self.open.open();
         let secs = self.timeout.as_secs();
         let mut body = format!("\"{}\" wants to run: {}\n", req.peer, req.tool);
         if let Some(intent) = &req.intent {
@@ -92,4 +137,23 @@ fn escape(s: &str) -> String {
         out.push_str(" ...");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_prompts_until_their_guard_drops() {
+        let open = OpenPrompts::default();
+        let shared = open.clone();
+        assert_eq!(open.count(), 0);
+        let a = open.open();
+        let b = shared.open();
+        assert_eq!(shared.count(), 2);
+        drop(a);
+        assert_eq!(open.count(), 1);
+        drop(b);
+        assert_eq!(open.count(), 0);
+    }
 }
