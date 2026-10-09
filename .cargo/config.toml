@@ -1,0 +1,3 @@
+[net]
+# The mcpmesh fork is fetched with the system git so its credential helper is used.
+git-fetch-with-cli = true

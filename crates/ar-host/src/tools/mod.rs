@@ -1,0 +1,148 @@
+//! Host tools. Built-in tools and tools of mounted MCP servers implement the same [`Tool`] trait,
+//! so the gate (level check, policy, approval, audit, result budget) treats them identically.
+
+pub mod clipboard;
+pub mod input;
+pub mod jobs;
+pub mod screen;
+pub mod shell;
+pub mod system;
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use ar_core::{Level, config::Action};
+use async_trait::async_trait;
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ToolAnnotations};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+
+use crate::session::ToolCtx;
+
+/// Static description of a tool plus the host-side rules that apply to it.
+#[derive(Debug, Clone)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Arc<JsonObject>,
+    /// Minimum caller level.
+    pub level: Level,
+    /// What the gate does when no policy rule matches.
+    pub default_action: Action,
+    /// Hints for clients; never the authority (the gate is).
+    pub read_only: bool,
+    pub destructive: bool,
+}
+
+impl ToolSpec {
+    /// A spec whose input schema is derived from `P`.
+    pub fn new<P: JsonSchema + 'static>(name: &str, level: Level, description: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema: schema_for::<P>(),
+            level,
+            default_action: if level >= Level::Admin { Action::Ask } else { Action::Allow },
+            read_only: level == Level::Observe,
+            destructive: level != Level::Observe,
+        }
+    }
+
+    pub fn ask(mut self) -> Self {
+        self.default_action = Action::Ask;
+        self
+    }
+
+    pub fn non_destructive(mut self) -> Self {
+        self.destructive = false;
+        self
+    }
+
+    /// The MCP tool definition shown to controllers.
+    pub fn to_mcp(&self) -> rmcp::model::Tool {
+        let mut annotations = ToolAnnotations::new().read_only(self.read_only).destructive(self.destructive);
+        if self.read_only {
+            annotations = annotations.idempotent(true);
+        }
+        let description = format!("{} [requires level: {}]", self.description, self.level);
+        rmcp::model::Tool::new(self.name.clone(), description, self.input_schema.clone()).annotate(annotations)
+    }
+}
+
+/// One capability the host offers.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn spec(&self) -> &ToolSpec;
+
+    /// Runs the tool. An `Err` is shown to the caller as a tool error (`isError: true`) with the
+    /// error's text, so messages should tell the agent what went wrong and what to do instead.
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult>;
+}
+
+/// All tools of this host, in display order.
+#[derive(Clone, Default)]
+pub struct Registry {
+    tools: Vec<Arc<dyn Tool>>,
+}
+
+impl Registry {
+    /// The tools built into the host binary.
+    pub fn builtin() -> Self {
+        let mut r = Self::default();
+        for t in system::tools()
+            .into_iter()
+            .chain(screen::tools())
+            .chain(input::tools())
+            .chain(clipboard::tools())
+            .chain(shell::tools())
+            .chain(jobs::tools())
+        {
+            r.add(t);
+        }
+        r
+    }
+
+    /// Adds a tool; a later tool with the same name replaces the earlier one.
+    pub fn add(&mut self, tool: Arc<dyn Tool>) {
+        let name = tool.spec().name.clone();
+        self.tools.retain(|t| t.spec().name != name);
+        self.tools.push(tool);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.iter().find(|t| t.spec().name == name).cloned()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
+        self.tools.iter()
+    }
+}
+
+/// JSON schema (object root) for a parameter type, in the dialect MCP clients expect.
+pub fn schema_for<P: JsonSchema + 'static>() -> Arc<JsonObject> {
+    rmcp::handler::server::common::schema_for_type::<P>()
+}
+
+/// Parses tool arguments into `P`, with an error message an agent can act on.
+pub fn parse<P: DeserializeOwned>(args: JsonObject) -> Result<P> {
+    serde_json::from_value(serde_json::Value::Object(args))
+        .map_err(|e| anyhow::anyhow!("invalid arguments: {e}"))
+}
+
+/// A successful result with one text block.
+pub fn text(s: impl Into<String>) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(s.into())])
+}
+
+/// A successful result with a JSON value rendered as text plus structured content.
+pub fn json(value: serde_json::Value) -> CallToolResult {
+    let mut r = CallToolResult::success(vec![ContentBlock::text(
+        serde_json::to_string_pretty(&value).unwrap_or_default(),
+    )]);
+    r.structured_content = Some(value);
+    r
+}
+
+/// Parameters for tools that take none.
+#[derive(Debug, Default, serde::Deserialize, JsonSchema)]
+pub struct NoParams {}

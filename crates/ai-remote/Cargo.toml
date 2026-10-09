@@ -1,0 +1,25 @@
+[package]
+name = "ai-remote"
+description = "Open-source remote control where AI agents are first-class operators"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ai-remote"
+path = "src/main.rs"
+
+[dependencies]
+ar-core.workspace = true
+ar-net.workspace = true
+ar-host.workspace = true
+ar-controller.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
