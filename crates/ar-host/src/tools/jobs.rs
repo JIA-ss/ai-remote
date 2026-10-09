@@ -1087,7 +1087,8 @@ impl JobsStart {
                 "Start a command in the background on the host and return its job id at once. Its stdout and \
                  stderr go to a log on the host (UTF-8); follow it with jobs_log, jobs_wait or jobs_status. Use \
                  this for builds, servers, GUI apps and anything that may take over ~30 s. A job keeps running \
-                 after your session ends, until it exits or jobs_kill stops it; a restart of the host may end it \n                 (always assume so for a host started at logon), so check jobs_status after a reconnect. At \
+                 after your session ends, until it exits or jobs_kill stops it; a restart of the host may end it \
+                 (always assume so for a host started at logon), so check jobs_status after a reconnect. At \
                  most 16 jobs run at once; a job whose main process exited but left processes running still \
                  counts. Usually needs the owner's approval.",
             )
