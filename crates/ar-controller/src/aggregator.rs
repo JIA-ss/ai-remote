@@ -9,13 +9,15 @@ use ar_net::ipc::LocalStream;
 use rmcp::{
     ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock,
-        Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+        CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotification,
+        CancelledNotificationParam, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, Implementation,
+        JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, ServerResult, Tool,
     },
-    service::{RequestContext, RunningService},
+    service::{PeerRequestOptions, RequestContext, RunningService, ServiceError},
 };
 use serde_json::{Value, json};
 use tokio::{io::AsyncReadExt, sync::Mutex};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 
@@ -106,17 +108,24 @@ impl Aggregator {
         self.only_host().await
     }
 
-    /// Calls `tool` on `host`, redialing once if the connection was lost.
-    pub async fn call_on_host(&self, host: &str, tool: &str, args: JsonObject) -> Result<CallToolResult> {
+    /// Calls `tool` on `host`, redialing once if the connection was lost. When `cancel` fires
+    /// first, the host is told, so the tool stops there too.
+    pub async fn call_on_host(
+        &self,
+        host: &str,
+        tool: &str,
+        args: JsonObject,
+        cancel: &CancellationToken,
+    ) -> Result<CallToolResult> {
         let params = CallToolRequestParams::new(tool.to_string()).with_arguments(args);
         let client = self.client(host).await?;
-        match client.call_tool(params.clone()).await {
+        match call_cancellable(&client, params.clone(), cancel).await {
             Ok(r) => Ok(r),
             Err(e) if client.is_closed() => {
                 tracing::debug!(%e, host, "session lost; reconnecting once");
                 self.drop_client(host).await;
                 let client = self.client(host).await?;
-                client.call_tool(params).await.map_err(|e| anyhow!("{e}"))
+                call_cancellable(&client, params, cancel).await.map_err(|e| anyhow!("{e}"))
             }
             Err(e) => Err(anyhow!("{e}")),
         }
@@ -206,6 +215,31 @@ fn json_result(v: Value) -> CallToolResult {
     r
 }
 
+/// One `tools/call` to a host. rmcp's `call_tool` cannot be cancelled from outside (dropping it
+/// leaves the host running the tool), so this sends the request itself and, when `cancel` fires
+/// first, sends the host `notifications/cancelled`.
+async fn call_cancellable(
+    client: &HostClient,
+    params: CallToolRequestParams,
+    cancel: &CancellationToken,
+) -> Result<CallToolResult, ServiceError> {
+    let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+    let handle = client.send_cancellable_request(request, PeerRequestOptions::no_options()).await?;
+    let (peer, id) = (handle.peer.clone(), handle.id.clone());
+    tokio::select! {
+        response = handle.await_response() => match response? {
+            ServerResult::CallToolResult(r) => Ok(r),
+            _ => Err(ServiceError::UnexpectedResponse),
+        },
+        _ = cancel.cancelled() => {
+            let reason = Some("the caller cancelled the request".to_string());
+            let note = CancelledNotification::new(CancelledNotificationParam::new(Some(id), reason));
+            let _ = peer.send_notification(note.into()).await;
+            Ok(CallToolResult::error(vec![ContentBlock::text("cancelled")]))
+        }
+    }
+}
+
 impl ServerHandler for Aggregator {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -240,8 +274,10 @@ impl ServerHandler for Aggregator {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        // Cancelled when the agent's client sends `notifications/cancelled` for this request.
+        let cancel = &context.ct;
         let mut args = request.arguments.unwrap_or_default();
         let result = match request.name.as_ref() {
             "list_hosts" => match self.list_hosts().await {
@@ -251,7 +287,7 @@ impl ServerHandler for Aggregator {
             "use_host" => {
                 let requested = args.get("host").and_then(Value::as_str).map(str::to_string);
                 match self.resolve_host(requested).await {
-                    Ok(host) => match self.call_on_host(&host, "system_info", JsonObject::new()).await {
+                    Ok(host) => match self.call_on_host(&host, "system_info", JsonObject::new(), cancel).await {
                         Ok(mut r) => {
                             *self.default_host.lock().await = Some(host.clone());
                             r.content.insert(0, ContentBlock::text(format!("Default host is now '{host}'.")));
@@ -265,7 +301,7 @@ impl ServerHandler for Aggregator {
             tool => {
                 let requested = args.remove("host").and_then(|v| v.as_str().map(str::to_string));
                 match self.resolve_host(requested).await {
-                    Ok(host) => match self.call_on_host(&host, tool, args).await {
+                    Ok(host) => match self.call_on_host(&host, tool, args, cancel).await {
                         Ok(r) => r,
                         Err(e) => error_result(format!("host '{host}': {e:#}")),
                     },

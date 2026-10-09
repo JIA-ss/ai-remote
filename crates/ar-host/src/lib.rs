@@ -12,6 +12,7 @@ pub mod mounts;
 pub mod platform;
 mod policy;
 mod protocol;
+pub mod result_budget;
 mod server;
 pub mod session;
 pub mod tools;
