@@ -21,6 +21,22 @@ export const commands = {
 	subscribeEvents: (host: string | null, onEvent: Channel<Json>) => typedError<number, string>(__TAURI_INVOKE("subscribe_events", { host, onEvent })),
 	/**  Ends a feed started by [`subscribe_events`]. */
 	unsubscribeEvents: (id: number) => typedError<null, string>(__TAURI_INVOKE("unsubscribe_events", { id })),
+	/**  What is waiting for approval on a host (or the only paired host), and that host's name. */
+	pendingApprovals: (host: string | null) => typedError<[string, PendingApproval[]], string>(__TAURI_INVOKE("pending_approvals", { host })),
+	/**
+	 *  Allows one waiting call. Windows Hello asks the person first (over this window); the host checks
+	 *  the signature against this device's accepted approver key.
+	 */
+	approve: (host: string, id: string) => typedError<null, string>(__TAURI_INVOKE("approve", { host, id })),
+	/**  Denies one waiting call; `note` is passed to the agent ("Tell the agent instead"). */
+	deny: (host: string, id: string, note: string | null) => typedError<null, string>(__TAURI_INVOKE("deny", { host, id, note })),
+	/**  Whether `host` accepted this device's approver key: `null` when this device has none yet. */
+	approverStatus: (host: string | null) => typedError<boolean | null, string>(__TAURI_INVOKE("approver_status", { host })),
+	/**
+	 *  Creates this device's approver key if needed (Windows Hello confirms) and offers it to `host`;
+	 *  resolves once someone at the host accepted or declined it.
+	 */
+	enrollApprover: (host: string) => typedError<Json, string>(__TAURI_INVOKE("enroll_approver", { host })),
 };
 
 /* Types */
@@ -29,6 +45,18 @@ export const commands = {
  *  itself sends the binding generator into endless recursion.)
  */
 export type Json = unknown;
+
+/**  A call waiting for a person on a host. */
+export type PendingApproval = {
+	id: string,
+	/**  The device whose agent asked. */
+	peer: string,
+	tool: string,
+	intent: string | null,
+	argsPreview: string,
+	/**  When the host stops waiting (milliseconds since the Unix epoch). */
+	expiresMs: number | null,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
