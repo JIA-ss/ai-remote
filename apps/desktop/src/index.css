@@ -33,6 +33,14 @@ body,
   height: 100%;
 }
 
+/* Windows: the frame plugin's strip is full width; keep it to the caption buttons so our own title
+   bar (back, computer name, chips) stays clickable. Our bar marks its empty parts as drag regions. */
+[data-tauri-frame-tb] {
+  left: auto !important;
+  right: 0;
+  width: var(--tauri-frame-controls-width, 138px) !important;
+}
+
 body {
   margin: 0;
   background: var(--canvas);
