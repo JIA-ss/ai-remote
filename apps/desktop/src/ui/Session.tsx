@@ -125,14 +125,19 @@ function Capsule({
 }
 
 /** The remote screen: decoded video in the app, a still picture in the demo. */
-function Stream({
+export function Stream({
   host,
   onFrame,
   onSize,
+  maxFps,
+  maxLongEdge,
 }: {
   host: string;
-  onFrame: () => void;
-  onSize: (w: number, h: number) => void;
+  onFrame?: () => void;
+  onSize?: (w: number, h: number) => void;
+  /** A small preview asks for less: fewer frames, a smaller picture. */
+  maxFps?: number;
+  maxLongEdge?: number;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -144,15 +149,15 @@ function Stream({
       canvas.current,
       () => view?.requestKeyframe(),
       (w, h) => {
-        onSize(w, h);
+        onSize?.(w, h);
         if (first) {
           first = false;
-          onFrame();
+          onFrame?.();
         }
       },
     );
     api
-      .watchScreen(host, (f) => decoder.push(f))
+      .watchScreen(host, (f) => decoder.push(f), { maxFps, maxLongEdge })
       .then((v) => {
         if (stopped) v?.stop();
         else view = v;
@@ -166,7 +171,7 @@ function Stream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [host]);
   if (api.kind !== "tauri") {
-    return <img className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { onSize(1600, 1000); onFrame(); }} />;
+    return <img className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { onSize?.(1600, 1000); onFrame?.(); }} />;
   }
   return <canvas ref={canvas} className="rd-holder" style={{ width: "100%", height: "100%" }} />;
 }

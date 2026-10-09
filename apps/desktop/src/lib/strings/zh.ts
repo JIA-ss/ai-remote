@@ -56,6 +56,7 @@ export const zh: Record<keyof typeof en, string> = {
   pause_agent: "暂停智能体",
   resume: "恢复",
   live: "实时",
+  watch_live: "实时观看",
 
   waiting_for_you: "等你处理",
   banner_wait: "{agent} 想运行 {tool}",
@@ -110,6 +111,13 @@ export const zh: Record<keyof typeof en, string> = {
   optional_sent: "选填，交还控制时一并发给智能体",
   handback_note: "交还后，智能体会先重新读取屏幕，再做下一步",
 
+  recent_steps: "最近的步骤",
+  this_computer: "这台电脑",
+  connection: "连接",
+  conn_direct: "直连，端到端加密",
+  conn_relayed: "中继，端到端加密",
+  agent_l: "智能体",
+  device_key: "设备密钥",
   wants_tool: "{agent} 想在 {host} 上运行 {tool}",
   ap_q_shell: "运行这条命令？",
   ap_q_job: "启动这个后台任务？",

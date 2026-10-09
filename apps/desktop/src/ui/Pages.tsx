@@ -5,6 +5,7 @@ import { api, type Paired } from "../lib/api";
 import { currentLang, setLang, t } from "../lib/i18n";
 import { allPending, groupOf, type Computer, type Snapshot } from "../lib/store";
 import { DecisionCard } from "./Decide";
+import { Stream } from "./Session";
 import { Glyph, OsGlyph, Pointer, SeatMark, Wordmark } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, statusOf } from "./Shell";
@@ -51,7 +52,8 @@ export function ComputerPage({ c, onWatch }: { c: Computer; onWatch: () => void 
         )}
         <div className="pv-wrap">
           <div className="pv stage" ref={pvRef}>
-            <div className="shot" style={{ height: Math.round(((pv.w || 400) - 24) * 10 / 16) }}>
+            <div className={cx("shot", off && "desat")} style={{ height: Math.round(((pv.w || 400) - 24) * 10 / 16) }}>
+              {!off && <Stream host={c.host.name} maxFps={2} maxLongEdge={960} />}
               <div className={cx("frame", c.feed.driver.state === "person" ? "you" : group === "working" || group === "needs" ? "agent" : "idle")} />
             </div>
             {spec && (
@@ -69,7 +71,7 @@ export function ComputerPage({ c, onWatch }: { c: Computer; onWatch: () => void 
               {!off && (
                 <button className="watch" onClick={onWatch}>
                   <Icon name="eye" size={14} />
-                  {t("live")}
+                  {t("watch_live")}
                 </button>
               )}
             </div>
@@ -78,7 +80,7 @@ export function ComputerPage({ c, onWatch }: { c: Computer; onWatch: () => void 
       </div>
       <div className="cp-cols">
         <div>
-          <div className="colh">{t("tab_steps")}</div>
+          <div className="colh">{t("recent_steps")}</div>
           <div className="log">
             {steps.length === 0 && <div className="body c3">{t("no_steps")}</div>}
             {steps.map((s) => (
@@ -94,14 +96,14 @@ export function ComputerPage({ c, onWatch }: { c: Computer; onWatch: () => void 
           </div>
         </div>
         <div>
-          <div className="colh">{c.host.name}</div>
+          <div className="colh">{t("this_computer")}</div>
           <dl className="dl">
-            <dt>{t("direct")}</dt>
-            <dd>{c.host.path ? t(c.host.path === "relay" ? "relayed" : "direct") : "—"}</dd>
-            <dt>{agent}</dt>
-            <dd>{c.feed.agent ?? "—"}</dd>
-            <dt>ID</dt>
-            <dd className="mono">{c.host.device ?? "—"}</dd>
+            <dt>{t("connection")}</dt>
+            <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
+            <dt>{t("agent_l")}</dt>
+            <dd>{c.feed.agent ? agent : "—"}</dd>
+            <dt>{t("device_key")}</dt>
+            <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
           </dl>
         </div>
         <div />
