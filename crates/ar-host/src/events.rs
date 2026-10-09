@@ -13,6 +13,9 @@
 //! - `{"enroll":{"alg":..,"key":..,"label":..}}`: offer an approver key; someone at this host must
 //!   confirm it.
 //! - `{"approver_status":{"alg":..,"key":..}}`: whether this host accepted that key for this device.
+//! - `{"turn":{"action":"take_over"|"hand_back"|"pause"|"resume",...}}`: change who drives (see
+//!   [`crate::turns`]); `take_over` takes `agent_may_watch`, `hand_back` an optional `note`.
+//! - `{"tell":{"text":".."}}`: a message for the agent, delivered with its next call result.
 //!
 //! Requests other than `subscribe` get one `{"ok":true,...}` or `{"ok":false,"error":"..."}` line.
 //! Any device with a level may use the stream; the feed carries what the audit log carries (argument
@@ -20,7 +23,7 @@
 
 use std::sync::Arc;
 
-use ar_core::{VERSION, approval::KeyAlg};
+use ar_core::{Level, VERSION, approval::KeyAlg};
 use ar_net::{
     Peer,
     iroh::{
@@ -51,6 +54,33 @@ enum Request {
     Answer(RemoteAnswer),
     Enroll(Enroll),
     ApproverStatus(KeyRef),
+    Turn(Turn),
+    Tell(Tell),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Turn {
+    action: TurnAction,
+    #[serde(default)]
+    agent_may_watch: bool,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TurnAction {
+    TakeOver,
+    HandBack,
+    Pause,
+    Resume,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tell {
+    text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +182,33 @@ async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<V
             let principal = peer.principal.as_deref().unwrap_or_default();
             json!({"accepted": approver.keys().find(principal, k.alg, &k.key).is_some()})
         }
+        Request::Turn(t) => {
+            // Anyone paired may stop the agent; taking the controls or letting it go on needs control.
+            if !matches!(t.action, TurnAction::Pause) && peer.level < Some(Level::Control) {
+                anyhow::bail!("this device's level does not allow that (it needs control)");
+            }
+            let turns = host.turns();
+            let driver = match t.action {
+                TurnAction::TakeOver => turns.take_over(&peer.name, t.agent_may_watch),
+                TurnAction::HandBack => turns.hand_back(&peer.name, t.note.as_deref())?,
+                TurnAction::Pause => turns.pause(&peer.name),
+                TurnAction::Resume => turns.resume()?,
+            };
+            let mut line = driver.event(&peer.name);
+            if let Some(note) = t.note.as_deref().filter(|_| matches!(t.action, TurnAction::HandBack)) {
+                line["note"] = note.into();
+            }
+            host.audit().event(line);
+            json!({"driver": driver})
+        }
+        Request::Tell(t) => {
+            if peer.level < Some(Level::Control) {
+                anyhow::bail!("this device's level does not allow messages to the agent (it needs control)");
+            }
+            host.turns().tell(&peer.name, &t.text)?;
+            host.audit().event(json!({"kind": "note", "from": peer.name, "text": t.text}));
+            json!({})
+        }
     })
 }
 
@@ -164,6 +221,7 @@ async fn feed(host: &HostState, mut send: SendStream) {
         "device": host.mesh().principal(),
         "version": VERSION,
         "pending": host.approver().pending(),
+        "driver": crate::turns::hello(&host.turns().driver()),
     })
     .to_string();
     if send.write_all(&framed(&hello)).await.is_err() {

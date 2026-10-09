@@ -2,7 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
-import type { FeedEvent, Host, PendingApproval, RawPending } from "./types";
+import type { Driver, FeedEvent, Host, PendingApproval, RawPending } from "./types";
 
 const minute = 60_000;
 
@@ -14,6 +14,7 @@ const hosts: Host[] = [
 ];
 
 const offline = new Set(["render-box"]);
+const drivers = new Map<string, Driver>();
 
 type Listener = (e: FeedEvent) => void;
 const listeners = new Map<string, Set<Listener>>();
@@ -140,7 +141,7 @@ export const demoBackend: Backend = {
   },
   async subscribe(host, onEvent) {
     reachable(host);
-    onEvent({ kind: "hello", host, version: "demo", pending: pending.get(host) ?? [] });
+    onEvent({ kind: "hello", host, version: "demo", pending: pending.get(host) ?? [], driver: drivers.get(host) ?? { state: "agent" } });
     for (const e of history.get(host) ?? []) onEvent(e);
     const set = listeners.get(host) ?? new Set<(e: FeedEvent) => void>();
     set.add(onEvent);
@@ -165,6 +166,23 @@ export const demoBackend: Backend = {
   async enrollApprover(host) {
     reachable(host);
     await wait(900);
+  },
+  async setTurn(host, action, opts = {}) {
+    reachable(host);
+    const now = Date.now();
+    const driver: Driver =
+      action === "take_over"
+        ? { state: "person", device: "home-laptop", since_ms: now, agent_may_watch: opts.agentMayWatch ?? false }
+        : action === "pause"
+          ? { state: "paused", by: "home-laptop", since_ms: now }
+          : { state: "agent" };
+    drivers.set(host, driver);
+    emit(host, { kind: "driver", ts: now, by: "home-laptop", note: opts.note, ...driver });
+    return driver;
+  },
+  async tellAgent(host, text) {
+    reachable(host);
+    emit(host, { kind: "note", ts: Date.now(), from: "home-laptop", text });
   },
 };
 

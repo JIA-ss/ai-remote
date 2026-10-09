@@ -43,11 +43,18 @@ pub(crate) struct Aggregator {
     agent: Arc<Agent>,
     default_host: Arc<Mutex<Option<String>>>,
     clients: Arc<Mutex<HashMap<String, Arc<HostClient>>>>,
+    /// Host sessions are a person's (see [`ar_core::PERSON_CLIENT`]), not an agent's.
+    person: bool,
 }
 
 impl Aggregator {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent, default_host: Arc::default(), clients: Arc::default() }
+        Self { agent, default_host: Arc::default(), clients: Arc::default(), person: false }
+    }
+
+    /// For calls a person makes at this device (the app while they drive).
+    pub fn for_person(agent: Arc<Agent>) -> Self {
+        Self { person: true, ..Self::new(agent) }
     }
 
     /// Serves MCP over the local stream until the shim goes away.
@@ -110,7 +117,14 @@ impl Aggregator {
         };
         let config = ClientConfig::new(
             ClientCapabilities::default(),
-            Implementation::new(format!("ai-remote controller ({})", ar_core::machine_name()), VERSION),
+            Implementation::new(
+                format!(
+                    "{} ({})",
+                    if self.person { ar_core::PERSON_CLIENT } else { "ai-remote controller" },
+                    ar_core::machine_name()
+                ),
+                VERSION,
+            ),
         );
         match config.serve((recv, send)).await {
             Ok(client) => Ok(client),

@@ -138,9 +138,15 @@ impl ProtocolHandler for McpProtocol {
                 let (id, name, principal) = (&session.id, &session.peer.name, session.peer.principal.as_deref());
                 match server.serve_with_ct((recv, send), session.cancel.clone()).await {
                     Ok(running) => {
-                        host.audit().session("session_start", id, name, principal);
+                        let person = running
+                            .peer()
+                            .peer_info()
+                            .is_some_and(|i| i.client_info.name.starts_with(ar_core::PERSON_CLIENT));
+                        session.set_person(person);
+                        let client = if person { "person" } else { "agent" };
+                        host.audit().session("session_start", id, name, principal, client);
                         let _ = running.waiting().await;
-                        host.audit().session("session_end", id, name, principal);
+                        host.audit().session("session_end", id, name, principal, client);
                     }
                     Err(e) => tracing::debug!(%e, "MCP session did not start"),
                 }

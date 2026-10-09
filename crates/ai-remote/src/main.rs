@@ -122,6 +122,38 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// [controller] Take the controls of a host: the agent's calls are refused until you hand back.
+    TakeOver {
+        #[arg(long)]
+        host: Option<String>,
+        /// Let the agent keep looking at the screen (observe-level tools) meanwhile.
+        #[arg(long)]
+        let_watch: bool,
+    },
+    /// [controller] Give the controls back to the agent, optionally telling it what you changed.
+    HandBack {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// [controller] Stop the agent on a host until you resume it.
+    Pause {
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// [controller] Let a paused agent go on.
+    Resume {
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// [controller] Leave a message for the agent working on a host; it arrives with its next call
+    /// result.
+    Tell {
+        text: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// [controller] Call one tool on a host and print the result.
     Call {
         /// Tool name, e.g. system_info.
@@ -132,6 +164,9 @@ enum Command {
         /// Host name (optional when only one host is paired).
         #[arg(long)]
         host: Option<String>,
+        /// You make this call yourself (it runs while you have taken over).
+        #[arg(long)]
+        person: bool,
     },
     /// [controller] stdio MCP server for AI agents (e.g. `claude mcp add ai-remote -- ai-remote mcp`).
     Mcp,
@@ -358,6 +393,35 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Mount { command } => mount_command(&profile, command, json_out).await,
         Command::Approvers { command } => approvers_command(&profile, command, json_out).await,
         Command::Approver { enroll } => approver_command(&profile, enroll, json_out).await,
+        Command::TakeOver { host, let_watch } => {
+            let request = json!({"turn": {"action": "take_over", "agent_may_watch": let_watch}});
+            let v = channel(&profile, host, request).await?;
+            let watch = if let_watch { " It may still look at the screen." } else { "" };
+            print_result(
+                json_out,
+                &v,
+                &format!(
+                    "You have control of {}. The agent waits until you hand back.{watch}",
+                    v["host"].as_str().unwrap_or("?")
+                ),
+            )
+        }
+        Command::HandBack { host, note } => {
+            let v = channel(&profile, host, json!({"turn": {"action": "hand_back", "note": note}})).await?;
+            print_result(json_out, &v, "Handed back. The agent reads the screen again before its next step.")
+        }
+        Command::Pause { host } => {
+            let v = channel(&profile, host, json!({"turn": {"action": "pause"}})).await?;
+            print_result(json_out, &v, &format!("The agent on {} is paused.", v["host"].as_str().unwrap_or("?")))
+        }
+        Command::Resume { host } => {
+            let v = channel(&profile, host, json!({"turn": {"action": "resume"}})).await?;
+            print_result(json_out, &v, "The agent can go on.")
+        }
+        Command::Tell { text, host } => {
+            let v = channel(&profile, host, json!({"tell": {"text": text}})).await?;
+            print_result(json_out, &v, "The agent gets your message with its next result.")
+        }
         Command::Approvals { host } => {
             let mut agent = ar_controller::connect_agent(&profile).await?;
             let (host, waiting) = ar_controller::approver::pending(&mut agent, host.as_deref()).await?;
@@ -424,10 +488,14 @@ async fn run(cli: Cli) -> Result<()> {
             let v = agent_request(&profile, json!({"op": "unpair", "host": host})).await?;
             print_result(json_out, &v, &format!("unpaired {}", v["host"].as_str().unwrap_or("?")))
         }
-        Command::Call { tool, args, host } => {
+        Command::Call { tool, args, host, person } => {
             let args: Value = serde_json::from_str(&args).context("arguments must be a JSON object")?;
             let Value::Object(args) = args else { bail!("arguments must be a JSON object") };
-            let v = agent_request(&profile, json!({"op": "call", "host": host, "tool": tool, "args": args})).await?;
+            let v = agent_request(
+                &profile,
+                json!({"op": "call", "host": host, "tool": tool, "args": args, "person": person}),
+            )
+            .await?;
             if json_out {
                 return print_json(&v);
             }
@@ -556,6 +624,11 @@ async fn approver_command(profile: &Profile, enroll: Option<String>, json_out: b
         format!("{host} had already accepted this key.")
     };
     print_result(json_out, &v, &msg)
+}
+
+async fn channel(profile: &Profile, host: Option<String>, request: Value) -> Result<Value> {
+    let mut agent = ar_controller::connect_agent(profile).await?;
+    ar_controller::approver::channel(&mut agent, host.as_deref(), request).await
 }
 
 async fn host_request(profile: &Profile, req: HostRequest) -> Result<Value> {

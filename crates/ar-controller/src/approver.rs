@@ -280,7 +280,7 @@ pub struct Waiting {
 
 /// The calls waiting for a person on `host` (or the only paired host), with the host's name.
 pub async fn pending(agent: &mut ar_net::ipc::Conn, host: Option<&str>) -> Result<(String, Vec<Waiting>)> {
-    let v = agent.request(&serde_json::json!({"op": "approvals", "host": host, "request": {"pending": true}})).await?;
+    let v = agent.request(&serde_json::json!({"op": "channel", "host": host, "request": {"pending": true}})).await?;
     let host = v["host"].as_str().unwrap_or_default().to_string();
     Ok((host, serde_json::from_value(v["pending"].clone())?))
 }
@@ -325,7 +325,7 @@ pub async fn allow(agent: &mut ar_net::ipc::Conn, profile: &Profile, host: &str,
     let signature = tokio::task::spawn_blocking(move || signer.sign_allow(&target)).await??;
     agent
         .request(&serde_json::json!({
-            "op": "approvals",
+            "op": "channel",
             "host": host,
             "request": {"answer": {
                 "id": waiting.id,
@@ -342,7 +342,7 @@ pub async fn allow(agent: &mut ar_net::ipc::Conn, profile: &Profile, host: &str,
 /// Denies waiting call `id` on `host`; `note` is told to the agent. Needs no approver key.
 pub async fn deny(agent: &mut ar_net::ipc::Conn, host: &str, id: &str, note: Option<&str>) -> Result<()> {
     let answer = serde_json::json!({"id": id, "decision": "deny", "note": note});
-    agent.request(&serde_json::json!({"op": "approvals", "host": host, "request": {"answer": answer}})).await?;
+    agent.request(&serde_json::json!({"op": "channel", "host": host, "request": {"answer": answer}})).await?;
     Ok(())
 }
 
@@ -352,13 +352,22 @@ pub async fn enroll(agent: &mut ar_net::ipc::Conn, profile: &Profile, host: Opti
     let p = profile.clone();
     let key = tokio::task::spawn_blocking(move || get_or_create(&p)).await??;
     let request = serde_json::json!({"enroll": {"alg": key.alg, "key": key.public_key_b64(), "label": key.label}});
-    agent.request(&serde_json::json!({"op": "approvals", "host": host, "request": request})).await
+    agent.request(&serde_json::json!({"op": "channel", "host": host, "request": request})).await
 }
 
 /// Whether `host` accepted this device's approver key (`None`: this device has no key).
 pub async fn accepted(agent: &mut ar_net::ipc::Conn, profile: &Profile, host: Option<&str>) -> Result<Option<bool>> {
     let Some(key) = existing(profile)? else { return Ok(None) };
     let request = serde_json::json!({"approver_status": {"alg": key.alg, "key": key.public_key_b64()}});
-    let v = agent.request(&serde_json::json!({"op": "approvals", "host": host, "request": request})).await?;
+    let v = agent.request(&serde_json::json!({"op": "channel", "host": host, "request": request})).await?;
     Ok(Some(v["accepted"] == true))
+}
+
+/// Sends one request on `host`'s events channel (`turn`, `tell`, ...) and returns the reply.
+pub async fn channel(
+    agent: &mut ar_net::ipc::Conn,
+    host: Option<&str>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    agent.request(&serde_json::json!({"op": "channel", "host": host, "request": request})).await
 }

@@ -79,15 +79,23 @@ async fn unpair(state: State<'_, AppState>, host: String) -> Result<Json, String
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
+/// `person`: the person at this device makes the call (while they drive), so it runs after they
+/// took over; everything else is treated like the agent.
 #[tauri::command]
 #[specta::specta]
-async fn call_tool(state: State<'_, AppState>, host: Option<String>, tool: String, args: Json) -> Result<Json, String> {
+async fn call_tool(
+    state: State<'_, AppState>,
+    host: Option<String>,
+    tool: String,
+    args: Json,
+    person: bool,
+) -> Result<Json, String> {
     let args = match args.0 {
         Value::Null => json!({}),
         object @ Value::Object(_) => object,
         _ => return Err("tool arguments must be a JSON object".into()),
     };
-    state.request(json!({"op": "call", "host": host, "tool": tool, "args": args})).await
+    state.request(json!({"op": "call", "host": host, "tool": tool, "args": args, "person": person})).await
 }
 
 /// Subscribes to a host's live activity feed. Every event (one parsed JSON object) is sent on
@@ -192,6 +200,31 @@ async fn enroll_approver(state: State<'_, AppState>, host: String) -> Result<Jso
     ar_controller::approver::enroll(&mut conn, &state.profile, Some(&host)).await.map(Json).map_err(text)
 }
 
+/// Changes who drives `host`: `take_over` (with `agentMayWatch`), `hand_back` (with an optional
+/// note for the agent), `pause` or `resume`. Returns the new driver.
+#[tauri::command]
+#[specta::specta]
+async fn set_turn(
+    state: State<'_, AppState>,
+    host: String,
+    action: String,
+    agent_may_watch: bool,
+    note: Option<String>,
+) -> Result<Json, String> {
+    let request = json!({"turn": {"action": action, "agent_may_watch": agent_may_watch, "note": note}});
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::channel(&mut conn, Some(&host), request).await.map(Json).map_err(text)
+}
+
+/// Leaves a message for the agent working on `host`; it arrives with its next call result.
+#[tauri::command]
+#[specta::specta]
+async fn tell_agent(state: State<'_, AppState>, host: String, message: String) -> Result<(), String> {
+    let mut conn = state.agent().await.map_err(text)?;
+    ar_controller::approver::channel(&mut conn, Some(&host), json!({"tell": {"text": message}})).await.map_err(text)?;
+    Ok(())
+}
+
 /// Ends a feed started by [`subscribe_events`].
 #[tauri::command]
 #[specta::specta]
@@ -216,6 +249,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         deny,
         approver_status,
         enroll_approver,
+        set_turn,
+        tell_agent,
     ])
 }
 

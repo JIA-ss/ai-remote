@@ -22,6 +22,7 @@ pub mod result_budget;
 mod server;
 pub mod session;
 pub mod tools;
+mod turns;
 
 use std::{sync::Arc, time::Duration};
 
@@ -48,6 +49,7 @@ pub struct HostState {
     registry: Registry,
     audit: AuditLog,
     approver: Approver,
+    turns: turns::Turns,
     jobs: tools::jobs::JobManager,
     background: bool,
     /// Cancelled when the host stops.
@@ -97,6 +99,11 @@ impl HostState {
 
     pub(crate) fn audit(&self) -> &AuditLog {
         &self.audit
+    }
+
+    /// Who drives this computer right now: the agent, a person who took over, or nobody (paused).
+    pub(crate) fn turns(&self) -> &turns::Turns {
+        &self.turns
     }
 
     pub(crate) fn approver(&self) -> &Approver {
@@ -212,6 +219,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
             config.host.approval_prompt,
             approvers::ApproverKeys::open(&profile.approvers_path()?)?,
         ),
+        turns: turns::Turns::default(),
         jobs: tools::jobs::JobManager::new(profile.jobs_dir()?),
         profile,
         name,

@@ -1,6 +1,8 @@
 //! The gate every tool call passes through, in this order:
 //!
-//! 1. the caller's current level (re-read on every call, so a downgrade applies immediately);
+//! 1. the caller's current level (re-read on every call, so a downgrade applies immediately), and
+//!    whose turn it is (an agent's calls wait while a person drives or the agent is paused, see
+//!    [`crate::turns`]);
 //! 2. policy (`allow` / `ask` / `deny`);
 //! 3. owner approval when the policy says `ask`, at the host or on an approver device (see
 //!    [`crate::approval`]);
@@ -10,6 +12,8 @@
 //! 6. result budget (large text cut to head and tail, oversized structured content dropped, images
 //!    kept within what model APIs accept; see [`crate::result_budget`]);
 //! 7. audit record of the outcome (its size is the size after the budget).
+//!
+//! Messages a person left for the agent are added to the next result an agent's session receives.
 
 use std::time::Instant;
 
@@ -56,6 +60,23 @@ pub async fn call(
     args: JsonObject,
     cancel: &CancellationToken,
 ) -> Result<CallToolResult, ErrorData> {
+    let mut result = call_gated(host, session, name, args, cancel).await?;
+    if !session.person() {
+        let notes = host.turns().take_notes();
+        if !notes.is_empty() {
+            result.content.push(ContentBlock::text(crate::turns::notes_text(&notes)));
+        }
+    }
+    Ok(result)
+}
+
+async fn call_gated(
+    host: &HostState,
+    session: &Session,
+    name: &str,
+    args: JsonObject,
+    cancel: &CancellationToken,
+) -> Result<CallToolResult, ErrorData> {
     let Some(tool) = host.registry().get(name) else {
         return Err(ErrorData::invalid_params(format!("unknown tool '{name}'"), None));
     };
@@ -63,7 +84,9 @@ pub async fn call(
     let canonical = serde_json::to_string(&args).unwrap_or_default();
     let args_hash = blake3::hash(canonical.as_bytes()).to_hex().to_string();
     // What the owner sees (prompt, audit log): secret values only by size; the hash covers them.
-    let shown = serde_json::to_string(&tools::shown_args(&args, tool.secret_args())).unwrap_or_default();
+    // What a person types while driving is theirs: the log keeps only its size.
+    let secret: &[&str] = if session.person() && name == "keyboard" { &["text"] } else { tool.secret_args() };
+    let shown = serde_json::to_string(&tools::shown_args(&args, secret)).unwrap_or_default();
     let preview = budget::head_tail(&shown, 400, 190);
     let intent = args.get("intent").and_then(|v| v.as_str()).map(str::to_string);
 
@@ -109,6 +132,12 @@ pub async fn call(
              (on the host: ai-remote level <this-device> {}).",
             spec.level, spec.level
         )));
+    }
+
+    // Whose turn it is.
+    if let Err(why) = host.turns().admits(session.person(), spec.level, host.name()) {
+        host.audit().write(&AuditRecord { decision: Some("turn"), args_preview: Some(&preview), ..record("decision") });
+        return Ok(refusal(&why));
     }
 
     // 2-3. Policy and approval.

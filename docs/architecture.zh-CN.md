@@ -108,15 +108,17 @@ flowchart LR
 - **ALPN `app/ai-remote/events/1`。** 活动流和审批通道。控制端每个请求开一条流、写一行 JSON：
   `{"subscribe":true}` 返回被控端最近的审计记录，之后是每条新记录（工具的决策和结果、会话、审批），
   `ai-remote watch` 和应用把它变成 Agent 的操作时间线；`pending`、`answer`、`enroll`、`approver_status`
-  用于远程审批（见 [approvals.zh-CN.md](approvals.zh-CN.md#通信格式)）。
+  用于远程审批（见 [approvals.zh-CN.md](approvals.zh-CN.md#通信格式)）；`turn`（接管、交还、暂停、恢复）和
+  `tell`（给 Agent 的留言）用于轮流操作。
 - （规划中）`app/ai-remote/screen/1` 用于给人看的实时画面，`app/ai-remote/file/1` 用于大文件传输。
 
 ## 6. 闸门
 
 每一次工具调用，不论是内置工具还是挂载工具，在被控端都走同一条流水线：
 
-1. **级别**：每次调用都重新读取调用方的级别，必须够得上工具要求的级别。超出调用方级别的工具，
-   也不会出现在它拿到的工具列表里。
+1. **级别与轮次**：每次调用都重新读取调用方的级别，必须够得上工具要求的级别。超出调用方级别的工具，
+   也不会出现在它拿到的工具列表里。有人接管或暂停了 Agent 时，Agent 的调用会被拒绝，并附一句说明
+   （见 [operations.zh-CN.md](operations.zh-CN.md#93-接管暂停和给-agent-留言)）。
 2. **策略**：按顺序匹配 `ai-remote.toml` 里的规则，第一条命中的生效；都不命中就用工具自身的默认动作
    （observe、control 级直接执行，admin 级先询问，只读取或停止后台任务的那几个 job 工具除外）。
    挂载 server 自带的工具标注只作参考，从不作为依据。

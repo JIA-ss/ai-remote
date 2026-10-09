@@ -1,19 +1,32 @@
 // Turns a host's activity feed into the agent's timeline and the approvals waiting for a person.
 
-import type { FeedEvent, PendingApproval, RawPending, Step } from "./types";
+import type { Driver, FeedEvent, PendingApproval, RawPending, Step } from "./types";
 
 export interface FeedState {
   host: string | null;
   steps: Step[];
   pending: PendingApproval[];
   /** Sessions open right now, by id, with the device that opened them. */
-  sessions: Record<string, { peer: string; since: number }>;
+  sessions: Record<string, { peer: string; since: number; person: boolean }>;
+  /** Who drives the host now. */
+  driver: Driver;
+  /** Changes of driver and messages to the agent, for the timeline. */
+  turns: Array<{ ts: number; driver?: Driver; by: string; note?: string; message?: string }>;
   /** False once the feed ended (host stopped, connection lost). */
   live: boolean;
   missed: number;
 }
 
-export const emptyFeed: FeedState = { host: null, steps: [], pending: [], sessions: {}, live: true, missed: 0 };
+export const emptyFeed: FeedState = {
+  host: null,
+  steps: [],
+  pending: [],
+  sessions: {},
+  driver: { state: "agent" },
+  turns: [],
+  live: true,
+  missed: 0,
+};
 
 /** Steps kept in memory; older ones scroll out. */
 const MAX_STEPS = 500;
@@ -46,9 +59,26 @@ function openStep(steps: Step[], key: string) {
 export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
   switch (e.kind) {
     case "hello":
-      return { ...state, host: e.host, live: true, pending: (e.pending ?? []).map(toPending) };
+      return {
+        ...state,
+        host: e.host,
+        live: true,
+        pending: (e.pending ?? []).map(toPending),
+        driver: e.driver ?? state.driver,
+      };
     case "session_start":
-      return { ...state, sessions: { ...state.sessions, [e.session]: { peer: e.peer, since: e.ts } } };
+      return {
+        ...state,
+        sessions: { ...state.sessions, [e.session]: { peer: e.peer, since: e.ts, person: e.client === "person" } },
+      };
+    case "driver": {
+      const { kind: _k, ts, by, note, ...driver } = e;
+      void _k;
+      const next = driver as Driver;
+      return { ...state, driver: next, turns: [...state.turns, { ts, by, note, driver: next }].slice(-MAX_STEPS) };
+    }
+    case "note":
+      return { ...state, turns: [...state.turns, { ts: e.ts, by: e.from, message: e.text }].slice(-MAX_STEPS) };
     case "session_end": {
       const sessions = { ...state.sessions };
       delete sessions[e.session];
@@ -61,6 +91,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
         key: `${key}#${e.ts}`,
         session: e.session,
         peer: e.peer,
+        byPerson: state.sessions[e.session]?.person ?? false,
         tool: e.tool,
         intent: e.intent ?? null,
         argsPreview: e.args_preview,
@@ -101,6 +132,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
           key: `${key}#${e.ts}`,
           session: e.session,
           peer: e.peer,
+          byPerson: state.sessions[e.session]?.person ?? false,
           tool: e.tool,
           intent: e.intent ?? null,
           argsPreview: e.args_preview ?? null,

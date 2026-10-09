@@ -19,6 +19,12 @@ export interface AgentStatus {
   version: string;
 }
 
+/** Who drives a host: the agent, a person who took over, or nobody (paused). */
+export type Driver =
+  | { state: "agent" }
+  | { state: "person"; device: string; since_ms: number; agent_may_watch: boolean }
+  | { state: "paused"; by: string; since_ms: number };
+
 export interface PendingApproval {
   id: string;
   peer: string;
@@ -30,8 +36,10 @@ export interface PendingApproval {
 
 /** One line of a host's activity feed: its audit records plus the stream's own notes. */
 export type FeedEvent =
-  | { kind: "hello"; host: string; device?: string; version: string; pending?: RawPending[] }
-  | { kind: "session_start" | "session_end"; ts: number; session: string; peer: string }
+  | { kind: "hello"; host: string; device?: string; version: string; pending?: RawPending[]; driver?: Driver }
+  | { kind: "session_start" | "session_end"; ts: number; session: string; peer: string; client?: "agent" | "person" }
+  | ({ kind: "driver"; ts: number; by: string; note?: string } & Driver)
+  | { kind: "note"; ts: number; from: string; text: string }
   | {
       kind: "decision";
       ts: number;
@@ -83,6 +91,8 @@ export interface Step {
   key: string;
   session: string;
   peer: string;
+  /** A person's own call while they drove (shown in amber), not the agent's. */
+  byPerson: boolean;
   tool: string;
   intent: string | null;
   argsPreview: string | null;
