@@ -11,7 +11,8 @@ use rmcp::{
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotification,
         CancelledNotificationParam, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, Implementation,
-        JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, ServerResult, Tool,
+        JsonObject, ListToolsResult, PaginatedRequestParams, ResultType, ServerCapabilities, ServerConfig, ServerResult,
+        Tool,
     },
     service::{PeerRequestOptions, RequestContext, RunningService, ServiceError},
 };
@@ -265,6 +266,16 @@ fn with_host_param(mut tool: Tool) -> Tool {
     tool
 }
 
+/// Marks a result as complete. Results relayed from a host arrive over the host session's protocol
+/// version, which has no `resultType`; a client on 2026-07-28 or later requires it on every result
+/// (and rmcp leaves it out again for clients on older versions).
+fn complete(mut result: CallToolResult) -> CallToolResult {
+    if result.result_type.is_none() {
+        result.result_type = Some(ResultType::COMPLETE);
+    }
+    result
+}
+
 fn error_result(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.into())])
 }
@@ -369,6 +380,19 @@ impl ServerHandler for Aggregator {
                 }
             }
         };
-        Ok(CallToolResponse::from(result))
+        Ok(CallToolResponse::from(complete(result)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relayed_results_are_marked_complete() {
+        // A host session on an older protocol version sends results without resultType.
+        let relayed: CallToolResult = serde_json::from_value(json!({"content": [{"type": "text", "text": "ok"}]})).unwrap();
+        assert!(relayed.result_type.is_none());
+        assert_eq!(complete(relayed).result_type, Some(ResultType::COMPLETE));
     }
 }
