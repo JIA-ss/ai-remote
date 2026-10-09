@@ -154,6 +154,19 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
+    /// [controller] Watch a host's screen for a while and report the stream (frames, sizes, rate);
+    /// --out saves the raw H.264 for a player. The desktop app shows the same stream live.
+    View {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        #[arg(long, default_value_t = 30)]
+        max_fps: u32,
+        /// Save the H.264 elementary stream (Annex B) here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// [controller] Call one tool on a host and print the result.
     Call {
         /// Tool name, e.g. system_info.
@@ -517,6 +530,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Watch { host } => watch(&profile, host, json_out).await,
+        Command::View { host, seconds, max_fps, out } => view(&profile, host, seconds, max_fps, out, json_out).await,
         Command::Mcp => ar_controller::run_shim(&profile).await,
         Command::Agent => ar_controller::run_agent(profile).await,
         Command::StopAgent => {
@@ -629,6 +643,77 @@ async fn approver_command(profile: &Profile, enroll: Option<String>, json_out: b
 async fn channel(profile: &Profile, host: Option<String>, request: Value) -> Result<Value> {
     let mut agent = ar_controller::connect_agent(profile).await?;
     ar_controller::approver::channel(&mut agent, host.as_deref(), request).await
+}
+
+/// Reads a host's live view for a while: counts frames, checks their framing, optionally saves them.
+async fn view(
+    profile: &Profile,
+    host: Option<String>,
+    seconds: u64,
+    max_fps: u32,
+    out: Option<PathBuf>,
+    json_out: bool,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut conn = ar_controller::connect_agent(profile).await?;
+    let reply = conn.request(&json!({"op": "screen", "host": host, "request": {"max_fps": max_fps}})).await?;
+    let host = reply["host"].as_str().unwrap_or("?").to_string();
+    let (stream, buffered) = conn.into_raw();
+    let mut stream = std::io::Cursor::new(buffered).chain(stream);
+    let mut file = match &out {
+        Some(p) => Some(std::fs::File::create(p).with_context(|| format!("create {}", p.display()))?),
+        None => None,
+    };
+    let (mut frames, mut keyframes, mut bytes, mut size) = (0u64, 0u64, 0u64, (0u16, 0u16));
+    let started = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    loop {
+        let mut header = [0u8; 18];
+        match tokio::time::timeout_at(deadline, stream.read_exact(&mut header)).await {
+            Err(_) => break,
+            Ok(Err(e)) => bail!("the live view ended: {e}"),
+            Ok(Ok(_)) => {}
+        }
+        if header[0] != 1 {
+            bail!("unexpected frame kind {}", header[0]);
+        }
+        let len = u32::from_be_bytes(header[14..18].try_into()?) as usize;
+        let mut data = vec![0u8; len];
+        stream.read_exact(&mut data).await?;
+        frames += 1;
+        keyframes += (header[1] & 1) as u64;
+        bytes += len as u64;
+        size = (u16::from_be_bytes([header[2], header[3]]), u16::from_be_bytes([header[4], header[5]]));
+        if let Some(f) = file.as_mut() {
+            std::io::Write::write_all(f, &data)?;
+        }
+    }
+    let secs = started.elapsed().as_secs_f64();
+    let v = json!({
+        "host": host,
+        "monitors": reply["monitors"],
+        "frames": frames,
+        "keyframes": keyframes,
+        "width": size.0,
+        "height": size.1,
+        "fps": frames as f64 / secs,
+        "kbit_per_s": bytes as f64 * 8.0 / secs / 1000.0,
+    });
+    if json_out {
+        return print_json(&v);
+    }
+    println!(
+        "{host}: {frames} frames ({keyframes} keyframes) at {}x{} in {secs:.1} s, {:.1} fps, {:.0} kbit/s",
+        size.0,
+        size.1,
+        frames as f64 / secs,
+        bytes as f64 * 8.0 / secs / 1000.0
+    );
+    println!("Frames arrive only when the screen changes; a still screen sends almost nothing.");
+    if let Some(p) = out {
+        println!("Saved to {} (H.264 Annex B; e.g. ffplay -f h264 <file>)", p.display());
+    }
+    Ok(())
 }
 
 async fn host_request(profile: &Profile, req: HostRequest) -> Result<Value> {

@@ -61,6 +61,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote unpair <host>` | forget a host on this controller |
 | `ai-remote call <tool> ['{json args}'] [--host H]` | call one tool and print the result |
 | `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
+| `ai-remote view [--host H] [--seconds N] [--out F]` | watch a host's screen for a while and report the stream (frames, size, rate); `--out` saves the H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | list, allow or deny calls waiting for approval ([approvals.md](approvals.md)) |
 | `ai-remote approver [--enroll <host>]` | this device's approver key, or offer it to a host |
 | `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | take the controls from the agent, and give them back (section 9.3) |

@@ -66,6 +66,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows_firewall = "0.8"
 xcap = "0.9"
 
+# The live view's video path is too slow unoptimized; optimize it even in debug builds.
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+[profile.dev.package.yuvutils-rs]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

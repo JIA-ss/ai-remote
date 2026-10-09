@@ -49,6 +49,21 @@ export interface Backend {
   setTurn(host: string, action: TurnAction, opts?: { agentMayWatch?: boolean; note?: string }): Promise<Driver>;
   /** A message for the agent; it arrives with its next call result. */
   tellAgent(host: string, text: string): Promise<void>;
+  /**
+   * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
+   * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
+   */
+  watchScreen(
+    host: string,
+    onFrame: (frame: ArrayBuffer) => void,
+    opts?: { monitor?: number; maxFps?: number; maxLongEdge?: number },
+  ): Promise<LiveView | null>;
+}
+
+export interface LiveView {
+  monitors: Array<{ index: number; width: number; height: number; primary: boolean }>;
+  requestKeyframe(): void;
+  stop(): void;
 }
 
 class BridgeError extends Error {}
@@ -113,6 +128,22 @@ const tauriBackend: Backend = {
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));
+  },
+  async watchScreen(host, onFrame, opts = {}) {
+    const channel = new Channel<unknown>();
+    channel.onmessage = (m) => {
+      if (m instanceof ArrayBuffer) onFrame(m);
+    };
+    const request = { monitor: opts.monitor ?? null, max_fps: opts.maxFps ?? 30, max_long_edge: opts.maxLongEdge ?? 1920 };
+    const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
+      number,
+      { monitors?: LiveView["monitors"] },
+    ];
+    return {
+      monitors: reply.monitors ?? [],
+      requestKeyframe: () => void commands.requestKeyframe(id),
+      stop: () => void commands.stopScreen(id),
+    };
   },
 };
 

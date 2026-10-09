@@ -60,6 +60,7 @@
 | `ai-remote unpair <被控端>` | 在本控制端上忘掉某台被控端 |
 | `ai-remote call <工具> ['{JSON 参数}'] [--host H]` | 调用一个工具并打印结果 |
 | `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
+| `ai-remote view [--host H] [--seconds N] [--out F]` | 观看被控端屏幕一段时间并报告视频流情况（帧数、尺寸、帧率）；`--out` 保存 H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | 列出、允许或拒绝等待审批的调用（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
 | `ai-remote approver [--enroll <被控端>]` | 本设备的审批密钥，或把它提交给被控端 |
 | `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | 从 Agent 手里接管，以及交还控制（9.3 节） |

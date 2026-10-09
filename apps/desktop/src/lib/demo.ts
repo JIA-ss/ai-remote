@@ -184,7 +184,16 @@ export const demoBackend: Backend = {
     reachable(host);
     emit(host, { kind: "note", ts: Date.now(), from: "home-laptop", text });
   },
+  async watchScreen(host) {
+    reachable(host);
+    return null;
+  },
 };
+
+/** The demo's stand-in for a live view: a still picture of office-pc's screen. */
+export function demoScreenUrl() {
+  return `data:image/svg+xml;base64,${btoa(demoScreen())}`;
+}
 
 /** A stand-in for office-pc's screen: a report window on a quiet Windows desktop. */
 function demoScreen() {

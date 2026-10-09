@@ -21,6 +21,7 @@ mod protocol;
 pub mod result_budget;
 mod server;
 pub mod session;
+pub mod stream;
 pub mod tools;
 mod turns;
 
@@ -28,7 +29,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
-use ar_net::{ALPN_EVENTS, ALPN_MCP, Mesh, MeshOptions, Peer, ipc};
+use ar_net::{ALPN_EVENTS, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, Peer, ipc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{approval::Approver, audit::AuditLog, tools::Registry};
@@ -232,6 +233,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     });
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
     mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
+    mesh.accept(ALPN_SCREEN, Arc::new(stream::protocol::ScreenProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
     announce_pairings(&mesh, owner).await;
 

@@ -33,6 +33,9 @@ pub const ALPN_MCP: &[u8] = b"app/ai-remote/mcp/1";
 /// ALPN of the live activity feed (audit lines) a controller subscribes to.
 pub const ALPN_EVENTS: &[u8] = b"app/ai-remote/events/1";
 
+/// ALPN of the live view: video of the host's screen for a person at a controller.
+pub const ALPN_SCREEN: &[u8] = b"app/ai-remote/screen/1";
+
 const SERVICE_PREFIX: &str = "ai-remote.";
 
 fn service_name(level: Level) -> String {

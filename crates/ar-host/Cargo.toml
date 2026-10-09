@@ -37,6 +37,9 @@ toml.workspace = true
 tracing.workspace = true
 getrandom.workspace = true
 xcap.workspace = true
+openh264 = "0.9"
+fast_image_resize = "6"
+yuvutils-rs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows_firewall.workspace = true
@@ -52,6 +55,7 @@ windows = { version = "0.62", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+windows-capture = "2"
 
 [dev-dependencies]
 ring.workspace = true
