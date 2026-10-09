@@ -45,11 +45,13 @@ pub(crate) struct Aggregator {
     clients: Arc<Mutex<HashMap<String, Arc<HostClient>>>>,
     /// Host sessions are a person's (see [`ar_core::PERSON_CLIENT`]), not an agent's.
     person: bool,
+    /// The MCP client this aggregator serves (`claude-code`), told to hosts so people see who acts.
+    agent_name: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Aggregator {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent, default_host: Arc::default(), clients: Arc::default(), person: false }
+        Self { agent, default_host: Arc::default(), clients: Arc::default(), person: false, agent_name: Arc::default() }
     }
 
     /// For calls a person makes at this device (the app while they drive).
@@ -115,20 +117,35 @@ impl Aggregator {
             Ok(s) => s,
             Err(e) => return Err(self.failure(host, conn, anyhow!("open a session stream: {e}")).await),
         };
-        let config = ClientConfig::new(
-            ClientCapabilities::default(),
-            Implementation::new(
-                format!(
-                    "{} ({})",
-                    if self.person { ar_core::PERSON_CLIENT } else { "ai-remote controller" },
-                    ar_core::machine_name()
-                ),
-                VERSION,
-            ),
-        );
+        let config = ClientConfig::new(ClientCapabilities::default(), Implementation::new(self.client_name(), VERSION));
         match config.serve((recv, send)).await {
             Ok(client) => Ok(client),
             Err(e) => Err(self.failure(host, conn, anyhow!("the MCP session did not start: {e}")).await),
+        }
+    }
+
+    /// The client name of a host session: whose it is, and for an agent, which MCP client it serves.
+    fn client_name(&self) -> String {
+        if self.person {
+            return format!("{} ({})", ar_core::PERSON_CLIENT, ar_core::machine_name());
+        }
+        let agent = self.agent_name.lock().unwrap().clone();
+        let mut name = format!("ai-remote controller ({})", ar_core::machine_name());
+        if let Some(agent) = agent {
+            name.push_str(ar_core::AGENT_MARK);
+            name.push_str(&agent);
+        }
+        name
+    }
+
+    /// Remembers the MCP client's name from its first request.
+    fn note_client(&self, context: &RequestContext<RoleServer>) {
+        let mut name = self.agent_name.lock().unwrap();
+        if name.is_none()
+            && let Some(info) = context.peer.peer_info()
+        {
+            let clean: String = info.client_info.name.chars().filter(|c| !c.is_control()).take(64).collect();
+            *name = Some(clean);
         }
     }
 
@@ -338,8 +355,9 @@ impl ServerHandler for Aggregator {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        self.note_client(&context);
         let mut tools = local_tools();
         let hosts = self.agent.host_names().await.unwrap_or_default();
         let lists = futures::future::join_all(hosts.iter().map(|h| self.host_tools(h))).await;
@@ -365,6 +383,7 @@ impl ServerHandler for Aggregator {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         // Cancelled when the agent's client sends `notifications/cancelled` for this request.
+        self.note_client(&context);
         let cancel = &context.ct;
         let mut args = request.arguments.unwrap_or_default();
         let result = match request.name.as_ref() {

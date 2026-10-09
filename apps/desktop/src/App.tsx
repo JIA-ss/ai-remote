@@ -1,48 +1,80 @@
+// The app: the main window (pane + page) or a live session (compact rail + stage + rail).
+
 import { useEffect, useState } from "react";
-import { commands } from "./bindings";
+import { api } from "./lib/api";
+import { t } from "./lib/i18n";
+import { allPending, groupOf, store, useStore } from "./lib/store";
+import { ActivityPage, ApprovalsPage, ComputerPage, EmptyHome, PairPage, SettingsPage } from "./ui/Pages";
+import { SessionPage } from "./ui/Session";
+import { Sidebar, TitleBar, type Nav } from "./ui/Shell";
+import { useNow } from "./ui/util";
 
-type Host = { name: string; level_at_pairing?: string | null; path?: string | null };
-type Status = { device: string; version: string; hosts: Host[] };
+type View = { kind: "main"; nav: Nav | null } | { kind: "session"; host: string };
 
-/** Bring-up screen for the bridge to the controller agent; the designed app replaces it. */
 export default function App() {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const snap = useStore();
+  const now = useNow(5000);
+  const [view, setView] = useState<View>({ kind: "main", nav: null });
+  const [device, setDevice] = useState("this device");
 
   useEffect(() => {
-    document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-    Promise.all([commands.agentStatus(), commands.listHosts()]).then(([status, hosts]) => {
-      if (status.status === "error") return setError(status.error);
-      if (hosts.status === "error") return setError(hosts.error);
-      const s = status.data as Omit<Status, "hosts">;
-      setStatus({ ...s, hosts: hosts.data as Host[] });
-    });
+    void store.start();
+    api
+      .status()
+      .then((s) => setDevice(s.device.startsWith("eid:demo") ? "home-laptop" : s.device.slice(0, 12)))
+      .catch(() => {});
   }, []);
 
+  const waiting = allPending(snap).length;
+  const nav = (n: Nav | "home") =>
+    setView({ kind: "main", nav: n === "home" ? null : n });
+
+  if (view.kind === "session") {
+    const c = snap.computers.find((x) => x.host.name === view.host);
+    if (c) {
+      return (
+        <SessionPage
+          c={c}
+          device={device}
+          waiting={waiting}
+          onBack={() => setView({ kind: "main", nav: { computer: c.host.name } })}
+          onNav={nav}
+        />
+      );
+    }
+  }
+
+  // With nothing chosen, open the computer that most needs attention.
+  const order = ["needs", "you", "working", "idle", "offline"] as const;
+  const first = [...snap.computers].sort((a, b) => order.indexOf(groupOf(a, now)) - order.indexOf(groupOf(b, now)))[0];
+  const active: Nav | null = view.kind === "main" ? (view.nav ?? (first ? { computer: first.host.name } : null)) : null;
+  const computer = active && typeof active === "object" ? snap.computers.find((c) => c.host.name === active.computer) : undefined;
+
+  let page: React.ReactNode;
+  if (!snap.ready) page = <div className="cpage body c2">{t("starting")}</div>;
+  else if (snap.error) page = <div className="cpage body c-danger">{snap.error}</div>;
+  else if (active === "approvals") page = <ApprovalsPage snap={snap} onOpen={(h) => setView({ kind: "session", host: h })} />;
+  else if (active === "activity") page = <ActivityPage snap={snap} />;
+  else if (active === "pair")
+    page = (
+      <PairPage
+        onPaired={async (h) => {
+          await store.refresh();
+          setView({ kind: "main", nav: { computer: h } });
+        }}
+      />
+    );
+  else if (active === "settings") page = <SettingsPage />;
+  else if (computer) page = <ComputerPage c={computer} onWatch={() => setView({ kind: "session", host: computer.host.name })} />;
+  else page = <EmptyHome onPair={() => nav("pair")} />;
+
   return (
-    <main className="flex h-full flex-col gap-4 p-8">
-      <h1 className="text-[length:var(--fs-title-1)] leading-[var(--lh-title-1)] font-semibold">ai-remote</h1>
-      {error && <p className="text-danger">{error}</p>}
-      {!status && !error && <p className="text-text-2">Starting the controller agent…</p>}
-      {status && (
-        <section className="flex flex-col gap-2 rounded-[var(--r-panel)] bg-card p-4 shadow-[var(--shadow-card)]">
-          <p className="text-text-2">
-            This device <span className="font-mono text-text-1">{status.device}</span>
-          </p>
-          {status.hosts.length === 0 ? (
-            <p className="text-text-2">No computers yet. Pair one with a code from that computer.</p>
-          ) : (
-            <ul className="flex flex-col gap-1">
-              {status.hosts.map((h) => (
-                <li key={h.name} className="flex justify-between">
-                  <span>{h.name}</span>
-                  <span className="text-text-3">{[h.level_at_pairing, h.path].filter(Boolean).join(", ")}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-    </main>
+    <div className="win" style={{ width: "100vw", height: "100vh" }}>
+      <TitleBar />
+      <div className="body-row">
+        <Sidebar computers={snap.computers} active={active} waiting={waiting} now={now} onNav={(n) => setView({ kind: "main", nav: n })} />
+        <main className="page">{page}</main>
+      </div>
+    </div>
   );
 }

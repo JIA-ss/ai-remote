@@ -31,7 +31,7 @@ function seedOffice() {
   const start = Date.now() - 2 * minute - 9_000;
   const s = "s-7f3a";
   const peer = "home-laptop";
-  const ev: FeedEvent[] = [{ kind: "session_start", ts: start, session: s, peer }];
+  const ev: FeedEvent[] = [{ kind: "session_start", ts: start, session: s, peer, client: "agent", agent: "claude-code" }];
   const call = (at: number, tool: string, hash: string, intent: string, args: string, ms: number) => {
     ev.push({ kind: "decision", ts: start + at, session: s, peer, tool, decision: "allow", intent, args_hash: hash, args_preview: args });
     ev.push({ kind: "outcome", ts: start + at + ms, session: s, peer, tool, args_hash: hash, outcome: "ok", duration_ms: ms });
@@ -61,7 +61,7 @@ function seedLab() {
   const s = "s-21c9";
   const peer = "ci-runner";
   history.set("lab-pc", [
-    { kind: "session_start", ts: start, session: s, peer },
+    { kind: "session_start", ts: start, session: s, peer, client: "agent", agent: "codex" },
     { kind: "decision", ts: start + 2_000, session: s, peer, tool: "jobs_start", decision: "allow", intent: "Run the nightly build", args_hash: "b1", args_preview: '{"command":"./build.ps1"}' },
     { kind: "outcome", ts: start + 2_400, session: s, peer, tool: "jobs_start", args_hash: "b1", outcome: "ok", duration_ms: 400 },
     { kind: "decision", ts: Date.now() - 4_000, session: s, peer, tool: "ui_tree", decision: "allow", intent: "Reading build.log in Notepad", args_hash: "b2", args_preview: '{"window":"build.log - Notepad"}' },
