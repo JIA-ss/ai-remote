@@ -1,5 +1,7 @@
 //! `ai-remote`: run a host, pair with hosts, and bridge AI agents to them over MCP.
 
+mod hostops;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -24,12 +26,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the host on this machine (in the foreground) so paired controllers can operate it.
+    /// Run the host on this machine (in the foreground) so paired controllers can operate it;
+    /// `host install` starts it automatically at login instead.
+    #[command(args_conflicts_with_subcommands = true)]
     Host {
+        #[command(subcommand)]
+        action: Option<HostAction>,
         /// Do not print a pairing ticket when no controller is paired yet.
         #[arg(long)]
         no_pair_code: bool,
     },
+    /// Check whether this machine can be operated as a host (session, desktop, elevation, network,
+    /// firewall, autostart, ...). Asks the running host; checks from here when none runs.
+    Doctor,
     /// [host] Print a one-time pairing ticket for a new controller.
     PairCode {
         /// Level to grant: observe, control or admin.
@@ -83,6 +92,28 @@ enum Command {
     Status,
 }
 
+#[derive(Subcommand)]
+enum HostAction {
+    /// Start the host automatically at login, in the background (Windows: a logon task with
+    /// highest privileges plus firewall rules, from an elevated terminal; macOS: a LaunchAgent).
+    Install {
+        /// Print every change without making it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not start the background host right away.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the autostart entry and firewall rules, and stop the running host.
+    Uninstall {
+        /// Print every change without making it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show whether autostart is installed, the firewall rules, and whether the host runs.
+    Status,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(home) = &cli.home {
@@ -97,8 +128,10 @@ fn main() -> Result<()> {
 fn init_logging(command: &Command) {
     // stdout belongs to the MCP protocol in `mcp`; logs always go to stderr.
     let default = match command {
-        Command::Host { .. } | Command::Agent => "info,mcpmesh=warn,iroh=warn,noq=warn",
-        _ => "warn",
+        Command::Host { action: None, .. } => ar_host::DEFAULT_LOG_FILTER,
+        Command::Agent => "info,mcpmesh=warn,iroh=warn,noq=warn",
+        // The firewall reader warns about every rule it cannot model.
+        _ => "warn,windows_firewall=error",
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("AI_REMOTE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
@@ -109,9 +142,18 @@ async fn run(cli: Cli) -> Result<()> {
     let profile = Profile::open_default()?;
     let json_out = cli.json;
     match cli.command {
-        Command::Host { no_pair_code } => {
-            ar_host::run(profile, ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code }).await
+        Command::Host { action: None, no_pair_code } => {
+            let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
+            ar_host::run(profile, opts).await
         }
+        Command::Host { action: Some(HostAction::Install { dry_run, no_start }), .. } => {
+            hostops::host_install(&profile, dry_run, no_start).await
+        }
+        Command::Host { action: Some(HostAction::Uninstall { dry_run }), .. } => {
+            hostops::host_uninstall(&profile, dry_run).await
+        }
+        Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Doctor => hostops::doctor(&profile, json_out).await,
         Command::PairCode { level, name } => {
             let v = host_request(&profile, HostRequest::PairCode { level, name }).await?;
             if json_out {

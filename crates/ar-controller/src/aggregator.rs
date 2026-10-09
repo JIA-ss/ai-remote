@@ -3,9 +3,9 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use ar_core::VERSION;
-use ar_net::ipc::LocalStream;
+use ar_net::{ipc::LocalStream, iroh::endpoint::Connection, refusal::Refusal};
 use rmcp::{
     ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
     model::{
@@ -22,6 +22,8 @@ use crate::agent::Agent;
 type HostClient = RunningService<RoleClient, ClientConfig>;
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long a failed session start waits for the host's close reason to arrive.
+const CLOSE_GRACE: Duration = Duration::from_millis(1500);
 
 const INSTRUCTIONS: &str = "\
 These tools operate real computers (\"hosts\") paired with this machine through ai-remote. Each \
@@ -59,26 +61,46 @@ impl Aggregator {
             }
             clients.remove(host);
         }
-        let conn = self.agent.connection(host).await?;
+        let mut conn = self.agent.connection(host).await?;
         let (send, recv) = match conn.open_bi().await {
             Ok(s) => s,
             Err(_) => {
-                // The cached connection died; redial once.
+                // The cached connection died. Redial once, unless the host cut it on purpose.
+                if let Some(r) = self.agent.closed_because(host).await.filter(Refusal::is_final) {
+                    return Err(self.agent.refused(host, r));
+                }
                 self.agent.invalidate(host).await;
-                self.agent.connection(host).await?.open_bi().await.context("open session stream")?
+                conn = self.agent.connection(host).await?;
+                match conn.open_bi().await {
+                    Ok(s) => s,
+                    Err(e) => return Err(self.failure(host, &conn, anyhow!("open a session stream: {e}")).await),
+                }
             }
         };
         let config = ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new(format!("ai-remote controller ({})", ar_core::machine_name()), VERSION),
         );
-        let client = config
-            .serve((recv, send))
-            .await
-            .map_err(|e| anyhow!("host '{host}' refused the MCP session: {e}"))?;
-        let client = Arc::new(client);
+        let client = match config.serve((recv, send)).await {
+            Ok(client) => Arc::new(client),
+            Err(e) => return Err(self.failure(host, &conn, anyhow!("the MCP session did not start: {e}")).await),
+        };
+        self.agent.clear_refusal(host);
         clients.insert(host.to_string(), client.clone());
         Ok(client)
+    }
+
+    /// Explains a failed session start. A host that refuses this device closes the connection
+    /// right after the handshake, so its close reason says more than the MCP error does.
+    async fn failure(&self, host: &str, conn: &Connection, fallback: anyhow::Error) -> anyhow::Error {
+        let reason = match conn.close_reason() {
+            Some(reason) => Some(reason),
+            None => tokio::time::timeout(CLOSE_GRACE, conn.closed()).await.ok(),
+        };
+        match reason {
+            Some(reason) => self.agent.refused(host, Refusal::from_connection_error(&reason)),
+            None => fallback,
+        }
     }
 
     async fn drop_client(&self, host: &str) {
@@ -112,13 +134,22 @@ impl Aggregator {
         let client = self.client(host).await?;
         match client.call_tool(params.clone()).await {
             Ok(r) => Ok(r),
-            Err(e) if client.is_closed() => {
+            Err(e) => {
+                // The host cut the connection on purpose (revoked, level removed, stopping): say
+                // so, and do not redial into the same refusal or a dial timeout.
+                if let Some(r) = self.agent.closed_because(host).await {
+                    self.drop_client(host).await;
+                    if r.is_final() || r == Refusal::Closed {
+                        return Err(self.agent.refused(host, r));
+                    }
+                } else if !client.is_closed() {
+                    return Err(anyhow!("{e}"));
+                }
                 tracing::debug!(%e, host, "session lost; reconnecting once");
                 self.drop_client(host).await;
                 let client = self.client(host).await?;
                 client.call_tool(params).await.map_err(|e| anyhow!("{e}"))
             }
-            Err(e) => Err(anyhow!("{e}")),
         }
     }
 
@@ -139,10 +170,14 @@ impl Aggregator {
         let default = self.default_host.lock().await.clone();
         let mut out = Vec::new();
         for name in self.agent.host_names().await? {
-            let reachable = self.client(&name).await.is_ok();
+            let (reachable, problem) = match self.client(&name).await {
+                Ok(_) => (true, None),
+                Err(e) => (false, Some(format!("{e:#}"))),
+            };
             out.push(json!({
                 "host": name,
                 "reachable": reachable,
+                "problem": problem,
                 "path": if reachable { self.agent.path_of(&name).await } else { None },
                 "level_at_pairing": known.get(&name).and_then(|k| k.level),
                 "default": default.as_deref() == Some(name.as_str()),
@@ -257,7 +292,7 @@ impl ServerHandler for Aggregator {
                             r.content.insert(0, ContentBlock::text(format!("Default host is now '{host}'.")));
                             r
                         }
-                        Err(e) => error_result(format!("{e:#}")),
+                        Err(e) => error_result(format!("host '{host}': {e:#}")),
                     },
                     Err(e) => error_result(format!("{e:#}")),
                 }
