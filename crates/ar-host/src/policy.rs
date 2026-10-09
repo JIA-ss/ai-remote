@@ -9,20 +9,18 @@ use ar_net::Peer;
 
 pub fn decide(rules: &[PolicyRule], tool: &str, peer: &Peer, default: Action) -> Action {
     for rule in rules {
-        if !glob_match(&rule.tool, tool) {
-            continue;
+        if glob_match(&rule.tool, tool) && applies(rule, peer) {
+            return rule.action;
         }
-        if let Some(p) = &rule.principal {
-            let matches = peer.name == *p
-                || peer.principal.as_deref() == Some(p.as_str())
-                || peer.user_id.as_deref() == Some(p.as_str());
-            if !matches {
-                continue;
-            }
-        }
-        return rule.action;
     }
     default
+}
+
+/// Whether `rule` concerns `peer`: it names no caller, or names this one.
+pub fn applies(rule: &PolicyRule, peer: &Peer) -> bool {
+    rule.principal.as_ref().is_none_or(|p| {
+        peer.name == *p || peer.principal.as_deref() == Some(p.as_str()) || peer.user_id.as_deref() == Some(p.as_str())
+    })
 }
 
 #[cfg(test)]

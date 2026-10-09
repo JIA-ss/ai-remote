@@ -98,7 +98,9 @@ export default function App() {
   else if (computer)
     page = (
       <ComputerPage
+        key={computer.host.name}
         c={computer}
+        onUnpaired={() => nav("home")}
         onWatch={() => setView({ kind: "session", host: computer.host.name })}
         onActivity={() => nav("activity")}
       />

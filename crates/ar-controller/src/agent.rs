@@ -68,8 +68,8 @@ pub enum AgentRequest {
         request: Value,
     },
     /// One request on a host's events channel, returning the host's reply: approvals (`pending`,
-    /// `answer`, `enroll`, `approver_status`) and turns (`turn`, `tell`); see the host's events
-    /// protocol. Allowing needs a signature the caller made with the person's approver key; the
+    /// `answer`, `enroll`, `approver_status`), turns (`turn`, `tell`) and this device's access
+    /// (`access`, `lower`, `leave`); see the host's events protocol. Allowing needs a signature the caller made with the person's approver key; the
     /// agent never signs, and no MCP tool reaches this.
     Channel {
         host: Option<String>,
@@ -407,7 +407,8 @@ const MAX_CHANNEL_REPLY: u64 = 1 << 20;
 /// Sends one request on `host`'s events channel and returns its reply (with the host's name added).
 /// An `enroll` waits for someone at the host to confirm, so the wait is long.
 async fn channel_request(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<Value> {
-    const ALLOWED: [&str; 6] = ["pending", "answer", "enroll", "approver_status", "turn", "tell"];
+    const ALLOWED: [&str; 9] =
+        ["pending", "answer", "enroll", "approver_status", "turn", "tell", "access", "lower", "leave"];
     let kind = request.as_object().filter(|o| o.len() == 1).and_then(|o| o.keys().next().cloned());
     if !kind.as_deref().is_some_and(|k| ALLOWED.contains(&k)) {
         bail!("host channel requests are one of: {}", ALLOWED.join(", "));

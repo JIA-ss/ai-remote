@@ -4,7 +4,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
 import { demoBackend } from "./demo";
-import type { AgentStatus, Driver, FeedEvent, Host, Level, PathKind, PendingApproval } from "./types";
+import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, PathKind, PendingApproval } from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
@@ -49,6 +49,10 @@ export interface Backend {
   setTurn(host: string, action: TurnAction, opts?: { agentMayWatch?: boolean; note?: string }): Promise<Driver>;
   /** A message for the agent; it arrives with its next call result. */
   tellAgent(host: string, text: string): Promise<void>;
+  /** What this device may do on `host`: level, standing rules, paired devices, tools. */
+  access(host: string): Promise<HostAccess>;
+  /** Lowers this device's level on `host`; raising it takes someone at that computer. */
+  lowerLevel(host: string, level: Level): Promise<void>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
@@ -127,6 +131,12 @@ const tauriBackend: Backend = {
       driver: Driver;
     };
     return v.driver;
+  },
+  async access(host) {
+    return unwrap(await commands.hostAccess(host)) as HostAccess;
+  },
+  async lowerLevel(host, level) {
+    unwrap(await commands.lowerLevel(host, level));
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));

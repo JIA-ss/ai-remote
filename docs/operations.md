@@ -58,7 +58,9 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 |---|---|
 | `ai-remote pair <ticket> [--name N]` | pair with a host |
 | `ai-remote hosts` | paired hosts and the level each granted at pairing |
-| `ai-remote unpair <host>` | forget a host on this controller |
+| `ai-remote unpair <host> [--local]` | unpair a host: it drops this device too when it can be reached, then this controller forgets it (`--local`: only here) |
+| `ai-remote access [--host H]` | what this device may do on a host: your level, the standing rules that concern you, the paired devices (all of them for an admin) and the tools on offer |
+| `ai-remote lower <level> [--host H]` | lower this device's level on a host; raising it again takes someone at that computer (`ai-remote level`) |
 | `ai-remote call <tool> ['{json args}'] [--host H]` | call one tool and print the result |
 | `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | watch a host's screen for a while and report the stream (frames, size, rate); `--out` saves the H.264 |

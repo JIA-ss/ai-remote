@@ -22,6 +22,16 @@ textarea.ta-input { display: block; width: 100%; box-sizing: border-box; resize:
 ::-webkit-scrollbar-thumb { background: var(--stroke-2); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Computer page tabs (Access, Tools): two columns, rows you can pick. */
+.tab-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; column-gap: 40px; margin-top: 32px; }
+.gr.pick { cursor: pointer; }
+.gr.pick:not(.sel):hover { background: var(--fill-1); }
+.gr.above .tt, .gr.above .ds { color: var(--text-3); }
+.gr.tool { min-height: 40px; padding: 8px 16px; }
+.tool-l { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.tool-l .mono { width: 132px; flex: none; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gr.tool.above .mono, .gr.tool.above .c2 { color: var(--text-3); }
+
 /* Inputs drawn as the design's fields. */
 input.field { border: 0; outline: 0; font: inherit; font-size: 14px; color: var(--text-1); box-sizing: border-box; }
 input.field::placeholder { color: var(--text-3); }

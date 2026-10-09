@@ -109,7 +109,10 @@ flowchart LR
   `{"subscribe":true}` 返回被控端最近的审计记录，之后是每条新记录（工具的决策和结果、会话、审批），
   `ai-remote watch` 和应用把它变成 Agent 的操作时间线；`pending`、`answer`、`enroll`、`approver_status`
   用于远程审批（见 [approvals.zh-CN.md](approvals.zh-CN.md#通信格式)）；`turn`（接管、交还、暂停、恢复）和
-  `tell`（给 Agent 的留言）用于轮流操作。
+  `tell`（给 Agent 的留言）用于轮流操作；`access`（本设备的级别、与它有关的规则、管理级别可见的已配对设备、
+  可用的工具）、`lower`（降低自己的级别，不能提升）和 `leave`（自己解除配对）供应用的“访问权限”和“工具”标签页使用。
+  改变设备自身权限的操作在回复发出之后才执行，因为授权一变，传输层就会切断该设备的连接。活动流的 hello 行带有
+  该设备当前的级别。
 - **ALPN `app/ai-remote/screen/1`。** 给控制端前的人看的被控端实时画面（桌面应用的会话画面；排查时用
   `ai-remote view`）。Windows Graphics Capture 只在屏幕变化时才给出一帧，最新的一帧放在只有一格的缓冲里
   （网络慢时在编码前就跳过旧帧，绝不排队），OpenH264 以屏幕内容模式编码（控制码率，只在开始和被请求时出关键帧），

@@ -126,7 +126,12 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   lines and then every new one (tool decisions and outcomes, sessions, approvals), which `ai-remote
   watch` and the apps turn into the agent's timeline; `pending`, `answer`, `enroll` and
   `approver_status` serve remote approvals ([approvals.md](approvals.md#wire-format)); `turn` (take
-  over, hand back, pause, resume) and `tell` (a message for the agent) serve turn-taking.
+  over, hand back, pause, resume) and `tell` (a message for the agent) serve turn-taking; `access`
+  (this device's level, the rules that concern it, the paired devices for an admin, the tools on
+  offer), `lower` (lower its own level, never raise it) and `leave` (unpair itself) serve the app's
+  Access and Tools tabs. A change to the device's own access is made after its reply, since the
+  transport cuts the device's connections when its grant changes. The feed's hello line carries the
+  device's current level.
 - **ALPN `app/ai-remote/screen/1`.** Live video of the host's screen for a person at a controller
   (the desktop app's session view; `ai-remote view` for checks). Windows Graphics Capture delivers a
   frame only when the screen changes, the newest frame waits in a one-slot buffer (a slow network

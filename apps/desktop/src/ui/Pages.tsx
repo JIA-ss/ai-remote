@@ -4,9 +4,11 @@
 
 import { useMemo, useState } from "react";
 import { api, type Paired } from "../lib/api";
-import { currentLang, setLang, t } from "../lib/i18n";
+import { currentLang, setLang, t, type Key } from "../lib/i18n";
 import { allPending, groupOf, type Computer, type Snapshot } from "../lib/store";
 import type { Step } from "../lib/types";
+import { CmdLine } from "./CmdLine";
+import { AccessTab, ToolsTab } from "./ComputerTabs";
 import { DecisionCard } from "./Decide";
 import { Glyph, OsGlyph, Pointer, SeatMark, Wordmark } from "./glyphs";
 import { Icon } from "./Icon";
@@ -68,20 +70,35 @@ function StepRows({ steps }: { steps: Step[] }) {
   );
 }
 
-export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch: () => void; onActivity: () => void }) {
-  const now = useNow(1000);
-  const st = statusOf(c, now);
-  const agent = agentLabel(c.feed.agent);
-  const pending = c.feed.pending[0];
-  const askedStep = pending ? c.feed.steps.find((s) => s.approvalId === pending.id) : undefined;
-  const [pvRef, pv] = useSize<HTMLDivElement>();
-  const spec = turnSpec(c.feed, now, c.online !== false);
+type Tab = "overview" | "access" | "tools";
+
+/** `?tab=` opens a tab directly (screenshots of the page outside the app). */
+function initialTab(): Tab {
+  const v = new URLSearchParams(location.search).get("tab");
+  return v === "access" || v === "tools" ? v : "overview";
+}
+
+/** One computer: what is happening there (Overview), this device's access, the tools on offer. */
+export function ComputerPage({
+  c,
+  onWatch,
+  onActivity,
+  onUnpaired,
+}: {
+  c: Computer;
+  onWatch: () => void;
+  onActivity: () => void;
+  onUnpaired: () => void;
+}) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const off = c.online === false;
-  const group = groupOf(c, now);
-  const n = news(c, now);
-  // Below 860 px tall the footer keeps two columns: the facts are in the top line and the Access tab.
   const short = useShortWindow();
-  const recent = short ? (currentLang() === "zh" ? 2 : 3) : 4;
+  const tabs: Array<[Tab | "activity", Key]> = [
+    ["overview", "tab_overview"],
+    ["access", "tab_access"],
+    ["tools", "tab_tools"],
+    ["activity", "tab_activity"],
+  ];
   return (
     <div className={cx("cpage", short && "short")}>
       <div className="cp-top">
@@ -97,7 +114,48 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
             {off ? t("st_offline") : t("live")}
           </span>
         </span>
+        <div className="seg fit" role="tablist">
+          {tabs.map(([k, label]) => (
+            <span
+              key={k}
+              className={cx(k === tab && "sel")}
+              role="tab"
+              tabIndex={0}
+              aria-selected={k === tab}
+              onClick={() => (k === "activity" ? onActivity() : setTab(k))}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (k === "activity" ? onActivity() : setTab(k))}
+            >
+              {t(label)}
+            </span>
+          ))}
+        </div>
       </div>
+      {tab === "access" ? (
+        <AccessTab c={c} onUnpaired={onUnpaired} />
+      ) : tab === "tools" ? (
+        <ToolsTab c={c} />
+      ) : (
+        <Overview c={c} short={short} onWatch={onWatch} onActivity={onActivity} />
+      )}
+    </div>
+  );
+}
+
+function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boolean; onWatch: () => void; onActivity: () => void }) {
+  const now = useNow(1000);
+  const st = statusOf(c, now);
+  const agent = agentLabel(c.feed.agent);
+  const pending = c.feed.pending[0];
+  const askedStep = pending ? c.feed.steps.find((s) => s.approvalId === pending.id) : undefined;
+  const [pvRef, pv] = useSize<HTMLDivElement>();
+  const spec = turnSpec(c.feed, now, c.online !== false);
+  const off = c.online === false;
+  const group = groupOf(c, now);
+  const n = news(c, now);
+  // Below 860 px tall the footer keeps two columns: the facts are in the top line and the Access tab.
+  const recent = short ? (currentLang() === "zh" ? 2 : 3) : 4;
+  return (
+    <>
       <div className="cp-hl">
         {n.who === "you" ? <Pointer who="you" h={28} ui /> : n.who === "agent" ? <Pointer who="agent" h={28} ui /> : <SeatMark state="idle" h={24} />}
         <div className="dsp">{n.hl}</div>
@@ -163,39 +221,17 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
               <dt>{t("connection")}</dt>
               <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
               <dt>{t("your_level")}</dt>
-              <dd>{levelName(c.host.levelAtPairing)}</dd>
+              <dd>{levelName(c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing)}</dd>
               <dt>{t("device_key")}</dt>
               <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
             </dl>
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
-/** A command with a Copy button. */
-function CmdLine({ cmd, style }: { cmd: string; style?: React.CSSProperties }) {
-  const [done, setDone] = useState(false);
-  return (
-    <div className="cmdline" style={style}>
-      <span className="mono">{cmd}</span>
-      <button
-        className="btn"
-        onClick={() => {
-          void navigator.clipboard?.writeText(cmd);
-          setDone(true);
-          setTimeout(() => setDone(false), 1500);
-        }}
-      >
-        <Icon name={done ? "check" : "copy"} size={14} />
-        {done ? t("copied") : t("copy")}
-      </button>
-    </div>
-  );
-}
-
-/** First run: the product in one sentence, the two ways in, and the turn line told as a story. */
 /** Display text with phrase marks: `|` allows a break there (Chinese is set keep-all), a newline forces one. */
 function phrases(s: string): React.ReactNode {
   return s.split("\n").map((line, i) => (
@@ -280,6 +316,7 @@ export function EmptyPage({ onPair }: { onPair: () => void }) {
   );
 }
 
+/** First run: the product in one sentence, the two ways in, and the turn line told as a story. */
 export function WelcomePage({ onPair }: { onPair: () => void }) {
   const [hostHelp, setHostHelp] = useState(false);
   const W = 616;

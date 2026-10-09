@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use ar_core::{Level, VERSION, approval::KeyAlg};
 use ar_net::{
+    Peer,
     ipc::Conn,
     refusal::{CLOSE_NO_ACCESS, REASON_NOT_PAIRED},
 };
@@ -75,6 +76,33 @@ pub async fn serve(host: Arc<HostState>, mut conn: Conn, shutdown: CancellationT
     }
 }
 
+/// Removes `p`'s pairing (every entry with its name), its live connections and its approver keys.
+/// Used by `ai-remote forget` here and by a controller that unpairs itself.
+pub(crate) async fn forget(host: &HostState, p: &Peer) -> Result<Value> {
+    let mesh = host.mesh();
+    // The transport removes every entry with this name and cuts their connections with its
+    // generic "access revoked". Close them first, so the controller hears "not paired: pair
+    // again" instead of being told to wait for an unrevoke that cannot happen.
+    let devices: Vec<String> =
+        mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
+    let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
+    mesh.forget(p).await?;
+    // A forgotten device's approver keys go with it; pairing again starts from nothing.
+    let mut approver_keys = 0;
+    for device in &devices {
+        approver_keys += host.approver().keys().remove(device, None)?;
+    }
+    // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
+    Ok(json!({
+        "peer": p.name,
+        "device": p.principal,
+        "forgotten": true,
+        "closed_connections": closed,
+        "still_revoked": p.revoked,
+        "approver_keys_removed": approver_keys,
+    }))
+}
+
 async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken) -> Result<Value> {
     let mesh = host.mesh();
     Ok(match req {
@@ -117,30 +145,7 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             mesh.unrevoke(&device).await?;
             json!({"peer": name.as_deref().unwrap_or(&device), "device": device, "revoked": false, "paired": name.is_some()})
         }
-        HostRequest::Forget { peer } => {
-            let p = mesh.find_peer(&peer).await?;
-            // The transport removes every entry with this name and cuts their connections with its
-            // generic "access revoked". Close them first, so the controller hears "not paired: pair
-            // again" instead of being told to wait for an unrevoke that cannot happen.
-            let devices: Vec<String> =
-                mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
-            let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
-            mesh.forget(&p).await?;
-            // A forgotten device's approver keys go with it; pairing again starts from nothing.
-            let mut approver_keys = 0;
-            for device in &devices {
-                approver_keys += host.approver().keys().remove(device, None)?;
-            }
-            // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
-            json!({
-                "peer": p.name,
-                "device": p.principal,
-                "forgotten": true,
-                "closed_connections": closed,
-                "still_revoked": p.revoked,
-                "approver_keys_removed": approver_keys,
-            })
-        }
+        HostRequest::Forget { peer } => forget(host, &mesh.find_peer(&peer).await?).await?,
         HostRequest::Approvers => {
             let keys = host.approver().keys().list();
             let keys: Vec<Value> = keys
