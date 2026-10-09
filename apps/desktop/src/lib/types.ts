@@ -39,6 +39,19 @@ export interface HostAccess {
 export interface AgentStatus {
   device: string;
   version: string;
+  /** This machine's name. */
+  name?: string;
+  /** Agents (MCP clients) connected to this device's controller now. */
+  agents?: ConnectedAgent[];
+}
+
+export interface ConnectedAgent {
+  id: number;
+  /** The MCP client's own name (`claude-code`), once it sent its first request. */
+  client: string | null;
+  since_ms: number;
+  last_ms: number;
+  calls: number;
 }
 
 /** Who drives a host: the agent, a person who took over, or nobody (paused). */

@@ -31,7 +31,12 @@ const IDLE_EXIT: Duration = Duration::from_secs(30 * 60);
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum AgentRequest {
+    /// This device, the version, the paired hosts and the agents (MCP clients) connected now.
     Status,
+    /// Cut off one connected agent (an id from `status`).
+    DisconnectAgent {
+        id: u64,
+    },
     /// Redeem a host's pairing ticket.
     Pair {
         ticket: String,
@@ -69,8 +74,9 @@ pub enum AgentRequest {
     },
     /// One request on a host's events channel, returning the host's reply: approvals (`pending`,
     /// `answer`, `enroll`, `approver_status`), turns (`turn`, `tell`) and this device's access
-    /// (`access`, `lower`, `leave`); see the host's events protocol. Allowing needs a signature the caller made with the person's approver key; the
-    /// agent never signs, and no MCP tool reaches this.
+    /// (`access`, `lower`, `leave`); see the host's events protocol. Allowing needs a signature
+    /// the caller made with the person's approver key; the agent never signs, and no MCP tool
+    /// reaches this.
     Channel {
         host: Option<String>,
         request: Value,
@@ -109,6 +115,8 @@ pub(crate) struct Agent {
     /// Host sessions for a person's own calls (the app while someone drives), kept between calls so
     /// each click does not start a new session.
     person: std::sync::OnceLock<Aggregator>,
+    /// The agents (MCP clients) connected now.
+    pub(crate) sessions: crate::sessions::AgentSessions,
 }
 
 impl Agent {
@@ -245,6 +253,7 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
         person: std::sync::OnceLock::new(),
+        sessions: Default::default(),
     });
     tracing::info!(device = %agent.mesh.short_id(), "controller agent running");
 
@@ -295,7 +304,14 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
         if let AgentRequest::Mcp = req {
             conn.reply(Ok(json!({"mcp": true}))).await?;
             let (stream, buffered) = conn.into_raw();
-            return Aggregator::new(agent.clone()).serve(stream, buffered).await;
+            let (id, stop) = agent.sessions.open();
+            let served = tokio::select! {
+                served = Aggregator::new(agent.clone()).with_session(id).serve(stream, buffered) => served,
+                // Disconnected from the app: dropping the session closes its stream.
+                _ = stop.cancelled() => Ok(()),
+            };
+            agent.sessions.close(id);
+            return served;
         }
         if let AgentRequest::Events { host } = req {
             // Connect first, so a failure is still an ordinary error reply.
@@ -336,9 +352,12 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
     Ok(match req {
         AgentRequest::Status => json!({
             "device": agent.mesh.principal(),
+            "name": machine_name(),
             "version": VERSION,
             "hosts": agent.host_names().await?,
+            "agents": agent.sessions.list(),
         }),
+        AgentRequest::DisconnectAgent { id } => json!({"disconnected": agent.sessions.stop(id)}),
         AgentRequest::Pair { ticket, name } => {
             let paired = agent.mesh.pair(&ticket, name.as_deref()).await?;
             // A fresh pairing supersedes whatever this host refused before.

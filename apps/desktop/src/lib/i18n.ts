@@ -25,6 +25,17 @@ export function currentLang(): Lang {
   return lang;
 }
 
+/** The language the person picked here, or `system` when the app follows the system's. */
+export function langChoice(): Lang | "system" {
+  const saved = localStorage.getItem("ai-remote.lang");
+  return saved === "en" || saved === "zh" ? saved : "system";
+}
+
+/** Follow the system's language again (takes effect on the next start or reload). */
+export function followSystemLang() {
+  localStorage.removeItem("ai-remote.lang");
+}
+
 export function setLang(next: Lang) {
   lang = next;
   localStorage.setItem("ai-remote.lang", next);

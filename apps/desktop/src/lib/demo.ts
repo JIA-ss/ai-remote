@@ -2,7 +2,17 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
-import type { Driver, FeedEvent, Host, HostAccess, HostTool, Level, PendingApproval, RawPending } from "./types";
+import type {
+  ConnectedAgent,
+  Driver,
+  FeedEvent,
+  Host,
+  HostAccess,
+  HostTool,
+  Level,
+  PendingApproval,
+  RawPending,
+} from "./types";
 
 const minute = 60_000;
 
@@ -123,10 +133,20 @@ function resolve(host: string, id: string, verdict: "approved" | "denied", note?
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const demoAgents: ConnectedAgent[] = [
+  { id: 1, client: "claude-code", since_ms: Date.now() - 40 * minute, last_ms: Date.now() - 2 * minute, calls: 13 },
+];
+
 export const demoBackend: Backend = {
   kind: "demo",
   async status() {
-    return { device: "eid:demo-home-laptop", version: "demo" };
+    const agents = demoAgents.map((a) => ({ ...a }));
+    return { device: "eid:4f2a9c1e77b0d3a8e51c0b6f2d9a7e43", version: "0.1.0", name: "home-laptop", agents };
+  },
+  async openAppearanceSettings() {},
+  async disconnectAgent(id) {
+    const i = demoAgents.findIndex((a) => a.id === id);
+    if (i >= 0) demoAgents.splice(i, 1);
   },
   async hosts() {
     // `?empty` shows the first run.

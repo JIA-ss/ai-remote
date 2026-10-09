@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { api } from "./lib/api";
 import { t } from "./lib/i18n";
 import { allPending, groupOf, store, useStore } from "./lib/store";
-import { ActivityPage, ApprovalsPage, ComputerPage, EmptyPage, PairPage, SettingsPage, WelcomePage } from "./ui/Pages";
+import { ActivityPage, ApprovalsPage, ComputerPage, EmptyPage, PairPage, WelcomePage } from "./ui/Pages";
 import { SessionPage } from "./ui/Session";
+import { SettingsWindow } from "./ui/Settings";
 import { Sidebar, TitleBar, type Nav } from "./ui/Shell";
 import { useNow } from "./ui/util";
 
@@ -74,6 +75,8 @@ export default function App() {
     }
   }
 
+  if (view.kind === "main" && view.nav === "settings") return <SettingsWindow onBack={() => nav("home")} />;
+
   // With nothing chosen, open the computer that most needs attention.
   const order = ["needs", "you", "working", "idle", "offline"] as const;
   const first = [...snap.computers].sort((a, b) => order.indexOf(groupOf(a, now)) - order.indexOf(groupOf(b, now)))[0];
@@ -94,7 +97,6 @@ export default function App() {
         }}
       />
     );
-  else if (active === "settings") page = <SettingsPage />;
   else if (computer)
     page = (
       <ComputerPage

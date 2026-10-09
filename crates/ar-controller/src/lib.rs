@@ -10,6 +10,7 @@ mod agent;
 mod aggregator;
 pub mod approver;
 mod hosts;
+pub mod sessions;
 mod shim;
 
 pub use agent::{AgentRequest, run_agent};

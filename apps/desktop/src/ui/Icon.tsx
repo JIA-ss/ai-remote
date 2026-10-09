@@ -9,13 +9,17 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  ExternalLink,
   Eye,
   EyeOff,
+  Globe,
   History,
   Info,
   Keyboard,
+  KeyRound,
   Laptop,
   Link,
+  Lock,
   Menu,
   MessageSquare,
   Monitor,
@@ -78,6 +82,10 @@ const FLUENT = {
   phone: "E8EA",
   puzzle: "EA86",
   wrench: "E90F",
+  globe: "E774",
+  open: "E8A7",
+  key: "E8D7",
+  lock: "E72E",
 } as const;
 
 export type IconName = keyof typeof FLUENT;
@@ -118,6 +126,10 @@ const LUCIDE: Record<IconName, LucideIcon> = {
   phone: Smartphone,
   puzzle: Puzzle,
   wrench: Wrench,
+  globe: Globe,
+  open: ExternalLink,
+  key: KeyRound,
+  lock: Lock,
 };
 
 const mac = detectOs() === "mac";

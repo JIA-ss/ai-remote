@@ -32,6 +32,12 @@ textarea.ta-input { display: block; width: 100%; box-sizing: border-box; resize:
 .tool-l .mono { width: 132px; flex: none; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gr.tool.above .mono, .gr.tool.above .c2 { color: var(--text-3); }
 
+/* A native select drawn as the design's dropdown. */
+.dd-wrap { position: relative; display: inline-flex; }
+.dd-wrap select.dd { appearance: none; border: 0; outline: 0; font: inherit; font-size: 14px; padding-right: 32px; cursor: pointer; }
+.dd-wrap select.dd:focus-visible { box-shadow: 0 0 0 2px var(--ink); }
+.dd-wrap .fi, .dd-wrap .lucide { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-2); }
+
 /* Inputs drawn as the design's fields. */
 input.field { border: 0; outline: 0; font: inherit; font-size: 14px; color: var(--text-1); box-sizing: border-box; }
 input.field::placeholder { color: var(--text-3); }
