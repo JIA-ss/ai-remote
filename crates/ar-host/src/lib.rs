@@ -72,6 +72,11 @@ impl HostState {
         &self.approver
     }
 
+    /// Approval prompts on screen whose answer is awaited; input tools stay off while any is open.
+    pub(crate) fn open_prompts(&self) -> approval::OpenPrompts {
+        self.approver.open_prompts()
+    }
+
     /// The level this host grants `peer` right now (`None` when unpaired or no level).
     pub async fn current_level(&self, peer: &Peer) -> Option<Level> {
         let peers = self.mesh.peers().await.ok()?;
