@@ -2,6 +2,7 @@
 //! so the gate (level check, policy, approval, audit, result budget) treats them identically.
 
 pub mod clipboard;
+pub mod command;
 pub mod input;
 pub mod jobs;
 pub mod screen;
@@ -50,6 +51,20 @@ impl ToolSpec {
 
     pub fn ask(mut self) -> Self {
         self.default_action = Action::Ask;
+        self
+    }
+
+    /// Runs without asking even at admin level: for tools that only read state, or undo what an
+    /// approved call did.
+    pub fn allow(mut self) -> Self {
+        self.default_action = Action::Allow;
+        self
+    }
+
+    /// Hints that the tool changes nothing on the host.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self.destructive = false;
         self
     }
 

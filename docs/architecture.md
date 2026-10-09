@@ -103,7 +103,9 @@ Tool names are stable API. Annotations follow MCP (`readOnlyHint`, `destructiveH
 | `mouse` | control | move / click / double_click / right_click / drag / scroll at coordinates in the last screenshot's space |
 | `keyboard` | control | type unicode text or press key combos (`ctrl+l`, `cmd+space`) |
 | `focus_window` | control | bring a window to the foreground |
-| `shell` | admin | run a command with timeout, capture stdout/stderr/exit code |
+| `clipboard_read` / `clipboard_write` | control | clipboard text (reading is `control`, not `observe`: the clipboard is private) |
+| `shell` | admin | run a command with timeout, capture stdout/stderr/exit code; the whole process tree dies with the call |
+| `jobs_start` / `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | background commands logging to a file on the host; they outlive the session and host restarts (metadata persisted, re-adopted by pid and start time) |
 | `files_*` *(planned)* | admin | list/read/write/transfer files |
 
 Coordinates: `screenshot` returns the mapping from image pixels to screen coordinates; `mouse`
