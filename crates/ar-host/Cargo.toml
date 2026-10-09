@@ -16,7 +16,10 @@ arboard.workspace = true
 async-trait = "0.1"
 base64.workspace = true
 blake3.workspace = true
+data-encoding.workspace = true
+dunce.workspace = true
 enigo.workspace = true
+futures.workspace = true
 image.workspace = true
 process-wrap.workspace = true
 rfd.workspace = true
@@ -24,9 +27,11 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sysinfo.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+toml.workspace = true
 tracing.workspace = true
 getrandom.workspace = true
 xcap.workspace = true
@@ -44,3 +49,12 @@ windows = { version = "0.62", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Mounted-server end-to-end test. It has its own main: the same binary also plays the mock MCP
+# server the test mounts, so no separate fixture has to be built or found.
+[[test]]
+name = "mounts"
+harness = false

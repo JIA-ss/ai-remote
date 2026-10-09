@@ -77,6 +77,7 @@ dependencies = [
  "ar-host",
  "ar-net",
  "clap",
+ "dunce",
  "serde_json",
  "tokio",
  "tracing",
@@ -185,7 +186,9 @@ dependencies = [
  "getrandom 0.3.4",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 1.1.8+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
 ]
 
 [[package]]
@@ -199,18 +202,24 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "data-encoding",
+ "dunce",
  "enigo",
+ "futures",
  "getrandom 0.3.4",
  "image",
- "process-wrap 9.1.1",
+ "process-wrap",
  "rfd",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "toml 1.1.8+spec-1.1.0",
  "tracing",
  "windows 0.62.2",
  "xcap",
@@ -1223,6 +1232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.1",
+ "const-oid 0.10.2",
  "crypto-common 0.2.2",
 ]
 
@@ -4428,20 +4438,6 @@ dependencies = [
 
 [[package]]
 name = "process-wrap"
-version = "9.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f95f6259ebd0640685b7cd26d635861f39208df0f89b2b61ff5cf76310fa54f6"
-dependencies = [
- "futures",
- "indexmap",
- "nix",
- "tokio",
- "tracing",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "process-wrap"
 version = "10.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
@@ -4782,7 +4778,7 @@ dependencies = [
  "indexmap",
  "pastey",
  "pin-project-lite",
- "process-wrap 10.0.1",
+ "process-wrap",
  "rmcp-macros",
  "schemars",
  "serde",
@@ -5828,6 +5824,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 
