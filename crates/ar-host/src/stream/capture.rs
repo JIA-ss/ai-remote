@@ -94,6 +94,17 @@ pub fn monitors() -> Result<Vec<(usize, u32, u32, bool)>> {
     Err(anyhow!("live view is not available on this platform yet"))
 }
 
+/// Where monitor `index` (`None`: the primary one) sits on the screen, as (x, y, width, height) in
+/// screen coordinates, the space the mouse tool takes with `space: "screen"`.
+pub fn geometry(index: Option<usize>) -> Option<(i32, i32, u32, u32)> {
+    let all = xcap::Monitor::all().ok()?;
+    let m = match index {
+        Some(i) => all.get(i)?,
+        None => all.iter().find(|m| m.is_primary().unwrap_or(false)).or(all.first())?,
+    };
+    Some((m.x().ok()?, m.y().ok()?, m.width().ok()?, m.height().ok()?))
+}
+
 /// Starts capturing monitor `index` (`None`: the primary one) at most `max_fps` times a second.
 pub fn start(index: Option<usize>, max_fps: u32) -> Result<Capture> {
     let slot = Arc::new(Slot::default());

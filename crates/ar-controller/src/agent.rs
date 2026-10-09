@@ -106,6 +106,9 @@ pub(crate) struct Agent {
     refusals: std::sync::Mutex<Refusals>,
     active: AtomicUsize,
     last_activity: std::sync::Mutex<Instant>,
+    /// Host sessions for a person's own calls (the app while someone drives), kept between calls so
+    /// each click does not start a new session.
+    person: std::sync::OnceLock<Aggregator>,
 }
 
 impl Agent {
@@ -241,6 +244,7 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
         refusals: std::sync::Mutex::new(Refusals::default()),
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
+        person: std::sync::OnceLock::new(),
     });
     tracing::info!(device = %agent.mesh.short_id(), "controller agent running");
 
@@ -373,8 +377,11 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             json!({"host": peer.name, "unpaired": true})
         }
         AgentRequest::Call { host, tool, args, person } => {
-            let aggregator =
-                if person { Aggregator::for_person(agent.clone()) } else { Aggregator::new(agent.clone()) };
+            let aggregator = if person {
+                agent.person.get_or_init(|| Aggregator::for_person(agent.clone())).clone()
+            } else {
+                Aggregator::new(agent.clone())
+            };
             let host = match host {
                 Some(h) => h,
                 None => aggregator.only_host().await?,

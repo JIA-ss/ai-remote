@@ -62,6 +62,8 @@ export interface Backend {
 
 export interface LiveView {
   monitors: Array<{ index: number; width: number; height: number; primary: boolean }>;
+  /** Where the streamed monitor sits in screen coordinates (what the mouse tool takes). */
+  screen: { x: number; y: number; width: number; height: number } | null;
   requestKeyframe(): void;
   stop(): void;
 }
@@ -137,10 +139,11 @@ const tauriBackend: Backend = {
     const request = { monitor: opts.monitor ?? null, max_fps: opts.maxFps ?? 30, max_long_edge: opts.maxLongEdge ?? 1920 };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
       number,
-      { monitors?: LiveView["monitors"] },
+      { monitors?: LiveView["monitors"]; screen?: LiveView["screen"] },
     ];
     return {
       monitors: reply.monitors ?? [],
+      screen: reply.screen ?? null,
       requestKeyframe: () => void commands.requestKeyframe(id),
       stop: () => void commands.stopScreen(id),
     };
