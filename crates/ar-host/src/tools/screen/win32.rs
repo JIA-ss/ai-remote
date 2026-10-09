@@ -1,4 +1,4 @@
-//! Windows: bring a window to the foreground.
+//! Windows: bring a window to the foreground, and the window traits list_windows reports.
 //!
 //! `SetForegroundWindow` only works for the process that received the last input event (or that
 //! the foreground process allowed); otherwise Windows just flashes the taskbar button. The host is
@@ -10,8 +10,11 @@
 //!    input event, then try again: the trick PowerToys uses before switching windows;
 //! 3. attach to the foreground thread's input state, then raise and activate the window.
 //!
-//! Hung windows are refused up front: activating them or attaching to their input queue can block
-//! this thread for as long as they hang.
+//! Nothing here waits on the target window's thread: restoring and raising are posted
+//! (`ShowWindowAsync`, `SetWindowPos` with `SWP_ASYNCWINDOWPOS`), because their synchronous forms
+//! block for as long as the window does not pump messages, and `IsHungAppWindow` only reports a
+//! window after about 5 s without a response. Hung windows are still refused up front, and so is
+//! attaching to a hung foreground thread. The async caller adds a timeout on top.
 
 use std::{
     ffi::c_void,
@@ -26,9 +29,11 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEINPUT, SendInput},
         WindowsAndMessaging::{
-            BringWindowToTop, GA_ROOT, GA_ROOTOWNER, GetAncestor, GetForegroundWindow, GetWindowTextLengthW,
-            GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, MSG,
-            PM_NOREMOVE, PeekMessageW, SW_RESTORE, SetForegroundWindow, ShowWindow,
+            GA_ROOT, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindowLongW,
+            GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOP, IsHungAppWindow, IsIconic,
+            IsWindow, IsWindowVisible, MSG, PM_NOREMOVE, PeekMessageW, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE,
+            SWP_NOSIZE, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST, WS_EX_TRANSPARENT,
         },
     },
 };
@@ -36,7 +41,10 @@ use windows::Win32::{
 /// What `focus_window` did.
 pub struct FocusOutcome {
     pub foreground: bool,
+    /// It was minimized and a restore was requested.
     pub restored: bool,
+    /// Still minimized at the end: the window has not processed the restore (busy).
+    pub still_minimized: bool,
     /// The step that brought the window to the front (or the last one tried).
     pub method: &'static str,
     pub title: String,
@@ -46,6 +54,8 @@ pub struct FocusOutcome {
 
 /// How long each step waits for the foreground to change.
 const STEP_WAIT: Duration = Duration::from_millis(150);
+/// How long to wait for a minimized window to process the posted restore.
+const RESTORE_WAIT: Duration = Duration::from_millis(500);
 
 pub fn focus_window(id: u32) -> Result<FocusOutcome> {
     let hwnd = hwnd_from_id(id);
@@ -73,8 +83,10 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
 
         let restored = IsIconic(hwnd).as_bool();
         if restored {
-            // SetForegroundWindow does not restore a minimized window.
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            // SetForegroundWindow does not restore a minimized window. Posted, then given a moment,
+            // so the activation below applies to the restored window.
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            wait_until(RESTORE_WAIT, || !IsIconic(hwnd).as_bool());
         }
 
         let mut method = "already_foreground";
@@ -86,7 +98,7 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
             method = "input_unlock";
             empty_input();
             let _ = SetForegroundWindow(hwnd);
-            let _ = BringWindowToTop(hwnd);
+            raise(hwnd);
         }
         if !wait_foreground(hwnd, STEP_WAIT) {
             method = "attach_thread_input";
@@ -97,6 +109,7 @@ pub fn focus_window(id: u32) -> Result<FocusOutcome> {
         Ok(FocusOutcome {
             foreground,
             restored,
+            still_minimized: IsIconic(hwnd).as_bool(),
             method,
             title,
             foreground_window: (!fg.is_invalid()).then(|| id_from_hwnd(fg)),
@@ -118,11 +131,18 @@ fn id_from_hwnd(hwnd: HWND) -> u32 {
 
 /// True once `hwnd` (or a dialog it owns) is the foreground window, polling for up to `wait`.
 fn wait_foreground(hwnd: HWND, wait: Duration) -> bool {
-    let deadline = Instant::now() + wait;
-    loop {
+    wait_until(wait, || {
         // SAFETY: no arguments / handle by value.
         let fg = unsafe { GetForegroundWindow() };
-        if fg == hwnd || (!fg.is_invalid() && unsafe { GetAncestor(fg, GA_ROOTOWNER) } == hwnd) {
+        fg == hwnd || (!fg.is_invalid() && unsafe { GetAncestor(fg, GA_ROOTOWNER) } == hwnd)
+    })
+}
+
+/// Polls `done` every 10 ms for up to `wait`; true as soon as it holds.
+fn wait_until(wait: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if done() {
             return true;
         }
         if Instant::now() >= deadline {
@@ -130,6 +150,12 @@ fn wait_foreground(hwnd: HWND, wait: Duration) -> bool {
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// `BringWindowToTop` without waiting: the request is posted to the window's thread.
+fn raise(hwnd: HWND) {
+    // SAFETY: handle by value; no pointers.
+    let _ = unsafe { SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS) };
 }
 
 /// One mouse input with no movement and no buttons. Nothing happens on screen, but this process
@@ -166,11 +192,39 @@ fn attach_and_activate(hwnd: HWND) {
         let mut msg = MSG::default();
         let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
         let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
-        let _ = BringWindowToTop(hwnd);
+        raise(hwnd);
         let _ = SetForegroundWindow(hwnd);
         if attached {
             let _ = AttachThreadInput(me, fg_thread, false);
         }
+    }
+}
+
+/// Extended-style facts that tell an overlay from a window an agent can act on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WindowTraits {
+    /// Stays above normal windows (`WS_EX_TOPMOST`).
+    pub topmost: bool,
+    /// Mouse input passes through it to the windows below (`WS_EX_LAYERED | WS_EX_TRANSPARENT`,
+    /// the usual recipe for HUDs and screen overlays): never a click or focus target.
+    pub click_through: bool,
+    /// Clicking it does not activate it (`WS_EX_NOACTIVATE`: on-screen keyboards, toasts, some
+    /// overlays), so focus_window may not keep it in front.
+    pub no_activate: bool,
+}
+
+pub fn window_traits(id: u32) -> WindowTraits {
+    // SAFETY: handle by value; a stale handle reads as 0 (no styles).
+    let ex = unsafe { GetWindowLongW(hwnd_from_id(id), GWL_EXSTYLE) } as u32;
+    traits_from_ex_style(ex)
+}
+
+fn traits_from_ex_style(ex: u32) -> WindowTraits {
+    let has = |flag: u32| ex & flag == flag;
+    WindowTraits {
+        topmost: has(WS_EX_TOPMOST.0),
+        click_through: has(WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0),
+        no_activate: has(WS_EX_NOACTIVATE.0),
     }
 }
 
@@ -203,6 +257,16 @@ mod tests {
     fn high_ids_are_sign_extended() {
         assert_eq!(hwnd_from_id(0x8001_0000).0 as isize, 0x8001_0000u32 as i32 as isize);
         assert!((hwnd_from_id(0x8001_0000).0 as isize) < 0);
+    }
+
+    #[test]
+    fn overlay_traits_come_from_the_extended_style() {
+        assert_eq!(traits_from_ex_style(0), WindowTraits::default());
+        let hud = traits_from_ex_style(WS_EX_TOPMOST.0 | WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0);
+        assert_eq!(hud, WindowTraits { topmost: true, click_through: true, no_activate: true });
+        // Layered alone (fades, rounded corners) or transparent alone does not pass clicks through.
+        assert!(!traits_from_ex_style(WS_EX_LAYERED.0).click_through);
+        assert!(!traits_from_ex_style(WS_EX_TRANSPARENT.0).click_through);
     }
 
     #[test]
