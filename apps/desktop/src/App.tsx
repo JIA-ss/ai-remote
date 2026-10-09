@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "./lib/api";
 import { t } from "./lib/i18n";
 import { allPending, groupOf, store, useStore } from "./lib/store";
-import { ActivityPage, ApprovalsPage, ComputerPage, PairPage, SettingsPage, WelcomePage } from "./ui/Pages";
+import { ActivityPage, ApprovalsPage, ComputerPage, EmptyPage, PairPage, SettingsPage, WelcomePage } from "./ui/Pages";
 import { SessionPage } from "./ui/Session";
 import { Sidebar, TitleBar, type Nav } from "./ui/Shell";
 import { useNow } from "./ui/util";
@@ -22,11 +22,25 @@ function initialView(): View {
   return { kind: "main", nav: null };
 }
 
+const WELCOMED = "ai-remote.welcomed";
+
+/** Whether the first-run welcome was seen; after it an empty list shows the empty computer page instead. */
+function initialWelcomed(): boolean {
+  const v = new URLSearchParams(location.search).get("view");
+  if (v === "welcome" || v === "empty") return v === "empty";
+  return localStorage.getItem(WELCOMED) === "1";
+}
+
 export default function App() {
   const snap = useStore();
   const now = useNow(5000);
   const [view, setView] = useState<View>(initialView);
   const [device, setDevice] = useState("this device");
+  const [welcomed, setWelcomed] = useState(initialWelcomed);
+  const welcome = () => {
+    localStorage.setItem(WELCOMED, "1");
+    setWelcomed(true);
+  };
 
   useEffect(() => {
     void store.start();
@@ -35,6 +49,11 @@ export default function App() {
       .then((s) => setDevice(s.device.startsWith("eid:demo") ? "home-laptop" : s.device.slice(0, 12)))
       .catch(() => {});
   }, []);
+
+  // Once there was a computer, the first run is over.
+  useEffect(() => {
+    if (snap.computers.length > 0 && !welcomed) welcome();
+  }, [snap.computers.length, welcomed]);
 
   const waiting = allPending(snap).length;
   const nav = (n: Nav | "home") =>
@@ -84,15 +103,20 @@ export default function App() {
         onActivity={() => nav("activity")}
       />
     );
-  else page = <WelcomePage onPair={() => nav("pair")} />;
+  else page = <EmptyPage onPair={() => nav("pair")} />;
 
   // First run: the welcome spread fills the window, without the pane.
-  if (snap.ready && !snap.error && snap.computers.length === 0 && (view.kind !== "main" || view.nav === null)) {
+  if (!welcomed && snap.ready && !snap.error && snap.computers.length === 0 && (view.kind !== "main" || view.nav === null)) {
     return (
       <div className="win" style={{ width: "100vw", height: "100vh" }}>
         <TitleBar />
         <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-          <WelcomePage onPair={() => nav("pair")} />
+          <WelcomePage
+            onPair={() => {
+              welcome();
+              nav("pair");
+            }}
+          />
         </div>
       </div>
     );

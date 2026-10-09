@@ -107,6 +107,8 @@ html:lang(zh-CN) .side-h { font-weight: 500; }
 .tgt-chip.tr { left: auto; right: -2px; top: -21px; }
 .tgt-chip.bl { top: auto; bottom: -21px; }
 .tgt-chip.l { left: -30px; top: 50%; margin-top: -9px; }
+.tgt-chip.r { left: auto; right: -30px; top: 50%; margin-top: -9px; }
+.tgt-chip.bl { left: -1px; bottom: -15px; }
 .tgt .ref { box-shadow: inset 0 0 0 1px rgb(47 91 211 / .6); background: rgb(255 255 255 / .92); color: #2F5BD3; }
 .tgt .ref.solid { background: #2F5BD3; color: #fff; box-shadow: 0 0 0 1.5px #fff; }
 .tgt.hover .ref { background: #1F2328; color: #fff; box-shadow: 0 0 0 1.5px #fff; }
@@ -340,7 +342,8 @@ html:lang(zh-CN) .lr .t b { font-weight: 500; }
 .scard .kv dt { margin: 0; font-family: var(--font-small); font-size: 12px; color: #8A919C; padding-top: 2px; }
 .scard .kv dd { margin: 0; color: #E6EDF3; }
 .scard .sline { margin-top: 16px; padding: 12px 0 0; border-top: 1px solid rgb(255 255 255 / .09); }
-.scard .sline .lb { display: flex; justify-content: space-between; margin-top: 6px; font-family: var(--font-small); font-size: 12px; color: #8A919C; }
+.scard .sline #endline, .scard .sline #endline svg { display: block; height: 24px; }
+.scard .sline .lb { display: flex; justify-content: space-between; margin-top: 0; font-family: var(--font-small); font-size: 12px; color: #8A919C; }
 .skel { position: absolute; inset: 0; background: #262C2B; }
 .skel i { position: absolute; border-radius: 8px; background: #303735; }
 
@@ -350,7 +353,7 @@ html:lang(zh-CN) .lr .t b { font-weight: 500; }
 .sees-h { display: flex; align-items: baseline; gap: 10px; }
 .sees-h .grow { flex: 1; }
 .tree { position: relative; margin: 12px -8px 0; }
-.tn { position: relative; height: 32px; display: flex; align-items: center; gap: 10px; padding-right: 8px; border-radius: 4px; font-size: 14px; white-space: nowrap; }
+.tn { position: relative; height: 32px; display: flex; align-items: center; gap: 10px; padding-right: 12px; border-radius: 4px; font-size: 14px; white-space: nowrap; }
 .tn .role { font-family: var(--font-small); font-size: 12px; color: var(--text-3); width: 52px; }
 .tn .nm { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; }
 .tn .state { margin-left: auto; font-family: var(--font-small); font-size: 12px; color: var(--agent); font-weight: 600; }
@@ -368,3 +371,10 @@ html:lang(zh-CN) .lr .t b { font-weight: 500; }
 .note-box .fi { font-size: 14px; margin-top: 3px; color: var(--text-3); }
 .stage { --tl-bg: var(--stage); }
 [data-theme="dark"]:lang(zh-CN) .lr.head .x { color: var(--text-2); }
+/* the wrapper paints the stage too, so a compositor tile that drops the inner layer can never show the page through */
+.stage-wrap { background: var(--stage); border-radius: var(--r-stage); }
+
+/* answered wait on the turn line: 70% amber holds 5:1 on dark grounds; on light grounds it would fall to 2.3:1,
+   so light keeps full you-stroke (3.3:1) and tells it apart from your own stretch by width (1.5 vs 3 px) and the decision dot */
+[data-theme="light"] { --tl-waited-op: 1; }
+[data-theme="light"] .stage, [data-theme="light"] .on-stage { --tl-waited-op: .7; }

@@ -14,7 +14,7 @@ import { Stream } from "./Session";
 import { computerFacts, Facts, statusOf } from "./Shell";
 import { TurnLine, turnSpec, type TurnSpec } from "./TurnLine";
 import { WelcomeFigure } from "./WelcomeFigure";
-import { agentLabel, clock, cx, useNow, useSize } from "./util";
+import { agentLabel, clock, cx, useNow, useShortWindow, useSize } from "./util";
 
 const levelName = (l: string | null) =>
   l === "admin" ? t("lvl_admin") : l === "control" ? t("lvl_control") : l === "observe" ? t("lvl_observe") : "—";
@@ -79,8 +79,11 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
   const off = c.online === false;
   const group = groupOf(c, now);
   const n = news(c, now);
+  // Below 860 px tall the footer keeps two columns: the facts are in the top line and the Access tab.
+  const short = useShortWindow();
+  const recent = short ? (currentLang() === "zh" ? 2 : 3) : 4;
   return (
-    <div className="cpage">
+    <div className={cx("cpage", short && "short")}>
       <div className="cp-top">
         <span className="tile">
           <OsGlyph os={c.os ?? "windows"} size={16} />
@@ -130,7 +133,7 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
           </div>
         </div>
       </div>
-      <div className="cp-cols">
+      <div className={cx("cp-cols", short && "two")}>
         <div>
           <div className="colh">{t("cur_task")}</div>
           {c.feed.task ? (
@@ -151,19 +154,21 @@ export function ComputerPage({ c, onWatch, onActivity }: { c: Computer; onWatch:
               {t("see_all")}
             </span>
           </div>
-          {c.feed.steps.length === 0 ? <div className="body c3">{t("no_steps")}</div> : <StepRows steps={[...c.feed.steps].reverse().slice(0, 4)} />}
+          {c.feed.steps.length === 0 ? <div className="body c3">{t("no_steps")}</div> : <StepRows steps={[...c.feed.steps].reverse().slice(0, recent)} />}
         </div>
-        <div>
-          <div className="colh">{t("this_computer")}</div>
-          <dl className="dl">
-            <dt>{t("connection")}</dt>
-            <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
-            <dt>{t("your_level")}</dt>
-            <dd>{levelName(c.host.levelAtPairing)}</dd>
-            <dt>{t("device_key")}</dt>
-            <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
-          </dl>
-        </div>
+        {!short && (
+          <div>
+            <div className="colh">{t("this_computer")}</div>
+            <dl className="dl">
+              <dt>{t("connection")}</dt>
+              <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
+              <dt>{t("your_level")}</dt>
+              <dd>{levelName(c.host.levelAtPairing)}</dd>
+              <dt>{t("device_key")}</dt>
+              <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
+            </dl>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -191,24 +196,109 @@ function CmdLine({ cmd, style }: { cmd: string; style?: React.CSSProperties }) {
 }
 
 /** First run: the product in one sentence, the two ways in, and the turn line told as a story. */
+/** Display text with phrase marks: `|` allows a break there (Chinese is set keep-all), a newline forces one. */
+function phrases(s: string): React.ReactNode {
+  return s.split("\n").map((line, i) => (
+    <span key={i}>
+      {i > 0 && <br />}
+      {line.split("|").map((p, j) => (
+        <span key={j}>
+          {j > 0 && <wbr />}
+          {p}
+        </span>
+      ))}
+    </span>
+  ));
+}
+
+/**
+ * The computer list when it is empty (after the first run): the one command, the one action, and the
+ * stage where the first computer will appear, framed in the idle colour with a key to the frame colours.
+ */
+export function EmptyPage({ onPair }: { onPair: () => void }) {
+  const key = (c: string, k: "em_k_agent" | "em_k_you" | "em_k_idle") => (
+    <span className="em-k">
+      <i style={{ boxShadow: `inset 0 0 0 2px ${c}` }} />
+      {t(k)}
+    </span>
+  );
+  return (
+    <div className="ipage em-page">
+      <div className="cp-hl" style={{ marginTop: 0 }}>
+        <div className="dsp">{t("em_title")}</div>
+      </div>
+      <div className="lede">{t("em_lede")}</div>
+      <div className="em-grid">
+        <div className="em-steps">
+          <div className="em-st">
+            <span className="n tnum">1</span>
+            <div className="b">
+              <div className="t">{t("em_s1")}</div>
+              <CmdLine cmd="ai-remote host" />
+              <div className="d">{t("em_s1_d")}</div>
+            </div>
+          </div>
+          <div className="em-st">
+            <span className="n tnum">2</span>
+            <div className="b">
+              <div className="t">{t("em_s2")}</div>
+              <div>
+                <button className="btn primary lg" onClick={onPair}>
+                  <Icon name="add" size={14} />
+                  {t("pair")}
+                </button>
+              </div>
+              <div className="d">{t("em_s2_d")}</div>
+            </div>
+          </div>
+        </div>
+        <div className="em-stage stagebox stage">
+          <div className="em-well">
+            <div className="em-in">
+              <SeatMark state="idle" h={44} />
+              <div className="t">{t("em_stage")}</div>
+              <div className="d">{t("em_stage_d")}</div>
+              <div className="em-keys">
+                {key("#6F9BFF", "em_k_agent")}
+                {key("#F3B53F", "em_k_you")}
+                {key("#8A919C", "em_k_idle")}
+              </div>
+            </div>
+          </div>
+          <div className="em-line">
+            <span className="hl" />
+            <SeatMark state="idle" h={16} />
+          </div>
+        </div>
+      </div>
+      <div style={{ flex: 1 }} />
+      <div className="footnote">
+        <Icon name="qr" size={12} />
+        <span>{t("em_foot")}</span>
+      </div>
+    </div>
+  );
+}
+
 export function WelcomePage({ onPair }: { onPair: () => void }) {
   const [hostHelp, setHostHelp] = useState(false);
   const W = 616;
   const spec: TurnSpec = {
+    // A finished story: the wait was answered, so it is the thin stroke with its decision dot, not dashes.
     segs: [
-      ["agent", 0, 24],
-      ["wait", 24, 48],
-      ["agent", 48, 70],
-      ["you", 70, 90],
-      ["agent", 90, 100],
+      ["agent", 0, 26],
+      ["waited", 26, 46],
+      ["agent", 46, 68],
+      ["you", 68, 88],
+      ["agent", 88, 100],
     ],
     ticks: [
       ["", 6],
-      ["", 12],
-      ["", 18],
-      ["dec", 48],
-      ["", 55],
-      ["", 62],
+      ["", 13],
+      ["", 20],
+      ["dec", 46],
+      ["", 53],
+      ["", 61],
       ["", 95],
     ],
     head: "agent",
@@ -217,10 +307,10 @@ export function WelcomePage({ onPair }: { onPair: () => void }) {
   const X = (p: number) => (p / 100) * L;
   const stops: Array<[number, "agent" | "you", string, "up" | "dn"]> = [
     [0, "agent", "fr_stop1", "up"],
-    [24, "you", "fr_stop2", "dn"],
-    [48, "you", "fr_stop3", "up"],
-    [70, "you", "fr_stop4", "dn"],
-    [90, "agent", "fr_stop5", "up"],
+    [26, "you", "fr_stop2", "dn"],
+    [46, "you", "fr_stop3", "up"],
+    [68, "you", "fr_stop4", "dn"],
+    [88, "agent", "fr_stop5", "up"],
   ];
   return (
     <div className="spread" style={{ inset: 0, overflow: "auto" }}>
@@ -228,7 +318,7 @@ export function WelcomePage({ onPair }: { onPair: () => void }) {
         <div>
           <Wordmark h={24} />
         </div>
-        <div className="hero">{t("fr_title")}</div>
+        <div className="hero">{phrases(t("fr_title"))}</div>
         <div className="lede">{t("fr_sub")}</div>
         <div className="doors">
           <div className="door">
