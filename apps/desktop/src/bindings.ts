@@ -57,6 +57,11 @@ export const commands = {
 	requestKeyframe: (id: number) => typedError<null, string>(__TAURI_INVOKE("request_keyframe", { id })),
 	/**  Ends live view `id`. */
 	stopScreen: (id: number) => typedError<null, string>(__TAURI_INVOKE("stop_screen", { id })),
+	/**
+	 *  Writes a message from the page (an error, a warning) to the app's log, so problems inside the
+	 *  webview show up where the app's own messages go.
+	 */
+	logFromPage: (level: string, message: string) => __TAURI_INVOKE<void>("log_from_page", { level, message }),
 };
 
 /* Types */

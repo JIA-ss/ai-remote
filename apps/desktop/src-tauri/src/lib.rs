@@ -314,6 +314,15 @@ async fn stop_screen(state: State<'_, AppState>, id: u32) -> Result<(), String> 
     Ok(())
 }
 
+/// Writes a message from the page (an error, a warning) to the app's log, so problems inside the
+/// webview show up where the app's own messages go.
+#[tauri::command]
+#[specta::specta]
+fn log_from_page(level: String, message: String) {
+    let message: String = message.chars().take(2000).collect();
+    eprintln!("[page {level}] {message}");
+}
+
 /// Ends a feed started by [`subscribe_events`].
 #[tauri::command]
 #[specta::specta]
@@ -343,6 +352,7 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         watch_screen,
         request_keyframe,
         stop_screen,
+        log_from_page,
     ])
 }
 
@@ -394,10 +404,109 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            #[cfg(debug_assertions)]
+            smoke(app);
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running the ai-remote app");
+}
+
+/// Debug builds: `AI_REMOTE_SMOKE=<png>` runs the app without ever showing it to the person at the
+/// computer (off screen, not focusable, not in the taskbar), saves a picture of its window after
+/// `AI_REMOTE_SMOKE_SECS` (default 8) and exits. Launch it with
+/// `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-features=CalculateNativeWinOcclusion` so the
+/// webview keeps drawing while off screen.
+#[cfg(debug_assertions)]
+fn smoke(app: &tauri::App) {
+    use tauri::Manager;
+    let Some(out) = std::env::var_os("AI_REMOTE_SMOKE") else { return };
+    let secs: u64 = std::env::var("AI_REMOTE_SMOKE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_focusable(false);
+        let _ = w.set_skip_taskbar(true);
+        let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
+        // `AI_REMOTE_SMOKE_QUERY=view=session&host=office-pc` opens a page directly.
+        if let Ok(q) = std::env::var("AI_REMOTE_SMOKE_QUERY") {
+            let q = q.replace('\'', "");
+            let _ = w.eval(format!("if (!location.search) location.replace('?{q}')"));
+        }
+    }
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+        if let Some(w) = handle.get_webview_window("main") {
+            let visible = w.is_visible().unwrap_or(false);
+            eprintln!("[smoke] window visible: {visible}, url: {:?}", w.url().map(|u| u.to_string()));
+            if !visible {
+                let _ = w.show();
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+        let picture = handle.get_webview_window("main").ok_or("no window".to_string()).and_then(|w| capture(&w));
+        match picture.and_then(|img| img.save(&out).map_err(|e| e.to_string())) {
+            Ok(()) => eprintln!("[smoke] saved {}", std::path::Path::new(&out).display()),
+            Err(e) => eprintln!("[smoke] cannot capture the window: {e}"),
+        }
+        handle.exit(0);
+    });
+}
+
+/// The window's pixels, drawn by the window itself (works off screen).
+#[cfg(all(debug_assertions, windows))]
+fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
+    use windows::Win32::{
+        Foundation::{HWND, RECT},
+        Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+            DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
+        },
+        Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow},
+        UI::WindowsAndMessaging::GetWindowRect,
+    };
+    let hwnd = HWND(w.hwnd().map_err(|e| e.to_string())?.0);
+    unsafe {
+        let mut r = RECT::default();
+        GetWindowRect(hwnd, &mut r).map_err(|e| e.to_string())?;
+        let (width, height) = ((r.right - r.left) as u32, (r.bottom - r.top) as u32);
+        let screen = GetDC(None);
+        let dc = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, width as i32, height as i32);
+        let old = SelectObject(dc, bmp.into());
+        // PW_RENDERFULLCONTENT (2): include DirectComposition content such as the webview.
+        let ok = PrintWindow(hwnd, dc, PRINT_WINDOW_FLAGS(2)).as_bool();
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut px = vec![0u8; (width * height * 4) as usize];
+        GetDIBits(dc, bmp, 0, height, Some(px.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS);
+        SelectObject(dc, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(dc);
+        ReleaseDC(None, screen);
+        if !ok {
+            return Err("PrintWindow failed".into());
+        }
+        for p in px.chunks_mut(4) {
+            p.swap(0, 2);
+            p[3] = 255;
+        }
+        image::RgbaImage::from_raw(width, height, px).ok_or_else(|| "bad buffer".into())
+    }
+}
+
+#[cfg(all(debug_assertions, not(windows)))]
+fn capture(_: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
+    Err("capture is only implemented on Windows".into())
 }
 
 #[cfg(test)]

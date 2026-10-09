@@ -13,6 +13,14 @@ createRoot(document.getElementById("root") as HTMLElement).render(
   </StrictMode>,
 );
 
+// Page errors go to the app's log (they are invisible otherwise).
+if ("__TAURI_INTERNALS__" in window) {
+  void import("./bindings").then(({ commands }) => {
+    window.addEventListener("error", (e) => void commands.logFromPage("error", `${e.message} (${e.filename}:${e.lineno})`));
+    window.addEventListener("unhandledrejection", (e) => void commands.logFromPage("error", `unhandled: ${String(e.reason)}`));
+  });
+}
+
 // The window starts hidden and is shown once the page has painted, so it never flashes white.
 if ("__TAURI_INTERNALS__" in window) {
   requestAnimationFrame(() =>

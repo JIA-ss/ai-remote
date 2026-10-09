@@ -124,6 +124,7 @@ export const en = {
   connection: "Connection",
   conn_direct: "Direct, encrypted end to end",
   conn_relayed: "Relayed, encrypted end to end",
+  agent_unnamed: "The agent",
   agent_l: "Agent",
   your_level: "Your level",
   device_key: "Device key",

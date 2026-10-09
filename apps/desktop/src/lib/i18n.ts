@@ -34,5 +34,8 @@ export function setLang(next: Lang) {
 /** The string for `key`, with `{name}` placeholders filled from `vars`. */
 export function t(key: Key, vars?: Record<string, string | number>): string {
   const s = catalogs[lang][key] ?? catalogs.en[key] ?? key;
-  return vars ? s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`)) : s;
+  if (!vars) return s;
+  const filled = s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
+  // Chinese templates space Latin names ("Claude Code 在等你"); a Chinese name needs no space.
+  return lang === "zh" ? filled.replace(/([㐀-鿿])\s+(?=[㐀-鿿])/g, "$1") : filled;
 }
