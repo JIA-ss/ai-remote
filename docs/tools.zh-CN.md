@@ -24,6 +24,7 @@
 | `list_hosts` | （控制端） | - | - | 已配对的被控端：能否连上，直连还是走中继 |
 | `use_host` | （控制端） | - | - | 把某台被控端设为本会话的默认被控端 |
 | `system_info` | observe | allow | 只读 | 操作系统、显示器、会话状态、你的级别 |
+| `set_task` | observe | allow | 只读 | 说明你正在做的任务；机主的应用会把它显示在步骤上方 |
 | `doctor` | observe | allow | 只读 | 分级体检，给出原因和修复办法 |
 | `screenshot` | observe | allow | 只读 | 截取一块显示器，按模型需要缩放 |
 | `zoom` | observe | allow | 只读 | 按原始分辨率重新截取截图中的一部分 |

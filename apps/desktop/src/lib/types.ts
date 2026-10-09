@@ -57,6 +57,7 @@ export type FeedEvent =
     }
   | ({ kind: "driver"; ts: number; by: string; note?: string } & Driver)
   | { kind: "note"; ts: number; from: string; text: string }
+  | { kind: "task"; ts: number; session: string; peer: string; task: string }
   | {
       kind: "decision";
       ts: number;

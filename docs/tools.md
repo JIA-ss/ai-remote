@@ -25,6 +25,7 @@ behaviour on macOS is *(planned)*. For installing and running hosts see
 | `list_hosts` | (controller) | - | - | paired hosts, reachable or not, direct or relayed |
 | `use_host` | (controller) | - | - | make a host the default for this session |
 | `system_info` | observe | allow | read-only | OS, monitors, session state, your level |
+| `set_task` | observe | allow | read-only | say what you are working on; the owner's app shows it above your steps |
 | `doctor` | observe | allow | read-only | graded checks with reasons and fixes |
 | `screenshot` | observe | allow | read-only | capture a monitor, scaled for the model |
 | `zoom` | observe | allow | read-only | fresh native-resolution capture of part of a screenshot |

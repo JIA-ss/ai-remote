@@ -10,6 +10,8 @@ export interface FeedState {
   sessions: Record<string, { peer: string; since: number; person: boolean; agent: string | null }>;
   /** The MCP client of the newest agent session seen (`claude-code`), kept after it ends. */
   agent: string | null;
+  /** What the agent said it is working on (`set_task`), with when and from which device. */
+  task: { text: string; ts: number; peer: string } | null;
   /** Who drives the host now. */
   driver: Driver;
   /** Changes of driver and messages to the agent, for the timeline. */
@@ -27,6 +29,7 @@ export const emptyFeed: FeedState = {
   driver: { state: "agent" },
   turns: [],
   agent: null,
+  task: null,
   live: true,
   missed: 0,
 };
@@ -84,6 +87,8 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
       const next = driver as Driver;
       return { ...state, driver: next, turns: [...state.turns, { ts, by, note, driver: next }].slice(-MAX_STEPS) };
     }
+    case "task":
+      return { ...state, task: { text: e.task, ts: e.ts, peer: e.peer } };
     case "note":
       return { ...state, turns: [...state.turns, { ts: e.ts, by: e.from, message: e.text }].slice(-MAX_STEPS) };
     case "session_end": {
@@ -123,6 +128,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
       return { ...state, steps, pending: state.pending.filter((p) => p.id !== e.id) };
     }
     case "decision": {
+      if (e.tool === "set_task") return state;
       const steps = [...state.steps];
       const key = callKey(e.session, e.tool, e.args_hash);
       const refused = !["allow", "approved"].includes(e.decision);
@@ -159,6 +165,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
       return { ...state, steps: steps.slice(-MAX_STEPS) };
     }
     case "outcome": {
+      if (e.tool === "set_task") return state;
       const steps = [...state.steps];
       const i = openStep(steps, callKey(e.session, e.tool, e.args_hash));
       if (i < 0) return state;
