@@ -101,6 +101,7 @@ dependencies = [
  "ar-controller",
  "ar-core",
  "ar-net",
+ "image",
  "serde",
  "serde_json",
  "specta",
@@ -110,6 +111,7 @@ dependencies = [
  "tauri-plugin-frame",
  "tauri-specta",
  "tokio",
+ "windows 0.62.2",
 ]
 
 [[package]]

@@ -120,6 +120,7 @@ export const zh: Record<keyof typeof en, string> = {
   connection: "连接",
   conn_direct: "直连，端到端加密",
   conn_relayed: "中继，端到端加密",
+  agent_unnamed: "智能体",
   agent_l: "智能体",
   your_level: "你的权限",
   device_key: "设备密钥",

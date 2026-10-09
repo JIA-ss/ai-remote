@@ -1,6 +1,7 @@
 // Small helpers shared by the views.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { t } from "../lib/i18n";
 
 export const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
 
@@ -21,7 +22,7 @@ export function countdown(deadline: number, now: number, zh: boolean) {
 
 /** How people know the agent: the MCP client's name made readable (`claude-code` → Claude Code). */
 export function agentLabel(raw: string | null | undefined): string {
-  if (!raw) return "The agent";
+  if (!raw) return t("agent_unnamed");
   const known: Record<string, string> = {
     "claude-code": "Claude Code",
     "claude-ai": "Claude",

@@ -23,6 +23,7 @@ ar-core.workspace = true
 ar-controller.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
@@ -32,3 +33,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-frame = "1.1"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tokio.workspace = true
+
+# Debug smoke runs capture the app's own window (PrintWindow) to check what it draws.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_UI_WindowsAndMessaging"] }

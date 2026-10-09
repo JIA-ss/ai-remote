@@ -53,7 +53,6 @@ sha2 = "0.11"
 spki = "0.8"
 sysinfo = "0.39"
 tempfile = "3"
-thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 toml = "1"
@@ -65,10 +64,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Reading Windows Firewall rules (doctor, `host status`); rules are written with netsh.exe.
 windows_firewall = "0.8"
 xcap = "0.9"
-
-# The live view's video path is too slow unoptimized; optimize it even in debug builds.
-[profile.dev.package.openh264-sys2]
-opt-level = 3
 [profile.dev.package.fast_image_resize]
 opt-level = 3
 [profile.dev.package.yuvutils-rs]
