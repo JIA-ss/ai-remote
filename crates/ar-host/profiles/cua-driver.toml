@@ -1,0 +1,45 @@
+# Mount profile: cua-driver (https://github.com/trycua/cua, libs/cua-driver, MIT license).
+#
+# A background computer-use driver: UI Automation tree snapshots with element tokens, clicks and
+# typing that do not move the real cursor or steal focus. ai-remote does not ship or download it;
+# install a release yourself, then:
+#
+#   ai-remote mount add-profile cua-driver --command <path-to-cua-driver.exe>
+#
+# Reviewed against the 59 tools of cua-driver 0.34.0. Exposed here: snapshot, verify and act on
+# windows. Never exposed: install_ffmpeg, install_extension, check_for_update, set_config, page
+# (JavaScript in pages), recording/replay and the browser_* family (needs its own review).
+# Descriptions are shortened on purpose: the server's own tool list is about 194k characters.
+
+name = "ui"
+about = "cua-driver: UI Automation snapshots and background input for desktop apps"
+checked_version = "0.34.0"
+args = ["mcp"]
+needs_desktop = true
+# Eager (the default): apps a server starts as its own child processes live in its process tree
+# and end when it stops, so a lazily stopped driver would close apps the agent opened.
+start = "eager"
+
+[env]
+CUA_DRIVER_RS_TELEMETRY_ENABLED = "false"
+CUA_TELEMETRY_ENABLED = "false"
+CUA_DRIVER_RS_UPDATE_CHECK = "false"
+CUA_DRIVER_PERMISSION_MODE = "standard"
+CUA_DRIVER_DISABLE_UNRESTRICTED = "1"
+
+[tools]
+list_apps = { level = "observe", description = "List installed and running apps: name, pid, running/active flags, kind (desktop or uwp) and launch_path, which launch_app accepts." }
+list_windows = { level = "observe", description = "List top-level windows: window_id, pid, app_name, title, bounds, z_index (higher is closer to the front), is_on_screen, minimized. Optional pid filter and on_screen_only." }
+get_window_state = { level = "observe", description = "Snapshot one window (pid and window_id from list_windows): its UI Automation tree as structuredContent.elements (element_index, role, label, value, enabled, actions, frame) with an element_token for each actionable element, plus a screenshot. Take a fresh snapshot before acting on a window in each turn: the next snapshot of the same window invalidates older tokens. query filters rows; max_elements / max_depth bound large trees; include_screenshot:false is a cheaper tree-only refresh." }
+verify_state = { level = "observe", description = "Check one to eight predicates (window exists or bounds; element exists, enabled, selected or value) against one window. Each comes back satisfied, unsatisfied or unknown, and unknown is not success. Use it after an action instead of assuming the action worked." }
+click = { level = "control", description = "Left-click in a window without moving the real cursor or taking focus. Prefer element_token from the latest get_window_state; use x, y (pixels of that snapshot's screenshot) only for surfaces missing from the tree. Background delivery is the default; retry with delivery_mode \"foreground\" only when the result says background delivery is unavailable." }
+double_click = { level = "control", description = "Double-click an element_token, or x, y in the latest snapshot's screenshot pixels, in the window of pid." }
+right_click = { level = "control", description = "Right-click an element_token, or x, y in the latest snapshot's screenshot pixels, in the window of pid (for example to open a context menu)." }
+type_text = { level = "control", description = "Type text into the focused control of pid's window without taking focus. Modern XAML/UWP apps need element_token. Keys such as Return or Tab go through press_key or hotkey." }
+press_key = { level = "control", description = "Press one key (return, tab, escape, up, down, left, right, space, delete, home, end, pageup, pagedown, f1-f12, letters, digits) with optional modifiers (ctrl, shift, alt, win), sent to pid's window." }
+hotkey = { level = "control", description = "Press a key combination, modifiers first and one key last, for example [\"ctrl\", \"s\"]. Some classic Win32 apps need a brief foreground switch for this." }
+scroll = { level = "control", description = "Scroll pid's window: direction up, down, left or right; by line or page; amount." }
+set_value = { level = "control", description = "Set the value of a text field, slider or combo box (element_token from the latest snapshot) through UI Automation." }
+clipboard_read = { level = "control", description = "List the clipboard's formats; with include_text true, also return its text. Privacy-sensitive." }
+launch_app = { level = "control", approve = "ask", description = "Start an app without taking focus: by name, aumid (packaged apps such as Calculator), path, or launch_path from list_apps. Returns its pid and windows. Asks the host owner first." }
+kill_app = { level = "admin", approve = "ask", description = "Force-terminate a process by pid; unsaved work is lost. Close the window normally first and use this only when that did not end it. Asks the host owner first." }
