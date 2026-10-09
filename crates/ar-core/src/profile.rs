@@ -49,7 +49,10 @@ impl Profile {
         let root = root.into();
         std::fs::create_dir_all(&root)
             .with_context(|| format!("create profile directory {}", root.display()))?;
-        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        // dunce keeps the plain `C:\...` form where it is equivalent: the `\\?\` form that
+        // std::fs::canonicalize returns on Windows leaks into every path shown to users and
+        // passed to tools, and cmd and many programs reject it.
+        let root = dunce::canonicalize(&root).unwrap_or(root);
         Ok(Self { root })
     }
 
@@ -126,4 +129,18 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_is_absolute_without_the_verbatim_prefix() {
+        let dir = std::env::temp_dir().join(format!("ar-profile-{}", std::process::id()));
+        let profile = Profile::at(&dir).unwrap();
+        assert!(profile.root().is_absolute());
+        assert!(!profile.root().to_string_lossy().starts_with(r"\\?\"), "{}", profile.root().display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
