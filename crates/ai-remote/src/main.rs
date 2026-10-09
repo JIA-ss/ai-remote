@@ -347,6 +347,7 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                 println!("No mounted servers. Add one with `ai-remote mount add-profile cua-driver --command <path>`");
                 println!("or `ai-remote mount add <name> --command <path> --tool <name>=<level>`.");
             }
+            let clashes = mounts::name_clashes(&cfg.mounts);
             for m in &cfg.mounts {
                 println!("{}", m.name);
                 println!(
@@ -361,7 +362,14 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                     println!("  no tools allowlisted: it exposes nothing (see `ai-remote mount test {}`)", m.name);
                 }
                 for (tool, entry) in &m.tools {
-                    println!("  {:<32} {}", mounts::tool_name(&m.name, tool), describe_entry(entry));
+                    let clash = clashes.iter().find(|c| c.mount == m.name && &c.tool == tool);
+                    let note = clash.map(|c| format!("  (not exposed: the name is taken by {})", c.taken_by));
+                    println!(
+                        "  {:<32} {}{}",
+                        mounts::tool_name(&m.name, tool),
+                        describe_entry(entry),
+                        note.unwrap_or_default()
+                    );
                 }
             }
             println!("\nconfig: {}", path.display());
@@ -388,6 +396,7 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
                 needs_desktop,
                 tools,
             };
+            refuse_clashes(&path, &mount, "pick another mount name")?;
             config::add_mount(&path, &mount)?;
             if json_out {
                 return print_json(&serde_json::to_value(&mount)?);
@@ -408,6 +417,7 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
             let (about, checked) = (curated.about.clone(), curated.checked_version.clone());
             let (command, sha256) = pin_command(&command, false)?;
             let mount = curated.into_config(name, command, sha256);
+            refuse_clashes(&path, &mount, "pick another mount name with --name")?;
             config::add_mount(&path, &mount)?;
             if json_out {
                 return print_json(&serde_json::to_value(&mount)?);
@@ -481,6 +491,27 @@ async fn mount_command(profile: &Profile, command: MountCommand, json_out: bool)
             Ok(())
         }
     }
+}
+
+/// Refuses a new mount whose tool names are taken by built-in tools or by mounts already configured
+/// (the host would not expose them).
+fn refuse_clashes(path: &std::path::Path, mount: &MountConfig, hint: &str) -> Result<()> {
+    let mut all = HostConfig::load(path)?.mounts;
+    all.retain(|m| m.name != mount.name); // a duplicate name is reported by add_mount
+    all.push(mount.clone());
+    let clashes: Vec<String> = mounts::name_clashes(&all)
+        .into_iter()
+        .filter(|c| c.mount == mount.name)
+        .map(|c| format!("{} (tool '{}') is taken by {}", c.name, c.tool, c.taken_by))
+        .collect();
+    if !clashes.is_empty() {
+        bail!(
+            "mount '{}' cannot expose these names, so the host would hide them: {}; {hint}, or leave the tool out",
+            mount.name,
+            clashes.join("; ")
+        );
+    }
+    Ok(())
 }
 
 /// Absolute path and SHA-256 of a mount's executable (or the command as given with `no_pin`).
