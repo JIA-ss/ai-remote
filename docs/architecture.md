@@ -110,13 +110,14 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   level", code 0 when the host stops. The controller turns them into plain language with the fix
   ("access revoked by the host", "not paired", "no access level", "host offline or unreachable" with
   the raw cause), does not redial into a refusal that only a person can lift, and remembers a
-  revocation, because later dials only meet the gate's generic 401. When the host owner has to act,
-  the message includes the controller's device id. The full list is in
+  revocation while the controller agent runs, because later dials only meet the gate's generic 401
+  (after the agent restarts, a revoked controller hears "not paired"). When the host owner has to
+  act, the message includes the controller's device id. The full list is in
   [operations.md](operations.md#7-when-a-host-refuses).
 - **Calls in flight.** A call whose connection ends while it runs is never re-sent: its request may
   already have run on the host, so the agent is told the outcome is unknown. Starting a session has
-  no side effects, so a session start on a kept connection that gets no answer within 8 seconds is
-  retried once on a fresh connection.
+  no side effects, so a session start on a kept connection that fails or gets no answer within 8
+  seconds is retried once on a fresh connection (unless the host refused this device).
 - **Relays.** The public n0 relays by default (they only see ciphertext); a host can use
   self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
   `[network] relays = [...]`. The controller agent has no relay setting in M0.
@@ -134,17 +135,17 @@ Every tool call, built-in or mounted, goes through the same pipeline on the host
    jobs). Annotations from mounted servers are hints, never the authority.
 3. **Approval**: for `ask`, a native dialog on the host's desktop shows who asks, the tool, the stated
    intent and the arguments. No answer before the timeout, a locked desktop, or an unattended machine
-   all mean **denied**. While a prompt is open, the input tools pause.
+   all mean **denied**. While a prompt is open, every mouse and keyboard call is refused.
 4. **Audit**: a JSONL record of the decision, written before the call runs.
 5. **Call**: bounded by the session. When the controller disconnects, is revoked, or cancels the
    request, the call is cancelled, child process trees are killed and a mounted server receives
    `notifications/cancelled`.
-6. **Audit**: a record of the outcome (duration, size, error). Both records carry a BLAKE3 hash of
-   the arguments; values that may hold secrets (environment values, standard input, clipboard text)
-   appear in prompts and in the log only by size.
-7. **Budget**: text over 60,000 characters is cut to its head and tail with a count of what was
+6. **Budget**: text over 60,000 characters is cut to its head and tail with a count of what was
    dropped, oversized structured content is dropped (its text form stays), and images are kept
    within what model APIs accept, so one result cannot flood an agent's context.
+7. **Audit**: a record of the outcome (duration, size after the budget, error). Both records carry a
+   BLAKE3 hash of the arguments; values that may hold secrets (environment values, standard input,
+   clipboard text) appear in prompts and in the log only by size.
 
 A refusal is a tool result with `isError` and a sentence that says what to do; agents are told not
 to retry refused or declined calls automatically.
@@ -254,7 +255,11 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
   one physical-pixel coordinate space.
 - **Child processes.** Everything the host starts (shell commands, jobs, mounted servers, system
   tools) gets no console window, and shell commands and mounted servers die with their whole process
-  tree. Background jobs are the exception on purpose: they outlive the session and host restarts.
+  tree. Background jobs are the exception on purpose: they outlive the session, and a restarted host
+  re-adopts the ones still running. They survive the host process itself only where every job
+  object above it lets them leave. The Windows background host is started by Task Scheduler, whose
+  job object does not, so its jobs end when it stops or restarts; a host started in a terminal
+  usually lets them survive (see [tools.md](tools.md#512-background-jobs)).
 - **Controller process model.** `ai-remote agent` owns the controller identity and one connection
   per host. `ai-remote mcp` is the process the MCP client starts; it starts the agent on demand and
   relays to it. The local pipe never relies on half-close (a Windows named pipe does not deliver it).

@@ -2,32 +2,36 @@
 
 中文 | [English](architecture.md)
 
-> 状态：预览阶段（pre-alpha）。里程碑 M0（命令行、Windows 被控端、面向 AI 的 MCP 桥）正在开发。
-> 标注「（规划中）」的部分尚未实现。
+> 状态：Pre-alpha 阶段。M0 的范围（命令行、Windows 被控端、MCP 桥接）已在 main 分支实现，
+> 但还没有发布任何版本，命令也可能调整。标注“（规划中）”的部分尚未实现。
+>
+> 本页是总览。被控端和控制端的部署与日常运维见 [operations.zh-CN.md](operations.zh-CN.md)；
+> 每个工具的参数和各类配置格式见 [tools.zh-CN.md](tools.zh-CN.md)。
 
 ## 1. ai-remote 是什么
 
-ai-remote 是一个开源的远程控制系统，**AI agent 是一等操作者**。人依然可以随时旁观、随时接管，
+ai-remote 是一个开源的远程控制系统，**AI Agent 是一等操作者**。人依然可以随时旁观、随时接管，
 但被控机器对外的主要接口不是一路视频流，而是一组结构化、按权限分级、全程留痕的工具。
 
 | 角色 | 平台 | 做什么 |
 |---|---|---|
-| **被控端（host）** | Windows、macOS（规划中） | 运行 `ai-remote host`，把本机能力（屏幕、输入、界面、shell、后台任务、挂载的 MCP server）以 MCP 工具的形式，通过端到端加密的点对点连接提供出去；按设备分级授权，高风险操作先问主人，所有调用写入审计日志。 |
-| **控制端（controller）** | Windows、macOS、iOS（规划中） | 与被控端配对并操作它们。`ai-remote mcp` 让任何 MCP 客户端（Claude Code、Cursor、自建 agent）都能驱动所有已配对的被控端；给人用的 App 在后续里程碑。 |
+| **被控端（host）** | Windows、macOS（规划中） | 在终端里运行 `ai-remote host`，或者登录后由 `ai-remote-hostw` 在后台运行。把本机能力（屏幕、输入、窗口、剪贴板、shell、后台任务、挂载的 MCP server）以 MCP 工具的形式，通过加密的点对点连接提供出去；按设备分级授权，高风险操作先问机主，所有调用写入审计日志。 |
+| **控制端（controller）** | Windows、macOS、iOS（规划中） | 与被控端配对并操作它们。`ai-remote mcp` 让任何 MCP 客户端（Claude Code、Cursor、你自己写的 Agent）都能驱动所有已配对的被控端；给人用的应用会在后续里程碑推出。 |
 
-iOS 只能做控制端：系统不允许第三方 App 控制它所在的这台设备。
+iOS 只能做控制端：系统不允许第三方应用控制它所在的这台设备。
 
 ## 2. 设计原则
 
-1. **AI 是一等客户端。** 被控端原生说 MCP。优先用结构化界面（带元素引用的无障碍树）操作，鼠标键盘是兜底。
+1. **AI 是一等客户端。** 被控端原生支持 MCP（Model Context Protocol）。优先用结构化界面操作
+   （来自挂载的 server，例如 cua-driver 提供的带元素引用的无障碍界面树），鼠标键盘是兜底。
    截图会按模型需要缩放，并附带把坐标映射回屏幕所需的几何信息。
-2. **人始终说了算。** 每台配对设备都有权限等级，高风险工具要主人确认，每次调用都有审计，主人可以随时撤销设备。
+2. **人始终说了算。** 每台配对设备都有权限级别，高风险工具要机主审批，每次调用都有审计，机主可以随时撤销设备。
    没人能确认时，一律视为拒绝。
-3. **按密钥拨号，不按 IP。** 设备身份是 Ed25519 密钥。连接是端到端加密的 QUIC，自动打洞，打不通时经加密中继转发。
-   不用端口映射，不用 VPN。
+3. **按密钥拨号，不按 IP。** 设备身份是 Ed25519 密钥。连接是端到端加密的 QUIC，自动打洞穿透 NAT，
+   打不通时经加密中继转发。不用端口映射，不用 VPN。
 4. **不依赖服务器。** 配对靠一次性票据。可选、可自建的账号服务（规划中）只负责分发设备密钥和授权，从不经手会话内容。
 5. **能复用就不重写。** ai-remote 构建在持续维护的开源组件之上（见第 9 节），只写自己特有的部分：
-   权限闸门、工具、MCP 桥和各端 App。
+   闸门、工具、MCP 桥接和各端应用。
 
 ## 3. 系统总览
 
@@ -36,61 +40,96 @@ flowchart LR
   subgraph 控制端机器
     A[MCP 客户端<br/>Claude Code、Cursor 等] -- stdio --> S[ai-remote mcp<br/>转接进程]
     S -- 本地管道 --> G[控制端常驻进程 agent<br/>身份、配对、<br/>每台被控端一条连接]
+    CC[ai-remote 命令行<br/>pair、hosts、call] -- 本地管道 --> G
   end
   subgraph 被控端机器
-    H[ai-remote host] --> GATE[闸门：等级、策略、<br/>审批、审计、结果预算]
+    HC[ai-remote 命令行<br/>pair-code、peers、level 等] -- 本地管道 --> H
+    H[ai-remote host<br/>或 ai-remote-hostw] --> GATE[闸门：级别、策略、<br/>审批、审计、结果预算]
     GATE --> T[内置工具]
     GATE --> M[挂载的 MCP server]
   end
   G -- "iroh QUIC，端到端加密<br/>打洞直连或经中继" --> H
 ```
 
-## 4. 身份、配对与权限等级
+本地管道在 Windows 上是只有本人能打开的命名管道，在其他系统上是权限为 0600 的 Unix socket；
+每个角色、每个配置目录各一个。
+
+## 4. 身份、配对与权限级别
 
 - **身份。** 被控端和控制端两个角色各有一把 Ed25519 密钥，存在用户的配置目录里（`identity.key`）。
-  密钥由我们自己保管再交给传输层，所以将来即使更换传输库，设备 ID 也不变。
+  密钥由 ai-remote 自己保管，再交给传输层，所以将来即使更换传输库，设备 ID 也不变。
 - **配对。**
-  1. 在被控端执行 `ai-remote pair-code --level control`，生成一张一次性票据（一天内有效）。
-     全新的被控端启动时会自动打印一张。
-  2. 在控制端执行 `ai-remote pair <票据> --name office-pc`。
-  3. 两边会显示同样的三个英文单词作为安全码，人工核对一致即可，用来防止票据被调包。
-- **权限等级**（由低到高）：
+  1. 在被控端执行 `ai-remote pair-code --level control`，向正在运行的被控端要一张一次性票据，24 小时后过期。
+     在终端里启动、且还没有任何配对的被控端会自己打印一张；后台被控端从不打印，因为票据就是凭证，不该出现在日志里。
+  2. 在控制端执行 `ai-remote pair <票据> --name office-pc`。它会打印由三个英文单词组成的安全码，以及被控端授予的级别。
+  3. 被控端会显示同样的三个词：终端里会打印，日志里也一定会记下。对不上就说明票据被别人先兑换了，
+     机主用 `ai-remote forget <控制端>` 把那台设备删掉即可。
 
-  | 等级 | 允许的操作 |
+  票据里带着被控端的公钥，所以控制端只能连到这台被控端；传输层会认证双方，所以被控端拿到的是控制端真实的公钥。
+- **权限级别**（由低到高）：
+
+  | 级别 | 允许的操作 |
   |---|---|
-  | `observe` | 系统信息、截图、窗口列表、界面树 |
-  | `control` | 再加鼠标、键盘、切换窗口、剪贴板、界面操作 |
-  | `admin` | 再加 shell、后台任务、文件 |
+  | `observe` | 系统信息、体检、截图、放大截图、窗口列表 |
+  | `control` | 再加鼠标、键盘、切换窗口、剪贴板、挂载 server 的界面操作 |
+  | `admin` | 再加 shell 和后台任务（文件功能规划中） |
 
-  `ai-remote level <设备> admin` 修改等级，下一次调用即生效，正在进行的会话也一样。
-  `ai-remote revoke <设备>` 拒绝该设备，并立即切断它的所有在线连接。
+- **机主的控制命令**（在被控端执行；立即生效，正在进行的会话也一样）：
 
-## 5. 传输与线上协议
+  | 命令 | 效果 |
+  |---|---|
+  | `ai-remote level <设备> <级别\|none>` | 修改级别，下一次调用就按新级别检查 |
+  | `ai-remote revoke <设备>` | 从此拒绝这台设备（即使它拿到新票据也不行），并切断它的在线连接；配对记录保留 |
+  | `ai-remote unrevoke <设备>` | 解除撤销（配对已删除时用设备 ID） |
+  | `ai-remote forget <设备>` | 删除配对并切断在线连接；这台设备只能凭新票据重新配对 |
+
+  各命令的细节，包括控制端在每种情况下会收到什么提示，见
+  [operations.zh-CN.md](operations.zh-CN.md#6-权限级别与访问控制)。
+
+## 5. 传输与通信协议
 
 - **传输层。** [iroh](https://github.com/n0-computer/iroh) 的 QUIC，通过内嵌的
   [mcpmesh](https://github.com/counterpunchtech/mcpmesh) 节点提供配对、每条连接默认拒绝的闸门和撤销。
   这些全部收在 `ar-net` 一个 crate 后面，其他代码都不直接依赖 mcpmesh。
 - **ALPN `app/ai-remote/mcp/1`。** 每个 MCP 会话一条双向流，按行分隔的 JSON-RPC，和 MCP 的 stdio
   分帧完全一致。控制端是 MCP 客户端，被控端是服务端。控制端对每台被控端只保持一条连接，每个会话开一条流。
-- **中继。** 默认使用 n0 的公共中继（只能看到密文）；也可以在 `[network] relays = [...]`
-  里配置自建的 [iroh-relay](https://github.com/n0-computer/iroh)。
-- （规划中）`app/ai-remote/screen/1` 给人看的实时画面，`app/ai-remote/file/1` 用于大文件传输。
+- **拒绝连接。** 被控端不愿为某台设备服务时，会带着错误码和原因关闭连接：未知或已撤销的设备由传输层返回 401，
+  “未配对”和“没有权限级别”由被控端返回 403，被控端退出时用 0。控制端把这些翻译成直白的说明并附上解决办法
+  （`access revoked by the host`、`not paired`、`no access level`，以及附带原始原因的
+  `host offline or unreachable`）。只有人能解除的拒绝，控制端不会反复重拨。它还会在常驻进程运行期间记住
+  “被撤销”这件事，因为之后再拨号只会碰到闸门统一的 401（常驻进程重启后，被撤销的控制端看到的是 `not paired`）。
+  需要机主处理时，提示里会带上控制端的设备 ID。完整列表见
+  [operations.zh-CN.md](operations.zh-CN.md#7-被控端拒绝了怎么办)。
+- **调用中途断线。** 调用执行期间连接断了，绝不会重发：请求可能已经在被控端执行过了，所以会如实告诉 Agent
+  结果未知。开启会话没有副作用，所以在复用的连接上开会话失败、或 8 秒内没有响应时，会换一条新连接重试一次
+  （被控端明确拒绝了这台设备时除外）。
+- **中继。** 默认使用 n0 的公共中继（只能看到密文）；被控端可以通过 `[network] relays = [...]` 改用自建的
+  [iroh-relay](https://github.com/n0-computer/iroh)。M0 中控制端常驻进程没有中继设置。
+- （规划中）`app/ai-remote/screen/1` 用于给人看的实时画面，`app/ai-remote/file/1` 用于大文件传输。
 
 ## 6. 闸门
 
 每一次工具调用，不论是内置工具还是挂载工具，在被控端都走同一条流水线：
 
-1. **等级**：调用方当前的等级必须够得上该工具的等级。
-2. **策略**：按顺序匹配 `ai-remote.toml` 里的规则，第一条命中的生效；都不命中就用工具自身的默认值
-   （observe、control 级直接执行，admin 级先询问）。挂载 server 自带的工具标注只作参考，不作为依据。
-3. **审批**：策略为 `ask` 时，在被控端桌面弹出原生对话框，显示是谁、要调用哪个工具、给出的理由和参数。
-   超时没人回答、桌面已锁定、机器无人值守，都按**拒绝**处理。
-4. **审计**：调用前记一条（决策），调用后记一条（结果、耗时、大小、错误），参数只记 BLAKE3 哈希和截断预览。
-5. **执行**：受会话生命周期约束；控制端断开或被撤销时，调用会被取消，子进程连同整棵进程树一起结束。
-6. **结果预算**：超长文本只保留开头和结尾，并注明省略了多少字符，避免一次结果撑爆 agent 的上下文。
+1. **级别**：每次调用都重新读取调用方的级别，必须够得上工具要求的级别。超出调用方级别的工具，
+   也不会出现在它拿到的工具列表里。
+2. **策略**：按顺序匹配 `ai-remote.toml` 里的规则，第一条命中的生效；都不命中就用工具自身的默认动作
+   （observe、control 级直接执行，admin 级先询问，只读取或停止后台任务的那几个 job 工具除外）。
+   挂载 server 自带的工具标注只作参考，从不作为依据。
+3. **审批**：动作为 `ask` 时，在被控端桌面弹出原生对话框，显示是谁、要调用哪个工具、给出的理由和参数。
+   超时没人回答、桌面已锁定、机器无人值守，都按**拒绝**处理。审批框开着的时候，所有鼠标和键盘调用一律拒绝。
+4. **审计**：调用执行前，先写一条 JSONL 格式的决策记录。
+5. **执行**：受会话生命周期约束。控制端断开、被撤销或取消请求时，调用随之取消，子进程连同整棵进程树一起结束，
+   挂载的 server 会收到 `notifications/cancelled`。
+6. **结果预算**：超过 60,000 个字符的文本只保留开头和结尾，并注明省略了多少；过大的结构化内容直接丢弃
+   （保留其文本形式）；图片控制在模型 API 能接受的范围内。这样一次结果撑不爆 Agent 的上下文。
+7. **审计**：再写一条结果记录（耗时、经预算处理后的大小、错误）。两条记录都带参数的 BLAKE3 哈希；
+   可能含机密的值（环境变量的值、标准输入、剪贴板文本）在审批框和日志里都只显示长度。
+
+被拒绝的调用会返回一个带 `isError` 的工具结果，用一句话说明该怎么办；Agent 会被告知不要自动重试被拒绝或被否决的调用。
 
 ```toml
-# ai-remote.toml（被控端）
+# ai-remote.toml（被控端），被控端启动时读取
 [host]
 name = "office-pc"
 approval_timeout_secs = 60
@@ -105,58 +144,94 @@ principal = "build-bot"
 action = "deny"
 ```
 
+规则格式见 [tools.zh-CN.md](tools.zh-CN.md#8-策略规则)。
+
 ## 7. 被控端工具（M0）
 
-| 工具 | 等级 | 作用 |
+| 工具 | 级别 | 作用 |
 |---|---|---|
-| `system_info` | observe | 操作系统、显示器、会话状态（是否交互会话、是否在控制台、是否锁屏、是否管理员）、你的等级 |
-| `doctor` | observe | 分级体检，给出原因和修复办法（开发中） |
-| `screenshot` | observe | 截取一块显示器，缩放（默认 1280 像素），返回图片和几何信息（开发中） |
-| `zoom` | observe | 按原始分辨率放大截图中的某个区域（开发中） |
-| `list_windows` | observe | 顶层窗口：所属程序、进程号、位置、是否前台（开发中） |
-| `focus_window` | control | 把某个窗口切到前台（开发中） |
-| `mouse` | control | 按截图坐标移动、点击、拖拽、滚动（开发中） |
-| `keyboard` | control | 输入文字、按键和组合键（开发中） |
-| `clipboard_read` / `clipboard_write` | control | 读写文本剪贴板（开发中） |
-| `shell` | admin，需确认 | 带超时执行命令，超时或取消时结束整棵进程树 |
-| `jobs_*` | admin | 带日志的后台任务：查看、等待、结束（开发中） |
-| `<挂载名>_<工具>` | 按白名单 | 挂载 MCP server 的工具（开发中） |
+| `system_info` | observe | 操作系统、显示器、会话状态（是否交互会话、是否在控制台、是否锁屏、是否提升权限）、你的级别 |
+| `doctor` | observe | 分级体检（ok、warn、fail），给出原因和修复办法 |
+| `screenshot` | observe | 截取一块显示器并缩小（默认长边 1280 像素），返回图片和几何信息 |
+| `zoom` | observe | 对之前某张截图中的一块区域，按原始分辨率重新截取 |
+| `list_windows` | observe | 顶层窗口：所属程序、进程号、位置、所在显示器、是否有焦点、是否为浮层 |
+| `focus_window` | control | 把某个窗口切到前台，并如实报告 Windows 是否允许 |
+| `mouse` | control | 移动、点击（单击、双击、三击、右键、中键）、拖拽、滚动 |
+| `keyboard` | control | 输入文字，按键、组合键和按键序列 |
+| `clipboard_read` / `clipboard_write` | control | 读写文本剪贴板（读也要 `control`：剪贴板里常有机密） |
+| `shell` | admin，需审批 | 带超时执行一条命令直到结束；调用结束时整棵进程树一起结束 |
+| `jobs_start` | admin，需审批 | 启动一个后台命令，输出写入日志文件，会话结束后继续运行 |
+| `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | 查看、等待和停止后台任务 |
+| `<挂载名>_<工具>` | 按白名单 | 挂载 MCP server 的工具 |
+
+通过 `ai-remote mcp` 使用时，控制端还会加上 `list_hosts`、`use_host` 两个工具，并给每个被控端工具加一个
+`host` 参数。每个工具的参数、返回值和限制见 [tools.zh-CN.md](tools.zh-CN.md)。
 
 坐标约定：`screenshot` 返回一个截图 ID；`mouse` 接收该截图里的像素坐标，由被控端换算成屏幕坐标。
 模型不需要处理 DPI 缩放和多显示器偏移。
 
+### 输入安全
+
+- 鼠标或键盘调用在发出第一个事件之前就会做完整校验（键名、坐标在截图内且落在某块显示器上、长度上限）。
+- 每个事件发出前都要检查：会话还在、没有打开的审批框、桌面可用，而且目标窗口既不是被控端自己的窗口
+  （审批框、被控端所在的终端），也不是权限更高的进程的窗口（Windows 会悄悄丢掉发给它的输入）。
+- 会锁屏或注销的组合键（win+L、ctrl+alt+del）一律拒绝。
+- 不管发生什么，调用按下的键和鼠标按钮都会在返回前全部松开；输入调用一次只执行一个。
+
 ### 挂载 MCP server
 
 被控端可以把本机的 MCP server 作为子进程启动，并只把**白名单**里的工具经过闸门暴露出去，命名为
-`<挂载名>_<工具>`。ai-remote 就是靠这个复用现成成果，而不是重写一遍：默认的无障碍能力来自
-[cua-driver](https://github.com/trycua/cua)（MIT 许可），它在 Windows 和 macOS 上提供元素级的界面操作。
-上游新版本新增的工具，在加入白名单前一律隐藏；每次启动前都会校验可执行文件的 SHA-256。
+`<挂载名>_<工具>`。ai-remote 就是靠它复用现成的成果，而不是重写一遍：为
+[cua-driver](https://github.com/trycua/cua)（MIT 许可）准备的预置配置，在 Windows 上提供元素级的界面操作。
+server 后续版本新增的工具，加入白名单前一律隐藏；每次启动前都会校验可执行文件的 SHA-256；
+崩溃或卡死的 server 会在下一次调用时按退避策略重启。
 
 ```toml
 [[mount]]
 name = "ui"
-command = "C:/Users/me/AppData/Local/ai-remote/data/host/mounts/cua-driver/cua-driver.exe"
+command = "C:/tools/cua-driver/cua-driver.exe"
 args = ["mcp"]
-sha256 = "..."
+sha256 = "<64 位十六进制>"
+needs_desktop = true
 [mount.tools]
 get_window_state = "observe"
 click = "control"
 launch_app = { level = "control", approve = "ask" }
 ```
 
+这些条目用 `ai-remote mount add`、`add-profile`、`test`、`list`、`remove` 管理。完整说明见
+[tools.zh-CN.md](tools.zh-CN.md#7-挂载-mcp-server)。
+
 ## 8. 进程模型与平台规则
 
-- **被控端必须跑在已登录用户的交互会话里，不能做成系统服务。** Windows 的服务运行在 0 号会话，那里没有桌面：
-  截图全黑，输入没有去处，审批框也弹不出来。`ai-remote host install`（开发中）会注册一个登录时启动的计划任务，
-  以最高权限和交互式令牌运行被控端；同时预先建好防火墙放行规则，免得首次监听时弹出一个无人处理的提示。
-  macOS 上对应的是用户级 LaunchAgent（规划中）。
+- **被控端运行在已登录用户的交互会话里，从不做成系统服务。** Windows 的服务运行在 0 号会话，那里没有桌面：
+  截图全黑，输入没有去处，审批框也弹不出来。
+- **进程。**
+
+  | 进程 | 由谁启动 | 说明 |
+  |---|---|---|
+  | `ai-remote host` | 你，在终端里 | 消息打印在终端；还没有任何配对时打印一张配对票据 |
+  | `ai-remote-hostw` | 登录时由自启项启动 | 没有控制台窗口，日志写到 `host/host.log`；在 Windows 上由一个小守护进程托管，被控端崩溃后自动重启 |
+  | `ai-remote agent` | 命令行或 `ai-remote mcp`，按需启动 | 控制端常驻进程；空闲 30 分钟后自动退出 |
+  | `ai-remote mcp` | MCP 客户端 | 很薄的 stdio 转接进程；多个转接进程共用一个常驻进程 |
+
+  每个配置目录只运行一个被控端：再启动一个，会发现这个配置目录的控制管道已被占用，随即退出。
+- **安装。** `ai-remote host install` 注册后台被控端：在 Windows 上是一个用户登录时触发、以最高权限和交互式令牌
+  运行的计划任务，外加入站防火墙规则，免得首次监听时弹出一个没人处理的提示；在 macOS 上是用户级 LaunchAgent
+  （macOS 被控端本身规划在 M1）。`--dry-run` 会先列出每一处改动。见
+  [operations.zh-CN.md](operations.zh-CN.md#3-运行被控端)。
 - **会话状态如实上报，不靠猜。** `system_info` 和 `doctor` 会说明进程是否在交互会话、是否在控制台、
-  是否以管理员运行、桌面是否已锁定，让 agent 分得清是「我看不见」还是「屏幕上本来就没东西」。
-- **DPI。** Windows 被控端开启了逐显示器 DPI 感知，截图、界面坐标和输入共用同一套物理像素坐标。
-- **控制端进程模型。** `ai-remote agent` 是每个用户一个的常驻进程，持有控制端身份，并对每台被控端保持一条连接。
-  `ai-remote mcp` 是 MCP 客户端启动的轻量转接进程：需要时自动拉起 agent，再把 stdio 转发过去。
-  多个转接进程共用同一个 agent。本地管道只允许本人连接，而且不依赖半关闭（Windows 命名管道不会传递半关闭）。
-- **配置目录。** 所有状态都在用户的配置目录里（可用 `--home` 或 `AI_REMOTE_HOME` 改到别处），
+  是否以管理员权限运行、桌面是否已锁定，让 Agent 分得清是“我看不见”还是“屏幕上本来就没东西”。
+- **DPI。** Windows 被控端开启了逐显示器 DPI 感知（v2），截图、窗口位置和输入共用同一套物理像素坐标。
+- **子进程。** 被控端启动的所有东西（shell 命令、后台任务、挂载的 server、系统工具）都不带控制台窗口；
+  shell 命令和挂载的 server 会连同整棵进程树一起结束。后台任务是有意为之的例外：它们在会话结束后继续运行，
+  被控端重启后会重新接管仍在运行的任务。但只有上层每一个作业对象（job object）都允许脱离，它们才能比被控端进程
+  本身活得更久。Windows 后台被控端由任务计划程序启动，而任务计划程序的作业对象不允许脱离，所以它停止或重启时，
+  它启动的后台任务也会结束；在终端里启动的被控端通常能让任务继续存活（见 [tools.zh-CN.md](tools.zh-CN.md#512-后台任务)）。
+- **控制端进程模型。** `ai-remote agent` 持有控制端身份，并对每台被控端保持一条连接。`ai-remote mcp`
+  是 MCP 客户端启动的进程：需要时自动拉起常驻进程，再把请求转发过去。本地管道不依赖半关闭
+  （Windows 命名管道不会传递半关闭）。
+- **配置目录。** 所有状态都在每个用户自己的配置目录里（可用 `--home` 或 `AI_REMOTE_HOME` 改到别处），
   方便在一台机器上同时跑多个身份做测试。
 
 ## 9. 复用了哪些组件
@@ -166,13 +241,16 @@ launch_app = { level = "control", approve = "ask" }
 | 点对点 QUIC、打洞、中继 | iroh（n0） | MIT / Apache-2.0 |
 | 配对、闸门、撤销、本地管道 | mcpmesh-node（锁定版本，见下文） | MIT / Apache-2.0 |
 | MCP 协议 | rmcp（官方 Rust SDK） | Apache-2.0 |
-| 截屏 | xcap | Apache-2.0 |
+| 截屏、窗口列表 | xcap | Apache-2.0 |
 | 输入模拟 | enigo | MIT |
+| 剪贴板 | arboard | MIT / Apache-2.0 |
 | 图片缩放与编码 | image | MIT / Apache-2.0 |
 | 进程树管理 | process-wrap | MIT / Apache-2.0 |
 | 原生对话框 | rfd | MIT |
 | 系统信息 | sysinfo | MIT |
-| 无障碍树（挂载） | cua-driver | MIT |
+| 防火墙规则（读取） | windows_firewall | MIT / Apache-2.0 |
+| 日志轮转 | file-rotate | MIT |
+| 无障碍界面树（挂载） | cua-driver | MIT |
 
 mcpmesh 0.58.0 锁定了 iroh 1.2、rmcp 3.1，以及一个已被作者撤回的 iroh-blobs 0.103.0。ai-remote 使用的
 fork 只改了这三个版本号（iroh 1.3.0、rmcp 3.5.1、iroh-blobs 0.103.1），mcpmesh 自带的测试全部原样通过。
@@ -182,11 +260,13 @@ fork 只改了这三个版本号（iroh 1.3.0、rmcp 3.5.1、iroh-blobs 0.103.1�
 
 ```
 crates/
-  ar-core/        配置目录布局、设备密钥、权限等级、被控端配置、结果预算
-  ar-net/         传输层封装（mcpmesh + iroh）、本地进程间通信
-  ar-host/        被控端：闸门、审批、审计、MCP 服务、工具、挂载、平台信息
-  ar-controller/  agent、聚合 MCP 服务、stdio 转接
-  ai-remote/      `ai-remote` 命令行
+  ar-core/        配置目录布局、设备密钥、权限级别、被控端配置、结果预算
+  ar-net/         传输层封装（mcpmesh + iroh）、拒绝原因、本地进程间通信
+  ar-host/        被控端：闸门、审批、审计、MCP 服务、工具、挂载、体检、
+                  安装（登录自启 + 防火墙）、平台信息
+    profiles/     挂载预置配置（cua-driver）
+  ar-controller/  常驻进程 agent、聚合 MCP 服务、stdio 转接
+  ai-remote/      `ai-remote` 命令行，以及无窗口的 `ai-remote-hostw`
 docs/
 assets/brand/     Logo、横幅、演示动画
 ```
@@ -195,8 +275,8 @@ assets/brand/     Logo、横幅、演示动画
 
 | 里程碑 | 范围 |
 |---|---|
-| **M0**（当前） | 命令行；Windows 被控端（屏幕、输入、剪贴板、shell、后台任务、挂载与闸门）；面向 agent 的 MCP 桥；登录自启安装；体检 |
-| M1 | macOS 被控端（ScreenCaptureKit、无障碍、LaunchAgent）、文件传输、交互式终端、密钥存入系统钥匙串、真实桌面上的 CI |
-| M2 | 给人看的实时画面（`screen/1`）、带审批和「AI 正在操作」提示的桌面 App |
-| M3 | iOS 控制端 App（SwiftUI + 通过 UniFFI 复用 Rust 核心），上架 App Store |
+| **M0**（已实现，尚未发布） | 命令行；Windows 被控端（屏幕、输入、剪贴板、shell、后台任务、挂载与闸门）；面向 Agent 的 MCP 桥接；登录自启安装；体检 |
+| M1 | macOS 被控端（ScreenCaptureKit、无障碍、LaunchAgent）、文件传输、交互式终端、密钥存入系统密钥库、真实桌面上的 CI |
+| M2 | 给人看的实时画面（`screen/1`）、带审批和“AI 正在操作”提示的桌面应用 |
+| M3 | iOS 控制端应用（SwiftUI 界面，通过 UniFFI 复用 Rust 核心），上架 App Store |
 | M4 | 可选、可自建的账号服务与中继，设备共享 |

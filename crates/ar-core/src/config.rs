@@ -33,7 +33,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Level, store};
 
+/// Unknown keys are errors everywhere in this file: a misspelled key must stop the host with a
+/// clear message, never be ignored (a misspelled `principal` would widen a rule to every device).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostConfig {
     #[serde(default)]
     pub host: HostSection,
@@ -48,6 +51,7 @@ pub struct HostConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostSection {
     /// Display name shown to controllers; defaults to the machine name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,6 +72,7 @@ fn default_approval_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkSection {
     /// Relay URLs to use instead of the default public relays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -87,6 +92,7 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyRule {
     /// Tool name, `*` wildcards allowed (`shell`, `ui_*`, `*`).
     pub tool: String,
@@ -348,6 +354,24 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn misspelled_keys_are_errors() {
+        // `principle` instead of `principal` must not silently turn into a rule for everyone.
+        let typo = "[[rule]]
+tool = \"shell\"
+action = \"allow\"
+principle = \"bob\"
+";
+        assert!(toml::from_str::<HostConfig>(typo).is_err());
+        assert!(toml::from_str::<HostConfig>("[[rules]]
+tool = \"*\"
+action = \"deny\"
+").is_err());
+        assert!(toml::from_str::<HostConfig>("[host]
+nmae = \"x\"
+").is_err());
+    }
 
     #[test]
     fn glob() {

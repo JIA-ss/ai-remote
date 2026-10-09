@@ -6,9 +6,9 @@
 //! 4. audit record of the decision;
 //! 5. the call itself, cancelled when the session or connection ends or the controller cancels the
 //!    request;
-//! 6. audit record of the outcome;
-//! 7. result budget (large text cut to head and tail, oversized structured content dropped, images
-//!    kept within what model APIs accept; see [`crate::result_budget`]).
+//! 6. result budget (large text cut to head and tail, oversized structured content dropped, images
+//!    kept within what model APIs accept; see [`crate::result_budget`]);
+//! 7. audit record of the outcome (its size is the size after the budget).
 
 use std::time::Instant;
 

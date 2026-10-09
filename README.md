@@ -18,7 +18,7 @@
 ai-remote lets the AI agent you already use operate your other computers. Run a small host on the Windows PC or Mac you want to control and pair it with your own machine once. From then on, any MCP agent (Claude Code, Cursor, or one you wrote) can see the screen, read each window as a tree of named elements, and act on those elements. Your devices connect directly over an encrypted peer-to-peer link. You decide what each device allows, approve anything risky, and can take over at any moment.
 
 > [!NOTE]
-> **Pre-alpha.** Milestone M0 (CLI, Windows host, MCP bridge) is in progress. Nothing is released, it is not ready for real machines, and commands may change. Star or watch the repository to follow along, or open an issue to help shape the design.
+> **Pre-alpha.** Milestone M0 (CLI, Windows host, MCP bridge) is implemented and being tested. Nothing is released yet, it is not ready for real machines, and commands may change. Star or watch the repository to follow along, or open an issue to help shape the design.
 
 <p align="center">
   <picture>
@@ -69,11 +69,11 @@ To export, the agent calls `click e4`. The host finds that button wherever it is
   </picture>
 </p>
 
-1. **`ai-remote host`** runs on each machine you want to control. It offers that machine's screen, UI tree, input, windows, and shell as MCP tools (file tools come in M1), checks every call against the device's level, and writes the audit log.
+1. **`ai-remote host`** runs on each machine you want to control. It offers that machine's screen, input, windows, clipboard, shell, and background jobs as MCP tools, plus the tools of local MCP servers you mount, such as an accessibility-tree driver for element-level UI actions (file tools come in M1). It checks every call against the device's level and writes the audit log.
 2. **`ai-remote mcp`** runs next to your agent and bridges it to every host you have paired. A desktop app and an iOS app come later.
 3. The two ends find each other by public key and talk over QUIC. The relay is only a fallback and cannot read the traffic.
 
-The full design is in [docs/architecture.md](docs/architecture.md). It is also available in [Chinese](docs/architecture.zh-CN.md).
+The full design is in [docs/architecture.md](docs/architecture.md). It is also available in [Chinese](docs/architecture.zh-CN.md). Every tool an agent gets, with its parameters and limits, is described in [docs/tools.md](docs/tools.md).
 
 ## Quickstart
 
@@ -101,6 +101,8 @@ claude mcp add ai-remote -- ai-remote mcp
 
 Any MCP client that can start a stdio server works the same way: point it at `ai-remote mcp`.
 
+To start the host at logon, check a machine with `ai-remote doctor`, or find out why a call was refused, see [docs/operations.md](docs/operations.md).
+
 ### What you can ask for
 
 - *"On office-pc, export the Q3 report as a PDF and share it with Finance."*
@@ -120,20 +122,20 @@ ai-remote treats the agent as a guest on your machine. The owner sets the rules,
 
 Give each device the lowest level that does the job: `observe` to ask about the screen, `control` to operate apps, `admin` for setup and maintenance.
 
-- **Approvals.** Risky actions, such as a shell command that deletes files, pause until the owner approves or denies them. The approvals interface is planned for M1.
+- **Approvals.** Risky actions, such as a shell command that deletes files, pause until the owner approves or denies them in a native prompt on the host. Nobody there, or no answer in time, means no. Approving from the desktop app and your phone comes later.
 - **Audit log.** Every action is recorded with who did it, what it touched, and the result.
 - **Take over and revoke.** You can take the controls back at any moment, and unpair a device to cut its access completely.
 - **Pairing and encryption.** Devices pair with a one-time ticket and are identified by their keys. Traffic is end-to-end encrypted, including when it passes through a relay.
 
-These levels are the planned defaults and may be refined during M0 and M1.
+These are the default levels and may be refined before the first release.
 
 ## Roadmap
 
 | Milestone | What ships | Status |
 | :-- | :-- | :-- |
-| **M0** | CLI, Windows host, MCP bridge | In progress |
-| **M1** | macOS host, file tools, approvals interface | Planned |
-| **M2** | Live video for humans, desktop app | Planned |
+| **M0** | CLI, Windows host, MCP bridge | Implemented, not released |
+| **M1** | macOS host, file tools | Planned |
+| **M2** | Desktop app with live view and approvals | Planned |
 | **M3** | iOS controller app on the App Store | Planned |
 | **M4** | Optional account service, self-hosted relay | Planned |
 

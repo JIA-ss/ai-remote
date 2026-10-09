@@ -130,7 +130,6 @@ fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
 /// Runs the host as a child and restarts it after an abnormal exit; a clean stop ends both.
 #[cfg(windows)]
 fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
-    use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
 
     log_appending(log_path);
     let exe = match std::env::current_exe() {
@@ -151,16 +150,12 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
         let mut backoff = Backoff::default();
         loop {
             let mut cmd = tokio::process::Command::new(&exe);
-            cmd.arg("--home").arg(profile.root()).arg("--supervised");
-            // The child is a windowless program too, so it needs no console flags. Kill-on-close
-            // job: if this supervisor ends (the task is ended, or it dies), so does the host.
-            let mut wrap = CommandWrap::from(cmd);
-            wrap.wrap(KillOnDrop).wrap(JobObject);
+            cmd.arg("--home").arg(profile.root()).arg("--supervised").kill_on_drop(true);
             let started = std::time::Instant::now();
-            let status = match wrap.spawn() {
-                // Wait for the host process itself; dropping `child` then kills anything it left
-                // in the job (a crash leaves its children behind).
-                Ok(mut child) => child.inner_mut().wait().await,
+            let status = match spawn_in_job(&mut cmd) {
+                // Wait for the host process itself; dropping the job then kills anything it left in
+                // it (a crash leaves its children behind). Background jobs broke away and survive.
+                Ok((mut child, _job)) => child.wait().await,
                 Err(e) => Err(e),
             };
             let delay = backoff.after(started.elapsed());
@@ -173,6 +168,23 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
             tokio::time::sleep(delay).await;
         }
     })
+}
+
+/// Starts the host in its own job object: kill-on-close, so the host and whatever it started die
+/// with this supervisor (the task is ended, or it dies), and breakaway allowed, so background jobs
+/// the host starts with `CREATE_BREAKAWAY_FROM_JOB` outlive a host restart as documented. The
+/// child is windowless too, so it needs no console flags.
+#[cfg(windows)]
+fn spawn_in_job(cmd: &mut tokio::process::Command) -> std::io::Result<(tokio::process::Child, win32job::Job)> {
+    let mut limits = win32job::ExtendedLimitInfo::new();
+    limits.limit_kill_on_job_close().limit_breakaway_ok();
+    let job = win32job::Job::create_with_limit_info(&limits).map_err(std::io::Error::other)?;
+    let child = cmd.spawn()?;
+    let handle = child.raw_handle().ok_or_else(|| std::io::Error::other("the host exited at once"))?;
+    // The host spawns nothing before it has started its transport, so nothing escapes the job
+    // between spawn and assignment.
+    job.assign_process(handle as isize).map_err(std::io::Error::other)?;
+    Ok((child, job))
 }
 
 /// How long to wait before restarting a host that exited abnormally: 5 s, doubling up to five

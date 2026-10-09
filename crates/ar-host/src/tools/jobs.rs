@@ -10,8 +10,11 @@
 //!   process group (Unix) via process-wrap, so `jobs_kill` takes down the whole tree, including
 //!   processes the job left behind after its main process exited. Nothing kills a job when the
 //!   session that started it ends or the host stops: outliving the call is the point of a job. On
-//!   Windows the process breaks away from a job object the host itself may run in when that is
-//!   allowed, because some launchers kill their whole tree when they exit.
+//!   Windows the process breaks away from a job object the host itself may run in when every job
+//!   up the chain allows it, because some launchers kill their whole tree when they exit. A host
+//!   started at logon runs under Task Scheduler, whose job object blocks breakaway, so there a job
+//!   ends when the host process does (the supervisor's job is killed on close); a host started from
+//!   a terminal usually lets jobs survive its restart.
 //! - A job's state follows its main process. Processes it leaves running afterwards (launchers such
 //!   as `start` or `Start-Process` do that) are reported as `leftover_processes`, take a running
 //!   slot and keep the job from being pruned, so they can neither get around [`MAX_RUNNING`] nor
@@ -1087,7 +1090,7 @@ impl JobsStart {
                 "Start a command in the background on the host and return its job id at once. Its stdout and \
                  stderr go to a log on the host (UTF-8); follow it with jobs_log, jobs_wait or jobs_status. Use \
                  this for builds, servers, GUI apps and anything that may take over ~30 s. A job keeps running \
-                 after your session ends and while the host restarts, until it exits or jobs_kill stops it. At \
+                 after your session ends, until it exits or jobs_kill stops it; a restart of the host may end it \n                 (always assume so for a host started at logon), so check jobs_status after a reconnect. At \
                  most 16 jobs run at once; a job whose main process exited but left processes running still \
                  counts. Usually needs the owner's approval.",
             )
