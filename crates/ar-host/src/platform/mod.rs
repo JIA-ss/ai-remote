@@ -52,3 +52,43 @@ pub fn prompt_blocker() -> Option<String> {
     let s = session_state();
     if s.desktop_usable { None } else { s.problem.or_else(|| Some("the desktop is not usable".into())) }
 }
+
+/// The window injected input would reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputTarget {
+    /// The focused window (keyboard input).
+    Focused,
+    /// The window under the pointer as it is now.
+    Pointer,
+    /// The window at a screen coordinate.
+    At(i32, i32),
+}
+
+/// Where injected input aimed at a window would end up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputTargetCheck {
+    /// Nothing known against sending it (also when the target cannot be determined at all).
+    Allowed,
+    /// Sending is allowed, but the OS may discard the input without any error; the text says why, so
+    /// the caller can pass it on.
+    Doubtful(String),
+    /// Must not be sent; the text says why and what to do instead.
+    Refused(String),
+}
+
+/// Checks the window that input aimed at `target` would reach: never the host's own windows (its
+/// approval prompts), and warn when the OS would likely drop the input silently.
+pub fn check_input_target(target: InputTarget) -> InputTargetCheck {
+    #[cfg(windows)]
+    {
+        windows::check_input_target(target)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        InputTargetCheck::Allowed
+    }
+}
+
+#[cfg(windows)]
+pub use self::windows::{char_key, move_pointer};

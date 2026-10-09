@@ -100,14 +100,16 @@ Tool names are stable API. Annotations follow MCP (`readOnlyHint`, `destructiveH
 | `list_windows` | observe | Top-level windows: title, app, pid, bounds, focused/minimized |
 | `ui_tree` | observe | Accessibility tree of the focused window (or a given window) with element refs, roles, names, values, bounds, states, supported actions |
 | `ui_action` | control | Act on an element ref: invoke, set_value, toggle, expand, collapse, select, focus |
-| `mouse` | control | move / click / double_click / right_click / drag / scroll at coordinates in the last screenshot's space |
-| `keyboard` | control | type unicode text or press key combos (`ctrl+l`, `cmd+space`) |
+| `mouse` | control | move / click / double_click / triple_click / right_click / middle_click / drag / scroll at coordinates in a screenshot's space (or screen coordinates) |
+| `keyboard` | control | type unicode text or press key combos and sequences (`ctrl+l`, `cmd+space`, `Down Down Return`); lock / sign-out chords are refused |
 | `focus_window` | control | bring a window to the foreground |
 | `shell` | admin | run a command with timeout, capture stdout/stderr/exit code |
 | `files_*` *(planned)* | admin | list/read/write/transfer files |
 
 Coordinates: `screenshot` returns the mapping from image pixels to screen coordinates; `mouse`
 accepts image-space coordinates by default so a model never has to do DPI or multi-monitor math.
+Input is checked before every event: it pauses while an approval prompt is open, refuses the host's
+own windows and windows of more privileged processes, and always releases held keys and buttons.
 
 ## 7. Safety model
 
