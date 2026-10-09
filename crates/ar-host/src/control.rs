@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use ar_core::{Level, VERSION};
-use ar_net::ipc::Conn;
+use ar_net::{
+    ipc::Conn,
+    refusal::{CLOSE_NO_ACCESS, REASON_NOT_PAIRED},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -69,18 +72,37 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
         HostRequest::Revoke { peer } => {
             let p = mesh.find_peer(&peer).await?;
             mesh.revoke(&p, Some("revoked by the host owner".into())).await?;
-            json!({"peer": p.name, "revoked": true})
+            json!({"peer": p.name, "device": p.principal, "revoked": true})
         }
         HostRequest::Unrevoke { peer } => {
-            let p = mesh.find_peer(&peer).await?;
-            mesh.unrevoke(&p).await?;
-            json!({"peer": p.name, "revoked": false})
+            // A device revoked and then forgotten has no pairing left: find it by its device id.
+            let (name, device) = match mesh.find_peer(&peer).await {
+                Ok(p) => (Some(p.name), p.principal.ok_or_else(|| anyhow!("that peer has no device id"))?),
+                Err(e) => match mesh.find_revoked(&peer).await? {
+                    Some(d) => (d.name, d.principal),
+                    None => return Err(anyhow!("{e:#}; no revoked device matches '{peer}' either")),
+                },
+            };
+            mesh.unrevoke(&device).await?;
+            json!({"peer": name.as_deref().unwrap_or(&device), "device": device, "revoked": false, "paired": name.is_some()})
         }
         HostRequest::Forget { peer } => {
             let p = mesh.find_peer(&peer).await?;
-            mesh.revoke(&p, Some("forgotten by the host owner".into())).await?;
+            // The transport removes every entry with this name and cuts their connections with its
+            // generic "access revoked". Close them first, so the controller hears "not paired: pair
+            // again" instead of being told to wait for an unrevoke that cannot happen.
+            let devices: Vec<String> =
+                mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
+            let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
             mesh.forget(&p).await?;
-            json!({"peer": p.name, "forgotten": true})
+            // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
+            json!({
+                "peer": p.name,
+                "device": p.principal,
+                "forgotten": true,
+                "closed_connections": closed,
+                "still_revoked": p.revoked,
+            })
         }
         HostRequest::Shutdown => {
             shutdown.cancel();

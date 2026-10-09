@@ -52,11 +52,12 @@ enum Command {
     Peers,
     /// [host] Change a controller's level (observe, control, admin or none).
     Level { peer: String, level: String },
-    /// [host] Refuse a controller from now on and cut its live sessions.
+    /// [host] Refuse a controller from now on (even with a new ticket) and cut its live sessions.
     Revoke { peer: String },
-    /// [host] Lift a revocation.
+    /// [host] Lift a revocation (by name, or by device id once the pairing was forgotten).
     Unrevoke { peer: String },
-    /// [host] Remove a controller's pairing entirely.
+    /// [host] Remove a controller's pairing and cut its live sessions; it can come back only with
+    /// a new ticket.
     Forget { peer: String },
     /// [host] Stop the running host.
     StopHost,
@@ -95,7 +96,9 @@ enum Command {
 #[derive(Subcommand)]
 enum HostAction {
     /// Start the host automatically at login, in the background (Windows: a logon task with
-    /// highest privileges plus firewall rules, from an elevated terminal; macOS: a LaunchAgent).
+    /// highest privileges plus firewall rules; macOS: a LaunchAgent). On Windows an administrator
+    /// runs it elevated; a standard user runs it unelevated and leaves the firewall rules to an
+    /// administrator (`--firewall-only`).
     Install {
         /// Print every change without making it.
         #[arg(long)]
@@ -103,12 +106,24 @@ enum HostAction {
         /// Do not start the background host right away.
         #[arg(long)]
         no_start: bool,
+        /// Only add the inbound firewall rules for this installation's host programs (Windows,
+        /// elevated; they apply to every account).
+        #[arg(long, conflicts_with = "no_start")]
+        firewall_only: bool,
+        /// Install even though another account uses the desktop (the host then starts at this
+        /// account's next logon).
+        #[arg(long)]
+        force: bool,
     },
-    /// Remove the autostart entry and firewall rules, and stop the running host.
+    /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
+    /// another profile's autostart still uses them.
     Uninstall {
         /// Print every change without making it.
         #[arg(long)]
         dry_run: bool,
+        /// Only remove the firewall rules (Windows, elevated).
+        #[arg(long)]
+        firewall_only: bool,
     },
     /// Show whether autostart is installed, the firewall rules, and whether the host runs.
     Status,
@@ -146,11 +161,12 @@ async fn run(cli: Cli) -> Result<()> {
             let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
             ar_host::run(profile, opts).await
         }
-        Command::Host { action: Some(HostAction::Install { dry_run, no_start }), .. } => {
-            hostops::host_install(&profile, dry_run, no_start).await
+        Command::Host { action: Some(HostAction::Install { dry_run, no_start, firewall_only, force }), .. } => {
+            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force };
+            hostops::host_install(&profile, flags).await
         }
-        Command::Host { action: Some(HostAction::Uninstall { dry_run }), .. } => {
-            hostops::host_uninstall(&profile, dry_run).await
+        Command::Host { action: Some(HostAction::Uninstall { dry_run, firewall_only }), .. } => {
+            hostops::host_uninstall(&profile, dry_run, firewall_only).await
         }
         Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
         Command::Doctor => hostops::doctor(&profile, json_out).await,
@@ -175,10 +191,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for p in peers {
                 println!(
-                    "{:<24} level={:<8} {}",
+                    "{:<24} level={:<8} {}{}",
                     p["name"].as_str().unwrap_or("?"),
                     p["level"].as_str().unwrap_or("none"),
-                    p["principal"].as_str().unwrap_or("")
+                    p["principal"].as_str().unwrap_or(""),
+                    if p["revoked"].as_bool() == Some(true) { "  REVOKED" } else { "" }
                 );
             }
             Ok(())
@@ -197,11 +214,24 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Unrevoke { peer } => {
             let v = host_request(&profile, HostRequest::Unrevoke { peer }).await?;
-            print_result(json_out, &v, &format!("{} is no longer revoked", v["peer"].as_str().unwrap_or("?")))
+            let mut msg = format!("{} is no longer revoked", v["peer"].as_str().unwrap_or("?"));
+            if v["paired"].as_bool() == Some(false) {
+                msg.push_str("; it is not paired, so it needs a new ticket (`ai-remote pair-code`) to connect again");
+            }
+            print_result(json_out, &v, &msg)
         }
         Command::Forget { peer } => {
             let v = host_request(&profile, HostRequest::Forget { peer }).await?;
-            print_result(json_out, &v, &format!("forgot {}", v["peer"].as_str().unwrap_or("?")))
+            let name = v["peer"].as_str().unwrap_or("?");
+            let mut msg = format!("forgot {name}; it can come back only with a new ticket");
+            if v["still_revoked"].as_bool() == Some(true) {
+                msg = format!(
+                    "forgot {name}. Its device stays refused because it was revoked; to let it pair again later, run: \
+                     ai-remote unrevoke {}",
+                    v["device"].as_str().unwrap_or("<device id>")
+                );
+            }
+            print_result(json_out, &v, &msg)
         }
         Command::StopHost => {
             let v = host_request(&profile, HostRequest::Shutdown).await?;

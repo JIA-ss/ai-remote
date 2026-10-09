@@ -3,7 +3,10 @@
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
     Globalization::{CP_OEMCP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar},
-    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+    Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_ELEVATION_TYPE, TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
+        TokenElevation, TokenElevationType, TokenElevationTypeDefault,
+    },
     System::{
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME},
@@ -57,25 +60,38 @@ fn current_session_id() -> Option<u32> {
     unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut id) }.ok().map(|_| id)
 }
 
-fn is_elevated() -> Option<bool> {
+/// Reads one fixed-size piece of this process's token. `T` must be the structure Windows returns
+/// for `class` (`TOKEN_ELEVATION` for `TokenElevation`, ...).
+fn token_info<T: Default>(class: TOKEN_INFORMATION_CLASS) -> Option<T> {
     let mut token = HANDLE::default();
     // SAFETY: the pseudo handle needs no closing; `token` is closed below.
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
-    let mut elevation = TOKEN_ELEVATION::default();
+    let mut value = T::default();
     let mut len = 0u32;
-    // SAFETY: buffer and length describe `elevation`.
+    // SAFETY: buffer and length describe `value`.
     let ok = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            Some(&mut elevation as *mut _ as *mut _),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut len,
-        )
+        GetTokenInformation(token, class, Some(&mut value as *mut T as *mut _), std::mem::size_of::<T>() as u32, &mut len)
     };
     // SAFETY: `token` was opened above.
     let _ = unsafe { CloseHandle(token) };
-    ok.ok().map(|_| elevation.TokenIsElevated != 0)
+    ok.ok().map(|_| value)
+}
+
+fn is_elevated() -> Option<bool> {
+    token_info::<TOKEN_ELEVATION>(TokenElevation).map(|e| e.TokenIsElevated != 0)
+}
+
+pub fn rights() -> super::Rights {
+    use super::Rights;
+    if is_elevated() == Some(true) {
+        return Rights::Elevated;
+    }
+    // A split ("limited") token belongs to an administrator; a plain unelevated token, with UAC on,
+    // to a standard user.
+    match token_info::<TOKEN_ELEVATION_TYPE>(TokenElevationType) {
+        Some(t) if t == TokenElevationTypeDefault => Rights::StandardUser,
+        _ => Rights::AdminNotElevated,
+    }
 }
 
 /// The awareness the process actually ended up with: a manifest or compatibility shim can override
@@ -133,5 +149,17 @@ fn input_desktop_name() -> Option<String> {
         ok.ok()?;
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rights_agree_with_elevation() {
+        let r = rights();
+        println!("rights: {r:?}");
+        assert_eq!(r == crate::platform::Rights::Elevated, is_elevated() == Some(true));
     }
 }

@@ -94,9 +94,16 @@ iOS can only be a controller: iOS does not allow a third-party app to control th
   (the transport's 401 for unknown or revoked devices, the host's 403 for "not paired" or "no
   access level", code 0 when the host stops). The controller maps them to plain language for the
   agent ("access revoked by the host", "not paired", "no access level", "host offline or
-  unreachable", "the host closed the connection") with the fix, and does not redial into a refusal
-  (`ar_net::refusal`). It remembers a revocation, because later dials only meet the gate's generic
-  401.
+  unreachable" with the raw cause, "the host closed the connection") with the fix, and does not
+  redial into a refusal (`ar_net::refusal`). Refusals the host owner must resolve name the
+  controller's device id, since its name on the host is the host's choice. The controller
+  remembers a revocation, because later dials only meet the gate's generic 401; it cannot tell
+  whether the pairing was removed afterwards, so that message names both remedies.
+- Calls in flight: a call whose connection ends while it runs is never re-sent (its request may
+  already have run on the host); the agent is told the outcome is unknown and to check the host's
+  state first. Starting a session has no side effects, so a session start on a kept connection
+  that gets no answer within a few seconds (the host crashed and the connection has not timed out
+  yet) is retried once on a fresh connection.
 
 ## 6. Host tool surface (v0)
 
@@ -128,10 +135,14 @@ accepts image-space coordinates by default so a model never has to do DPI or mul
   is refused.
 - **Audit log**: every tool call is appended to `audit.jsonl` on the host (time, peer, tool,
   argument summary, outcome, duration).
-- **Revocation & kill switch**: `ai-remote revoke <peer>` refuses a peer and cuts its live
-  connections, `ai-remote forget <peer>` also drops the pairing; stopping the host ends everything
-  and closes every controller connection with a "host stopping" reason. A global hotkey and
-  on-screen "AI is controlling" indicator are planned.
+- **Revocation & kill switch**: `ai-remote revoke <peer>` refuses a device from now on, even with
+  a new ticket, and cuts its live connections ("access revoked"); `unrevoke` lifts it.
+  `ai-remote forget <peer>` removes the pairing and cuts the live connections with "not paired"
+  (the host closes them itself before the transport would close them as "revoked"): the device can
+  come back only with a new ticket. Forgetting a revoked device keeps the refusal; `unrevoke
+  <device id>` lifts it later. Stopping the host ends everything and closes every controller
+  connection with a "host stopping" reason. A global hotkey and on-screen "AI is controlling"
+  indicator are planned.
 - **Prompt injection awareness**: on-screen text is untrusted data. Tool results that contain
   screen text are labeled as such so agents can treat them accordingly.
 
@@ -144,17 +155,37 @@ shown. So the host is never a service; it runs as one of two programs of the sam
 | Process | Started by | Output |
 |---|---|---|
 | `ai-remote host` | the user, in a terminal | terminal (stdout), logs on stderr; prints a pairing ticket when nobody is paired |
-| `ai-remote-hostw` | the autostart entry, at login | no console window (Windows GUI subsystem); everything goes to `<profile>/host/host.log` (one rotated copy kept); never mints a ticket |
+| `ai-remote-hostw` | the autostart entry, at login | no console window (Windows GUI subsystem); everything goes to `<profile>/host/host.log` (rotated at 8 MiB, two earlier files kept); never mints a ticket |
 | `ai-remote agent` | the CLI or `ai-remote mcp`, on demand | `<profile>/controller/controller.log`; exits after 30 idle minutes |
 
-Both host programs take the control endpoint of their profile, so only one host runs per profile.
-Its `status` reports the pid (a restart is verified by a changed pid) and whether it runs in the
-background.
+Both host programs take the control endpoint of their profile, so only one host runs per profile;
+a second start claims it first and quits (exit code 3) without touching the running host or its
+log. Its `status` reports the pid (a restart is verified by a changed pid) and whether it runs in
+the background.
+
+On Windows, `ai-remote-hostw` started at login is a small supervisor that runs the host as a child
+process in a kill-on-close job object: an abnormal exit (crash, panic, error) is restarted after
+5 s, backing off to 5 minutes; a clean stop (`ai-remote stop-host`) ends both. Task Scheduler's own
+"restart on failure" cannot do this: it only covers a task that fails to launch, never an exit
+code. On macOS launchd's `KeepAlive` gives the same behaviour.
+
+The background host has no console, so every console program it starts (shell commands, system
+tools, mounted MCP servers, background jobs) must be created without a console window, or one pops
+up on the user's desktop: child processes go through `platform::no_console_window` or
+`platform::process_tree` (which also kills the whole tree when the handle drops). With a job
+object, creation flags must be passed through the wrapper: the job object replaces flags set on
+the command itself.
 
 **`ai-remote host install`** registers the background host (`--dry-run` prints every change,
 including the full task definition; repeating it is safe and is the upgrade path):
 
-- **Windows**, from an elevated terminal (the install checks and explains):
+- **Windows**: an administrator runs it from an elevated terminal (the install checks and
+  explains). A standard user runs it unelevated: that registers their task and skips the firewall
+  steps, which an administrator adds with `ai-remote host install --firewall-only` (the rules
+  cover the programs, for every account). An elevated terminal of another account than the
+  desktop's user (a standard user's terminal elevated with an administrator's credentials) is
+  refused, since the task would start at the wrong account's logon with the wrong profile;
+  `--force` installs for that account anyway.
   - A Task Scheduler task `\ai-remote\host-<profile id>`, registered with `schtasks.exe` (absolute
     path) from an XML definition: logon trigger of the current user (by SID), interactive token,
     highest privileges (so the host can drive elevated windows), no execution time limit (the
@@ -172,8 +203,11 @@ including the full task definition; repeating it is safe and is the upgrade path
   Interactive, Aqua sessions only), loaded with `launchctl bootstrap`. No elevation.
 
 `ai-remote host uninstall` stops the running host, deletes the task (or LaunchAgent) and the
-firewall rules; `ai-remote host status` shows the entry, what it runs, whether that is this
-installation and profile, the firewall rules per program, and whether the host runs.
+firewall rules, unless another profile's task still starts the same background host (the rules
+are per program, so they stay for it); a standard user's uninstall leaves the rules to an
+administrator (`--firewall-only`). `ai-remote host status` shows the entry, what it runs, whether
+that is this installation and profile, the firewall rules per program (including block rules that
+cover every program), and whether the host runs.
 
 **`ai-remote doctor`** asks the running host for its graded preflight (the same checks as the
 `doctor` tool, seen from the host's own session, token and network); without a running host it

@@ -32,8 +32,9 @@ use crate::{approval::Approver, audit::AuditLog, tools::Registry};
 pub use control::HostRequest;
 
 /// Log filter for a running host when `AI_REMOTE_LOG` is not set: our own events, only problems
-/// from the transport. The firewall reader warns about every rule it cannot model; not useful here.
-pub const DEFAULT_LOG_FILTER: &str = "info,mcpmesh=warn,iroh=warn,noq=warn,windows_firewall=error";
+/// from the transport and the MCP library (which logs every session's full peer info at info).
+/// The firewall reader warns about every rule it cannot model; not useful here.
+pub const DEFAULT_LOG_FILTER: &str = "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn,windows_firewall=error";
 
 /// Everything a running host shares between sessions.
 pub struct HostState {
@@ -48,6 +49,7 @@ pub struct HostState {
     background: bool,
     /// Cancelled when the host stops.
     stopping: CancellationToken,
+    live: protocol::LiveConns,
 }
 
 impl HostState {
@@ -83,6 +85,11 @@ impl HostState {
     /// Cancelled when the host is stopping.
     pub fn stopping(&self) -> &CancellationToken {
         &self.stopping
+    }
+
+    /// Controller connections being served.
+    pub(crate) fn live(&self) -> &protocol::LiveConns {
+        &self.live
     }
 
     fn audit(&self) -> &AuditLog {
@@ -131,22 +138,54 @@ impl Owner {
     }
 }
 
+/// Another host already runs for the profile: not a failure worth retrying.
+#[derive(Debug)]
+pub struct AlreadyRunning(pub std::path::PathBuf);
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a host is already running for this profile ({})", self.0.display())
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
+/// This profile's host slot (its control endpoint). Holding it proves that no other host runs for
+/// the profile, so a second start (a double-click, a script) is turned away before it touches
+/// anything the running host owns, its log included. Needs a tokio runtime context.
+pub struct Claim {
+    listener: ipc::Listener,
+}
+
+impl Claim {
+    /// Fails with [`AlreadyRunning`] when a host already holds the slot.
+    pub fn acquire(profile: &Profile) -> Result<Self> {
+        let endpoint = profile.control_endpoint(Role::Host)?;
+        let listener = ipc::Listener::bind(&endpoint).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                anyhow::Error::new(AlreadyRunning(profile.root().to_path_buf()))
+            } else {
+                anyhow!("bind control endpoint {}: {e}", endpoint.display())
+            }
+        })?;
+        Ok(Self { listener })
+    }
+}
+
 /// Runs the host until Ctrl+C or a `shutdown` request on the control channel.
 pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
+    let claim = Claim::acquire(&profile)?;
+    run_claimed(profile, claim, opts).await
+}
+
+/// [`run`] with the profile's slot already claimed.
+pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> Result<()> {
     platform::init_process();
     let owner = Owner { background: opts.background };
     let config_path = profile.host_config_path()?;
     let config = HostConfig::load(&config_path)?;
     let name = config.host.name.clone().unwrap_or_else(machine_name);
-
-    let endpoint = profile.control_endpoint(Role::Host)?;
-    let mut listener = ipc::Listener::bind(&endpoint).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrInUse {
-            anyhow!("a host is already running for this profile ({})", profile.root().display())
-        } else {
-            anyhow!("bind control endpoint {}: {e}", endpoint.display())
-        }
-    })?;
+    let mut listener = claim.listener;
 
     let device_key = identity::load_or_create(&profile.identity_path(Role::Host)?)?;
     let mesh = Mesh::start(MeshOptions {
@@ -172,6 +211,7 @@ pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
         registry,
         background: opts.background,
         stopping: CancellationToken::new(),
+        live: protocol::LiveConns::default(),
     });
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.

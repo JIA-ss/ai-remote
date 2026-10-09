@@ -8,7 +8,7 @@ use ar_core::{Profile, Role};
 use ar_host::{
     HostRequest,
     doctor::{self, Grade, Report},
-    install::{self, Action, Plan},
+    install::{self, Action, Plan, Scope},
 };
 use ar_net::ipc::Conn;
 use serde_json::{Value, json};
@@ -32,17 +32,48 @@ async fn wait_for_host(profile: &Profile, timeout: Duration) -> Option<Value> {
     }
 }
 
-pub async fn host_install(profile: &Profile, dry_run: bool, no_start: bool) -> Result<()> {
+/// Flags of `ai-remote host install`.
+pub struct InstallFlags {
+    pub dry_run: bool,
+    pub no_start: bool,
+    pub firewall_only: bool,
+    pub force: bool,
+}
+
+pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> {
+    let scope = if flags.firewall_only { Scope::FirewallOnly } else { Scope::All };
     let p = profile.clone();
-    let plan = tokio::task::spawn_blocking(move || install::install_plan(&p)).await??;
-    print_plan(&plan, dry_run);
-    if dry_run {
+    let plan = tokio::task::spawn_blocking(move || install::install_plan(&p, scope)).await??;
+    print_plan(&plan, flags.dry_run);
+    if let Some(blocker) = &plan.blocker {
+        if !flags.dry_run && !flags.force {
+            bail!("{blocker}");
+        }
+        println!("Warning: {blocker}\n");
+    }
+    if flags.dry_run {
         return Ok(());
     }
-    require_elevation(&plan, profile, "install")?;
-    execute(&plan)?;
+    let with_admin = admin_steps_allowed(&plan, profile, "install", scope)?;
+    execute(&plan, with_admin)?;
+    if scope == Scope::FirewallOnly {
+        println!("\nThe firewall rules are in place.");
+        return Ok(());
+    }
     println!("\nAutostart is installed.");
-    if no_start {
+    if !with_admin && plan.has_admin_steps() {
+        println!(
+            "\nThe firewall rules need an administrator. Ask one to run this from an elevated terminal (any \
+             administrator account):\n\n  {} host install --firewall-only\n\nUntil then Windows asks on the desktop \
+             whether to allow the host at its first incoming connection; an unanswered prompt blocks it.",
+            this_exe()
+        );
+    }
+    if plan.blocker.is_some() {
+        println!("It starts when this account logs on; it is not started now because the desktop belongs to another account.");
+        return Ok(());
+    }
+    if flags.no_start {
         return Ok(());
     }
     if let Some(host) = running_host(profile).await {
@@ -71,10 +102,11 @@ pub async fn host_install(profile: &Profile, dry_run: bool, no_start: bool) -> R
     Ok(())
 }
 
-pub async fn host_uninstall(profile: &Profile, dry_run: bool) -> Result<()> {
+pub async fn host_uninstall(profile: &Profile, dry_run: bool, firewall_only: bool) -> Result<()> {
+    let scope = if firewall_only { Scope::FirewallOnly } else { Scope::All };
     let p = profile.clone();
-    let plan = tokio::task::spawn_blocking(move || install::uninstall_plan(&p)).await??;
-    let running = running_host(profile).await;
+    let plan = tokio::task::spawn_blocking(move || install::uninstall_plan(&p, scope)).await??;
+    let running = if scope == Scope::All { running_host(profile).await } else { None };
     print_plan(&plan, dry_run);
     if let Some(host) = &running {
         println!("  - Also stops the running host (pid {}).", host["pid"]);
@@ -82,13 +114,32 @@ pub async fn host_uninstall(profile: &Profile, dry_run: bool) -> Result<()> {
     if dry_run {
         return Ok(());
     }
-    require_elevation(&plan, profile, "uninstall")?;
+    let with_admin = admin_steps_allowed(&plan, profile, "uninstall", scope)?;
     if running.is_some() {
         stop_host(profile).await?;
     }
-    execute(&plan)?;
+    execute(&plan, with_admin)?;
+    if scope == Scope::FirewallOnly {
+        println!("\nDone.");
+        return Ok(());
+    }
     println!("\nAutostart is removed.");
+    if !with_admin && plan.has_admin_steps() {
+        println!(
+            "The firewall rules stay: removing them needs an administrator. One can run, from an elevated terminal:\n\n  \
+             {} host uninstall --firewall-only",
+            this_exe()
+        );
+    }
     Ok(())
+}
+
+/// This installation's CLI by full path, quoted, for commands another account (an administrator)
+/// should run: the firewall rules name these very programs.
+fn this_exe() -> String {
+    install::Binaries::locate()
+        .map(|b| install::quote_arg(&b.cli.to_string_lossy()))
+        .unwrap_or_else(|_| "ai-remote".into())
 }
 
 /// Asks the host to stop and waits until it no longer answers.
@@ -142,6 +193,12 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
                     format!("; BLOCKED by {}", fw.block.iter().map(|b| format!("\"{b}\"")).collect::<Vec<_>>().join(", "))
                 };
                 println!("firewall:  {}: {allow}{block}", fw.program);
+            }
+            if let Some(fw) = s.firewall.first().filter(|fw| !fw.block_all.is_empty()) {
+                println!(
+                    "firewall:  inbound UDP of every program is blocked by {} (beats the allow rules; review in wf.msc)",
+                    fw.block_all.iter().map(|b| format!("\"{b}\"")).collect::<Vec<_>>().join(", ")
+                );
             }
             if let Some(e) = &s.firewall_error {
                 println!("firewall:  unknown ({e})");
@@ -225,25 +282,48 @@ fn print_plan(plan: &Plan, dry_run: bool) {
         }
     }
     if plan.needs_elevation {
-        println!("\nRun it without --dry-run from an elevated terminal to apply.");
-    }
-}
-
-fn require_elevation(plan: &Plan, profile: &Profile, verb: &str) -> Result<()> {
-    if plan.needs_elevation && ar_host::platform::session_state().elevated == Some(false) {
-        bail!(
-            "this needs an elevated terminal: the logon task runs with highest privileges and firewall rules apply to \
-             the whole machine.\nOpen one (right-click the terminal, \"Run as administrator\") and run:\n\n  ai-remote \
-             --home {} host {verb}\n\nAdd --dry-run to see every change first.",
-            install::quote_arg(&profile.root().to_string_lossy())
+        println!(
+            "\nRun it without --dry-run to apply: from an elevated terminal if this account is an administrator. A \
+             standard user's run does the rest and leaves the steps marked \"administrator\" to `--firewall-only` \
+             in an administrator's elevated terminal."
         );
     }
-    Ok(())
 }
 
-fn execute(plan: &Plan) -> Result<()> {
+/// Whether this process runs the plan's administrator steps too (`Ok(false)`: a standard user
+/// runs the rest). An administrator who is not elevated is sent to an elevated terminal: their
+/// logon task needs it for "highest privileges", and so do the firewall rules.
+fn admin_steps_allowed(plan: &Plan, profile: &Profile, verb: &str, scope: Scope) -> Result<bool> {
+    use ar_host::platform::Rights;
+    if !plan.needs_elevation {
+        return Ok(true);
+    }
+    let firewall_flag = if scope == Scope::FirewallOnly { " --firewall-only" } else { "" };
+    match ar_host::platform::rights() {
+        Rights::Elevated => Ok(true),
+        Rights::AdminNotElevated => bail!(
+            "this needs an elevated terminal: the logon task runs with highest privileges and firewall rules apply to \
+             the whole machine.\nOpen one (right-click the terminal, \"Run as administrator\") and run:\n\n  ai-remote \
+             --home {} host {verb}{firewall_flag}\n\nAdd --dry-run to see every change first.",
+            install::quote_arg(&profile.root().to_string_lossy())
+        ),
+        Rights::StandardUser if scope == Scope::FirewallOnly => bail!(
+            "firewall rules apply to the whole machine and need an administrator. Ask one to run this from an \
+             elevated terminal (any administrator account):\n\n  {} host {verb} --firewall-only",
+            this_exe()
+        ),
+        Rights::StandardUser => Ok(false),
+    }
+}
+
+/// Runs the plan's steps in order; administrator steps only when `with_admin`.
+fn execute(plan: &Plan, with_admin: bool) -> Result<()> {
     for (i, action) in plan.actions.iter().enumerate() {
         println!("  {}. {}", i + 1, action.describe().replace('\n', "\n   "));
+        if action.needs_admin() && !with_admin {
+            println!("     skipped: needs an administrator");
+            continue;
+        }
         match action.execute() {
             Ok(None) => println!("     ok"),
             Ok(Some(note)) => println!("     skipped: {note}"),

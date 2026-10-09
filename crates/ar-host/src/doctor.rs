@@ -281,6 +281,20 @@ fn grade_firewall(rules: &ProgramRules) -> Check {
         )
         .fix("run `ai-remote host install` from an elevated terminal; it removes them");
     }
+    if !rules.block_all.is_empty() {
+        // A warning, not a failure: the rule may be scoped to addresses or network profiles that
+        // this check does not read.
+        return Check::new(
+            "firewall",
+            Grade::Warn,
+            format!(
+                "block rule(s) {} refuse inbound UDP for every program, which beats any allow rule: direct connections \
+                 to {program} may be refused and traffic fall back to the relay",
+                rules.block_all.iter().map(|b| format!("\"{b}\"")).collect::<Vec<_>>().join(", ")
+            ),
+        )
+        .fix("review them in Windows Defender Firewall with Advanced Security (wf.msc); ai-remote does not change rules of other programs");
+    }
     if !rules.allows_udp() {
         return Check::new(
             "firewall",
@@ -473,6 +487,7 @@ mod tests {
             program: r"C:\x\ai-remote-hostw.exe".into(),
             allow: allow.iter().map(|s| s.to_string()).collect(),
             block: block.iter().map(|s| s.to_string()).collect(),
+            block_all: Vec::new(),
         };
         assert_eq!(grade_firewall(&rules(&["UDP", "TCP"], &[])).grade, Grade::Ok);
         assert_eq!(grade_firewall(&rules(&["TCP"], &[])).grade, Grade::Warn);
@@ -480,6 +495,11 @@ mod tests {
         let blocked = grade_firewall(&rules(&["UDP"], &["ai-remote-hostw"]));
         assert_eq!(blocked.grade, Grade::Fail);
         assert!(blocked.summary.contains("\"ai-remote-hostw\""));
+        // A block rule for every program beats our allow rule.
+        let everyone = ProgramRules { block_all: vec!["no inbound udp".into()], ..rules(&["UDP", "TCP"], &[]) };
+        let check = grade_firewall(&everyone);
+        assert_eq!(check.grade, Grade::Warn);
+        assert!(check.summary.contains("\"no inbound udp\""));
     }
 
     #[test]

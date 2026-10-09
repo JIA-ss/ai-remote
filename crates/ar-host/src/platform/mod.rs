@@ -30,6 +30,31 @@ pub struct SessionState {
     pub problem: Option<String>,
 }
 
+/// What this process may change on the machine (Windows; elsewhere always [`Rights::Elevated`]
+/// as far as ai-remote is concerned: nothing it installs needs more).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rights {
+    /// Elevated (or an administrator without UAC): may do everything.
+    Elevated,
+    /// An administrator's unelevated token: elevating is one prompt away.
+    AdminNotElevated,
+    /// A standard user: can register their own logon task, not machine-wide firewall rules.
+    StandardUser,
+}
+
+/// This process's [`Rights`]; an unreadable token counts as an unelevated administrator, so the
+/// caller asks for elevation rather than attempting less.
+pub fn rights() -> Rights {
+    #[cfg(windows)]
+    {
+        windows::rights()
+    }
+    #[cfg(not(windows))]
+    {
+        Rights::Elevated
+    }
+}
+
 /// Process-wide setup; call first thing in the host.
 pub fn init_process() {
     #[cfg(windows)]
@@ -64,6 +89,41 @@ pub fn dpi_awareness() -> Option<&'static str> {
     {
         None
     }
+}
+
+/// Prepares a child process so it opens no console window. The background host has no console of
+/// its own, so on Windows every console program it starts (a shell, schtasks, netsh, a mounted MCP
+/// server) would otherwise get a fresh console window popping up on the user's desktop. Every
+/// child the host starts goes through this or [`process_tree`]. For a tokio command, pass
+/// `cmd.as_std_mut()`.
+pub fn no_console_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(::windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// Wraps a command the host's tools run: no console window, and dropping the child kills its whole
+/// process tree (a job object on Windows, a process group elsewhere), so a timeout or the end of a
+/// session leaves nothing behind.
+///
+/// Do not set creation flags on `cmd` itself: the job object replaces them with its own (it
+/// starts the child suspended to enrol it), keeping only flags given through the wrapper here.
+pub fn process_tree(cmd: tokio::process::Command) -> process_wrap::tokio::CommandWrap {
+    use process_wrap::tokio::{CommandWrap, KillOnDrop};
+    let mut wrap = CommandWrap::from(cmd);
+    // Must come before the job object, which reads these and adds its own.
+    #[cfg(windows)]
+    wrap.wrap(process_wrap::tokio::CreationFlags(::windows::Win32::System::Threading::CREATE_NO_WINDOW));
+    wrap.wrap(KillOnDrop);
+    #[cfg(windows)]
+    wrap.wrap(process_wrap::tokio::JobObject);
+    #[cfg(unix)]
+    wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+    wrap
 }
 
 /// Text printed by a console tool (schtasks, netsh): those write the console's OEM code page, not

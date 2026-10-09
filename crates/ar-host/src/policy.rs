@@ -30,7 +30,7 @@ mod tests {
     use super::*;
 
     fn peer(name: &str) -> Peer {
-        Peer { name: name.into(), principal: Some(format!("eid:{name}")), user_id: None, level: None }
+        Peer { name: name.into(), principal: Some(format!("eid:{name}")), user_id: None, level: None, revoked: false }
     }
 
     fn rule(tool: &str, action: Action, principal: Option<&str>) -> PolicyRule {
