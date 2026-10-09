@@ -22,6 +22,7 @@ use crate::{
     audit::{AuditRecord, now_ms},
     policy,
     session::{Session, ToolCtx},
+    tools,
 };
 
 pub async fn call(
@@ -36,7 +37,9 @@ pub async fn call(
     let spec = tool.spec().clone();
     let canonical = serde_json::to_string(&args).unwrap_or_default();
     let args_hash = blake3::hash(canonical.as_bytes()).to_hex().to_string();
-    let preview = budget::head_tail(&canonical, 400, 190);
+    // What the owner sees (prompt, audit log): secret values only by size; the hash covers them.
+    let shown = serde_json::to_string(&tools::shown_args(&args, tool.secret_args())).unwrap_or_default();
+    let preview = budget::head_tail(&shown, 400, 190);
     let intent = args.get("intent").and_then(|v| v.as_str()).map(str::to_string);
 
     let record = |kind: &'static str| AuditRecord {

@@ -105,7 +105,7 @@ Tool names are stable API. Annotations follow MCP (`readOnlyHint`, `destructiveH
 | `focus_window` | control | bring a window to the foreground |
 | `clipboard_read` / `clipboard_write` | control | clipboard text (reading is `control`, not `observe`: the clipboard is private) |
 | `shell` | admin | run a command with timeout, capture stdout/stderr/exit code; the whole process tree dies with the call |
-| `jobs_start` / `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | background commands logging to a file on the host; they outlive the session and host restarts (metadata persisted, re-adopted by pid and start time) |
+| `jobs_start` / `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | background commands logging to a file on the host; they outlive the session and host restarts (metadata persisted, re-adopted by pid and start time); processes a job leaves running are reported and count toward the limit; jobs are shared by all admin devices |
 | `files_*` *(planned)* | admin | list/read/write/transfer files |
 
 Coordinates: `screenshot` returns the mapping from image pixels to screen coordinates; `mouse`
@@ -118,7 +118,9 @@ accepts image-space coordinates by default so a model never has to do DPI or mul
   M0 prompts in the host terminal; the desktop app will show a native prompt with the exact
   action.
 - **Audit log**: every tool call is appended to `audit.jsonl` on the host (time, peer, tool,
-  argument summary, outcome, duration).
+  argument summary, outcome, duration). Arguments that may carry secrets (environment values,
+  standard input, clipboard text) appear in the summary and in approval prompts only by size; the
+  recorded argument hash still covers them.
 - **Revocation & kill switch**: `ai-remote peers remove <id>` drops a peer and its live sessions;
   stopping the host ends everything. A global hotkey and on-screen "AI is controlling" indicator
   are planned for the desktop app.

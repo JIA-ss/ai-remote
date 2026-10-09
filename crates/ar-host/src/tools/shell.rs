@@ -2,8 +2,11 @@
 //!
 //! The command runs in its own Job Object (Windows) or process group (Unix). When the call ends
 //! for any reason (normal exit, timeout, or the session ending and the gate dropping the call),
-//! everything the command started is killed, so a call never leaks processes (lesson F8). Output
-//! is read while the command runs, so a timeout still returns what was printed before it.
+//! everything the command started is killed, so a call never leaks processes (lesson F8). The call
+//! ends when the command's own process exits (plus a short grace to collect buffered output), not
+//! when everything it started has: a command that leaves a process running must not hang the call
+//! until its timeout. Output is read while the command runs, so a timeout still returns what was
+//! printed before it.
 
 use std::{collections::VecDeque, process::Stdio, sync::Arc, time::Duration};
 
@@ -38,11 +41,13 @@ struct ShellParams {
     /// Working directory.
     #[serde(default)]
     cwd: Option<String>,
-    /// Environment changes for this command: a string sets the variable, null removes it.
+    /// Environment changes for this command: a string sets the variable, null removes it. Values
+    /// are not shown in approval prompts or the audit log (names are).
     #[serde(default)]
     env: Option<EnvMap>,
     /// Text written to the command's standard input (UTF-8), which is then closed. In PowerShell
     /// read it with `[Console]::In.ReadToEnd()` or pipe it into a native program; `$input` is empty.
+    /// Not shown in approval prompts or the audit log (only its length).
     #[serde(default)]
     stdin: Option<String>,
     /// Seconds before the command is killed (default 60, max 600). Use jobs_start for longer work.
@@ -80,6 +85,10 @@ impl Tool for ShellTool {
         &self.spec
     }
 
+    fn secret_args(&self) -> &'static [&'static str] {
+        &["env", "stdin"]
+    }
+
     async fn call(&self, _ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: ShellParams = parse(args)?;
         let timeout = Duration::from_secs(p.timeout_secs.unwrap_or(60).clamp(1, 600));
@@ -111,8 +120,8 @@ impl Tool for ShellTool {
 /// (which would otherwise cut it in the middle).
 const STREAM_LIMIT: usize = 24_000;
 const STREAM_KEEP: usize = 11_000;
-/// After the command exits, how long to keep reading output still buffered in the pipes (or held
-/// open by a process it left behind, which is killed when the call returns).
+/// After the command's own process exits, how long to keep reading output still buffered in the
+/// pipes (or held open by a process it left behind, which is killed when the call returns).
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// Result of [`run`].
@@ -165,7 +174,7 @@ pub(crate) async fn run(spec: &CommandSpec<'_>, stdin: Option<&str>, timeout: Du
     let mut stderr = Capped::default();
 
     let finished = tokio::time::timeout(timeout, async {
-        let exit = child.0.wait();
+        let exit = command::main_process(&mut *child.0).wait();
         let pumps = async { tokio::join!(pump(stdout_pipe, &mut stdout), pump(stderr_pipe, &mut stderr)) };
         tokio::pin!(exit, pumps);
         tokio::select! {
@@ -297,6 +306,49 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn powershell_syntax_errors_point_at_the_callers_code() {
+        let out = run(&spec("Write-Output 'ok'\nWrite-Output (1 +", None), None, Duration::from_secs(60)).await.unwrap();
+        assert_eq!(out.exit_code, Some(1), "{out:?}");
+        assert!(out.stdout.is_empty(), "nothing runs: {out:?}");
+        assert!(out.stderr.contains("command:2"), "{}", out.stderr);
+        assert!(!out.stderr.contains("LASTEXITCODE"), "the appended check must not show: {}", out.stderr);
+    }
+
+    /// pwsh 7 colours errors with ANSI escapes unless told otherwise. Skipped where pwsh is missing.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn pwsh_errors_are_plain_text_and_exit_codes_survive() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        if !std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file()) {
+            eprintln!("pwsh is not installed; skipping");
+            return;
+        }
+        let mut env = EnvMap::new();
+        env.insert("TERM".into(), Some("xterm-test".into()));
+        let cmd = "Write-Output \"héllo $env:TERM\"; Write-Error 'bad'; cmd /c exit 4";
+        let spec = CommandSpec { env: Some(&env), ..spec(cmd, Some("pwsh")) };
+        let out = run(&spec, None, Duration::from_secs(60)).await.unwrap();
+        assert_eq!(out.exit_code, Some(4), "{out:?}");
+        assert_eq!(out.stdout.trim_end(), "héllo xterm-test", "the script sees the caller's TERM: {out:?}");
+        assert!(out.stderr.contains("bad") && !out.stderr.contains('\x1b'), "{:?}", out.stderr);
+    }
+
+    /// PowerShell starts with TERM=dumb, but neither the script nor what it runs see that.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_scripts_see_the_callers_term() {
+        let cmd = "\"[$env:TERM]\"; cmd /c 'if defined TERM (echo child=%TERM%) else (echo child=none)'";
+        for (term, expected) in [(None, ["[]", "child=none"]), (Some("vt100"), ["[vt100]", "child=vt100"])] {
+            let mut env = EnvMap::new();
+            env.insert("TERM".into(), term.map(str::to_string));
+            let spec = CommandSpec { env: Some(&env), ..spec(cmd, None) };
+            let out = run(&spec, None, Duration::from_secs(60)).await.unwrap();
+            assert_eq!(out.stdout.lines().map(str::trim_end).collect::<Vec<_>>(), expected, "{out:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn cmd_keeps_quotes_and_operators() {
         let out = run(&spec(r#"echo "a & b" | findstr /c:"a & b" && echo 世界 100%"#, Some("cmd")), None, Duration::from_secs(30))
             .await
@@ -375,6 +427,32 @@ mod tests {
         let out = run(&spec(&cmd, None), None, Duration::from_secs(12)).await.unwrap();
         assert!(out.timed_out, "{out:?}");
         assert_eq!(out.exit_code, None);
+        let pids = read_pids(&pid_file).await;
+        assert_all_gone(&pids).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The call ends with the command's own process (not when everything it started has ended),
+    /// and what it left running is killed.
+    #[tokio::test]
+    async fn main_exit_ends_the_call_and_kills_leftovers() {
+        let dir = std::env::temp_dir().join(format!("ar-shell-leftover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("leftover.pids");
+        let f = pid_file.display().to_string();
+        let cmd = if cfg!(windows) {
+            format!(
+                "$c = Start-Process -PassThru -NoNewWindow ping -ArgumentList '-n','120','127.0.0.1'; \
+                 Set-Content -LiteralPath '{f}' -Value \"$PID $($c.Id)\"; 'main-done'"
+            )
+        } else {
+            format!("sleep 120 & echo \"$$ $!\" > '{f}'; echo main-done")
+        };
+        let out = run(&spec(&cmd, None), None, Duration::from_secs(90)).await.unwrap();
+        assert!(!out.timed_out, "{out:?}");
+        assert_eq!(out.exit_code, Some(0), "{out:?}");
+        assert!(out.stdout.contains("main-done"), "{out:?}");
+        assert!(out.elapsed_ms < 45_000, "the call waited for the leftover: {out:?}");
         let pids = read_pids(&pid_file).await;
         assert_all_gone(&pids).await;
         let _ = std::fs::remove_dir_all(&dir);
