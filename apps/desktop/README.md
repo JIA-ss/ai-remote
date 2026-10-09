@@ -6,7 +6,7 @@ side talks to the same per-user controller agent as the `ai-remote` CLI, so the 
 client share one identity and one set of pairings.
 
 Status: early. The main window (computers, the computer page with its Access and Tools tabs,
-approvals, activity, pairing, first run) and the live session (video, the capsule, the turn line, the decision card, take over and hand
+approvals, activity, pairing, first run, settings) and the live session (video, the capsule, the turn line, the decision card, take over and hand
 back) follow the v2 design system. In a plain browser (`npm run dev`) the page runs on a demo backend
 with sample computers; `?empty` shows the first run, `?view=empty&empty` the empty computer list after
 it, `?view=session&host=office-pc` a session.
@@ -33,7 +33,7 @@ TypeScript bindings for the Rust commands (`src/bindings.ts`) are regenerated on
 [Tauri 2](https://v2.tauri.app) 应用（React + TypeScript + Tailwind），Rust 一侧连接的是和 `ai-remote`
 命令行同一个用户级控制端 Agent，所以应用、命令行和所有 MCP 客户端共用一个身份和同一套配对。
 
-状态：早期。主窗口（电脑列表、电脑页及其“访问权限”和“工具”标签页、待批准、活动记录、配对、首次启动）和实时会话（画面、驾驶胶囊、轮次线、
+状态：早期。主窗口（电脑列表、电脑页及其“访问权限”和“工具”标签页、待批准、设置、活动记录、配对、首次启动）和实时会话（画面、驾驶胶囊、轮次线、
 决定卡片、接管与交还）已按 v2 设计系统实现。在普通浏览器里（`npm run dev`）页面使用带示例电脑的演示后端；
 `?empty` 显示首次启动，`?view=empty&empty` 显示首次启动之后的空电脑列表，`?view=session&host=office-pc` 显示会话。
 

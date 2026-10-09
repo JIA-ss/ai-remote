@@ -31,6 +31,10 @@ export interface Paired {
 export interface Backend {
   kind: "tauri" | "demo";
   status(): Promise<AgentStatus>;
+  /** Cuts off a connected agent; its MCP client sees the connection close. */
+  disconnectAgent(id: number): Promise<void>;
+  /** Opens the system's light and dark settings (the app follows them). */
+  openAppearanceSettings(): Promise<void>;
   hosts(): Promise<Host[]>;
   pair(ticket: string, name?: string): Promise<Paired>;
   unpair(host: string): Promise<void>;
@@ -83,6 +87,12 @@ const tauriBackend: Backend = {
   kind: "tauri",
   async status() {
     return unwrap(await commands.agentStatus()) as AgentStatus;
+  },
+  async disconnectAgent(id) {
+    unwrap(await commands.disconnectAgent(id));
+  },
+  async openAppearanceSettings() {
+    unwrap(await commands.openAppearanceSettings());
   },
   async hosts() {
     const raw = unwrap(await commands.listHosts()) as Array<Record<string, unknown>>;

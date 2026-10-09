@@ -4,7 +4,7 @@
 
 import { useMemo, useState } from "react";
 import { api, type Paired } from "../lib/api";
-import { currentLang, setLang, t, type Key } from "../lib/i18n";
+import { currentLang, t, type Key } from "../lib/i18n";
 import { allPending, groupOf, type Computer, type Snapshot } from "../lib/store";
 import type { Step } from "../lib/types";
 import { CmdLine } from "./CmdLine";
@@ -812,35 +812,6 @@ export function ActivityPage({ snap }: { snap: Snapshot }) {
           <span>{t("takeover_not_recorded")}</span>
         </div>
       </aside>
-    </div>
-  );
-}
-
-export function SettingsPage() {
-  const [lang, setL] = useState(currentLang());
-  return (
-    <div className="spage">
-      <div className="hd">{t("settings")}</div>
-      <div className="grp">
-        <div className="gr noic">
-          <div>
-            <div className="tt">English / 中文</div>
-          </div>
-          <span className="end">
-            <button
-              className="btn"
-              onClick={() => {
-                const next = lang === "en" ? "zh" : "en";
-                setLang(next);
-                setL(next);
-                location.reload();
-              }}
-            >
-              {lang === "en" ? "中文" : "English"}
-            </button>
-          </span>
-        </div>
-      </div>
     </div>
   );
 }

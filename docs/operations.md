@@ -65,11 +65,12 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | watch a host's screen for a while and report the stream (frames, size, rate); `--out` saves the H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | list, allow or deny calls waiting for approval ([approvals.md](approvals.md)) |
-| `ai-remote approver [--enroll <host>]` | this device's approver key, or offer it to a host |
+| `ai-remote approver [--create] [--enroll <host>]` | this device's approver key (`--create` makes it), or offer it to a host |
 | `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | take the controls from the agent, and give them back (section 9.3) |
 | `ai-remote pause` / `resume` | stop the agent on a host until you resume it |
 | `ai-remote tell <text>` | leave a message for the agent; it arrives with its next result |
 | `ai-remote mcp` | stdio MCP server for an MCP client |
+| `ai-remote agents [--disconnect ID]` | the agents (MCP clients) connected to this controller now, with their call counts; `--disconnect` cuts one off (the app's Settings, Agents does the same) |
 | `ai-remote agent` / `stop-agent` | run the controller agent in the foreground, or stop it |
 
 **Either side:** `ai-remote status` shows the profile, and whether a host and an agent run for it
@@ -524,7 +525,7 @@ ai-remote approver --enroll office-pc
 ```
 
 Someone at the host confirms the new key in a prompt. Without a usable desktop there, print the key
-with `ai-remote approver` on the device and add it in the host's terminal:
+with `ai-remote approver --create` on the device and add it in the host's terminal:
 `ai-remote approvers add <device> <scheme>:<key>`. Then:
 
 ```bash

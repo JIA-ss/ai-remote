@@ -4,8 +4,12 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
-	/**  This device's id, version and paired hosts. */
+	/**  This device's id, version, paired hosts and the agents (MCP clients) connected now. */
 	agentStatus: () => typedError<Json, string>(__TAURI_INVOKE("agent_status")),
+	/**  Cuts off one connected agent (an id from `agent_status`); its MCP client sees the connection close. */
+	disconnectAgent: (id: number) => typedError<Json, string>(__TAURI_INVOKE("disconnect_agent", { id })),
+	/**  Opens the system's appearance settings (light and dark), which the app follows. */
+	openAppearanceSettings: () => typedError<null, string>(__TAURI_INVOKE("open_appearance_settings")),
 	/**  Paired hosts with the level granted at pairing and the current path (direct or relay). */
 	listHosts: () => typedError<Json, string>(__TAURI_INVOKE("list_hosts")),
 	/**  Redeems a host's pairing ticket; returns the host's name, the safety code and the level. */

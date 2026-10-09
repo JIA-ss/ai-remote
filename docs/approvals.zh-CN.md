@@ -54,14 +54,14 @@ sequenceDiagram
 
 - **在设备上发起：** `ai-remote approver --enroll <被控端>` 会按需生成密钥（Windows 会请机主用 Windows Hello 确认），
   然后提交给被控端；被控端弹出提示，写明设备名、密钥和它的指纹。这要求被控端桌面可用，且 `approval_prompt = true`。
-- **在被控端添加：** 复制设备上 `ai-remote approver` 打印的密钥，在被控端的终端里运行
+- **在被控端添加：** 复制设备上 `ai-remote approver --create` 打印的密钥，在被控端的终端里运行
   `ai-remote approvers add <设备> <算法>:<密钥>`。
 
 ## 命令
 
 | 在哪里运行 | 命令 | 作用 |
 |---|---|---|
-| 控制端 | `ai-remote approver` | 显示本设备的审批密钥和指纹（第一次使用时生成） |
+| 控制端 | `ai-remote approver [--create]` | 显示本设备的审批密钥和指纹；没有密钥时用 `--create` 生成（只有这时才会弹出 Windows Hello） |
 | 控制端 | `ai-remote approver --enroll <被控端>` | 把密钥提交给被控端，由那边的人确认 |
 | 控制端 | `ai-remote approvals [--host H]` | 列出正在等审批的调用 |
 | 控制端 | `ai-remote approve <id> [--host H]` | 允许一个等待中的调用（先要通过 Windows Hello） |

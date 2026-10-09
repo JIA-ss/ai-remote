@@ -47,11 +47,25 @@ pub(crate) struct Aggregator {
     person: bool,
     /// The MCP client this aggregator serves (`claude-code`), told to hosts so people see who acts.
     agent_name: Arc<std::sync::Mutex<Option<String>>>,
+    /// This connection's entry in the agent's session list (an agent's MCP connection).
+    session: Option<u64>,
 }
 
 impl Aggregator {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent, default_host: Arc::default(), clients: Arc::default(), person: false, agent_name: Arc::default() }
+        Self {
+            agent,
+            default_host: Arc::default(),
+            clients: Arc::default(),
+            person: false,
+            agent_name: Arc::default(),
+            session: None,
+        }
+    }
+
+    /// Reports the client's name and calls to the agent's session list under `id`.
+    pub fn with_session(self, id: u64) -> Self {
+        Self { session: Some(id), ..self }
     }
 
     /// For calls a person makes at this device (the app while they drive).
@@ -145,6 +159,9 @@ impl Aggregator {
             && let Some(info) = context.peer.peer_info()
         {
             let clean: String = info.client_info.name.chars().filter(|c| !c.is_control()).take(64).collect();
+            if let Some(id) = self.session {
+                self.agent.sessions.named(id, &clean);
+            }
             *name = Some(clean);
         }
     }
@@ -384,6 +401,9 @@ impl ServerHandler for Aggregator {
     ) -> Result<CallToolResponse, ErrorData> {
         // Cancelled when the agent's client sends `notifications/cancelled` for this request.
         self.note_client(&context);
+        if let Some(id) = self.session {
+            self.agent.sessions.called(id);
+        }
         let cancel = &context.ct;
         let mut args = request.arguments.unwrap_or_default();
         let result = match request.name.as_ref() {

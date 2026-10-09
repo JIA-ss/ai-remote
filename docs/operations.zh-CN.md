@@ -64,11 +64,12 @@
 | `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | 观看被控端屏幕一段时间并报告视频流情况（帧数、尺寸、帧率）；`--out` 保存 H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | 列出、允许或拒绝等待审批的调用（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
-| `ai-remote approver [--enroll <被控端>]` | 本设备的审批密钥，或把它提交给被控端 |
+| `ai-remote approver [--create] [--enroll <被控端>]` | 本设备的审批密钥（`--create` 生成），或把它提交给被控端 |
 | `ai-remote take-over [--let-watch]` / `hand-back [--note N]` | 从 Agent 手里接管，以及交还控制（9.3 节） |
 | `ai-remote pause` / `resume` | 暂停某台被控端上的 Agent，直到你恢复 |
 | `ai-remote tell <文字>` | 给 Agent 留言；它会随下一次调用结果送达 |
 | `ai-remote mcp` | 给 MCP 客户端用的 stdio MCP server |
+| `ai-remote agents [--disconnect ID]` | 当前连接到本控制端的智能体（MCP 客户端）及其调用次数；`--disconnect` 断开其中一个（应用“设置 → 智能体”做的是同一件事） |
 | `ai-remote agent` / `stop-agent` | 在前台运行控制端常驻进程，或停止它 |
 
 **两端通用：** `ai-remote status` 显示当前配置目录，以及它对应的被控端和常驻进程是否在运行（附设备 ID）。
@@ -471,7 +472,7 @@ Allow this once? (No answer within 60 s counts as No.)
 ai-remote approver --enroll office-pc
 ```
 
-被控端前的人在提示里确认这把新密钥。如果那边桌面不可用，就在设备上用 `ai-remote approver` 打印密钥，再到被控端的终端里
+被控端前的人在提示里确认这把新密钥。如果那边桌面不可用，就在设备上用 `ai-remote approver --create` 打印密钥，再到被控端的终端里
 添加：`ai-remote approvers add <设备> <算法>:<密钥>`。之后：
 
 ```bash

@@ -84,6 +84,12 @@ enum Command {
     },
     /// [controller] List paired hosts.
     Hosts,
+    /// [controller] The agents (MCP clients) connected to this controller now; --disconnect cuts one
+    /// off by its id.
+    Agents {
+        #[arg(long, value_name = "ID")]
+        disconnect: Option<u64>,
+    },
     /// [controller] Unpair a host: it removes this device's pairing too (when it can be reached), then
     /// this device forgets it. --local only forgets it here.
     Unpair {
@@ -114,7 +120,11 @@ enum Command {
     /// [controller] Show this device's approver key (created on first use; Windows Hello confirms
     /// it), or offer it to a host with --enroll. With an accepted key you can allow actions from here.
     Approver {
-        /// Offer the key to this host; someone there confirms it.
+        /// Make the key if this device has none (Windows Hello asks you once). Without it the
+        /// command only shows an existing key, so looking never brings up a prompt.
+        #[arg(long)]
+        create: bool,
+        /// Offer the key to this host, making it first if needed; someone there confirms it.
         #[arg(long, value_name = "HOST")]
         enroll: Option<String>,
     },
@@ -423,7 +433,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Mount { command } => mount_command(&profile, command, json_out).await,
         Command::Approvers { command } => approvers_command(&profile, command, json_out).await,
-        Command::Approver { enroll } => approver_command(&profile, enroll, json_out).await,
+        Command::Approver { create, enroll } => approver_command(&profile, create, enroll, json_out).await,
         Command::TakeOver { host, let_watch } => {
             let request = json!({"turn": {"action": "take_over", "agent_may_watch": let_watch}});
             let v = channel(&profile, host, request).await?;
@@ -511,6 +521,31 @@ async fn run(cli: Cli) -> Result<()> {
                     "{:<24} level-at-pairing={}",
                     h["name"].as_str().unwrap_or("?"),
                     h["level_at_pairing"].as_str().unwrap_or("?")
+                );
+            }
+            Ok(())
+        }
+        Command::Agents { disconnect: Some(id) } => {
+            let v = agent_request(&profile, json!({"op": "disconnect_agent", "id": id})).await?;
+            let text =
+                if v["disconnected"] == true { format!("agent {id} disconnected") } else { format!("no agent {id}") };
+            print_result(json_out, &v, &text)
+        }
+        Command::Agents { disconnect: None } => {
+            let v = agent_request(&profile, json!({"op": "status"})).await?;
+            if json_out {
+                return print_json(&v["agents"]);
+            }
+            let agents = v["agents"].as_array().cloned().unwrap_or_default();
+            if agents.is_empty() {
+                println!("No agent is connected. An MCP client connects with: ai-remote mcp");
+            }
+            for a in agents {
+                println!(
+                    "{:<4} {:<24} {} calls",
+                    a["id"].as_u64().unwrap_or(0),
+                    a["client"].as_str().unwrap_or("(not named yet)"),
+                    a["calls"].as_u64().unwrap_or(0)
                 );
             }
             Ok(())
@@ -605,7 +640,16 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Watch { host } => watch(&profile, host, json_out).await,
         Command::View { host, seconds, max_fps, out } => view(&profile, host, seconds, max_fps, out, json_out).await,
-        Command::Mcp => ar_controller::run_shim(&profile).await,
+        Command::Mcp => {
+            let ended = ar_controller::run_shim(&profile).await;
+            // Exit now: the stdin reader is a blocking read the runtime would wait for, so an MCP
+            // client whose session ended (disconnected from the app) would only notice at its
+            // next request.
+            if let Err(e) = &ended {
+                eprintln!("Error: {e:#}");
+            }
+            std::process::exit(if ended.is_ok() { 0 } else { 1 });
+        }
         Command::Agent => ar_controller::run_agent(profile).await,
         Command::StopAgent => {
             let endpoint = profile.control_endpoint(Role::Controller)?;
@@ -681,9 +725,21 @@ async fn approvers_command(profile: &Profile, command: Option<ApproversCommand>,
     }
 }
 
-async fn approver_command(profile: &Profile, enroll: Option<String>, json_out: bool) -> Result<()> {
+async fn approver_command(profile: &Profile, create: bool, enroll: Option<String>, json_out: bool) -> Result<()> {
     let p = profile.clone();
-    let key = tokio::task::spawn_blocking(move || ar_controller::approver::get_or_create(&p)).await??;
+    let make = create || enroll.is_some();
+    let key = tokio::task::spawn_blocking(move || {
+        if make { ar_controller::approver::get_or_create(&p).map(Some) } else { ar_controller::approver::existing(&p) }
+    })
+    .await??;
+    let Some(key) = key else {
+        if json_out {
+            return print_json(&json!({"key": null}));
+        }
+        println!("This device has no approver key yet. Make one with:\n\n  ai-remote approver --create\n");
+        println!("Windows Hello (Touch ID on a Mac) asks you once; denying from here works without a key.");
+        return Ok(());
+    };
     let shown = json!({
         "label": key.label,
         "fingerprint": key.fingerprint(),

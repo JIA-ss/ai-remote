@@ -63,14 +63,14 @@ A host accepts a new key only when someone at the host confirms it, in one of tw
   person to confirm with Windows Hello) and offers it to the host, which shows a prompt naming the
   device, the key and its fingerprint. This needs a usable desktop on the host and
   `approval_prompt = true`.
-- **At the host:** copy the key that `ai-remote approver` prints on the device and run
+- **At the host:** copy the key that `ai-remote approver --create` prints on the device and run
   `ai-remote approvers add <device> <scheme>:<key>` in the host's terminal.
 
 ## Commands
 
 | Where | Command | What it does |
 |---|---|---|
-| controller | `ai-remote approver` | show this device's approver key and fingerprint (created on first use) |
+| controller | `ai-remote approver [--create]` | show this device's approver key and fingerprint; `--create` makes it if there is none (only then does Windows Hello ask) |
 | controller | `ai-remote approver --enroll <host>` | offer the key to a host; someone there confirms it |
 | controller | `ai-remote approvals [--host H]` | list what is waiting for approval |
 | controller | `ai-remote approve <id> [--host H]` | allow one waiting call (Windows Hello asks first) |

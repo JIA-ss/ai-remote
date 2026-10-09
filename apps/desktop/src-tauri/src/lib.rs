@@ -68,11 +68,33 @@ fn text(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-/// This device's id, version and paired hosts.
+/// This device's id, version, paired hosts and the agents (MCP clients) connected now.
 #[tauri::command]
 #[specta::specta]
 async fn agent_status(state: State<'_, AppState>) -> Result<Json, String> {
     state.request(json!({"op": "status"})).await
+}
+
+/// Opens the system's appearance settings (light and dark), which the app follows.
+#[tauri::command]
+#[specta::specta]
+fn open_appearance_settings() -> Result<(), String> {
+    #[cfg(windows)]
+    let opened = std::process::Command::new("explorer").arg("ms-settings:colors").spawn();
+    #[cfg(target_os = "macos")]
+    let opened = std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.Appearance-Settings.extension")
+        .spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let opened: std::io::Result<std::process::Child> = Err(std::io::Error::other("not on this system"));
+    opened.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Cuts off one connected agent (an id from `agent_status`); its MCP client sees the connection close.
+#[tauri::command]
+#[specta::specta]
+async fn disconnect_agent(state: State<'_, AppState>, id: u32) -> Result<Json, String> {
+    state.request(json!({"op": "disconnect_agent", "id": id})).await
 }
 
 /// Paired hosts with the level granted at pairing and the current path (direct or relay).
@@ -361,6 +383,8 @@ async fn unsubscribe_events(state: State<'_, AppState>, id: u32) -> Result<(), S
 fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
         agent_status,
+        disconnect_agent,
+        open_appearance_settings,
         list_hosts,
         pair,
         unpair,
