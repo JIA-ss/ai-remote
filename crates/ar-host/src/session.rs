@@ -114,7 +114,7 @@ mod tests {
     use super::*;
 
     fn session() -> Session {
-        let peer = Peer { name: "test".into(), principal: None, user_id: None, level: Some(Level::Observe) };
+        let peer = Peer { name: "test".into(), principal: None, user_id: None, level: Some(Level::Observe), revoked: false };
         Session::new(peer, Level::Observe, CancellationToken::new())
     }
 

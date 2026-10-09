@@ -60,6 +60,16 @@ impl Profile {
         &self.root
     }
 
+    /// Short stable id of this profile (16 hex digits), for names that must differ per profile on
+    /// one machine: the control pipe, the autostart task, the LaunchAgent label.
+    pub fn instance_id(&self) -> String {
+        let key = self.root.to_string_lossy();
+        // Windows paths are case-insensitive; one directory must map to one id.
+        #[cfg(windows)]
+        let key = key.to_lowercase();
+        format!("{:016x}", fnv1a(key.as_bytes()))
+    }
+
     /// Directory of one role, created on demand.
     pub fn role_dir(&self, role: Role) -> Result<PathBuf> {
         let dir = self.root.join(role.as_str());
@@ -111,8 +121,7 @@ impl Profile {
     pub fn control_endpoint(&self, role: Role) -> Result<PathBuf> {
         #[cfg(windows)]
         {
-            let digest = fnv1a(self.root.to_string_lossy().to_lowercase().as_bytes());
-            Ok(PathBuf::from(format!(r"\\.\pipe\ai-remote-{}-{digest:016x}", role.as_str())))
+            Ok(PathBuf::from(format!(r"\\.\pipe\ai-remote-{}-{}", role.as_str(), self.instance_id())))
         }
         #[cfg(not(windows))]
         {
@@ -121,7 +130,6 @@ impl Profile {
     }
 }
 
-#[cfg(windows)]
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
@@ -135,12 +143,30 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn root_is_absolute_without_the_verbatim_prefix() {
-        let dir = std::env::temp_dir().join(format!("ar-profile-{}", std::process::id()));
+    fn temp_profile(name: &str) -> (PathBuf, Profile) {
+        let dir = std::env::temp_dir().join(format!("ar-profile-test-{name}-{}", std::process::id()));
         let profile = Profile::at(&dir).unwrap();
+        (dir, profile)
+    }
+
+    #[test]
+    fn root_is_canonical_without_verbatim_prefix() {
+        let (dir, profile) = temp_profile("root");
+        let shown = profile.root().display().to_string();
+        // The verbatim prefix is `\\?\` (two backslashes).
+        assert!(!shown.starts_with(r"\\?\"), "{shown}");
         assert!(profile.root().is_absolute());
-        assert!(!profile.root().to_string_lossy().starts_with(r"\\?\"), "{}", profile.root().display());
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn instance_id_is_stable_and_per_directory() {
+        let (a_dir, a) = temp_profile("id-a");
+        let (b_dir, b) = temp_profile("id-b");
+        assert_eq!(a.instance_id(), Profile::at(&a_dir).unwrap().instance_id());
+        assert_ne!(a.instance_id(), b.instance_id());
+        assert_eq!(a.instance_id().len(), 16);
+        std::fs::remove_dir_all(&a_dir).unwrap();
+        std::fs::remove_dir_all(&b_dir).unwrap();
     }
 }

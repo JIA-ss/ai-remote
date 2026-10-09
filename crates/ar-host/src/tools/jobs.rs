@@ -349,6 +349,9 @@ impl JobManager {
             }
             Control::Adopted => Some(self.blocking(move |_| Ok(ProcTable::read().kill_job(&root))).await?),
         };
+        // Termination is asynchronous (on Windows a killed console process's conhost lingers for a
+        // moment): wait until the tree is really gone, so a status read right after this call agrees.
+        self.blocking(move |_| Ok(wait_tree_empty(&root, Duration::from_secs(3)))).await?;
         if !was_running {
             return Ok(match swept {
                 Some(n) => format!("the job's main process had already ended; killed {n} process(es) it left running"),
@@ -740,6 +743,9 @@ struct Proc {
     start: u64,
     /// Unix session id. `None` on Windows, whose "session" is the logon session.
     session: Option<u32>,
+    /// An OS helper that lives and dies with the processes it serves (Windows' console host): never
+    /// counted as something the job left running, and it may outlive its console by a moment.
+    os_helper: bool,
 }
 
 /// A job's main process as recorded: the pid with the start time identifies it.
@@ -769,6 +775,7 @@ impl ProcTable {
                 parent: p.parent().map(Pid::as_u32),
                 start: p.start_time(),
                 session: unix_session(p),
+                os_helper: cfg!(windows) && p.name().eq_ignore_ascii_case("conhost.exe"),
             })
             .collect();
         Self { sys, procs }
@@ -792,6 +799,21 @@ fn unix_session(p: &sysinfo::Process) -> Option<u32> {
 #[cfg(not(unix))]
 fn unix_session(_: &sysinfo::Process) -> Option<u32> {
     None
+}
+
+/// Polls the process table until the job whose main process is `root` has no live process left, or
+/// `timeout` passes. Returns whether it emptied.
+fn wait_tree_empty(root: &Root, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if ProcTable::read().members(root).is_empty() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The live processes of the job whose main process is `root`, given every live process. Pure, so
@@ -818,6 +840,7 @@ fn job_members(procs: &[Proc], root: &Root) -> Vec<Proc> {
     members.extend(
         procs
             .iter()
+            .filter(|p| !p.os_helper)
             .filter(|p| p.pid != root.pid && (p.parent == Some(root.pid) || p.session == Some(root.pid)))
             .filter(|p| started_by_root(p)),
     );
@@ -827,7 +850,12 @@ fn job_members(procs: &[Proc], root: &Root) -> Vec<Proc> {
         let parent = members[next];
         next += 1;
         for p in procs {
-            if p.parent == Some(parent.pid) && p.pid != parent.pid && p.start >= parent.start && seen.insert(p.pid) {
+            if !p.os_helper
+                && p.parent == Some(parent.pid)
+                && p.pid != parent.pid
+                && p.start >= parent.start
+                && seen.insert(p.pid)
+            {
                 members.push(*p);
             }
         }
@@ -1349,7 +1377,7 @@ mod tests {
     }
 
     fn proc(pid: u32, parent: u32, start: u64) -> Proc {
-        Proc { pid, parent: Some(parent), start, session: None }
+        Proc { pid, parent: Some(parent), start, session: None, os_helper: false }
     }
 
     fn members(procs: &[Proc], root: Root) -> Vec<u32> {
@@ -1361,6 +1389,15 @@ mod tests {
     const LIVE_ROOT: Root = Root { pid: 10, start: 100, alive_until: None };
     /// Root 10 started at 100 and is known to have run until 150.
     const ENDED_ROOT: Root = Root { pid: 10, start: 100, alive_until: Some(150) };
+
+    #[test]
+    fn os_helpers_are_not_job_members() {
+        // A console job's conhost (11) may outlive the job by a moment; it never counts as a leftover.
+        let conhost = Proc { os_helper: true, ..proc(11, 10, 101) };
+        let procs = [conhost, proc(12, 10, 102)];
+        assert_eq!(members(&procs, ENDED_ROOT), [12]);
+        assert!(members(&[conhost], ENDED_ROOT).is_empty());
+    }
 
     #[test]
     fn live_root_takes_its_descendants_only() {
@@ -1398,7 +1435,7 @@ mod tests {
     #[test]
     fn unix_orphans_are_found_through_their_session() {
         // 15 was reparented to init (pid 1) but kept the job's session; 16 is its child.
-        let orphan = Proc { pid: 15, parent: Some(1), start: 130, session: Some(10) };
+        let orphan = Proc { pid: 15, parent: Some(1), start: 130, session: Some(10), os_helper: false };
         let procs = [orphan, proc(16, 15, 400)];
         assert_eq!(members(&procs, ENDED_ROOT), [15, 16]);
         // A session member that started after the root was last known alive is not attributed.

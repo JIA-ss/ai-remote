@@ -2,12 +2,16 @@
 //! per-device permission levels, owner approval and an audit log.
 //!
 //! The host must run inside the interactive desktop session of the logged-in user (never as a
-//! service): capture, input injection and approval prompts all need that desktop.
+//! service): capture, input injection and approval prompts all need that desktop. It runs either
+//! in a terminal (`ai-remote host`) or in the background, started at login by the entry
+//! `ai-remote host install` registers (see [`install`]).
 
 mod approval;
 mod audit;
 mod control;
+pub mod doctor;
 mod gate;
+pub mod install;
 pub mod mounts;
 pub mod platform;
 mod policy;
@@ -28,6 +32,11 @@ use crate::{approval::Approver, audit::AuditLog, tools::Registry};
 
 pub use control::HostRequest;
 
+/// Log filter for a running host when `AI_REMOTE_LOG` is not set: our own events, only problems
+/// from the transport and the MCP library (which logs every session's full peer info at info).
+/// The firewall reader warns about every rule it cannot model; not useful here.
+pub const DEFAULT_LOG_FILTER: &str = "info,mcpmesh=warn,iroh=warn,noq=warn,rmcp=warn,windows_firewall=error";
+
 /// Everything a running host shares between sessions.
 pub struct HostState {
     profile: Profile,
@@ -38,6 +47,10 @@ pub struct HostState {
     audit: AuditLog,
     approver: Approver,
     jobs: tools::jobs::JobManager,
+    background: bool,
+    /// Cancelled when the host stops.
+    stopping: CancellationToken,
+    live: protocol::LiveConns,
 }
 
 impl HostState {
@@ -63,6 +76,21 @@ impl HostState {
 
     pub fn jobs(&self) -> &tools::jobs::JobManager {
         &self.jobs
+    }
+
+    /// Runs without a console (started at login); messages go to the host log only.
+    pub fn background(&self) -> bool {
+        self.background
+    }
+
+    /// Cancelled when the host is stopping.
+    pub fn stopping(&self) -> &CancellationToken {
+        &self.stopping
+    }
+
+    /// Controller connections being served.
+    pub(crate) fn live(&self) -> &protocol::LiveConns {
+        &self.live
     }
 
     fn audit(&self) -> &AuditLog {
@@ -93,23 +121,77 @@ impl HostState {
 pub struct HostOptions {
     /// Print a pairing ticket at start when no controller is paired yet.
     pub pair_code_if_unpaired: bool,
+    /// No console: everything meant for the owner goes to the log. A pairing ticket is a bearer
+    /// credential, so a background host never mints one by itself.
+    pub background: bool,
+}
+
+/// Where messages for the host owner go: the terminal in the foreground, the log otherwise.
+#[derive(Clone, Copy)]
+struct Owner {
+    background: bool,
+}
+
+impl Owner {
+    fn say(self, line: &str) {
+        if self.background {
+            if !line.trim().is_empty() {
+                tracing::info!("{}", line.trim());
+            }
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
+/// Another host already runs for the profile: not a failure worth retrying.
+#[derive(Debug)]
+pub struct AlreadyRunning(pub std::path::PathBuf);
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a host is already running for this profile ({})", self.0.display())
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
+/// This profile's host slot (its control endpoint). Holding it proves that no other host runs for
+/// the profile, so a second start (a double-click, a script) is turned away before it touches
+/// anything the running host owns, its log included. Needs a tokio runtime context.
+pub struct Claim {
+    listener: ipc::Listener,
+}
+
+impl Claim {
+    /// Fails with [`AlreadyRunning`] when a host already holds the slot.
+    pub fn acquire(profile: &Profile) -> Result<Self> {
+        let endpoint = profile.control_endpoint(Role::Host)?;
+        let listener = ipc::Listener::bind(&endpoint).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                anyhow::Error::new(AlreadyRunning(profile.root().to_path_buf()))
+            } else {
+                anyhow!("bind control endpoint {}: {e}", endpoint.display())
+            }
+        })?;
+        Ok(Self { listener })
+    }
 }
 
 /// Runs the host until Ctrl+C or a `shutdown` request on the control channel.
 pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
+    let claim = Claim::acquire(&profile)?;
+    run_claimed(profile, claim, opts).await
+}
+
+/// [`run`] with the profile's slot already claimed.
+pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> Result<()> {
     platform::init_process();
+    let owner = Owner { background: opts.background };
     let config_path = profile.host_config_path()?;
     let config = HostConfig::load(&config_path)?;
     let name = config.host.name.clone().unwrap_or_else(machine_name);
-
-    let endpoint = profile.control_endpoint(Role::Host)?;
-    let mut listener = ipc::Listener::bind(&endpoint).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrInUse {
-            anyhow!("a host is already running for this profile ({})", profile.root().display())
-        } else {
-            anyhow!("bind control endpoint {}: {e}", endpoint.display())
-        }
-    })?;
+    let mut listener = claim.listener;
 
     let device_key = identity::load_or_create(&profile.identity_path(Role::Host)?)?;
     let mesh = Mesh::start(MeshOptions {
@@ -133,25 +215,33 @@ pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
         config,
         mesh: mesh.clone(),
         registry,
+        background: opts.background,
+        stopping: CancellationToken::new(),
+        live: protocol::LiveConns::default(),
     });
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
+    // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
+    announce_pairings(&mesh, owner).await;
 
     let peers = mesh.peers().await.context("read paired devices")?;
-    println!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id());
-    println!("  paired controllers: {}", peers.len());
-    println!("  audit log: {}", state.audit.path().display());
+    owner.say(&format!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id()));
+    owner.say(&format!("  profile: {}", state.profile.root().display()));
+    owner.say(&format!("  paired controllers: {}", peers.len()));
+    owner.say(&format!("  audit log: {}", state.audit.path().display()));
     if let Some(reason) = platform::prompt_blocker() {
-        println!("  warning: approval prompts cannot be shown ({reason}); actions that need approval will be refused");
+        owner.say(&format!(
+            "  warning: approval prompts cannot be shown ({reason}); actions that need approval will be refused"
+        ));
     }
-    if peers.is_empty() && opts.pair_code_if_unpaired {
+    if peers.is_empty() && opts.pair_code_if_unpaired && !opts.background {
         let invite = mesh.invite(Level::Control, None).await?;
-        println!();
-        println!("No controller is paired yet. On the controlling machine, run:");
-        println!();
-        println!("  ai-remote pair {}", invite.line);
-        println!();
-        println!("It grants level \"control\" and is valid once, until {}.", fmt_epoch(invite.expires_at));
-        println!("Check that both machines show the same three-word safety code.");
+        owner.say("");
+        owner.say("No controller is paired yet. On the controlling machine, run:");
+        owner.say("");
+        owner.say(&format!("  ai-remote pair {}", invite.line));
+        owner.say("");
+        owner.say(&format!("It grants level \"control\" and is valid once, until {}.", fmt_epoch(invite.expires_at)));
+        owner.say("Check that both machines show the same three-word safety code.");
     }
 
     let shutdown = CancellationToken::new();
@@ -169,8 +259,45 @@ pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
             _ = shutdown.cancelled() => break,
         }
     }
-    println!("ai-remote host stopped.");
+    // Close live controller connections and give the close frames a moment to leave.
+    state.stopping.cancel();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    owner.say("ai-remote host stopped.");
     Ok(())
+}
+
+/// Shows the host side of every pairing ceremony: the controller printed a three-word safety code
+/// when it redeemed the ticket, and the host owner must see the same words here. Different words
+/// mean someone else redeemed the ticket.
+async fn announce_pairings(mesh: &Mesh, owner: Owner) {
+    let mut watch = match mesh.watch_pairings().await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("cannot watch for new pairings ({e:#}); safety codes will not be shown here");
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        loop {
+            match watch.next().await {
+                Ok(Some(p)) => {
+                    let level = p.level.map(|l| l.to_string()).unwrap_or_else(|| "none".into());
+                    tracing::info!(peer = %p.peer, %level, sas = %p.sas, principal = ?p.principal, "controller paired");
+                    if !owner.background {
+                        println!();
+                        println!("Paired with controller \"{}\" (level: {level}).", p.peer);
+                        println!("  Safety code: {}", p.sas);
+                        println!("  The controller must show the same words. If it does not, run: ai-remote forget {}", p.peer);
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("stopped watching for new pairings: {e:#}");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn fmt_epoch(epoch: u64) -> String {

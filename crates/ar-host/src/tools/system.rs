@@ -12,7 +12,40 @@ use super::{NoParams, Tool, ToolSpec, json};
 use crate::{platform, session::ToolCtx};
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
-    vec![Arc::new(SystemInfo::new())]
+    vec![Arc::new(SystemInfo::new()), Arc::new(Doctor::new())]
+}
+
+/// `doctor`: the graded preflight (see [`crate::doctor`]), run inside the host.
+struct Doctor {
+    spec: ToolSpec,
+}
+
+impl Doctor {
+    fn new() -> Self {
+        Self {
+            spec: ToolSpec::new::<NoParams>(
+                "doctor",
+                Level::Observe,
+                "Check whether this host can really be operated: interactive session, unlocked desktop, elevation, DPI \
+                 awareness, relay connection, firewall, autostart, approval prompts, audit log and disk space. Each \
+                 check is ok/warn/fail with a reason and a fix. Run it before a task; if anything fails, stop and \
+                 report it instead of working around it.",
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Doctor {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, ctx: &ToolCtx<'_>, _args: JsonObject) -> Result<CallToolResult> {
+        let report =
+            crate::doctor::run(crate::doctor::Inputs { profile: ctx.host.profile(), mesh: Some(ctx.host.mesh()) }).await;
+        Ok(json(serde_json::to_value(report)?))
+    }
 }
 
 struct SystemInfo {

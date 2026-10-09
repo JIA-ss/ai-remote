@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn zoom_explains_ids_from_other_sessions() {
         let session = || {
-            let peer = ar_net::Peer { name: "t".into(), principal: None, user_id: None, level: None };
+            let peer = ar_net::Peer { name: "t".into(), principal: None, user_id: None, level: None, revoked: false };
             Session::new(peer, Level::Observe, tokio_util::sync::CancellationToken::new())
         };
         let (old, new) = (session(), session());
