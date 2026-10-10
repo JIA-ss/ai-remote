@@ -3,6 +3,10 @@ options:
   bundleIdPrefix: io.github.jia-ss
   deploymentTarget:
     iOS: "17.0"
+settings:
+  base:
+    # The generated XCFramework currently contains arm64 device and simulator slices.
+    ARCHS: arm64
 packages:
   AIRemotePhone:
     path: .

@@ -116,7 +116,11 @@ public struct PhoneRootView: View {
         NavigationStack {
             Form {
                 Section("在电脑上生成票据") { Text("启动 ai-remote host，再运行 ai-remote pair-code --level control。").font(.callout); Text("可以通过通用剪贴板把票据复制到 iPhone。").font(.footnote).foregroundStyle(.secondary) }
-                Section("一次性配对票据") { TextEditor(text: $store.pairingCode).frame(minHeight: 130).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled().accessibilityIdentifier("pairing-ticket"); Button("配对") { Task { await store.pair() } }.disabled(store.loading || store.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("pair-submit") }
+                Section("一次性配对票据") {
+                    TextEditor(text: $store.pairingCode).frame(minHeight: 130).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
+                        .ticketCapitalizationDisabled().accessibilityIdentifier("pairing-ticket")
+                    Button("配对") { Task { await store.pair() } }.disabled(store.loading || store.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("pair-submit")
+                }
                 if let code = store.safetyCode { Section("核对安全码") { Text(code).font(.system(.title3, design: .monospaced)); Text("请确认电脑上显示的是相同的三个单词。配对票据使用一次后失效。").font(.footnote) } }
             }.navigationTitle("配对电脑").toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { store.pairSheet = false } } }
         }.modifier(PhoneErrorAlert(store: store))
@@ -155,5 +159,15 @@ private struct PhoneErrorAlert: ViewModifier {
         content.alert("需要关注", isPresented: Binding(get: { enabled && store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好", role: .cancel) { store.error = nil }
         } message: { Text(store.error ?? "") }
+    }
+}
+
+private extension View {
+    @ViewBuilder func ticketCapitalizationDisabled() -> some View {
+        #if os(iOS)
+        self.textInputAutocapitalization(.never)
+        #else
+        self
+        #endif
     }
 }

@@ -28,6 +28,12 @@ final class PhoneUITests: XCTestCase {
         screenshot.name = "Phone pairing screen"
         screenshot.lifetime = .keepAlways
         add(screenshot)
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 2)
+        app.activate()
+        XCTAssertTrue(ticket.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.alerts["需要关注"].waitForExistence(timeout: 5))
+        app.buttons["完成"].tap()
         app.terminate()
         app.launch()
         XCTAssertTrue(app.buttons["配对一台电脑"].waitForExistence(timeout: 30))

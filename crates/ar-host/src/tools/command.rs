@@ -15,7 +15,7 @@
 //!   "dumb" (neither `$PSStyle.OutputRendering` nor `NO_COLOR` turn that off for stderr). PowerShell
 //!   therefore starts with `TERM=dumb`, and the bootstrap gives the script the TERM it would have
 //!   had otherwise, so the programs it runs see no difference.
-//! - **cmd**: `cmd /d /s /c "chcp 65001 >nul & <command>"`. `/s` strips exactly the outer quotes,
+//! - **cmd**: `cmd /d /s /c "chcp 65001 >nul & (<command>)"`. `/s` strips exactly the outer quotes,
 //!   so the command reaches cmd verbatim and quotes, `&`, `|` and `%VAR%` keep their usual meaning.
 //!   Limits: one command line (a newline would end it, so multi-line input is refused), at most
 //!   8191 characters, and `%VAR%` is expanded the way the interactive prompt does it.
@@ -219,7 +219,9 @@ fn cmd_args(command: &str) -> Result<String> {
              or use shell \"powershell\" for a multi-line script"
         );
     }
-    let args = format!("/d /s /c \"chcp 65001 >nul & {command}\"");
+    // Keep chcp outside the caller's pipeline. Otherwise cmd runs the prefix in a pipe child,
+    // leaving the parent on its original code page and replacing Unicode echo output with '?'.
+    let args = format!("/d /s /c \"chcp 65001 >nul & ({command})\"");
     if args.len() + 32 > MAX_CMD_LINE {
         bail!(
             "the cmd command line is too long (cmd accepts at most {MAX_CMD_LINE} characters); use shell \"powershell\" or a script file"
@@ -322,7 +324,7 @@ mod tests {
     #[test]
     fn cmd_line_is_passed_verbatim_inside_outer_quotes() {
         let args = cmd_args(r#"echo "a & b" | findstr a & echo 100%"#).unwrap();
-        assert_eq!(args, r#"/d /s /c "chcp 65001 >nul & echo "a & b" | findstr a & echo 100%""#);
+        assert_eq!(args, r#"/d /s /c "chcp 65001 >nul & (echo "a & b" | findstr a & echo 100%)""#);
         // A trailing newline is tolerated; an inner one is refused with advice.
         assert!(cmd_args("dir\r\n").is_ok());
         let err = cmd_args("echo a\necho b").unwrap_err().to_string();

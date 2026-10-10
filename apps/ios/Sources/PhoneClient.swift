@@ -16,10 +16,13 @@ public final class StreamListener: MobileStream, @unchecked Sendable {
 public actor PhoneClient {
     private var controller: MobileController?
     private var starting: Task<MobileController, Error>?
+    private var closing: Task<Void, Never>?
     private var generation = 0
     private let directory: String
     public init(directory: String) { self.directory = directory }
     public func start() async throws {
+        if let closing { await closing.value }
+        try Task.checkCancellation()
         if controller != nil { return }
         let token = generation
         let task: Task<MobileController, Error>
@@ -36,11 +39,17 @@ public actor PhoneClient {
         } catch { if token == generation { starting = nil }; throw error }
     }
     public func close() async {
+        if let closing { await closing.value; return }
         generation += 1
         let pending = starting; starting = nil
         let old = controller; controller = nil
-        if let pending { pending.cancel(); if let connected = try? await pending.value { await connected.close() } }
-        await old?.close()
+        let task = Task {
+            if let pending { pending.cancel(); if let connected = try? await pending.value { await connected.close() } }
+            await old?.close()
+        }
+        closing = task
+        await task.value
+        closing = nil
     }
     private func ready() throws -> MobileController {
         guard let controller else { throw NSError(domain: "ai-remote", code: 1, userInfo: [NSLocalizedDescriptionKey: "控制端尚未连接"]) }
