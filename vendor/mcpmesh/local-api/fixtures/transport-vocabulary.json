@@ -1,0 +1,16 @@
+{
+  "note": "Canonical transport-vocabulary blocklist (spec §1.5/§17). ONE copy — shipped in-crate as mcpmesh_local_api::TRANSPORT_VOCABULARY and consumed by mcpmesh's own surface-leak suite (cli/tests/daemon_autostart.rs); embedders vendor or re-export it, never fork the terms. 'serial'/'relay' match as whole IDENTIFIER tokens (_ is a word char) so domain compounds like index_serial never false-trip (R4). Carve-outs are spec-canonical identifiers that legitimately embed a banned substring.",
+  "substring_banned": [
+    "endpoint",
+    "endpointid",
+    "ticket",
+    "alpn",
+    ".sock",
+    "iroh",
+    "quic",
+    "nodeid",
+    "pubkey"
+  ],
+  "token_banned": ["serial", "relay"],
+  "carve_outs": ["ask_model_endpoint"]
+}

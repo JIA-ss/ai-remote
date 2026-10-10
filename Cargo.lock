@@ -4193,7 +4193,6 @@ dependencies = [
 [[package]]
 name = "mcpmesh-codec"
 version = "0.58.0"
-source = "git+https://github.com/JIA-ss/mcpmesh?rev=e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28#e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28"
 dependencies = [
  "serde_json",
  "tokio",
@@ -4202,7 +4201,6 @@ dependencies = [
 [[package]]
 name = "mcpmesh-local-api"
 version = "0.58.0"
-source = "git+https://github.com/JIA-ss/mcpmesh?rev=e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28#e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28"
 dependencies = [
  "mcpmesh-codec",
  "rustix 1.1.5",
@@ -4216,7 +4214,6 @@ dependencies = [
 [[package]]
 name = "mcpmesh-net"
 version = "0.58.0"
-source = "git+https://github.com/JIA-ss/mcpmesh?rev=e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28#e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4234,7 +4231,6 @@ dependencies = [
 [[package]]
 name = "mcpmesh-node"
 version = "0.58.0"
-source = "git+https://github.com/JIA-ss/mcpmesh?rev=e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28#e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4270,7 +4266,6 @@ dependencies = [
 [[package]]
 name = "mcpmesh-trust"
 version = "0.58.0"
-source = "git+https://github.com/JIA-ss/mcpmesh?rev=e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28#e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28"
 dependencies = [
  "chrono",
  "data-encoding",

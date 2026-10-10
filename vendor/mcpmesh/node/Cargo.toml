@@ -1,0 +1,102 @@
+[package]
+name = "mcpmesh-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Embed a full mcpmesh node in-process — the daemon core as a library"
+
+[lints]
+workspace = true
+
+[features]
+# TEST-ONLY (#116). Enables `[network] relay_only`, which forces application data over the relay
+# while a direct path exists — the only way to exercise relayed behaviour without physically
+# breaking direct connectivity.
+#
+# DEFAULT OFF, deliberately: it compiles against iroh's `path_selector`, which iroh gates behind
+# `unstable-custom-transports` and documents as "not covered by semantic versioning guarantees and
+# may change in any release without a major version bump". mcpmesh exact-pins iroh to control that
+# risk, so a normal build must never depend on it — only a test build that opts in.
+unstable-relay-only = ["iroh/unstable-custom-transports"]
+
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+figment.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# `process`: the `run` backend spawns a child MCP server per session via
+# tokio::process::Command with async stdin/stdout handles (the workspace tokio omits it).
+tokio = { workspace = true, features = ["process"] }
+tracing.workspace = true
+# #134: the ONLY channel iroh 1.0.3 offers for the relay's duplicate-endpoint-id signal is a
+# `warn!` — no event, no Endpoint state, no watcher. `IdentityConflictLayer` is a Layer an
+# EMBEDDER installs into the subscriber it already owns (a subscriber is global, so an embedded
+# node cannot install its own); the standalone daemon installs it itself.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+# Same issue: the match needle is built from `Status::SameEndpointIdConnected`'s own Display, so an
+# upstream rewording changes both sides together instead of silently disabling detection. Already
+# in the lock via iroh.
+iroh-relay = { version = "1", default-features = false }
+mcpmesh-trust.workspace = true
+mcpmesh-net.workspace = true
+# `service` (implies `client`): the control server consumes the seam's hardened local
+# endpoint types, and `Node::control` hands back the seam's ControlClient over an
+# in-memory duplex.
+mcpmesh-local-api = { workspace = true, features = ["service"] }
+# Org-root VerifyingKey for roster install/load + the `org_root_pk` b64u decode. Same
+# crate mcpmesh-trust already pins → a dependency edge only, no new crate version.
+ed25519-dalek.workspace = true
+# Runtime-dir ownership + peer-uid checks (spec §11.2/§13). Already in the tree via
+# iroh; SAFE wrappers (no inline unsafe → satisfies forbid(unsafe)).
+rustix = { version = "1", features = ["process", "fs"] }
+# state.redb — the pure-Rust embedded KV the spec pins for the peer allowlist store
+# (§15). MIT OR Apache-2.0 (already in deny.toml allow); no C deps.
+redb = "2"
+# Surgical config.toml writes for `serve`/RegisterService: read the doc as a
+# `toml::Table`, upsert the `[services.*]` entry, atomic-write back.
+toml = "0.8"
+# base32 line-encoding for the `mcpmesh-invite:` artifact. Already in the tree via iroh.
+data-encoding = "2"
+# blake3 transcript hash for the pairing short authentication code (spec §4.2).
+blake3 = "1"
+# OS CSPRNG for the 32-byte pairing invite secret (spec §4.2).
+rand.workspace = true
+iroh.workspace = true
+# Roster + presence gossip topics (spec §4.3/§10.1). iroh-gossip 0.101.0 depends on
+# iroh "1" → unifies on the workspace-pinned iroh =1.0.1, NO iroh bump.
+iroh-gossip = { workspace = true }
+# Roster-blob fetch only (spec §4.3/§9). iroh-blobs 0.103.0 → iroh ^1.0.0, unifies on =1.0.1.
+iroh-blobs = { workspace = true }
+# HTTPS roster poll (spec §4.3), rustls-tls (no OpenSSL).
+reqwest = { workspace = true }
+# The rustls CryptoProvider install: reqwest (`rustls-no-provider`) resolves the provider
+# at CLIENT-BUILD time and PANICS if none is installed; iroh installs no process-default.
+# `Node::start` installs a ring process-default once (idempotent — a host app that already
+# installed its own provider wins).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# The gossip broadcast/receive payload type (`Bytes`) + the `StreamExt::next` the
+# GossipReceiver stream yields. Not re-exported nameably by iroh-gossip, so direct deps.
+bytes = { workspace = true }
+n0-future = { workspace = true }
+# Custom-discovery pkarr relay URLs (spec §10.3): iroh's Pkarr builders take `url::Url`.
+url = { workspace = true }
+iroh-mdns-address-lookup = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true
+# Log-capture for the pairing-rendezvous surface-discipline test: assert no peer
+# EndpointId leaks into a refusal's logs.
+tracing-subscriber = "0.3"
+serde_json.workspace = true
+
+# #116: `iroh::test_utils::run_relay_server` + the self-signed CA config, so the relay-only
+# selector can be proven END TO END against a real in-process relay rather than argued about.
+# Dev-only: under resolver "3" these features do not leak into `cargo build`, so the production
+# feature gate is unaffected.
+iroh = { workspace = true, features = ["test-utils"] }
+iroh-relay = { version = "1", features = ["test-utils"] }
