@@ -12,7 +12,7 @@
 Use Codex, Claude Code, Cursor, VS Code or another stdio MCP client to operate your paired Windows PCs and Macs. See the screen, send mouse/keyboard input, inspect windows, and run permitted tools over encrypted peer-to-peer connections. Pause the agent, take over, and hand back when you are ready.
 
 > [!NOTE]
-> **Pre-alpha, build from source.** The Mac host and desktop app have passed local acceptance on Apple Silicon. Windows has an existing implementation. The native iPhone controller source is present, but **iOS SDK builds, simulator installation and physical-device acceptance remain unverified**. No signed releases or App Store app are available. [Validation](docs/iphone-validation.md)
+> **Pre-alpha, build from source.** The Mac host and desktop app have passed local acceptance on Apple Silicon. Windows has an existing implementation. The native iPhone controller source is present, with **device/simulator SDK builds and simulator startup/pairing UI tests passed**. Physical iPhone remote-control acceptance is still deferred. No signed releases or App Store app are available. [Validation](docs/iphone-validation.md)
 
 ## What works today
 
@@ -22,7 +22,7 @@ Use Codex, Claude Code, Cursor, VS Code or another stdio MCP client to operate y
 | macOS host | Pairing, screenshots, input and H.264 stream accepted locally | [Mac setup and limits](docs/macos.md) |
 | Desktop controller | Computers, live view, activity, pairing, takeover and MCP-client setup | [Desktop app](apps/desktop/README.md) |
 | MCP bridge | Real stdio initialization, tools/list and connected-client tracking verified | [Client setup](docs/mcp-clients.md) |
-| iPhone controller | Experimental SwiftUI/UniFFI source; Mac core tests and native decoder replay passed | [iPhone build and acceptance](apps/ios/README.md) |
+| iPhone controller | Experimental SwiftUI/UniFFI controller; iOS SDK builds and simulator UI tests passed | [iPhone build and acceptance](apps/ios/README.md) |
 
 The Mac acceptance used macOS 27 on Apple Silicon. Intel Macs and older OS versions need their own runtime checks. The development video stream is functional but currently low-rate; it is not a latency or FPS benchmark.
 
@@ -47,7 +47,7 @@ You need the pinned Rust toolchain (1.95.0). The desktop app also needs Node/npm
 ```sh
 git clone https://github.com/JIA-ss/ai-remote.git
 cd ai-remote
-cargo build -p ai-remote
+cargo install --path crates/ai-remote --locked
 ```
 
 On **macOS**, build and open a development app with its CLI included:
@@ -57,7 +57,7 @@ tools/macos.sh build --debug --bundles app
 open target/debug/bundle/macos/ai-remote.app
 ```
 
-On the **computer to control**, run the CLI from `target/debug/` (or install it on PATH):
+On the **computer to control**, run the installed CLI (make sure Cargo’s bin directory is on PATH):
 
 ```sh
 ai-remote host
@@ -103,7 +103,7 @@ High-risk steps wait for owner approval. An unanswered request is denied. Every 
 
 ## Questions people ask
 
-**Can my iPhone control my computer?** That is the purpose of `apps/ios`: native SwiftUI UI over the shared Rust controller. The source includes pairing, video, touch/text, takeover and activity. It still needs local iOS SDK compilation and device acceptance; a Mac Swift build is not an iPhone install.
+**Can my iPhone control my computer?** That is the purpose of `apps/ios`: native SwiftUI UI over the shared Rust controller. The source includes pairing, video, touch/text, takeover and activity. Device and arm64 simulator builds pass with the iOS SDK, as do simulator startup, invalid-ticket, background/resume and relaunch tests. Live control on a physical iPhone still needs acceptance.
 
 **Can an agent control my iPhone through this app?** No. The iOS source is a controller, not an iPhone host.
 
@@ -128,7 +128,7 @@ node --test tools/mcp-install.test.mjs
 | Stage | Next work |
 | :-- | :-- |
 | M0–M2 | Continue Windows/Mac acceptance, improve capture performance, complete file/accessibility work and signed packaging |
-| M3 | Compile the native phone app with the iOS SDK; simulator/device acceptance; Face ID signing, QR pairing and notifications |
+| M3 | Physical phone/remote-session acceptance; Face ID signing, QR pairing and notifications |
 | M4 | Optional self-hosted account/relay services and device sharing |
 
 ## License

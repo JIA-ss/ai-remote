@@ -12,17 +12,17 @@
 把 Codex、Claude Code、Cursor、VS Code 或其他 stdio MCP 客户端接入 ai-remote，即可操作已配对的 Windows 与 Mac：查看屏幕、发送鼠标键盘输入、列出窗口、运行授权的工具。连接经过加密；你可以暂停智能体、接管，再交还控制权。
 
 > [!NOTE]
-> **Pre-alpha，需要从源码构建。** Apple Silicon Mac 被控端和桌面应用已通过本机验收。Windows 已有实现。本仓库包含原生 iPhone 控制端源码，但 **iOS SDK 构建、模拟器安装和真机验收尚未验证**。目前没有签名发行包或 App Store 应用。[验收记录](docs/iphone-validation.md)
+> **Pre-alpha，需要从源码构建。** Apple Silicon Mac 被控端和桌面应用已通过本机验收。Windows 已有实现。本仓库包含原生 iPhone 控制端源码，**设备/模拟器 SDK 构建，以及模拟器启动与配对界面测试已通过**；iPhone 真机远控仍待验收。目前没有签名发行包或 App Store 应用。[验收记录](docs/iphone-validation.md)
 
 ## 目前能做什么
 
 | 端 | 状态 | 入口 |
 | :-- | :-- | :-- |
-| Windows 被控端 / CLI | 已实现；本轮 Mac 适配未重新做 Windows 运行验收 | [使用说明](docs/operations.md) |
+| Windows 被控端 / CLI | 已实现；本轮 Mac 适配未重新做 Windows 运行验收 | [使用说明](docs/operations.zh-CN.md) |
 | macOS 被控端 | 本机已验证配对、截图、输入和 H.264 屏幕流 | [Mac 配置与限制](docs/macos.md) |
 | 桌面控制端 | 电脑列表、实时画面、活动、配对、接管与多 MCP 客户端配置 | [桌面应用](apps/desktop/README.md) |
 | MCP 桥接 | 已验证真实 stdio 初始化、工具列表与已连接智能体记录 | [客户端配置](docs/mcp-clients.md) |
-| iPhone 控制端 | 实验性 SwiftUI/UniFFI 源码；Mac 核心测试和原生解码回放通过 | [iPhone 构建与验收](apps/ios/README.md) |
+| iPhone 控制端 | 实验性 SwiftUI/UniFFI 控制端；iOS SDK 构建和模拟器界面测试通过 | [iPhone 构建与验收](apps/ios/README.md) |
 
 本轮 Mac 验收使用 Apple Silicon 与 macOS 27。Intel Mac、较早系统仍需独立运行验收。开发版屏幕流已经工作，但当前帧率较低，不作为性能或延迟基准。
 
@@ -47,7 +47,7 @@
 ```sh
 git clone https://github.com/JIA-ss/ai-remote.git
 cd ai-remote
-cargo build -p ai-remote
+cargo install --path crates/ai-remote --locked
 ```
 
 在 **macOS** 构建带 CLI 的开发应用：
@@ -57,7 +57,7 @@ tools/macos.sh build --debug --bundles app
 open target/debug/bundle/macos/ai-remote.app
 ```
 
-在**被控电脑**上运行 CLI（位于 `target/debug/`，或先加入 PATH）：
+在**被控电脑**上运行安装后的 CLI（确保 Cargo 的 bin 目录已加入 PATH）：
 
 ```sh
 ai-remote host
@@ -72,7 +72,7 @@ ai-remote pair <ticket> --name office-pc
 ai-remote call system_info --host office-pc
 ```
 
-核对两端相同的三个单词安全码。Mac 被控端需要给实际运行的可执行文件授予屏幕录制与辅助功能权限，重启后运行 `ai-remote doctor`。锁屏或权限不足时，先恢复桌面和权限再操作。[详细说明](docs/operations.md)
+核对两端相同的三个单词安全码。Mac 被控端需要给实际运行的可执行文件授予屏幕录制与辅助功能权限，重启后运行 `ai-remote doctor`。锁屏或权限不足时，先恢复桌面和权限再操作。[详细说明](docs/operations.zh-CN.md)
 
 ## 接入你的智能体
 
@@ -99,11 +99,11 @@ Cursor 使用 `~/.cursor/mcp.json` 中的 `mcpServers` JSON，VS Code 使用 MCP
 
 高风险请求等待主人确认，未响应则拒绝。每次决策与结果写入被控端审计日志；撤销或取消配对即可移除设备访问权。
 
-**远程允许签名当前需要 Windows Hello。** Mac 与 iPhone 控制端可以拒绝；Touch ID / Face ID 允许签名尚未实现。被控电脑桌面可用时，也可通过本机提示批准。[审批设计](docs/approvals.md)
+**远程允许签名当前需要 Windows Hello。** Mac 与 iPhone 控制端可以拒绝；Touch ID / Face ID 允许签名尚未实现。被控电脑桌面可用时，也可通过本机提示批准。[审批设计](docs/approvals.zh-CN.md)
 
 ## 常见问题
 
-**iPhone 能控制电脑吗？** `apps/ios` 就是为此开发的原生 SwiftUI 控制端，复用 Rust 核心，包含配对、画面、触控与文字、接管和活动功能。目前仍需要 iOS SDK 构建和设备验收，Mac Swift 编译不能代替 iPhone 安装。
+**iPhone 能控制电脑吗？** `apps/ios` 就是为此开发的原生 SwiftUI 控制端，复用 Rust 核心，包含配对、画面、触控与文字、接管和活动功能。设备与 arm64 模拟器已通过 iOS SDK 编译，模拟器启动、无效票据、后台恢复和重新启动测试也已通过。iPhone 真机上的实时控制仍待验收。
 
 **智能体能通过它控制 iPhone 吗？** 不能。iOS 源码是控制端，不是 iPhone 被控端。
 
@@ -121,14 +121,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 node --test tools/mcp-install.test.mjs
 ```
 
-[Mac 验收](docs/macos.md) · [iPhone 验收记录](docs/iphone-validation.md) · [工具参考](docs/tools.md) · [安全策略](SECURITY.md) · [参与贡献](CONTRIBUTING.md)
+[Mac 验收](docs/macos.md) · [iPhone 验收记录](docs/iphone-validation.md) · [工具参考](docs/tools.zh-CN.md) · [安全策略](SECURITY.md) · [参与贡献](CONTRIBUTING.md)
 
 ## 路线图
 
 | 阶段 | 下一步 |
 | :-- | :-- |
 | M0–M2 | 持续验证 Windows/Mac，提升捕获性能，完成文件与无障碍能力，签名打包 |
-| M3 | iOS SDK 编译，模拟器与真机验收；Face ID 签名、二维码配对与通知 |
+| M3 | 真机与实际远控验收；Face ID 签名、二维码配对与通知 |
 | M4 | 可选自托管账号/中继服务与设备共享 |
 
 ## 许可证
