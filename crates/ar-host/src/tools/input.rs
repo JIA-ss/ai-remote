@@ -10,10 +10,7 @@
 mod inject;
 mod keys;
 
-use std::{
-    sync::{Arc, Mutex, PoisonError},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use ar_core::Level;
@@ -23,6 +20,7 @@ use rmcp::model::{CallToolResult, JsonObject};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::{Mutex, MutexGuard, Semaphore, SemaphorePermit};
 
 use self::{
     inject::{Op, Plan},
@@ -62,7 +60,10 @@ const DRAG_STEPS: i32 = 10;
 const DRAG_PAUSE: Duration = Duration::from_millis(15);
 
 /// Serialises input calls (see the module comment).
-static INPUT: Mutex<()> = Mutex::new(());
+static INPUT: Mutex<()> = Mutex::const_new(());
+/// At most one executing call and one waiter. Waiting must not occupy blocking
+/// threads needed by screenshots, native prompts and unrelated host work.
+static INPUT_CAPACITY: Semaphore = Semaphore::const_new(2);
 
 const PROMPT_OPEN: &str = "an ai-remote approval prompt is open on the host, so mouse and keyboard input is \
      paused until the owner answers it (input must never be able to answer a prompt). Retry in a little while.";
@@ -702,22 +703,87 @@ fn check_step(
 /// otherwise keep typing.
 async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
     let cancel = ctx.session.cancel.clone();
+    let request = ctx.cancel.clone();
+    let turn = ctx.turn_cancel.clone();
     let prompts = ctx.host.open_prompts();
+    let (capacity, input) = input_slot().await?;
     tokio::task::spawn_blocking(move || {
-        let _one_at_a_time = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
+        // These guards remain with the actual worker if its JoinHandle is dropped.
+        let (_capacity, _one_at_a_time) = (capacity, input);
+        check_active(&cancel, &request, &turn)?;
         let mut backend = inject::EnigoBackend::new()?;
         let mut warnings = Vec::new();
-        inject::execute(&plan, &mut backend, &mut |target| check_step(&cancel, &prompts, target, &mut warnings))?;
+        inject::execute(
+            &plan,
+            &mut backend,
+            &mut |target| check_step(&cancel, &prompts, target, &mut warnings),
+            &mut || check_active(&cancel, &request, &turn),
+        )?;
         Ok(warnings)
     })
     .await
     .context("the input thread failed")?
 }
 
+pub(crate) async fn input_slot() -> Result<(SemaphorePermit<'static>, MutexGuard<'static, ()>)> {
+    let capacity = INPUT_CAPACITY.try_acquire().map_err(|_| {
+        anyhow!("input busy: one call is executing and one is already queued; wait for them before sending more input")
+    })?;
+    let input = INPUT.lock().await;
+    Ok((capacity, input))
+}
+
+fn check_active(
+    session: &tokio_util::sync::CancellationToken,
+    request: &tokio_util::sync::CancellationToken,
+    turn: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if session.is_cancelled() {
+        bail!("the session ended");
+    }
+    if request.is_cancelled() {
+        bail!("the input call was cancelled");
+    }
+    if turn.is_cancelled() {
+        bail!("control changed; this input call will not resume after handback or resume");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use inject::tests::run as run_recorded;
+
+    #[tokio::test]
+    async fn input_queue_is_bounded_and_a_cancelled_waiter_releases_capacity() {
+        let active = input_slot().await.unwrap();
+        let mut queued = Box::pin(input_slot());
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        let err = input_slot().await.unwrap_err().to_string();
+        assert!(err.contains("input busy"), "{err}");
+        drop(queued);
+        let mut replacement = Box::pin(input_slot());
+        assert!(futures::poll!(replacement.as_mut()).is_pending());
+        drop(active);
+        assert!(replacement.await.is_ok());
+    }
+
+    #[test]
+    fn input_checks_request_and_driver_grants_in_addition_to_the_session() {
+        use tokio_util::sync::CancellationToken;
+        let session = CancellationToken::new();
+        let request = CancellationToken::new();
+        let turn = CancellationToken::new();
+        assert!(check_active(&session, &request, &turn).is_ok());
+        request.cancel();
+        assert!(check_active(&session, &request, &turn).unwrap_err().to_string().contains("call was cancelled"));
+        let request = CancellationToken::new();
+        turn.cancel();
+        assert!(check_active(&session, &request, &turn).unwrap_err().to_string().contains("control changed"));
+        session.cancel();
+        assert!(check_active(&session, &request, &turn).unwrap_err().to_string().contains("session ended"));
+    }
 
     fn mouse(args: serde_json::Value) -> Result<MouseRequest> {
         let p: MouseParams = parse(args.as_object().unwrap().clone())?;

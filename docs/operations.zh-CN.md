@@ -489,7 +489,7 @@ ai-remote deny 3f9c2a --note "use the recycle bin"   # Agent 会收到这句话
 Agent 和人在同一台电脑上轮流操作。在级别为 `control` 或以上的已配对设备上：
 
 ```bash
-ai-remote take-over             # 由你操作；Agent 的下一次调用会被拒绝，提示“有人接管了”
+ai-remote take-over             # 由你操作；取消执行中/排队的 Agent 调用，拒绝后续调用
 ai-remote take-over --let-watch # 同上，但 Agent 还可以继续看（只限 observe 级工具）
 ai-remote hand-back --note "I fixed the chart title"
 ai-remote pause                 # 暂停，谁都不操作；任何已配对设备都可以暂停
@@ -498,6 +498,11 @@ ai-remote tell "Use the D: drive for the export"
 ```
 
 - 你操作期间只有你自己的调用会执行：桌面应用替你发出的调用，或者 `ai-remote call ... --person`。你键入的内容在日志里只记录长度。
+- 接管或暂停会使已有 Agent 调用的控制授权失效，包括等待审批和排队的输入。交还或恢复只允许新调用，不会继续旧动作。
+  输入线程在每个事件前检查取消，包括拖动过程中的指针移动；停止时释放已按下的键和鼠标按钮。
+  已发送给系统的事件无法撤回，因此发出替代动作前应重新查看屏幕。`--let-watch` 允许接管期间继续执行 observe 级调用。
+- 输入最多一批执行、一批等待；更多调用立即返回 `input busy`。应等待现有调用结束并核对现场后再发送。
+  等待使用异步锁，避免占用截图和原生审批框需要的工作线程。
 - 交还控制以及每条 `tell` 都会排队一条留言，附在 Agent 下一次调用的结果里（“Messages from the owner while you worked: ...”），
   让 Agent 知道屏幕可能变了。
 - 每次切换都是一条审计记录（`driver`：`agent`、`person` 或 `paused`，谁操作的，附言），每个会话也会记录它属于 Agent 还是人

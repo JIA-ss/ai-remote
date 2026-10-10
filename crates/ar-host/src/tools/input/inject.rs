@@ -91,21 +91,23 @@ pub trait Backend {
     }
 }
 
-/// Runs `plan` on `backend`, calling `check` before every checked step. Stops at the first failure
+/// Runs `plan` on `backend`, calling `active` before every step and `check` before target-sensitive steps. Stops at the first failure
 /// with an error that says how far it got; keys and buttons still held are released either way.
 pub fn execute<B: Backend>(
     plan: &Plan,
     backend: &mut B,
     check: &mut dyn FnMut(InputTarget) -> Result<()>,
+    active: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
     let mut held = Held { backend, keys: Vec::new(), buttons: Vec::new() };
     let mut done = 0;
     for step in &plan.steps {
-        let result = match step.check {
-            Some(target) => check(target),
-            None => Ok(()),
-        }
-        .and_then(|()| held.apply(&step.op));
+        let result = active()
+            .and_then(|()| match step.check {
+                Some(target) => check(target),
+                None => Ok(()),
+            })
+            .and_then(|()| held.apply(&step.op));
         if let Err(e) = result {
             let released =
                 if held.is_empty() { "" } else { " The keys and buttons it was holding have been released." };
@@ -142,8 +144,9 @@ impl<B: Backend> Held<'_, B> {
                 self.backend.key(*k, Direction::Press)
             }
             Op::ReleaseKey(k) => {
+                self.backend.key(*k, Direction::Release)?;
                 forget(&mut self.keys, k);
-                self.backend.key(*k, Direction::Release)
+                Ok(())
             }
             Op::TapKey(k) => self.backend.key(*k, Direction::Click),
             Op::PressButton(b) => {
@@ -151,8 +154,9 @@ impl<B: Backend> Held<'_, B> {
                 self.backend.button(*b, Direction::Press)
             }
             Op::ReleaseButton(b) => {
+                self.backend.button(*b, Direction::Release)?;
                 forget(&mut self.buttons, b);
-                self.backend.button(*b, Direction::Release)
+                Ok(())
             }
             Op::Click(b) => self.backend.button(*b, Direction::Click),
             Op::Scroll(n, axis) => self.backend.scroll(*n, *axis),
@@ -286,7 +290,7 @@ pub mod tests {
     /// Runs `plan` with every check passing.
     pub fn run(plan: &Plan) -> (Result<()>, Vec<String>) {
         let mut rec = Recorder::default();
-        let r = execute(plan, &mut rec, &mut |_| Ok(()));
+        let r = execute(plan, &mut rec, &mut |_| Ok(()), &mut || Ok(()));
         (r, rec.calls)
     }
 
@@ -322,7 +326,7 @@ pub mod tests {
     #[test]
     fn releases_everything_held_when_a_step_fails() {
         let mut rec = Recorder { fail_at: Some(3), ..Default::default() };
-        let err = execute(&ctrl_drag(), &mut rec, &mut |_| Ok(())).unwrap_err().to_string();
+        let err = execute(&ctrl_drag(), &mut rec, &mut |_| Ok(()), &mut || Ok(())).unwrap_err().to_string();
         assert!(err.contains("stopped after 0 of 1 drags: injected failure"), "{err}");
         assert!(err.contains("have been released"), "{err}");
         // The failing move, then the button and the key, in that order.
@@ -332,7 +336,7 @@ pub mod tests {
     #[test]
     fn releases_a_press_that_itself_failed() {
         let mut rec = Recorder { fail_at: Some(1), ..Default::default() };
-        execute(&ctrl_drag(), &mut rec, &mut |_| Ok(())).unwrap_err();
+        execute(&ctrl_drag(), &mut rec, &mut |_| Ok(()), &mut || Ok(())).unwrap_err();
         assert_eq!(rec.calls, ["move 1,1", "key Control Press", "key Control Release"]);
     }
 
@@ -347,16 +351,57 @@ pub mod tests {
         }
         let mut rec = Recorder::default();
         let mut checks = 0;
-        let err = execute(&plan, &mut rec, &mut |_| {
-            checks += 1;
-            if checks == 4 { Err(anyhow!("a prompt opened")) } else { Ok(()) }
-        })
+        let err = execute(
+            &plan,
+            &mut rec,
+            &mut |_| {
+                checks += 1;
+                if checks == 4 { Err(anyhow!("a prompt opened")) } else { Ok(()) }
+            },
+            &mut || Ok(()),
+        )
         .unwrap_err()
         .to_string();
         assert!(err.starts_with("stopped after 1 of 3 chords: a prompt opened"), "{err}");
         // Chord 2 pressed shift, then its tap was refused: shift is released, nothing else is sent.
         assert_eq!(rec.calls.len(), 5);
         assert_eq!(rec.calls[3..], ["key Shift Press", "key Shift Release"]);
+    }
+
+    #[test]
+    fn cancellation_stops_unchecked_drag_moves_and_releases_held_input() {
+        let mut rec = Recorder::default();
+        let mut steps = 0;
+        let err = execute(&ctrl_drag(), &mut rec, &mut |_| Ok(()), &mut || {
+            steps += 1;
+            if steps == 4 { Err(anyhow!("control changed")) } else { Ok(()) }
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("control changed"), "{err}");
+        assert_eq!(
+            rec.calls,
+            ["move 1,1", "key Control Press", "button Left Press", "button Left Release", "key Control Release"]
+        );
+    }
+
+    #[test]
+    fn cancelled_queued_input_sends_nothing_even_for_a_plain_move() {
+        let mut plan = Plan::new("moves");
+        plan.plain(Op::MoveTo(10, 20));
+        let mut rec = Recorder::default();
+        execute(&plan, &mut rec, &mut |_| Ok(()), &mut || Err(anyhow!("cancelled"))).unwrap_err();
+        assert!(rec.calls.is_empty());
+    }
+
+    #[test]
+    fn failed_releases_are_retried_by_cleanup() {
+        for index in [4, 5] {
+            let mut rec = Recorder { fail_at: Some(index), ..Default::default() };
+            execute(&ctrl_drag(), &mut rec, &mut |_| Ok(()), &mut || Ok(())).unwrap_err();
+            let release = if index == 4 { "button Left Release" } else { "key Control Release" };
+            assert_eq!(rec.calls.iter().filter(|call| *call == release).count(), 2);
+        }
     }
 
     #[test]

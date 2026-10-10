@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 use ar_core::Level;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::audit::now_ms;
 
@@ -46,36 +47,63 @@ const MAX_NOTE: usize = 2000;
 const MAX_NOTES: usize = 8;
 
 pub struct Turns {
-    driver: Mutex<Driver>,
+    state: Mutex<State>,
     notes: Mutex<Vec<Note>>,
+}
+
+struct State {
+    driver: Driver,
+    control: CancellationToken,
+    observe: CancellationToken,
+}
+
+impl State {
+    /// Old control grants remain cancelled after handback/resume. Checking only
+    /// the current driver would let queued work survive a quick takeover cycle.
+    fn change(&mut self, next: Driver) -> Driver {
+        self.control.cancel();
+        self.control = CancellationToken::new();
+        if !matches!(next, Driver::Agent | Driver::Person { agent_may_watch: true, .. }) {
+            self.observe.cancel();
+            self.observe = CancellationToken::new();
+        }
+        self.driver = next.clone();
+        next
+    }
 }
 
 impl Default for Turns {
     fn default() -> Self {
-        Self { driver: Mutex::new(Driver::Agent), notes: Mutex::default() }
+        Self {
+            state: Mutex::new(State {
+                driver: Driver::Agent,
+                control: CancellationToken::new(),
+                observe: CancellationToken::new(),
+            }),
+            notes: Mutex::default(),
+        }
     }
 }
 
 impl Turns {
     pub fn driver(&self) -> Driver {
-        self.driver.lock().unwrap().clone()
+        self.state.lock().unwrap().driver.clone()
     }
 
-    /// `device` takes the controls; the agent stops at its next call.
+    /// `device` takes the controls; active and queued agent calls lose their grant.
     pub fn take_over(&self, device: &str, agent_may_watch: bool) -> Driver {
         let next = Driver::Person { device: device.to_string(), since_ms: now(), agent_may_watch };
-        *self.driver.lock().unwrap() = next.clone();
-        next
+        self.state.lock().unwrap().change(next)
     }
 
     /// Gives the controls back to the agent, with an optional message telling it what changed.
     pub fn hand_back(&self, device: &str, note: Option<&str>) -> Result<Driver> {
-        let mut driver = self.driver.lock().unwrap();
-        if !matches!(*driver, Driver::Person { .. }) {
+        let mut state = self.state.lock().unwrap();
+        if !matches!(state.driver, Driver::Person { .. }) {
             bail!("nobody has taken over this computer");
         }
-        *driver = Driver::Agent;
-        drop(driver);
+        state.change(Driver::Agent);
+        drop(state);
         let text = match note.map(str::trim).filter(|n| !n.is_empty()) {
             Some(n) => format!("They took over and handed back. They said: \"{}\"", clean(n)),
             None => "They took over and handed back.".to_string(),
@@ -86,17 +114,15 @@ impl Turns {
 
     pub fn pause(&self, by: &str) -> Driver {
         let next = Driver::Paused { by: by.to_string(), since_ms: now() };
-        *self.driver.lock().unwrap() = next.clone();
-        next
+        self.state.lock().unwrap().change(next)
     }
 
     pub fn resume(&self) -> Result<Driver> {
-        let mut driver = self.driver.lock().unwrap();
-        if !matches!(*driver, Driver::Paused { .. }) {
+        let mut state = self.state.lock().unwrap();
+        if !matches!(state.driver, Driver::Paused { .. }) {
             bail!("the agent is not paused");
         }
-        *driver = Driver::Agent;
-        Ok(Driver::Agent)
+        Ok(state.change(Driver::Agent))
     }
 
     /// Queues a message for the agent; it arrives with its next call result.
@@ -122,13 +148,17 @@ impl Turns {
         std::mem::take(&mut *self.notes.lock().unwrap())
     }
 
-    /// Whether a call may run now. `person` says the call comes from a person's session (the app
-    /// while someone drives), `level` is the tool's level. `Err` holds the sentence the agent gets.
-    pub fn admits(&self, person: bool, level: Level, host: &str) -> Result<(), String> {
-        match &*self.driver.lock().unwrap() {
-            Driver::Agent => Ok(()),
-            Driver::Person { .. } | Driver::Paused { .. } if person => Ok(()),
-            Driver::Person { agent_may_watch: true, .. } if level == Level::Observe => Ok(()),
+    /// Admits a call and snapshots its control grant under the same lock. A grant
+    /// is cancelled when that access ends; it never revives after handback.
+    pub fn admits(&self, person: bool, level: Level, host: &str) -> Result<CancellationToken, String> {
+        let state = self.state.lock().unwrap();
+        if person {
+            return Ok(CancellationToken::new());
+        }
+        let grant = || if level == Level::Observe { state.observe.clone() } else { state.control.clone() };
+        match &state.driver {
+            Driver::Agent => Ok(grant()),
+            Driver::Person { agent_may_watch: true, .. } if level == Level::Observe => Ok(grant()),
             Driver::Person { device, .. } => Err(format!(
                 "A person took over {host} from {device}, so this call did not run. Do not retry right away: \
                  calls work again once they hand back. Tell the user what you were about to do."
@@ -217,6 +247,35 @@ mod tests {
         t.resume().unwrap();
         assert_eq!(t.driver(), Driver::Agent);
         assert!(t.hand_back("x", None).is_err(), "nothing to hand back");
+    }
+
+    #[test]
+    fn takeover_and_handback_do_not_revive_old_or_queued_grants() {
+        let t = Turns::default();
+        let active = t.admits(false, Level::Control, "pc").unwrap();
+        let queued = t.admits(false, Level::Admin, "pc").unwrap();
+        let watching = t.admits(false, Level::Observe, "pc").unwrap();
+        let human = t.admits(true, Level::Control, "pc").unwrap();
+        t.take_over("phone", true);
+        t.hand_back("phone", None).unwrap();
+        assert!(active.is_cancelled() && queued.is_cancelled());
+        assert!(!watching.is_cancelled(), "watching was allowed throughout");
+        assert!(!human.is_cancelled(), "human calls keep their existing semantics");
+        assert!(!t.admits(false, Level::Control, "pc").unwrap().is_cancelled());
+    }
+
+    #[test]
+    fn pause_invalidates_observation_and_control_even_after_resume() {
+        let t = Turns::default();
+        let read = t.admits(false, Level::Observe, "pc").unwrap();
+        let write = t.admits(false, Level::Control, "pc").unwrap();
+        t.pause("phone");
+        t.resume().unwrap();
+        assert!(read.is_cancelled() && write.is_cancelled());
+        assert!(!t.admits(false, Level::Observe, "pc").unwrap().is_cancelled());
+        let read = t.admits(false, Level::Observe, "pc").unwrap();
+        t.take_over("phone", false);
+        assert!(read.is_cancelled());
     }
 
     #[test]

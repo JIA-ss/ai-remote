@@ -542,7 +542,7 @@ design, the signed message and the threat model are in [approvals.md](approvals.
 An agent and a person take turns on one computer. From a paired device with level `control` or above:
 
 ```bash
-ai-remote take-over             # you drive; the agent's next call is refused with "a person took over"
+ai-remote take-over             # you drive; active/queued agent calls are cancelled, new calls refused
 ai-remote take-over --let-watch # same, but the agent may keep looking (observe-level tools only)
 ai-remote hand-back --note "I fixed the chart title"
 ai-remote pause                 # nobody drives; any paired device may pause
@@ -552,6 +552,14 @@ ai-remote tell "Use the D: drive for the export"
 
 - While you drive, only your own calls run: those the desktop app makes for you, or
   `ai-remote call ... --person`. What you type is logged by size only.
+- Taking over or pausing invalidates the grant held by existing agent calls, including pending
+  approvals and queued input. Handback/resume allows new calls; it never resumes old ones. Input
+  workers check cancellation before every event, including pointer movement, and release held
+  keys/buttons when stopping. An event already sent to the OS cannot be undone: inspect the screen
+  before issuing a replacement action. `--let-watch` preserves observe-level calls during takeover.
+- Input permits one executing call and one waiter. Further calls fail with `input busy`; wait for
+  the outstanding calls and inspect the host before sending more. Waiting uses an async lock rather
+  than occupying native worker threads needed by capture and approval dialogs.
 - Handing back, and every `tell`, queues a message that is added to the agent's next call result
   ("Messages from the owner while you worked: ..."), so the agent knows the screen may have changed.
 - Each change is an audit line (`driver`: `agent`, `person` or `paused`, who, and the note), and
