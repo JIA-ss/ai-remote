@@ -114,7 +114,7 @@ pub(crate) struct Agent {
     last_activity: std::sync::Mutex<Instant>,
     /// Host sessions for a person's own calls (the app while someone drives), kept between calls so
     /// each click does not start a new session.
-    person: std::sync::OnceLock<Aggregator>,
+    person: std::sync::Mutex<Option<Aggregator>>,
     /// The agents (MCP clients) connected now.
     pub(crate) sessions: crate::sessions::AgentSessions,
 }
@@ -228,15 +228,7 @@ impl Agent {
 }
 
 /// Runs the agent until idle for a long time, Ctrl+C, or a `shutdown` request.
-pub async fn run_agent(profile: Profile) -> Result<()> {
-    let endpoint = profile.control_endpoint(Role::Controller)?;
-    let mut listener = ipc::Listener::bind(&endpoint).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AddrInUse {
-            anyhow!("a controller agent is already running for this profile")
-        } else {
-            anyhow!("bind control endpoint {}: {e}", endpoint.display())
-        }
-    })?;
+async fn start_state(profile: &Profile) -> Result<Arc<Agent>> {
     let device_key = identity::load_or_create(&profile.identity_path(Role::Controller)?)?;
     let mesh = Mesh::start(MeshOptions {
         root: profile.mesh_dir(Role::Controller)?,
@@ -252,13 +244,140 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
         refusals: std::sync::Mutex::new(Refusals::default()),
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
-        person: std::sync::OnceLock::new(),
+        person: std::sync::Mutex::new(None),
         sessions: Default::default(),
     });
     tracing::info!(device = %agent.mesh.short_id(), "controller agent running");
 
+    Ok(agent)
+}
+
+/// The native mobile controller uses the same handlers, without subprocesses or filesystem
+/// sockets (iOS application-container paths exceed sockaddr_un's 103-byte limit).
+pub struct EmbeddedController {
+    agent: std::sync::Mutex<Option<Arc<Agent>>>,
+    shutdown: CancellationToken,
+    streams: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl EmbeddedController {
+    pub async fn start(profile: &Profile) -> Result<Self> {
+        Ok(Self {
+            agent: std::sync::Mutex::new(Some(start_state(profile).await?)),
+            shutdown: CancellationToken::new(),
+            streams: Default::default(),
+        })
+    }
+
+    fn state(&self) -> Result<Arc<Agent>> {
+        if self.shutdown.is_cancelled() {
+            bail!("controller is closed");
+        }
+        self.agent.lock().unwrap().clone().ok_or_else(|| anyhow!("controller is closed"))
+    }
+
+    pub async fn request(&self, request: Value) -> Result<Value> {
+        let agent = self.state()?;
+        let request = serde_json::from_value(request)?;
+        tokio::select! {
+            _ = self.shutdown.cancelled() => Err(anyhow!("controller is closed")),
+            result = handle(&agent, request, &self.shutdown) => result,
+        }
+    }
+
+    pub async fn open_stream(&self, request: Value) -> Result<(tokio::io::DuplexStream, Value)> {
+        let agent = self.state()?;
+        let req: AgentRequest = serde_json::from_value(request)?;
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let stop = self.shutdown.clone();
+        let (reply, task) = tokio::select! {
+            _ = stop.cancelled() => return Err(anyhow!("controller is closed")),
+            result = async {
+                Ok::<_, anyhow::Error>(match req {
+                    AgentRequest::Events { host } => {
+                        let feed = open_events(&agent, host).await?;
+                        let reply = json!({"host":feed.host, "events":true});
+                        let cancelled = stop.clone();
+                        (reply, tokio::spawn(async move { tokio::select! { _ = feed.relay(server) => {}, _ = cancelled.cancelled() => {} } }))
+                    }
+                    AgentRequest::Screen { host, request } => {
+                        let (view, reply) = open_screen(&agent, host, &request).await?;
+                        let cancelled = stop.clone();
+                        (reply, tokio::spawn(async move { tokio::select! { _ = view.relay(server, vec![]) => {}, _ = cancelled.cancelled() => {} } }))
+                    }
+                    _ => bail!("not a streaming request"),
+                })
+            } => result?,
+        };
+        let mut tasks = self.streams.lock().unwrap();
+        tasks.retain(|t| !t.is_finished());
+        if stop.is_cancelled() {
+            task.abort();
+            bail!("controller is closed");
+        }
+        tasks.push(task);
+        Ok((client, reply))
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        self.shutdown.cancel();
+        let tasks = std::mem::take(&mut *self.streams.lock().unwrap());
+        for task in tasks {
+            let _ = task.await;
+        }
+        let agent = self.agent.lock().unwrap().take();
+        if let Some(mut agent) = agent {
+            agent.person.lock().unwrap().take();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match Arc::try_unwrap(agent) {
+                    Ok(agent) => {
+                        agent.mesh.shutdown().await;
+                        break;
+                    }
+                    Err(shared) => {
+                        // Cancelled requests must first get a chance to drop their state borrow.
+                        // Retain ownership on timeout so a later close can actually retry shutdown.
+                        if tokio::time::Instant::now() >= deadline {
+                            *self.agent.lock().unwrap() = Some(shared);
+                            bail!("controller has an in-flight operation; retry close after it ends");
+                        }
+                        agent = shared;
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for EmbeddedController {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        for task in self.streams.get_mut().unwrap().drain(..) {
+            task.abort();
+        }
+        if let Some(agent) = self.agent.get_mut().unwrap().take() {
+            agent.person.lock().unwrap().take();
+        }
+    }
+}
+
+pub async fn run_agent(profile: Profile) -> Result<()> {
+    let endpoint = profile.control_endpoint(Role::Controller)?;
+    let mut listener = ipc::Listener::bind(&endpoint).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            anyhow!("a controller agent is already running for this profile")
+        } else {
+            anyhow!("bind control endpoint {}: {e}", endpoint.display())
+        }
+    })?;
+    let agent = start_state(&profile).await?;
+
     let shutdown = CancellationToken::new();
     let mut idle_check = tokio::time::interval(Duration::from_secs(60));
+    let mut clients = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             conn = listener.accept() => match conn {
@@ -267,7 +386,7 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
                     let shutdown = shutdown.clone();
                     agent.active.fetch_add(1, Ordering::SeqCst);
                     agent.touch();
-                    tokio::spawn(async move {
+                    clients.spawn(async move {
                         if let Err(e) = serve_client(&agent, conn, &shutdown).await {
                             tracing::debug!(%e, "agent client ended with an error");
                         }
@@ -277,6 +396,7 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
                 }
                 Err(e) => tracing::warn!(%e, "control connection failed"),
             },
+            _ = clients.join_next(), if !clients.is_empty() => {},
             _ = idle_check.tick() => {
                 let idle = agent.last_activity.lock().unwrap().elapsed();
                 if agent.active.load(Ordering::SeqCst) == 0 && idle >= IDLE_EXIT {
@@ -288,11 +408,29 @@ pub async fn run_agent(profile: Profile) -> Result<()> {
             _ = shutdown.cancelled() => break,
         }
     }
+    // A mobile app embeds this agent rather than exiting a process. Stop all local clients,
+    // break the cached person's Arc cycle, then release the node's database and UDP endpoint.
+    shutdown.cancel();
+    if tokio::time::timeout(Duration::from_secs(5), async { while clients.join_next().await.is_some() {} })
+        .await
+        .is_err()
+    {
+        clients.abort_all();
+        while clients.join_next().await.is_some() {}
+    }
+    agent.person.lock().unwrap().take();
+    let agent = Arc::try_unwrap(agent).map_err(|_| anyhow!("controller still shared after shutdown"))?;
+    agent.mesh.shutdown().await;
     Ok(())
 }
 
 async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &CancellationToken) -> Result<()> {
-    while let Some(line) = conn.read_json().await? {
+    loop {
+        let line = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            line = conn.read_json() => line?,
+        };
+        let Some(line) = line else { break };
         agent.touch();
         let req: AgentRequest = match serde_json::from_value(line) {
             Ok(r) => r,
@@ -309,6 +447,7 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 served = Aggregator::new(agent.clone()).with_session(id).serve(stream, buffered) => served,
                 // Disconnected from the app: dropping the session closes its stream.
                 _ = stop.cancelled() => Ok(()),
+                _ = shutdown.cancelled() => Ok(()),
             };
             agent.sessions.close(id);
             return served;
@@ -319,7 +458,10 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 Ok(feed) => {
                     conn.reply(Ok(json!({"events": true, "host": feed.host}))).await?;
                     let (stream, _) = conn.into_raw();
-                    feed.relay(stream).await;
+                    tokio::select! {
+                        _ = feed.relay(stream) => {},
+                        _ = shutdown.cancelled() => {},
+                    }
                     return Ok(());
                 }
                 Err(e) => {
@@ -333,7 +475,10 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 Ok((view, reply)) => {
                     conn.reply(Ok(reply)).await?;
                     let (stream, buffered) = conn.into_raw();
-                    view.relay(stream, buffered).await;
+                    tokio::select! {
+                        _ = view.relay(stream, buffered) => {},
+                        _ = shutdown.cancelled() => {},
+                    }
                     return Ok(());
                 }
                 Err(e) => {
@@ -397,7 +542,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
         }
         AgentRequest::Call { host, tool, args, person } => {
             let aggregator = if person {
-                agent.person.get_or_init(|| Aggregator::for_person(agent.clone())).clone()
+                agent.person.lock().unwrap().get_or_insert_with(|| Aggregator::for_person(agent.clone())).clone()
             } else {
                 Aggregator::new(agent.clone())
             };
@@ -514,7 +659,7 @@ async fn open_screen(agent: &Arc<Agent>, host: Option<String>, request: &Value) 
 
 impl ScreenView {
     /// Copies video to the local client and the client's lines to the host, until either ends.
-    async fn relay(self, local: ipc::LocalStream, buffered: Vec<u8>) {
+    async fn relay<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(self, local: T, buffered: Vec<u8>) {
         let ScreenView { conn, mut send, mut recv } = self;
         let (mut local_read, mut local_write) = tokio::io::split(local);
         let up = async {
@@ -558,7 +703,7 @@ async fn open_events(agent: &Arc<Agent>, host: Option<String>) -> Result<EventFe
 
 impl EventFeed {
     /// Copies the feed to the local client until the host ends it or the client goes away.
-    async fn relay(self, local: ipc::LocalStream) {
+    async fn relay<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(self, local: T) {
         let EventFeed { conn, send, mut recv, .. } = self;
         let (mut local_read, mut local_write) = tokio::io::split(local);
         let client_gone = async {
@@ -577,6 +722,23 @@ impl EventFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedded_close_waits_for_an_in_flight_state_borrow() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile::at(dir.path()).unwrap();
+        let controller = EmbeddedController::start(&profile).await.unwrap();
+        let borrowed = controller.state().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            drop(borrowed);
+        });
+        controller.close().await.unwrap();
+        release.await.unwrap();
+        assert!(controller.request(json!({"op":"status"})).await.is_err());
+        let reopened = EmbeddedController::start(&profile).await.unwrap();
+        reopened.close().await.unwrap();
+    }
 
     #[test]
     fn a_revocation_outlives_later_generic_refusals() {

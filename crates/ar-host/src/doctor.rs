@@ -82,6 +82,11 @@ pub struct Inputs<'a> {
 pub async fn run(inputs: Inputs<'_>) -> Report {
     let session = platform::session_state();
     let mut checks = session_checks(&session);
+    #[cfg(target_os = "macos")]
+    checks.extend(macos_permission_checks(
+        platform::macos::screen_recording_allowed(),
+        platform::macos::accessibility_allowed(),
+    ));
     checks.push(dpi_check(platform::dpi_awareness()));
     checks.push(match inputs.mesh {
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
@@ -113,6 +118,22 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
 /// The worst grade of all checks (`ok` when everything was skipped).
 pub fn overall(checks: &[Check]) -> Grade {
     checks.iter().map(|c| c.grade).max().unwrap_or(Grade::Ok).max(Grade::Ok)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_permission_checks(screen: bool, input: bool) -> Vec<Check> {
+    [("screen_recording", screen, "Screen Recording", "capture the screen"),
+     ("accessibility", input, "Accessibility", "control mouse and keyboard")]
+        .into_iter()
+        .map(|(id, allowed, name, purpose)| {
+            if allowed {
+                Check::new(id, Grade::Ok, format!("macOS {name} permission granted to this process"))
+            } else {
+                Check::new(id, Grade::Fail, format!("macOS {name} permission missing: cannot {purpose}"))
+                    .fix(format!("enable the host executable (or its launching terminal) in System Settings > Privacy & Security > {name}, restart the host, then run doctor again"))
+            }
+        })
+        .collect()
 }
 
 fn session_checks(s: &SessionState) -> Vec<Check> {
@@ -411,6 +432,16 @@ mod tests {
 
     fn grades(checks: &[Check]) -> Vec<(&str, Grade)> {
         checks.iter().map(|c| (c.id.as_str(), c.grade)).collect()
+    }
+
+    #[test]
+    fn macos_missing_permissions_are_failures_with_repairs() {
+        let checks = macos_permission_checks(false, false);
+        assert_eq!(overall(&checks), Grade::Fail);
+        assert!(checks.iter().all(|c| c.grade == Grade::Fail && c.fix.is_some()));
+        let observe_only = macos_permission_checks(true, false);
+        assert_eq!(grades(&observe_only), [("screen_recording", Grade::Ok), ("accessibility", Grade::Fail)]);
+        assert_eq!(overall(&macos_permission_checks(true, true)), Grade::Ok);
     }
 
     #[test]

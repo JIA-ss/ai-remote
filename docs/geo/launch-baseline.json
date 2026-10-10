@@ -1,0 +1,414 @@
+{
+  "project": "JIA-ss/ai-remote",
+  "captured_at": "2026-10-10 10:46:17 UTC",
+  "query_set_id": "launch-v1",
+  "surface": {
+    "tool": "web.run search",
+    "engine": "unknown",
+    "region": "unknown",
+    "options": {}
+  },
+  "observations": [
+    {
+      "query_id": "q1",
+      "text": "\"ai-remote\" \"JIA-ss\"",
+      "returned_sources": [
+        {
+          "title": "Alexandre Mas | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pma2363.html"
+        },
+        {
+          "title": "EurekaMag Full Text Articles Chapter 110964",
+          "url": "https://eurekamag.com/research/110/963/"
+        },
+        {
+          "title": "Faculty Publications | GLRC",
+          "url": "https://www.mtu.edu/greatlakes/about/publications/"
+        },
+        {
+          "title": "Vol. 17, Issue 24 | Remote Sensing | MDPI",
+          "url": "https://www.mdpi.com/2072-4292/17/24"
+        },
+        {
+          "title": "(PDF) The 2026 Singapore Consensus on Global AI Safety Research Priorities",
+          "url": "https://www.researchgate.net/publication/412349314_The_2026_Singapore_Consensus_on_Global_AI_Safety_Research_Priorities?_tp=eyJjb250ZXh0Ijp7InBhZ2UiOiJzY2llbnRpZmljQ29udHJpYnV0aW9ucyIsInByZXZpb3VzUGFnZSI6bnVsbCwic3ViUGFnZSI6bnVsbH19"
+        },
+        {
+          "title": "(PDF) A Comprehensive Survey on Semantic Communication in Non-Terrestrial Networks: Architectures, Methodologies, and Challenges",
+          "url": "https://www.researchgate.net/publication/406036403_A_Comprehensive_Survey_on_Semantic_Communication_in_Non-Terrestrial_Networks_Architectures_Methodologies_and_Challenges"
+        },
+        {
+          "title": "(PDF) Artificial Intelligence in Healthcare: 2021 Year in Review",
+          "url": "https://www.researchgate.net/publication/358897338_Artificial_Intelligence_in_Healthcare_2021_Year_in_Review"
+        },
+        {
+          "title": "Nicholas Bloom | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/e/c/pbl55.html"
+        },
+        {
+          "title": "(PDF) AI from the Global Majority: Official Outcome of the UN IGF Data and Artificial Intelligence Governance Coalition",
+          "url": "https://www.researchgate.net/publication/387131230_AI_from_the_Global_Majority_Official_Outcome_of_the_UN_IGF_Data_and_Artificial_Intelligence_Governance_Coalition"
+        },
+        {
+          "title": "(PDF) Mitigating the Memory Bottleneck with Machine Learning-Driven and Data-Aware Microarchitectural Techniques",
+          "url": "https://www.researchgate.net/publication/401719507_Mitigating_the_Memory_Bottleneck_with_Machine_Learning-Driven_and_Data-Aware_Microarchitectural_Techniques"
+        },
+        {
+          "title": "Xavier Jaravel | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pja604.html"
+        },
+        {
+          "title": "Brantly Mercer Callaway VI | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pca1233.html"
+        }
+      ],
+      "official_urls": [],
+      "error": null,
+      "source_format_parsed": true
+    },
+    {
+      "query_id": "q2",
+      "text": "open source MCP remote control Windows macOS",
+      "returned_sources": [
+        {
+          "title": "GitHub - munimtechnologies/munim-computer-use: Open-source Computer Use MCP server for any coding agent — macOS, Windows, Linux. Accessibility-first, background input, agent pointer, zoom, your signed-in Chrome. · GitHub",
+          "url": "https://github.com/munimtechnologies/munim-computer-use"
+        },
+        {
+          "title": "GitHub - signal-slot/mcp-vnc · GitHub",
+          "url": "https://github.com/signal-slot/mcp-vnc"
+        },
+        {
+          "title": "GitHub - dddabtc/winremote-mcp: Windows Remote MCP Server — 40+ tools for desktop automation, process management, file operations via FastMCP · GitHub",
+          "url": "https://github.com/dddabtc/winremote-mcp"
+        },
+        {
+          "title": "Extra — Open-Source Computer Use Protocol & MCP Server",
+          "url": "https://extra.yantraos.com/"
+        },
+        {
+          "title": "GitHub - shimondoodkin/screenmcp: Remote phone control platform - Android app, API server, WebSocket relay, CLI client · GitHub",
+          "url": "https://github.com/shimondoodkin/screenmcp"
+        },
+        {
+          "title": "ScreenMCP - Remote Control Your Android Phone with AI",
+          "url": "https://screenmcp.com/"
+        },
+        {
+          "title": "GitHub - alaarab/livemcp: The definitive Model Context Protocol bridge for Ableton Live · GitHub",
+          "url": "https://github.com/alaarab/livemcp"
+        },
+        {
+          "title": "munim-computer-use | Munim Technologies",
+          "url": "https://www.munimtech.com/opensource/munim-computer-use"
+        },
+        {
+          "title": "GitHub - cioinside/da-mcp: Cross-platform desktop automation MCP server (Linux/macOS/Windows, 12 tools) · GitHub",
+          "url": "https://github.com/cioinside/da-mcp"
+        },
+        {
+          "title": "bscott/rdc: Remote Desktop Control for AI… — Shadowgraph",
+          "url": "https://shadowgraph.io/bscott/rdc"
+        },
+        {
+          "title": "@mseep/mcp-vnc - npm",
+          "url": "https://www.npmjs.com/package/%40mseep/mcp-vnc"
+        },
+        {
+          "title": "VNC Controller | MCP Cow",
+          "url": "https://mcpcow.com/en/service/vnc-controller/"
+        },
+        {
+          "title": "Released Remote Desktop Control (OSS) for Agents",
+          "url": "https://www.reddit.com/r/aiagents/comments/1wbz2z1/released_remote_desktop_control_oss_for_agents/"
+        },
+        {
+          "title": "I built an MCP server that gives AI agents full control of Windows desktops (40+ tools, open source)",
+          "url": "https://www.reddit.com/r/LocalLLaMA/comments/1r1t0dt/i_built_an_mcp_server_that_gives_ai_agents_full/"
+        },
+        {
+          "title": "Tired of MCP agents being stuck in the browser? I built a native macOS server for full OS control.",
+          "url": "https://www.reddit.com/r/mcp/comments/1s8omfq/tired_of_mcp_agents_being_stuck_in_the_browser_i/"
+        },
+        {
+          "title": "RustDesk",
+          "url": "https://en.wikipedia.org/wiki/RustDesk"
+        },
+        {
+          "title": "Open source MCP server that gives any AI agent real Windows desktop control — 45+ tools",
+          "url": "https://www.reddit.com/r/BlackboxAI_/comments/1rqj01s/open_source_mcp_server_that_gives_any_ai_agent/"
+        },
+        {
+          "title": "I built a local macOS control layer so AI agents can work in background tabs without taking over my screen",
+          "url": "https://www.reddit.com/r/AppsWebappsFullstack/comments/1wddvmr/i_built_a_local_macos_control_layer_so_ai_agents/"
+        },
+        {
+          "title": "I open-sourced the local macOS control layer I use for multi-agent AI workflows",
+          "url": "https://www.reddit.com/r/OpenSourceAI/comments/1wcbzhy/i_opensourced_the_local_macos_control_layer_i_use/"
+        },
+        {
+          "title": "mcp-vnc – An MCP server that allows AI agents to remotely control Windows, Linux, and macOS systems via VNC. It provides tools for mouse and keyboard interaction, text input, and screen capturing.",
+          "url": "https://www.reddit.com/r/mcp/comments/1rlcqhx/mcpvnc_an_mcp_server_that_allows_ai_agents_to/"
+        },
+        {
+          "title": "[Open Source] Building a local MCP server + SwiftUI menu bar app for real macOS automation",
+          "url": "https://www.reddit.com/r/macosprogramming/comments/1wcbz1f/open_source_building_a_local_mcp_server_swiftui/"
+        },
+        {
+          "title": "I built an MCP server that lets ChatGPT control my Windows PC — so regular Chat can actually work on my projects",
+          "url": "https://www.reddit.com/r/mcp/comments/1vyoxdo/i_built_an_mcp_server_that_lets_chatgpt_control/"
+        },
+        {
+          "title": "Mac MCP 2.0 — local macOS control for AI agents with background browser automation",
+          "url": "https://www.reddit.com/r/mcp/comments/1wbhicd/mac_mcp_20_local_macos_control_for_ai_agents_with/"
+        },
+        {
+          "title": "💻 Open Source Alternative to OpenAI Operator — Control Remote Desktops via VNC using Claude Desktop App",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1jjc785"
+        },
+        {
+          "title": "MeshCentral",
+          "url": "https://en.wikipedia.org/wiki/MeshCentral"
+        },
+        {
+          "title": "Mac MCP — I made an open-source local macOS control server for AI agents",
+          "url": "https://www.reddit.com/r/IMadeThis/comments/1wbhpdn/mac_mcp_i_made_an_opensource_local_macos_control/"
+        },
+        {
+          "title": "TightVNC",
+          "url": "https://en.wikipedia.org/wiki/TightVNC"
+        },
+        {
+          "title": "NX technology",
+          "url": "https://en.wikipedia.org/wiki/NX_technology"
+        },
+        {
+          "title": "3.3 Restrictions",
+          "url": "https://files.rsupport.com/en/remoteview/documents/user-guides/RemoteView-macOS-user-guide-en.pdf"
+        }
+      ],
+      "official_urls": [],
+      "error": null,
+      "source_format_parsed": true
+    },
+    {
+      "query_id": "q3",
+      "text": "AI agent remote desktop iPhone controller",
+      "returned_sources": [
+        {
+          "title": "Control Your Dev Environment Remotely | Tarsy",
+          "url": "https://www.tarsy.dev/"
+        },
+        {
+          "title": "Remote Control AI Agents From Your Phone : Claude, Codex, Antigravity | AgentsRoom",
+          "url": "https://agentsroom.dev/features/remote-agent-control"
+        },
+        {
+          "title": "Contop - Your Desktop, From Anywhere",
+          "url": "https://www.contop.app/"
+        },
+        {
+          "title": "Loupe — Remote desktop for people who live in the Apple ecosystem",
+          "url": "https://theloupe.team/"
+        },
+        {
+          "title": "Jump Desktop | Fast, Secure Remote Desktop for Any Computer",
+          "url": "https://jumpdesktop.com/"
+        },
+        {
+          "title": "Workbench | Remote Desktop for AI Agents & Headless Mac Mini",
+          "url": "https://astropad.com/product/workbench/"
+        },
+        {
+          "title": "GitHub - Abreto/palmdesk: AI-native remote control for desktop apps: stream one macOS or Windows window to your phone for agent-ready workflows. · GitHub",
+          "url": "https://github.com/Abreto/palmdesk"
+        },
+        {
+          "title": "Cursor for iOS | Cursor Docs",
+          "url": "https://cursor.com/docs/cloud-agent/mobile"
+        },
+        {
+          "title": "Kibbler - Remote Claude Code Control from Phone | AI Agent Management on the Go",
+          "url": "https://kibbler.dev/"
+        },
+        {
+          "title": "Download | Morpheus",
+          "url": "https://getmorphe.us/download"
+        },
+        {
+          "title": "AiOrc - Run your desktop AI agents from your phone",
+          "url": "https://www.aiorc.tech/"
+        },
+        {
+          "title": "WhipDesk — Control AI Coding Agents from Your Phone",
+          "url": "https://whipdesk.com/"
+        },
+        {
+          "title": "I built a remote AI agent that controls your desktop from your phone (fully open source)",
+          "url": "https://www.reddit.com/r/SideProject/comments/1sfatun/i_built_a_remote_ai_agent_that_controls_your/"
+        },
+        {
+          "title": "I built an open source remote AI agent that controls your desktop from your phone",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1sfed5t/i_built_an_open_source_remote_ai_agent_that/"
+        },
+        {
+          "title": "I got tired of AI telling me what to do, so I started building one that can actually use my computer.",
+          "url": "https://www.reddit.com/r/SideProject/comments/1x0qrxe/i_got_tired_of_ai_telling_me_what_to_do_so_i/"
+        },
+        {
+          "title": "I built a companion app that lets you voice call, chat with, and remote-view your own PC from your phone (private & local)",
+          "url": "https://www.reddit.com/r/SideProject/comments/1wb7re5/i_built_a_companion_app_that_lets_you_voice_call/"
+        },
+        {
+          "title": "i built a remote desktop app to use ai coding agents from my phone",
+          "url": "https://www.reddit.com/r/buildinpublic/comments/1rlkojh/i_built_a_remote_desktop_app_to_use_ai_coding/"
+        },
+        {
+          "title": "I made a out of the box AI Agent that controls your entire pc, basically jarvis but no set up",
+          "url": "https://www.reddit.com/r/SideProject/comments/1rjh8l7/i_made_a_out_of_the_box_ai_agent_that_controls/"
+        },
+        {
+          "title": "(free) Built a remote cross platform agentic app",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1t9jlbb/free_built_a_remote_cross_platform_agentic_app/"
+        },
+        {
+          "title": "I built a local macOS MCP so chat agents can actually operate the Mac instead of just explain steps",
+          "url": "https://www.reddit.com/r/Build_AI_Agents/comments/1wbhnwb/i_built_a_local_macos_mcp_so_chat_agents_can/"
+        },
+        {
+          "title": "Anthropic could be about to release Claude Cowork for mobile",
+          "url": "https://www.techradar.com/pro/anthropic-could-be-about-to-release-claude-cowork-for-mobile"
+        },
+        {
+          "title": "OpenClaw is available on iPhone and Android  - these are the things I would set up first",
+          "url": "https://www.tomsguide.com/ai/openclaw-is-available-on-iphone-and-android-these-are-the-first-things-i-would-set-up"
+        },
+        {
+          "title": "I tried Claude's new Cowork feature - and it ran my laptop from my phone",
+          "url": "https://www.tomsguide.com/ai/i-sent-claude-a-task-from-my-phone-and-it-finished-it-on-my-laptop-without-me-touching-a-thing"
+        }
+      ],
+      "official_urls": [],
+      "error": null,
+      "source_format_parsed": true
+    },
+    {
+      "query_id": "q4",
+      "text": "开源 MCP 远程控制 Mac Windows 智能体",
+      "returned_sources": [
+        {
+          "title": "Extra — Open-Source Computer Use Protocol & MCP Server",
+          "url": "https://extra.yantraos.com/"
+        },
+        {
+          "title": "GitHub - hisence999/MyPC-mcp · GitHub",
+          "url": "https://github.com/hisence999/mypc-mcp"
+        },
+        {
+          "title": "QuickDesk:基于 Chromium Remoting 的 AI 原生远程桌面项目 - AtomGit",
+          "url": "https://gitcode.com/barry-ran/QuickDesk"
+        },
+        {
+          "title": "MCP远程macOS控制台 - 腾讯云",
+          "url": "https://cloud.tencent.com/developer/mcp/server/10541"
+        },
+        {
+          "title": "ClawTouch 开源 — 给 AI agent 装一双真实的手",
+          "url": "https://clawtouch.cn/open-source.html"
+        },
+        {
+          "title": "MCP Remote macOS Use - AI Remote Desktop Control Server | MCPlane",
+          "url": "https://www.mcplane.com/mcp_servers/mcp-remote-macos-use"
+        },
+        {
+          "title": "GitHub - MAA-AI/MaaMCP: 基于 MaaFramework 的 MCP 服务器 为 AI 助手提供 Android 设备和 Windows 桌面自动化能力 · GitHub",
+          "url": "https://github.com/MAA-AI/MaaMCP"
+        },
+        {
+          "title": "GitHub - cioinside/da-mcp: Cross-platform desktop automation MCP server (Linux/macOS/Windows, 12 tools) · GitHub",
+          "url": "https://github.com/cioinside/da-mcp"
+        },
+        {
+          "title": "UI-TARS 桌面版 - 腾讯云",
+          "url": "https://developer.cloud.tencent.com/mcp/server/11672"
+        },
+        {
+          "title": "给 AI 装上跨平台屏幕与键鼠：YourDesk 的 WebRTC 远控、边缘超分与 MCP 自动化实践 | lijianfei.com",
+          "url": "https://lijianfei.com/post/yourdesk-webrtc-remote-desktop-mcp-ai-agent/"
+        },
+        {
+          "title": "GitHub - tinqiao-oss/clawtouch-mcp: ClawTouch MCP server — exposes a real USB-HID keyboard/mouse (Raspberry Pi Pico 2) as Model Context Protocol tools for any LLM agent. MIT. · GitHub",
+          "url": "https://github.com/tinqiao-oss/clawtouch-mcp"
+        },
+        {
+          "title": "Mac OS Remote Control MCP 服务器 | Awesome MCP Servers",
+          "url": "https://mcpservers.org/zh-CN/servers/senseisven/mcp_macos"
+        },
+        {
+          "title": "RustDesk",
+          "url": "https://zh.wikipedia.org/wiki/RustDesk"
+        },
+        {
+          "title": "用户指南",
+          "url": "https://support.huaweicloud.com/usermanual-versatile/versatile-usermanual-pdf.pdf"
+        },
+        {
+          "title": "Google Antigravity",
+          "url": "https://zh.wikipedia.org/wiki/Google_Antigravity"
+        },
+        {
+          "title": "远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee376b.pdf"
+        },
+        {
+          "title": "远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ede4aa.pdf"
+        },
+        {
+          "title": "远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee273c.pdf"
+        },
+        {
+          "title": "远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee0216.pdf"
+        },
+        {
+          "title": "Scrcpy",
+          "url": "https://zh.wikipedia.org/wiki/Scrcpy"
+        },
+        {
+          "title": "Breve (软件)",
+          "url": "https://zh.wikipedia.org/wiki/Breve_%28%E8%BD%AF%E4%BB%B6%29"
+        },
+        {
+          "title": "Syncthing",
+          "url": "https://zh.wikipedia.org/wiki/Syncthing"
+        },
+        {
+          "title": "TightVNC",
+          "url": "https://zh.wikipedia.org/wiki/TightVNC"
+        },
+        {
+          "title": "The Emergence of Wireless MAC Protocols with Multi-Agent Reinforcement Learning",
+          "url": "https://arxiv.org/abs/2108.07144"
+        }
+      ],
+      "official_urls": [],
+      "error": null,
+      "source_format_parsed": true
+    }
+  ],
+  "outcomes": {
+    "technical_delivery": "public repository anonymously reachable HTTP 200",
+    "actual_crawl": "not_measured",
+    "indexing": "not_measured",
+    "answer_citation": "not_measured",
+    "recommendation": "not_measured",
+    "adoption": "not_measured"
+  },
+  "known_unknowns": [
+    "newly public repository has not appeared among official URLs in these returned samples",
+    "absence in a returned sample does not establish index absence",
+    "search return order is not a ranking measurement"
+  ]
+}

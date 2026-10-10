@@ -1,159 +1,136 @@
-<p align="right"><a href="README.md">English</a>&nbsp;&nbsp;|&nbsp;&nbsp;<b>中文</b></p>
+# ai-remote
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/banner-dark.zh-CN.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/banner-light.zh-CN.svg">
-    <img src="assets/brand/banner-light.zh-CN.svg" width="880" alt="ai-remote：让 AI Agent 远程操作你的 Windows 和 Mac。高风险操作先问你，你随时可以接管。">
-  </picture>
-</p>
+<p align="right"><a href="README.md">English</a> · <b>中文</b></p>
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/brand/home-dark.zh-CN.svg">
+<source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.zh-CN.svg">
+<img src="assets/brand/home-light.zh-CN.svg" width="880" alt="ai-remote：让 AI 动手，控制权在你。Windows 与 macOS 的 MCP 远程控制；iPhone 控制端源码开发中。">
+</picture></p>
+<p align="center"><a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="#你的电脑你的规则">安全机制</a> · <a href="#目前能做什么">平台状态</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
 
-<p align="center">
-  <a href="#快速上手">快&#8288;速&#8288;上&#8288;手</a>&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="#工作原理">工&#8288;作&#8288;原&#8288;理</a>&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="#控制权始终在你手里">安&#8288;全&#8288;机&#8288;制</a>&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="#路线图">路&#8288;线&#8288;图</a>
-</p>
-
-ai-remote 让你正在用的 AI Agent 直接操作你的其他电脑。在想要控制的 Windows 或 Mac 上运行一个轻量的被控端，和自己的电脑配对一次。之后，任何支持 MCP 的 Agent（Claude Code、Cursor，或者你自己写的）都能看到屏幕，把每个窗口读成一棵带名字的元素树，并直接操作这些元素。设备之间通过加密的点对点链路直连。每台设备允许做什么由你决定，高风险操作要经过你批准，你也随时可以接管。
+**让 MCP 智能体远程操作你的电脑，也让你看得见、随时能接管。**
+把 Codex、Claude Code、Cursor、VS Code 或其他 stdio MCP 客户端接入 ai-remote，即可操作已配对的 Windows 与 Mac：查看屏幕、发送鼠标键盘输入、列出窗口、运行授权的工具。连接经过加密；你可以暂停智能体、接管，再交还控制权。
 
 > [!NOTE]
-> **Pre-alpha 阶段**。第一个里程碑 M0（命令行、Windows 被控端、MCP 桥接）已经实现，正在测试打磨；M2 桌面应用也在成形：实时画面、在自己设备上用 Windows Hello 审批、与智能体轮流操作。目前还没有发布任何版本，不能用在真实的机器上，命令也可能会变。欢迎 Star 或 Watch 关注进展，也欢迎提 issue 一起讨论设计。
+> **Pre-alpha，需要从源码构建。** Apple Silicon Mac 被控端和桌面应用已通过本机验收。Windows 已有实现。本仓库包含原生 iPhone 控制端源码，**设备/模拟器 SDK 构建，以及模拟器启动与配对界面测试已通过**；iPhone 真机远控仍待验收。目前没有签名发行包或 App Store 应用。[验收记录](docs/iphone-validation.md)
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/demo-dark.zh-CN.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/demo-light.zh-CN.svg">
-    <img src="assets/brand/demo-light.zh-CN.svg" width="880" alt="动画演示：AI Agent 读取远程 Windows 电脑的界面树，按元素引用点击“导出 PDF”。在执行会删除文件的 shell 命令之前，它停下来等你批准一次。它准备点“分享”时，你先接管，改了一个数字再交还，随后 Agent 分享更新后的报告。每一步都记入审计日志。">
-  </picture>
-  <br>
-  <sub>蓝色是 Agent，琥珀色是你。这是规划中流程的示意：实时画面要等 M2 的桌面应用，界面也还没有定稿。</sub>
-</p>
+## 目前能做什么
 
-## 有什么不同
+| 端 | 状态 | 入口 |
+| :-- | :-- | :-- |
+| Windows 被控端 / CLI | 已实现；本轮 Mac 适配未重新做 Windows 运行验收 | [使用说明](docs/operations.zh-CN.md) |
+| macOS 被控端 | 本机已验证配对、截图、输入和 H.264 屏幕流 | [Mac 配置与限制](docs/macos.md) |
+| 桌面控制端 | 电脑列表、实时画面、活动、配对、接管与多 MCP 客户端配置 | [桌面应用](apps/desktop/README.md) |
+| MCP 桥接 | 已验证真实 stdio 初始化、工具列表与已连接智能体记录 | [客户端配置](docs/mcp-clients.md) |
+| iPhone 控制端 | 实验性 SwiftUI/UniFFI 控制端；iOS SDK 构建和模拟器界面测试通过 | [iPhone 构建与验收](apps/ios/README.md) |
 
-| 通常 | 用 ai-remote |
-| :-- | :-- |
-| Agent 盯着截图，猜该点哪里。 | Agent 读取系统的无障碍（accessibility）界面树，按引用操作元素，比如 <code>click&nbsp;e4</code>。窗口移动、缩放或者换主题都不受影响。截图和鼠标键盘输入仍然保留，作为兜底。 |
-| 想连上一台机器，得开端口、搭 VPN，或者买内网穿透服务。 | 设备之间按公钥互相拨号，用基于 iroh 的 QUIC 连接，自动打洞穿透 NAT；实在打不通时才走加密中继，中继只能看到密文。 |
-| 远程权限要么全给，要么不给。 | 每台配对设备都有自己的权限级别：observe、control 或 admin。高风险操作要等你批准，每个操作都会写进审计日志。 |
-| 厂商的云服务挡在你和你的机器之间。 | 设备之间点对点通信，用一次性票据配对。可选的账号服务还在规划中，到时候也能自己部署。 |
+本轮 Mac 验收使用 Apple Silicon 与 macOS 27。Intel Mac、较早系统仍需独立运行验收。开发版屏幕流已经工作，但当前帧率较低，不作为性能或延迟基准。
 
-### Agent 看到的界面
+## 为什么使用 ai-remote
 
-窗口会以一棵精简元素树的形式交给 Agent。每个元素都有角色、名称和一个引用，Agent 就靠这个引用来操作它。下面是演示里的那个窗口：
+- **沿用现有智能体。** 一个 MCP 桥接访问你已配对的电脑，无需项目自带的托管 AI 模型。
+- **按设备身份配对。** 一次性票据建立信任；QUIC 优先直连，需要时使用加密中继。
+- **只授予需要的权限。** 每台设备分别设置 observe、control 或 admin。执行前检查权限、轮次、策略与审批。
+- **看见过程，随时介入。** 桌面应用提供实时画面和活动记录；接管期间，智能体的控制调用会被阻止，交还后恢复。
+- **通过已有 MCP 服务扩展。** 指定本地可执行文件与工具白名单挂载服务。无障碍元素树等能力由相应集成提供；核心尚不包含通用的原生元素树。
 
-```text
-e1  window "Q3 报告"
-e2  ├─ button "打开"
-e3  ├─ button "保存"
-e4  ├─ button "导出 PDF"
-e5  ├─ button "分享"
-e6  ├─ heading "Q3 报告"
-e7  └─ table "关键指标"
-e8     ├─ cell "$4.2M"
-e9     └─ cell "2.4%"
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.zh-CN.svg">
+<source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.zh-CN.svg">
+<img src="assets/brand/how-it-works-light.zh-CN.svg" width="880" alt="MCP 客户端连接 ai-remote mcp，再经加密 QUIC 访问已配对的电脑；被控端检查权限、审批并记录审计。">
+</picture></p>
+
+## 从源码开始
+
+需要锁定的 Rust 1.95.0 工具链。桌面应用还需要 Node/npm 与对应系统的原生开发工具。
+
+```sh
+git clone https://github.com/JIA-ss/ai-remote.git
+cd ai-remote
+cargo install --path crates/ai-remote --locked
 ```
 
-要导出 PDF，Agent 只需调用 `click e4`。不管这个按钮此刻在屏幕的哪个位置，被控端都会找到它并按下去。
+在 **macOS** 构建带 CLI 的开发应用：
 
-<sub>仅作示意，工具名和树的格式会在 M0 期间确定。</sub>
+```sh
+tools/macos.sh build --debug --bundles app
+open target/debug/bundle/macos/ai-remote.app
+```
 
-## 工作原理
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.zh-CN.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.zh-CN.svg">
-    <img src="assets/brand/how-it-works-light.zh-CN.svg" width="880" alt="AI Agent 通过 stdio 上的 MCP 连接你电脑上的 ai-remote mcp；ai-remote mcp 按公钥拨号，经 QUIC 直连到达每台已配对的被控端，加密中继只作兜底，被控端不用开放端口。你为每台设备设定权限，审批高风险操作，随时可以接管或撤销。">
-  </picture>
-</p>
-
-1. **`ai-remote host`** 运行在每台要被控制的机器上，也就是被控端。它把这台机器的屏幕、输入、窗口、剪贴板、shell 和后台任务以 MCP 工具的形式提供出来，也能挂载本机已有的 MCP server，比如提供元素级界面操作的无障碍树工具（文件工具在 M1 推出）。它按设备的权限级别检查每一次调用，并写入审计日志。
-2. **`ai-remote mcp`** 运行在 Agent 旁边，是控制端，负责把 Agent 和你配对过的所有被控端连起来。桌面应用和 iOS 应用会在之后推出。
-3. 两端按公钥找到彼此，用 QUIC 通信。中继只是兜底，读不到传输的内容。
-
-完整设计见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，也有[英文版](docs/architecture.md)。Agent 能用的每个工具及其参数和限制，见 [docs/tools.zh-CN.md](docs/tools.zh-CN.md)。
-
-## 快速上手
-
-> [!WARNING]
-> 目前还没有发布版本。以下是 M0 规划中的命令，正式发布前可能会变。
-
-**1. 在要让 Agent 操作的机器上**启动被控端，然后在另一个终端里生成一次性配对票据：
+在**被控电脑**上运行安装后的 CLI（确保 Cargo 的 bin 目录已加入 PATH）：
 
 ```sh
 ai-remote host
-ai-remote pair-code
+# 在这台电脑的另一终端生成票据：
+ai-remote pair-code --level control
 ```
 
-**2. 在你自己的电脑上**用这张票据完成配对，并给这台机器起个名字：
+在**控制电脑**兑换一次性票据：
 
 ```sh
 ai-remote pair <ticket> --name office-pc
+ai-remote call system_info --host office-pc
 ```
 
-**3. 把桥接加到你的 Agent 里**。以 Claude Code 为例：
+核对两端相同的三个单词安全码。Mac 被控端需要给实际运行的可执行文件授予屏幕录制与辅助功能权限，重启后运行 `ai-remote doctor`。锁屏或权限不足时，先恢复桌面和权限再操作。[详细说明](docs/operations.zh-CN.md)
+
+## 接入你的智能体
+
+桌面应用中打开 **设置 → 智能体**，选择客户端后复制安装指引。应用会提供真实可执行文件路径和当前配对配置目录，也支持 Mac 应用包内的 CLI。
+
+CLI 已加入 PATH 时，可使用：
 
 ```sh
-claude mcp add ai-remote -- ai-remote mcp
+# Claude Code，适用于所有项目
+claude mcp add --transport stdio --scope user ai-remote -- ai-remote mcp
+# Codex
+codex mcp add ai-remote -- ai-remote mcp
 ```
 
-其他能启动 stdio 服务的 MCP 客户端也一样，指向 `ai-remote mcp` 即可。
+Cursor 使用 `~/.cursor/mcp.json` 中的 `mcpServers` JSON，VS Code 使用 MCP 配置中的 `servers` JSON。Codex 还可在 `~/.codex/config.toml` 中添加 `[mcp_servers.ai-remote]`。路径、转义和完整示例见 [MCP 客户端配置](docs/mcp-clients.md)。
 
-想让被控端在登录后自动启动、用 `ai-remote doctor` 检查机器，或者弄清调用为什么被拒绝，见 [docs/operations.zh-CN.md](docs/operations.zh-CN.md)。
+## 你的电脑，你的规则
 
-### 可以让它做什么
-
-- “在 office-pc 上把 Q3 报告导出成 PDF，再分享给财务组。”
-- “打开 lab-box 上的构建日志，告诉我昨晚的任务为什么失败。”
-- “看看 office-pc 有没有待安装的 Windows 更新，有就装上，重启之前先问我。”
-- “给 office-pc 截个图，告诉我现在开着哪些窗口。”
-
-## 控制权始终在你手里
-
-在 ai-remote 里，Agent 是你机器上的客人：规则由机主定，由被控端执行。
-
-| 级别 | Agent 能做什么 |
+| 等级 | 允许的工具 |
 | :-- | :-- |
-| `observe` | 看屏幕、读界面树、列出窗口 |
-| `control` | `observe` 的全部能力，外加操作界面元素、使用鼠标键盘 |
-| `admin` | `control` 的全部能力，外加执行 shell 命令、读写文件 |
+| `observe` | 屏幕、窗口列表、系统信息与已允许的只读集成 |
+| `control` | observe 加鼠标、键盘与剪贴板 |
+| `admin` | control 加 shell 与后台任务；高风险调用先等待批准 |
 
-每台设备只给够用的最低级别：查看屏幕给 `observe`，操作应用给 `control`，安装和维护才给 `admin`。
+高风险请求等待主人确认，未响应则拒绝。每次决策与结果写入被控端审计日志；撤销或取消配对即可移除设备访问权。
 
-- **审批**：高风险操作（比如会删除文件的 shell 命令）会先暂停，等机主批准或拒绝：可以在被控端弹出的原生对话框里，也可以在已配对的设备上，允许时必须通过 Windows Hello，所以 Agent 永远批准不了自己的请求（[原理](docs/approvals.zh-CN.md)）。超时未答按拒绝处理。桌面应用和手机上的审批卡片随后推出。
-- **审计日志**：每个操作都会记下是谁做的、动了什么、结果如何。
-- **接管与撤销**：你随时可以收回控制权，解除配对就能彻底切断这台设备的访问。
-- **配对与加密**：设备用一次性票据配对，以各自的密钥识别身份。流量端到端加密，经过中继时也一样。
+**远程允许签名当前需要 Windows Hello。** Mac 与 iPhone 控制端可以拒绝；Touch ID / Face ID 允许签名尚未实现。被控电脑桌面可用时，也可通过本机提示批准。[审批设计](docs/approvals.zh-CN.md)
 
-以上是默认的权限级别，正式发布前可能还会调整。
+## 常见问题
+
+**iPhone 能控制电脑吗？** `apps/ios` 就是为此开发的原生 SwiftUI 控制端，复用 Rust 核心，包含配对、画面、触控与文字、接管和活动功能。设备与 arm64 模拟器已通过 iOS SDK 编译，模拟器启动、无效票据、后台恢复和重新启动测试也已通过。iPhone 真机上的实时控制仍待验收。
+
+**智能体能通过它控制 iPhone 吗？** 不能。iOS 源码是控制端，不是 iPhone 被控端。
+
+**需要端口转发或 ai-remote 云账号吗？** 正常配对不要求手动端口转发或项目云账号。网络限制仍可能使设备不可达，工具会返回错误，不保证所有网络都能连接。
+
+**自带原生无障碍元素树或文件管理吗？** 核心提供截图、输入和窗口；额外能力由白名单挂载的 MCP 服务提供。Mac 原生元素树与文件传输仍在规划中。
+
+**安装包在哪里？** 暂未发布签名版本，需要从源码构建。Windows、Intel Mac、iPhone 签名与 Mac 公证都有各自的验收要求。
+
+## 开发与证据
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+node --test tools/mcp-install.test.mjs
+```
+
+[Mac 验收](docs/macos.md) · [iPhone 验收记录](docs/iphone-validation.md) · [工具参考](docs/tools.zh-CN.md) · [安全策略](SECURITY.md) · [参与贡献](CONTRIBUTING.md)
 
 ## 路线图
 
-| 里&#8288;程&#8288;碑 | 交付内容 | 状&#8288;态 |
-| :-- | :-- | :-- |
-| **M0** | 命令行、Windows 被控端、MCP 桥接 | 已&#8288;实&#8288;现&#8288;，&#8288;未&#8288;发&#8288;布 |
-| **M1** | macOS 被控端、文件工具 | 计&#8288;划&#8288;中 |
-| **M2** | 带实时画面和审批的桌面应用 | 进&#8288;行&#8288;中&#8288;：实时画面、远程审批、接管与交还、应用主要界面 |
-| **M3** | iOS 控制端（上架 App Store） | 计&#8288;划&#8288;中 |
-| **M4** | 可选的账号服务、可自建的中继 | 计&#8288;划&#8288;中 |
-
-被控端先支持 Windows，再支持 macOS。控制端先做命令行，之后是桌面应用和 iOS 应用。
-
-## 参与贡献
-
-架构还在定型，现阶段最有价值的贡献是设计上的反馈。建议先读 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，再到 [issue](https://github.com/JIA-ss/ai-remote/issues) 里提问题、讲使用场景，或者提出反对意见。代码贡献之后才会开放，具体流程见 [CONTRIBUTING.md](CONTRIBUTING.md#参与贡献)。安全问题请按 [SECURITY.md](SECURITY.md#安全策略) 里的方式私下报告。
+| 阶段 | 下一步 |
+| :-- | :-- |
+| M0–M2 | 持续验证 Windows/Mac，提升捕获性能，完成文件与无障碍能力，签名打包 |
+| M3 | 真机与实际远控验收；Face ID 签名、二维码配对与通知 |
+| M4 | 可选自托管账号/中继服务与设备共享 |
 
 ## 许可证
 
-[AGPL-3.0](LICENSE)
-
-<p align="center">
-  <br>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-light.svg">
-    <img src="assets/brand/logo-light.svg" width="44" height="44" alt="ai-remote 标志">
-  </picture>
-</p>
+[AGPL-3.0](LICENSE)。官方仓库：[JIA-ss/ai-remote](https://github.com/JIA-ss/ai-remote)。

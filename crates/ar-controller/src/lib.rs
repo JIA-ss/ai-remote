@@ -13,6 +13,6 @@ mod hosts;
 pub mod sessions;
 mod shim;
 
-pub use agent::{AgentRequest, run_agent};
+pub use agent::{AgentRequest, EmbeddedController, run_agent};
 pub use hosts::KnownHost;
 pub use shim::{connect_agent, connect_agent_with, run_shim};

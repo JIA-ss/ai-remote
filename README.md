@@ -1,159 +1,136 @@
-<p align="right"><b>English</b>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="README.zh-CN.md">中文</a></p>
+# ai-remote
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/banner-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/banner-light.svg">
-    <img src="assets/brand/banner-light.svg" width="880" alt="ai-remote. AI agents operate your Windows and Mac remotely. Risky steps wait for you. Take over at any time.">
-  </picture>
-</p>
+<p align="right"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/brand/home-dark.svg">
+<source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.svg">
+<img src="assets/brand/home-light.svg" width="880" alt="ai-remote: your agent works, you keep the controls. MCP remote control for Windows and macOS; experimental iPhone controller source.">
+</picture></p>
+<p align="center"><a href="#start-from-source">Start from source</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="#your-computers-your-rules">Safety</a> · <a href="#what-works-today">Platform status</a> · <a href="docs/architecture.md">Architecture</a></p>
 
-<p align="center">
-  <a href="#quickstart">Quickstart</a>&nbsp;&nbsp;&nbsp;
-  <a href="#how-it-works">How&nbsp;it&nbsp;works</a>&nbsp;&nbsp;&nbsp;
-  <a href="#you-stay-in-charge">Safety</a>&nbsp;&nbsp;&nbsp;
-  <a href="#roadmap">Roadmap</a>
-</p>
-
-ai-remote lets the AI agent you already use operate your other computers. Run a small host on the Windows PC or Mac you want to control and pair it with your own machine once. From then on, any MCP agent (Claude Code, Cursor, or one you wrote) can see the screen, read each window as a tree of named elements, and act on those elements. Your devices connect directly over an encrypted peer-to-peer link. You decide what each device allows, approve anything risky, and can take over at any moment.
+**Open-source remote computer control for MCP agents, with a desktop app for the person watching.**
+Use Codex, Claude Code, Cursor, VS Code or another stdio MCP client to operate your paired Windows PCs and Macs. See the screen, send mouse/keyboard input, inspect windows, and run permitted tools over encrypted peer-to-peer connections. Pause the agent, take over, and hand back when you are ready.
 
 > [!NOTE]
-> **Pre-alpha.** Milestone M0 (CLI, Windows host, MCP bridge) is implemented and being tested, and the M2 desktop app is taking shape: live video, approvals from your own device with Windows Hello, and taking turns with the agent. Nothing is released yet, it is not ready for real machines, and commands may change. Star or watch the repository to follow along, or open an issue to help shape the design.
+> **Pre-alpha, build from source.** The Mac host and desktop app have passed local acceptance on Apple Silicon. Windows has an existing implementation. The native iPhone controller source is present, with **device/simulator SDK builds and simulator startup/pairing UI tests passed**. Physical iPhone remote-control acceptance is still deferred. No signed releases or App Store app are available. [Validation](docs/iphone-validation.md)
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/demo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/demo-light.svg">
-    <img src="assets/brand/demo-light.svg" width="880" alt="Animated demo. An AI agent reads the UI tree of a remote Windows PC and clicks Export PDF by its element reference. Before a shell command that deletes files, it stops and you approve it once. When it heads for Share, you take over, fix one figure, and hand back; the agent then shares the updated report. Every step lands in the audit log.">
-  </picture>
-  <br>
-  <sub>Blue is the agent, amber is you. An illustration of the planned flow: the live view comes with the desktop app in M2, and the interface is not final.</sub>
-</p>
+## What works today
 
-## What is different
+| Surface | Status | Start here |
+| :-- | :-- | :-- |
+| Windows host / CLI | Implemented; not revalidated on Windows in the latest Mac pass | [Operations](docs/operations.md) |
+| macOS host | Pairing, screenshots, input and H.264 stream accepted locally | [Mac setup and limits](docs/macos.md) |
+| Desktop controller | Computers, live view, activity, pairing, takeover and MCP-client setup | [Desktop app](apps/desktop/README.md) |
+| MCP bridge | Real stdio initialization, tools/list and connected-client tracking verified | [Client setup](docs/mcp-clients.md) |
+| iPhone controller | Experimental SwiftUI/UniFFI controller; iOS SDK builds and simulator UI tests passed | [iPhone build and acceptance](apps/ios/README.md) |
 
-| Usually | With ai-remote |
-| :-- | :-- |
-| The agent looks at a screenshot and guesses where to click. | The agent reads the accessibility tree and acts on elements by reference, such as <code>click&nbsp;e4</code>. That keeps working when a window moves, scales, or changes theme. Screenshots, mouse, and keyboard stay available as a fallback. |
-| To reach a machine, you open a port, run a VPN, or rent a tunnel. | Devices dial each other by public key over QUIC, built on iroh, and punch through NAT. When there is no direct path, an encrypted relay forwards traffic it cannot read. |
-| Remote access is all or nothing. | Each paired device has a level: observe, control, or admin. Risky actions wait for your approval, and every action lands in an audit log. |
-| A vendor's cloud sits between you and your machines. | Your devices talk peer to peer and pair with a one-time ticket. An optional account service is planned, and you will be able to host it yourself. |
+The Mac acceptance used macOS 27 on Apple Silicon. Intel Macs and older OS versions need their own runtime checks. The development video stream is functional but currently low-rate; it is not a latency or FPS benchmark.
 
-### What the agent sees
+## Why use ai-remote
 
-A window arrives as a compact tree. Each element has a role, a name, and a reference the agent acts on. This is the window from the demo:
+- **Bring your existing agent.** One MCP bridge reaches the computers you paired; the project does not require its own hosted AI model.
+- **Pair by device identity.** One-time tickets establish trust. QUIC uses direct paths when available and encrypted relay fallback when needed.
+- **Give only the access needed.** Each device is observe, control or admin. The host checks permission, turn, policy and approval before a tool runs.
+- **Watch and intervene.** The human app shows live video and an activity feed. Taking over stops the agent's control calls until you hand back.
+- **Extend through existing MCP servers.** Mount a local server with a pinned executable and an explicit tool allowlist. Accessibility-tree tools come from such integrations; a universal native tree is not included.
 
-```text
-e1  window "Q3 report"
-e2  ├─ button "Open"
-e3  ├─ button "Save"
-e4  ├─ button "Export PDF"
-e5  ├─ button "Share"
-e6  ├─ heading "Q3 report"
-e7  └─ table "Key figures"
-e8     ├─ cell "$4.2M"
-e9     └─ cell "2.4%"
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.svg">
+<source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.svg">
+<img src="assets/brand/how-it-works-light.svg" width="880" alt="An MCP client connects to ai-remote mcp, which reaches paired computer hosts over encrypted QUIC; the host enforces levels, approval and audit.">
+</picture></p>
+
+## Start from source
+
+You need the pinned Rust toolchain (1.95.0). The desktop app also needs Node/npm and the platform's native development tools.
+
+```sh
+git clone https://github.com/JIA-ss/ai-remote.git
+cd ai-remote
+cargo install --path crates/ai-remote --locked
 ```
 
-To export, the agent calls `click e4`. The host finds that button wherever it is on screen and presses it.
+On **macOS**, build and open a development app with its CLI included:
 
-<sub>Illustrative. Tool names and the tree format will settle during M0.</sub>
+```sh
+tools/macos.sh build --debug --bundles app
+open target/debug/bundle/macos/ai-remote.app
+```
 
-## How it works
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.svg">
-    <img src="assets/brand/how-it-works-light.svg" width="880" alt="Your AI agent talks MCP over stdio to ai-remote mcp on your computer. ai-remote mcp reaches each paired host over a direct QUIC link dialed by public key, with an encrypted relay as fallback. The host needs no open ports. You set each device's level, approve risky steps, and can take over or revoke at any time.">
-  </picture>
-</p>
-
-1. **`ai-remote host`** runs on each machine you want to control. It offers that machine's screen, input, windows, clipboard, shell, and background jobs as MCP tools, plus the tools of local MCP servers you mount, such as an accessibility-tree driver for element-level UI actions (file tools come in M1). It checks every call against the device's level and writes the audit log.
-2. **`ai-remote mcp`** runs next to your agent and bridges it to every host you have paired. A desktop app and an iOS app come later.
-3. The two ends find each other by public key and talk over QUIC. The relay is only a fallback and cannot read the traffic.
-
-The full design is in [docs/architecture.md](docs/architecture.md). It is also available in [Chinese](docs/architecture.zh-CN.md). Every tool an agent gets, with its parameters and limits, is described in [docs/tools.md](docs/tools.md).
-
-## Quickstart
-
-> [!WARNING]
-> There are no releases yet. These are the planned M0 commands, and they may change before the first release.
-
-**1. On the machine you want the agent to operate**, start the host. Then, in a second terminal, print a one-time pairing ticket:
+On the **computer to control**, run the installed CLI (make sure Cargo’s bin directory is on PATH):
 
 ```sh
 ai-remote host
-ai-remote pair-code
+# In another terminal on that computer:
+ai-remote pair-code --level control
 ```
 
-**2. On your own computer**, pair with that ticket and give the machine a name:
+On the **controller computer**, redeem the one-time ticket:
 
 ```sh
 ai-remote pair <ticket> --name office-pc
+ai-remote call system_info --host office-pc
 ```
 
-**3. Add the bridge to your agent.** For Claude Code:
+Compare the same three-word safety code on both devices. On a Mac host, grant Screen Recording and Accessibility to the actual running executable, restart it, and run `ai-remote doctor`. A locked or unauthorized desktop must be repaired before capture/input, not worked around. [Detailed operations](docs/operations.md)
+
+## Connect your agent
+
+In the desktop app, open **Settings → Agents**, choose your MCP client, then copy its setup. The app supplies the actual executable path and the current pairing profile, including when the CLI lives inside the Mac bundle.
+
+If `ai-remote` is on PATH, the basic commands are:
 
 ```sh
-claude mcp add ai-remote -- ai-remote mcp
+# Claude Code, available across your projects
+claude mcp add --transport stdio --scope user ai-remote -- ai-remote mcp
+# Codex
+codex mcp add ai-remote -- ai-remote mcp
 ```
 
-Any MCP client that can start a stdio server works the same way: point it at `ai-remote mcp`.
+Cursor uses `mcpServers` JSON in `~/.cursor/mcp.json`. VS Code uses `servers` JSON in its MCP configuration. Codex also supports `[mcp_servers.ai-remote]` in `~/.codex/config.toml`. Paths, quoting and exact examples: [MCP client setup](docs/mcp-clients.md).
 
-To start the host at logon, check a machine with `ai-remote doctor`, or find out why a call was refused, see [docs/operations.md](docs/operations.md).
+## Your computers, your rules
 
-### What you can ask for
-
-- *"On office-pc, export the Q3 report as a PDF and share it with Finance."*
-- *"Open the build log on lab-box and tell me why last night's job failed."*
-- *"Check office-pc for pending Windows updates and install them, but ask me before it restarts."*
-- *"Take a screenshot of office-pc and tell me which windows are open."*
-
-## You stay in charge
-
-ai-remote treats the agent as a guest on your machine. The owner sets the rules, and the host enforces them.
-
-| Level | The agent can |
+| Level | Allowed tools |
 | :-- | :-- |
-| `observe` | See the screen, read the UI tree, list windows |
-| `control` | Everything in `observe`, plus act on elements and use mouse and keyboard |
-| `admin` | Everything in `control`, plus run shell commands and work with files |
+| `observe` | Screen, window list, system info and permitted read-only integrations |
+| `control` | Observe plus mouse, keyboard and clipboard |
+| `admin` | Control plus shell and background jobs; risky calls ask first |
 
-Give each device the lowest level that does the job: `observe` to ask about the screen, `control` to operate apps, `admin` for setup and maintenance.
+High-risk steps wait for owner approval. An unanswered request is denied. Every decision and outcome goes to the host's audit log. Revoke/unpair a device to remove its access.
 
-- **Approvals.** Risky actions, such as a shell command that deletes files, pause until the owner approves or denies them: in a native prompt on the host, or from a paired device, where allowing needs Windows Hello so an agent can never approve its own request ([how it works](docs/approvals.md)). No answer in time means no. Approval cards in the desktop app and on your phone come next.
-- **Audit log.** Every action is recorded with who did it, what it touched, and the result.
-- **Take over and revoke.** You can take the controls back at any moment, and unpair a device to cut its access completely.
-- **Pairing and encryption.** Devices pair with a one-time ticket and are identified by their keys. Traffic is end-to-end encrypted, including when it passes through a relay.
+**Allowing remotely currently requires Windows Hello.** Mac and iPhone controllers can deny; their Touch ID / Face ID signing backends are not implemented. The native host prompt remains an approval path when the host's desktop is usable. [Approval design](docs/approvals.md)
 
-These are the default levels and may be refined before the first release.
+## Questions people ask
+
+**Can my iPhone control my computer?** That is the purpose of `apps/ios`: native SwiftUI UI over the shared Rust controller. The source includes pairing, video, touch/text, takeover and activity. Device and arm64 simulator builds pass with the iOS SDK, as do simulator startup, invalid-ticket, background/resume and relaunch tests. Live control on a physical iPhone still needs acceptance.
+
+**Can an agent control my iPhone through this app?** No. The iOS source is a controller, not an iPhone host.
+
+**Do I need port forwarding or an ai-remote cloud account?** No manual port-forwarding or project cloud account is part of normal pairing. Network restrictions can still make a peer unreachable; the tool reports that rather than guaranteeing every network works.
+
+**Does it include a native accessibility tree or file manager?** The core provides screenshots, input and windows; allowlisted mounted MCP servers provide additional tools. Native Mac accessibility-tree and file-transfer work remain planned.
+
+**Where are the binaries?** No signed release is published yet. Build from source; Windows, Intel Mac, iPhone signing and notarization have separate verification needs.
+
+## Development and evidence
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+node --test tools/mcp-install.test.mjs
+```
+
+[Mac acceptance](docs/macos.md) · [iPhone validation ledger](docs/iphone-validation.md) · [Tool reference](docs/tools.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 ## Roadmap
 
-| Milestone | What ships | Status |
-| :-- | :-- | :-- |
-| **M0** | CLI, Windows host, MCP bridge | Implemented, not released |
-| **M1** | macOS host, file tools | Planned |
-| **M2** | Desktop app with live view and approvals | In progress: live video, remote approvals, take over / hand back, the app's main screens |
-| **M3** | iOS controller app on the App Store | Planned |
-| **M4** | Optional account service, self-hosted relay | Planned |
-
-Hosts come to Windows first, then macOS. On the controlling side, the CLI comes first, then a desktop app and an iOS app.
-
-## Contributing
-
-The architecture is still settling, so design feedback is the most useful contribution right now. Read [docs/architecture.md](docs/architecture.md), then open an [issue](https://github.com/JIA-ss/ai-remote/issues) with questions, use cases, or objections. Code contributions open later; [CONTRIBUTING.md](CONTRIBUTING.md) describes how they will work. Please report security problems privately, as described in [SECURITY.md](SECURITY.md).
+| Stage | Next work |
+| :-- | :-- |
+| M0–M2 | Continue Windows/Mac acceptance, improve capture performance, complete file/accessibility work and signed packaging |
+| M3 | Physical phone/remote-session acceptance; Face ID signing, QR pairing and notifications |
+| M4 | Optional self-hosted account/relay services and device sharing |
 
 ## License
 
-[AGPL-3.0](LICENSE)
-
-<p align="center">
-  <br>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-light.svg">
-    <img src="assets/brand/logo-light.svg" width="44" height="44" alt="ai-remote logo">
-  </picture>
-</p>
+[AGPL-3.0](LICENSE). The official project is [JIA-ss/ai-remote](https://github.com/JIA-ss/ai-remote).

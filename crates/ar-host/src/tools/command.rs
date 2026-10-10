@@ -15,8 +15,10 @@
 //!   "dumb" (neither `$PSStyle.OutputRendering` nor `NO_COLOR` turn that off for stderr). PowerShell
 //!   therefore starts with `TERM=dumb`, and the bootstrap gives the script the TERM it would have
 //!   had otherwise, so the programs it runs see no difference.
-//! - **cmd**: `cmd /d /s /c "chcp 65001 >nul & <command>"`. `/s` strips exactly the outer quotes,
-//!   so the command reaches cmd verbatim and quotes, `&`, `|` and `%VAR%` keep their usual meaning.
+//! - **cmd**: a fixed bootstrap sets UTF-8 before launching a second cmd. Delayed expansion
+//!   transports the quoted script from an environment variable after the bootstrap's operator
+//!   parsing; the child disables delayed expansion and parses the original command. This keeps
+//!   the code-page change outside the caller's pipeline without wrapping the script in a block.
 //!   Limits: one command line (a newline would end it, so multi-line input is refused), at most
 //!   8191 characters, and `%VAR%` is expanded the way the interactive prompt does it.
 //! - **sh**, **bash**, **zsh** (not Windows): `<shell> -c <command>`.
@@ -92,6 +94,7 @@ const PS_SCRIPT_VAR: &str = "AI_REMOTE_PS_SCRIPT";
 /// The TERM the PowerShell script should see (absent: none), while PowerShell itself starts with
 /// `TERM=dumb`; restored and removed by the bootstrap.
 const PS_TERM_VAR: &str = "AI_REMOTE_PS_TERM";
+const CMD_SCRIPT_VAR: &str = "AI_REMOTE_CMD_SCRIPT";
 /// Names reserved for passing data to the bootstrap.
 const RESERVED_ENV_PREFIX: &str = "AI_REMOTE_PS_";
 
@@ -194,6 +197,9 @@ pub fn build(spec: &CommandSpec<'_>) -> Result<tokio::process::Command> {
         };
         c.env(PS_SCRIPT_VAR, powershell_payload(spec.command)?);
     }
+    if spec.shell == Shell::Cmd {
+        c.env(CMD_SCRIPT_VAR, cmd_payload(spec.command)?);
+    }
     Ok(c)
 }
 
@@ -212,6 +218,11 @@ fn powershell_payload(command: &str) -> Result<String> {
 
 /// Arguments after `cmd.exe` for one command line.
 fn cmd_args(command: &str) -> Result<String> {
+    cmd_payload(command)?;
+    Ok(format!("/v:on /d /s /c \"chcp 65001 >nul & \"{}\" /v:off /d /s /c !{CMD_SCRIPT_VAR}!\"", system32("cmd.exe")))
+}
+
+fn cmd_payload(command: &str) -> Result<String> {
     let command = command.trim_end_matches(['\r', '\n']);
     if command.contains(['\r', '\n']) {
         bail!(
@@ -219,20 +230,22 @@ fn cmd_args(command: &str) -> Result<String> {
              or use shell \"powershell\" for a multi-line script"
         );
     }
-    let args = format!("/d /s /c \"chcp 65001 >nul & {command}\"");
-    if args.len() + 32 > MAX_CMD_LINE {
+    if command.encode_utf16().count() + 128 > MAX_CMD_LINE {
         bail!(
             "the cmd command line is too long (cmd accepts at most {MAX_CMD_LINE} characters); use shell \"powershell\" or a script file"
         );
     }
-    Ok(args)
+    Ok(format!("\"{command}\""))
 }
 
 fn check_env_name(name: &str) -> Result<()> {
     if name.is_empty() || name.contains(['=', '\0']) {
         bail!("invalid environment variable name '{name}': it must be non-empty and contain no '=' or NUL");
     }
-    if name.get(..RESERVED_ENV_PREFIX.len()).is_some_and(|p| p.eq_ignore_ascii_case(RESERVED_ENV_PREFIX)) {
+    if [RESERVED_ENV_PREFIX, "AI_REMOTE_CMD_"]
+        .iter()
+        .any(|prefix| name.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix)))
+    {
         bail!("the environment variable name '{name}' is reserved by ai-remote");
     }
     Ok(())
@@ -321,8 +334,11 @@ mod tests {
 
     #[test]
     fn cmd_line_is_passed_verbatim_inside_outer_quotes() {
-        let args = cmd_args(r#"echo "a & b" | findstr a & echo 100%"#).unwrap();
-        assert_eq!(args, r#"/d /s /c "chcp 65001 >nul & echo "a & b" | findstr a & echo 100%""#);
+        let command = r#"echo "a & b" | findstr a & echo 100%)!"#;
+        assert_eq!(cmd_payload(command).unwrap(), format!("\"{command}\""));
+        let args = cmd_args(command).unwrap();
+        assert!(!args.contains(command));
+        assert!(args.contains("/v:off /d /s /c !AI_REMOTE_CMD_SCRIPT!"));
         // A trailing newline is tolerated; an inner one is refused with advice.
         assert!(cmd_args("dir\r\n").is_ok());
         let err = cmd_args("echo a\necho b").unwrap_err().to_string();
@@ -345,6 +361,7 @@ mod tests {
         assert!(check_env_name("A=B").is_err());
         assert!(check_env_name("ai_remote_ps_script").is_err());
         assert!(check_env_name("AI_REMOTE_PS_TERM").is_err());
+        assert!(check_env_name("ai_remote_cmd_script").is_err());
         assert!(check_env_name("AI_REMOTE").is_ok());
         assert!(check_env_name("TÉRM").is_ok());
     }

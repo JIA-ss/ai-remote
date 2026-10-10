@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { currentLang, t } from "../lib/i18n";
+import { detectOs } from "../lib/platform";
 import type { PendingApproval } from "../lib/types";
 import { Actor, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
@@ -50,6 +51,7 @@ export function DecisionCard({
 }) {
   const now = useNow(1000);
   const zh = currentLang() === "zh";
+  const canApprove = detectOs() !== "mac";
   const [approver, setApprover] = useState<Approver>("unknown");
   const [busy, setBusy] = useState<null | "allow" | "deny" | "setup">(null);
   const [error, setError] = useState<string | null>(null);
@@ -116,7 +118,7 @@ export function DecisionCard({
   const verbBtn = (
     <button
       className={cx("btn", danger ? "danger" : "primary")}
-      disabled={approver !== "ready" || busy !== null}
+      disabled={!canApprove || approver !== "ready" || busy !== null}
       onClick={allow}
       title={approver === "ready" ? t("hello_first") : undefined}
     >
@@ -157,7 +159,8 @@ export function DecisionCard({
         </div>
       )}
       <Payload text={command} />
-      {approver === "none" && (
+      {!canApprove && <div className="prov"><Icon name="info" size={16} /><span>{t("approval_unavailable_mac")}</span></div>}
+      {canApprove && approver === "none" && (
         <div className="prov">
           <Icon name="info" size={16} />
           <span>

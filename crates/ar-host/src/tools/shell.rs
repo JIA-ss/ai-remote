@@ -352,6 +352,12 @@ mod tests {
         assert_eq!(out.exit_code, Some(0), "{out:?}");
         let lines: Vec<&str> = out.stdout.lines().map(str::trim_end).collect();
         assert_eq!(lines, [r#""a & b""#, "世界 100%"], "{out:?}");
+        // A code-page bootstrap must not turn a valid single-line script into a command block.
+        for command in ["echo literal) 世界!", "echo 世界! & rem trailing comment"] {
+            let out = run(&spec(command, Some("cmd")), None, Duration::from_secs(30)).await.unwrap();
+            assert_eq!(out.exit_code, Some(0), "{out:?}");
+            assert!(out.stdout.contains("世界!"), "{out:?}");
+        }
     }
 
     #[tokio::test]

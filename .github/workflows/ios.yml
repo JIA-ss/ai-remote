@@ -1,0 +1,89 @@
+name: iPhone controller
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", ".github/workflows/ios.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: iphone-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and SDK
+        id: sdk
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          echo "version=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
+          rustup toolchain install 1.95.0 --profile minimal
+          brew install xcodegen
+      - uses: actions/cache/restore@v4
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+            target/aarch64-apple-ios/release
+            target/aarch64-apple-ios-sim/release
+          key: ios-rust-1.95-sdk-${{ steps.sdk.outputs.version }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ios-rust-1.95-sdk-${{ steps.sdk.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
+      - name: Build the shared Rust core and XCFramework
+        run: tools/ios.sh framework
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+      - name: Compile iPhone simulator app
+        run: |
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath target/ios-build CODE_SIGNING_ALLOWED=NO build
+      - name: Compile device app without signing
+        run: |
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination 'generic/platform=iOS' -configuration Debug \
+            -derivedDataPath target/ios-device-build CODE_SIGNING_ALLOWED=NO build
+      - name: Launch and test on iPhone simulator
+        run: |
+          simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for group in json.load(sys.stdin)["devices"].values() for d in group if d["name"].startswith("iPhone")))')
+          xcrun simctl boot "$simulator"
+          xcrun simctl bootstatus "$simulator" -b
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination "platform=iOS Simulator,id=$simulator" -configuration Debug \
+            -derivedDataPath target/ios-build -resultBundlePath target/phone-ui.xcresult \
+            CODE_SIGNING_ALLOWED=NO test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPhone-simulator-app
+          path: |
+            target/ios-build/Build/Products/Debug-iphonesimulator/ai-remote.app
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/phone-ui.xcresult/Info.plist') != ''
+        with:
+          name: iPhone-simulator-test-result
+          path: target/phone-ui.xcresult
+          retention-days: 1
+      - uses: actions/cache/save@v4
+        if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+            target/aarch64-apple-ios/release
+            target/aarch64-apple-ios-sim/release
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
