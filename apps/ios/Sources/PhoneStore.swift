@@ -32,7 +32,9 @@ import AIRemoteCore
     private var suspending: Task<Void, Never>?
     private var lifecycleGeneration = 0
     private var active = true
-    public var ownsControls: Bool { driver == "person" && driverDevice == ownName && !ownName.isEmpty }
+    private var leaving = false
+    private var hasDriver: Bool { driver == "person" && driverDevice == ownName && !ownName.isEmpty }
+    public var ownsControls: Bool { hasDriver && active && !leaving }
     public var mayControl: Bool { level == "control" || level == "admin" }
 
     public init(directory: String? = nil) {
@@ -118,12 +120,14 @@ import AIRemoteCore
         }
     }
     public func setTurn(_ action: String) async {
-        guard let selected else { return }
+        guard let selected, !leaving, active else { return }
+        let token = generation
         do {
             let result = try await client.turn(host: selected.name, action: action)
+            guard token == generation else { return }
             driver = result["driver"]["state"].string ?? driver
             driverDevice = result["driver"]["device"].string ?? ""
-        } catch { self.error = error.localizedDescription }
+        } catch { if token == generation { self.error = error.localizedDescription } }
     }
     public func refreshPending() async {
         guard let selected else { return }
@@ -158,17 +162,19 @@ import AIRemoteCore
         })
     }
     public func leaveSession() async {
-        if ownsControls, let selected {
+        let handBack = hasDriver
+        leaving = true; defer { leaving = false }
+        generation += 1; inputTail?.cancel(); inputTail = nil
+        for id in [eventID, videoID].compactMap({ $0 }) { await client.stop(id) }
+        eventID = nil; videoID = nil; decoder?.close(); decoder = nil
+        if handBack, let selected {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { [client] in _ = try? await client.turn(host: selected.name, action: "hand_back") }
                 group.addTask { try? await Task.sleep(for: .seconds(3)) }
                 _ = await group.next(); group.cancelAll()
             }
         }
-        generation += 1; inputTail?.cancel(); inputTail = nil
-        for id in [eventID, videoID].compactMap({ $0 }) { await client.stop(id) }
-        eventID = nil; videoID = nil; decoder?.close(); decoder = nil
-        selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""
+        selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""; level = nil; driver = "agent"
     }
     public func suspend() async {
         active = false; lifecycleGeneration += 1
