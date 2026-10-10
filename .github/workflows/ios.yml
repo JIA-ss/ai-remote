@@ -8,6 +8,8 @@ permissions:
   contents: read
 jobs:
   build:
+    # Public builds run automatically; private previews can opt in through a repository variable.
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.repository.private || vars.IOS_CI_ENABLED == 'true' }}
     runs-on: macos-15
     timeout-minutes: 45
     steps:
