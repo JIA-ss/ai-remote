@@ -307,9 +307,9 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
 | Log rotation | file-rotate | MIT |
 | Accessibility tree (mounted) | cua-driver | MIT |
 
-mcpmesh 0.58.0 pins iroh 1.2, rmcp 3.1 and a since-yanked iroh-blobs 0.103.0. ai-remote uses a fork
+mcpmesh 0.58.0 pins iroh 1.2, rmcp 3.1 and a since-yanked iroh-blobs 0.103.0. ai-remote vendors a patch snapshot
 that changes only those three versions (iroh 1.3.0, rmcp 3.5.1, iroh-blobs 0.103.1); its own test
-suites pass unchanged. If mcpmesh stops being maintained, `ar-net` can be re-implemented directly on
+suites pass unchanged. See [vendored source provenance](../vendor/mcpmesh/README.ai-remote.md); public builds require no private Git access. If mcpmesh stops being maintained, `ar-net` can be re-implemented directly on
 iroh without touching the rest of ai-remote.
 
 ## 10. Code layout

@@ -1,6 +1,8 @@
 //! Platform facts the host depends on: process setup, the desktop session it runs in, and whether
 //! a person could answer an approval prompt right now.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -66,7 +68,11 @@ pub fn session_state() -> SessionState {
     {
         windows::session_state()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::session_state()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         SessionState { desktop_usable: true, ..Default::default() }
     }

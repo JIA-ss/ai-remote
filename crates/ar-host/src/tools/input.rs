@@ -889,7 +889,13 @@ mod tests {
         let plan = plan_key_spec("ctrl+shift+t", 1).unwrap();
         assert_eq!(
             calls(&plan),
-            ["key Control Press", "key Shift Press", "key T Click", "key Shift Release", "key Control Release"]
+            [
+                "key Control Press",
+                "key Shift Press",
+                if cfg!(windows) { "key T Click" } else { "key Unicode('t') Click" },
+                "key Shift Release",
+                "key Control Release"
+            ]
         );
         let plan = plan_key_spec("Down Return", 3).unwrap();
         assert_eq!((plan.unit, plan.total), ("chords", 6));
@@ -905,8 +911,13 @@ mod tests {
     #[test]
     fn refuses_key_specs_before_pressing_anything() {
         let err = |s: &str, r| plan_key_spec(s, r).unwrap_err().to_string();
-        assert!(err("win+l", 1).contains("'win+l' is refused: it locks the workstation"));
-        assert!(err("a ctrl+alt+del", 1).contains("secure attention"));
+        #[cfg(windows)]
+        {
+            assert!(err("win+l", 1).contains("'win+l' is refused: it locks the workstation"));
+            assert!(err("a ctrl+alt+del", 1).contains("secure attention"));
+        }
+        #[cfg(target_os = "macos")]
+        assert!(err("ctrl+cmd+q", 1).contains("locks"));
         assert!(err("a", 0).contains("repeat must be 1-100"));
         assert!(err("a", 101).contains("repeat must be 1-100"));
         assert!(err(&"a ".repeat(20), 100).contains("2000 chords"));

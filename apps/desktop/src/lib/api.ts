@@ -155,6 +155,11 @@ const tauriBackend: Backend = {
     const channel = new Channel<unknown>();
     channel.onmessage = (m) => {
       if (m instanceof ArrayBuffer) onFrame(m);
+      // WKWebView's message-handler fallback serializes raw IPC replies as byte arrays.
+      // Normally connect-src permits the faster binary fetch path; retain the fallback too.
+      else if (Array.isArray(m) && m.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
+        onFrame(Uint8Array.from(m).buffer);
+      }
     };
     const request = { monitor: opts.monitor ?? null, max_fps: opts.maxFps ?? 30, max_long_edge: opts.maxLongEdge ?? 1920 };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [

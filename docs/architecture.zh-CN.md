@@ -269,8 +269,7 @@ launch_app = { level = "control", approve = "ask" }
 | 日志轮转 | file-rotate | MIT |
 | 无障碍界面树（挂载） | cua-driver | MIT |
 
-mcpmesh 0.58.0 锁定了 iroh 1.2、rmcp 3.1，以及一个已被作者撤回的 iroh-blobs 0.103.0。ai-remote 使用的
-fork 只改了这三个版本号（iroh 1.3.0、rmcp 3.5.1、iroh-blobs 0.103.1），mcpmesh 自带的测试全部原样通过。
+mcpmesh 0.58.0 锁定了 iroh 1.2、rmcp 3.1，以及一个已被作者撤回的 iroh-blobs 0.103.0。ai-remote 固定在仓库中的补丁副本 只改了这三个版本号（iroh 1.3.0、rmcp 3.5.1、iroh-blobs 0.103.1），mcpmesh 自带的测试全部原样通过。[源码来源](../vendor/mcpmesh/README.ai-remote.md)保留了版本、散列与许可证，构建不需要私有 Git 权限。
 如果 mcpmesh 停止维护，可以直接在 iroh 上重写 `ar-net`，其余代码不受影响。
 
 ## 10. 代码结构

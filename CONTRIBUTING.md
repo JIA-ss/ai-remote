@@ -1,49 +1,48 @@
 # Contributing
 
-Thanks for your interest. ai-remote is pre-alpha and not open to outside contributions yet; this
-page describes how it will work once it is.
-
-## Before you start
-
-- Open an issue to discuss anything larger than a small fix, so effort is not wasted.
-- Security problems go through the [security policy](SECURITY.md), never public issues.
-
-## Contributor license agreement
-
-Contributions will require signing a contributor license agreement (CLA). ai-remote is licensed
-under the AGPL-3.0; the CLA lets the project also publish the iOS app through the App Store, which
-the AGPL alone does not allow. The CLA will be handled automatically on your first pull request.
+ai-remote is public and pre-alpha. Bug reports, reproducible platform results and focused pull
+requests are welcome. Discuss larger changes in an issue first; security reports belong in the
+[private reporting channel](SECURITY.md).
 
 ## Development
 
-```bash
-cargo build
-cargo test
-cargo clippy --all-targets
+Use the toolchain pinned in `rust-toolchain.toml`. The transport dependency snapshot is included
+under `vendor/mcpmesh`; no private repository token is needed.
+
+```sh
+cd apps/desktop
+npm ci
+npm run build
+cd ../..
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+node --test tools/mcp-install.test.mjs
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`. To try a host and a controller on one machine, use
-two profiles:
+See [Mac development](docs/macos.md), [iPhone development](apps/ios/README.md) and
+[operations](docs/operations.md) for prerequisites and isolated host/controller profiles.
+The standard GitHub Actions runners compile/test Mac, Windows and the iOS targets. CI build
+results do not replace platform permission, physical input or real-device acceptance.
 
-```bash
-ai-remote --home ./tmp/host host
-ai-remote --home ./tmp/ctl pair <ticket printed by the host>
-ai-remote --home ./tmp/ctl call system_info
-```
+- Reuse maintained dependencies and explain any new one. Preserve third-party license notices.
+- Keep mcpmesh types behind `ar-net`.
+- Host calls must pass the gate, turn checks, approval and audit. Do not add a bypass.
+- Include the actual platform and evidence scope in your PR. Do not claim device acceptance from
+  a cross-compile or prerecorded screen. Keep private tickets, keys and screen captures out of Git.
+- Describe what failed and how the user can recover in error messages.
 
-Guidelines:
+## Licensing
 
-- Reuse maintained crates instead of writing your own; explain in the PR when you cannot.
-- Keep `mcpmesh` types inside `ar-net`.
-- Host tools must go through the gate; never add a path that skips levels, approval or audit.
-- Error messages should tell the reader (often an AI agent) what went wrong and what to do next.
-
----
+Project code is [AGPL-3.0](LICENSE); vendored dependencies retain their own licenses. There is no
+automated CLA flow configured. Any future distribution or contributor agreement change must be
+documented explicitly; this repository does not promise an App Store release.
 
 # 参与贡献
 
-ai-remote 目前处于预览阶段，暂不接受外部贡献；以下是开放后的规则。较大的改动请先开 issue 讨论；
-安全问题请按[安全策略](SECURITY.md)私下报告。贡献需要签署贡献者许可协议（CLA）：项目采用 AGPL-3.0，
-CLA 让项目可以把 iOS App 发布到 App Store（单靠 AGPL 不行），首次提交 PR 时会自动引导签署。
-开发约定：优先复用成熟的 crate；mcpmesh 的类型只出现在 `ar-net` 里；被控端工具必须经过闸门；
-错误信息要让读者（往往是 AI agent）知道出了什么问题、下一步该怎么做。
+项目已公开，仍处于 pre-alpha。欢迎报告可复现问题、补充各平台验收和提交范围明确的 PR；较大
+改动先在 issue 讨论。安全问题请按[安全策略](SECURITY.md)私下报告。
+
+开发命令见上方。优先复用成熟依赖；mcpmesh 类型留在 `ar-net`；被控端调用必须经过权限、轮次、
+审批与审计。写清实际测试平台和证据范围，不用交叉编译或录屏回放代替真机验收。票据、密钥与
+私人截图不能提交。项目采用 AGPL-3.0，第三方源码保留原许可证；当前没有自动 CLA 签署流程，
+未来分发或贡献协议变化需要另行明确记录。

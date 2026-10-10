@@ -1,0 +1,68 @@
+name: Desktop and core
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "25"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy
+      - uses: actions/cache/restore@v4
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+          key: desktop-rust-1.95-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-rust-1.95-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}-
+      - name: Build desktop frontend
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+      - name: MCP client configuration tests
+        run: node --test tools/mcp-install.test.mjs
+      - name: Windows command transport diagnostics
+        if: runner.os == 'Windows'
+        run: pwsh -NoProfile -File tools/windows-cmd-probe.ps1
+      - name: Rust tests
+        run: cargo test --workspace --locked
+      - name: Darwin dependency ABI regression
+        if: runner.os == 'macOS'
+        run: cargo test --manifest-path vendor/netdev/Cargo.toml --lib darwin_abi --locked --target-dir target/vendor-abi
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - uses: actions/cache/save@v4
+        if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

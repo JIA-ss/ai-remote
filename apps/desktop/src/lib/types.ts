@@ -37,6 +37,8 @@ export interface HostAccess {
 }
 
 export interface AgentStatus {
+  /** The app's actual MCP executable and arguments, pinned to this device's profile. */
+  mcp?: { command: string; args: string[] };
   device: string;
   version: string;
   /** This machine's name. */

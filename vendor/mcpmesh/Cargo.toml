@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["codec", "net", "trust", "local-api", "node"]
+
+[workspace.package]
+version = "0.58.0"         # the release-train version: all six crates publish in lockstep (see RELEASING.md)
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95.0"
+repository = "https://github.com/counterpunchtech/mcpmesh"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+clap = { version = "4", features = ["derive", "string"] }  # "string": owned command names for man-page stems
+clap_complete = "4"   # `mcpmesh completions <shell>` (agent/human shell integration)
+clap_mangen = "0.2"   # `mcpmesh internal man <dir>` (roff pages off the same clap tree)
+figment = { version = "0.10", features = ["toml", "env"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+async-trait = "0.1"
+tempfile = "3"
+assert_cmd = "2"
+rustix = { version = "1", features = ["process"] }
+iroh = "=1.3.0"  # keep default features: tls-ring supplies the rustls CryptoProvider the presets install. 1.0.3 adds live Endpoint::insert_relay/remove_relay (#53).
+iroh-gossip = "=0.101.0"   # roster + presence topics (spec §10, roster mode only); iroh "1" — no iroh bump
+iroh-blobs  = "=0.103.1"   # roster-blob fetch ONLY (spec §4.3/§9); iroh ^1.0.0 — the pinned version
+# The `Bytes` payload type the gossip broadcast/receive API speaks + the `StreamExt::next` the
+# GossipReceiver stream needs. Both already in the lock via iroh/iroh-gossip; neither is
+# re-exported nameably, so direct deps.
+bytes = "1"
+n0-future = "0.3"
+# HTTPS roster poll (spec §4.3). `rustls-no-provider` = rustls TLS over ring, NO aws-lc-rs. It does
+# NOT install a CryptoProvider: reqwest resolves one at client-build time and panics if none is
+# installed, so the daemon installs a ring process-default first — see `daemon::serve_forever`.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rmcp = { version = "=3.5.1", features = ["client", "server", "macros"] }  # official MCP Rust SDK
+url = "2"  # pkarr relay URLs (spec §10.3): iroh's Pkarr builders take `url::Url` directly
+# Internal crates: `path` drives the workspace build; `version` is REQUIRED for crates.io
+# (`cargo publish` rewrites path deps to registry deps and refuses version-less ones).
+mcpmesh-codec = { path = "codec", version = "0.58.0" }
+mcpmesh-net = { path = "net", version = "0.58.0" }
+mcpmesh-trust = { path = "trust", version = "0.58.0" }
+mcpmesh-local-api = { path = "local-api", version = "0.58.0", default-features = false }
+mcpmesh-node = { path = "node", version = "0.58.0" }

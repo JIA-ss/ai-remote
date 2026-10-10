@@ -1,0 +1,31 @@
+[package]
+name = "mcpmesh-trust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "mcpmesh trust kernel: Ed25519 device identity, signed rosters, invites, revocation rules"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Featureless (`paths` only): the family paths/endpoint rule lives on the vocabulary crate so
+# plugins (which must not link trust) share it; trust re-exports it. No client/service
+# features here — keeps this edge types-only and the crate graph acyclic (local-api never
+# depends on trust).
+mcpmesh-local-api = { workspace = true, default-features = false }
+ed25519-dalek.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+tracing.workspace = true                             # rule-4b revocation-wins warn (dep edge only)
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_jcs = "0.2"                                   # RFC 8785 JCS — the pinned canonicalizer
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }  # RFC3339 parse (rule 3)
+data-encoding = "2"                                  # base64url for b64u: fields (already in lock via iroh)
+
+[dev-dependencies]
+tempfile.workspace = true

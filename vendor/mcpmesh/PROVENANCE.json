@@ -1,0 +1,420 @@
+{
+  "upstream": "https://github.com/counterpunchtech/mcpmesh",
+  "upstream_revision": "555dc1d6a6a5d429729898d508f5068cdc0e2794",
+  "patch_revision": "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28",
+  "pins": {
+    "iroh": "1.3.0",
+    "rmcp": "3.5.1",
+    "iroh-blobs": "0.103.1"
+  },
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "0e6ae2a65968c43878af97049420d68fb581892eefc7a23ad7f408c720740ec0"
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "sha256": "1f56676c1365aae359dc32fa680da44b5a7dfdcd3d47e5a7a672e8b930e0587c"
+    },
+    {
+      "path": "codec/Cargo.toml",
+      "sha256": "85cacd0d409fecd2b20658a373247075075f3de02457c16208c2b053945dcdf2"
+    },
+    {
+      "path": "codec/README.md",
+      "sha256": "a1790e688bbfb09ae8710b69c2206b78051b3f0b2bd78fe4c6ba519a47711dd8"
+    },
+    {
+      "path": "codec/src/lib.rs",
+      "sha256": "20ccced56a3ca66ccc4c5c9a615a975dcf2e90f1c0bed6273d5123e336a1b392"
+    },
+    {
+      "path": "local-api/Cargo.toml",
+      "sha256": "2a3a1204c391743b97a9ef7072ec668316ee4561c67dff3528560c4046845aca"
+    },
+    {
+      "path": "local-api/README.md",
+      "sha256": "a3ed3144fd98e79462f5bb1ba6fc8486a91a2f096fca89d7391173ef92732d86"
+    },
+    {
+      "path": "local-api/examples/status.py",
+      "sha256": "2aae5fc79fa6b193641afd440597dbb14c21aeb57248a909a3b23dfe20d8e79e"
+    },
+    {
+      "path": "local-api/examples/status.rs",
+      "sha256": "0b7128744064fb9f73e33affa0129526625811fc1c906ad9387c291ec08a075f"
+    },
+    {
+      "path": "local-api/examples/watch.rs",
+      "sha256": "ddcc9a514830149f677481437057cb24329ba37ee216b9c1291882dbadf9a9c3"
+    },
+    {
+      "path": "local-api/fixtures/transport-vocabulary.json",
+      "sha256": "1fab9ea8d5d7ae777b57c9d12d772db6655cb81f70884eee3ba22c279a896987"
+    },
+    {
+      "path": "local-api/src/client.rs",
+      "sha256": "da82cc8a861af7ccf8c070edb3261fbe249a1b324ab21426779cf3c63cd1b74d"
+    },
+    {
+      "path": "local-api/src/codec.rs",
+      "sha256": "d787d534019f3fd226ca6efcd3731ba51febeed5730e142b47615f1b5df0b489"
+    },
+    {
+      "path": "local-api/src/lib.rs",
+      "sha256": "5e1e5095f01803927f83fe7bfc72b5a69afec38ebebbfc9709f21d7e3b7bce0c"
+    },
+    {
+      "path": "local-api/src/paths.rs",
+      "sha256": "d906b00e3d76e61288a79f2171365540470fc429c8f76b7af50833ba8d48895e"
+    },
+    {
+      "path": "local-api/src/principals.rs",
+      "sha256": "684e8d44ff8078c327e37976c438dfccaf4f698d6de9860298ff3362fbf46a3d"
+    },
+    {
+      "path": "local-api/src/protocol.rs",
+      "sha256": "a390fb53188a758b3bc2314f7ad19e68dd08b7e70a539b06a5a487273b90c730"
+    },
+    {
+      "path": "local-api/src/service.rs",
+      "sha256": "db437eeb2b2d5eb5741779b924d9c2a18dd00f5ca6e2715179cb28c5139187da"
+    },
+    {
+      "path": "local-api/src/transport/unix.rs",
+      "sha256": "4f139bf8d1cacfe2852908dad47ddd21de9fc1f1c6cb2427bbd3d9a6766cd9c8"
+    },
+    {
+      "path": "local-api/src/transport/windows.rs",
+      "sha256": "acef0755399f578cb9223ddd71996aca5dce6ddc7cc4c39d5281c42df3970beb"
+    },
+    {
+      "path": "local-api/src/transport.rs",
+      "sha256": "f553a694586c091cb33cbe2f148e9152981853cf37604fc39148ea250e4a08a0"
+    },
+    {
+      "path": "local-api/tests/canonical_exports.rs",
+      "sha256": "0a88dc3837b23abaee581c2f7990c9558dd6119fcfa11b0f5ed7761ed211101e"
+    },
+    {
+      "path": "net/Cargo.toml",
+      "sha256": "feff5a34f18f0f9933bd47399fc4fc9e303299d7cc26af61c623f2c232880152"
+    },
+    {
+      "path": "net/README.md",
+      "sha256": "51659950682978ee4b2641e218749cb622940403b631df6c9e4ee2e9341dddea"
+    },
+    {
+      "path": "net/src/endpoint.rs",
+      "sha256": "9e5676e0bbffc60c4cfa66da92434e92d74e67c7c9345e996859a566b41c6ccd"
+    },
+    {
+      "path": "net/src/errors.rs",
+      "sha256": "dc29301eec304a703fc618e36bffcca94aa7cf950feeaafeeda650bbee17bd21"
+    },
+    {
+      "path": "net/src/framing.rs",
+      "sha256": "ad1fc4a4bdb07b83405e47c0a55ef2dc5016d644a284c72c2602fa0bd9f170e4"
+    },
+    {
+      "path": "net/src/identity.rs",
+      "sha256": "3bd3267a9eaab682e9523575c9dcb41e366e20013af8175ecd9ce2e39330110e"
+    },
+    {
+      "path": "net/src/lib.rs",
+      "sha256": "ceafc78ffc40e35a76e6763a98b8d8c7ae5bab994410b93e32aaf81dc39aff0b"
+    },
+    {
+      "path": "net/src/registry.rs",
+      "sha256": "df5fe8622e3b346b6ee9d7c0c424231b42e84ecd65f2c202ac779a55c4a1eecf"
+    },
+    {
+      "path": "net/src/service.rs",
+      "sha256": "7f2b62b77e1267c0148cfc607b23415bbd1fe995645a1a3822f713d39bb62558"
+    },
+    {
+      "path": "net/src/transport.rs",
+      "sha256": "18eccc66e11d4cca91f580ee7d91b0d8458c0ae4014547b90f5c49abd0b09be3"
+    },
+    {
+      "path": "net/tests/admit_recheck.rs",
+      "sha256": "72e49c232065ba48f91d6f91100336aa75b50d34666ec74600fc30908f881d96"
+    },
+    {
+      "path": "net/tests/endpoint_smoke.rs",
+      "sha256": "c6d4e7ff9596c6bfa6c8c07aca4a6dcaa2a9e5b19990b0039efd150ec3f5b82d"
+    },
+    {
+      "path": "net/tests/session.rs",
+      "sha256": "5c25b23aa79c098c15c48ea5f0e7113dff94dcfed93932d16916105ce9697c8b"
+    },
+    {
+      "path": "node/Cargo.toml",
+      "sha256": "a7a8c3ae0eb08c50f1f4268e392e7238fb980f43777d256cfbffb5d2816a69e9"
+    },
+    {
+      "path": "node/src/allowlist.rs",
+      "sha256": "6721c93601f00fc5f4ddd3e28d858aaab1584a61961fc7fd00eb2069ad267f40"
+    },
+    {
+      "path": "node/src/audit/log.rs",
+      "sha256": "ef7cfa6c709ed1d48e8fe3ac12e258396122d80b05a526a0265d837aa080e601"
+    },
+    {
+      "path": "node/src/audit/mod.rs",
+      "sha256": "8ddf6e3735211e35bede4658c33dbb9a8b00fcd77d75c9c9a6d22172508b1467"
+    },
+    {
+      "path": "node/src/audit/record.rs",
+      "sha256": "3e051d6b517ec0e1268ed6fdd41590c0c837c996b13b4332365c29805cade1a8"
+    },
+    {
+      "path": "node/src/backends/mod.rs",
+      "sha256": "b71da062df030bc7158f25ac7e5119a3ec1c73dc28a5d97153a5416f71d51d0b"
+    },
+    {
+      "path": "node/src/backends/socket.rs",
+      "sha256": "a99488c4d8f07699e3ac9de7512dcdc8ed624b2442f78a7555d16ba44a280f12"
+    },
+    {
+      "path": "node/src/backends/spawn.rs",
+      "sha256": "e42e1400eb435f497fa147e6184bb009f1b5de029d478a4fe1d6c9f4aaaa1a4a"
+    },
+    {
+      "path": "node/src/blobs/mod.rs",
+      "sha256": "de37c8edbda56ba0cbb064c8d296419e9eea6ac922390451455695b0d80d0209"
+    },
+    {
+      "path": "node/src/blobs/provider.rs",
+      "sha256": "5fc16411dc2718422c7e4e844f65788627f39d23769a66fc7a9c67acb7373189"
+    },
+    {
+      "path": "node/src/blobs/scope.rs",
+      "sha256": "b1af73957eb03577bc83d6c38b9569b54f44a398338ef522c4c626fd610c31d8"
+    },
+    {
+      "path": "node/src/cancel.rs",
+      "sha256": "492b1c8988c6ff3110384e0dfc197140ed5fc40a5ffab3f0b76e5cb371471a0f"
+    },
+    {
+      "path": "node/src/config.rs",
+      "sha256": "f227d623a227944e1a92ccac2c18fe11b81c699b3300ba8caaa85ab7e982b6b5"
+    },
+    {
+      "path": "node/src/control.rs",
+      "sha256": "29bde7c10114a1ba214aa6813f2cd2b50ec18f5fd112265e5c9537e50720cec2"
+    },
+    {
+      "path": "node/src/daemon/accept.rs",
+      "sha256": "4b89751db783536d1706a86d453abdd049b4946d44d13b18e4628dd2f4b2d6e2"
+    },
+    {
+      "path": "node/src/daemon/boot.rs",
+      "sha256": "f493d53ed6380bc420c24b24762715dc7ad5fc9ca5f8e4c3d62fc805f7b53fc0"
+    },
+    {
+      "path": "node/src/daemon/config_write.rs",
+      "sha256": "5c56696db728c35feb7e5b6f3c0cd457ecba0932c4a12b0e50dcaad8d281cc09"
+    },
+    {
+      "path": "node/src/daemon/conn_cache.rs",
+      "sha256": "ba7a11613b330765475dba05dd3e4cac22b97bf2e21165f3313dfd88bc6912aa"
+    },
+    {
+      "path": "node/src/daemon/dial.rs",
+      "sha256": "78522ac058c42cc71043a01cf46188c26ce01b38dff9db26aefabd664628f6ef"
+    },
+    {
+      "path": "node/src/daemon/dial_hint.rs",
+      "sha256": "08c21aa8f7a0d2b573b68f30c3c5d686a9d83030854c59b71a768ee0b9b5e3bb"
+    },
+    {
+      "path": "node/src/daemon/handlers.rs",
+      "sha256": "552dd35a928509d5abd30150fda424d5a7ce65a3ffba61faef889aaf885f5e60"
+    },
+    {
+      "path": "node/src/daemon/hooks.rs",
+      "sha256": "f7ba498ba3a7eb6f096793e3c624a259c6b3b99ae987983553dfb8f80e791118"
+    },
+    {
+      "path": "node/src/daemon/lookup_hygiene.rs",
+      "sha256": "6353253cac6994840021808eb8e85aba802edae85baea261f8e2a37a80922f03"
+    },
+    {
+      "path": "node/src/daemon/org_author.rs",
+      "sha256": "52c10b27f82b97bdde978d6074af2ec1a7c911195e27770a37a0dc0bcd24210c"
+    },
+    {
+      "path": "node/src/daemon/path_watch.rs",
+      "sha256": "1ec1637c2058e2eafbacee5b4078b8eea730d534cf6928f1485922181ef6442f"
+    },
+    {
+      "path": "node/src/daemon/reach.rs",
+      "sha256": "b581aee9aaaa8606a30a28b72a95cbb86aed7c84da1ef1d78208051280d6a21f"
+    },
+    {
+      "path": "node/src/daemon/resume.rs",
+      "sha256": "b762711f40f8366cd68353f278196e6a3ef8ef1e1363dd969e4339cc301b2d54"
+    },
+    {
+      "path": "node/src/daemon/roster_install.rs",
+      "sha256": "b8dfdbbf9dd26d87dfdb2618690b9a65635f6444b7a53615b5c77cdf99e7573c"
+    },
+    {
+      "path": "node/src/daemon/self_net.rs",
+      "sha256": "24a1facb335a3f27d49f1c9272a2cff614b88079156af8bf6a6fd8e8c3ee8697"
+    },
+    {
+      "path": "node/src/daemon/sever.rs",
+      "sha256": "e56ee70e10182cca3108c7e6ca5d5816cfc3de608265cd527d8e3c6e847d86ae"
+    },
+    {
+      "path": "node/src/daemon/status.rs",
+      "sha256": "b996b9c96336abe8922fc3dee4ef64c0470d30f9bcd74c93b7e168cf271da355"
+    },
+    {
+      "path": "node/src/daemon.rs",
+      "sha256": "56ea76e5378633e7e6c63c3508400976eca6868efe7bd591c2d6e30ac609d277"
+    },
+    {
+      "path": "node/src/diag.rs",
+      "sha256": "6082b65d4e3e5510bd9cb8cea87bd416738dcfa67b3ecdcfa0ba2b10fb898880"
+    },
+    {
+      "path": "node/src/discovery/local.rs",
+      "sha256": "476113fb92d39b8902df8eedcd0a1f7d203c79366b39b6453e9935eda9f99cef"
+    },
+    {
+      "path": "node/src/discovery/mod.rs",
+      "sha256": "8550cece9c94ff1bfb99847bc1190d944d441d9c9135e8e29ba93ecf4dd696a0"
+    },
+    {
+      "path": "node/src/ipc.rs",
+      "sha256": "3aa9f6b7927f99783f974ffda6756e9a33d759812593402c9c63299e2fc1d084"
+    },
+    {
+      "path": "node/src/lib.rs",
+      "sha256": "513f8b900464c18d876a628eccd8911a328647fe934a6e0aed34e4e445f00191"
+    },
+    {
+      "path": "node/src/limits.rs",
+      "sha256": "53083f02ca300c63bf34b000eb08f50c793e6173673ae59a182619d09fd2c289"
+    },
+    {
+      "path": "node/src/node.rs",
+      "sha256": "a3f43b00f71274b91786994b009bee8e65bbaf58f0b1685a2eaf02cc1876a975"
+    },
+    {
+      "path": "node/src/pairing/mod.rs",
+      "sha256": "eb985735010e97fa3b93de5c5e67a547d6bbb33dd9ab0dd5bf99526fc726637b"
+    },
+    {
+      "path": "node/src/pairing/persist.rs",
+      "sha256": "f8004ea656aac25af78f0c88a52d01f6766f0f4541d32f48ece9a13d092e56fc"
+    },
+    {
+      "path": "node/src/pairing/recovery.rs",
+      "sha256": "5c40bed0c7aefcfd52f93f05840b2bb7f817d8dd71815b30ad0282500659a9dc"
+    },
+    {
+      "path": "node/src/pairing/rendezvous.rs",
+      "sha256": "1b10ea87d34e18444a44f5a05298b1ab67ec83b201b14edadff48096339806c8"
+    },
+    {
+      "path": "node/src/pairing/sas.rs",
+      "sha256": "b7fdf97cf52b088f14164d4bdada43f68b96b99c72e07cbb31a97effadc26153"
+    },
+    {
+      "path": "node/src/paths.rs",
+      "sha256": "ec0cf411edf5259a96c4311aade0041fcca5238302e8b01bb18b81395ae8fc5e"
+    },
+    {
+      "path": "node/src/roster/distribute.rs",
+      "sha256": "376ec5133b13a4263ba2797a007995cda108cdfd80cc3c0fa1bd959142e2f9ce"
+    },
+    {
+      "path": "node/src/roster/enroll.rs",
+      "sha256": "c39a9fb35bb42e1e944d456908be059569115729d5b3320f245e7fb9441be92f"
+    },
+    {
+      "path": "node/src/roster/freshness.rs",
+      "sha256": "65c6b1864c909b45f17dd22f2a34a365e4c570ac314e1425120353fc725493f1"
+    },
+    {
+      "path": "node/src/roster/gate.rs",
+      "sha256": "7878930d62392cb96f35e50fd09f41ad7c9c55b067a8dde395083f4437a556ca"
+    },
+    {
+      "path": "node/src/roster/mod.rs",
+      "sha256": "6f7dab9acc0b13b003882b5c5e40fa93a6d7bd37400711d4ea38956adbd6baab"
+    },
+    {
+      "path": "node/src/roster/presence.rs",
+      "sha256": "3d4bd20c715a7123a7a9a74d1a131b63630ee5239cb23dc8c26a761df23c0bfc"
+    },
+    {
+      "path": "node/src/roster/transport.rs",
+      "sha256": "3689a7c14db57f656c42587fff1f44f7f299ba53582f14f154efd077503fd6e2"
+    },
+    {
+      "path": "node/src/stream.rs",
+      "sha256": "6ecec4dde23639801c8ee7efbb86c5804e75a3789bc0d69ef1a24698d86ba772"
+    },
+    {
+      "path": "node/src/util.rs",
+      "sha256": "a475196d0cebf1c356ef3d87718180cfe8d95ddbc1a28f3ca53fb2c920f0a625"
+    },
+    {
+      "path": "node/tests/accept_side_path.rs",
+      "sha256": "09b6aeaa18f8a1ec415a46ba2dcf461c4cba62782e0b39eefaf6194b85adc15b"
+    },
+    {
+      "path": "node/tests/start.rs",
+      "sha256": "514401c13b319db45d03cd0dd0aadcdf8d5d0e0b8690afa5c979c0d15c02dc97"
+    },
+    {
+      "path": "trust/Cargo.toml",
+      "sha256": "872f74c6064cc100eee23497446ece24fa686edcc30c5c8a08405a149acb769c"
+    },
+    {
+      "path": "trust/README.md",
+      "sha256": "b2d5ce4171e59f04b30cdc9ad6c53aff363d588435e1e3cde7053aee294eec97"
+    },
+    {
+      "path": "trust/src/app.rs",
+      "sha256": "e3865b8f752e5ebf3aba61b5831f44efd863e0aff63d60701ee681d5dc813c4b"
+    },
+    {
+      "path": "trust/src/binding.rs",
+      "sha256": "742e73070e015fe9cd416e2fc928ad0e3055cd0441aadeb885db1747498fe92e"
+    },
+    {
+      "path": "trust/src/keys.rs",
+      "sha256": "e5f09e01edfb9653e6e155fc2247fce93723298532cefd81634a9e711b2a3e59"
+    },
+    {
+      "path": "trust/src/lib.rs",
+      "sha256": "864b7ddbc49a06c977a8e836b0e834b4ddb90bdced51f265c09980fd14273d26"
+    },
+    {
+      "path": "trust/src/roster/mod.rs",
+      "sha256": "ef053fa69bcf68037b4768278ec52a40f3c2b536fcde7040183b314d022742ad"
+    },
+    {
+      "path": "trust/src/roster/mutate.rs",
+      "sha256": "65f101301c232f280f7149f4789ef58678d94626abfbf9ffc630897cb0b2a4fe"
+    },
+    {
+      "path": "trust/src/roster/sign.rs",
+      "sha256": "e256a363fa7923746049c54f4191760e11ed1af0de55e9927f1eef3ae248cbb3"
+    },
+    {
+      "path": "trust/src/roster/validate.rs",
+      "sha256": "648744aa9faae29f996c8ef86bb1498eb317ba6ff8e46c47aba41f70ddd0cd86"
+    }
+  ]
+}

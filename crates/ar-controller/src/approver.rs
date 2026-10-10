@@ -12,10 +12,11 @@
 //! builds do not contain it.
 
 use anyhow::Result;
+#[cfg(any(windows, feature = "software-approver"))]
+use ar_core::machine_name;
 use ar_core::{
     Profile,
     approval::{AllowTarget, KeyAlg, allow_message},
-    machine_name,
 };
 use data_encoding::BASE64;
 
@@ -32,6 +33,10 @@ pub struct ApproverKey {
 
 #[derive(Debug, Clone)]
 enum Backend {
+    // Keeps ApproverKey inhabited on platforms that cannot make keys yet.
+    #[cfg(not(any(windows, feature = "software-approver")))]
+    #[allow(dead_code)]
+    Unavailable,
     #[cfg(windows)]
     Hello(String),
     #[cfg(feature = "software-approver")]
@@ -53,6 +58,13 @@ impl ApproverKey {
     pub fn sign_allow(&self, target: &AllowTarget) -> Result<Vec<u8>> {
         let message = allow_message(target)?;
         match &self.backend {
+            #[cfg(not(any(windows, feature = "software-approver")))]
+            Backend::Unavailable => {
+                let _ = message;
+                anyhow::bail!(
+                    "remote approval signing is not available on this platform; approve at the host or on a Windows Hello device"
+                )
+            }
             #[cfg(windows)]
             Backend::Hello(name) => hello::sign(name, &message),
             #[cfg(feature = "software-approver")]
@@ -102,6 +114,7 @@ pub fn get_or_create(profile: &Profile) -> Result<ApproverKey> {
     }
 }
 
+#[cfg(any(windows, feature = "software-approver"))]
 fn label(kind: &str) -> String {
     format!("{kind} on {}", machine_name())
 }

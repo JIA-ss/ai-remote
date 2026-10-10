@@ -1,0 +1,4 @@
+[bindings.swift]
+module_name = "AIRemoteCore"
+ffi_module_name = "AIRemoteCoreFFI"
+generate_module_map = true
