@@ -1,4 +1,5 @@
-//! Screen capture for the live view: Windows Graphics Capture through `windows-capture`. Frames
+//! Screen capture for the live view: Windows Graphics Capture through `windows-capture`, and
+//! bounded xcap polling on macOS. Frames
 //! arrive only when the screen changes; the newest one waits in a slot for the encoder, so a slow
 //! encoder or network skips frames before they are encoded instead of queueing them.
 
@@ -31,7 +32,11 @@ struct SlotState {
 
 impl Slot {
     fn put(&self, frame: Raw) {
-        self.frame.lock().unwrap().frame = Some(frame);
+        let mut state = self.frame.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        state.frame = Some(frame);
         self.ready.notify_one();
     }
 
@@ -55,6 +60,8 @@ impl Slot {
 pub struct Capture {
     #[cfg(windows)]
     control: Option<windows_capture::capture::CaptureControl<win::Handler, win::Error>>,
+    #[cfg(target_os = "macos")]
+    worker: Option<std::thread::JoinHandle<()>>,
     slot: Arc<Slot>,
 }
 
@@ -70,6 +77,10 @@ impl Drop for Capture {
         #[cfg(windows)]
         if let Some(control) = self.control.take() {
             let _ = control.stop();
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
         }
     }
 }
@@ -90,7 +101,15 @@ pub fn monitors() -> Result<Vec<(usize, u32, u32, bool)>> {
             })
             .collect())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        xcap::Monitor::all()?
+            .iter()
+            .enumerate()
+            .map(|(i, m)| Ok((i, m.width()?, m.height()?, m.is_primary()?)))
+            .collect()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     Err(anyhow!("live view is not available on this platform yet"))
 }
 
@@ -113,11 +132,61 @@ pub fn start(index: Option<usize>, max_fps: u32) -> Result<Capture> {
         let control = win::start(index, max_fps, slot.clone())?;
         Ok(Capture { control: Some(control), slot })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if !crate::platform::macos::screen_recording_allowed() {
+            anyhow::bail!(
+                "live view needs macOS Screen Recording permission for the host; enable it in System Settings > Privacy & Security > Screen Recording, restart the host, then run doctor"
+            );
+        }
+        let all = xcap::Monitor::all()?;
+        let monitor = match index {
+            Some(i) => all.get(i),
+            None => all.iter().find(|m| m.is_primary().unwrap_or(false)).or(all.first()),
+        }
+        .ok_or_else(|| anyhow!("monitor not found"))?
+        .clone();
+        // Fail before acknowledging the stream when capture does not actually work.
+        let first = mac_frame(&monitor)?;
+        slot.put(first);
+        let frames = slot.clone();
+        let interval = Duration::from_secs_f64(1.0 / f64::from(max_fps.clamp(1, 30)));
+        let worker = std::thread::Builder::new().name("ar-macos-capture".into()).spawn(move || {
+            loop {
+                let guard = frames.frame.lock().unwrap();
+                let (guard, _) = frames.ready.wait_timeout_while(guard, interval, |s| !s.closed).unwrap();
+                if guard.closed {
+                    break;
+                }
+                drop(guard);
+                match mac_frame(&monitor) {
+                    Ok(frame) => frames.put(frame),
+                    Err(e) => {
+                        tracing::warn!("macOS live capture stopped: {e:#}");
+                        frames.close();
+                        break;
+                    }
+                }
+            }
+        })?;
+        Ok(Capture { worker: Some(worker), slot })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (index, max_fps, slot);
         Err(anyhow!("live view is not available on this platform yet"))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_frame(monitor: &xcap::Monitor) -> Result<Raw> {
+    let image = monitor.capture_image()?;
+    let (width, height) = image.dimensions();
+    let mut bgra = image.into_raw();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Ok(Raw { bgra, width, height })
 }
 
 #[cfg(windows)]

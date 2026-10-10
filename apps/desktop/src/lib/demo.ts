@@ -141,7 +141,8 @@ export const demoBackend: Backend = {
   kind: "demo",
   async status() {
     const agents = demoAgents.map((a) => ({ ...a }));
-    return { device: "eid:4f2a9c1e77b0d3a8e51c0b6f2d9a7e43", version: "0.1.0", name: "home-laptop", agents };
+    return { device: "eid:4f2a9c1e77b0d3a8e51c0b6f2d9a7e43", version: "0.1.0", name: "home-laptop", agents,
+      mcp: { command: "ai-remote", args: ["mcp"] } };
   },
   async openAppearanceSettings() {},
   async disconnectAgent(id) {

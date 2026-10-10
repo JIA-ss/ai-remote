@@ -1,6 +1,14 @@
 // The live view's decoder: frames from the host (18-byte header + H.264 Annex B) through WebCodecs
 // onto a canvas. Hardware decoding where the platform has it.
 
+import { commands } from "../bindings";
+
+function reportVideoError(e: unknown) {
+  const message = `Live video: ${String(e)}`;
+  if ("__TAURI_INTERNALS__" in window) void commands.logFromPage("error", message);
+  else console.error(message);
+}
+
 export interface FrameHeader {
   keyframe: boolean;
   width: number;
@@ -79,7 +87,10 @@ export function createDecoder(
         ctx?.drawImage(frame, 0, 0);
         frame.close();
       },
-      error: () => reset(),
+      error: (e) => {
+        reportVideoError(e);
+        reset();
+      },
     });
     // Annex B input: no `description`, the parameter sets travel in the keyframes.
     decoder.configure({ codec: c, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });

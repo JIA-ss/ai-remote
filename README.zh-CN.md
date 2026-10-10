@@ -100,6 +100,8 @@ claude mcp add ai-remote -- ai-remote mcp
 ```
 
 其他能启动 stdio 服务的 MCP 客户端也一样，指向 `ai-remote mcp` 即可。
+桌面应用提供 Claude Code、Codex、Cursor 和 VS Code 的对应配置，并使用打包后的实际 CLI 路径，
+详见 [MCP 客户端接入说明](docs/mcp-clients.md)。
 
 想让被控端在登录后自动启动、用 `ai-remote doctor` 检查机器，或者弄清调用为什么被拒绝，见 [docs/operations.zh-CN.md](docs/operations.zh-CN.md)。
 
@@ -134,7 +136,7 @@ claude mcp add ai-remote -- ai-remote mcp
 | 里&#8288;程&#8288;碑 | 交付内容 | 状&#8288;态 |
 | :-- | :-- | :-- |
 | **M0** | 命令行、Windows 被控端、MCP 桥接 | 已&#8288;实&#8288;现&#8288;，&#8288;未&#8288;发&#8288;布 |
-| **M1** | macOS 被控端、文件工具 | 计&#8288;划&#8288;中 |
+| **M1** | macOS 被控端、文件工具 | 进&#8288;行&#8288;中：Mac 基础被控端与原生控制端适配；文件工具尚未实现（[开发与验收](docs/macos.md)） |
 | **M2** | 带实时画面和审批的桌面应用 | 进&#8288;行&#8288;中&#8288;：实时画面、远程审批、接管与交还、应用主要界面 |
 | **M3** | iOS 控制端（上架 App Store） | 计&#8288;划&#8288;中 |
 | **M4** | 可选的账号服务、可自建的中继 | 计&#8288;划&#8288;中 |

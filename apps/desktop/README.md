@@ -19,6 +19,10 @@ npm install
 npm run tauri dev
 ```
 
+On macOS, run `tools/macos.sh dev` from the repository root. For a native development app with its
+CLI included, run `tools/macos.sh build --debug --bundles app`. See [macOS validation](../../docs/macos.md)
+for permissions, native smoke tests and the features still unavailable on Mac.
+
 The app starts the controller agent through the `ai-remote` command. It looks for it in `AI_REMOTE_CLI`,
 next to the app, then on `PATH`; during development build it first with `cargo build -p ai-remote`.
 
@@ -44,6 +48,10 @@ TypeScript bindings for the Rust commands (`src/bindings.ts`) are regenerated on
 npm install
 npm run tauri dev
 ```
+
+macOS 请在仓库根目录运行 `tools/macos.sh dev`；需要携带 CLI 的原生测试应用时，运行
+`tools/macos.sh build --debug --bundles app`。权限、原生验收和当前功能边界见
+[macOS 开发与验收](../../docs/macos.md)。
 
 应用通过 `ai-remote` 命令启动控制端 Agent，查找顺序：`AI_REMOTE_CLI`、应用所在目录、`PATH`；开发时先
 `cargo build -p ai-remote`。

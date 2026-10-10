@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
 import { detectOs } from "../lib/platform";
+import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
 import type { AgentStatus } from "../lib/types";
 import { CmdLine } from "./CmdLine";
@@ -156,6 +157,14 @@ function General({ version }: { version?: string }) {
 
 function Agents({ status, name, onChange }: { status: AgentStatus | null; name: string; onChange: () => void }) {
   const agents = status?.agents ?? [];
+  const [client, setClient] = useState<McpClient>(() => {
+    const saved = localStorage.getItem("ai-remote.mcp-client");
+    return MCP_CLIENTS.some(([id]) => id === saved) ? saved as McpClient : "claude";
+  });
+  const setup = status?.mcp ? mcpInstall(client, status.mcp, !mac) : null;
+  const instructions: Record<McpClient, Key> = {
+    claude: "ag_claude_d", codex: "ag_codex_d", cursor: "ag_cursor_d", vscode: "ag_vscode_d", other: "ag_other_d",
+  };
   return (
     <>
       <div className="grp-h">{t("ag_connected")}</div>
@@ -206,7 +215,29 @@ function Agents({ status, name, onChange }: { status: AgentStatus | null; name: 
           <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
             {t("ag_add_d", { name })}
           </div>
-          <CmdLine cmd="claude mcp add ai-remote -- ai-remote mcp" />
+          <label style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+            <span className="ds">{t("ag_client")}</span>
+            <select className="dd" value={client} onChange={(e) => {
+              const next = e.target.value as McpClient;
+              setClient(next);
+              localStorage.setItem("ai-remote.mcp-client", next);
+            }}>
+              {MCP_CLIENTS.map(([id, label]) => <option key={id} value={id}>{label || t("ag_other")}</option>)}
+            </select>
+          </label>
+          <div className="ds" style={{ marginBottom: 12 }}>{t(instructions[client])}</div>
+          {setup ? <>
+            {setup.command && <>
+              <div className="ds" style={{ marginBottom: 8 }}>{t(mac ? "ag_terminal_mac" : "ag_terminal_win")}</div>
+              <CmdLine key={setup.command} cmd={setup.command} multiline />
+            </>}
+            {setup.config && <>
+              {client === "codex" && <div className="ds" style={{ margin: "16px 0 8px" }}>{t("ag_codex_manual")}</div>}
+              <CmdLine key={setup.config} cmd={setup.config} multiline />
+              <div className="ds" style={{ marginTop: 10 }}>{t("ag_merge")}</div>
+            </>}
+            <div className="ds" style={{ marginTop: 14 }}>{t("ag_verify")}</div>
+          </> : <div className="ds">{t("ag_config_missing")}</div>}
         </div>
       </div>
     </>
@@ -296,7 +327,7 @@ function Approvals() {
               <div>
                 <div className="tt">{h}</div>
                 <div className="ds">
-                  {v === true
+                  {mac ? t("ap_mac_deny_only") : v === true
                     ? t("ap_accepted")
                     : v === "asking"
                       ? t("ap_asking", { host: h })
@@ -308,7 +339,7 @@ function Approvals() {
                 </div>
               </div>
               <span className="end">
-                {(v === false || v === null) && (
+                {!mac && (v === false || v === null) && (
                   <button
                     className="btn"
                     onClick={async () => {

@@ -72,7 +72,14 @@ fn text(e: anyhow::Error) -> String {
 #[tauri::command]
 #[specta::specta]
 async fn agent_status(state: State<'_, AppState>) -> Result<Json, String> {
-    state.request(json!({"op": "status"})).await
+    let mut status = state.request(json!({"op": "status"})).await?;
+    // Use the executable we actually launch and the same profile, including bundled macOS
+    // sidecars and profiles outside the default directory. Client apps need not inherit PATH.
+    status.0["mcp"] = json!({
+        "command": state.cli,
+        "args": ["--home", state.profile.root().to_string_lossy(), "mcp"],
+    });
+    Ok(status)
 }
 
 /// Opens the system's appearance settings (light and dark), which the app follows.
@@ -310,6 +317,8 @@ async fn watch_screen(
     let task = tokio::spawn(async move {
         let mut read = std::io::Cursor::new(buffered).chain(read);
         let frames = async {
+            #[cfg(debug_assertions)]
+            let mut first = true;
             loop {
                 let mut header = [0u8; 18];
                 if read.read_exact(&mut header).await.is_err() {
@@ -321,6 +330,11 @@ async fn watch_screen(
                 frame.resize(18 + len, 0);
                 if read.read_exact(&mut frame[18..]).await.is_err() || on_frame.send(Frame(frame)).is_err() {
                     break;
+                }
+                #[cfg(debug_assertions)]
+                if first {
+                    first = false;
+                    eprintln!("[video] sent first frame: {len} bytes");
                 }
             }
         };
@@ -433,7 +447,9 @@ fn find_cli() -> Result<PathBuf> {
 pub fn run() {
     let builder = builder();
     #[cfg(debug_assertions)]
-    builder.export(specta_typescript::Typescript::default(), "../src/bindings.ts").expect("export TypeScript bindings");
+    builder
+        .export(specta_typescript::Typescript::default(), concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"))
+        .expect("export TypeScript bindings");
 
     let profile = Profile::open_default().expect("open the ai-remote profile");
     let cli = find_cli().unwrap_or_else(|e| {
@@ -476,7 +492,11 @@ fn smoke(app: &tauri::App) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_focusable(false);
         let _ = w.set_skip_taskbar(true);
-        let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
+        if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() == Ok("1") {
+            let _ = w.show();
+        } else {
+            let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
+        }
         // `AI_REMOTE_SMOKE_QUERY=view=session&host=office-pc` opens a page directly.
         if let Ok(q) = std::env::var("AI_REMOTE_SMOKE_QUERY") {
             let q = q.replace('\'', "");
@@ -487,6 +507,8 @@ fn smoke(app: &tauri::App) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(secs));
         if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.eval("window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'smoke', message: JSON.stringify({ secure: isSecureContext, decoder: typeof VideoDecoder, visibility: document.visibilityState, canvases: Array.from(document.querySelectorAll('canvas')).map(c => [c.width, c.height]) }) })");
+            let _ = w.eval("window.__TAURI_INTERNALS__.invoke('agent_status').then(s => window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'mcp', message: JSON.stringify(s.mcp) }))");
             let visible = w.is_visible().unwrap_or(false);
             eprintln!("[smoke] window visible: {visible}, url: {:?}", w.url().map(|u| u.to_string()));
             if !visible {
@@ -495,11 +517,17 @@ fn smoke(app: &tauri::App) {
             }
         }
         let picture = handle.get_webview_window("main").ok_or("no window".to_string()).and_then(|w| capture(&w));
-        match picture.and_then(|img| img.save(&out).map_err(|e| e.to_string())) {
-            Ok(()) => eprintln!("[smoke] saved {}", std::path::Path::new(&out).display()),
-            Err(e) => eprintln!("[smoke] cannot capture the window: {e}"),
-        }
-        handle.exit(0);
+        let code = match picture.and_then(|img| img.save(&out).map_err(|e| e.to_string())) {
+            Ok(()) => {
+                eprintln!("[smoke] saved {}", std::path::Path::new(&out).display());
+                0
+            }
+            Err(e) => {
+                eprintln!("[smoke] cannot capture the window: {e}");
+                1
+            }
+        };
+        handle.exit(code);
     });
 }
 
@@ -555,7 +583,42 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
     }
 }
 
-#[cfg(all(debug_assertions, not(windows)))]
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
+    use block2::RcBlock;
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDictionary, NSError};
+    use objc2_web_kit::WKWebView;
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    // with_webview dispatches on the main thread; wait only on the smoke worker, never AppKit.
+    w.with_webview(move |webview| unsafe {
+        let view = &*webview.inner().cast::<WKWebView>();
+        let done = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
+            let result = (|| {
+                if let Some(error) = error.as_ref() {
+                    return Err(error.localizedDescription().to_string());
+                }
+                let image = image.as_ref().ok_or("WKWebView returned no snapshot")?;
+                let tiff = image.TIFFRepresentation().ok_or("snapshot has no bitmap")?;
+                let bitmap = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &tiff)
+                    .ok_or("cannot decode snapshot bitmap")?;
+                let png = bitmap
+                    .representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+                    .ok_or("cannot encode snapshot PNG")?;
+                Ok(png.to_vec())
+            })();
+            let _ = tx.send(result);
+        });
+        view.takeSnapshotWithConfiguration_completionHandler(None, &done);
+    })
+    .map_err(|e| e.to_string())?;
+    let bytes = rx.recv_timeout(std::time::Duration::from_secs(15)).map_err(|e| e.to_string())??;
+    image::load_from_memory(&bytes).map(|i| i.into_rgba8()).map_err(|e| e.to_string())
+}
+
+#[cfg(all(debug_assertions, not(any(windows, target_os = "macos"))))]
 fn capture(_: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
     Err("capture is only implemented on Windows".into())
 }
@@ -567,7 +630,10 @@ mod tests {
     #[test]
     fn export_typescript_bindings() {
         super::builder()
-            .export(specta_typescript::Typescript::default(), "../src/bindings.ts")
+            .export(
+                specta_typescript::Typescript::default(),
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"),
+            )
             .expect("export TypeScript bindings");
     }
 }

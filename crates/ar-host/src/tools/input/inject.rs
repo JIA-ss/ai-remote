@@ -190,8 +190,17 @@ pub struct EnigoBackend {
 
 impl EnigoBackend {
     pub fn new() -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        if !crate::platform::macos::accessibility_allowed() {
+            anyhow::bail!(
+                "cannot inject input: macOS Accessibility permission is missing for this host. Enable it in System Settings > Privacy & Security > Accessibility, restart the host, then run doctor"
+            );
+        }
         // Defaults also release keys enigo saw pressed when it is dropped: a second safety net.
-        let enigo = enigo::Enigo::new(&enigo::Settings::default()).map_err(|e| {
+        let settings = enigo::Settings::default();
+        #[cfg(target_os = "macos")]
+        let settings = enigo::Settings { open_prompt_to_get_permissions: false, ..settings };
+        let enigo = enigo::Enigo::new(&settings).map_err(|e| {
             let hint = if cfg!(target_os = "macos") {
                 " Grant ai-remote Accessibility access (System Settings > Privacy & Security > Accessibility)."
             } else {

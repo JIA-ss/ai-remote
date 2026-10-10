@@ -7,3 +7,4 @@
 *.xcuserstate
 xcuserdata/
 /dist
+__pycache__/

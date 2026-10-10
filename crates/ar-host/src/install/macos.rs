@@ -37,8 +37,8 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
         summary: format!("Install autostart for the ai-remote host (profile {})", profile.root().display()),
         notes: vec![
             format!("The LaunchAgent {} starts {} at login.", label(profile), bins.hostw.display()),
-            "macOS asks to allow Screen Recording and Accessibility for ai-remote-hostw the first time it captures \
-             or acts; grant both in System Settings > Privacy & Security."
+            "Grant Screen Recording and Accessibility to ai-remote-hostw in System Settings > Privacy & Security, \
+             restart the host, then run doctor. Remote tools do not open permission prompts."
                 .into(),
         ],
         actions: vec![
