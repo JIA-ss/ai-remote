@@ -29,7 +29,7 @@ report = {'platform': sys.platform, 'model_calls': 0, 'targeting': 'native_eleme
 
 
 def command(home, *args):
-    p = subprocess.run([str(CLI), '--home', str(home), '--json', *map(str,args)], capture_output=True, text=True, timeout=30)
+    p = subprocess.run([str(CLI), '--home', str(home), '--json', *map(str,args)], capture_output=True, text=True, encoding="utf-8", timeout=30)
     if p.returncode:
         raise RuntimeError(f'command failed ({p.returncode}): {p.stderr[-800:]}')
     return json.loads(p.stdout)
@@ -49,7 +49,7 @@ def wait_for(fn, label, timeout=15):
 
 class Bridge:
     def __init__(self, home):
-        self.p = subprocess.Popen([str(CLI),'--home',str(home),'mcp'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
+        self.p = subprocess.Popen([str(CLI),'--home',str(home),'mcp'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,encoding="utf-8",bufsize=1)
         self.q = queue.Queue()
         self.counter = 0
         threading.Thread(target=self.read,daemon=True).start()
@@ -117,16 +117,16 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
                 elif os.name=='nt':
                     fixture=subprocess.Popen(['powershell.exe','-NoProfile','-STA','-File',str(ROOT/'tools/ui-fixture.ps1'),'-OutputPath',str(state_file)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 else: raise RuntimeError('native UI acceptance supports macOS and Windows')
-                wait_for(lambda:state_file.exists() and json.loads(state_file.read_text()).get('pid'),'fixture ready')
-                pid=json.loads(state_file.read_text())['pid']
-                def state():return json.loads(state_file.read_text())
+                wait_for(lambda:state_file.exists() and json.loads(state_file.read_text(encoding="utf-8")).get('pid'),'fixture ready')
+                pid=json.loads(state_file.read_text(encoding="utf-8"))['pid']
+                def state():return json.loads(state_file.read_text(encoding="utf-8"))
                 def tree(**args):return bridge.call('ui_tree',{'pid':pid,**args})
                 def action(t,n,a,value=None,error=False):
                     args={'snapshot_id':t['snapshot_id'],'element_id':n['id'],'action':a}
                     if value is not None:args['value']=value
                     return bridge.call('ui_action',args,error=error)
                 first=tree()
-                (OUT/'initial-tree.json').write_text(json.dumps(first,ensure_ascii=False,indent=2))
+                (OUT/'initial-tree.json').write_text(json.dumps(first,ensure_ascii=False,indent=2),encoding="utf-8")
                 assert not first['truncated'], first['warnings']
                 assert first['source'] in ['macos_ax','windows_uia']
                 assert 'snapshot_id='+first['snapshot_id'] in first['text']
@@ -181,12 +181,12 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
                 assert len(filtered['matched_ids'])==1
                 assert select_node(filtered,'Apply')['id'] in filtered['matched_ids']
                 report['text_query']='passed'
-                (OUT/'final-tree.json').write_text(json.dumps(tree(),ensure_ascii=False,indent=2))
+                (OUT/'final-tree.json').write_text(json.dumps(tree(),ensure_ascii=False,indent=2),encoding="utf-8")
                 # Screenshot is evidence only; none of the target selection or actions used it.
                 image=bridge.call('screenshot')
                 pixels=next(c for c in image['content'] if c['type']=='image')
                 (OUT/'acceptance.jpg').write_bytes(base64.b64decode(pixels['data']))
-                audit=(host_home/'host/audit.jsonl').read_text()
+                audit=(host_home/'host/audit.jsonl').read_text(encoding='utf-8')
                 assert literal not in audit, 'literal value leaked in audit'
                 report['audit_value_redaction']='passed'
                 report.update(result='passed',fixture=state(),observed_elements=first['observed_count'])
@@ -205,6 +205,6 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
             try:host.wait(timeout=10)
             except subprocess.TimeoutExpired:host.kill();host.wait(timeout=5)
         log.close()
-        (OUT/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
-print(json.dumps(report,ensure_ascii=False,indent=2))
+        (OUT/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+print(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
 sys.exit(exit_code)
