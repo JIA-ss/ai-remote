@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -11,7 +11,7 @@ const launch = {
   args: ["--home", "/Users/测试/Profile's state; $(printf bad)", "mcp"],
 };
 
-test("Claude and Codex shell commands preserve every literal argument", () => {
+test("Claude and Codex shell commands preserve every literal argument", { skip: process.platform === "win32" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "ar-mcp-"));
   try {
     for (const client of ["claude", "codex"]) {
@@ -42,4 +42,20 @@ test("Codex TOML round trips paths with spaces, Unicode and backslashes", () => 
 
 test("PowerShell arguments escape apostrophes and leave backslashes literal", () => {
   assert.equal(shellArgument("C:\\Users\\O'Brien\\ai-remote.exe", true), "'C:\\Users\\O''Brien\\ai-remote.exe'");
+});
+
+test("PowerShell commands preserve each native client argument", { skip: process.platform !== "win32" }, () => {
+  const launch = { command: "C:\\Program Files\\O'Brien $HOME\\ai-remote.exe", args: ["--home", "C:\\Users\\测试\\Profile's state; $(Write-Output bad)", "mcp"] };
+  const dir = mkdtempSync(join(tmpdir(), "ar-mcp-"));
+  try {
+    const preload = join(dir, "argv.cjs");
+    writeFileSync(preload, "console.log(JSON.stringify(process.argv.slice(1))); process.exit(0);");
+    for (const client of ["claude", "codex"]) {
+      copyFileSync(process.execPath, join(dir, `${client}.exe`));
+      const args = JSON.parse(execFileSync("pwsh", ["-NoProfile", "-Command", mcpInstall(client, launch, true).command], {
+        encoding: "utf8", env: { ...process.env, PATH: `${dir};${process.env.PATH}`, NODE_OPTIONS: `--require "${preload}"` },
+      }));
+      assert.deepEqual(args.slice(args.indexOf("--") + 1), [launch.command, ...launch.args]);
+    }
+  } finally { rmSync(dir, { recursive: true }); }
 });
