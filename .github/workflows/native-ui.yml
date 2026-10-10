@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: native-ui-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   native:
     strategy:

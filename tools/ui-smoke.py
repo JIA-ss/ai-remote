@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 
+sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--cli', type=Path, default=ROOT / ('target/debug/ai-remote.exe' if os.name == 'nt' else 'target/debug/ai-remote'))
@@ -206,5 +207,5 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
             except subprocess.TimeoutExpired:host.kill();host.wait(timeout=5)
         log.close()
         (OUT/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
-print(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+print(json.dumps(report,ensure_ascii=False,indent=2))
 sys.exit(exit_code)
