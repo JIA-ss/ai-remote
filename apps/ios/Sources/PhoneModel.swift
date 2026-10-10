@@ -1,0 +1,88 @@
+import Foundation
+
+public enum JSONValue: Codable, Sendable, Equatable {
+    case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let x = try? c.decode(Bool.self) { self = .bool(x) }
+        else if let x = try? c.decode(Double.self) { self = .number(x) }
+        else if let x = try? c.decode(String.self) { self = .string(x) }
+        else if let x = try? c.decode([JSONValue].self) { self = .array(x) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let x): try c.encode(x)
+        case .array(let x): try c.encode(x)
+        case .string(let x): try c.encode(x)
+        case .number(let x): try c.encode(x)
+        case .bool(let x): try c.encode(x)
+        case .null: try c.encodeNil()
+        }
+    }
+    public subscript(_ key: String) -> JSONValue { if case .object(let v) = self { return v[key] ?? .null }; return .null }
+    public var string: String? { if case .string(let v) = self { return v }; return nil }
+    public var number: Double? { if case .number(let v) = self { return v }; return nil }
+    public var array: [JSONValue] { if case .array(let v) = self { return v }; return [] }
+    public var text: String { String(data: (try? JSONEncoder().encode(self)) ?? Data(), encoding: .utf8) ?? "null" }
+    public static func parse(_ text: String) throws -> JSONValue { try JSONDecoder().decode(Self.self, from: Data(text.utf8)) }
+}
+
+public struct PhoneHost: Identifiable, Sendable, Equatable {
+    public var id: String { name }
+    public let name: String
+    public let level: String?
+    public let path: String?
+    public init(_ v: JSONValue) { name = v["name"].string ?? ""; level = v["level_at_pairing"].string; path = v["path"].string }
+}
+
+public struct ScreenGeometry: Sendable, Equatable {
+    public let x, y, width, height: Double
+    public init?(_ v: JSONValue) {
+        guard let x = v["x"].number, let y = v["y"].number, let w = v["width"].number, let h = v["height"].number,
+              w > 0, h > 0, [x,y,w,h].allSatisfy({ $0.isFinite }) else { return nil }
+        self.x = x; self.y = y; width = w; height = h
+    }
+    /// Touch coordinates in the displayed picture (not its letterboxing), mapped to host points.
+    public func point(u: Double, v: Double) -> (Double, Double)? {
+        guard (0...1).contains(u), (0...1).contains(v) else { return nil }
+        return ((x + u * (width - 1)).rounded(), (y + v * (height - 1)).rounded())
+    }
+}
+
+public struct ScreenFrame: Sendable {
+    public let width: Int
+    public let height: Int
+    public let keyframe: Bool
+    public let microseconds: UInt64
+    public let payload: Data
+    public init?(_ data: Data) {
+        let b = [UInt8](data)
+        guard b.count >= 18, b[0] == 1 else { return nil }
+        let length = b[14..<18].reduce(0) { ($0 << 8) | Int($1) }
+        guard length > 0, length <= 8 * 1024 * 1024, b.count == 18 + length else { return nil }
+        width = Int(b[2]) << 8 | Int(b[3]); height = Int(b[4]) << 8 | Int(b[5])
+        guard width > 0, height > 0 else { return nil }
+        keyframe = b[1] & 1 == 1
+        microseconds = b[6..<14].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        payload = Data(b.dropFirst(18))
+    }
+    public var nalUnits: [Data] {
+        let b = [UInt8](payload)
+        var starts: [(Int,Int)] = []
+        var i = 0
+        while i + 2 < b.count {
+            if b[i] == 0 && b[i+1] == 0 {
+                if b[i+2] == 1 { starts.append((i,i+3)); i += 3; continue }
+                if i + 3 < b.count && b[i+2] == 0 && b[i+3] == 1 { starts.append((i,i+4)); i += 4; continue }
+            }
+            i += 1
+        }
+        return starts.enumerated().compactMap { index, start in
+            let end = index + 1 < starts.count ? starts[index+1].0 : b.count
+            return end > start.1 ? Data(b[start.1..<end]) : nil
+        }
+    }
+}
