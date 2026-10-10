@@ -8,7 +8,7 @@ and a reduced-motion rule in every animated file.
 """
 import glob, os, re, sys
 import xml.etree.ElementTree as ET
-import build_brand, build_demo, build_diagram
+import build_brand, build_demo, build_diagram, build_home
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,6 +17,7 @@ def main():
     build_brand.build()
     build_demo.build_all()
     build_diagram.build_all()
+    build_home.build()
     bad = 0
     for f in sorted(glob.glob(os.path.join(ROOT, "assets", "brand", "*.svg"))):
         s = open(f, encoding="utf-8").read()
