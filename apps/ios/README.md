@@ -13,7 +13,7 @@ an iOS host exposing arbitrary other apps.
 Validation is tracked separately: the shared Swift/Rust modules compile on macOS, and the Rust
 controller closes/reopens with a stable identity even at iOS-length sandbox paths. The real Mac
 host protocol smoke is `tools/phone-core-smoke.py`. This is not a simulator/device test. Native
-iOS SDK builds run in `.github/workflows/ios.yml`; actual phone acceptance remains required.
+iOS SDK builds run locally through Xcode; actual phone acceptance remains required.
 
 ## Build
 
