@@ -74,3 +74,11 @@ Mac 作为被控端时，需要给实际运行的程序授予“屏幕录制”�
 证据保存在 `target/macos-validation/`。应用截图直接来自 WKWebView，无需为了截图再授予录屏
 权限；验收检查正常启动时窗口可见，并检查屏幕外渲染的真实解码画布尺寸。网页 UI 验收
 仍需使用浏览器单独进行，不能替代原生应用与视频解码验收。
+
+## macOS 27 compiler-plugin compatibility
+
+Cargo profiles keep build scripts and procedural-macro dylibs unstripped. On this Mac, a stripped
+`time_macros`/`zeroize_derive` dylib existed and passed codesign checks, but direct `dlopen` failed
+with `mis-aligned LINKEDIT string pool`; rustc reported E0463 instead. The build override preserves
+these compile-time libraries without changing the application's runtime permission checks.
+The issue is also tracked in [rust-lang/rust#110536](https://github.com/rust-lang/rust/issues/110536).

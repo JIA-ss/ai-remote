@@ -70,9 +70,17 @@ opt-level = 3
 [profile.dev.package.yuvutils-rs]
 opt-level = 3
 
+# Compile-time dylibs must remain loadable by rustc on macOS 27. Symbol stripping can
+# produce a mis-aligned LINKEDIT string pool even when codesign verification passes.
+[profile.dev.build-override]
+strip = "none"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[profile.release.build-override]
+strip = "none"
 
 # mcpmesh 0.58.0 exact-pins iroh 1.2, rmcp 3.1 and a yanked iroh-blobs 0.103.0. The vendored snapshot changes only
 # those three pins (iroh 1.3.0, rmcp 3.5.1, iroh-blobs 0.103.1); everything else is upstream.
