@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
-exclude = ["vendor/mcpmesh"]
+exclude = ["vendor/mcpmesh", "vendor/netdev"]
 
 [workspace.package]
 version = "0.0.1"
@@ -82,3 +82,6 @@ mcpmesh-net = { path = "vendor/mcpmesh/net" }
 mcpmesh-trust = { path = "vendor/mcpmesh/trust" }
 mcpmesh-local-api = { path = "vendor/mcpmesh/local-api" }
 mcpmesh-codec = { path = "vendor/mcpmesh/codec" }
+
+# netdev 0.46.3 references a macOS-only libc type on iOS; retain the Darwin ioctl ABI.
+netdev = { path = "vendor/netdev" }
