@@ -1,0 +1,47 @@
+name: iPhone controller
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/iphone-controller]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "tools/ios.sh", ".github/workflows/ios.yml"]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          rustup toolchain install 1.95.0 --profile minimal
+          brew install xcodegen
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ios-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build the shared Rust core and XCFramework
+        run: tools/ios.sh framework
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+      - name: Compile iPhone simulator app
+        run: |
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath target/ios-build CODE_SIGNING_ALLOWED=NO build
+      - name: Compile device app (signing deferred to its owner's team)
+        run: |
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination 'generic/platform=iOS' -configuration Debug \
+            -derivedDataPath target/ios-device-build CODE_SIGNING_ALLOWED=NO build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPhone-simulator-app
+          path: target/ios-build/Build/Products/Debug-iphonesimulator/*.app
+          retention-days: 7
