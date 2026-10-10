@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod screen;
 pub mod shell;
 pub mod system;
+pub mod ui;
 
 use std::sync::Arc;
 
@@ -137,6 +138,7 @@ impl Registry {
             .into_iter()
             .chain(screen::tools())
             .chain(input::tools())
+            .chain(ui::tools())
             .chain(clipboard::tools())
             .chain(shell::tools())
             .chain(jobs::tools())

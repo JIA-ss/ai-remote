@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+ar-ui = { path = "../ar-ui" }
 ar-core.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true

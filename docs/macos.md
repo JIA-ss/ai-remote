@@ -33,7 +33,7 @@ Current limits:
   Mac controllers can deny, take over and hand back; allow at the host or a Windows Hello controller.
   The app disables unavailable enrollment/allow controls and explains this in English and Chinese.
 - `focus_window` still supports Windows only; on a Mac use the mouse tools or a mounted accessibility
-  server. File tools and the native macOS accessibility-tree provider are still planned.
+  server. Built-in `ui_tree`, `ui_read` and `ui_action` now provide native AX element observations and semantic actions; see [contracts and acceptance](structured-ui.md). File tools remain planned.
 - Mac live capture uses xcap polling, capped at 30 requested frames/second, with one latest-frame
   slot. It captures Retina pixels and exposes point geometry for input. Actual delivered rate depends
   on capture/encoding and content changes; a requested rate is not a performance guarantee.
@@ -47,6 +47,7 @@ tools/macos.sh build --debug --bundles app
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 python3 tools/macos-smoke.py
+python3 tools/input-control-smoke.py
 ```
 
 The smoke script requires `swiftc`, `ffmpeg` and `ffprobe`. It creates temporary host/controller
@@ -58,6 +59,15 @@ It stops its test host/controller and fixture, and saves the report, logs and im
 off-screen canvas to have the decoded frame's size;
 also inspect `native-session.png` to confirm the live screen. It never approves
 a risky request or changes the default profile/launch-at-login setup.
+
+`input-control-smoke.py` separately checks takeover of active and queued input,
+queue overflow, real stdio MCP cancellation, and fresh input after resume. It
+checks for an unlocked desktop before starting its disposable window, and stores
+its report, audit and screenshot under `target/input-control-validation/`.
+`control-gate-smoke.py` checks actual MCP/QUIC cancellation and pending-approval
+withdrawal with temporary shell markers and can also run while the screen is
+locked. Source comparisons and implementation decisions are recorded in
+[implementation-review.md](implementation-review.md).
 
 # macOS 开发与验收
 
