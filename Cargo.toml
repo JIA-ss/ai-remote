@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
-exclude = ["vendor/mcpmesh", "vendor/netdev"]
+exclude = ["vendor/mcpmesh", "vendor/netdev", "vendor/netwatch"]
 
 [workspace.package]
 version = "0.0.1"
@@ -85,3 +85,6 @@ mcpmesh-codec = { path = "vendor/mcpmesh/codec" }
 
 # netdev 0.46.3 references a macOS-only libc type on iOS; retain the Darwin ioctl ABI.
 netdev = { path = "vendor/netdev" }
+
+# netwatch requires Darwin routing constants that libc omits on iOS.
+netwatch = { path = "vendor/netwatch" }

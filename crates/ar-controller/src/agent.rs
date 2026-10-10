@@ -270,6 +270,9 @@ impl EmbeddedController {
     }
 
     fn state(&self) -> Result<Arc<Agent>> {
+        if self.shutdown.is_cancelled() {
+            bail!("controller is closed");
+        }
         self.agent.lock().unwrap().clone().ok_or_else(|| anyhow!("controller is closed"))
     }
 
@@ -323,11 +326,27 @@ impl EmbeddedController {
             let _ = task.await;
         }
         let agent = self.agent.lock().unwrap().take();
-        if let Some(agent) = agent {
+        if let Some(mut agent) = agent {
             agent.person.lock().unwrap().take();
-            let agent = Arc::try_unwrap(agent)
-                .map_err(|_| anyhow!("controller has an in-flight operation; retry close after it ends"))?;
-            agent.mesh.shutdown().await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match Arc::try_unwrap(agent) {
+                    Ok(agent) => {
+                        agent.mesh.shutdown().await;
+                        break;
+                    }
+                    Err(shared) => {
+                        // Cancelled requests must first get a chance to drop their state borrow.
+                        // Retain ownership on timeout so a later close can actually retry shutdown.
+                        if tokio::time::Instant::now() >= deadline {
+                            *self.agent.lock().unwrap() = Some(shared);
+                            bail!("controller has an in-flight operation; retry close after it ends");
+                        }
+                        agent = shared;
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -703,6 +722,23 @@ impl EventFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embedded_close_waits_for_an_in_flight_state_borrow() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile::at(dir.path()).unwrap();
+        let controller = EmbeddedController::start(&profile).await.unwrap();
+        let borrowed = controller.state().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            drop(borrowed);
+        });
+        controller.close().await.unwrap();
+        release.await.unwrap();
+        assert!(controller.request(json!({"op":"status"})).await.is_err());
+        let reopened = EmbeddedController::start(&profile).await.unwrap();
+        reopened.close().await.unwrap();
+    }
 
     #[test]
     fn a_revocation_outlives_later_generic_refusals() {

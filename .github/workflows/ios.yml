@@ -18,17 +18,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain and SDK
+        id: sdk
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
+          echo "version=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
           rustup toolchain install 1.95.0 --profile minimal
           brew install xcodegen
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ios-dependencies-${{ hashFiles('Cargo.lock') }}
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+            target/aarch64-apple-ios/release
+            target/aarch64-apple-ios-sim/release
+          key: ios-rust-1.95-sdk-${{ steps.sdk.outputs.version }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ios-rust-1.95-sdk-${{ steps.sdk.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
       - name: Build the shared Rust core and XCFramework
         run: tools/ios.sh framework
       - name: Generate Xcode project
@@ -60,3 +70,15 @@ jobs:
             target/ios-build/Build/Products/Debug-iphonesimulator/ai-remote.app
             target/phone-ui.xcresult
           retention-days: 1
+      - uses: actions/cache/save@v4
+        if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps
+            target/aarch64-apple-ios/release
+            target/aarch64-apple-ios-sim/release
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

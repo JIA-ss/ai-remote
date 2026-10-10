@@ -35,7 +35,7 @@ test("client JSON uses its own schema without changing executable or profile", (
 test("Codex TOML round trips paths with spaces, Unicode and backslashes", () => {
   for (const config of [launch, { command: "C:\\Program Files\\ai-remote\\ai-remote.exe", args: ["--home", "C:\\Users\\O'Brien\\配置", "mcp"] }]) {
     const text = mcpInstall("codex", config, true).config;
-    const parsed = JSON.parse(execFileSync("python3", ["-c", "import sys,json,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"], { input: text, encoding: "utf8" }));
+    const parsed = JSON.parse(execFileSync("python3", ["-c", "import sys,json,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"], { input: text, encoding: "utf8", env: { ...process.env, PYTHONUTF8: "1" } }));
     assert.deepEqual(parsed.mcp_servers["ai-remote"], config);
   }
 });
@@ -53,7 +53,7 @@ test("PowerShell commands preserve each native client argument", { skip: process
     for (const client of ["claude", "codex"]) {
       copyFileSync(process.execPath, join(dir, `${client}.exe`));
       const args = JSON.parse(execFileSync("pwsh", ["-NoProfile", "-Command", mcpInstall(client, launch, true).command], {
-        encoding: "utf8", env: { ...process.env, PATH: `${dir};${process.env.PATH}`, NODE_OPTIONS: `--require "${preload}"` },
+        encoding: "utf8", env: { ...process.env, PATH: `${dir};${process.env.PATH}`, NODE_OPTIONS: `--require "${preload.replaceAll("\\", "/")}"` },
       }));
       assert.deepEqual(args.slice(args.indexOf("--") + 1), [launch.command, ...launch.args]);
     }
