@@ -256,6 +256,7 @@ dependencies = [
  "anyhow",
  "ar-core",
  "ar-net",
+ "ar-ui",
  "arboard",
  "async-trait",
  "base64 0.22.1",
@@ -322,6 +323,20 @@ dependencies = [
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "ar-ui"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "core-foundation",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uiautomation",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8213,6 +8228,29 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "uiautomation"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa2eacf9390a8491bc949b04230f40c12520c6423a2962a6087eea1ef14373af"
+dependencies = [
+ "chrono",
+ "uiautomation_derive",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "uiautomation_derive"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c893ec96e05c3c81ba46f838f3190549ec185ef377d582ab3d44202b2dfacbd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]

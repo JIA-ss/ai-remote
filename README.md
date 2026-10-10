@@ -32,7 +32,7 @@ The Mac acceptance used macOS 27 on Apple Silicon. Intel Macs and older OS versi
 - **Pair by device identity.** One-time tickets establish trust. QUIC uses direct paths when available and encrypted relay fallback when needed.
 - **Give only the access needed.** Each device is observe, control or admin. The host checks permission, turn, policy and approval before a tool runs.
 - **Watch and intervene.** The human app shows live video and an activity feed. Taking over stops the agent's control calls until you hand back.
-- **Extend through existing MCP servers.** Mount a local server with a pinned executable and an explicit tool allowlist. Accessibility-tree tools come from such integrations; a universal native tree is not included.
+- **Extend through existing MCP servers.** Mount a local server with a pinned executable and an explicit tool allowlist. Built-in `ui_tree`, `ui_read` and `ui_action` provide text-first AX/UIA controls; mounted integrations can extend coverage.
 
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.svg">
@@ -109,7 +109,7 @@ High-risk steps wait for owner approval. An unanswered request is denied. Every 
 
 **Do I need port forwarding or an ai-remote cloud account?** No manual port-forwarding or project cloud account is part of normal pairing. Network restrictions can still make a peer unreachable; the tool reports that rather than guaranteeing every network works.
 
-**Does it include a native accessibility tree or file manager?** The core provides screenshots, input and windows; allowlisted mounted MCP servers provide additional tools. Native Mac accessibility-tree and file-transfer work remain planned.
+**Does it include a native accessibility tree or file manager?** The core includes native Mac AX and Windows UIA trees and element actions, alongside screenshots, input and windows. See [structured UI contracts and acceptance](docs/structured-ui.md). File transfer remains planned.
 
 **Where are the binaries?** No signed release is published yet. Build from source; Windows, Intel Mac, iPhone signing and notarization have separate verification needs.
 
