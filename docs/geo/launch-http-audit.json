@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "audit_kind": "technical_metadata_only",
+  "generated_at": "2026-10-10T12:33:53.713707+00:00",
+  "scope": {
+    "origin": "https://github.com",
+    "path_directory": "/JIA-ss/"
+  },
+  "claims": {
+    "indexing": "unknown",
+    "discovery": "not_measured",
+    "citation": "not_measured",
+    "recommendation": "not_measured",
+    "ranking": "not_measured"
+  },
+  "limits": {
+    "max_pages": 1,
+    "max_pages_hard_limit": 300,
+    "max_workers": 4,
+    "max_bytes_per_response": 2097152,
+    "timeout_seconds": 15,
+    "max_redirects": 5,
+    "result_cache": false
+  },
+  "pages": [
+    {
+      "requested_url": "https://github.com/JIA-ss/ai-remote",
+      "final_url": "https://github.com/JIA-ss/ai-remote",
+      "http_status": 200,
+      "error": null,
+      "content_type": "text/html; charset=utf-8",
+      "content_encoding": null,
+      "declared_content_length": null,
+      "byte_length": 338217,
+      "sha256": "f2f1a627d1d78d2b82244371790e4141b65b2204b0f285e03a314213a20c6f4d",
+      "sha256_basis": "bytes_read",
+      "body_truncated": false,
+      "robots_header": [],
+      "redirects": [],
+      "title": "GitHub - JIA-ss/ai-remote: Open-source MCP remote control for Windows and macOS, with human takeover and an experimental native iPhone controller. · GitHub",
+      "h1": [
+        "ai-remote"
+      ],
+      "description": [
+        "Open-source MCP remote control for Windows and macOS, with human takeover and an experimental native iPhone controller. - JIA-ss/ai-remote"
+      ],
+      "canonical": [],
+      "robots_meta": [],
+      "html_language": "en",
+      "language_alternates": [],
+      "html_base": null,
+      "meta_refresh": [],
+      "text_basis": "static_html_not_browser_rendered"
+    }
+  ],
+  "sitemap": {
+    "requested_url": "https://github.com/JIA-ss/sitemap.xml",
+    "final_url": "https://github.com/JIA-ss/sitemap.xml",
+    "http_status": 404,
+    "error": {
+      "kind": "http_status",
+      "detail": "HTTP 404"
+    },
+    "content_type": "text/html; charset=utf-8",
+    "content_encoding": null,
+    "declared_content_length": null,
+    "byte_length": 268915,
+    "sha256": "bb631af88c448fe664a03502f036cb2322d9e7a86b43d08fe1653d4daff25f6e",
+    "sha256_basis": "bytes_read",
+    "body_truncated": false,
+    "robots_header": [],
+    "redirects": [],
+    "title": "Page not found · GitHub · GitHub",
+    "h1": [],
+    "description": [
+      "GitHub is where people build software. More than 225 million people use GitHub to discover, fork, and contribute to over 800 million projects."
+    ],
+    "canonical": [
+      {
+        "declared_url": "https://github.com/JIA-ss/sitemap.xml",
+        "trusted": false,
+        "resolved_url": "https://github.com/JIA-ss/sitemap.xml",
+        "in_scope": true
+      }
+    ],
+    "robots_meta": [],
+    "html_language": "en",
+    "language_alternates": [],
+    "html_base": null,
+    "meta_refresh": [],
+    "text_basis": "static_html_not_browser_rendered",
+    "parse": {
+      "status": "not_parsed",
+      "root": null,
+      "declared_count": 0,
+      "error": {
+        "kind": "sitemap_unavailable",
+        "detail": "No complete successful sitemap response"
+      }
+    },
+    "entries": []
+  },
+  "unfetched": [],
+  "summary": {
+    "page_count": 1,
+    "page_failure_count": 0,
+    "sitemap_failure_count": 1,
+    "excluded_count": 0,
+    "duplicate_count": 0,
+    "unfetched_count": 0
+  }
+}

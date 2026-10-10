@@ -54,3 +54,25 @@ References: [Google's guidance for AI features](https://developers.google.com/se
 [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 The use of standard GitHub-hosted runners for public repos is free; larger runners and storage have
 separate billing rules. The workflows use standard runners, dependency caches and one-day artifacts.
+
+## Published result — 2026-10-10
+
+The implementation/homepage merged as `91bed6eb1f4c65450c8ed9a6ddfc79081313f900`.
+[Independent post-publication evidence](launch-post-publication.json) confirms anonymous main API,
+fixed-revision English/Chinese content, link targets, repository description/topics, and public iOS
+CI success. [HTTP audit](launch-http-audit.json) records a 200 repository page, actual H1 and
+description; its inferred sitemap request failed. GitHub controls that domain, so this remains an
+unavailable sitemap observation rather than a project-owned sitemap repair.
+
+The [earlier independent sample](launch-independent.json) and post-publication sample both used
+individual calls for each frozen query. Later source counts were 12 / 40 / 38 / 24, with no official
+project URL returned. No immediate discovery increase was observed. Indexing, real crawler access,
+answer citation, recommendation and adoption remain unmeasured.
+
+A source discrepancy is retained: real-time anonymous repository HTML contains the merged revision
+and new content, while the web tool's open result showed earlier text without a source revision.
+No cache or indexing cause is asserted from that difference.
+
+本轮完成公开入口、中英文主页、接入示例、平台能力边界与独立复核。四条固定查询暂未返回官方
+仓库，不能把它解释为未索引，也不能宣称曝光提升。后续沿用同一查询集、记录时间间隔和真实
+来源；引用、推荐与采用需要各自的实际证据。

@@ -1,0 +1,795 @@
+{
+  "schema_version": 1,
+  "official_url": "https://github.com/JIA-ss/ai-remote",
+  "phase": "post-publication independent read-only review",
+  "previous_record_preserved": "/tmp/ar-geo-independent.json",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "\"ai-remote\" \"JIA-ss\"",
+      "options": {},
+      "tool": "web.run search",
+      "engine": "unknown",
+      "region": "unknown",
+      "started_at_utc": "2026-10-10 12:33:54 UTC",
+      "completed_at_utc": "2026-10-10 12:33:56 UTC",
+      "sources": [
+        {
+          "title": "Nicholas Bloom | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/e/c/pbl55.html"
+        },
+        {
+          "title": "Alexandre Mas | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pma2363.html"
+        },
+        {
+          "title": "Items where Subject is \"Q Science (General)\" - WRAP: Warwick Research Archive Portal",
+          "url": "https://wrap.warwick.ac.uk/view/subjects/Q1.creators_name.html"
+        },
+        {
+          "title": "EurekaMag Full Text Articles Chapter 110964",
+          "url": "https://eurekamag.com/research/110/963/"
+        },
+        {
+          "title": "Faculty Publications | GLRC",
+          "url": "https://www.mtu.edu/greatlakes/about/publications/"
+        },
+        {
+          "title": "Vol. 17, Issue 24 | Remote Sensing | MDPI",
+          "url": "https://www.mdpi.com/2072-4292/17/24"
+        },
+        {
+          "title": "Xavier Jaravel | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pja604.html"
+        },
+        {
+          "title": "Product document",
+          "url": "https://manuals.plus/m/3c32bcde2df059ba50f3b6c35244be4831f733f212871d1cda0dd345af586a24"
+        },
+        {
+          "title": "Brantly Mercer Callaway VI | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pca1233.html"
+        },
+        {
+          "title": "Steven Davis | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/e/c/pda15.html"
+        },
+        {
+          "title": "Pedro H. C. Sant'Anna | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/psa1158.html"
+        },
+        {
+          "title": "Andrew Goodman-Bacon | IDEAS/RePEc",
+          "url": "https://ideas.repec.org/f/c/pgo1031.html"
+        }
+      ],
+      "returned_sources_count": 12,
+      "official_url_seen_in_sources": false,
+      "errors": []
+    },
+    {
+      "id": "q2",
+      "query": "open source MCP remote control Windows macOS",
+      "options": {},
+      "tool": "web.run search",
+      "engine": "unknown",
+      "region": "unknown",
+      "started_at_utc": "2026-10-10 12:33:54 UTC",
+      "completed_at_utc": "2026-10-10 12:33:56 UTC",
+      "sources": [
+        {
+          "title": "GitHub - munimtechnologies/munim-computer-use: Open-source Computer Use MCP server for any coding agent — macOS, Windows, Linux. Accessibility-first, background input, agent pointer, zoom, your signed-in Chrome. · GitHub",
+          "url": "https://github.com/munimtechnologies/munim-computer-use"
+        },
+        {
+          "title": "GitHub - signal-slot/mcp-vnc · GitHub",
+          "url": "https://github.com/signal-slot/mcp-vnc"
+        },
+        {
+          "title": "GitHub - mrpulor-gh/nuphus-mcp: Desktop automation MCP server — computer use for any AI agent: control screen, windows, mouse/keyboard, and Chrome via Model Context Protocol (stdio). Not a DSH plugin — DSH users install dsh-nuphus-mcp. · GitHub",
+          "url": "https://github.com/mrpulor-gh/nuphus-mcp"
+        },
+        {
+          "title": "GitHub - dddabtc/winremote-mcp: Windows Remote MCP Server — 40+ tools for desktop automation, process management, file operations via FastMCP · GitHub",
+          "url": "https://github.com/dddabtc/winremote-mcp"
+        },
+        {
+          "title": "Extra — Open-Source Computer Use Protocol & MCP Server",
+          "url": "https://extra.yantraos.com/"
+        },
+        {
+          "title": "GitHub - shimondoodkin/screenmcp: Remote phone control platform - Android app, API server, WebSocket relay, CLI client · GitHub",
+          "url": "https://github.com/shimondoodkin/screenmcp"
+        },
+        {
+          "title": "ScreenMCP - Remote Control Your Android Phone with AI",
+          "url": "https://screenmcp.com/"
+        },
+        {
+          "title": "GitHub - alaarab/livemcp: The definitive Model Context Protocol bridge for Ableton Live · GitHub",
+          "url": "https://github.com/alaarab/livemcp"
+        },
+        {
+          "title": "munim-computer-use | Munim Technologies",
+          "url": "https://www.munimtech.com/opensource/munim-computer-use"
+        },
+        {
+          "title": "GitHub - cioinside/da-mcp: Cross-platform desktop automation MCP server (Linux/macOS/Windows, 12 tools) · GitHub",
+          "url": "https://github.com/cioinside/da-mcp"
+        },
+        {
+          "title": "bscott/rdc: Remote Desktop Control for AI… — Shadowgraph",
+          "url": "https://shadowgraph.io/bscott/rdc"
+        },
+        {
+          "title": "@mseep/mcp-vnc - npm",
+          "url": "https://www.npmjs.com/package/%40mseep/mcp-vnc"
+        },
+        {
+          "title": "Released Remote Desktop Control (OSS) for Agents",
+          "url": "https://www.reddit.com/r/aiagents/comments/1wbz2z1/released_remote_desktop_control_oss_for_agents/"
+        },
+        {
+          "title": "I built an MCP server that gives AI agents full control of Windows desktops (40+ tools, open source)",
+          "url": "https://www.reddit.com/r/LocalLLaMA/comments/1r1t0dt/i_built_an_mcp_server_that_gives_ai_agents_full/"
+        },
+        {
+          "title": "Tired of MCP agents being stuck in the browser? I built a native macOS server for full OS control.",
+          "url": "https://www.reddit.com/r/mcp/comments/1s8omfq/tired_of_mcp_agents_being_stuck_in_the_browser_i/"
+        },
+        {
+          "title": "RustDesk",
+          "url": "https://en.wikipedia.org/wiki/RustDesk"
+        },
+        {
+          "title": "Open source MCP server that gives any AI agent real Windows desktop control — 45+ tools",
+          "url": "https://www.reddit.com/r/BlackboxAI_/comments/1rqj01s/open_source_mcp_server_that_gives_any_ai_agent/"
+        },
+        {
+          "title": "I built a local macOS control layer so AI agents can work in background tabs without taking over my screen",
+          "url": "https://www.reddit.com/r/AppsWebappsFullstack/comments/1wddvmr/i_built_a_local_macos_control_layer_so_ai_agents/"
+        },
+        {
+          "title": "I open-sourced the local macOS control layer I use for multi-agent AI workflows",
+          "url": "https://www.reddit.com/r/OpenSourceAI/comments/1wcbzhy/i_opensourced_the_local_macos_control_layer_i_use/"
+        },
+        {
+          "title": "mcp-vnc – An MCP server that allows AI agents to remotely control Windows, Linux, and macOS systems via VNC. It provides tools for mouse and keyboard interaction, text input, and screen capturing.",
+          "url": "https://www.reddit.com/r/mcp/comments/1rlcqhx/mcpvnc_an_mcp_server_that_allows_ai_agents_to/"
+        },
+        {
+          "title": "[Open Source] Building a local MCP server + SwiftUI menu bar app for real macOS automation",
+          "url": "https://www.reddit.com/r/macosprogramming/comments/1wcbz1f/open_source_building_a_local_mcp_server_swiftui/"
+        },
+        {
+          "title": "I built an MCP server that lets ChatGPT control my Windows PC — so regular Chat can actually work on my projects",
+          "url": "https://www.reddit.com/r/mcp/comments/1vyoxdo/i_built_an_mcp_server_that_lets_chatgpt_control/"
+        },
+        {
+          "title": "Mac MCP 2.0 — local macOS control for AI agents with background browser automation",
+          "url": "https://www.reddit.com/r/mcp/comments/1wbhicd/mac_mcp_20_local_macos_control_for_ai_agents_with/"
+        },
+        {
+          "title": "💻 Open Source Alternative to OpenAI Operator — Control Remote Desktops via VNC using Claude Desktop App",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1jjc785"
+        },
+        {
+          "title": "MeshCentral",
+          "url": "https://en.wikipedia.org/wiki/MeshCentral"
+        },
+        {
+          "title": "Mac MCP — I made an open-source local macOS control server for AI agents",
+          "url": "https://www.reddit.com/r/IMadeThis/comments/1wbhpdn/mac_mcp_i_made_an_opensource_local_macos_control/"
+        },
+        {
+          "title": "TightVNC",
+          "url": "https://en.wikipedia.org/wiki/TightVNC"
+        },
+        {
+          "title": "NX technology",
+          "url": "https://en.wikipedia.org/wiki/NX_technology"
+        },
+        {
+          "title": "3.3 Restrictions",
+          "url": "https://files.rsupport.com/en/remoteview/documents/user-guides/RemoteView-macOS-user-guide-en.pdf"
+        },
+        {
+          "title": "OctoPrint",
+          "url": "https://en.wikipedia.org/wiki/OctoPrint"
+        },
+        {
+          "title": "RCMDP101U\n1-Local/Remote Share Access Single Port",
+          "url": "https://www.aten.com/eu/en/products/kvm/remote-control-%26-monitoring-solutions/rcmdp101u/?p=1"
+        },
+        {
+          "title": "MCP-Driven Accessibility Tree Standardization for AI-Powered Screen Reader Agents",
+          "url": "https://arxiv.org/abs/2608.24898"
+        },
+        {
+          "title": "Clementine (software)",
+          "url": "https://en.wikipedia.org/wiki/Clementine_%28software%29"
+        },
+        {
+          "title": "Remote Control Controller User's Guide",
+          "url": "https://help.hcl-software.com/bigfix/10.0/lifecycle/pdf/Remote_Control_Controller_Users_Guide.pdf"
+        },
+        {
+          "title": "Welcome to PCoIP Software Client for macOS",
+          "url": "https://www.teradici.com/web-help/pcoip_client/mac/22.09/pdf/software-client-mac_22.09.pdf"
+        },
+        {
+          "title": "Activity! Pair up!",
+          "url": "https://web.stanford.edu/class/cs329t/slides/ishita-mcp.pdf"
+        },
+        {
+          "title": "Remote Control Target User's Guide",
+          "url": "https://help.hcl-software.com/bigfix/9.5/lifecycle/pdf/Remote_Control_Target_Users_Guide.pdf"
+        },
+        {
+          "title": "MCP-Universe RL: A Framework for Training MCP Tool-Use Agents via Reinforcement Learning",
+          "url": "https://arxiv.org/abs/2608.22167"
+        },
+        {
+          "title": "macOSWorld: A Multilingual Interactive Benchmark for GUI Agents",
+          "url": "https://arxiv.org/abs/2506.04135"
+        },
+        {
+          "title": "A First Measurement Study on Authentication Security in Real-World Remote MCP Servers",
+          "url": "https://arxiv.org/abs/2605.22333"
+        }
+      ],
+      "returned_sources_count": 40,
+      "official_url_seen_in_sources": false,
+      "errors": []
+    },
+    {
+      "id": "q3",
+      "query": "AI agent remote desktop iPhone controller",
+      "options": {},
+      "tool": "web.run search",
+      "engine": "unknown",
+      "region": "unknown",
+      "started_at_utc": "2026-10-10 12:33:54 UTC",
+      "completed_at_utc": "2026-10-10 12:33:56 UTC",
+      "sources": [
+        {
+          "title": "Control Your Dev Environment Remotely | Tarsy",
+          "url": "https://www.tarsy.dev/"
+        },
+        {
+          "title": "Remote Control AI Agents From Your Phone : Claude, Codex, Antigravity | AgentsRoom",
+          "url": "https://agentsroom.dev/features/remote-agent-control"
+        },
+        {
+          "title": "Contop - Your Desktop, From Anywhere",
+          "url": "https://www.contop.app/"
+        },
+        {
+          "title": "Loupe — Remote desktop for people who live in the Apple ecosystem",
+          "url": "https://theloupe.team/"
+        },
+        {
+          "title": "Jump Desktop | Fast, Secure Remote Desktop for Any Computer",
+          "url": "https://jumpdesktop.com/"
+        },
+        {
+          "title": "Workbench | Remote Desktop for AI Agents & Headless Mac Mini",
+          "url": "https://astropad.com/product/workbench/"
+        },
+        {
+          "title": "GitHub - Abreto/palmdesk: AI-native remote control for desktop apps: stream one macOS or Windows window to your phone for agent-ready workflows. · GitHub",
+          "url": "https://github.com/Abreto/palmdesk"
+        },
+        {
+          "title": "Cursor for iOS | Cursor Docs",
+          "url": "https://cursor.com/docs/cloud-agent/mobile"
+        },
+        {
+          "title": "Kibbler - Remote Claude Code Control from Phone | AI Agent Management on the Go",
+          "url": "https://kibbler.dev/"
+        },
+        {
+          "title": "Download | Morpheus",
+          "url": "https://getmorphe.us/download"
+        },
+        {
+          "title": "AiOrc - Run your desktop AI agents from your phone",
+          "url": "https://www.aiorc.tech/"
+        },
+        {
+          "title": "WhipDesk — Control AI Coding Agents from Your Phone",
+          "url": "https://whipdesk.com/"
+        },
+        {
+          "title": "I built a remote AI agent that controls your desktop from your phone (fully open source)",
+          "url": "https://www.reddit.com/r/SideProject/comments/1sfatun/i_built_a_remote_ai_agent_that_controls_your/"
+        },
+        {
+          "title": "I built an open source remote AI agent that controls your desktop from your phone",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1sfed5t/i_built_an_open_source_remote_ai_agent_that/"
+        },
+        {
+          "title": "I got tired of AI telling me what to do, so I started building one that can actually use my computer.",
+          "url": "https://www.reddit.com/r/SideProject/comments/1x0qrxe/i_got_tired_of_ai_telling_me_what_to_do_so_i/"
+        },
+        {
+          "title": "I built a companion app that lets you voice call, chat with, and remote-view your own PC from your phone (private & local)",
+          "url": "https://www.reddit.com/r/SideProject/comments/1wb7re5/i_built_a_companion_app_that_lets_you_voice_call/"
+        },
+        {
+          "title": "i built a remote desktop app to use ai coding agents from my phone",
+          "url": "https://www.reddit.com/r/buildinpublic/comments/1rlkojh/i_built_a_remote_desktop_app_to_use_ai_coding/"
+        },
+        {
+          "title": "I made a out of the box AI Agent that controls your entire pc, basically jarvis but no set up",
+          "url": "https://www.reddit.com/r/SideProject/comments/1rjh8l7/i_made_a_out_of_the_box_ai_agent_that_controls/"
+        },
+        {
+          "title": "(free) Built a remote cross platform agentic app",
+          "url": "https://www.reddit.com/r/ClaudeAI/comments/1t9jlbb/free_built_a_remote_cross_platform_agentic_app/"
+        },
+        {
+          "title": "I built a local macOS MCP so chat agents can actually operate the Mac instead of just explain steps",
+          "url": "https://www.reddit.com/r/Build_AI_Agents/comments/1wbhnwb/i_built_a_local_macos_mcp_so_chat_agents_can/"
+        },
+        {
+          "title": "SSH into my laptop from my iPhone…",
+          "url": "https://www.reddit.com/r/ClaudeCode/comments/1rcawun/ssh_into_my_laptop_from_my_iphone/"
+        },
+        {
+          "title": "(free) Built a remote cross platform agentic app",
+          "url": "https://www.reddit.com/r/codex/comments/1t9jqah/free_built_a_remote_cross_platform_agentic_app/"
+        },
+        {
+          "title": "Apple Remote Desktop Administrator's Guide",
+          "url": "https://images.apple.com/server/docs/ARD3.2_AdminGuide.pdf"
+        },
+        {
+          "title": "I got tired of AI telling me what to do, so I started building one that can actually use my Mac.",
+          "url": "https://www.reddit.com/r/alphaandbetausers/comments/1x0qsmi/i_got_tired_of_ai_telling_me_what_to_do_so_i/"
+        },
+        {
+          "title": "[iOS/macOS Beta] Looking for developers to test an iPhone + Mac workflow app",
+          "url": "https://www.reddit.com/r/alphaandbetausers/comments/1swepnd/iosmacos_beta_looking_for_developers_to_test_an/"
+        },
+        {
+          "title": "Remote Support iOS Rep Console 3.1.5",
+          "url": "https://www.beyondtrust.com/docs/archive/remote-support/24-2/rs-ios-rep-3-1-5.pdf"
+        },
+        {
+          "title": "Remote Support iOS Rep Console 3.1.3",
+          "url": "https://www.beyondtrust.com/docs/archive/remote-support/23-3/rs-ios-rep-3-1-3.pdf"
+        },
+        {
+          "title": "Apple Remote Destkop",
+          "url": "https://images.apple.com/server/docs/ARD_3_Admin_Guide_v3.3.pdf"
+        },
+        {
+          "title": "RemoteView for iPhone            User Guide",
+          "url": "https://files.rsupport.com/us/remoteview/documents/user-guides/remoteview6.0-ios-userguide-us.pdf"
+        },
+        {
+          "title": "Anthropic could be about to release Claude Cowork for mobile",
+          "url": "https://www.techradar.com/pro/anthropic-could-be-about-to-release-claude-cowork-for-mobile"
+        },
+        {
+          "title": "OpenClaw is available on iPhone and Android  - these are the things I would set up first",
+          "url": "https://www.tomsguide.com/ai/openclaw-is-available-on-iphone-and-android-these-are-the-first-things-i-would-set-up"
+        },
+        {
+          "title": "I tried Claude's new Cowork feature - and it ran my laptop from my phone",
+          "url": "https://www.tomsguide.com/ai/i-sent-claude-a-task-from-my-phone-and-it-finished-it-on-my-laptop-without-me-touching-a-thing"
+        },
+        {
+          "title": "AetherPal",
+          "url": "https://en.wikipedia.org/wiki/AetherPal"
+        },
+        {
+          "title": "Backbone One",
+          "url": "https://en.wikipedia.org/wiki/Backbone_One"
+        },
+        {
+          "title": "Remote Utilities",
+          "url": "https://en.wikipedia.org/wiki/Remote_Utilities"
+        },
+        {
+          "title": "Comparison of remote desktop software",
+          "url": "https://en.wikipedia.org/wiki/Comparison_of_remote_desktop_software"
+        },
+        {
+          "title": "ZeroTier",
+          "url": "https://en.wikipedia.org/wiki/ZeroTier"
+        },
+        {
+          "title": "Remote desktop software",
+          "url": "https://en.wikipedia.org/wiki/Remote_desktop_software"
+        }
+      ],
+      "returned_sources_count": 38,
+      "official_url_seen_in_sources": false,
+      "errors": []
+    },
+    {
+      "id": "q4",
+      "query": "开源 MCP 远程控制 Mac Windows 智能体",
+      "options": {},
+      "tool": "web.run search",
+      "engine": "unknown",
+      "region": "unknown",
+      "started_at_utc": "2026-10-10 12:33:54 UTC",
+      "completed_at_utc": "2026-10-10 12:33:56 UTC",
+      "sources": [
+        {
+          "title": "Extra — Open-Source Computer Use Protocol & MCP Server",
+          "url": "https://extra.yantraos.com/"
+        },
+        {
+          "title": "GitHub - cioinside/da-mcp: Cross-platform desktop automation MCP server (Linux/macOS/Windows, 12 tools) · GitHub",
+          "url": "https://github.com/cioinside/da-mcp"
+        },
+        {
+          "title": "Backchat — 一个工作区，连接所有智能体",
+          "url": "https://backchat.openma.dev/zh/"
+        },
+        {
+          "title": "GitHub - hisence999/MyPC-mcp · GitHub",
+          "url": "https://github.com/hisence999/mypc-mcp"
+        },
+        {
+          "title": "向日葵-简单好用的远程控制软件|远程控制桌面连接|远程控制电脑|远程开机唤醒-贝锐向日葵官网",
+          "url": "https://activity.sunlogin.oray.com/mcp"
+        },
+        {
+          "title": "QuickDesk:基于 Chromium Remoting 的 AI 原生远程桌面项目 - AtomGit",
+          "url": "https://gitcode.com/barry-ran/QuickDesk"
+        },
+        {
+          "title": "MCP远程macOS控制台 - 腾讯云",
+          "url": "https://cloud.tencent.com/developer/mcp/server/10541"
+        },
+        {
+          "title": "ClawTouch 开源 — 给 AI agent 装一双真实的手",
+          "url": "https://clawtouch.cn/open-source.html"
+        },
+        {
+          "title": "MCP Remote macOS Use - AI Remote Desktop Control Server | MCPlane",
+          "url": "https://www.mcplane.com/mcp_servers/mcp-remote-macos-use"
+        },
+        {
+          "title": "GitHub - MAA-AI/MaaMCP: 基于 MaaFramework 的 MCP 服务器 为 AI 助手提供 Android 设备和 Windows 桌面自动化能力 · GitHub",
+          "url": "https://github.com/MAA-AI/MaaMCP"
+        },
+        {
+          "title": "desktop-touch-mcp | Computer-use MCP server for Windows agents",
+          "url": "https://harusame64.github.io/desktop-touch-mcp/"
+        },
+        {
+          "title": "UI-TARS 桌面版 - 腾讯云",
+          "url": "https://developer.cloud.tencent.com/mcp/server/11672"
+        },
+        {
+          "title": "RustDesk",
+          "url": "https://zh.wikipedia.org/wiki/RustDesk"
+        },
+        {
+          "title": "用户指南",
+          "url": "https://support.huaweicloud.com/usermanual-versatile/versatile-usermanual-pdf.pdf"
+        },
+        {
+          "title": "Google Antigravity",
+          "url": "https://zh.wikipedia.org/wiki/Google_Antigravity"
+        },
+        {
+          "title": "软件规格参数\n\n远程控制软件  \n远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee376b.pdf"
+        },
+        {
+          "title": "软件规格参数\n\n远程控制软件  \n远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ede4aa.pdf"
+        },
+        {
+          "title": "软件规格参数\n\n远程控制软件  \n远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee273c.pdf"
+        },
+        {
+          "title": "软件规格参数\n\n远程控制软件  \n远程控制应用(Mac/PC)，能够控制任意数量的联网Modulo",
+          "url": "https://www.ezpro.com/getimage/index/action/images/name/63b3876ee0216.pdf"
+        },
+        {
+          "title": "Scrcpy",
+          "url": "https://zh.wikipedia.org/wiki/Scrcpy"
+        },
+        {
+          "title": "Breve (软件)",
+          "url": "https://zh.wikipedia.org/wiki/Breve_%28%E8%BD%AF%E4%BB%B6%29"
+        },
+        {
+          "title": "Syncthing",
+          "url": "https://zh.wikipedia.org/wiki/Syncthing"
+        },
+        {
+          "title": "TightVNC",
+          "url": "https://zh.wikipedia.org/wiki/TightVNC"
+        },
+        {
+          "title": "The Emergence of Wireless MAC Protocols with Multi-Agent Reinforcement Learning",
+          "url": "https://arxiv.org/abs/2108.07144"
+        }
+      ],
+      "returned_sources_count": 24,
+      "official_url_seen_in_sources": false,
+      "errors": []
+    }
+  ],
+  "public_source": {
+    "observed_at_utc": "2026-10-10T12:34:15.012708+00:00",
+    "tool": "anonymous urllib GitHub REST/raw GET",
+    "official_url": "https://github.com/JIA-ss/ai-remote",
+    "default_branch": "main",
+    "head_sha": "91bed6eb1f4c65450c8ed9a6ddfc79081313f900",
+    "expected_merge_sha": "91bed6eb1f4c65450c8ed9a6ddfc79081313f900",
+    "description": "Open-source MCP remote control for Windows and macOS, with human takeover and an experimental native iPhone controller.",
+    "topics": [
+      "human-in-the-loop",
+      "iphone",
+      "macos",
+      "mcp",
+      "peer-to-peer",
+      "remote-control",
+      "rust",
+      "swiftui",
+      "windows"
+    ],
+    "readmes": [
+      {
+        "file": "README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/README.md",
+        "sha256": "1a5034f90022dfea30a381c0f2fcb216f1954c0688c0d4bb785598882321511d",
+        "relative_targets": [
+          {
+            "target": "CONTRIBUTING.md",
+            "present": true
+          },
+          {
+            "target": "LICENSE",
+            "present": true
+          },
+          {
+            "target": "README.zh-CN.md",
+            "present": true
+          },
+          {
+            "target": "SECURITY.md",
+            "present": true
+          },
+          {
+            "target": "apps/desktop/README.md",
+            "present": true
+          },
+          {
+            "target": "apps/ios/README.md",
+            "present": true
+          },
+          {
+            "target": "assets/brand/home-dark.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/home-light.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/how-it-works-dark.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/how-it-works-light.svg",
+            "present": true
+          },
+          {
+            "target": "docs/approvals.md",
+            "present": true
+          },
+          {
+            "target": "docs/architecture.md",
+            "present": true
+          },
+          {
+            "target": "docs/iphone-validation.md",
+            "present": true
+          },
+          {
+            "target": "docs/macos.md",
+            "present": true
+          },
+          {
+            "target": "docs/mcp-clients.md",
+            "present": true
+          },
+          {
+            "target": "docs/operations.md",
+            "present": true
+          },
+          {
+            "target": "docs/tools.md",
+            "present": true
+          }
+        ],
+        "heading": "# ai-remote"
+      },
+      {
+        "file": "README.zh-CN.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/README.zh-CN.md",
+        "sha256": "c9e70627aebc6fa676a78b4bbcd51d3d7a4ddbc8cc44fff46bae204dc7cb732b",
+        "relative_targets": [
+          {
+            "target": "CONTRIBUTING.md",
+            "present": true
+          },
+          {
+            "target": "LICENSE",
+            "present": true
+          },
+          {
+            "target": "README.md",
+            "present": true
+          },
+          {
+            "target": "SECURITY.md",
+            "present": true
+          },
+          {
+            "target": "apps/desktop/README.md",
+            "present": true
+          },
+          {
+            "target": "apps/ios/README.md",
+            "present": true
+          },
+          {
+            "target": "assets/brand/home-dark.zh-CN.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/home-light.zh-CN.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/how-it-works-dark.zh-CN.svg",
+            "present": true
+          },
+          {
+            "target": "assets/brand/how-it-works-light.zh-CN.svg",
+            "present": true
+          },
+          {
+            "target": "docs/approvals.zh-CN.md",
+            "present": true
+          },
+          {
+            "target": "docs/architecture.zh-CN.md",
+            "present": true
+          },
+          {
+            "target": "docs/iphone-validation.md",
+            "present": true
+          },
+          {
+            "target": "docs/macos.md",
+            "present": true
+          },
+          {
+            "target": "docs/mcp-clients.md",
+            "present": true
+          },
+          {
+            "target": "docs/operations.zh-CN.md",
+            "present": true
+          },
+          {
+            "target": "docs/tools.zh-CN.md",
+            "present": true
+          }
+        ],
+        "heading": "# ai-remote"
+      }
+    ],
+    "linked_documents": [
+      {
+        "file": "docs/macos.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/macos.md",
+        "sha256": "284da16a71d5ee9c6b3c7e9d2467b70b6342e52be40ddfbe2c3c4d3787b2ccf7",
+        "retrieved": true
+      },
+      {
+        "file": "docs/iphone-validation.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/iphone-validation.md",
+        "sha256": "a70fb7bdb45323839f82b1b6cbb93cc280bdc7cb9d1a679f91ce27124bdc4550",
+        "retrieved": true
+      },
+      {
+        "file": "docs/mcp-clients.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/mcp-clients.md",
+        "sha256": "789d2ecc2d5ccd92a25750215f4a47ba23ddf1630b4394d139b97830600e389c",
+        "retrieved": true
+      },
+      {
+        "file": "apps/ios/README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/apps/ios/README.md",
+        "sha256": "fcfdc3553f38a408ef57c83c5c065c0f7eb16c45dfceed558e086efd73d4c022",
+        "retrieved": true
+      },
+      {
+        "file": "apps/desktop/README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/apps/desktop/README.md",
+        "sha256": "56d91c43ad1573e73e4d5c8495368785540be9910ac26e1ddb85ea847e900d32",
+        "retrieved": true
+      },
+      {
+        "file": "docs/approvals.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/approvals.md",
+        "sha256": "fe4184a64499a75c77de6428e0db966d0e4d75b113f7d083754b57cf45a55ec9",
+        "retrieved": true
+      },
+      {
+        "file": "docs/tools.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/tools.md",
+        "sha256": "ac94d2d734a966c1940797a30483bd050c13a399d51ac9683523c4875091ac78",
+        "retrieved": true
+      },
+      {
+        "file": "docs/operations.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/operations.md",
+        "sha256": "50cb65d5734d62936e4a63d0599c10e9eeb7d59706a6de73b5d0d361c100deef",
+        "retrieved": true
+      }
+    ]
+  },
+  "live_html": {
+    "observed_at_utc": "2026-10-10T12:34:44.229278+00:00",
+    "tool": "anonymous urllib live HTML GET",
+    "url": "https://github.com/JIA-ss/ai-remote",
+    "final_url": "https://github.com/JIA-ss/ai-remote",
+    "http_status": 200,
+    "contains_merge_sha": true,
+    "contains_new_readme_heading": true,
+    "contains_new_ios_boundary": true,
+    "contains_old_m0_note": false
+  },
+  "referenced_ci": {
+    "html_url": "https://github.com/JIA-ss/ai-remote/actions/runs/38049375262",
+    "name": "iPhone controller",
+    "head_sha": "a0c8612acbb6879549eb9812d3fdd157fcea5ef9",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-10-10T11:42:46Z",
+    "updated_at": "2026-10-10T12:09:23Z"
+  },
+  "source_text_local_files": [
+    "/tmp/ar-post-README.md",
+    "/tmp/ar-post-README.zh-CN.md",
+    "/tmp/ar-post-docs-iphone-validation.md"
+  ],
+  "direct_observations": [
+    "Anonymous GitHub API main resolves to requested merge SHA 91bed6eb1f4c65450c8ed9a6ddfc79081313f900.",
+    "Both fixed-SHA README files retrieved; top-level project name, mutual language links, AGPL-3.0 license, official repository link, capability and limits match.",
+    "All relative file/image targets in both READMEs exist in the merge tree.",
+    "Chinese operations/approvals/tools destinations now use zh-CN files, resolving the earlier optional finding.",
+    "Public iPhone ledger links successful CI at source a0c8612. It separates simulator startup/pairing error UI scope from physical iPhone live remote-session acceptance.",
+    "Live anonymous repository HTML contains merge SHA, new What works today section and physical-iPhone deferred boundary; old M0 note is absent.",
+    "web.run open of the exact official repository URL still returned old README text in this observation; source version is not exposed by that tool. Divergence is recorded without assuming a cache implementation.",
+    "All four independent search calls returned source sets without the official repository URL. No query discovery uplift observed in this immediate sample."
+  ],
+  "current_boundaries": [
+    "Pre-alpha build-from-source; no signed release/App Store distribution.",
+    "Apple Silicon/macOS 27 locally accepted; Intel and older macOS require separate runtime checks.",
+    "Windows implementation exists but recent Mac pass did not revalidate Windows runtime.",
+    "iOS device/simulator SDK builds and simulator startup/invalid-ticket/background-resume/relaunch UI accepted per published ledger and successful referenced CI; physical iPhone live control is deferred.",
+    "Remote allow currently needs Windows Hello; Touch ID/Face ID allow signing is absent.",
+    "Core includes screenshots/input/windows; mounted allowlisted MCP integrations extend capabilities. Native Mac accessibility-tree/file-transfer remains planned.",
+    "Development stream is functional but low-rate, without FPS/latency benchmark claims.",
+    "Simulator UI testing does not establish a real paired remote-desktop session."
+  ],
+  "evidence_boundary": "Return order is not ranking. URL absence is query-result observation only, not index absence. HTTP/API/raw retrieval and current live HTML confirm public content only; no answer-citation/recommendation/adoption/conversion measurement.",
+  "errors": []
+}
