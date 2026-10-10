@@ -7,8 +7,8 @@
 //! 3. owner approval when the policy says `ask`, at the host or on an approver device (see
 //!    [`crate::approval`]);
 //! 4. audit record of the decision;
-//! 5. the call itself, cancelled when the session or connection ends or the controller cancels the
-//!    request;
+//! 5. the call itself, cancelled when its control grant ends, the session/connection ends or the
+//!    controller cancels the request; pending approvals use the same cancellation checks;
 //! 6. result budget (large text cut to head and tail, oversized structured content dropped, images
 //!    kept within what model APIs accept; see [`crate::result_budget`]);
 //! 7. audit record of the outcome (its size is the size after the budget).
@@ -135,10 +135,17 @@ async fn call_gated(
     }
 
     // Whose turn it is.
-    if let Err(why) = host.turns().admits(session.person(), spec.level, host.name()) {
-        host.audit().write(&AuditRecord { decision: Some("turn"), args_preview: Some(&preview), ..record("decision") });
-        return Ok(refusal(&why));
-    }
+    let turn_cancel = match host.turns().admits(session.person(), spec.level, host.name()) {
+        Ok(grant) => grant,
+        Err(why) => {
+            host.audit().write(&AuditRecord {
+                decision: Some("turn"),
+                args_preview: Some(&preview),
+                ..record("decision")
+            });
+            return Ok(refusal(&why));
+        }
+    };
 
     // 2-3. Policy and approval.
     let (mut approval, mut approved_by) = (None::<String>, None::<String>);
@@ -154,22 +161,30 @@ async fn call_gated(
             return Ok(refusal(&format!("The host's policy does not allow '{name}'.")));
         }
         Action::Ask => {
-            let r = host
-                .approver()
-                .ask(
-                    &host.mesh().principal(),
-                    host.audit(),
-                    ApprovalRequest {
-                        session: session.id.clone(),
-                        peer: session.peer.name.clone(),
-                        principal: session.peer.principal.clone(),
-                        tool: name.to_string(),
-                        intent: intent.clone(),
-                        args_preview: preview.clone(),
-                        args_hash: args_hash.clone(),
-                    },
-                )
-                .await;
+            let host_id = host.mesh().principal();
+            let asking = host.approver().ask(
+                &host_id,
+                host.audit(),
+                ApprovalRequest {
+                    session: session.id.clone(),
+                    peer: session.peer.name.clone(),
+                    principal: session.peer.principal.clone(),
+                    tool: name.to_string(),
+                    intent: intent.clone(),
+                    args_preview: preview.clone(),
+                    args_hash: args_hash.clone(),
+                },
+            );
+            let r = tokio::select! {
+                biased;
+                why = stopped(&session.cancel, cancel, &turn_cancel) => {
+                    host.audit().write(&AuditRecord {
+                        decision: Some("cancelled"), args_preview: Some(&preview), ..record("decision")
+                    });
+                    return Ok(refusal(why));
+                }
+                r = asking => r,
+            };
             approval = r.id.clone();
             approved_by = r.by.clone();
             if r.verdict != Verdict::Approved {
@@ -197,13 +212,17 @@ async fn call_gated(
 
     // 5. The call, bounded by the session's lifetime and the request's own cancellation.
     let started = Instant::now();
-    let ctx = ToolCtx { host, session };
-    // Dropping the tool's future is what stops it (a mounted server is sent `notifications/cancelled`).
+    let work = cancel.child_token();
+    let _work_guard = work.clone().drop_guard();
+    let ctx = ToolCtx { host, session, cancel: work.clone(), turn_cancel: turn_cancel.clone() };
+    // Async tools stop when their future is dropped. Blocking input workers also
+    // check the call's tokens before every event, including moves during a drag.
     let result = tokio::select! {
+        biased;
+        why = stopped(&session.cancel, cancel, &turn_cancel) => Err(why),
         r = tool.call(&ctx, args) => Ok(r),
-        _ = session.cancel.cancelled() => Err("cancelled: the session ended"),
-        _ = cancel.cancelled() => Err("cancelled by the controller"),
     };
+    work.cancel();
     let duration_ms = Some(started.elapsed().as_millis());
 
     // 6-7. Outcome and budget.
@@ -214,7 +233,7 @@ async fn call_gated(
     };
     let outcome = if outcome == "ok" && result.is_error == Some(true) { "error" } else { outcome };
     let bytes = serde_json::to_vec(&result.content).map(|v| v.len()).unwrap_or(0);
-    let error_text = (outcome == "error")
+    let error_text = matches!(outcome, "error" | "cancelled")
         .then(|| result.content.first().and_then(|c| c.as_text()).map(|t| budget::head_tail(&t.text, 300, 140)))
         .flatten();
     host.audit().write(&AuditRecord {
@@ -229,4 +248,14 @@ async fn call_gated(
 
 fn refusal(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.to_string())])
+}
+
+async fn stopped(session: &CancellationToken, request: &CancellationToken, turn: &CancellationToken) -> &'static str {
+    tokio::select! {
+        biased;
+        _ = session.cancelled() => "cancelled: the session ended",
+        _ = request.cancelled() => "cancelled by the controller",
+        _ = turn.cancelled() => "cancelled: control changed during this call. Some actions may already have run. \
+            After handback or resume, inspect the host before issuing a new action; this call will not resume.",
+    }
 }

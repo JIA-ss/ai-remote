@@ -118,6 +118,12 @@ impl Session {
 pub struct ToolCtx<'a> {
     pub host: &'a HostState,
     pub session: &'a Session,
+    /// Cancelled on request cancellation or when the gate drops this call. A
+    /// blocking worker must check this: dropping its JoinHandle does not stop it.
+    pub cancel: CancellationToken,
+    /// The driver's grant at admission, invalidated by takeover/pause even if
+    /// handback/resume happens before the worker runs again.
+    pub(crate) turn_cancel: CancellationToken,
 }
 
 fn rand_u32() -> u32 {

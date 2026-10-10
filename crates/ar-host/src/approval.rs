@@ -242,8 +242,7 @@ impl Approver {
         let mut guard = Withdraw { approver: self, audit, id: &id, started: now_ms(), resolved: false };
 
         // Counted before the dialog can exist, so input checked after this point never reaches it.
-        let _open = blocker.is_none().then(|| self.open.open());
-        let dialog = blocker.is_none().then(|| show_dialog(&req, self.timeout));
+        let dialog = blocker.is_none().then(|| show_dialog(&req, self.timeout, self.open.open()));
         let deadline = tokio::time::Instant::now() + self.timeout;
         let mut rx = rx;
         let local = async {
@@ -409,7 +408,11 @@ impl Drop for Withdraw<'_> {
     }
 }
 
-fn show_dialog(req: &ApprovalRequest, timeout: Duration) -> tokio::task::JoinHandle<MessageDialogResult> {
+fn show_dialog(
+    req: &ApprovalRequest,
+    timeout: Duration,
+    open: PromptOpen,
+) -> tokio::task::JoinHandle<MessageDialogResult> {
     let secs = timeout.as_secs();
     let mut body = format!("\"{}\" wants to run: {}\n", clean(&req.peer, 80), req.tool);
     if let Some(intent) = &req.intent {
@@ -418,6 +421,9 @@ fn show_dialog(req: &ApprovalRequest, timeout: Duration) -> tokio::task::JoinHan
     body.push_str(&format!("\nDetails:\n{}\n", escape(&req.args_preview)));
     body.push_str(&format!("\nAllow this once? (No answer within {secs} s counts as No.)"));
     tokio::task::spawn_blocking(move || {
+        // Cancelling the asking future cannot close a native blocking dialog.
+        // Keep input blocked until the actual dialog is dismissed.
+        let _open = open;
         MessageDialog::new()
             .set_level(MessageLevel::Warning)
             .set_title("ai-remote: approve an action")
