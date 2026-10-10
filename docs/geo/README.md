@@ -8,7 +8,7 @@ MCP agents to their own paired Windows/Mac computers, and people supervising tha
 
 - A clear project H1, consistent official name, public repository description and relevant topics.
 - New light/dark bilingual cover art using the existing blue agent / amber owner identity.
-- Source build instructions, client-specific MCP setup, permissions and common questions.
+- Source install instructions, client-specific MCP setup, permissions and common questions.
 - Platform and validation links close to the claims they qualify; iPhone source remains experimental.
 - Public builds use included, licensed dependency snapshots rather than a private Git fork.
 - Contribution instructions reflect the actual workflow; no nonexistent automatic CLA is promised.

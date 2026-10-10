@@ -32,11 +32,13 @@ run. To compile without signing:
 
 ```sh
 xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
-  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+  -destination 'generic/platform=iOS Simulator' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
 ```
 
 The build helper generates Swift bindings and an XCFramework for arm64 iPhone and arm64 simulator.
 Generated code and compiled frameworks stay out of Git; the pinned UniFFI version regenerates them.
+The simulator slice is arm64; use an Apple Silicon Mac to run it. Intel simulator builds are not
+provided by this helper.
 
 ## Repeat core validation on macOS
 
@@ -61,7 +63,9 @@ of agent control while a person drives, activity, native decoded video, hand bac
 6. Background/reopen the app: no lingering views, stable identity and retained pairing.
 7. Unpair/revoke at the host and prove the phone can no longer operate it.
 
-The app attempts to hand back before leaving a session. A lost connection can prevent that; check
+The app serializes background teardown with reopening, and uses a short iOS background task for
+cleanup. Hand-back requests have a three-second Rust timeout because Swift task cancellation does
+not cancel UniFFI futures. The app attempts to hand back before leaving a session. A lost connection can prevent that; check
 the host's current driver when reconnecting. Backgrounding stops streams and the embedded node;
 the app does not claim unattended background video or push notifications.
 
@@ -73,3 +77,17 @@ the app does not claim unattended background video or push notifications.
 
 本机核心编译、协议测试、iOS SDK 编译、模拟器与真机验收是不同证据，不能互相代替。真机需要
 完整 Xcode、签名团队、连接的 iPhone 和开发者模式；在最终手机验收前不宣称正式可用或已上架。
+
+To reproduce the native Swift/Rust lifecycle races on Mac after `tools/ios.sh mac-core`:
+
+```sh
+swiftc -parse-as-library -target arm64-apple-macos14.0 \
+  -I apps/ios/Generated -L apps/ios/Generated -lAIRemotePhone -lAIRemoteCore \
+  -Xlinker -rpath -Xlinker "$PWD/apps/ios/Generated" \
+  tools/PhoneLifecycleSmoke.swift -o target/PhoneLifecycleSmoke
+target/PhoneLifecycleSmoke "$PWD/target/phone-lifecycle"
+```
+
+This runs three client close/start races and three store background/resume races against the real
+embedded core, requiring stable identity and a usable reopened controller. It does not install an
+iPhone application.
