@@ -103,7 +103,7 @@ pub fn read(e: &Element) -> Result<Node> {
 }
 fn no_element(error: &uiautomation::errors::Error) -> bool {
     // A null COM result is the normal end of a child/sibling walk. Other failures stay visible.
-    matches!(error.code(), 1 | 5 | -2147467261)
+    matches!(error.code(), 0 | 1 | 5 | -2147467261)
 }
 pub fn collect(pid: u32, max: usize, depth: usize, check: &dyn Fn() -> Result<()>) -> Result<super::Tree> {
     let a = automation()?;
@@ -225,4 +225,18 @@ pub fn act(e: &Element, action: Action, value: Option<&str>) -> Result<()> {
         Action::Focus => e.0.set_focus()?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn null_com_results_end_walks_but_provider_errors_do_not() {
+        for code in [0, 1, 5, -2147467261] {
+            assert!(no_element(&uiautomation::errors::Error::new(code, "null element")));
+        }
+        for code in [-2147220991, -2147024891, -2147467259] {
+            assert!(!no_element(&uiautomation::errors::Error::new(code, "provider error")));
+        }
+    }
 }
