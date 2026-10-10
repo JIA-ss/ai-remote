@@ -41,6 +41,9 @@ openh264 = "0.9"
 fast_image_resize = "6"
 yuvutils-rs = "0.8"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
 [target.'cfg(windows)'.dependencies]
 windows_firewall.workspace = true
 windows = { version = "0.62", features = [

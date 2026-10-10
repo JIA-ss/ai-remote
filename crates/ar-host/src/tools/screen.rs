@@ -998,6 +998,12 @@ fn image_result(meta: Value, img: &Processed) -> CallToolResult {
 
 /// Refuses early, with the platform's reason, when the desktop cannot be seen or operated.
 fn require_desktop(what: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if !platform::macos::screen_recording_allowed() {
+        bail!(
+            "cannot {what}: macOS Screen Recording permission is missing for this host. Enable it in System Settings > Privacy & Security > Screen Recording, restart the host, then run doctor"
+        );
+    }
     let s = platform::session_state();
     if s.desktop_usable {
         return Ok(());

@@ -24,16 +24,53 @@ pub use local::LocalStream;
 const MAX_LINE: u64 = 4 * 1024 * 1024;
 
 /// A bound control endpoint.
-pub struct Listener(local::LocalListener);
+pub struct Listener {
+    inner: local::LocalListener,
+    // mcpmesh's Unix bind removes stale sockets unconditionally. Hold an OS lock first so
+    // concurrent cold starts cannot unlink a live daemon's endpoint.
+    #[cfg(unix)]
+    _lock: std::fs::File,
+}
 
 impl Listener {
     /// Binds `path`. Fails with `AddrInUse` when another daemon of the same role already runs.
     pub fn bind(path: &Path) -> std::io::Result<Self> {
-        local::bind_local(path).map(Self)
+        #[cfg(unix)]
+        let lock = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let parent = path.parent().ok_or_else(|| std::io::Error::other("control endpoint needs a parent"))?;
+            local::ensure_private_dir(parent)?;
+            let lock_path = path.with_extension("lock");
+            if let Ok(meta) = std::fs::symlink_metadata(&lock_path)
+                && !meta.file_type().is_file()
+            {
+                return Err(std::io::Error::other("control lock is not a regular file"));
+            }
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(lock_path)?;
+            lock.try_lock().map_err(|e| match e {
+                std::fs::TryLockError::WouldBlock => {
+                    std::io::Error::new(std::io::ErrorKind::AddrInUse, "a daemon already holds this control endpoint")
+                }
+                std::fs::TryLockError::Error(e) => e,
+            })?;
+            lock
+        };
+        let inner = local::bind_local(path)?;
+        Ok(Self {
+            inner,
+            #[cfg(unix)]
+            _lock: lock,
+        })
     }
 
     pub async fn accept(&mut self) -> std::io::Result<Conn> {
-        let stream = self.0.accept().await?;
+        let stream = self.inner.accept().await?;
         if !local::authorize_local_peer(&stream) {
             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer is another user"));
         }
@@ -117,4 +154,26 @@ async fn write_json_line<W: AsyncWrite + Unpin>(w: &mut W, value: &Value) -> Res
     w.write_all(&bytes).await?;
     w.flush().await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_second_daemon_cannot_replace_the_live_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let mut first = Listener::bind(&path).unwrap();
+        let error = Listener::bind(&path).err().expect("second bind must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        // The first daemon is still reachable after the refused bind.
+        let mut client = Conn::connect(&path).await.unwrap();
+        let mut server = first.accept().await.unwrap();
+        client.write_json(&json!({"op": "status"})).await.unwrap();
+        assert_eq!(server.read_json().await.unwrap(), Some(json!({"op": "status"})));
+        drop((client, server, first));
+        // Reuse after a normal exit or crash: the lock is released, the stale socket is removed.
+        let _next = Listener::bind(&path).unwrap();
+    }
 }

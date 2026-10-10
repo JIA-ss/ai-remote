@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type LiveView } from "../lib/api";
+import { commands } from "../bindings";
 import { demoScreenUrl } from "../lib/demo";
 import { currentLang, t } from "../lib/i18n";
 import type { Computer } from "../lib/store";
@@ -169,7 +170,7 @@ export function Stream({
           onScreen?.(v?.screen ?? null);
         }
       })
-      .catch(() => {});
+      .catch((e) => void commands.logFromPage("error", `Cannot start live video: ${String(e)}`));
     return () => {
       stopped = true;
       view?.stop();

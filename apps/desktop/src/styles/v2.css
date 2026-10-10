@@ -15,6 +15,7 @@
 .tb .app .name { font-family: var(--font-small); font-size: 12px; line-height: 16px; color: var(--text-1); }
 .tb .title { font-size: 14px; line-height: 20px; font-weight: var(--w-strong); white-space: nowrap; }
 .tb .drag { flex: 1; height: 100%; }
+[data-os="mac"] .tb { padding-left: 80px; }
 .caps { display: flex; height: 48px; align-self: flex-start; }
 .caps span { width: 46px; height: 48px; display: grid; place-items: center; font-family: "Segoe Fluent Icons"; font-size: 10px; color: var(--text-1); }
 .body-row { flex: 1; display: flex; min-height: 0; }

@@ -100,6 +100,8 @@ claude mcp add ai-remote -- ai-remote mcp
 ```
 
 Any MCP client that can start a stdio server works the same way: point it at `ai-remote mcp`.
+The desktop app shows setup for Claude Code, Codex, Cursor and VS Code, including the actual bundled
+CLI path; see [MCP client setup](docs/mcp-clients.md).
 
 To start the host at logon, check a machine with `ai-remote doctor`, or find out why a call was refused, see [docs/operations.md](docs/operations.md).
 
@@ -134,7 +136,7 @@ These are the default levels and may be refined before the first release.
 | Milestone | What ships | Status |
 | :-- | :-- | :-- |
 | **M0** | CLI, Windows host, MCP bridge | Implemented, not released |
-| **M1** | macOS host, file tools | Planned |
+| **M1** | macOS host, file tools | In progress: basic Mac host and native controller adaptation; file tools pending ([development and validation](docs/macos.md)) |
 | **M2** | Desktop app with live view and approvals | In progress: live video, remote approvals, take over / hand back, the app's main screens |
 | **M3** | iOS controller app on the App Store | Planned |
 | **M4** | Optional account service, self-hosted relay | Planned |
