@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
+exclude = ["vendor/mcpmesh"]
 
 [workspace.package]
 version = "0.0.1"
@@ -73,11 +74,11 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
-# mcpmesh 0.58.0 exact-pins iroh 1.2, rmcp 3.1 and a yanked iroh-blobs 0.103.0. Our fork changes only
+# mcpmesh 0.58.0 exact-pins iroh 1.2, rmcp 3.1 and a yanked iroh-blobs 0.103.0. The vendored snapshot changes only
 # those three pins (iroh 1.3.0, rmcp 3.5.1, iroh-blobs 0.103.1); everything else is upstream.
 [patch.crates-io]
-mcpmesh-node = { git = "https://github.com/JIA-ss/mcpmesh", rev = "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28" }
-mcpmesh-net = { git = "https://github.com/JIA-ss/mcpmesh", rev = "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28" }
-mcpmesh-trust = { git = "https://github.com/JIA-ss/mcpmesh", rev = "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28" }
-mcpmesh-local-api = { git = "https://github.com/JIA-ss/mcpmesh", rev = "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28" }
-mcpmesh-codec = { git = "https://github.com/JIA-ss/mcpmesh", rev = "e0bc46c5b2ec165bd16f69cfc49bcf67e8186b28" }
+mcpmesh-node = { path = "vendor/mcpmesh/node" }
+mcpmesh-net = { path = "vendor/mcpmesh/net" }
+mcpmesh-trust = { path = "vendor/mcpmesh/trust" }
+mcpmesh-local-api = { path = "vendor/mcpmesh/local-api" }
+mcpmesh-codec = { path = "vendor/mcpmesh/codec" }

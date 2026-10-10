@@ -2,10 +2,10 @@ name: iPhone controller
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/iphone-controller]
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "tools/ios.sh", ".github/workflows/ios.yml"]
+    branches: [main]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/mcpmesh/**", "tools/ios.sh", ".github/workflows/ios.yml"]
   pull_request:
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "tools/ios.sh", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/mcpmesh/**", "tools/ios.sh", ".github/workflows/ios.yml"]
 permissions:
   contents: read
 concurrency:

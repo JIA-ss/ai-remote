@@ -1,0 +1,22 @@
+[package]
+name = "mcpmesh-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "The mcpmesh family wire codec: newline-delimited compact JSON over async byte streams"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+# The family's ONE wire codec. Deliberately tiny — serde_json + tokio io traits only,
+# NO iroh — so the no-iroh wire ends (mcpmesh-local-api's client; kb, loc, the host)
+# can link the SAME implementation the daemon side (mcpmesh-net) uses.
+[dependencies]
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
