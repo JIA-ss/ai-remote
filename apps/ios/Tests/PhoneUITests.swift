@@ -3,6 +3,13 @@ import XCTest
 final class PhoneUITests: XCTestCase {
     func testLaunchAndInvalidPairing() {
         let app = XCUIApplication()
+        addUIInterruptionMonitor(withDescription: "Local network permission") { alert in
+            for label in ["Allow", "允许"] where alert.buttons[label].exists {
+                alert.buttons[label].tap()
+                return true
+            }
+            return false
+        }
         app.launch()
         XCTAssertTrue(app.buttons["配对一台电脑"].waitForExistence(timeout: 30))
         app.buttons["配对一台电脑"].tap()

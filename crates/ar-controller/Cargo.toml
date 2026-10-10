@@ -39,3 +39,5 @@ windows = { version = "0.62", features = [
   "Win32_System_Console",
 ] }
 windows-core = "0.62"
+[dev-dependencies]
+tempfile.workspace = true

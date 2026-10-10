@@ -175,9 +175,7 @@ impl MobileController {
 
     /// Call when entering the background. Ends views and connections; pairing data stays on disk.
     pub async fn close(&self) {
-        if self.closed.swap(true, Ordering::SeqCst) {
-            return;
-        }
+        self.closed.store(true, Ordering::SeqCst);
         let all: Vec<_> = self.subscriptions.lock().unwrap().drain().map(|(_, s)| s).collect();
         for subscription in &all {
             subscription.cancel.cancel();
