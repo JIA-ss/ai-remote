@@ -29,6 +29,9 @@ import AIRemoteCore
     private var decoder: H264Decoder?
     private var generation = 0
     private var inputTail: Task<Void, Never>?
+    private var suspending: Task<Void, Never>?
+    private var lifecycleGeneration = 0
+    private var active = true
     public var ownsControls: Bool { driver == "person" && driverDevice == ownName && !ownName.isEmpty }
     public var mayControl: Bool { level == "control" || level == "admin" }
 
@@ -38,14 +41,18 @@ import AIRemoteCore
         client = PhoneClient(directory: path)
     }
     public func resume() async {
-        guard !loading else { return }
+        active = true
+        if let suspending { await suspending.value }
+        let token = lifecycleGeneration
         loading = true; defer { loading = false }
         do {
             try await client.start()
             let status = try await client.request(["op": .string("status")])
             device = status["device"].string ?? ""
             try await refresh()
-        } catch { self.error = error.localizedDescription }
+        } catch is CancellationError {
+            // An older startup may finish after a background transition.
+        } catch { if active && token == lifecycleGeneration { self.error = error.localizedDescription } }
     }
     public func refresh() async throws {
         let result = try await client.request(["op": .string("hosts")])
@@ -163,5 +170,12 @@ import AIRemoteCore
         eventID = nil; videoID = nil; decoder?.close(); decoder = nil
         selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""
     }
-    public func suspend() async { await leaveSession(); await client.close() }
+    public func suspend() async {
+        active = false; lifecycleGeneration += 1
+        if let suspending { await suspending.value; return }
+        let task = Task { await self.leaveSession(); await self.client.close() }
+        suspending = task
+        await task.value
+        suspending = nil
+    }
 }

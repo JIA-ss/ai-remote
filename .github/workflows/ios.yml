@@ -68,7 +68,12 @@ jobs:
           name: iPhone-simulator-app
           path: |
             target/ios-build/Build/Products/Debug-iphonesimulator/ai-remote.app
-            target/phone-ui.xcresult
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/phone-ui.xcresult/Info.plist') != ''
+        with:
+          name: iPhone-simulator-test-result
+          path: target/phone-ui.xcresult
           retention-days: 1
       - uses: actions/cache/save@v4
         if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
