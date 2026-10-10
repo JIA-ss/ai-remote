@@ -133,17 +133,23 @@ import AIRemoteCore
         } catch { self.error = error.localizedDescription }
     }
     /// Serialize user input; recheck that this phone still owns control when each call starts.
-    public func input(tool: String, args: [String: JSONValue]) {
+    public func input(tool: String, args: [String: JSONValue], success: (() -> Void)? = nil) {
         guard let selected, ownsControls, screen != nil else { return }
         let prior = inputTail, token = generation
         inputTail = Task { [weak self] in
             await prior?.value
             guard let self, token == self.generation, self.ownsControls else { return }
-            do { _ = try await self.client.call(host: selected.name, tool: tool, args: args) }
+            do { _ = try await self.client.call(host: selected.name, tool: tool, args: args); success?() }
             catch { self.error = error.localizedDescription }
         }
     }
-    public func sendText() { guard !text.isEmpty else { return }; input(tool: "keyboard", args: ["text": .string(text)]); text = "" }
+    public func sendText() {
+        guard !text.isEmpty else { return }
+        let sent = text
+        input(tool: "keyboard", args: ["text": .string(sent)], success: { [weak self] in
+            if self?.text == sent { self?.text = "" }
+        })
+    }
     public func leaveSession() async {
         if ownsControls, let selected {
             await withTaskGroup(of: Void.self) { group in
