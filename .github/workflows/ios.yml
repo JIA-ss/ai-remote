@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", ".github/workflows/ios.yml"]
   pull_request:
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", ".github/workflows/ios.yml"]
 permissions:
   contents: read
 concurrency:
@@ -25,6 +25,8 @@ jobs:
           echo "version=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
           rustup toolchain install 1.95.0 --profile minimal
           brew install xcodegen
+      - name: Verify IPA packaging boundaries
+        run: python3 tools/test_package_ios_ipa.py
       - uses: actions/cache/restore@v4
         id: rust-cache
         with:
@@ -54,6 +56,20 @@ jobs:
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
             -destination 'generic/platform=iOS' -configuration Debug \
             -derivedDataPath target/ios-device-build CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned iPhone device IPA
+        run: |
+          mkdir -p target/ios-install
+          python3 tools/package-ios-ipa.py \
+            target/ios-device-build/Build/Products/Debug-iphoneos/ai-remote.app \
+            --output target/ios-install/ai-remote-unsigned.ipa \
+            > target/ios-install/package-metadata.json
+      - name: Upload unsigned iPhone device IPA for local signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhone-device-unsigned-ipa
+          path: target/ios-install/
+          if-no-files-found: error
+          retention-days: 7
       - name: Launch and test on iPhone simulator
         run: |
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for group in json.load(sys.stdin)["devices"].values() for d in group if d["name"].startswith("iPhone")))')

@@ -40,6 +40,55 @@ Generated code and compiled frameworks stay out of Git; the pinned UniFFI versio
 The simulator slice is arm64; use an Apple Silicon Mac to run it. Intel simulator builds are not
 provided by this helper.
 
+## Install on your own iPhone or iPad
+
+The controller requires iOS/iPadOS 17 or later. It is not published on the App Store or TestFlight.
+The `iPhone controller` workflow builds the real `iphoneos` app with signing disabled, verifies its
+arm64 Mach-O device platform, and uploads **`iPhone-device-unsigned-ipa`** before simulator UI tests.
+Download that artifact from a run for the revision you want to test and unzip it to obtain
+`ai-remote-unsigned.ipa` and `package-metadata.json`. Artifacts are retained for seven days.
+
+**This IPA is unsigned and cannot be installed directly.** Downloading, packaging or successfully
+compiling it does not prove on-device installation or remote-control acceptance. The simulator app
+artifact targets a different platform and cannot be installed on an iPhone, even though both builds
+use arm64. The packager rejects simulator/Catalyst images and unsafe bundle links.
+
+Two local signing paths are available:
+
+1. **Xcode:** use the source build above, sign in with your Apple Account in Xcode, choose your
+   Personal Team or developer team with automatic signing, connect and trust the phone, enable
+   Developer Mode, select the phone as the run destination, and run the app. A free Personal Team
+   can test on a personal device; its provisioning profiles expire after seven days and require
+   rebuilding/reinstalling. See Apple's [device deployment guide](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices)
+   and [Personal Team limits](https://developer.apple.com/help/account/basics/about-your-developer-account/).
+2. **Sideloadly:** if a full Xcode installation is unavailable, download the tool from the
+   [official Sideloadly website](https://sideloadly.io/), connect and trust the iPhone over USB,
+   load `ai-remote-unsigned.ipa`, and use its Apple ID signing mode with your own account to
+   sign and install locally. Enter credentials and any verification codes only in the local tool.
+   Sideloadly documents free/paid account support and seven-day free-account expiry. This route
+   still needs physical-phone acceptance; we have not validated this project's installation through
+   Sideloadly.
+
+For development-signed apps, follow Apple's [Developer Mode instructions](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device):
+Settings > Privacy & Security > Developer Mode, restart the phone, then confirm enabling it.
+The setting may only appear after initiating pairing. Once installed, allow the app's Local Network
+prompt, generate a one-time ticket on the host, paste it into the controller, and compare the safety
+code on both devices. Then complete the phone acceptance checklist below.
+
+To package a locally compiled **unsigned device** app without signing or installing anything:
+
+```sh
+python3 tools/package-ios-ipa.py \
+  target/ios-device-build/Build/Products/Debug-iphoneos/ai-remote.app \
+  --output target/ios-install/ai-remote-unsigned.ipa
+```
+
+The archive uses `Payload/ai-remote.app`, preserves framework symlinks and executable permissions,
+requires no signing identity, and rejects embedded provisioning profiles. Metadata reports
+`signing: local-signing-required`; a linker ad-hoc signature is not a development signing identity.
+Distribution signing, TestFlight
+uploads and production release packaging are separate work.
+
 ## Repeat core validation on macOS
 
 ```sh
