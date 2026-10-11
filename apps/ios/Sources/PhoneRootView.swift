@@ -254,7 +254,7 @@ public struct PhoneRootView: View {
                     Text("可以通过通用剪贴板把票据复制到 iPhone。").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("一次性配对票据") {
-                    TextEditor(text: $store.pairingCode).frame(minHeight: 140).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
+                    TextEditor(text: $store.pairingCode).frame(height: 140).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
                         .ticketCapitalizationDisabled().accessibilityIdentifier("pairing-ticket")
                         .scrollContentBackground(.hidden).padding(8).modifier(PhoneSurface(cornerRadius: 18))
                     Button { Task { await store.pair() } } label: {

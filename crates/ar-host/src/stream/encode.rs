@@ -177,11 +177,13 @@ impl FrameEncoder {
                 }
             }
         }
+        #[cfg(target_os = "macos")]
         let encoder = match &mut self.backend {
             Backend::Software(encoder) => encoder,
-            #[cfg(target_os = "macos")]
             _ => unreachable!("encoder was initialized"),
         };
+        #[cfg(not(target_os = "macos"))]
+        let Backend::Software(encoder) = &mut self.backend;
         if self.force_next {
             encoder.force_keyframe();
         }
