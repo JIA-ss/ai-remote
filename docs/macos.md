@@ -34,9 +34,11 @@ Current limits:
   The app disables unavailable enrollment/allow controls and explains this in English and Chinese.
 - `focus_window` still supports Windows only; on a Mac use the mouse tools or a mounted accessibility
   server. Built-in `ui_tree`, `ui_read` and `ui_action` now provide native AX element observations and semantic actions; see [contracts and acceptance](structured-ui.md). File tools remain planned.
-- Mac live capture uses xcap polling, capped at 30 requested frames/second, with one latest-frame
-  slot. It captures Retina pixels and exposes point geometry for input. Actual delivered rate depends
-  on capture/encoding and content changes; a requested rate is not a performance guarantee.
+- Mac live capture uses ScreenCaptureKit on macOS 13+, with up to 60 requested frames/second and
+  GPU-scaled Retina pixels. A single latest-frame slot retains native IOSurface buffers; verified
+  VideoToolbox hardware H.264 encoding is preferred, with OpenH264 fallback. Input uses the selected
+  monitor's point geometry. A requested rate is not a performance guarantee; see the isolated
+  encoder measurements and live-acceptance limits in [stream performance](stream-performance.md).
 - Intel Macs and older macOS versions need separate runtime acceptance. No release is signed or
   notarized by this development workflow.
 

@@ -1,4 +1,7 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
     let mut attributes = tauri_build::Attributes::new();
     // On Windows the app manifest (Common Controls v6, per-monitor DPI awareness) is embedded through
     // the linker so every binary of this crate gets it, test binaries included: tauri-build embeds

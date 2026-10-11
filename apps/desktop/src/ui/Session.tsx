@@ -7,9 +7,10 @@ import { api, type LiveView } from "../lib/api";
 import { commands } from "../bindings";
 import { demoScreenUrl } from "../lib/demo";
 import { currentLang, t } from "../lib/i18n";
+import { loadStreamQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
-import { createDecoder } from "../lib/video";
+import { createDecoder, type VideoStats } from "../lib/video";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
 import { Glyph, Pointer, SeatMark, type Seat } from "./glyphs";
@@ -135,20 +136,42 @@ export function Stream({
   onSize,
   maxFps,
   maxLongEdge,
+  bitrateKbps,
   onScreen,
+  onStats,
+  onRestart,
+  onError,
 }: {
   host: string;
   onFrame?: () => void;
   onSize?: (w: number, h: number) => void;
   /** Where the streamed monitor is in screen coordinates (for your input while you drive). */
   onScreen?: (r: ScreenRect | null) => void;
+  onStats?: (stats: VideoStats | null) => void;
+  /** Clears the previous frame and geometry while the new stream is starting. */
+  onRestart?: () => void;
+  onError?: (reason: string | null) => void;
   /** A small preview asks for less: fewer frames, a smaller picture. */
   maxFps?: number;
   maxLongEdge?: number;
+  bitrateKbps?: number;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const [ended, setEnded] = useState<string | null>(null);
+  const [retryGeneration, setRetryGeneration] = useState(0);
+  const callbacks = useRef({ onFrame, onSize, onScreen, onStats, onRestart, onError });
+  callbacks.current = { onFrame, onSize, onScreen, onStats, onRestart, onError };
   useEffect(() => {
+    callbacks.current.onRestart?.();
+    callbacks.current.onScreen?.(null);
+    callbacks.current.onStats?.(null);
+    if (canvas.current) {
+      canvas.current.width = 0;
+      canvas.current.height = 0;
+    }
     if (api.kind !== "tauri" || !canvas.current) return;
+    setEnded(null);
+    callbacks.current.onError?.(null);
     let view: LiveView | null = null;
     let stopped = false;
     let first = true;
@@ -156,34 +179,77 @@ export function Stream({
       canvas.current,
       () => view?.requestKeyframe(),
       (w, h) => {
-        onSize?.(w, h);
+        if (stopped) return;
+        callbacks.current.onSize?.(w, h);
         if (first) {
           first = false;
-          onFrame?.();
+          callbacks.current.onFrame?.();
         }
       },
+      (stats) => {
+        if (!stopped) callbacks.current.onStats?.(stats);
+      },
     );
+    const end = (reason: string) => {
+      if (stopped) return;
+      stopped = true;
+      view?.stop();
+      decoder.close();
+      if (canvas.current) {
+        canvas.current.width = 0;
+        canvas.current.height = 0;
+      }
+      callbacks.current.onRestart?.();
+      callbacks.current.onScreen?.(null);
+      callbacks.current.onStats?.(null);
+      const message = reason || t("stream_ended_reason");
+      setEnded(message);
+      callbacks.current.onError?.(message);
+    };
     api
-      .watchScreen(host, (f) => decoder.push(f), { maxFps, maxLongEdge })
+      .watchScreen(host, (f) => { if (!stopped) decoder.push(f); }, { maxFps, maxLongEdge, bitrateKbps, onEnded: end })
       .then((v) => {
         if (stopped) v?.stop();
         else {
           view = v;
-          onScreen?.(v?.screen ?? null);
+          callbacks.current.onScreen?.(v?.screen ?? null);
         }
       })
-      .catch((e) => void commands.logFromPage("error", `Cannot start live video: ${String(e)}`));
+      .catch((e) => {
+        if (stopped) return;
+        void commands.logFromPage("error", `Cannot start live video: ${String(e)}`);
+        end(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       stopped = true;
       view?.stop();
       decoder.close();
+      callbacks.current.onScreen?.(null);
+      callbacks.current.onStats?.(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [host]);
+  }, [host, maxFps, maxLongEdge, bitrateKbps, retryGeneration]);
   if (api.kind !== "tauri") {
-    return <img className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { onSize?.(1600, 1000); onFrame?.(); onScreen?.({ x: 0, y: 0, width: 1600, height: 1000 }); }} />;
+    return <img key={`${host}/${maxFps}/${maxLongEdge}/${bitrateKbps}/${retryGeneration}`} className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { callbacks.current.onSize?.(1600, 1000); callbacks.current.onFrame?.(); callbacks.current.onScreen?.({ x: 0, y: 0, width: 1600, height: 1000 }); }} />;
   }
-  return <canvas ref={canvas} className="rd-holder" style={{ width: "100%", height: "100%" }} />;
+  return (
+    <>
+      <canvas ref={canvas} className="rd-holder" style={{ width: "100%", height: "100%" }} />
+      {ended && (
+        <div className="stream-ended" role="alert">
+          <Icon name="warn" size={24} />
+          <strong>{t("stream_ended_title")}</strong>
+          <p>{ended}</p>
+          <button type="button" className="btn" onClick={() => {
+            setEnded(null);
+            callbacks.current.onError?.(null);
+            callbacks.current.onRestart?.();
+            setRetryGeneration((generation) => generation + 1);
+          }}><Icon name="refresh" size={14} />{t("stream_retry")}</button>
+        </div>
+      )}
+    </>
+  );
 }
 
 /** One row of the steps log. `cls` follows the design's grammar: done | you | sys, the rule above
@@ -310,6 +376,8 @@ export function SessionPage({
   const [aspect, setAspect] = useState(16 / 10);
   const [hasFrame, setHasFrame] = useState(false);
   const [screen, setScreen] = useState<ScreenRect | null>(null);
+  const [quality, setQuality] = useState(loadStreamQuality);
+  const [stats, setStats] = useState<VideoStats | null>(null);
   const [tab, setTab] = useState<"steps" | "sees">("steps");
   const [message, setMessage] = useState("");
   const [sent, setSent] = useState(false);
@@ -318,6 +386,17 @@ export function SessionPage({
   const [actionError, setActionError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+
+  const resetVideo = () => {
+    setHasFrame(false);
+    setScreen(null);
+    setStats(null);
+    setAspect(16 / 10);
+  };
+
+  useEffect(() => {
+    if (c.online === false) resetVideo();
+  }, [c.online]);
 
   const bar = barOf(c, hasFrame);
   const pending = c.feed.pending[0];
@@ -387,6 +466,33 @@ export function SessionPage({
   return (
     <div className="win" style={{ width: "100vw", height: "100vh" }}>
       <TitleBar title={host} facts={<Facts items={computerFacts(c)} />} onBack={onBack} />
+      <div className="stream-controls">
+        <label htmlFor="stream-quality">{t("stream_quality")}</label>
+        <select
+          id="stream-quality"
+          value={quality.id}
+          title={t("stream_requested_note")}
+          onChange={(e) => {
+            const next = streamQuality(e.target.value);
+            if (next.id === quality.id) return;
+            resetVideo();
+            saveStreamQuality(next.id);
+            setQuality(next);
+          }}
+        >
+          {STREAM_QUALITIES.map((profile) => <option key={profile.id} value={profile.id}>{t(profile.label)}</option>)}
+        </select>
+        <span className="stream-request" title={t("stream_requested_note")}>{t("stream_requested_limits", { edge: quality.maxLongEdge, fps: quality.maxFps, mbps: quality.bitrateKbps / 1000 })}</span>
+        <span className="stream-metrics" title={stats ? t("stream_metrics_detail", { dropped: stats.droppedFrames, queue: stats.decodeQueueSize }) : undefined}>
+          {api.kind === "demo"
+            ? t("stream_preview_metrics")
+            : c.online === false
+              ? t("st_offline")
+              : hasFrame && stats
+                ? t("stream_actual_metrics", { width: stats.width, height: stats.height, fps: stats.decodedFps.toFixed(1), mbps: (stats.receivedKbps / 1000).toFixed(2) })
+                : t("stream_awaiting_metrics")}
+        </span>
+      </div>
       <div className="body-row">
         <NavRail waiting={waiting} os={c.os ?? "windows"} onNav={onNav} />
         <div className="stage-wrap" style={{ flex: 1, minWidth: 0, marginLeft: 8, marginBottom: 8 }}>
@@ -406,10 +512,21 @@ export function SessionPage({
             <div className={cx("frame", drive)} style={{ left, top, width: sw, height: sh }} />
             <div className={cx("stream", bar === "offline" && "desat")} style={{ left, top, width: sw, height: sh }}>
               {c.online !== false && (
-                <Stream host={host} onFrame={() => setHasFrame(true)} onSize={(w, h) => setAspect(w / h)} onScreen={setScreen} />
+                <Stream
+                  host={host}
+                  maxFps={quality.maxFps}
+                  maxLongEdge={quality.maxLongEdge}
+                  bitrateKbps={quality.bitrateKbps}
+                  onFrame={() => setHasFrame(true)}
+                  onSize={(w, h) => setAspect(w / h)}
+                  onScreen={setScreen}
+                  onStats={setStats}
+                  onRestart={resetVideo}
+                  onError={setActionError}
+                />
               )}
-              {bar === "you" && (
-                <RemoteInput host={host} screen={screen} mac={c.os === "mac"} onHandBack={() => void act("hand_back")} />
+              {bar === "you" && hasFrame && screen !== null && (
+                <RemoteInput host={host} screen={screen} mac={c.os === "mac"} onHandBack={() => void act("hand_back")} onError={setActionError} />
               )}
             </div>
             {turn && (
@@ -452,7 +569,7 @@ export function SessionPage({
                 </span>
               </div>
             )}
-            {bar === "connecting" && (
+            {bar === "connecting" && !actionError && (
               <div className="scard" style={{ left: "50%", top: top + sh / 2, transform: "translate(-50%, -50%)" }}>
                 <div className="hd2">{t("conn_title", { host })}</div>
                 <div className="bd">{t("conn_body")}</div>

@@ -18,6 +18,8 @@ mode="${1:-dev}"
 if [[ $# -gt 0 ]]; then shift; fi
 case "$mode" in dev|build) ;; *) echo "Usage: tools/macos.sh [dev|build] [Tauri arguments]" >&2; exit 2 ;; esac
 root="$PWD"
+# ScreenCaptureKit's maintained bridge and our app both require macOS 13 or newer.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 target="$(rustc -vV | sed -n 's/^host: //p')"
 profile=release
 if [[ "$mode" == dev || " $* " == *" --debug "* ]]; then profile=debug; fi

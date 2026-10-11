@@ -115,9 +115,11 @@ flowchart LR
   该设备当前的级别。
 - **ALPN `app/ai-remote/screen/1`。** 给控制端前的人看的被控端实时画面（桌面应用的会话画面；排查时用
   `ai-remote view`）。Windows Graphics Capture 只在屏幕变化时才给出一帧，最新的一帧放在只有一格的缓冲里
-  （网络慢时在编码前就跳过旧帧，绝不排队），OpenH264 以屏幕内容模式编码（控制码率，只在开始和被请求时出关键帧），
-  应用用 WebCodecs 解码。一条流上是 18 字节帧头加 H.264 Annex B；任何有权限级别的设备都能看，观看会写入审计
-  （`view_start`、`view_end`）。硬件编码和 macOS 采集随后提供。
+  （网络慢时在编码前替换旧帧，编码输出最多等待一帧）。macOS 13+ 使用 ScreenCaptureKit 原生事件采集和
+  GPU 缩放，保留 IOSurface 并优先使用经查询确认的 VideoToolbox 硬件 H.264；失败时回退 OpenH264。
+  Windows 当前保留 Graphics Capture + OpenH264。桌面应用用 WebCodecs 解码，iPhone 用 VideoToolbox；
+  静止画面也能重新编码关键帧恢复解码。流上是 18 字节帧头加 H.264 Annex B，任何有权限级别的设备都能看，
+  观看会写入审计（`view_start`、`view_end`）。画质配置和实测范围见[性能说明](stream-performance.md)。
 - （规划中）`app/ai-remote/file/1` 用于大文件传输。
 
 ## 6. 闸门

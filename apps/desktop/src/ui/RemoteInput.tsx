@@ -4,6 +4,8 @@
 
 import { useEffect, useRef } from "react";
 import { api } from "../lib/api";
+import { t } from "../lib/i18n";
+import { createManualInputDispatcher, type ManualInputDispatcher } from "../lib/manual-input";
 
 export interface ScreenRect {
   x: number;
@@ -44,33 +46,58 @@ export function RemoteInput({
   screen,
   mac,
   onHandBack,
+  onError,
 }: {
   host: string;
   screen: ScreenRect | null;
   /** The remote is a Mac (the command key is `cmd` there). */
   mac: boolean;
   onHandBack: () => void;
+  onError?: (message: string | null) => void;
 }) {
   const layer = useRef<HTMLDivElement>(null);
   const down = useRef<{ x: number; y: number; button: number } | null>(null);
   const text = useRef("");
   const flush = useRef<number | null>(null);
   const wheelAt = useRef(0);
+  const dispatcher = useRef<ManualInputDispatcher | null>(null);
+  const callbacks = useRef({ onHandBack, onError });
+  callbacks.current = { onHandBack, onError };
+
+  const cancelPending = () => {
+    if (flush.current !== null) clearTimeout(flush.current);
+    flush.current = null;
+    text.current = "";
+    down.current = null;
+    dispatcher.current?.cancel();
+  };
 
   // Keyboard focus moves to the picture when you take over.
   useEffect(() => {
+    const input = createManualInputDispatcher(
+      (tool, args) => api.callTool(host, tool, args, true),
+      (failure) => {
+        cancelPending();
+        callbacks.current.onError?.(failure.reason === "overflow" ? t("manual_input_overflow") : t("manual_input_failed", { error: failure.message }));
+      },
+    );
+    dispatcher.current = input;
     layer.current?.focus();
     return () => {
-      // A buffered keystroke must never outlive takeover or the session page.
-      if (flush.current !== null) clearTimeout(flush.current);
-      flush.current = null;
-      text.current = "";
-      down.current = null;
+      cancelPending();
+      input.cancel();
+      if (dispatcher.current === input) dispatcher.current = null;
     };
-  }, []);
+  }, [host]);
+
+  // A stream restart or display geometry change invalidates gestures and unsent input.
+  useEffect(() => {
+    cancelPending();
+    return cancelPending;
+  }, [screen?.x, screen?.y, screen?.width, screen?.height]);
 
   const call = (tool: string, args: Record<string, unknown>) => {
-    void api.callTool(host, tool, args, true).catch(() => {});
+    if (dispatcher.current?.enqueue(tool, args)) callbacks.current.onError?.(null);
   };
 
   /** A point of the layer in screen coordinates. */
@@ -94,11 +121,14 @@ export function RemoteInput({
       ref={layer}
       tabIndex={0}
       aria-label="Remote screen"
+      onBlur={cancelPending}
       style={{ position: "absolute", inset: 0, zIndex: 5, outline: "none", cursor: "default" }}
       onPointerDown={(e) => {
         layer.current?.focus();
+        e.currentTarget.setPointerCapture(e.pointerId);
         down.current = { x: e.clientX, y: e.clientY, button: e.button };
       }}
+      onPointerCancel={cancelPending}
       onPointerUp={(e) => {
         const start = down.current;
         down.current = null;
@@ -111,9 +141,8 @@ export function RemoteInput({
           call("mouse", { action: "drag", x: a[0], y: a[1], to_x: b[0], to_y: b[1], space: "screen" });
         } else if (start.button === 1) {
           call("mouse", { action: "middle_click", x: b[0], y: b[1], space: "screen" });
-        } else if (e.detail === 2) {
-          call("mouse", { action: "double_click", x: b[0], y: b[1], space: "screen" });
-        } else if (e.detail === 1) {
+        } else {
+          // PointerEvent.detail is zero for real mouse input; each release is one click.
           call("mouse", { action: "click", x: b[0], y: b[1], space: "screen" });
         }
       }}
@@ -135,7 +164,8 @@ export function RemoteInput({
       onKeyDown={(e) => {
         if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "h") {
           e.preventDefault();
-          onHandBack();
+          cancelPending();
+          callbacks.current.onHandBack();
           return;
         }
         const plain = e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey;
