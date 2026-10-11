@@ -26,17 +26,24 @@ final class PhoneUITests: XCTestCase {
         XCTAssertLessThanOrEqual(ticket.frame.height, 142, "Long text must scroll inside the 140-point editor")
         XCTAssertTrue(submit.exists)
         XCTAssertTrue(submit.isEnabled)
-        // Swipe outside the editor, so an open keyboard can move the Form rather than the text.
-        for _ in 0..<2 where !submit.isHittable {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.75))
-            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.35))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Verify the action with the editing keyboard open")
         XCTAssertTrue(submit.isHittable, "Pair must remain reachable after entering a long ticket")
+        XCTAssertLessThanOrEqual(submit.frame.maxY, app.keyboards.firstMatch.frame.minY, "The pair action must sit above the keyboard")
+        let beforeSubmit = XCTAttachment(screenshot: app.screenshot())
+        beforeSubmit.name = "Long dummy ticket - keyboard open and pair action visible"
+        beforeSubmit.lifetime = .keepAlways
+        add(beforeSubmit)
         submit.tap()
         XCTAssertTrue(app.alerts["需要关注"].waitForExistence(timeout: 15))
         app.alerts["需要关注"].buttons["好"].tap()
         XCTAssertEqual(ticket.value as? String, dummy, "An invalid ticket must remain available for correction")
+        ticket.tap()
+        ticket.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual((ticket.value as? String)?.count, dummy.count - 1, "A rejected ticket must remain editable")
+        ticket.typeText("x")
+        XCTAssertEqual(ticket.value as? String, dummy, "Editing must update the same ticket after a rejected pairing")
+        XCTAssertTrue(submit.isEnabled)
+        XCTAssertTrue(submit.isHittable)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Long dummy pairing ticket - bounded editor and reachable submit"
         screenshot.lifetime = .keepAlways
