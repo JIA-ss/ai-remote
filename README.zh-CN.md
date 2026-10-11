@@ -4,41 +4,61 @@
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/brand/home-dark.zh-CN.svg">
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.zh-CN.svg">
-<img src="assets/brand/home-light.zh-CN.svg" width="880" alt="ai-remote：让 AI 动手，控制权在你。Windows 与 macOS 的 MCP 远程控制；iPhone 控制端源码开发中。">
+<img src="assets/brand/home-light.zh-CN.svg" width="880" alt="ai-remote：AI Native 多端 P2P 远程控制。Mac 与 Windows 已实现；iOS/iPhone、iPadOS/iPad、Android 与 Linux WIP。">
 </picture></p>
-<p align="center"><a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="#你的电脑你的规则">安全机制</a> · <a href="#目前能做什么">平台状态</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
+<p align="center"><a href="#连接你的每一端">平台支持</a> · <a href="#多端-p2p-加密连接">P2P 直连</a> · <a href="#ai-native从协议到控制">AI Native</a> · <a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
 
-**让 MCP 智能体远程操作你的电脑，也让你看得见、随时能接管。**
-把 Codex、Claude Code、Cursor、VS Code 或其他 stdio MCP 客户端接入 ai-remote，即可操作已配对的 Windows 与 Mac：查看屏幕、发送鼠标键盘输入、列出窗口、运行授权的工具。连接经过加密；你可以暂停智能体、接管，再交还控制权。
+**AI Native 多端远程控制，P2P 加密连接你的设备。**
+手机、平板、Mac、PC，与你的 AI，共用一套远程控制核心。通过控制端查看和操作已配对的电脑，也可以接入现有 MCP 智能体，让 AI 动手。你看得见屏幕和操作过程，随时接管，再把控制权交还给 AI。
+
+**Mac + Windows 已实现 · iOS / iPhone WIP · iPadOS / iPad WIP · Android WIP · Linux WIP**
+
+## 连接你的每一端
+
+| 平台 | 角色 | 状态 |
+| :-- | :-- | :-- |
+| **macOS / Mac** | 被控端 + 桌面控制端 | 已实现；Apple Silicon 本机已验证配对、截图、输入与 H.264 屏幕流。[Mac 配置](docs/macos.md) |
+| **Windows / PC** | 被控端 + 桌面控制端 | 已实现；包含 Windows UIA 与原生输入路径。[使用说明](docs/operations.zh-CN.md) · [结构化 UI 验收](docs/structured-ui.md) |
+| **iOS / iPhone** | 原生手机控制端 | **WIP** — 已有 SwiftUI/UniFFI 源码，设备/模拟器 SDK 构建和模拟器界面测试通过；真机远控待验收。[验收记录](docs/iphone-validation.md) |
+| **iPadOS / iPad** | 平板控制端 | **WIP** — iOS 应用已声明支持 iPhone 与 iPad；iPad 布局与真机验收待完成。[源码与构建](apps/ios/README.md) |
+| **Android** | 手机 / 平板控制端 | **WIP** — 规划中，原生应用待实现。 |
+| **Linux** | 桌面被控端 / 控制端 | **WIP** — 桌面能力与平台验收待完成。 |
+
+移动设备的角色是**控制你的电脑**，目前不提供远程操作 iPhone、iPad 或 Android 设备的被控端。Linux 是开发目标，尚不是已支持的桌面平台。
 
 > [!NOTE]
-> **Pre-alpha，需要从源码构建。** Apple Silicon Mac 被控端和桌面应用已通过本机验收。Windows 已有实现。本仓库包含原生 iPhone 控制端源码，**设备/模拟器 SDK 构建，以及模拟器启动与配对界面测试已通过**；iPhone 真机远控仍待验收。目前没有签名发行包或 App Store 应用。[验收记录](docs/iphone-validation.md)
+> **Pre-alpha，需要从源码构建。** 暂无签名发行包或 App Store 应用。Mac 验收使用 Apple Silicon 与 macOS 27；Intel Mac 和较早系统需要独立验证。已有实现、SDK 构建与模拟器测试各有不同的验证范围，见 [Mac 证据](docs/macos.md)、[Windows/Mac UI 证据](docs/structured-ui.md)与 [iPhone 验收记录](docs/iphone-validation.md)。
 
-## 目前能做什么
+## 多端 P2P 加密连接
 
-| 端 | 状态 | 入口 |
-| :-- | :-- | :-- |
-| Windows 被控端 / CLI | 已实现；本轮 Mac 适配未重新做 Windows 运行验收 | [使用说明](docs/operations.zh-CN.md) |
-| macOS 被控端 | 本机已验证配对、截图、输入和 H.264 屏幕流 | [Mac 配置与限制](docs/macos.md) |
-| 桌面控制端 | 电脑列表、实时画面、活动、配对、接管与多 MCP 客户端配置 | [桌面应用](apps/desktop/README.md) |
-| MCP 桥接 | 已验证真实 stdio 初始化、工具列表与已连接智能体记录 | [客户端配置](docs/mcp-clients.md) |
-| iPhone 控制端 | 实验性 SwiftUI/UniFFI 控制端；iOS SDK 构建和模拟器界面测试通过 | [iPhone 构建与验收](apps/ios/README.md) |
+**电脑控制电脑，手机或平板控制电脑，AI 操作已配对的远端。**
+桌面应用、实验性 iOS 控制端与 MCP 桥接复用 Rust 控制核心和加密 QUIC 传输。按设备身份配对，连接你信任的电脑；你亲自操作与 AI 调用工具，都走同一套连接与权限机制。
 
-本轮 Mac 验收使用 Apple Silicon 与 macOS 27。Intel Mac、较早系统仍需独立运行验收。开发版屏幕流已经工作，但当前帧率较低，不作为性能或延迟基准。
-
-## 为什么使用 ai-remote
-
-- **沿用现有智能体。** 一个 MCP 桥接访问你已配对的电脑，无需项目自带的托管 AI 模型。
-- **按设备身份配对。** 一次性票据建立信任；QUIC 优先直连，需要时使用加密中继。
-- **只授予需要的权限。** 每台设备分别设置 observe、control 或 admin。执行前检查权限、轮次、策略与审批。
-- **看见过程，随时介入。** 桌面应用提供实时画面和活动记录；接管期间，智能体的控制调用会被阻止，交还后恢复。
-- **通过已有 MCP 服务扩展。** 指定本地可执行文件与工具白名单挂载服务。内置 `ui_tree`、`ui_read`、`ui_action` 提供 AX/UIA 文本元素树与控件动作；挂载集成可扩展覆盖范围。
+- **P2P 优先直连。** 通过 NAT 打洞尝试设备间直接连接；无法直连时使用加密中继兜底，中继只能看到密文。
+- **配对保留信任关系。** 一次性票据与两端一致的安全码确认身份。新连接会重新尝试连通路径，配对不代表永久直连。
+- **正常使用无需手动端口转发或项目云账号。** 受限网络仍可能导致不可达；被控端可配置自托管中继。[传输架构](docs/architecture.zh-CN.md)
 
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.zh-CN.svg">
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.zh-CN.svg">
-<img src="assets/brand/how-it-works-light.zh-CN.svg" width="880" alt="MCP 客户端连接 ai-remote mcp，再经加密 QUIC 访问已配对的电脑；被控端检查权限、审批并记录审计。">
+<img src="assets/brand/how-it-works-light.zh-CN.svg" width="880" alt="AI 通过本地 MCP 桥接，人通过共享控制核心，使用端到端加密的 P2P QUIC 连接已配对的 Mac 与 Windows；加密中继兜底。iOS、iPadOS、Android 与 Linux 为 WIP。">
 </picture></p>
+
+## AI Native：从协议到控制
+
+**沿用你已有的 Codex、Claude Code、Cursor、VS Code 或任意 stdio MCP 客户端。** 一个 MCP 桥接，把已配对的电脑变成智能体可调用的工具；无需项目自带的托管 AI 模型。
+
+| 能力 | AI 能做什么 |
+| :-- | :-- |
+| **原生 MCP 接入** | 通过本地 stdio 桥接发现和调用远端工具；一份客户端配置访问多台已配对电脑。[客户端配置](docs/mcp-clients.md) |
+| **结构化 UI** | 使用 `ui_tree`、`ui_read`、`ui_action` 读取 macOS AX / Windows UIA 元素树并操作控件，也保留截图能力。[UI 合约](docs/structured-ui.md) |
+| **电脑工具** | 查看屏幕、检查窗口、发送鼠标键盘输入，按权限运行 shell 与后台任务。[工具参考](docs/tools.zh-CN.md) |
+| **人机共享控制** | 你查看实时画面与活动记录；接管时阻止智能体控制调用，交还后恢复。[控制与审批](docs/approvals.zh-CN.md) |
+| **扩展现有集成** | 指定本地可执行文件与工具白名单，挂载已有 MCP 服务。 |
+
+每次执行都由被控端检查权限、轮次、策略与审批。AI 能访问哪些电脑、每台电脑允许哪些操作，由你决定。
+
+桌面屏幕流预设可请求 1080p30、1080p60 或 4K30，并显示实际解码分辨率、帧率和接收码率。macOS 13+ 使用原生 ScreenCaptureKit 与 VideoToolbox 硬件编码，保留软件回退。[性能证据与限制](docs/stream-performance.md)区分编码基准与真实远控表现；预设是请求上限，不是吞吐保证。
 
 ## 从源码开始
 
@@ -128,7 +148,8 @@ node --test tools/mcp-install.test.mjs
 | 阶段 | 下一步 |
 | :-- | :-- |
 | M0–M2 | 持续验证 Windows/Mac，提升捕获性能，完成文件与无障碍能力，签名打包 |
-| M3 | 真机与实际远控验收；Face ID 签名、二维码配对与通知 |
+| M3 | 移动控制端：iOS/iPhone 与 iPadOS/iPad 验收、Android 实现；Face ID 签名、二维码配对与通知 |
+| 平台扩展 | Linux 桌面被控端/控制端支持与验收 |
 | M4 | 可选自托管账号/中继服务与设备共享 |
 
 ## 许可证

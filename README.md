@@ -4,42 +4,61 @@
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/brand/home-dark.svg">
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.svg">
-<img src="assets/brand/home-light.svg" width="880" alt="ai-remote: your agent works, you keep the controls. MCP remote control for Windows and macOS; experimental iPhone controller source.">
+<img src="assets/brand/home-light.svg" width="880" alt="ai-remote: AI-native, multi-device P2P remote control. Mac and Windows implemented; iOS/iPhone, iPadOS/iPad, Android and Linux WIP.">
 </picture></p>
-<p align="center"><a href="#start-from-source">Start from source</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="#your-computers-your-rules">Safety</a> · <a href="#what-works-today">Platform status</a> · <a href="docs/architecture.md">Architecture</a></p>
+<p align="center"><a href="#across-your-devices">Platforms</a> · <a href="#paired-devices-connected-over-p2p">P2P</a> · <a href="#ai-native-from-protocol-to-control">AI Native</a> · <a href="#start-from-source">Get started</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="docs/architecture.md">Architecture</a></p>
 
-**Open-source remote computer control for MCP agents, with a desktop app for the person watching.**
-Use Codex, Claude Code, Cursor, VS Code or another stdio MCP client to operate your paired Windows PCs and Macs. See the screen, send mouse/keyboard input, inspect windows, and run permitted tools over encrypted peer-to-peer connections. Pause the agent, take over, and hand back when you are ready.
+**AI-native remote control across your devices, over encrypted P2P.**
+Your phone, your tablet, your Mac, your PC — and your AI agent, connected through one shared control layer. Use the human apps to view and control your paired computers, or connect your existing MCP agent to do the work. Watch the screen, take over, and hand control back whenever you want.
+
+**Mac + Windows implemented · iOS / iPhone WIP · iPadOS / iPad WIP · Android WIP · Linux WIP**
+
+## Across your devices
+
+| Platform | Role | Status |
+| :-- | :-- | :-- |
+| **macOS / Mac** | Host + desktop controller | Implemented; local Apple Silicon pairing, capture, input and H.264 stream acceptance. [Mac setup](docs/macos.md) |
+| **Windows / PC** | Host + desktop controller | Implemented; Windows UIA and native input paths. [Operations](docs/operations.md) · [Structured UI evidence](docs/structured-ui.md) |
+| **iOS / iPhone** | Native mobile controller | **WIP** — SwiftUI/UniFFI source, device/simulator SDK builds and simulator UI tests; physical remote-control acceptance pending. [Validation](docs/iphone-validation.md) |
+| **iPadOS / iPad** | Tablet controller | **WIP** — the iOS app targets iPhone and iPad; iPad layout and real-device acceptance pending. [Source and builds](apps/ios/README.md) |
+| **Android** | Phone / tablet controller | **WIP** — planned; native app implementation pending. |
+| **Linux** | Desktop host / controller | **WIP** — desktop support and platform acceptance pending. |
+
+Mobile devices are **controllers for your computers**. The project does not currently host a remotely controlled iPhone, iPad or Android device. Linux is a development target, not a supported desktop today.
 
 > [!NOTE]
-> **Pre-alpha, build from source.** The Mac host and desktop app have passed local acceptance on Apple Silicon. Windows has an existing implementation. The native iPhone controller source is present, with **device/simulator SDK builds and simulator startup/pairing UI tests passed**. Physical iPhone remote-control acceptance is still deferred. No signed releases or App Store app are available. [Validation](docs/iphone-validation.md)
+> **Pre-alpha; build from source.** No signed release or App Store app is available. Mac acceptance used Apple Silicon and macOS 27; Intel Macs and older systems need runtime checks. Platform implementation, SDK builds and simulator tests have different validation scopes. See [Mac evidence](docs/macos.md), [Windows/Mac UI evidence](docs/structured-ui.md) and [iPhone validation](docs/iphone-validation.md).
 
-## What works today
+## Paired devices, connected over P2P
 
-| Surface | Status | Start here |
-| :-- | :-- | :-- |
-| Windows host / CLI | Implemented; not revalidated on Windows in the latest Mac pass | [Operations](docs/operations.md) |
-| macOS host | Pairing, screenshots, input and H.264 stream accepted locally | [Mac setup and limits](docs/macos.md) |
-| Desktop controller | Computers, live view, activity, pairing, takeover and MCP-client setup | [Desktop app](apps/desktop/README.md) |
-| MCP bridge | Real stdio initialization, tools/list and connected-client tracking verified | [Client setup](docs/mcp-clients.md) |
-| iPhone controller | Experimental SwiftUI/UniFFI controller; iOS SDK builds and simulator UI tests passed | [iPhone build and acceptance](apps/ios/README.md) |
+**Computer to computer. Phone or tablet to computer. Your agent to your paired hosts.**
+The desktop apps, experimental iOS controller and MCP bridge share the Rust controller and encrypted QUIC transport. Pair by device identity, then reach the computers you trust — whether you drive them yourself or hand the tools to your agent.
 
-The Mac acceptance used macOS 27 on Apple Silicon. Intel Macs and older OS versions need their own runtime checks. The development video stream is functional but currently low-rate; it is not a latency or FPS benchmark.
-
-## Why use ai-remote
-
-- **Bring your existing agent.** One MCP bridge reaches the computers you paired; the project does not require its own hosted AI model.
-- **Pair by device identity.** One-time tickets establish trust. QUIC uses direct paths when available and encrypted relay fallback when needed.
-- **Give only the access needed.** Each device is observe, control or admin. The host checks permission, turn, policy and approval before a tool runs.
-- **Watch and intervene.** The human app shows live video and an activity feed. Taking over stops the agent's control calls until you hand back.
-- **Choose stream quality.** Desktop presets request1080p30,1080p60 or4K30, with actual decoded resolution/frame rate and received bitrate. macOS13+ uses native ScreenCaptureKit and verified VideoToolbox hardware encoding, with software fallback. [Measurements and limits](docs/stream-performance.md) distinguish encoder benchmarks from live remote performance.
-- **Extend through existing MCP servers.** Mount a local server with a pinned executable and an explicit tool allowlist. Built-in `ui_tree`, `ui_read` and `ui_action` provide text-first AX/UIA controls; mounted integrations can extend coverage.
+- **P2P first.** NAT hole punching attempts a direct device-to-device path. If a direct path is unavailable, an encrypted relay carries the traffic; it sees ciphertext.
+- **Pair once, keep trust.** One-time tickets and a matching safety code establish device identity. A fresh connection reattempts connectivity; pairing does not promise a permanent direct path.
+- **No manual port forwarding or project cloud account in normal setup.** Restrictive networks can still prevent a connection. Self-hosted relays can be configured on the host. [Transport architecture](docs/architecture.md)
 
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/brand/how-it-works-dark.svg">
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/how-it-works-light.svg">
-<img src="assets/brand/how-it-works-light.svg" width="880" alt="An MCP client connects to ai-remote mcp, which reaches paired computer hosts over encrypted QUIC; the host enforces levels, approval and audit.">
+<img src="assets/brand/how-it-works-light.svg" width="880" alt="AI agents connect through the local MCP bridge; human apps use the shared controller. Both reach paired Mac and Windows hosts over encrypted P2P QUIC, with relay fallback. iOS, iPadOS, Android and Linux are WIP.">
 </picture></p>
+
+## AI-native, from protocol to control
+
+**Bring the agent you already use: Codex, Claude Code, Cursor, VS Code, or any stdio MCP client.** One MCP bridge exposes your paired computers as tools; no ai-remote hosted model is required.
+
+| Capability | What your agent can do |
+| :-- | :-- |
+| **Native MCP** | Discover and call remote tools through the local stdio bridge; reach multiple paired hosts from one client configuration. [Client setup](docs/mcp-clients.md) |
+| **Structured UI** | Read native macOS AX / Windows UIA trees and act on elements with `ui_tree`, `ui_read` and `ui_action`, alongside screenshots. [UI contracts](docs/structured-ui.md) |
+| **Computer tools** | Capture screens, inspect windows, send mouse/keyboard input, and run shell/background jobs at the permitted access level. [Tools](docs/tools.md) |
+| **Shared human / agent control** | Watch live video and activity. Taking over stops agent control calls; handing back lets the agent resume. [Control and approvals](docs/approvals.md) |
+| **Extensible integrations** | Mount existing local MCP servers with a pinned executable and an explicit tool allowlist. |
+
+The host checks access level, turn, policy and approval before executing tools. You decide which computers the agent can reach and what it can do on each one.
+
+Desktop stream presets request 1080p30, 1080p60 or 4K30 and show actual decoded resolution/frame rate and received bitrate. macOS 13+ uses native ScreenCaptureKit and VideoToolbox hardware encoding, with software fallback. [Measurements and limits](docs/stream-performance.md) separate encoder benchmarks from live remote performance; presets are requested limits, not guaranteed throughput.
 
 ## Start from source
 
@@ -129,7 +148,8 @@ node --test tools/mcp-install.test.mjs
 | Stage | Next work |
 | :-- | :-- |
 | M0–M2 | Continue Windows/Mac acceptance, improve capture performance, complete file/accessibility work and signed packaging |
-| M3 | Physical phone/remote-session acceptance; Face ID signing, QR pairing and notifications |
+| M3 | Mobile controllers: iOS/iPhone and iPadOS/iPad acceptance, Android implementation; Face ID signing, QR pairing and notifications |
+| Platform expansion | Linux desktop host/controller support and acceptance |
 | M4 | Optional self-hosted account/relay services and device sharing |
 
 ## License
