@@ -32,14 +32,22 @@ pub fn install_plan(profile: &Profile) -> Result<Plan> {
     // renamed copy through the descriptor it holds.
     let stderr_log = profile.role_dir(Role::Host)?.join("host-stderr.log");
     let plist = launchd::launch_agent_plist(&label(profile), &bins.hostw, profile.root(), &stderr_log)?;
+    let responsible_bundle = launchd::responsible_bundle_identifier(&bins.hostw)?;
+    let privacy_note = match responsible_bundle {
+        Some(id) => format!(
+            "The LaunchAgent is associated with the enclosing app {id}. Verify Screen Recording and Accessibility \
+             in System Settings > Privacy & Security, restart the host, then run doctor."
+        ),
+        None => "This standalone host has no associated app bundle. Grant Screen Recording and Accessibility to \
+                 ai-remote-hostw in System Settings > Privacy & Security, restart the host, then run doctor."
+            .into(),
+    };
     let target = format!("{domain}/{}", label(profile));
     Ok(Plan {
         summary: format!("Install autostart for the ai-remote host (profile {})", profile.root().display()),
         notes: vec![
             format!("The LaunchAgent {} starts {} at login.", label(profile), bins.hostw.display()),
-            "Grant Screen Recording and Accessibility to ai-remote-hostw in System Settings > Privacy & Security, \
-             restart the host, then run doctor. Remote tools do not open permission prompts."
-                .into(),
+            privacy_note,
         ],
         actions: vec![
             Action::WriteFile { path: path.clone(), contents: plist.clone().into_bytes(), preview: plist },
