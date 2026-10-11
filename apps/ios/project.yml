@@ -53,6 +53,7 @@ targets:
     sources: [Tests]
     dependencies:
       - target: AIRemote
+      - package: AIRemotePhone
     settings:
       base:
         SWIFT_VERSION: "5.0"

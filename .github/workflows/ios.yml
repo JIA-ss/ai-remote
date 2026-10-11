@@ -8,9 +8,9 @@ on:
         type: string
   push:
     branches: [main]
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", ".github/workflows/ios.yml"]
   pull_request:
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", ".github/workflows/ios.yml"]
 permissions:
   contents: read
 concurrency:
@@ -58,6 +58,8 @@ jobs:
           PY
       - name: Verify IPA packaging boundaries
         run: python3 tools/test_package_ios_ipa.py
+      - name: Verify viewport geometry and input mapping
+        run: tools/test-phone-viewport.sh
       - uses: actions/cache/restore@v4
         id: rust-cache
         with:
@@ -67,6 +69,9 @@ jobs:
             target/debug/.fingerprint
             target/debug/build
             target/debug/deps
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
             target/aarch64-apple-ios/release
             target/aarch64-apple-ios-sim/release
           key: ios-rust-1.95-sdk-${{ steps.sdk.outputs.version }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
@@ -165,6 +170,9 @@ jobs:
             target/debug/.fingerprint
             target/debug/build
             target/debug/deps
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
             target/aarch64-apple-ios/release
             target/aarch64-apple-ios-sim/release
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}

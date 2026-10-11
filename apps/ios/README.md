@@ -15,6 +15,23 @@ controller closes/reopens with a stable identity even at iOS-length sandbox path
 host protocol smoke is `tools/phone-core-smoke.py`. This is not a simulator/device test. Native
 iOS SDK builds run locally through Xcode and in the [public iPhone CI](https://github.com/JIA-ss/ai-remote/actions/workflows/ios.yml). CI also launches an iPhone simulator and tests initial pairing/error UI; physical phone acceptance remains required.
 
+## View and operate the desktop
+
+Use the upper-right fullscreen button to hide navigation and status bars. Fit keeps the complete
+desktop inside the phone's notch and corner safe area; **Fill screen** in the control menu enlarges
+it to cover the viewport. Pinch to zoom and use two fingers to pan. Local zoom and pan reuse the
+decoded image and retain their focus when the phone rotates.
+
+After taking over, one-finger taps and drags operate the desktop. Letterbox taps are ignored, and
+adding a second finger cancels pending remote input. The floating toolbar keeps takeover/handback
+and emergency pause available. Open **Keyboard** when needed; close the drawer to recover the
+viewing area. Scroll and shortcut keys are in **More controls**.
+
+`tools/test-phone-viewport.sh` checks geometry and host-point mapping. Simulator UI fixtures use
+the production session view with an explicitly labelled static image; they validate fullscreen,
+safe-area fit, zoom and pointer callbacks. Those fixtures exist only in Debug builds. Real text
+delivery, handback and physical-phone acceptance are verified separately.
+
 ## Build
 
 Install full Xcode with the iOS platform, Rust via rustup, and XcodeGen (`brew install xcodegen`).
