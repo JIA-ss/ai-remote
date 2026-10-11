@@ -61,28 +61,39 @@ final class PhoneUITests: XCTestCase {
         assertPointerMapping(app: app, viewport: viewport, start: CGPoint(x: 0.4, y: 0.5), end: CGPoint(x: 0.6, y: 0.5))
         attach(app, name: "Production session fixture - zoomed native viewport")
 
+        let beforeFitInput = fixtureSequence(input)
         app.buttons["session-fit"].tap()
         waitFor("fit restored") {
             let value = self.viewportMetrics(viewport)
             return abs((value["zoom"] ?? 0) - (value["fit"] ?? 1)) < 0.001
         }
+        XCTAssertEqual(fixtureSequence(input), beforeFitInput, "Local fit must not emit remote input")
         XCTAssertFalse(app.textFields["session-text"].exists, "Keyboard and shortcuts must start collapsed")
-        app.buttons["session-controls-toggle"].tap()
-        XCTAssertFalse(app.buttons["session-keyboard"].exists)
+        let controls = app.buttons["session-controls-toggle"]
+        let beforeControlsInput = fixtureSequence(input)
+        controls.tap()
+        waitFor("controls collapsed") { controls.label == "展开控制栏" && !app.buttons["session-keyboard"].exists }
+        XCTAssertEqual(fixtureSequence(input), beforeControlsInput, "A local toolbar action must not emit remote input")
         XCTAssertTrue(app.buttons["session-agent"].isHittable)
         XCTAssertTrue(app.buttons["session-take-over"].isHittable)
-        app.buttons["session-controls-toggle"].tap()
+        controls.tap()
+        waitFor("controls expanded") { controls.label == "收起控制栏" && app.buttons["session-keyboard"].isHittable }
+        XCTAssertEqual(fixtureSequence(input), beforeControlsInput)
+        let beforeKeyboardInput = fixtureSequence(input)
         app.buttons["session-keyboard"].tap()
         let field = app.textFields["session-text"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(fixtureSequence(input), beforeKeyboardInput, "Opening a local keyboard must not emit remote input")
         field.typeText("UI-only draft")
         let close = app.buttons["session-keyboard-close"]
         XCTAssertTrue(close.isHittable)
         XCTAssertLessThanOrEqual(close.frame.maxY, app.keyboards.firstMatch.frame.minY)
         attach(app, name: "Production session fixture - explicit keyboard drawer")
+        let beforeCloseInput = fixtureSequence(input)
         close.tap()
         waitFor("keyboard drawer closed") { !app.keyboards.firstMatch.exists && !field.exists }
+        XCTAssertEqual(fixtureSequence(input), beforeCloseInput, "Closing a local keyboard must not emit remote input")
         waitFor("fullscreen picture recovered after keyboard") {
             let value = self.viewportMetrics(viewport)
             return (value["displayed_width"] ?? 0) >= (value["available_width"] ?? 1) * 0.9

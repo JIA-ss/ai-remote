@@ -236,13 +236,15 @@ public struct PhoneRootView: View {
     private var floatingControls: some View {
         HStack(spacing: 6) {
             turnButton
-            agentButton.labelStyle(.iconOnly).frame(width: 44, height: 44)
+            agentButton
             if controlsExpanded {
-                Button("键盘", systemImage: "keyboard") {
+                Button {
                     showKeyboard.toggle()
                     textFocused = showKeyboard
+                } label: {
+                    Image(systemName: "keyboard").frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                .buttonStyle(.plain).accessibilityLabel("键盘")
                 .disabled(!store.connected || !store.ownsControls)
                 .accessibilityIdentifier("session-keyboard")
                 Menu {
@@ -265,10 +267,13 @@ public struct PhoneRootView: View {
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                 .accessibilityLabel("更多控制").accessibilityIdentifier("session-menu")
             }
-            Button(controlsExpanded ? "收起控制栏" : "展开控制栏", systemImage: controlsExpanded ? "chevron.down" : "chevron.up") {
+            Button {
                 controlsExpanded.toggle()
+            } label: {
+                Image(systemName: controlsExpanded ? "chevron.down" : "chevron.up")
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
-            .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            .buttonStyle(.plain).accessibilityLabel(controlsExpanded ? "收起控制栏" : "展开控制栏")
             .accessibilityIdentifier("session-controls-toggle")
         }
         .buttonStyle(.plain).padding(6).modifier(PhoneGlassSurface())
@@ -281,14 +286,19 @@ public struct PhoneRootView: View {
                 .modifier(PhoneSurface(cornerRadius: 16)).focused($textFocused)
                 .disabled(!store.connected || !store.ownsControls)
                 .onSubmit { sendText() }.accessibilityIdentifier("session-text")
-            Button("发送", systemImage: "arrow.up.circle.fill") { sendText() }
-                .labelStyle(.iconOnly).font(.title2).frame(width: 44, height: 44)
+            Button { sendText() } label: {
+                Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+                .buttonStyle(.plain).accessibilityLabel("发送")
                 .disabled(store.text.isEmpty || !store.connected || !store.ownsControls)
                 .accessibilityIdentifier("session-send")
-            Button("收起键盘", systemImage: "keyboard.chevron.compact.down") {
+            Button {
                 textFocused = false; showKeyboard = false
+            } label: {
+                Image(systemName: "keyboard.chevron.compact.down").frame(width: 44, height: 44).contentShape(Rectangle())
             }
-            .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            .buttonStyle(.plain).accessibilityLabel("收起键盘")
             .accessibilityIdentifier("session-keyboard-close")
         }
         .padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
@@ -319,10 +329,13 @@ public struct PhoneRootView: View {
     }
 
     private var agentButton: some View {
-        Button(store.driver == "paused" ? "继续智能体" : "暂停智能体", systemImage: store.driver == "paused" ? "play.fill" : "pause.fill") {
+        Button {
             Task { await store.setTurn(store.driver == "paused" ? "resume" : "pause") }
+        } label: {
+            Image(systemName: store.driver == "paused" ? "play.fill" : "pause.fill")
+                .font(.subheadline.weight(.medium)).frame(width: 44, height: 44).contentShape(Rectangle())
         }
-        .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+        .buttonStyle(.plain).accessibilityLabel(store.driver == "paused" ? "继续智能体" : "暂停智能体")
         .accessibilityIdentifier("session-agent")
         // Pause remains an emergency action even before video arrives or after it fails.
         .disabled(store.driver == "paused" && !store.mayControl)
