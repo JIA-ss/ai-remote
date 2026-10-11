@@ -257,17 +257,6 @@ public struct PhoneRootView: View {
                     TextEditor(text: $store.pairingCode).frame(height: 140).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
                         .ticketCapitalizationDisabled().accessibilityIdentifier("pairing-ticket")
                         .scrollContentBackground(.hidden).padding(8).modifier(PhoneSurface(cornerRadius: 18))
-                    Button { Task { await store.pair() } } label: {
-                        HStack {
-                            Spacer()
-                            if store.loading { ProgressView() }
-                            Text(store.loading ? "正在配对…" : "配对").fontWeight(.semibold)
-                            Spacer()
-                        }.frame(minHeight: 32)
-                    }
-                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large)
-                    .disabled(store.loading || store.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("pair-submit")
                 }
                 if let code = store.safetyCode {
                     Section("核对安全码") {
@@ -276,6 +265,20 @@ public struct PhoneRootView: View {
                         Text("请确认电脑上显示的是相同的三个单词。配对票据使用一次后失效。").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                // Keep the primary action above the keyboard while the ticket scrolls.
+                Button { Task { await store.pair() } } label: {
+                    HStack(spacing: 8) {
+                        if store.loading { ProgressView() }
+                        Text(store.loading ? "正在配对…" : "配对").fontWeight(.semibold)
+                    }.frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large)
+                .disabled(store.loading || store.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("pair-submit")
+                .padding(.horizontal, 20).padding(.vertical, 12)
+                .background(.bar)
             }
             .navigationTitle("配对电脑")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { store.pairSheet = false } } }
