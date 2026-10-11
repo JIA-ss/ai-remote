@@ -173,7 +173,8 @@ export const demoBackend: Backend = {
   },
   async subscribe(host, onEvent) {
     reachable(host);
-    onEvent({ kind: "hello", host, version: "demo", pending: pending.get(host) ?? [], driver: drivers.get(host) ?? { state: "agent" } });
+    onEvent({ kind: "hello", host, version: "demo", os: host === "studio-mac" ? "macos" : "windows", level: hosts.find((h) => h.name === host)?.levelAtPairing,
+      pending: pending.get(host) ?? [], driver: drivers.get(host) ?? { state: "agent" } });
     for (const e of history.get(host) ?? []) onEvent(e);
     const set = listeners.get(host) ?? new Set<(e: FeedEvent) => void>();
     set.add(onEvent);
@@ -239,6 +240,9 @@ export const demoBackend: Backend = {
         tool("system_info", "observe", "allow", "Machine name, OS, screens and whether the desktop can be used."),
         tool("screenshot", "observe", "allow", "A picture of one screen."),
         tool("list_windows", "observe", "allow", "Open windows with their titles."),
+        tool("ui_tree", "observe", "allow", "A native accessibility tree with bounded, session-bound references."),
+        tool("ui_read", "observe", "allow", "Read one element from the current accessibility snapshot."),
+        tool("ui_action", "control", "allow", "Act on one element from the current accessibility snapshot."),
         tool("mouse", "control", "allow", "Move, click and drag."),
         tool("keyboard", "control", "allow", "Type text and press keys."),
         tool("clipboard_read", "control", "allow", "Read the clipboard."),
@@ -256,16 +260,6 @@ export const demoBackend: Backend = {
             tool("git_diff", "admin", "allow", "Show changes."),
             tool("git_commit", "admin", "allow", "Record staged changes."),
             tool("git_push", "admin", "ask", "Send commits to a remote."),
-          ],
-        },
-        {
-          name: "ui",
-          needs_desktop: true,
-          lazy: false,
-          tools: [
-            tool("ui_tree", "observe", "allow", "The window's accessibility tree with element ids."),
-            tool("ui_click", "control", "allow", "Click an element by id."),
-            tool("ui_launch_app", "control", "ask", "Start an app."),
           ],
         },
       ],

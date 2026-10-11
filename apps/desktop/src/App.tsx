@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { api } from "./lib/api";
 import { t } from "./lib/i18n";
-import { allPending, groupOf, store, useStore } from "./lib/store";
+import { allPending, store, useStore } from "./lib/store";
+import { DevicesPage } from "./ui/Devices";
 import { ActivityPage, ApprovalsPage, ComputerPage, EmptyPage, PairPage, WelcomePage } from "./ui/Pages";
 import { SessionPage } from "./ui/Session";
 import { SettingsWindow } from "./ui/Settings";
@@ -18,7 +19,7 @@ function initialView(): View {
   const v = q.get("view");
   const host = q.get("host");
   if (v === "session" && host) return { kind: "session", host };
-  if (v === "approvals" || v === "activity" || v === "pair" || v === "settings") return { kind: "main", nav: v };
+  if (v === "devices" || v === "approvals" || v === "activity" || v === "pair" || v === "settings") return { kind: "main", nav: v };
   if (v === "computer" && host) return { kind: "main", nav: { computer: host } };
   return { kind: "main", nav: null };
 }
@@ -38,6 +39,7 @@ export default function App() {
   const [view, setView] = useState<View>(initialView);
   const [device, setDevice] = useState("this device");
   const [welcomed, setWelcomed] = useState(initialWelcomed);
+  const [deviceQuery, setDeviceQuery] = useState("");
   const welcome = () => {
     localStorage.setItem(WELCOMED, "1");
     setWelcomed(true);
@@ -58,7 +60,7 @@ export default function App() {
 
   const waiting = allPending(snap).length;
   const nav = (n: Nav | "home") =>
-    setView({ kind: "main", nav: n === "home" ? null : n });
+    setView({ kind: "main", nav: n === "home" ? "devices" : n });
 
   if (view.kind === "session") {
     const c = snap.computers.find((x) => x.host.name === view.host);
@@ -77,15 +79,26 @@ export default function App() {
 
   if (view.kind === "main" && view.nav === "settings") return <SettingsWindow onBack={() => nav("home")} />;
 
-  // With nothing chosen, open the computer that most needs attention.
-  const order = ["needs", "you", "working", "idle", "offline"] as const;
-  const first = [...snap.computers].sort((a, b) => order.indexOf(groupOf(a, now)) - order.indexOf(groupOf(b, now)))[0];
-  const active: Nav | null = view.kind === "main" ? (view.nav ?? (first ? { computer: first.host.name } : null)) : null;
+  // Start with the whole workspace, so attention and connection state are visible at a glance.
+  const active: Nav = view.kind === "main" ? (view.nav ?? "devices") : "devices";
   const computer = active && typeof active === "object" ? snap.computers.find((c) => c.host.name === active.computer) : undefined;
 
   let page: React.ReactNode;
   if (!snap.ready) page = <div className="cpage body c2">{t("starting")}</div>;
   else if (snap.error) page = <div className="cpage body c-danger">{snap.error}</div>;
+  else if (active === "devices")
+    page = (
+      <DevicesPage
+        computers={snap.computers}
+        now={now}
+        query={deviceQuery}
+        onQuery={setDeviceQuery}
+        onPair={() => nav("pair")}
+        onApprovals={() => nav("approvals")}
+        onDetails={(host) => nav({ computer: host })}
+        onWatch={(host) => setView({ kind: "session", host })}
+      />
+    );
   else if (active === "approvals") page = <ApprovalsPage snap={snap} />;
   else if (active === "activity") page = <ActivityPage snap={snap} />;
   else if (active === "pair")
@@ -130,7 +143,15 @@ export default function App() {
     <div className="win" style={{ width: "100vw", height: "100vh" }}>
       <TitleBar />
       <div className="body-row">
-        <Sidebar computers={snap.computers} active={active} waiting={waiting} now={now} onNav={(n) => setView({ kind: "main", nav: n })} />
+        <Sidebar
+          computers={snap.computers}
+          active={active}
+          waiting={waiting}
+          now={now}
+          query={deviceQuery}
+          onQuery={setDeviceQuery}
+          onNav={(n) => setView({ kind: "main", nav: n })}
+        />
         <main className="page">{page}</main>
       </div>
     </div>

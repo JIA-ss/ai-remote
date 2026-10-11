@@ -17,7 +17,13 @@ cd ../..
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 node --test tools/mcp-install.test.mjs
+node --test tools/desktop-state.test.mjs
 ```
+
+For desktop UI changes, run `npm run dev` in `apps/desktop`, then
+`python3 tools/desktop-ui-smoke.py` from the root. This uses the durable headless Camofox
+`general` session and a labelled browser demo. Reports and screenshots are saved under
+`target/ui-modernization/browser`; they do not replace native Tauri, video or device acceptance.
 
 See [Mac development](docs/macos.md), [iPhone development](apps/ios/README.md) and
 [operations](docs/operations.md) for prerequisites and isolated host/controller profiles.

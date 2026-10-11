@@ -104,29 +104,29 @@ export function ComputerPage({
       <div className="cp-top">
         <span className="tile">
           <OsGlyph os={c.os ?? "windows"} size={16} />
-          <i className={cx("pd", off && "off")} />
+          <i className={cx("pd", (off || c.online === null) && "off")} />
         </span>
         <span className="nm">{c.host.name}</span>
         <span className="facts">
           <Facts items={computerFacts(c)} />
           <span>
-            <i className={off ? "off" : "on"} />
-            {off ? t("st_offline") : t("live")}
+            <i className={c.online === true ? "on" : "off"} />
+            {off ? t("st_offline") : c.online === null ? t("st_connecting") : t("live")}
           </span>
         </span>
         <div className="seg fit" role="tablist">
           {tabs.map(([k, label]) => (
-            <span
+            <button
+              type="button"
               key={k}
               className={cx(k === tab && "sel")}
               role="tab"
               tabIndex={0}
               aria-selected={k === tab}
               onClick={() => (k === "activity" ? onActivity() : setTab(k))}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (k === "activity" ? onActivity() : setTab(k))}
             >
               {t(label)}
-            </span>
+            </button>
           ))}
         </div>
       </div>
@@ -208,9 +208,9 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
         <div>
           <div className="colh">
             {t("recent_steps")}
-            <span className="end" role="button" tabIndex={0} onClick={onActivity}>
+            <button className="end" onClick={onActivity}>
               {t("see_all")}
-            </span>
+            </button>
           </div>
           {c.feed.steps.length === 0 ? <div className="body c3">{t("no_steps")}</div> : <StepRows steps={[...c.feed.steps].reverse().slice(0, recent)} />}
         </div>

@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
-import { detectOs } from "../lib/platform";
+import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
 import type { AgentStatus } from "../lib/types";
@@ -112,6 +112,8 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
 
 function General({ version }: { version?: string }) {
   const [choice, setChoice] = useState(langChoice());
+  const [appearance, setAppearance] = useState(themeChoice());
+  const [opaque, setOpaque] = useState(reducedTransparency());
   return (
     <div className="grp">
       <Row ic={<Icon name="globe" />} tt={t("gn_lang")} ds={t(mac ? "gn_lang_d_mac" : "gn_lang_d")}>
@@ -135,11 +137,32 @@ function General({ version }: { version?: string }) {
           <Icon name="chevD" size={12} />
         </span>
       </Row>
-      <Row ic={<Icon name="monitor" />} tt={t("gn_theme")} ds={t(mac ? "gn_theme_d_mac" : "gn_theme_d")}>
-        <button className="btn" onClick={() => void api.openAppearanceSettings().catch(() => {})}>
-          <Icon name="open" size={14} />
-          {t(mac ? "gn_open_mac" : "gn_open_win")}
-        </button>
+      <Row ic={<Icon name="monitor" />} tt={t("gn_theme_choice")}>
+        <span className="dd-wrap">
+          <select className="dd" aria-label={t("gn_theme_choice")} value={appearance} onChange={(e) => {
+            const next = e.target.value as ThemeChoice;
+            setAppearance(next);
+            setThemeChoice(next);
+          }}>
+            <option value="system">{t("gn_theme_system")}</option>
+            <option value="light">{t("gn_theme_light")}</option>
+            <option value="dark">{t("gn_theme_dark")}</option>
+          </select>
+          <Icon name="chevD" size={12} />
+        </span>
+      </Row>
+      <Row ic={<Icon name="eye" />} tt={t("gn_transparency")} ds={t("gn_transparency_d")}>
+        <span className="dd-wrap">
+          <select className="dd" aria-label={t("gn_transparency")} value={opaque ? "reduced" : "full"} onChange={(e) => {
+            const next = e.target.value === "reduced";
+            setOpaque(next);
+            setReducedTransparency(next);
+          }}>
+            <option value="full">{t("gn_glass_on")}</option>
+            <option value="reduced">{t("gn_glass_off")}</option>
+          </select>
+          <Icon name="chevD" size={12} />
+        </span>
       </Row>
       <Row ic={<Icon name="keyboard" />} tt={t("gn_hotkey")} ds={t("gn_hotkey_d")}>
         <span className="kbd" style={{ fontSize: 13, lineHeight: "22px", padding: "0 8px", color: "var(--text-1)" }}>

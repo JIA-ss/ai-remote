@@ -51,6 +51,8 @@ class Store {
   private listeners = new Set<() => void>();
   private stops = new Map<string, () => void>();
   private started = false;
+  private metadataTimer: ReturnType<typeof setTimeout> | null = null;
+  private metadataRevision = 0;
 
   subscribe = (l: () => void) => {
     this.listeners.add(l);
@@ -79,10 +81,10 @@ class Store {
     try {
       const hosts = await api.hosts();
       const known = new Map(this.snap.computers.map((c) => [c.host.name, c]));
-      const computers = hosts.map(
-        (host) =>
-          known.get(host.name) ?? { host, feed: emptyFeed, os: null, online: null, problem: null, since: null },
-      );
+      const computers = hosts.map((host) => {
+        const previous = known.get(host.name);
+        return previous ? { ...previous, host } : { host, feed: emptyFeed, os: null, online: null, problem: null, since: null };
+      });
       for (const [name, stop] of this.stops) {
         if (!hosts.some((h) => h.name === name)) {
           stop();
@@ -116,17 +118,38 @@ class Store {
     }
   }
 
+  /** The initial host list can predate the connection. Query paths after a hello/reconnect. */
+  private refreshMetadataSoon() {
+    const revision = ++this.metadataRevision;
+    if (this.metadataTimer) clearTimeout(this.metadataTimer);
+    this.metadataTimer = setTimeout(async () => {
+      this.metadataTimer = null;
+      try {
+        const hosts = await api.hosts();
+        if (revision !== this.metadataRevision) return;
+        const latest = new Map(hosts.map((host) => [host.name, host]));
+        this.set({ ...this.snap, computers: this.snap.computers.map((c) => {
+          const host = latest.get(c.host.name);
+          return host ? { ...c, host } : c;
+        }) });
+      } catch {
+        // Keep unknown paths until the local controller can report them again.
+      }
+    }, 250);
+  }
+
   private onEvent(name: string, e: FeedEvent) {
+    if (e.kind === "hello" || e.kind === "closed") this.refreshMetadataSoon();
     this.update(name, (c) => {
       const feed = reduceFeed(c.feed, e);
       if (e.kind === "hello") {
         const os = e.os === "macos" ? "mac" : e.os === "windows" ? "windows" : c.os;
-        return { ...c, feed, os, online: true, problem: null, since: null };
+        return { ...c, host: { ...c.host, path: null }, feed, os, online: true, problem: null, since: null };
       }
       if (e.kind === "closed") {
         this.stops.delete(name);
         setTimeout(() => void this.follow(name), 5_000);
-        return { ...c, feed, online: false, since: Date.now() };
+        return { ...c, host: { ...c.host, path: null }, feed, online: false, since: Date.now() };
       }
       if (e.kind === "session_end") return { ...c, feed, since: e.ts };
       return { ...c, feed };
