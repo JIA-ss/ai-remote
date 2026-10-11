@@ -7,13 +7,22 @@ import UIKit
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
-            PhoneRootView(store: store)
-                .task { await store.resume() }
-                .onChange(of: phase) { _, value in
-                    if value == .active { Task { await store.resume() } }
-                    else if value == .background { finishBackgroundSession() }
-                }
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-ui-viewport-fixture") {
+                PhoneViewportFixtureView()
+            } else { liveView }
+            #else
+            liveView
+            #endif
         }
+    }
+    private var liveView: some View {
+        PhoneRootView(store: store)
+            .task { await store.resume() }
+            .onChange(of: phase) { _, value in
+                if value == .active { Task { await store.resume() } }
+                else if value == .background { finishBackgroundSession() }
+            }
     }
     private func finishBackgroundSession() {
         let cleanup = BackgroundCleanup()

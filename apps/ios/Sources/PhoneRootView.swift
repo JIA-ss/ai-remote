@@ -3,6 +3,18 @@ import SwiftUI
 public struct PhoneRootView: View {
     @Bindable var store: PhoneStore
     @Environment(\.colorScheme) private var colorScheme
+    @PhoneViewState<Bool> private var fullscreen = false
+    @PhoneViewState<Bool> private var controlsExpanded = true
+    @PhoneViewState<Bool> private var showKeyboard = false
+    @PhoneViewState<PhoneViewportRequest> private var viewportRequest = PhoneViewportRequest()
+    @FocusState private var textFocused: Bool
+    #if DEBUG
+    private var fixtureInputObserver: ((String, [String: JSONValue]) -> Void)? = nil
+    public init(store: PhoneStore, fixtureInputObserver: @escaping (String, [String: JSONValue]) -> Void) {
+        self.store = store
+        self.fixtureInputObserver = fixtureInputObserver
+    }
+    #endif
     public init(store: PhoneStore) { self.store = store }
 
     public var body: some View {
@@ -13,6 +25,7 @@ public struct PhoneRootView: View {
             }
             .background(canvas)
             .navigationTitle(store.selected?.name ?? "电脑")
+            .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
             .toolbar {
                 if store.selected != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
@@ -24,6 +37,11 @@ public struct PhoneRootView: View {
             .sheet(isPresented: $store.pairSheet) { pairing }
             .sheet(isPresented: $store.showActivity) { activity }
             .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
+            .onChange(of: store.selected?.name) { _, _ in
+                fullscreen = false; showKeyboard = false; textFocused = false
+                controlsExpanded = true
+                requestViewport(.fit)
+            }
         }
         .tint(.blue)
     }
@@ -114,15 +132,42 @@ public struct PhoneRootView: View {
     }
 
     private func session(_ host: PhoneHost) -> some View {
-        VStack(spacing: 12) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { connectionStatus; Spacer(minLength: 8); turnButton }
-                VStack(alignment: .leading, spacing: 12) { connectionStatus; turnButton }
-            }
-            .padding(16).modifier(PhoneGlassSurface()).padding(.horizontal, 16).padding(.top, 8)
+        ZStack {
             screenView
+                .ignoresSafeArea(.container, edges: fullscreen ? .all : [])
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Circle().fill(store.connected ? Color.green : Color.orange).frame(width: 6, height: 6)
+                        Text(sessionTitle).font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    .padding(.horizontal, 12).frame(minHeight: 36)
+                    .modifier(PhoneGlassSurface())
+                    .accessibilityLabel("\(host.name)，\(sessionTitle)，\(sessionDetail)")
+                    Spacer(minLength: 8)
+                    Button("适合画面", systemImage: "arrow.down.right.and.arrow.up.left") { requestViewport(.fit) }
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneGlassSurface())
+                        .accessibilityIdentifier("session-fit")
+                    Button(fullscreen ? "退出全屏" : "全屏", systemImage: fullscreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward") {
+                        fullscreen.toggle()
+                    }
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneGlassSurface())
+                    .accessibilityIdentifier("session-fullscreen")
+                }
+                Spacer(minLength: 8)
+                floatingControls
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { sessionControls.padding(16) }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.black)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showKeyboard { keyboardDrawer }
+        }
+        .onChange(of: store.ownsControls) { _, owns in
+            if !owns { showKeyboard = false; textFocused = false }
+        }
     }
 
     private var connectionStatus: some View {
@@ -155,44 +200,83 @@ public struct PhoneRootView: View {
             Task { await store.setTurn(store.ownsControls ? "hand_back" : "take_over") }
         }
         .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.regular)
+        .frame(minHeight: 44).accessibilityIdentifier("session-take-over")
         .disabled(!store.ownsControls && (!store.mayControl || !store.connected))
     }
 
-    private var sessionControls: some View {
-        VStack(spacing: 12) {
-            if store.ownsControls {
-                HStack(spacing: 10) {
-                    TextField("输入到电脑", text: $store.text)
-                        .textFieldStyle(.plain).padding(.horizontal, 15).frame(minHeight: 44)
-                        .modifier(PhoneSurface(cornerRadius: 18))
-                        .disabled(!store.connected).onSubmit { if store.connected { store.sendText() } }
-                    Button("发送", systemImage: "arrow.up.circle.fill") { store.sendText() }
-                        .labelStyle(.iconOnly).font(.title).frame(minWidth: 44, minHeight: 44)
-                        .disabled(store.text.isEmpty || !store.connected)
+    private var floatingControls: some View {
+        HStack(spacing: 6) {
+            turnButton
+            agentButton.labelStyle(.iconOnly).frame(width: 44, height: 44)
+            if controlsExpanded {
+                Button("键盘", systemImage: "keyboard") {
+                    showKeyboard.toggle()
+                    textFocused = showKeyboard
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                .disabled(!store.connected || !store.ownsControls)
+                .accessibilityIdentifier("session-keyboard")
+                Menu {
+                    Button("填满屏幕", systemImage: "arrow.up.left.and.arrow.down.right") { requestViewport(.fill) }
+                    Button("适合画面", systemImage: "arrow.down.right.and.arrow.up.left") { requestViewport(.fit) }
+                    Menu("快捷键") {
                         ForEach(["Return", "Tab", "Escape", "Backspace"], id: \.self) { key in
-                            Button(key) { store.input(tool: "keyboard", args: ["keys": .string(key)]) }
-                                .font(.caption.weight(.medium)).frame(minHeight: 44).padding(.horizontal, 12)
-                                .modifier(PhoneSurface(cornerRadius: 16))
+                            Button(key) { sendKey(key) }
                         }
-                        Button("向上滚动", systemImage: "arrow.up") { scroll("up") }.labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneSurface(cornerRadius: 16))
-                        Button("向下滚动", systemImage: "arrow.down") { scroll("down") }.labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneSurface(cornerRadius: 16))
-                    }
-                    .buttonStyle(.plain).disabled(!store.connected)
-                }
-            } else if store.connected {
-                Text(store.mayControl ? "接管后，可轻点、拖动和输入文字" : "当前权限仅可观看电脑画面")
-                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }.disabled(!store.connected || !store.ownsControls)
+                    Button("向上滚动", systemImage: "arrow.up") { scroll("up") }
+                        .disabled(!store.connected || !store.ownsControls)
+                    Button("向下滚动", systemImage: "arrow.down") { scroll("down") }
+                        .disabled(!store.connected || !store.ownsControls)
+                    Button("活动与审批", systemImage: "list.bullet.rectangle") { store.showActivity = true }
+                        .accessibilityIdentifier("session-activity")
+                    Button("退出连接", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        Task { await store.leaveSession() }
+                    }.accessibilityIdentifier("session-exit")
+                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                .accessibilityLabel("更多控制").accessibilityIdentifier("session-menu")
             }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { agentButton; Spacer(minLength: 4); permissionLabel }
-                VStack(spacing: 8) { agentButton; permissionLabel }
+            Button(controlsExpanded ? "收起控制栏" : "展开控制栏", systemImage: controlsExpanded ? "chevron.down" : "chevron.up") {
+                controlsExpanded.toggle()
             }
-            .padding(.horizontal, 14).padding(.vertical, 8).modifier(PhoneGlassSurface())
+            .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            .accessibilityIdentifier("session-controls-toggle")
         }
+        .buttonStyle(.plain).padding(6).modifier(PhoneGlassSurface())
+    }
+
+    private var keyboardDrawer: some View {
+        HStack(spacing: 8) {
+            TextField("输入到电脑", text: $store.text)
+                .textFieldStyle(.plain).padding(.horizontal, 12).frame(minHeight: 44)
+                .modifier(PhoneSurface(cornerRadius: 16)).focused($textFocused)
+                .disabled(!store.connected || !store.ownsControls)
+                .onSubmit { sendText() }.accessibilityIdentifier("session-text")
+            Button("发送", systemImage: "arrow.up.circle.fill") { sendText() }
+                .labelStyle(.iconOnly).font(.title2).frame(width: 44, height: 44)
+                .disabled(store.text.isEmpty || !store.connected || !store.ownsControls)
+                .accessibilityIdentifier("session-send")
+            Button("收起键盘", systemImage: "keyboard.chevron.compact.down") {
+                textFocused = false; showKeyboard = false
+            }
+            .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            .accessibilityIdentifier("session-keyboard-close")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
+    }
+
+    private func requestViewport(_ mode: PhoneViewportRequest.Mode) {
+        viewportRequest = PhoneViewportRequest(mode: mode, revision: viewportRequest.revision + 1)
+    }
+
+    private func sendKey(_ key: String) {
+        guard store.connected, store.ownsControls else { return }
+        store.input(tool: "keyboard", args: ["keys": .string(key)])
+    }
+
+    private func sendText() {
+        guard store.connected, store.ownsControls else { return }
+        store.sendText()
     }
 
     private var agentButton: some View {
@@ -200,6 +284,7 @@ public struct PhoneRootView: View {
             Task { await store.setTurn(store.driver == "paused" ? "resume" : "pause") }
         }
         .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+        .accessibilityIdentifier("session-agent")
         // Pause remains an emergency action even before video arrives or after it fails.
         .disabled(store.driver == "paused" && !store.mayControl)
     }
@@ -211,19 +296,20 @@ public struct PhoneRootView: View {
     private var screenView: some View {
         GeometryReader { area in
             if let picture = store.image {
+                #if os(iOS)
+                nativeViewport(picture)
+                #else
                 let ratio = CGFloat(picture.width) / CGFloat(picture.height)
                 let width = min(area.size.width, area.size.height * ratio), height = width / ratio
                 Image(decorative: picture, scale: 1).resizable().frame(width: width, height: height)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0).onEnded { gesture in
-                        guard store.connected, let screen = store.screen,
-                              let start = screen.point(u: gesture.startLocation.x / width, v: gesture.startLocation.y / height),
-                              let end = screen.point(u: gesture.location.x / width, v: gesture.location.y / height) else { return }
+                        guard let start = PhoneViewportGeometry.normalizedPoint(gesture.startLocation, imageSize: CGSize(width: width, height: height)),
+                              let end = PhoneViewportGeometry.normalizedPoint(gesture.location, imageSize: CGSize(width: width, height: height)) else { return }
                         let drag = hypot(gesture.translation.width, gesture.translation.height) > 10
-                        var args: [String: JSONValue] = ["action": .string(drag ? "drag" : "click"), "x": .number(start.0), "y": .number(start.1), "space": .string("screen")]
-                        if drag { args["to_x"] = .number(end.0); args["to_y"] = .number(end.1) }
-                        store.input(tool: "mouse", args: args)
+                        sendPointer(PhonePointerGesture(start: start, end: end, isDrag: drag))
                     }).position(x: area.size.width / 2, y: area.size.height / 2)
+                #endif
             } else {
                 VStack(spacing: 14) {
                     if store.error == nil { ProgressView().controlSize(.large) }
@@ -236,12 +322,35 @@ public struct PhoneRootView: View {
                 .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Controls sit outside this surface so no blur or overlay hides the remote desktop.
-        .background(PhonePalette.screen).frame(maxHeight: .infinity)
+        .background(.black).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    #if os(iOS)
+    private func nativeViewport(_ picture: CGImage) -> some View {
+        var viewport = PhoneRemoteViewport(image: picture, allowsInput: store.connected && store.ownsControls,
+                                           request: viewportRequest, onGesture: sendPointer)
+        #if DEBUG
+        viewport.diagnosticsEnabled = fixtureInputObserver != nil
+        #endif
+        return viewport
+    }
+    #endif
+
+    private func sendPointer(_ gesture: PhonePointerGesture) {
+        guard store.connected, store.ownsControls, let screen = store.screen,
+              let start = screen.point(u: Double(gesture.start.x), v: Double(gesture.start.y)),
+              let end = screen.point(u: Double(gesture.end.x), v: Double(gesture.end.y)) else { return }
+        var args: [String: JSONValue] = ["action": .string(gesture.isDrag ? "drag" : "click"),
+                                       "x": .number(start.0), "y": .number(start.1), "space": .string("screen")]
+        if gesture.isDrag { args["to_x"] = .number(end.0); args["to_y"] = .number(end.1) }
+        #if DEBUG
+        if let observer = fixtureInputObserver { observer("mouse", args); return }
+        #endif
+        store.input(tool: "mouse", args: args)
     }
 
     private func scroll(_ direction: String) {
-        guard store.connected, let screen = store.screen else { return }
+        guard store.connected, store.ownsControls, let screen = store.screen else { return }
         store.input(tool: "mouse", args: ["action": .string("scroll"), "direction": .string(direction), "amount": .number(3), "x": .number(screen.x + screen.width/2), "y": .number(screen.y + screen.height/2), "space": .string("screen")])
     }
 
@@ -322,6 +431,19 @@ public struct PhoneRootView: View {
     }
 
     private func levelName(_ level: String?) -> String { switch level { case "admin": "管理权限"; case "control": "控制权限"; case "observe": "仅观看"; default: "等待权限信息" } }
+}
+
+private struct PhoneSessionChrome: ViewModifier {
+    let fullscreen: Bool
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+            .toolbar(fullscreen ? .hidden : .visible, for: .navigationBar)
+            .statusBarHidden(fullscreen)
+        #else
+        content
+        #endif
+    }
 }
 
 private enum PhonePalette {
