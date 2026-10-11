@@ -11,6 +11,8 @@ public struct PhoneRootView: View {
     @FocusState private var textFocused: Bool
     #if DEBUG
     private var fixtureInputObserver: ((String, [String: JSONValue]) -> Void)? = nil
+    @PhoneViewState<Int> private var fullscreenToggleCount = 0
+    @PhoneViewState<String> private var fullscreenChangeReason = "initial"
     public init(store: PhoneStore, fixtureInputObserver: @escaping (String, [String: JSONValue]) -> Void) {
         self.store = store
         self.fixtureInputObserver = fixtureInputObserver
@@ -49,6 +51,9 @@ public struct PhoneRootView: View {
         .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
         .onChange(of: store.selected?.name) { _, _ in
             fullscreen = false; showKeyboard = false; textFocused = false
+            #if DEBUG
+            fullscreenChangeReason = "host changed"
+            #endif
             controlsExpanded = true
             requestViewport(.fit)
         }
@@ -154,13 +159,24 @@ public struct PhoneRootView: View {
                     .modifier(PhoneGlassSurface())
                     .accessibilityLabel("\(host.name)，\(sessionTitle)，\(sessionDetail)")
                     Spacer(minLength: 8)
-                    Button("适合画面", systemImage: "arrow.down.right.and.arrow.up.left") { requestViewport(.fit) }
-                        .labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneGlassSurface())
-                        .accessibilityIdentifier("session-fit")
-                    Button(fullscreen ? "退出全屏" : "全屏", systemImage: fullscreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward") {
-                        fullscreen.toggle()
+                    Button { requestViewport(.fit) } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left").frame(width: 44, height: 44).contentShape(Rectangle())
                     }
-                    .labelStyle(.iconOnly).frame(width: 44, height: 44).modifier(PhoneGlassSurface())
+                        .buttonStyle(.plain).modifier(PhoneGlassSurface()).accessibilityLabel("适合画面")
+                        .accessibilityIdentifier("session-fit")
+                    Button {
+                        fullscreen.toggle()
+                        #if DEBUG
+                        fullscreenToggleCount += 1
+                        fullscreenChangeReason = "toggle"
+                        #endif
+                    } label: {
+                        Image(systemName: fullscreen ? "arrow.down.forward.and.arrow.up.backward" : "arrow.up.backward.and.arrow.down.forward")
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).modifier(PhoneGlassSurface())
+                    .accessibilityLabel(fullscreen ? "退出全屏" : "全屏")
+                    .accessibilityValue(fullscreenDiagnostic)
                     .accessibilityIdentifier("session-fullscreen")
                 }
                 Spacer(minLength: 8)
@@ -280,6 +296,16 @@ public struct PhoneRootView: View {
 
     private func requestViewport(_ mode: PhoneViewportRequest.Mode) {
         viewportRequest = PhoneViewportRequest(mode: mode, revision: viewportRequest.revision + 1)
+    }
+
+    private var fullscreenDiagnostic: String {
+        #if DEBUG
+        if fixtureInputObserver != nil {
+            return JSONValue.object(["fullscreen": .bool(fullscreen), "toggle_count": .number(Double(fullscreenToggleCount)),
+                                     "reason": .string(fullscreenChangeReason)]).text
+        }
+        #endif
+        return fullscreen ? "全屏中" : "标准显示"
     }
 
     private func sendKey(_ key: String) {
