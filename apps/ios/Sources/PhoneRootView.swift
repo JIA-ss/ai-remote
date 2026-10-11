@@ -19,30 +19,38 @@ public struct PhoneRootView: View {
     public init(store: PhoneStore) { self.store = store }
 
     public var body: some View {
-        NavigationStack {
-            Group {
-                if let host = store.selected { session(host) }
-                else { computers }
-            }
-            .background(canvas)
-            .navigationTitle(store.selected?.name ?? "电脑")
-            .toolbar {
-                if store.selected != nil {
-                    ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
-                    ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
-                } else {
-                    ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
+        Group {
+            if fullscreen, let host = store.selected {
+                // A full-window session has no navigation container consuming its
+                // layout proposal. It keeps the same store and stream subscription.
+                session(host)
+            } else {
+                NavigationStack {
+                    Group {
+                        if let host = store.selected { session(host) }
+                        else { computers }
+                    }
+                    .background(canvas)
+                    .navigationTitle(store.selected?.name ?? "电脑")
+                    .toolbar {
+                        if store.selected != nil {
+                            ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
+                            ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
+                        } else {
+                            ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
+                        }
+                    }
+                    .modifier(PhoneSessionChrome(fullscreen: false))
                 }
             }
-            .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
-            .sheet(isPresented: $store.pairSheet) { pairing }
-            .sheet(isPresented: $store.showActivity) { activity }
-            .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
-            .onChange(of: store.selected?.name) { _, _ in
-                fullscreen = false; showKeyboard = false; textFocused = false
-                controlsExpanded = true
-                requestViewport(.fit)
-            }
+        }
+        .sheet(isPresented: $store.pairSheet) { pairing }
+        .sheet(isPresented: $store.showActivity) { activity }
+        .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
+        .onChange(of: store.selected?.name) { _, _ in
+            fullscreen = false; showKeyboard = false; textFocused = false
+            controlsExpanded = true
+            requestViewport(.fit)
         }
         .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
         .tint(.blue)
