@@ -14,7 +14,11 @@ targets:
   AIRemote:
     type: application
     platform: iOS
-    sources: [App]
+    sources:
+      - path: App
+        excludes: [PrivacyInfo.xcprivacy]
+      - path: App/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: AIRemotePhone
     settings:
@@ -27,9 +31,14 @@ targets:
         MARKETING_VERSION: 0.0.1
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Release:
+          ENABLE_DEBUG_DYLIB: NO
     info:
       path: App/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: ai-remote
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: 连接你已配对的电脑，显示实时画面并发送你授权的操作。

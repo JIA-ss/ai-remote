@@ -1,6 +1,11 @@
 name: iPhone controller
 on:
   workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Optional CFBundleVersion (1-3 numeric components); defaults to run_number.run_attempt"
+        required: false
+        type: string
   push:
     branches: [main]
     paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", ".github/workflows/ios.yml"]
@@ -15,16 +20,42 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      # macos-15 ARM64 lists Xcode 26.2 and its iOS 26.2 simulator runtime:
+      # https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain and SDK
         id: sdk
         run: |
+          test -d "$DEVELOPER_DIR"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
-          echo "version=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import os, subprocess
+          xcode = subprocess.check_output(["xcodebuild", "-version"], text=True).splitlines()[0].split()[1]
+          sdk = subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-version"], text=True).strip()
+          if int(xcode.split(".")[0]) < 26 or int(sdk.split(".")[0]) < 26:
+              raise SystemExit("iOS release preparation requires Xcode 26+ and iOS SDK 26+")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"version={sdk}", file=output)
+          PY
           rustup toolchain install 1.95.0 --profile minimal
           brew install xcodegen
+      - name: Select controlled build number
+        id: version
+        env:
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          number = os.environ.get("INPUT_BUILD_NUMBER") or f'{os.environ["GITHUB_RUN_NUMBER"]}.{os.environ["GITHUB_RUN_ATTEMPT"]}'
+          if re.fullmatch(r"[1-9][0-9]*(?:\.[0-9]+){0,2}", number) is None:
+              raise SystemExit("build_number must contain 1-3 numeric components with a positive first component")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"build_number={number}", file=output)
+          PY
       - name: Verify IPA packaging boundaries
         run: python3 tools/test_package_ios_ipa.py
       - uses: actions/cache/restore@v4
@@ -50,17 +81,41 @@ jobs:
         run: |
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
             -destination 'generic/platform=iOS Simulator' -configuration Debug \
-            -derivedDataPath target/ios-build CODE_SIGNING_ALLOWED=NO build
-      - name: Compile device app without signing
+            -derivedDataPath target/ios-build CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION='${{ steps.version.outputs.build_number }}' build
+      - name: Archive unsigned Release device app
         run: |
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
-            -destination 'generic/platform=iOS' -configuration Debug \
-            -derivedDataPath target/ios-device-build CODE_SIGNING_ALLOWED=NO build
-      - name: Package unsigned iPhone device IPA
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath target/ios-device-build -archivePath target/ios-release/ai-remote.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO \
+            CURRENT_PROJECT_VERSION='${{ steps.version.outputs.build_number }}' archive
+      - name: Verify Release archive version and platform
+        env:
+          EXPECTED_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          app = Path("target/ios-release/ai-remote.xcarchive/Products/Applications/ai-remote.app")
+          info = plistlib.loads((app / "Info.plist").read_bytes())
+          assert info["CFBundleSupportedPlatforms"] == ["iPhoneOS"], "archive must target physical iOS devices"
+          assert info["CFBundleVersion"] == os.environ["EXPECTED_BUILD_NUMBER"], "build number mapping failed"
+          assert info["CFBundleShortVersionString"] == "0.0.1", "marketing version mapping failed"
+          assert int(info["DTSDKName"].removeprefix("iphoneos").split(".")[0]) >= 26, "archive SDK is too old"
+          assert not (app / "ai-remote.debug.dylib").exists(), "Release must not contain the debug injection dylib"
+          assert not (app / "__preview.dylib").exists(), "Release must not contain the preview injection dylib"
+          privacy = plistlib.loads((app / "PrivacyInfo.xcprivacy").read_bytes())
+          assert privacy["NSPrivacyAccessedAPITypes"] == [{
+              "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+              "NSPrivacyAccessedAPITypeReasons": ["C617.1"],
+          }], "Release archive must contain the audited privacy manifest"
+          PY
+      - name: Package unsigned Release iPhone device IPA
         run: |
           mkdir -p target/ios-install
           python3 tools/package-ios-ipa.py \
-            target/ios-device-build/Build/Products/Debug-iphoneos/ai-remote.app \
+            target/ios-release/ai-remote.xcarchive/Products/Applications/ai-remote.app \
             --output target/ios-install/ai-remote-unsigned.ipa \
             > target/ios-install/package-metadata.json
       - name: Upload unsigned iPhone device IPA for local signing
@@ -70,15 +125,25 @@ jobs:
           path: target/ios-install/
           if-no-files-found: error
           retention-days: 7
+      - name: Preserve unsigned Release archive
+        run: |
+          ditto -c -k --norsrc --keepParent target/ios-release/ai-remote.xcarchive target/ios-release/ai-remote-unsigned.xcarchive.zip
+      - name: Upload unsigned Release archive for future distribution signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhone-release-unsigned-archive
+          path: target/ios-release/ai-remote-unsigned.xcarchive.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Launch and test on iPhone simulator
         run: |
-          simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for group in json.load(sys.stdin)["devices"].values() for d in group if d["name"].startswith("iPhone")))')
+          simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for runtime, group in json.load(sys.stdin)["devices"].items() if runtime.endswith(".iOS-26-2") for d in group if d["name"].startswith("iPhone")))')
           xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
             -destination "platform=iOS Simulator,id=$simulator" -configuration Debug \
             -derivedDataPath target/ios-build -resultBundlePath target/phone-ui.xcresult \
-            CODE_SIGNING_ALLOWED=NO test
+            CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION='${{ steps.version.outputs.build_number }}' test
       - uses: actions/upload-artifact@v4
         with:
           name: iPhone-simulator-app

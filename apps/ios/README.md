@@ -43,7 +43,7 @@ provided by this helper.
 ## Install on your own iPhone or iPad
 
 The controller requires iOS/iPadOS 17 or later. It is not published on the App Store or TestFlight.
-The `iPhone controller` workflow builds the real `iphoneos` app with signing disabled, verifies its
+The `iPhone controller` workflow archives a Release `iphoneos` app with signing disabled, verifies its
 arm64 Mach-O device platform, and uploads **`iPhone-device-unsigned-ipa`** before simulator UI tests.
 Download that artifact from a run for the revision you want to test and unzip it to obtain
 `ai-remote-unsigned.ipa` and `package-metadata.json`. Artifacts are retained for seven days.
@@ -94,7 +94,7 @@ To package a locally compiled **unsigned device** app without signing or install
 
 ```sh
 python3 tools/package-ios-ipa.py \
-  target/ios-device-build/Build/Products/Debug-iphoneos/ai-remote.app \
+  target/ios-release/ai-remote.xcarchive/Products/Applications/ai-remote.app \
   --output target/ios-install/ai-remote-unsigned.ipa
 ```
 
@@ -103,6 +103,42 @@ requires no signing identity, and rejects embedded provisioning profiles. Metada
 `signing: local-signing-required`; a linker ad-hoc signature is not a development signing identity.
 Distribution signing, TestFlight
 uploads and production release packaging are separate work.
+
+## Release build inputs
+
+CI uses the ARM64 `macos-15` image and explicitly selects
+`/Applications/Xcode_26.2.app/Contents/Developer`. GitHub's
+[official runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)
+lists Xcode 26.2, the iOS 26.2 SDK, and an installed iOS 26.2 simulator runtime. The workflow checks
+the selected Xcode and device SDK are at least version 26 before building. It retains simulator
+Debug build/UI tests on iOS 26.2.
+
+The device artifact is produced by an unsigned **Release archive**, with debug injection disabled.
+CI validates the resulting app's device platform, SDK, version and build number, rejects debug and
+preview injection dylibs, then applies the same Mach-O/IPA packaging checks. It also preserves
+`iPhone-release-unsigned-archive`, containing `ai-remote-unsigned.xcarchive.zip`, for seven days.
+This archive is an input for later distribution signing; it is not an App Store Connect export or
+a TestFlight build. No Apple account, certificate generation, signing or upload is performed.
+
+XcodeGen's generated Info.plist maps `CFBundleShortVersionString` to `$(MARKETING_VERSION)` and
+`CFBundleVersion` to `$(CURRENT_PROJECT_VERSION)`. Local project defaults are version `0.0.1`, build
+`1`. CI sets the build to `github.run_number.github.run_attempt` so rerunning a workflow changes the
+build number. A manual workflow dispatch can instead specify `build_number`, using one to three
+numeric components with a positive first component, for example `12` or `12.2`. Confirm the chosen
+number is newer than any build already uploaded before later enabling distribution.
+
+To prepare an unsigned Release archive locally after generating the XCFramework and Xcode project:
+
+```sh
+xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+  -destination 'generic/platform=iOS' -configuration Release \
+  -archivePath target/ios-release/ai-remote.xcarchive \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO \
+  CURRENT_PROJECT_VERSION=12 archive
+```
+
+Distribution signing, the app record, account permissions, privacy declarations and encryption
+declarations require separate verification before any TestFlight upload.
 
 ## Repeat core validation on macOS
 
