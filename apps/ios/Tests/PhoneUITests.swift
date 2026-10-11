@@ -25,8 +25,14 @@ final class PhoneUITests: XCTestCase {
         XCTAssertLessThan(portrait["displayed_height"] ?? 0, viewport.frame.height * 0.5)
         assertPointerMapping(app: app, viewport: viewport, start: CGPoint(x: 0.5, y: 0.5))
 
-        app.buttons["session-fullscreen"].tap()
+        let fullscreen = app.buttons["session-fullscreen"]
+        let beforeFullscreenInput = fixtureSequence(input)
+        fullscreen.tap()
+        waitFor("fullscreen action state: \(fullscreen.value ?? "missing")") { fullscreen.label == "退出全屏" }
+        XCTAssertEqual(fixtureSequence(input), beforeFullscreenInput, "The local fullscreen button must not emit a remote click")
         XCUIDevice.shared.orientation = .landscapeLeft
+        waitFor("fullscreen state after rotation: \(fullscreen.value ?? "missing")") { fullscreen.label == "退出全屏" }
+        XCTAssertEqual(fixtureSequence(input), beforeFullscreenInput)
         waitFor("landscape full picture area") {
             let value = self.viewportMetrics(viewport)
             let window = app.windows.firstMatch.frame
@@ -103,7 +109,10 @@ final class PhoneUITests: XCTestCase {
         let viewport = app.descendants(matching: .any)["remote-viewport"]
         XCTAssertTrue(viewport.waitForExistence(timeout: 15))
         waitFor("actual ultrawide fixture pixels") { self.viewportMetrics(viewport)["image_height"] == 540 }
-        app.buttons["session-fullscreen"].tap()
+        let fullscreen = app.buttons["session-fullscreen"]
+        fullscreen.tap()
+        waitFor("ultrawide fullscreen action state: \(fullscreen.value ?? "missing")") { fullscreen.label == "退出全屏" }
+        XCTAssertEqual(fixtureSequence(app.staticTexts["fixture-remote-input"]), 0)
         app.buttons["session-menu"].tap()
         app.buttons["填满屏幕"].tap()
         waitFor("32 by 9 fill covers both viewport dimensions") {
