@@ -24,6 +24,7 @@ struct PhoneRemoteViewport: UIViewRepresentable {
     let allowsInput: Bool
     let request: PhoneViewportRequest
     let onGesture: (PhonePointerGesture) -> Void
+    let onInsets: (UIEdgeInsets) -> Void
     #if DEBUG
     var diagnosticsEnabled = false
     #endif
@@ -33,6 +34,7 @@ struct PhoneRemoteViewport: UIViewRepresentable {
     func updateUIView(_ view: NativePhoneViewport, context: Context) {
         view.allowsRemoteInput = allowsInput
         view.onRemoteGesture = onGesture
+        view.onInsets = onInsets
         #if DEBUG
         view.diagnosticsEnabled = diagnosticsEnabled
         #endif
@@ -42,6 +44,7 @@ struct PhoneRemoteViewport: UIViewRepresentable {
     static func dismantleUIView(_ view: NativePhoneViewport, coordinator: ()) {
         view.allowsRemoteInput = false
         view.onRemoteGesture = nil
+        view.onInsets = nil
         view.imageView.image = nil
     }
 }
@@ -49,6 +52,7 @@ struct PhoneRemoteViewport: UIViewRepresentable {
 final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     let imageView = UIImageView()
     var onRemoteGesture: ((PhonePointerGesture) -> Void)?
+    var onInsets: ((UIEdgeInsets) -> Void)?
     var allowsRemoteInput = false {
         didSet {
             guard oldValue != allowsRemoteInput else { return }
@@ -66,6 +70,7 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
     private var lastImage: CGImage?
     private var lastRequest: PhoneViewportRequest?
     private var pendingRequest: PhoneViewportRequest?
+    private var lastPublishedInsets: UIEdgeInsets?
     private var adjusting = false
     private var dragStart: CGPoint?
     private lazy var remoteTap = RemoteSingleTouchTapRecognizer(target: self, action: #selector(tapEnded(_:)))
@@ -157,6 +162,7 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
         adjusting = true
         lastViewport = bounds.size
         lastAvailableRect = available
+        publishInsets(for: available)
         maximumZoomScale = zoomLimit(fit: fit)
         minimumZoomScale = fit
         setZoomScale(min(max(fit * relativeZoom, fit), maximumZoomScale), animated: false)
@@ -169,6 +175,17 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
         if let request = pendingRequest, lastRequest != request {
             lastRequest = request
             apply(request.mode)
+        }
+    }
+
+    private func publishInsets(for available: CGRect) {
+        let next = UIEdgeInsets(top: available.minY, left: available.minX,
+                               bottom: bounds.height - available.maxY, right: bounds.width - available.maxX)
+        guard next != lastPublishedInsets else { return }
+        lastPublishedInsets = next
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.lastPublishedInsets == next else { return }
+            self.onInsets?(next)
         }
     }
 
@@ -262,6 +279,7 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === remoteTap || gestureRecognizer === remoteDrag else { return true }
         guard allowsRemoteInput else { return false }
         // Both recognizers must see additional fingers even in letterboxing.
         // Initial-image bounds are checked separately, without hiding a second touch.
@@ -277,14 +295,15 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         let native = otherGestureRecognizer === panGestureRecognizer || otherGestureRecognizer === pinchGestureRecognizer
-        return gestureRecognizer === remoteDrag && native
+        let nativeSource = gestureRecognizer === panGestureRecognizer || gestureRecognizer === pinchGestureRecognizer
+        return native && (gestureRecognizer === remoteDrag || nativeSource)
     }
 
     @objc private func tapEnded(_ recognizer: RemoteSingleTouchTapRecognizer) {
         guard recognizer.state == .ended, allowsRemoteInput, !isZooming,
               recognizer.startedInsideImage, !recognizer.involvedMultipleTouches,
               let location = point(recognizer) else { return }
-        onRemoteGesture?(PhonePointerGesture(start: location, end: location, isDrag: false))
+        deliver(PhonePointerGesture(start: location, end: location, isDrag: false), multipleTouches: recognizer.involvedMultipleTouches)
     }
 
     @objc private func dragChanged(_ recognizer: RemoteSingleTouchPanRecognizer) {
@@ -301,10 +320,18 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
                   let start = dragStart, let end = point(recognizer) else { return }
             let translation = recognizer.translation(in: self)
             let drag = hypot(translation.x, translation.y) > 10
-            onRemoteGesture?(PhonePointerGesture(start: start, end: end, isDrag: drag))
+            deliver(PhonePointerGesture(start: start, end: end, isDrag: drag), multipleTouches: recognizer.involvedMultipleTouches)
         case .cancelled, .failed: dragStart = nil
         default: break
         }
+    }
+
+    /// Stable completion policy, shared by real tap/pan endings and native tests.
+    /// UIKit may reset instantaneous recognizer states after cancellation.
+    @discardableResult func deliver(_ gesture: PhonePointerGesture, multipleTouches: Bool) -> Bool {
+        guard allowsRemoteInput, !isZooming, !multipleTouches else { return false }
+        onRemoteGesture?(gesture)
+        return true
     }
 
     @objc private func performViewportFit() -> Bool { apply(.fit); return true }
@@ -343,11 +370,12 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
 class RemoteSingleTouchPanRecognizer: UIPanGestureRecognizer {
     private(set) var involvedMultipleTouches = false
 
-    func activeTouchCountChanged(_ count: Int) {
-        guard count > 1 else { return }
+    @discardableResult func activeTouchCountChanged(_ count: Int) -> Bool {
+        guard count > 1 else { return false }
         involvedMultipleTouches = true
         if state == .began || state == .changed { state = .cancelled }
         else if state == .possible { state = .failed }
+        return true
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -373,11 +401,12 @@ class RemoteSingleTouchTapRecognizer: UITapGestureRecognizer {
     private(set) var startedInsideImage = false
     private(set) var involvedMultipleTouches = false
 
-    func activeTouchCountChanged(_ count: Int) {
-        guard count > 1 else { return }
+    @discardableResult func activeTouchCountChanged(_ count: Int) -> Bool {
+        guard count > 1 else { return false }
         involvedMultipleTouches = true
         if state == .began || state == .changed { state = .cancelled }
         else if state == .possible { state = .failed }
+        return true
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
