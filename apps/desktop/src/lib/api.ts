@@ -64,7 +64,7 @@ export interface Backend {
   watchScreen(
     host: string,
     onFrame: (frame: ArrayBuffer) => void,
-    opts?: { monitor?: number; maxFps?: number; maxLongEdge?: number },
+    opts?: { monitor?: number; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number; onEnded?: (reason: string) => void },
   ): Promise<LiveView | null>;
 }
 
@@ -154,14 +154,24 @@ const tauriBackend: Backend = {
   async watchScreen(host, onFrame, opts = {}) {
     const channel = new Channel<unknown>();
     channel.onmessage = (m) => {
-      if (m instanceof ArrayBuffer) onFrame(m);
       // WKWebView's message-handler fallback serializes raw IPC replies as byte arrays.
       // Normally connect-src permits the faster binary fetch path; retain the fallback too.
-      else if (Array.isArray(m) && m.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
-        onFrame(Uint8Array.from(m).buffer);
-      }
+      const bytes = m instanceof ArrayBuffer
+        ? new Uint8Array(m)
+        : Array.isArray(m) && m.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)
+          ? Uint8Array.from(m)
+          : null;
+      if (!bytes) return;
+      // Kind 2 is the local native-to-webview terminal marker, never a host video frame.
+      if (bytes[0] === 2) opts.onEnded?.(new TextDecoder().decode(bytes.subarray(1)));
+      else onFrame(bytes.buffer);
     };
-    const request = { monitor: opts.monitor ?? null, max_fps: opts.maxFps ?? 30, max_long_edge: opts.maxLongEdge ?? 1920 };
+    const request = {
+      monitor: opts.monitor ?? null,
+      max_fps: opts.maxFps ?? 30,
+      max_long_edge: opts.maxLongEdge ?? 1920,
+      bitrate_kbps: opts.bitrateKbps ?? 6000,
+    };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
       number,
       { monitors?: LiveView["monitors"]; screen?: LiveView["screen"] },

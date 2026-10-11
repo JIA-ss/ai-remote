@@ -27,6 +27,8 @@ import AIRemoteCore
     private var eventID: UInt64?
     private var videoID: UInt64?
     private var decoder: H264Decoder?
+    private var imageRelay: PhonePictureRelay?
+    private var keyframePending = false
     private var generation = 0
     private var inputTail: Task<Void, Never>?
     private var suspending: Task<Void, Never>?
@@ -80,30 +82,56 @@ import AIRemoteCore
             guard token == generation else { return }
             ownName = access["you"].string ?? ""; level = access["level"].string
             let events = StreamListener(event: { [weak self] line in Task { @MainActor in self?.receive(line, token: token) } }, ended: { [weak self] reason in
-                Task { @MainActor in guard let self, token == self.generation, reason != "stopped" else { return }; self.connected = false; self.error = reason }
+                Task { @MainActor in await self?.videoEnded(reason: reason, token: token) }
             })
-            eventID = try await client.events(host: host.name, listener: events)
+            let eventSubscription = try await client.events(host: host.name, listener: events)
+            guard token == generation else { await client.stop(eventSubscription); return }
+            eventID = eventSubscription
             let context = CIContext()
-            decoder = H264Decoder(output: { [weak self] pixels in
+            let relay = PhonePictureRelay { [weak self] picture in
+                guard let self, token == self.generation else { return }
+                self.image = picture; self.connected = true
+            }
+            imageRelay = relay
+            decoder = H264Decoder(output: { pixels in
                 let ci = CIImage(cvPixelBuffer: pixels)
                 guard let picture = context.createCGImage(ci, from: ci.extent) else { return }
-                Task { @MainActor in guard let self, token == self.generation else { return }; self.image = picture; self.connected = true }
+                relay.push(picture)
             }, failed: { [weak self] reason in
                 Task { @MainActor in
                     guard let self, token == self.generation else { return }
                     self.error = reason
-                    if let id = self.videoID { await self.client.keyframe(id) }
                 }
+            }, requestKeyframe: { [weak self] in
+                Task { @MainActor in await self?.requestVideoKeyframe(token: token) }
             })
             let renderer = decoder!
             let video = StreamListener(frame: { renderer.push($0) }, ended: { [weak self] reason in
-                Task { @MainActor in guard let self, token == self.generation, reason != "stopped" else { return }; self.connected = false; self.error = reason }
+                Task { @MainActor in await self?.videoEnded(reason: reason, token: token) }
             })
             let view = try await client.video(host: host.name, listener: video)
             guard token == generation else { await client.stop(view.subscription); return }
             videoID = view.subscription
             screen = ScreenGeometry(try JSONValue.parse(view.replyJson)["screen"])
+            if keyframePending { await requestVideoKeyframe(token: token) }
         } catch { if token == generation { self.error = error.localizedDescription } }
+    }
+    private func videoEnded(reason: String, token: Int) async {
+        guard token == generation, reason != "stopped" else { return }
+        generation += 1
+        let oldSubscriptions = [videoID, eventID].compactMap { $0 }
+        videoID = nil; eventID = nil; screen = nil; keyframePending = false
+        imageRelay?.close(); decoder?.close()
+        connected = false; error = reason
+        // These are leases on the originating core, not IDs that can be reused after reopening.
+        for id in oldSubscriptions { await client.stop(id) }
+    }
+    private func requestVideoKeyframe(token: Int) async {
+        guard token == generation, active, !leaving else { return }
+        keyframePending = true
+        guard let id = videoID else { return }
+        keyframePending = false
+        await client.keyframe(id)
     }
     private func receive(_ line: String, token: Int) {
         guard token == generation, let event = try? JSONValue.parse(line) else { return }
@@ -166,7 +194,8 @@ import AIRemoteCore
         leaving = true; defer { leaving = false }
         generation += 1; inputTail?.cancel(); inputTail = nil
         for id in [eventID, videoID].compactMap({ $0 }) { await client.stop(id) }
-        eventID = nil; videoID = nil; decoder?.close(); decoder = nil
+        eventID = nil; videoID = nil; keyframePending = false
+        imageRelay?.close(); imageRelay = nil; decoder?.close(); decoder = nil
         if handBack, let selected {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { [client] in _ = try? await client.turn(host: selected.name, action: "hand_back") }
@@ -184,4 +213,40 @@ import AIRemoteCore
         await task.value
         suspending = nil
     }
+}
+
+/// One queued MainActor update and one newest picture, even if rendering the UI falls behind.
+/// The store still presents its existing native CGImage surface.
+private final class PhonePictureRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: CGImage?
+    private var scheduled = false, closed = false
+    private let show: @MainActor @Sendable (CGImage) -> Void
+    init(show: @escaping @MainActor @Sendable (CGImage) -> Void) { self.show = show }
+    func push(_ image: CGImage) {
+        let enqueue = lock.withLock {
+            guard !closed else { return false }
+            latest = image
+            guard !scheduled else { return false }
+            scheduled = true
+            return true
+        }
+        if enqueue { schedule() }
+    }
+    private func schedule() {
+        Task { @MainActor [weak self] in self?.flush() }
+    }
+    @MainActor private func flush() {
+        let picture: CGImage? = lock.withLock {
+            defer { latest = nil }
+            return closed ? nil : latest
+        }
+        if let picture { show(picture) }
+        let again = lock.withLock {
+            if closed || latest == nil { scheduled = false; return false }
+            return true
+        }
+        if again { schedule() }
+    }
+    func close() { lock.withLock { closed = true; latest = nil } }
 }

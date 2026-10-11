@@ -32,6 +32,7 @@ The Mac acceptance used macOS 27 on Apple Silicon. Intel Macs and older OS versi
 - **Pair by device identity.** One-time tickets establish trust. QUIC uses direct paths when available and encrypted relay fallback when needed.
 - **Give only the access needed.** Each device is observe, control or admin. The host checks permission, turn, policy and approval before a tool runs.
 - **Watch and intervene.** The human app shows live video and an activity feed. Taking over stops the agent's control calls until you hand back.
+- **Choose stream quality.** Desktop presets request1080p30,1080p60 or4K30, with actual decoded resolution/frame rate and received bitrate. macOS13+ uses native ScreenCaptureKit and verified VideoToolbox hardware encoding, with software fallback. [Measurements and limits](docs/stream-performance.md) distinguish encoder benchmarks from live remote performance.
 - **Extend through existing MCP servers.** Mount a local server with a pinned executable and an explicit tool allowlist. Built-in `ui_tree`, `ui_read` and `ui_action` provide text-first AX/UIA controls; mounted integrations can extend coverage.
 
 <p align="center"><picture>

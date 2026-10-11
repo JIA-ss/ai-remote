@@ -325,6 +325,9 @@ async fn watch_screen(
                     break;
                 }
                 let len = u32::from_be_bytes([header[14], header[15], header[16], header[17]]) as usize;
+                if header[0] != 1 || len == 0 || len > 8 * 1024 * 1024 {
+                    break;
+                }
                 let mut frame = Vec::with_capacity(18 + len);
                 frame.extend_from_slice(&header);
                 frame.resize(18 + len, 0);
@@ -349,6 +352,11 @@ async fn watch_screen(
             _ = frames => {}
             _ = up => {}
         }
+        // Local IPC terminal marker, separate from the screen/1 video wire protocol.
+        let mut ended = vec![2];
+        ended
+            .extend_from_slice(b"The screen stream ended. Retry, or select a lower quality if the connection is slow.");
+        let _ = on_frame.send(Frame(ended));
     });
     state.views.lock().unwrap().insert(id, View { task, control });
     Ok((id, Json(reply)))

@@ -135,11 +135,13 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
 - **ALPN `app/ai-remote/screen/1`.** Live video of the host's screen for a person at a controller
   (the desktop app's session view; `ai-remote view` for checks). Windows Graphics Capture delivers a
   frame only when the screen changes, the newest frame waits in a one-slot buffer (a slow network
-  skips frames before they are encoded, never queues them), OpenH264 encodes it in its screen-content
-  mode (bit rate held, a keyframe only at the start and on request) and the app decodes it with
-  WebCodecs. Frames are 18-byte headers plus H.264 Annex B on one stream; any device with a level may
-  watch, and watching is audited (`view_start`, `view_end`). Hardware encoding and macOS capture come
-  later.
+  replaces old captures before encoding, with at most one encoded frame waiting). macOS13+ uses
+  event-driven ScreenCaptureKit with GPU scaling and native IOSurface buffers. VideoToolbox H.264
+  is preferred only after hardware is verified; OpenH264 remains the fallback and the Windows
+  encoder. The desktop uses WebCodecs; iPhone uses VideoToolbox. A keyframe can be re-encoded even
+  when the screen is static. Frames remain18-byte headers plus H.264 AnnexB on one stream; any
+  device with a level may watch, and watching is audited (`view_start`, `view_end`). See
+  [stream performance](stream-performance.md) for requested settings and measurement boundaries.
 - *(planned)* `app/ai-remote/file/1` for bulk file transfer.
 
 ## 6. The gate

@@ -90,6 +90,13 @@ impl Turns {
         self.state.lock().unwrap().driver.clone()
     }
 
+    /// A cache lifetime, never an admission grant. Explicit human calls keep
+    /// their existing semantics; cached native state must not cross driver changes.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn input_cache_lifetime(&self) -> CancellationToken {
+        self.state.lock().unwrap().control.clone()
+    }
+
     /// `device` takes the controls; active and queued agent calls lose their grant.
     pub fn take_over(&self, device: &str, agent_may_watch: bool) -> Driver {
         let next = Driver::Person { device: device.to_string(), since_ms: now(), agent_may_watch };
@@ -228,6 +235,25 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert!(notes[0].text.contains("fixed the chart") && !notes[0].text.contains('\u{7}'));
         assert!(t.take_notes().is_empty(), "delivered once");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_cache_lifetimes_never_cross_driver_changes_or_change_human_admission() {
+        let t = Turns::default();
+        let before = t.input_cache_lifetime();
+        let human = t.admits(true, Level::Control, "pc").unwrap();
+        t.take_over("laptop", false);
+        assert!(before.is_cancelled());
+        let taken = t.input_cache_lifetime();
+        t.hand_back("laptop", None).unwrap();
+        assert!(taken.is_cancelled());
+        t.take_over("laptop", false);
+        let fresh = t.input_cache_lifetime();
+        assert!(!fresh.is_cancelled());
+        t.pause("laptop");
+        assert!(fresh.is_cancelled());
+        assert!(!human.is_cancelled(), "cache invalidation must not redefine explicit human input grants");
     }
 
     #[test]

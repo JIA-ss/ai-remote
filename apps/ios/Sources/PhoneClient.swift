@@ -18,6 +18,14 @@ public actor PhoneClient {
     private var starting: Task<MobileController, Error>?
     private var closing: Task<Void, Never>?
     private var generation = 0
+    private struct SubscriptionLease {
+        let controller: MobileController
+        let nativeID: UInt64
+    }
+    // Native IDs restart at one when the embedded core reopens. Public Swift handles never
+    // alias a retired controller's ID, so delayed cleanup cannot stop a new session.
+    private var nextSubscription: UInt64 = 1
+    private var subscriptions: [UInt64: SubscriptionLease] = [:]
     private let directory: String
     public init(directory: String) { self.directory = directory }
     public func start() async throws {
@@ -41,6 +49,7 @@ public actor PhoneClient {
     public func close() async {
         if let closing { await closing.value; return }
         generation += 1
+        subscriptions.removeAll()
         let pending = starting; starting = nil
         let old = controller; controller = nil
         let task = Task {
@@ -69,10 +78,29 @@ public actor PhoneClient {
     public func turn(host: String, action: String) async throws -> JSONValue {
         try await request(["op": .string("channel"), "host": .string(host), "request": .object(["turn": .object(["action": .string(action), "agent_may_watch": .bool(true)])])])
     }
-    public func events(host: String, listener: StreamListener) async throws -> UInt64 { try await ready().watchEvents(host: host, listener: listener) }
-    public func video(host: String, listener: StreamListener) async throws -> MobileView {
-        try await ready().watchScreen(host: host, monitor: nil, maxFps: 15, maxLongEdge: 1280, listener: listener)
+    private func lease(_ nativeID: UInt64, owner: MobileController) -> UInt64 {
+        let id = nextSubscription; nextSubscription += 1
+        subscriptions[id] = SubscriptionLease(controller: owner, nativeID: nativeID)
+        return id
     }
-    public func stop(_ id: UInt64) async { await controller?.stopSubscription(subscription: id) }
-    public func keyframe(_ id: UInt64) async { await controller?.requestKeyframe(subscription: id) }
+    public func events(host: String, listener: StreamListener) async throws -> UInt64 {
+        let owner = try ready(), token = generation
+        let nativeID = try await owner.watchEvents(host: host, listener: listener)
+        guard token == generation else { await owner.stopSubscription(subscription: nativeID); throw CancellationError() }
+        return lease(nativeID, owner: owner)
+    }
+    public func video(host: String, listener: StreamListener) async throws -> MobileView {
+        let owner = try ready(), token = generation
+        let view = try await owner.watchScreen(host: host, monitor: nil, maxFps: 30, maxLongEdge: 1920, listener: listener)
+        guard token == generation else { await owner.stopSubscription(subscription: view.subscription); throw CancellationError() }
+        return MobileView(subscription: lease(view.subscription, owner: owner), replyJson: view.replyJson)
+    }
+    public func stop(_ id: UInt64) async {
+        guard let lease = subscriptions.removeValue(forKey: id) else { return }
+        await lease.controller.stopSubscription(subscription: lease.nativeID)
+    }
+    public func keyframe(_ id: UInt64) async {
+        guard let lease = subscriptions[id] else { return }
+        await lease.controller.requestKeyframe(subscription: lease.nativeID)
+    }
 }

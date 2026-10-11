@@ -1,5 +1,5 @@
 //! Screen capture for the live view: Windows Graphics Capture through `windows-capture`, and
-//! bounded xcap polling on macOS. Frames
+//! event-driven ScreenCaptureKit on macOS. Frames
 //! arrive only when the screen changes; the newest one waits in a slot for the encoder, so a slow
 //! encoder or network skips frames before they are encoded instead of queueing them.
 
@@ -10,11 +10,14 @@ use std::{
 
 use anyhow::{Result, anyhow};
 
-/// A captured frame, tightly packed BGRA.
+/// A captured frame. Windows uses tightly packed BGRA; macOS retains the native, immutable
+/// IOSurface-backed pixel buffer for VideoToolbox instead of mapping/copying pixels on the CPU.
 pub struct Raw {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    #[cfg(target_os = "macos")]
+    pub pixel_buffer: Option<apple_cf::cv::CVPixelBuffer>,
 }
 
 /// The newest frame not yet taken, shared by the capture thread and the encoder.
@@ -28,6 +31,8 @@ pub struct Slot {
 struct SlotState {
     frame: Option<Raw>,
     closed: bool,
+    #[cfg(target_os = "macos")]
+    error: Option<String>,
 }
 
 impl Slot {
@@ -36,13 +41,59 @@ impl Slot {
         if state.closed {
             return;
         }
-        state.frame = Some(frame);
+        let previous = state.frame.replace(frame);
         self.ready.notify_one();
+        // Release the superseded native surface outside the lock; there is never a frame queue.
+        drop(state);
+        drop(previous);
     }
 
     pub fn close(&self) {
-        self.frame.lock().unwrap().closed = true;
+        let mut state = self.frame.lock().unwrap();
+        state.closed = true;
+        let previous = state.frame.take();
         self.ready.notify_all();
+        drop(state);
+        drop(previous);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fail(&self, error: String) {
+        let mut state = self.frame.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        tracing::warn!(%error, "macOS live capture stopped");
+        state.error = Some(error);
+        state.closed = true;
+        let previous = state.frame.take();
+        self.ready.notify_all();
+        drop(state);
+        drop(previous);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn is_closed(&self) -> bool {
+        self.frame.lock().unwrap().closed
+    }
+
+    /// A successful native start is not sufficient: retain a complete first frame before replying.
+    #[cfg(target_os = "macos")]
+    fn wait_ready(&self, timeout: Duration) -> Result<()> {
+        let state = self.frame.lock().unwrap();
+        let (state, _) = self.ready.wait_timeout_while(state, timeout, |s| s.frame.is_none() && !s.closed).unwrap();
+        if state.closed {
+            return Err(anyhow!(
+                "{}",
+                state.error.as_deref().unwrap_or("screen capture stopped before its first frame")
+            ));
+        }
+        if state.frame.is_none() {
+            return Err(anyhow!(
+                "ScreenCaptureKit produced no complete frame; check the display and Screen Recording permission, then reconnect"
+            ));
+        }
+        Ok(())
     }
 
     /// Waits for the next frame; `None` once closed. Times out to let the caller check for a stop.
@@ -61,13 +112,19 @@ pub struct Capture {
     #[cfg(windows)]
     control: Option<windows_capture::capture::CaptureControl<win::Handler, win::Error>>,
     #[cfg(target_os = "macos")]
-    worker: Option<std::thread::JoinHandle<()>>,
+    native: Option<mac::NativeCapture>,
     slot: Arc<Slot>,
+    geometry: Option<(i32, i32, u32, u32)>,
 }
 
 impl Capture {
     pub fn slot(&self) -> Arc<Slot> {
         self.slot.clone()
+    }
+
+    /// Point coordinates for the exact monitor chosen when capture started, not Retina pixels.
+    pub fn geometry(&self) -> Option<(i32, i32, u32, u32)> {
+        self.geometry
     }
 }
 
@@ -79,8 +136,8 @@ impl Drop for Capture {
             let _ = control.stop();
         }
         #[cfg(target_os = "macos")]
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(native) = self.native.take() {
+            drop(native);
         }
     }
 }
@@ -125,69 +182,30 @@ pub fn geometry(index: Option<usize>) -> Option<(i32, i32, u32, u32)> {
 }
 
 /// Starts capturing monitor `index` (`None`: the primary one) at most `max_fps` times a second.
-pub fn start(index: Option<usize>, max_fps: u32) -> Result<Capture> {
+/// macOS scales on the GPU to the requested long edge before handing frames to the encoder.
+pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<Capture> {
     let slot = Arc::new(Slot::default());
     #[cfg(windows)]
     {
         let control = win::start(index, max_fps, slot.clone())?;
-        Ok(Capture { control: Some(control), slot })
+        let _ = max_long_edge; // Windows scaling remains in the encoder.
+        Ok(Capture { control: Some(control), slot, geometry: geometry(index) })
     }
     #[cfg(target_os = "macos")]
     {
-        if !crate::platform::macos::screen_recording_allowed() {
-            anyhow::bail!(
-                "live view needs macOS Screen Recording permission for the host; enable it in System Settings > Privacy & Security > Screen Recording, restart the host, then run doctor"
-            );
-        }
-        let all = xcap::Monitor::all()?;
-        let monitor = match index {
-            Some(i) => all.get(i),
-            None => all.iter().find(|m| m.is_primary().unwrap_or(false)).or(all.first()),
-        }
-        .ok_or_else(|| anyhow!("monitor not found"))?
-        .clone();
-        // Fail before acknowledging the stream when capture does not actually work.
-        let first = mac_frame(&monitor)?;
-        slot.put(first);
-        let frames = slot.clone();
-        let interval = Duration::from_secs_f64(1.0 / f64::from(max_fps.clamp(1, 30)));
-        let worker = std::thread::Builder::new().name("ar-macos-capture".into()).spawn(move || {
-            loop {
-                let guard = frames.frame.lock().unwrap();
-                let (guard, _) = frames.ready.wait_timeout_while(guard, interval, |s| !s.closed).unwrap();
-                if guard.closed {
-                    break;
-                }
-                drop(guard);
-                match mac_frame(&monitor) {
-                    Ok(frame) => frames.put(frame),
-                    Err(e) => {
-                        tracing::warn!("macOS live capture stopped: {e:#}");
-                        frames.close();
-                        break;
-                    }
-                }
-            }
-        })?;
-        Ok(Capture { worker: Some(worker), slot })
+        let native = mac::start(index, max_fps, max_long_edge, slot.clone())?;
+        let geometry = Some(native.geometry());
+        Ok(Capture { native: Some(native), slot, geometry })
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = (index, max_fps, slot);
+        let _ = (index, max_fps, max_long_edge, slot);
         Err(anyhow!("live view is not available on this platform yet"))
     }
 }
 
 #[cfg(target_os = "macos")]
-fn mac_frame(monitor: &xcap::Monitor) -> Result<Raw> {
-    let image = monitor.capture_image()?;
-    let (width, height) = image.dimensions();
-    let mut bgra = image.into_raw();
-    for pixel in bgra.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    Ok(Raw { bgra, width, height })
-}
+mod mac;
 
 #[cfg(windows)]
 mod win {
@@ -270,7 +288,7 @@ mod tests {
     #[test]
     #[ignore]
     fn capture_and_encode_the_screen() {
-        let capture = start(None, 30).unwrap();
+        let capture = start(None, 30, 1920).unwrap();
         let slot = capture.slot();
         let mut enc = FrameEncoder::new(30, 6_000_000, 1920).unwrap();
         let mut dec = openh264::decoder::Decoder::new().unwrap();
@@ -300,5 +318,69 @@ mod tests {
             encode_time.as_secs_f64() * 1000.0 / frames.max(1) as f64
         );
         assert!(frames > 0 && decoded == frames);
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    fn raw(value: u8) -> Raw {
+        Raw {
+            bgra: vec![value; 16],
+            width: 2,
+            height: 2,
+            #[cfg(target_os = "macos")]
+            pixel_buffer: None,
+        }
+    }
+
+    #[test]
+    fn a_slow_consumer_gets_only_the_newest_frame() {
+        let slot = Slot::default();
+        for value in 0..100 {
+            slot.put(raw(value));
+        }
+        let next = slot.take(Duration::ZERO).unwrap().unwrap();
+        assert_eq!(next.bgra, vec![99; 16]);
+        assert!(slot.take(Duration::ZERO).unwrap().is_none());
+    }
+
+    #[test]
+    fn close_discards_pending_frames_and_refuses_late_callbacks() {
+        let slot = Slot::default();
+        slot.put(raw(1));
+        slot.close();
+        assert!(slot.frame.lock().unwrap().frame.is_none());
+        slot.put(raw(2));
+        assert!(slot.frame.lock().unwrap().frame.is_none());
+        assert!(slot.take(Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn close_wakes_a_waiting_encoder() {
+        let slot = Arc::new(Slot::default());
+        let waiting = slot.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            tx.send(waiting.take(Duration::from_secs(30)).is_none()).unwrap();
+        });
+        slot.close();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        thread.join().unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_frame_handshake_preserves_frame_and_propagates_capture_errors() {
+        let slot = Slot::default();
+        assert!(slot.wait_ready(Duration::ZERO).is_err());
+        slot.put(raw(7));
+        slot.wait_ready(Duration::ZERO).unwrap();
+        assert_eq!(slot.take(Duration::ZERO).unwrap().unwrap().bgra, vec![7; 16]);
+        slot.put(raw(8));
+        slot.fail("capture permission revoked".into());
+        assert!(slot.frame.lock().unwrap().frame.is_none());
+        assert_eq!(slot.wait_ready(Duration::ZERO).unwrap_err().to_string(), "capture permission revoked");
     }
 }

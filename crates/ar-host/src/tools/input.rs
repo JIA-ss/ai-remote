@@ -59,6 +59,19 @@ const SCROLL_PAUSE: Duration = Duration::from_millis(15);
 const DRAG_STEPS: i32 = 10;
 const DRAG_PAUSE: Duration = Duration::from_millis(15);
 
+#[cfg(target_os = "macos")]
+struct ManualBackend {
+    peer: String,
+    point: Option<(i32, i32)>,
+    lifetime: tokio_util::sync::CancellationToken,
+    backend: inject::EnigoBackend,
+}
+
+// Enigo on macOS keeps native multi-click state in its instance. Reuse it only
+// for the same explicit human and driver epoch; every event remains checked.
+#[cfg(target_os = "macos")]
+static MANUAL_BACKEND: std::sync::Mutex<Option<ManualBackend>> = std::sync::Mutex::new(None);
+
 /// Serialises input calls (see the module comment).
 static INPUT: Mutex<()> = Mutex::const_new(());
 /// At most one executing call and one waiter. Waiting must not occupy blocking
@@ -653,8 +666,20 @@ impl Tool for Keyboard {
 /// Refuses early when input cannot reach the desktop or a prompt is open.
 fn ready(ctx: &ToolCtx<'_>) -> Result<()> {
     desktop_ready()?;
+    #[cfg(target_os = "macos")]
+    accessibility_ready()?;
     if ctx.host.open_prompts().count() > 0 {
         bail!(PROMPT_OPEN);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn accessibility_ready() -> Result<()> {
+    if !crate::platform::macos::accessibility_allowed() {
+        bail!(
+            "input cannot reach the desktop: macOS Accessibility permission is missing; enable it for this host and restart it"
+        );
     }
     Ok(())
 }
@@ -686,6 +711,8 @@ fn check_step(
         bail!(PROMPT_OPEN);
     }
     desktop_ready()?;
+    #[cfg(target_os = "macos")]
+    accessibility_ready()?;
     match platform::check_input_target(target) {
         InputTargetCheck::Allowed => Ok(()),
         InputTargetCheck::Doubtful(warning) => {
@@ -702,6 +729,17 @@ fn check_step(
 /// Keeps checking the session: the gate stops awaiting a cancelled call, but this thread would
 /// otherwise keep typing.
 async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    let manual = ctx.session.person();
+    #[cfg(target_os = "macos")]
+    let cache_lifetime = ctx.host.turns().input_cache_lifetime();
+    #[cfg(target_os = "macos")]
+    let peer = ctx.session.peer.principal.clone().unwrap_or_else(|| ctx.session.peer.name.clone());
+    #[cfg(target_os = "macos")]
+    let point = plan.steps.iter().find_map(|step| match (&step.op, step.check) {
+        (Op::Click(_), Some(InputTarget::At(x, y))) => Some((x, y)),
+        _ => None,
+    });
     let cancel = ctx.session.cancel.clone();
     let request = ctx.cancel.clone();
     let turn = ctx.turn_cancel.clone();
@@ -711,15 +749,45 @@ async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
         // These guards remain with the actual worker if its JoinHandle is dropped.
         let (_capacity, _one_at_a_time) = (capacity, input);
         check_active(&cancel, &request, &turn)?;
-        let mut backend = inject::EnigoBackend::new()?;
-        let mut warnings = Vec::new();
-        inject::execute(
-            &plan,
-            &mut backend,
-            &mut |target| check_step(&cancel, &prompts, target, &mut warnings),
-            &mut || check_active(&cancel, &request, &turn),
-        )?;
-        Ok(warnings)
+        #[cfg(target_os = "macos")]
+        accessibility_ready()?;
+        let execute = |backend: &mut inject::EnigoBackend| {
+            let mut warnings = Vec::new();
+            inject::execute(
+                &plan,
+                backend,
+                &mut |target| check_step(&cancel, &prompts, target, &mut warnings),
+                &mut || check_active(&cancel, &request, &turn),
+            )?;
+            Ok(warnings)
+        };
+        #[cfg(target_os = "macos")]
+        if manual {
+            let mut cache =
+                MANUAL_BACKEND.lock().map_err(|_| anyhow!("manual input state failed; restart the host"))?;
+            if cache_lifetime.is_cancelled() {
+                // An explicitly human call keeps its admission behavior, but a
+                // call queued before a driver change cannot reuse newer click state.
+                *cache = None;
+                return execute(&mut inject::EnigoBackend::new()?);
+            }
+            if cache.as_ref().is_none_or(|previous| {
+                previous.peer != peer || previous.lifetime.is_cancelled() || point.is_none() || previous.point != point
+            }) {
+                *cache = Some(ManualBackend {
+                    peer,
+                    point,
+                    lifetime: cache_lifetime,
+                    backend: inject::EnigoBackend::new()?,
+                });
+            }
+            let result = execute(&mut cache.as_mut().unwrap().backend);
+            if result.is_err() {
+                *cache = None;
+            }
+            return result;
+        }
+        execute(&mut inject::EnigoBackend::new()?)
     })
     .await
     .context("the input thread failed")?

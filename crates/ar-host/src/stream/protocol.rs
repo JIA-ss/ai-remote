@@ -11,7 +11,7 @@
 //! u8  flags    bit 0: keyframe
 //! u16 width    big-endian, the stream size of this frame
 //! u16 height
-//! u64 ts_us    capture time, microseconds since the stream started
+//! u64 ts_us    encoder emission time, microseconds since the stream started
 //! u32 length
 //! ..  H.264 Annex B, `length` bytes
 //! ```
@@ -38,7 +38,7 @@ use ar_net::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     sync::mpsc,
 };
 
@@ -156,10 +156,19 @@ async fn serve(
         return;
     }
     let monitors = capture::monitors().unwrap_or_default();
-    let capture = match capture::start(req.monitor, req.max_fps) {
-        Ok(c) => c,
-        Err(e) => {
-            reply(&mut send, json!({"ok": false, "error": format!("{e:#}")})).await;
+    let capture = match tokio::task::spawn_blocking(move || {
+        capture::start(req.monitor, req.max_fps, req.max_long_edge.clamp(320, 3840))
+    })
+    .await
+    {
+        Ok(Ok(c)) => c,
+        result => {
+            let error = match result {
+                Ok(Err(e)) => format!("{e:#}"),
+                Err(e) => format!("capture worker failed: {e}"),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            reply(&mut send, json!({"ok": false, "error": error})).await;
             return;
         }
     };
@@ -167,7 +176,7 @@ async fn serve(
         monitors.iter().map(|(i, w, h, p)| json!({"index": i, "width": w, "height": h, "primary": p})).collect();
     // Where the streamed monitor is on the screen, so a viewer can turn a point of the picture into
     // screen coordinates for the mouse tool.
-    let screen = capture::geometry(req.monitor).map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
+    let screen = capture.geometry().map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
     if !reply(&mut send, json!({"ok": true, "monitors": list, "screen": screen})).await {
         return;
     }
@@ -177,7 +186,7 @@ async fn serve(
 
     // Encoding runs on a blocking thread; frames come back over a small channel, so a slow network
     // makes the encoder wait, and the capture slot skips frames meanwhile.
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(2);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
     let keyframe = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
     let encoder = {
@@ -192,13 +201,25 @@ async fn serve(
                 }
             };
             let started = Instant::now();
+            let mut latest = None;
             while !stop.load(Ordering::Relaxed) {
-                let Some(next) = slot.take(Duration::from_millis(250)) else { break };
-                let Some(raw) = next else { continue };
+                let Some(next) = slot.take(Duration::from_millis(50)) else { break };
+                if let Some(raw) = next {
+                    latest = Some(raw);
+                } else if !keyframe.load(Ordering::Relaxed) {
+                    continue;
+                }
+                // Event-driven capture emits no new pixels for a static desktop. A decoder
+                // recovering from loss must still get an IDR of the last complete frame.
+                let Some(raw) = latest.as_ref() else { continue };
+                if crate::platform::prompt_blocker().is_some() {
+                    slot.close();
+                    break;
+                }
                 if keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
-                let frame = match enc.encode(&raw.bgra, raw.width, raw.height, raw.width * 4) {
+                let frame = match enc.encode_raw(raw) {
                     Ok(Some(f)) => f,
                     Ok(None) => continue,
                     Err(e) => {
@@ -214,16 +235,18 @@ async fn serve(
         })
     };
 
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
         tokio::select! {
             frame = rx.recv() => match frame {
-                Some(bytes) => if send.write_all(&bytes).await.is_err() { break },
+                Some(bytes) => {
+                    if !write_frame(&mut send, &mut reader, &bytes, &mut line, &keyframe, host.stopping()).await { break; }
+                },
                 None => break,
             },
-            read = reader.read_line(&mut line) => match read {
+            read = reader.read_until(b'\n', &mut line) => match read {
                 Ok(n) if n > 0 => {
-                    if serde_json::from_str::<Control>(&line).is_ok_and(|c| c.keyframe) {
+                    if serde_json::from_slice::<Control>(&line).is_ok_and(|c| c.keyframe) {
                         keyframe.store(true, Ordering::Relaxed);
                     }
                     line.clear();
@@ -237,10 +260,37 @@ async fn serve(
     }
     stop.store(true, Ordering::Relaxed);
     drop(rx);
-    drop(capture);
+    let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
     let _ = encoder.await;
     let _ = send.finish();
     host.audit().event(audit_line("view_end"));
+}
+
+/// A partial frame is terminal on failure. Keep cancellation and keyframe controls responsive
+/// during network backpressure, and retain partial control lines across select cancellations.
+async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
+    send: &mut W,
+    reader: &mut R,
+    bytes: &[u8],
+    line: &mut Vec<u8>,
+    keyframe: &AtomicBool,
+    stop: &tokio_util::sync::CancellationToken,
+) -> bool {
+    let write = tokio::time::timeout(Duration::from_secs(2), send.write_all(bytes));
+    tokio::pin!(write);
+    loop {
+        tokio::select! {
+            result = &mut write => return matches!(result, Ok(Ok(()))),
+            read = reader.read_until(b'\n', line) => match read {
+                Ok(n) if n > 0 => {
+                    if serde_json::from_slice::<Control>(line).is_ok_and(|c| c.keyframe) { keyframe.store(true, Ordering::Relaxed); }
+                    line.clear();
+                },
+                _ => return false,
+            },
+            _ = stop.cancelled() => return false,
+        }
+    }
 }
 
 /// Writes one JSON line; `false` when the controller is gone.
@@ -265,6 +315,59 @@ pub fn frame_bytes(data: &[u8], keyframe: bool, width: u32, height: u32, ts_us: 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn slow_write_still_accepts_keyframe_control_and_stop() {
+        let (mut send, _slow_peer) = tokio::io::duplex(1);
+        let (control, mut peer) = tokio::io::duplex(128);
+        let mut reader = BufReader::new(control);
+        let stop = tokio_util::sync::CancellationToken::new();
+        let keyframe = AtomicBool::new(false);
+        let mut line = Vec::new();
+        let started = Instant::now();
+        let controls = async {
+            peer.write_all(b"{\"keyframe\":true}\n").await.unwrap();
+            tokio::time::timeout(Duration::from_millis(500), async {
+                while !keyframe.load(Ordering::Relaxed) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            stop.cancel();
+        };
+        let (sent, _) =
+            tokio::join!(write_frame(&mut send, &mut reader, &[0; 4096], &mut line, &keyframe, &stop), controls);
+        assert!(!sent, "cancelled partial frames must terminate instead of continuing");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(keyframe.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn partial_control_json_survives_an_interleaved_frame_write() {
+        let (mut send, mut receiver) = tokio::io::duplex(1);
+        let (control, mut peer) = tokio::io::duplex(128);
+        let mut reader = BufReader::new(control);
+        let stop = tokio_util::sync::CancellationToken::new();
+        let keyframe = AtomicBool::new(false);
+        let mut line = Vec::new();
+        peer.write_all(b"{\"key").await.unwrap();
+        let receive = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let mut bytes = [0; 4];
+            receiver.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(bytes, [1, 2, 3, 4]);
+        };
+        let (sent, _) =
+            tokio::join!(write_frame(&mut send, &mut reader, &[1, 2, 3, 4], &mut line, &keyframe, &stop), receive);
+        assert!(sent);
+        assert_eq!(line, b"{\"key");
+        peer.write_all(b"frame\":true}\n").await.unwrap();
+        reader.read_until(b'\n', &mut line).await.unwrap();
+        assert!(serde_json::from_slice::<Control>(&line).unwrap().keyframe);
+    }
+
     #[test]
     fn frames_have_an_18_byte_header() {
         let b = super::frame_bytes(&[0, 0, 0, 1, 0x67], true, 1920, 1080, 42);
