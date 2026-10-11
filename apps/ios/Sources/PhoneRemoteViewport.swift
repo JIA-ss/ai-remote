@@ -94,6 +94,10 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
         addSubview(imageView)
         remoteDrag.minimumNumberOfTouches = 1
         remoteDrag.maximumNumberOfTouches = 1
+        remoteDrag.captureInitialImagePoint = { [weak self] touch in
+            guard let self else { return nil }
+            return PhoneViewportGeometry.normalizedPoint(touch.location(in: self.imageView), imageSize: self.imageSize)
+        }
         remoteTap.numberOfTouchesRequired = 1
         remoteTap.permitsInitialTouch = { [weak self] touch in
             guard let self else { return false }
@@ -309,11 +313,9 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
     @objc private func dragChanged(_ recognizer: RemoteSingleTouchPanRecognizer) {
         switch recognizer.state {
         case .began:
-            let location = recognizer.location(in: imageView)
-            let translation = recognizer.translation(in: imageView)
-            let original = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
-            dragStart = allowsRemoteInput && !isZooming
-                ? PhoneViewportGeometry.normalizedPoint(original, imageSize: imageSize) : nil
+            // UIPan's translation may start after its recognition hysteresis.
+            // Use the actual touch-down position captured before that threshold.
+            dragStart = allowsRemoteInput && !isZooming ? recognizer.initialImagePoint : nil
         case .ended:
             defer { dragStart = nil }
             guard allowsRemoteInput, !isZooming, !recognizer.involvedMultipleTouches,
@@ -368,6 +370,8 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
 /// UIKit's maximumNumberOfTouches alone does not revoke a pan that already began.
 /// Cancel explicitly on a second finger, without sending any remote down/up events.
 class RemoteSingleTouchPanRecognizer: UIPanGestureRecognizer {
+    var captureInitialImagePoint: ((UITouch) -> CGPoint?)?
+    private(set) var initialImagePoint: CGPoint?
     private(set) var involvedMultipleTouches = false
 
     @discardableResult func activeTouchCountChanged(_ count: Int) -> Bool {
@@ -381,6 +385,7 @@ class RemoteSingleTouchPanRecognizer: UIPanGestureRecognizer {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         activeTouchCountChanged(event.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? touches.count)
         guard !involvedMultipleTouches else { return }
+        if let first = touches.first { initialImagePoint = captureInitialImagePoint?(first) }
         super.touchesBegan(touches, with: event)
     }
 
@@ -393,6 +398,7 @@ class RemoteSingleTouchPanRecognizer: UIPanGestureRecognizer {
     override func reset() {
         super.reset()
         involvedMultipleTouches = false
+        initialImagePoint = nil
     }
 }
 
