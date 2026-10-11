@@ -7,6 +7,7 @@ public struct PhoneRootView: View {
     @PhoneViewState<Bool> private var controlsExpanded = true
     @PhoneViewState<Bool> private var showKeyboard = false
     @PhoneViewState<PhoneViewportRequest> private var viewportRequest = PhoneViewportRequest()
+    @PhoneViewState<EdgeInsets> private var viewportInsets = EdgeInsets()
     @FocusState private var textFocused: Bool
     #if DEBUG
     private var fixtureInputObserver: ((String, [String: JSONValue]) -> Void)? = nil
@@ -25,7 +26,6 @@ public struct PhoneRootView: View {
             }
             .background(canvas)
             .navigationTitle(store.selected?.name ?? "电脑")
-            .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
             .toolbar {
                 if store.selected != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
@@ -34,6 +34,7 @@ public struct PhoneRootView: View {
                     ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                 }
             }
+            .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
             .sheet(isPresented: $store.pairSheet) { pairing }
             .sheet(isPresented: $store.showActivity) { activity }
             .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
@@ -43,6 +44,7 @@ public struct PhoneRootView: View {
                 requestViewport(.fit)
             }
         }
+        .modifier(PhoneSessionChrome(fullscreen: fullscreen && store.selected != nil))
         .tint(.blue)
     }
 
@@ -134,7 +136,6 @@ public struct PhoneRootView: View {
     private func session(_ host: PhoneHost) -> some View {
         ZStack {
             screenView
-                .ignoresSafeArea(.container, edges: fullscreen ? .all : [])
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     HStack(spacing: 6) {
@@ -158,9 +159,13 @@ public struct PhoneRootView: View {
                 floatingControls
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.leading, viewportInsets.leading + 12)
+            .padding(.trailing, viewportInsets.trailing + 12)
+            .padding(.top, viewportInsets.top + 8)
+            .padding(.bottom, viewportInsets.bottom + 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: fullscreen ? .all : [])
         .background(.black)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if showKeyboard { keyboardDrawer }
@@ -328,7 +333,10 @@ public struct PhoneRootView: View {
     #if os(iOS)
     private func nativeViewport(_ picture: CGImage) -> some View {
         var viewport = PhoneRemoteViewport(image: picture, allowsInput: store.connected && store.ownsControls,
-                                           request: viewportRequest, onGesture: sendPointer)
+                                           request: viewportRequest, onGesture: sendPointer, onInsets: { insets in
+            let next = EdgeInsets(top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right)
+            if viewportInsets != next { viewportInsets = next }
+        })
         #if DEBUG
         viewport.diagnosticsEnabled = fixtureInputObserver != nil
         #endif
