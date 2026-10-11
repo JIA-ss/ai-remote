@@ -25,6 +25,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Select macOS SDK
+        if: runner.os == 'macOS'
+        env:
+          # apple-metal's Swift bridge uses macOS 26 SDK declarations.
+          # https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md
+          DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+        run: |
+          test -d "$DEVELOPER_DIR"
+          printf '%s\n' "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          xcodebuild -version
+          python3 - <<'PY'
+          import subprocess
+          sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-version"], text=True).strip()
+          if int(sdk.split(".")[0]) < 26:
+              raise SystemExit("apple-metal requires macOS SDK 26+")
+          print(f"macOS SDK: {sdk}")
+          PY
       - name: Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --component clippy
       - uses: actions/cache/restore@v4
