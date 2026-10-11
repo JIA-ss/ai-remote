@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/desktop/src-tauri"]
-exclude = ["vendor/mcpmesh", "vendor/netdev", "vendor/netwatch"]
+exclude = ["vendor/mcpmesh", "vendor/netdev", "vendor/netwatch", "vendor/n0-dns-resolver"]
 
 [workspace.package]
 version = "0.0.1"
@@ -96,3 +96,6 @@ netdev = { path = "vendor/netdev" }
 
 # netwatch requires Darwin routing constants that libc omits on iOS.
 netwatch = { path = "vendor/netwatch" }
+
+# iOS must not read metadata from the system hosts file outside its app container.
+n0-dns-resolver = { path = "vendor/n0-dns-resolver" }
