@@ -47,21 +47,36 @@ The `iPhone controller` workflow builds the real `iphoneos` app with signing dis
 arm64 Mach-O device platform, and uploads **`iPhone-device-unsigned-ipa`** before simulator UI tests.
 Download that artifact from a run for the revision you want to test and unzip it to obtain
 `ai-remote-unsigned.ipa` and `package-metadata.json`. Artifacts are retained for seven days.
+The actual CI-generated device IPA has passed these packaging checks; physical-phone installation
+and remote-control acceptance still require separate verification.
 
-**This IPA is unsigned and cannot be installed directly.** Downloading, packaging or successfully
+**This IPA is unsigned and must be signed locally for your device before installation.** Downloading, packaging or successfully
 compiling it does not prove on-device installation or remote-control acceptance. The simulator app
 artifact targets a different platform and cannot be installed on an iPhone, even though both builds
 use arm64. The packager rejects simulator/Catalyst images and unsafe bundle links.
 
-Two local signing paths are available:
+Full Xcode is needed for the source-build path above. To install the available device IPA, you can
+instead sign it locally with your own Apple ID using AltServer; a full Xcode installation is not
+required for that path. Choose a local signing path:
 
-1. **Xcode:** use the source build above, sign in with your Apple Account in Xcode, choose your
+1. **AltServer (CI IPA):** download AltServer from its [official macOS installation guide](https://faq.altstore.io/altstore-classic/how-to-install-altstore-macos),
+   copy `AltServer.app` into `/Applications`, and launch it. Connect an unlocked iPhone over USB
+   and trust the computer. Hold **Option** while clicking AltServer's menu-bar icon, choose
+   **“Sideload .ipa…”**, and follow the local dialog to select `ai-remote-unsigned.ipa`, the phone,
+   and your own Apple ID for development signing. Enter credentials and verification codes only
+   in the local signing tool. **Installing AltStore first is not required.** AltServer's
+   [official release notes](https://faq.altstore.io/release-notes/altserver) document direct IPA
+   sideloading and manual reinstallation every seven days for free-account installations.
+   For ongoing refresh, optionally install AltStore using the guide above; AltStore supports
+   refreshing sideloaded apps. This project's physical-phone installation and control through
+   this route remain unverified.
+2. **Xcode (source build):** use the source build above, sign in with your Apple Account in Xcode, choose your
    Personal Team or developer team with automatic signing, connect and trust the phone, enable
    Developer Mode, select the phone as the run destination, and run the app. A free Personal Team
    can test on a personal device; its provisioning profiles expire after seven days and require
    rebuilding/reinstalling. See Apple's [device deployment guide](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices)
    and [Personal Team limits](https://developer.apple.com/help/account/basics/about-your-developer-account/).
-2. **Sideloadly:** if a full Xcode installation is unavailable, download the tool from the
+3. **Sideloadly (optional, unverified):** if a full Xcode installation is unavailable, download the tool from the
    [official Sideloadly website](https://sideloadly.io/), connect and trust the iPhone over USB,
    load `ai-remote-unsigned.ipa`, and use its Apple ID signing mode with your own account to
    sign and install locally. Enter credentials and any verification codes only in the local tool.
@@ -124,8 +139,12 @@ the app does not claim unattended background video or push notifications.
 首次版本通过粘贴一次性票据配对，支持观看、触控点击/拖动、滚动、键盘输入、接管/交还、暂停、
 活动记录和拒绝请求。暂未实现 Face ID 的允许签名、二维码扫描和后台推送。
 
-本机核心编译、协议测试、iOS SDK 编译、模拟器与真机验收是不同证据，不能互相代替。真机需要
-完整 Xcode、签名团队、连接的 iPhone 和开发者模式；在最终手机验收前不宣称正式可用或已上架。
+本机核心编译、协议测试、iOS SDK 编译、模拟器与真机验收是不同证据，不能互相代替。真实 CI
+生成的设备 IPA 已通过打包校验，仍需用你自己的 Apple ID 在本机签名。源码编译与 Xcode 安装
+路径需要完整 Xcode、签名团队和连接的 iPhone；已有 IPA 可以用官方 AltServer 的 Option 菜单
+“Sideload .ipa…” 直接签名安装，无须先装 AltStore，也无须为此安装完整 Xcode。免费账号直装
+每七天需重新安装；可选择安装 AltStore 续签。Sideloadly 保留为尚未验证的可选路径。手机仍需
+完成开发者模式、应用信任及上方真机验收清单；目前不宣称已在真机安装、正式可用或已上架。
 
 To reproduce the native Swift/Rust lifecycle races on Mac after `tools/ios.sh mac-core`:
 
