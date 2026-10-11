@@ -60,6 +60,13 @@ export function RemoteInput({
   // Keyboard focus moves to the picture when you take over.
   useEffect(() => {
     layer.current?.focus();
+    return () => {
+      // A buffered keystroke must never outlive takeover or the session page.
+      if (flush.current !== null) clearTimeout(flush.current);
+      flush.current = null;
+      text.current = "";
+      down.current = null;
+    };
   }, []);
 
   const call = (tool: string, args: Record<string, unknown>) => {

@@ -45,7 +45,7 @@ jobs:
           npm ci
           npm run build
       - name: MCP client configuration tests
-        run: node --test tools/mcp-install.test.mjs
+        run: node --test tools/mcp-install.test.mjs tools/desktop-state.test.mjs
       - name: Windows command transport diagnostics
         if: runner.os == 'Windows'
         run: pwsh -NoProfile -File tools/windows-cmd-probe.ps1

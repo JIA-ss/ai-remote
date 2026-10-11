@@ -289,7 +289,7 @@ export function ToolsTab({ c }: { c: Computer }) {
   const asks = all.filter((x) => usable(x) && x.action === "ask").length;
   const above = all.filter((x) => rank(x.level) > rank(level)).length;
   const mounted = access.mounts.reduce((k, m) => k + m.tools.filter(usable).length, 0);
-  const current = sources.find((s) => s.key === (sel ?? access.mounts[0]?.name ?? "")) ?? sources[0];
+  const current = sources.find((s) => s.key === (sel ?? "")) ?? sources[0];
   const maxLevel = (tools: HostTool[]) => tools.reduce<Level>((m, x) => (rank(x.level) > rank(m) ? x.level : m), "observe");
   const lede = [
     access.mounts.length ? t("tools_lede", { b: n - mounted, m: mounted }) : t("tools_lede_builtin", { b: n }),

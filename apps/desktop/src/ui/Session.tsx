@@ -47,6 +47,7 @@ function Capsule({
   tool,
   path,
   mayWatch,
+  busy,
   onAction,
 }: {
   bar: Bar;
@@ -57,6 +58,7 @@ function Capsule({
   tool: string;
   path: "direct" | "relay" | null;
   mayWatch: boolean;
+  busy: boolean;
   onAction: (a: "take_over" | "pause" | "hand_back" | "resume") => void;
 }) {
   const lines: Record<Bar, [string, string]> = {
@@ -69,12 +71,12 @@ function Capsule({
     connecting: [t("cap_conn_1", { host }), t("cap_conn_2")],
   };
   const take = (
-    <button className="pill take" onClick={() => onAction("take_over")}>
+    <button className="pill take" disabled={busy} onClick={() => onAction("take_over")}>
       {t("take_over")}
     </button>
   );
   const pause = (
-    <button className="pill" onClick={() => onAction("pause")}>
+    <button className="pill" disabled={busy} onClick={() => onAction("pause")}>
       <Glyph name="paused" size={16} />
       {t("pause_agent")}
     </button>
@@ -89,13 +91,13 @@ function Capsule({
     waiting: take,
     idle: take,
     you: (
-      <button className="pill ink" onClick={() => onAction("hand_back")}>
+      <button className="pill ink" disabled={busy} onClick={() => onAction("hand_back")}>
         {t("hand_back")}
         <span className="kbd">Ctrl+Alt+H</span>
       </button>
     ),
     paused: (
-      <button className="pill ink" onClick={() => onAction("resume")}>
+      <button className="pill ink" disabled={busy} onClick={() => onAction("resume")}>
         <Icon name="play" size={14} />
         {t("resume")}
       </button>
@@ -313,6 +315,8 @@ export function SessionPage({
   const [sent, setSent] = useState(false);
   const [handNote, setHandNote] = useState("");
   const [mayWatch, setMayWatch] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   const bar = barOf(c, hasFrame);
@@ -341,24 +345,34 @@ export function SessionPage({
   const floorTop = Math.round(lineTop + 24 + (stage.h - (lineTop + 24) - 40) / 2);
 
   const act = async (a: "take_over" | "pause" | "hand_back" | "resume") => {
+    if (acting) return;
+    setActing(true);
+    setActionError(null);
     try {
       if (a === "take_over") await api.setTurn(host, "take_over", { agentMayWatch: mayWatch });
       else if (a === "hand_back") {
         await api.setTurn(host, "hand_back", { note: handNote.trim() || undefined });
         setHandNote("");
       } else await api.setTurn(host, a);
-    } catch {
-      /* the feed shows the state either way */
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActing(false);
     }
   };
 
   const send = async () => {
     const text = message.trim();
     if (!text) return;
-    await api.tellAgent(host, text);
-    setMessage("");
-    setSent(true);
-    setTimeout(() => setSent(false), 4000);
+    try {
+      setActionError(null);
+      await api.tellAgent(host, text);
+      setMessage("");
+      setSent(true);
+      setTimeout(() => setSent(false), 4000);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const composerPh = pending ? t("composer_decide") : bar === "paused" ? t("composer_decide") : t("composer_ph");
@@ -383,10 +397,12 @@ export function SessionPage({
               host={host}
               device={device}
               tool={pending?.tool ?? ""}
-              path={c.host.path === "relay" ? "relay" : c.host.path === "direct" ? "direct" : null}
+              path={c.online === true ? c.host.path === "relay" ? "relay" : c.host.path === "direct" ? "direct" : null : null}
               mayWatch={c.feed.driver.state === "person" && c.feed.driver.agent_may_watch}
+              busy={acting}
               onAction={act}
             />
+            {actionError && <div className="session-error" role="alert">{actionError}</div>}
             <div className={cx("frame", drive)} style={{ left, top, width: sw, height: sh }} />
             <div className={cx("stream", bar === "offline" && "desat")} style={{ left, top, width: sw, height: sh }}>
               {c.online !== false && (

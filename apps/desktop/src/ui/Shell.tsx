@@ -2,6 +2,7 @@
 // the NavigationView pane with the computer list, and the compact rail used in sessions.
 
 import type { ReactNode } from "react";
+import { api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { groupOf, type Computer, type Group } from "../lib/store";
 import { Glyph, Mark, OsGlyph } from "./glyphs";
@@ -9,7 +10,7 @@ import { Icon } from "./Icon";
 import { TurnLine, turnSpec } from "./TurnLine";
 import { clock, cx } from "./util";
 
-export type Nav = "approvals" | "activity" | "pair" | "settings" | { computer: string };
+export type Nav = "devices" | "approvals" | "activity" | "pair" | "settings" | { computer: string };
 
 export function TitleBar({ title, facts, onBack }: { title?: string; facts?: ReactNode; onBack?: () => void }) {
   return (
@@ -34,6 +35,7 @@ export function TitleBar({ title, facts, onBack }: { title?: string; facts?: Rea
           <span className="name">{t("app")}</span>
         )}
       </div>
+      {api.kind === "demo" && <span className="demo-badge">{t("preview_badge")}</span>}
       <div className="drag" data-tauri-drag-region />
       {/* Room for the caption buttons drawn by the window frame. */}
       <div style={{ width: "var(--tauri-frame-controls-width, 0px)", flex: "none" }} />
@@ -63,13 +65,14 @@ export function computerFacts(c: Computer): Array<[ReactNode, string]> {
   if (c.os) out.push([<OsGlyph key="os" os={c.os} size={12} />, t(c.os === "mac" ? "mac" : "win")]);
   const lvl = c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing;
   if (lvl) out.push([<Glyph key="lvl" name={levelGlyph[lvl]} size={12} />, t(levelName[lvl])]);
-  if (c.host.path === "direct" || c.host.path === "relay")
+  if (c.online === true && (c.host.path === "direct" || c.host.path === "relay"))
     out.push([<Glyph key="p" name={c.host.path === "relay" ? "relayed" : "direct"} size={12} />, t(c.host.path === "relay" ? "relayed" : "direct")]);
   return out;
 }
 
 /** The status sentence of a computer row and its tone. */
 export function statusOf(c: Computer, now: number): { text: string; tone: "" | "you" | "agent" } {
+  if (c.online === null) return { text: t("st_connecting"), tone: "" };
   const g = groupOf(c, now);
   if (g === "offline") return { text: c.since ? t("st_offline_since", { time: clock(c.since, false) }) : t("st_offline"), tone: "" };
   if (g === "needs") return { text: t("st_waiting"), tone: "you" };
@@ -79,30 +82,29 @@ export function statusOf(c: Computer, now: number): { text: string; tone: "" | "
     const last = c.feed.steps.at(-1);
     return { text: last?.intent ?? t("st_running", { tool: last?.tool ?? "" }), tone: "agent" };
   }
-  if (c.online === null) return { text: t("st_connecting"), tone: "" };
   return { text: c.since ? t("st_idle_since", { time: clock(c.since, false) }) : t("st_idle"), tone: "" };
 }
 
 function PcRow({ c, sel, now, onClick, width }: { c: Computer; sel: boolean; now: number; onClick: () => void; width: number }) {
   const st = statusOf(c, now);
-  const spec = Object.keys(c.feed.sessions).length || c.feed.pending.length ? turnSpec(c.feed, now, c.online !== false) : null;
+  const spec = c.online === true && (Object.keys(c.feed.sessions).length || c.feed.pending.length) ? turnSpec(c.feed, now, true) : null;
   const off = c.online === false;
   return (
-    <div className={cx("pc", sel && "sel", off && "off")} title={c.host.name} onClick={onClick} role="button" tabIndex={0}>
+    <button type="button" className={cx("pc", sel && "sel", off && "off")} title={c.host.name} onClick={onClick} aria-current={sel ? "page" : undefined}>
       <span className="tile">
-        <OsGlyph os={c.os ?? "windows"} size={16} />
+        {c.os ? <OsGlyph os={c.os} size={16} /> : <Icon name="monitor" size={16} />}
         <i className={cx("pd", (off || c.online === null) && "off")} />
       </span>
-      <div className="tx">
+      <span className="tx">
         <span className="nm">{c.host.name}</span>
         <span className={cx("st", st.tone)}>{st.text}</span>
-      </div>
+      </span>
       {spec && (
-        <div className="mini">
+        <span className="mini">
           <TurnLine spec={spec} w={width - 24 - 20 - 30 - 12} mini />
-        </div>
+        </span>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -120,12 +122,16 @@ export function Sidebar({
   active,
   waiting,
   now,
+  query,
+  onQuery,
   onNav,
 }: {
   computers: Computer[];
   active: Nav | null;
   waiting: number;
   now: number;
+  query: string;
+  onQuery: (query: string) => void;
   onNav: (n: Nav) => void;
 }) {
   const width = 272;
@@ -135,28 +141,35 @@ export function Sidebar({
   const grouped = new Map<string, Computer[]>();
   for (const g of ORDER) {
     const label = GROUP_LABEL[g];
-    const list = computers.filter((c) => groupOf(c, now) === g);
+    const list = computers.filter((c) => groupOf(c, now) === g && c.host.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
     if (list.length) grouped.set(label, [...(grouped.get(label) ?? []), ...list]);
   }
   return (
-    <nav className="side" style={{ width }}>
+    <nav className="side" style={{ width }} aria-label={t("main_navigation")}>
       <div className="search">
         <Icon name="search" size={14} />
-        <span>{t("search_computers")}</span>
+        <input type="search" value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("search_computers")} aria-label={t("search_computers")} />
+        {query && <button type="button" className="search-clear" onClick={() => onQuery("")} aria-label={t("clear_search")}><Icon name="x" size={12} /></button>}
       </div>
-      <div className={cx("nv", isActive("approvals") && "sel")} onClick={() => onNav("approvals")} role="button" tabIndex={0}>
+      <button type="button" className={cx("nv", isActive("devices") && "sel")} onClick={() => onNav("devices")} aria-current={isActive("devices") ? "page" : undefined}>
+        <Icon name="monitor" size={16} />
+        <span>{t("devices")}</span>
+        <span className="end device-count">{computers.length}</span>
+      </button>
+      <button type="button" className={cx("nv", isActive("approvals") && "sel")} onClick={() => onNav("approvals")} aria-current={isActive("approvals") ? "page" : undefined}>
         <Glyph name="approval" size={16} />
         <span>{t("approvals")}</span>
         {waiting > 0 && <span className="end badge">{waiting}</span>}
-      </div>
-      <div className={cx("nv", isActive("activity") && "sel")} onClick={() => onNav("activity")} role="button" tabIndex={0}>
+      </button>
+      <button type="button" className={cx("nv", isActive("activity") && "sel")} onClick={() => onNav("activity")} aria-current={isActive("activity") ? "page" : undefined}>
         <Icon name="history" size={16} />
         <span>{t("activity")}</span>
-      </div>
-      {computers.length === 0 ? (
+      </button>
+      <div className="side-devices">
+      {computers.length === 0 || grouped.size === 0 ? (
         <>
           <div className="side-h">{t("computers")}</div>
-          <div className="empty-note">{t("no_computers_short")}</div>
+          <div className="empty-note" role="status">{t(computers.length === 0 ? "no_computers_short" : "search_no_matches")}</div>
         </>
       ) : (
         [...grouped.entries()].map(([label, list]) => (
@@ -178,15 +191,15 @@ export function Sidebar({
           </div>
         ))
       )}
-      <div className="spacer" />
-      <div className={cx("nv", isActive("pair") && "sel")} onClick={() => onNav("pair")} role="button" tabIndex={0}>
+      </div>
+      <button type="button" className={cx("nv", isActive("pair") && "sel")} onClick={() => onNav("pair")} aria-current={isActive("pair") ? "page" : undefined}>
         <Icon name="add" size={16} />
         <span>{t("pair")}</span>
-      </div>
-      <div className={cx("nv", isActive("settings") && "sel")} onClick={() => onNav("settings")} role="button" tabIndex={0}>
+      </button>
+      <button type="button" className={cx("nv", isActive("settings") && "sel")} onClick={() => onNav("settings")} aria-current={isActive("settings") ? "page" : undefined}>
         <Icon name="settings" size={16} />
         <span>{t("settings")}</span>
-      </div>
+      </button>
     </nav>
   );
 }
@@ -194,28 +207,28 @@ export function Sidebar({
 /** The compact rail in sessions. */
 export function NavRail({ waiting, os, onNav }: { waiting: number; os: "windows" | "mac"; onNav: (n: Nav | "home") => void }) {
   return (
-    <nav className="nrail">
-      <div className="ni" onClick={() => onNav("home")} role="button" tabIndex={0}>
+    <nav className="nrail" aria-label={t("main_navigation")}>
+      <button type="button" className="ni" onClick={() => onNav("home")} aria-label={t("devices")} title={t("devices")}>
         <Icon name="menu" size={16} />
-      </div>
-      <div className="ni" onClick={() => onNav("approvals")} role="button" tabIndex={0}>
+      </button>
+      <button type="button" className="ni" onClick={() => onNav("approvals")} aria-label={t("approvals")} title={t("approvals")}>
         <Glyph name="approval" size={18} />
         {waiting > 0 && <span className="badge">{waiting}</span>}
-      </div>
-      <div className="ni" onClick={() => onNav("activity")} role="button" tabIndex={0}>
+      </button>
+      <button type="button" className="ni" onClick={() => onNav("activity")} aria-label={t("activity")} title={t("activity")}>
         <Icon name="history" size={16} />
-      </div>
+      </button>
       <div className="sep" />
-      <div className="ni sel">
+      <span className="ni sel" aria-current="page" aria-label={t("current_session")} title={t("current_session")}>
         <OsGlyph os={os} size={16} />
-      </div>
+      </span>
       <div className="spacer" />
-      <div className="ni" onClick={() => onNav("pair")} role="button" tabIndex={0}>
+      <button type="button" className="ni" onClick={() => onNav("pair")} aria-label={t("pair")} title={t("pair")}>
         <Icon name="add" size={16} />
-      </div>
-      <div className="ni" onClick={() => onNav("settings")} role="button" tabIndex={0}>
+      </button>
+      <button type="button" className="ni" onClick={() => onNav("settings")} aria-label={t("settings")} title={t("settings")}>
         <Icon name="settings" size={16} />
-      </div>
+      </button>
     </nav>
   );
 }
