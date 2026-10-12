@@ -31,7 +31,13 @@ function news(c: Computer, now: number): { hl: string; lede: string | null; who:
   if (p) {
     const asked = c.feed.steps.find((s) => s.approvalId === p.id);
     const hl =
-      p.tool === "shell" ? t("hl_waiting_shell") : p.tool === "jobs_start" ? t("hl_waiting_job") : t("hl_waiting_tool", { tool: p.tool });
+      p.tool === "shell"
+        ? t("hl_waiting_shell")
+        : p.tool === "jobs_start"
+          ? t("hl_waiting_job")
+          : p.tool.startsWith("files_")
+            ? t("hl_waiting_file")
+            : t("hl_waiting_tool", { tool: p.tool });
     return { hl, lede: t("lede_waiting", { agent, time: clock(asked?.startedMs ?? now), tool: p.tool }), who: "you" };
   }
   if (g === "you") return { hl: t("hl_you", { host }), lede: t("lede_you", { agent }), who: "you" };
@@ -221,7 +227,10 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
               <dt>{t("connection")}</dt>
               <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
               <dt>{t("your_level")}</dt>
-              <dd>{levelName(c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing)}</dd>
+              <dd>
+                {levelName(c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing)}
+                {c.feed.bypass && <span className="c-danger">{` · ${t("bypass_fact")}`}</span>}
+              </dd>
               <dt>{t("device_key")}</dt>
               <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
             </dl>

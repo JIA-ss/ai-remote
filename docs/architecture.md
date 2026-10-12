@@ -142,7 +142,17 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   when the screen is static. Frames remain18-byte headers plus H.264 AnnexB on one stream; any
   device with a level may watch, and watching is audited (`view_start`, `view_end`). See
   [stream performance](stream-performance.md) for requested settings and measurement boundaries.
-- *(planned)* `app/ai-remote/file/1` for bulk file transfer.
+- **ALPN `app/ai-remote/file/1`.** Whole-file transfers (`ai-remote push` / `pull`). The bytes do not
+  pass through MCP (whose results stay near 1 MiB): a `files_push` / `files_pull` call goes through the
+  gate like any tool (level, policy, approval, audit) and returns a one-time ticket bound to the device
+  it was issued to, the path and, for an upload, the approved size and SHA-256, valid for 2 minutes.
+  The controller then opens a stream on this ALPN and writes `{"ticket":..}`; after the host's one-line
+  reply (`op`, `size`) the bytes follow. An upload lands in a temporary file next to the target and is
+  moved into place only when size and SHA-256 match; a download is followed by a line with its SHA-256
+  for the controller to check. Both sides read and write the announced size and never rely on the other
+  closing its half. Redeeming re-checks the level (admin) and the turn (a takeover or pause stops a
+  transfer midway); each transfer is audited (`transfer`). MCP clients do not see the two ticket tools,
+  since they could not use the ticket.
 
 ## 6. The gate
 
@@ -151,7 +161,9 @@ Every tool call, built-in or mounted, goes through the same pipeline on the host
 1. **Level and turn**: the caller's level is re-read on every call and must reach the tool's level.
    Tools above the caller's level are also left out of the tool list it receives. While a person has
    taken over or paused the agent, an agent's calls are refused with a sentence saying so
-   ([operations.md](operations.md#93-taking-over-pausing-and-messages-to-the-agent)).
+   ([operations.md](operations.md#93-taking-over-pausing-and-messages-to-the-agent)). A controller
+   the owner bypasses (set at the host only) is checked as admin and skips steps 2 and 3
+   ([operations.md](operations.md#61-bypass-trusting-a-controller-with-everything)).
 2. **Policy**: rules in `ai-remote.toml`, first match wins; otherwise the tool's default
    (observe and control tools run, admin tools ask, except the job tools that only read or stop
    jobs). Annotations from mounted servers are hints, never the authority.
@@ -209,6 +221,9 @@ The rule format is described in [tools.md](tools.md#8-policy-rules).
 | `shell` | admin, asks | run a command to completion with a timeout; its whole process tree dies with the call |
 | `jobs_start` | admin, asks | start a background command that logs to a file and outlives the session |
 | `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | follow, wait for and stop background jobs |
+| `files_list` / `files_stat` | admin | list a folder, inspect a path |
+| `files_mkdir` / `files_delete` | admin, asks | create a folder, delete a path (roots and the host's profile refused) |
+| `files_push` / `files_pull` | admin, asks | approve a whole-file transfer and issue its ticket for `file/1` (CLI only) |
 | `<mount>_<tool>` | per allowlist | tools of mounted MCP servers |
 
 Through `ai-remote mcp` the controller adds `list_hosts`, `use_host` and a `host` argument on every

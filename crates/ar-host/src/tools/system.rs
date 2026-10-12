@@ -142,6 +142,9 @@ impl Tool for SystemInfo {
             "you": {
                 "peer_name": ctx.session.peer.name,
                 "level": level,
+                // The owner trusts this device with everything: every tool, no approvals, no deny
+                // rules (until they turn it off).
+                "bypass": ctx.host.bypass().covers(&ctx.session.peer),
             },
         })))
     }

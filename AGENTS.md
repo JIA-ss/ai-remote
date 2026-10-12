@@ -15,6 +15,103 @@
 - Windows 上的 Bash 工具对很长的 heredoc（含引号的大段代码）解析不稳定，大段内容先写成文件再处理。
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 
+## 命令行远程操作（2026-10-12，分支 `feat/cli-remote`）
+
+目标：人、脚本和 CI 不经 MCP 也能直接操作被控端，形态参照内部测试机工具的命令行：
+`ai-remote exec / job / shot / windows / info / doctor --host / ls / stat / mkdir / rm / push / pull`，
+默认被控端，统一的退出码和 `--json`。用户文档：`docs/operations*.md` 4.1 节、`docs/tools*.md` 5.13 节。
+
+### 设计
+
+- **每条命令都是工具调用**（经常驻进程的 `call` op），不开旁路：级别、策略、审批、审计、轮次对命令行和 Agent 一视同仁。
+  命令行代码在 `crates/ai-remote/src/remote.rs`，`main.rs` 只挂子命令。
+- **文件传输两步走**：`files_push` / `files_pull` 工具过闸门后签一张一次性票据（绑定设备、路径，上传另绑大小和
+  SHA-256，2 分钟有效）；字节走新 ALPN `app/ai-remote/file/1`（架构文档原本就规划了这个名字），不经 MCP——MCP 结果
+  预算约 1 MiB，且分块调用会让 ask 级工具每块弹一次审批。被控端 `crates/ar-host/src/files_channel.rs`，
+  工具 `tools/files.rs`；控制端常驻进程新 op `files`（`agent.rs` 的 `open_files` / `FileTransfer::relay`）。
+- **双方按事先知道的大小读写，不靠关闭半条流**：Windows 命名管道不支持半关闭，命令行 ↔ 常驻进程这一段做不到 EOF。
+- 上传写到目标旁的 `.<名>.ai-remote-<id8>.part`，大小和哈希都对才 `rename`（Windows 上 `std::fs::rename` 会替换已有文件）；
+  `overwrite=false` 时 rename 前再查一次目标。下载在字节后附一行 SHA-256，命令行写本地 `.part`，核对后才改名。
+- 兑换票据时再查级别（须 admin）和轮次；接管 / 暂停会中途停掉传输。每次传输一条审计 `transfer`（桌面端时间线忽略未知
+  kind，不受影响）。
+- `files_push` / `files_pull` 不出现在 MCP 工具列表里（Agent 拿到票据也用不了），MCP 调用会被拒并提示用命令行；
+  `files_list / stat / mkdir / delete` 对 Agent 可见。
+- **默认被控端**存在 `controller/hosts.json` 的 `default`，命令行和 MCP 会话共用（`Aggregator::implicit_host`，
+  原 `only_host`）；`unpair` 那台时自动清掉。另有 `AI_REMOTE_HOST`（clap `env` 特性）作用于所有控制端 `--host`，
+  `doctor` 除外（它不带 `--host` 时检查本机）。
+- 退出码：0 完成；2 被控端拒绝或工具失败；1 调用没发出。`exec` 照 ssh：远端退出码原样、超时 124、没执行 255；
+  `job wait`：任务退出码、超时 124、被杀 137、未知 255。
+- `files_delete` 拒绝根目录，以及被控端配置目录本身和包含它的文件夹（删了身份和审计日志就没了）。
+
+### 验证
+
+`python tools/cli-remote-smoke.py [--cli <exe>] [--big-mib N]`：本机隔离的被控端 + 控制端（真实 QUIC，admin 级，
+被控端规则放行 shell/jobs/files 但拒绝 `files_mkdir` 以覆盖拒绝路径），逐条跑命令并核对退出码、输出、哈希、审计记录、
+MCP 工具列表。
+
+### 实测（2026-10-12，本机，Windows 11，release）
+
+- 冒烟 39 项：release 4 轮全过；debug 3 轮全过（其中最后加的接管测试只在第 3 轮）。覆盖：exec 退出码 / 超时 124 / stdin / env；job log -f、wait 透传码、
+  wait 超时 124、kill；截图（PNG 超预算时被控端改发 JPEG，命令行按实际格式改扩展名——第一轮就是这里出错）；
+  策略拒绝退出 2；push 新建目录 / 拒绝覆盖 / --force / 推到已有文件夹 / 相对路径拒绝；pull 拒绝覆盖本地 / 缺文件；
+  无 `.part` 残留；ls / stat / rm -r / 配置目录保护；hosts default；doctor --host；MCP 隐藏两个签票工具；审计 `transfer`；
+  **传输中 `take-over`**：上传在中途停下，被控端的原因完整回到命令行，目标和临时文件都不留。
+- 吞吐（512 MiB 随机数据，本机回环 QUIC，含两端 SHA-256 和目标 fsync；每档 2 次，**样本少**）：
+  转发缓冲改 1 MiB 前 push 90~92 / pull 98~111 MiB/s，改后 push 100~108 / pull 120~129 MiB/s。
+  这是 ai-remote 自身开销的上限，**不是**局域网实测；千兆网（约 112 MiB/s）下大致接近线速，万兆下它会是瓶颈。
+  剩余瓶颈未定位（推测在回环上的 QUIC 加密 / 流控，未验证）。
+
+### 踩过的坑
+
+1. 共享工作区里同时有别的会话在改推流代码；本分支在独立 worktree（`../ai-remote-cli`）里做，避免互相 `git add` / 编译干扰。
+2. 工作区文件可能是 CRLF（`git ls-files --eol` 显示 `w/crlf`），按 LF 写的替换脚本会静默不命中；改已有文件优先用编辑工具。
+
+### 下一步
+
+- [ ] MCP 侧的 push/pull（控制端工具，读写控制端本机文件）——是否给 Agent 开放需要先定权限模型。
+- [ ] 文件夹传输（现在要先打包）、断点续传。
+- [ ] 桌面端审批卡给文件工具专门的问句（现在走通用"想调用 X"）。
+- [ ] 传输吞吐：定位回环 100~130 MiB/s 的瓶颈（QUIC 窗口 / 加密 / 单流），在两台机器的局域网上实测。
+- [ ] `shot` 只能拿到结果预算内的图（长边 ≤ 2576、约 762 KiB）；要原尺寸无损截图可走文件通道另开一条路。
+
+## Bypass：完全信任控制端（2026-10-12，同在 `feat/cli-remote`）
+
+用户需求："加一个 bypass permissions 模式，用户可以设置，设置之后 agent 默认权限都允许操作"。和用户确认过的取舍：
+**全部放开**（不只跳过审批，级别和 deny 规则也不管）；**在设备的设置里控制**（按控制端逐台设）；被控端本身没有界面，
+所以放在被控端那台机器的桌面应用"设置 → 本设备"里，再加命令行 `ai-remote bypass`。用户文档：`docs/operations*.md` 6.1 节。
+
+### 设计
+
+- 状态：`crates/ar-host/src/bypass.rs`，按控制端 principal 存 `<配置目录>/host/bypass.json`，可选 `until_ms` 到期；重启保留。
+- **只能在被控端本机设置**：本地控制通道 `HostRequest::Bypass / SetBypass`（命令行和桌面端都走它），控制端没有任何请求能开它，
+  Agent 经 ai-remote 给自己开不了。已有 `shell` 的 Agent 能改文件——和改被控端任何配置一样，写进了 approvals 威胁模型。
+- 生效点（都用 `HostState::effective_level` 或 `bypass().covers`）：闸门按 admin 查级别并跳过策略/审批（`gate.rs`，同一次调用只判断
+  一次 `bypassed`，级别和策略不会不一致）；工具列表（`server.rs`）；文件通道（`files_channel.rs`）；events 通道的 turn/tell 权限。
+  `system_info.you`、`access`、feed hello 带 `bypass`，但 `level` 仍报真实级别。
+- 仍然有效：配对和"有某个级别"（无级别的设备在连接层就被拒，bypass 不会给它访问）；接管/暂停（轮次检查在闸门里照旧）；审计
+  （决策记录带 `bypass: true`，开关本身写 `kind: "bypass"`）。
+- 自动结束：`revoke`、`level none`、`forget`、控制端自己 `lower` 都会清掉 bypass——收紧访问的动作不该被一个遗留开关抵消。
+- `doctor` 新增 `bypass` 检查：开着就 warn。
+- 审计决策仍记 `decision: "allow"` 加 `bypass: true` 字段，而不是新的 decision 值：桌面端时间线把 allow/approved 以外的都当成被拒。
+- 桌面端：Tauri 命令 `local_host_bypass` / `set_local_host_bypass` 直连本机被控端的控制管道（同一配置目录）；设置页用下拉框
+  （设置页没有开关组件，其他选项也都是下拉框），选"全部放开"弹红色确认框写明后果；电脑页"权限"标签对被信任的设备显示红字说明。
+  `bindings.ts` 手写后由 debug 构建重新生成核对。
+
+### 多端
+
+- Windows / macOS 桌面端：被控端那台的"设置 → 本设备"在 host 运行时显示"正在运行"和逐台信任设置（不再显示安装命令）；
+  控制端的电脑页顶部事实栏和"访问权限"标签标出"全部放开"（feed hello 的 `bypass`），bypass 下不再显示"只有管理权限能看到其他设备"。
+  审批卡和标题给 `files_*` 写了专门的问句。macOS 走 Unix socket 控制通道，代码不分平台，由 CI（macos-15）编译和测试。
+- iPhone：`PhoneStore.bypass`（access 应答和 hello），`mayControl` 包含 bypass，否则 observe 级的手机在 bypass 下"接管"会被错误置灰；
+  权限标签显示"全部放开（无需审批）"。Swift 只能在 Mac 上编，靠 iOS CI。
+
+### 验证
+
+- `python tools/bypass-smoke.py`：observe 级控制端 + 无审批框 + deny 规则的被控端，21 项：开启前 shell 被级别拒；开启后 shell 免审批、
+  deny 规则失效、文件传输可用、MCP 工具列表出现 shell/jobs/files；`info`/`access`/doctor/审计都有标记；接管仍能拦；关闭后恢复拒绝；
+  `--all --for 3s` 到期自动失效；`level none` 清掉 bypass。
+- 桌面端：演示后端下在浏览器里点过整个流程（下拉 → 确认框 → 生效、红字说明）；真实被控端下用 debug 应用的 smoke 截图核对列表。
+
 ## 推流性能专项（2026-10-12 起，分支 `perf/stream-max`）
 
 目标：所有平台的画面推流做到硬件编解码、原生分辨率、满刷新率、最低延迟。

@@ -16,6 +16,10 @@ type Approver = "unknown" | "none" | "pending" | "ready";
 function questionFor(tool: string) {
   if (tool === "shell") return { q: t("ap_q_shell"), verb: t("ap_verb_shell") };
   if (tool === "jobs_start") return { q: t("ap_q_job"), verb: t("ap_verb_job") };
+  if (tool === "files_push") return { q: t("ap_q_push"), verb: t("ap_verb_push") };
+  if (tool === "files_pull") return { q: t("ap_q_pull"), verb: t("ap_verb_pull") };
+  if (tool === "files_delete") return { q: t("ap_q_delete"), verb: t("ap_verb_delete") };
+  if (tool === "files_mkdir") return { q: t("ap_q_mkdir"), verb: t("ap_verb_mkdir") };
   return { q: t("ap_q_tool", { tool }), verb: t("ap_verb_tool") };
 }
 

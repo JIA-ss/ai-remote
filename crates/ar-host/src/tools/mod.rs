@@ -3,6 +3,7 @@
 
 pub mod clipboard;
 pub mod command;
+pub mod files;
 pub mod input;
 pub mod jobs;
 pub mod screen;
@@ -142,6 +143,7 @@ impl Registry {
             .chain(clipboard::tools())
             .chain(shell::tools())
             .chain(jobs::tools())
+            .chain(files::tools())
         {
             r.add(t);
         }

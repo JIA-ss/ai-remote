@@ -16,6 +16,8 @@ import AIRemoteCore
     public var image: CGImage?
     public var screen: ScreenGeometry?
     public var level: String?
+    /// The host's owner trusts this device with everything: every tool, no approvals, whatever `level`.
+    public var bypass = false
     public var driver = "agent"
     public var driverDevice = ""
     public var ownName = ""
@@ -37,7 +39,7 @@ import AIRemoteCore
     private var leaving = false
     private var hasDriver: Bool { driver == "person" && driverDevice == ownName && !ownName.isEmpty }
     public var ownsControls: Bool { hasDriver && active && !leaving }
-    public var mayControl: Bool { level == "control" || level == "admin" }
+    public var mayControl: Bool { bypass || level == "control" || level == "admin" }
 
     public init(directory: String? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -80,7 +82,7 @@ import AIRemoteCore
         do {
             let access = try await client.request(["op": .string("channel"), "host": .string(host.name), "request": .object(["access": .bool(true)])])
             guard token == generation else { return }
-            ownName = access["you"].string ?? ""; level = access["level"].string
+            ownName = access["you"].string ?? ""; level = access["level"].string; bypass = access["bypass"] == .bool(true)
             let events = StreamListener(event: { [weak self] line in Task { @MainActor in self?.receive(line, token: token) } }, ended: { [weak self] reason in
                 Task { @MainActor in await self?.videoEnded(reason: reason, token: token) }
             })
@@ -137,7 +139,7 @@ import AIRemoteCore
         guard token == generation, let event = try? JSONValue.parse(line) else { return }
         switch event["kind"].string {
         case "hello":
-            level = event["level"].string; pending = event["pending"].array
+            level = event["level"].string; bypass = event["bypass"] == .bool(true); pending = event["pending"].array
             driver = event["driver"]["state"].string ?? "agent"; driverDevice = event["driver"]["device"].string ?? ""
         case "driver": driver = event["state"].string ?? "agent"; driverDevice = event["device"].string ?? ""
         case "decision", "outcome", "task", "note":
@@ -203,7 +205,7 @@ import AIRemoteCore
                 _ = await group.next(); group.cancelAll()
             }
         }
-        selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""; level = nil; driver = "agent"
+        selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""; level = nil; bypass = false; driver = "agent"
     }
     public func suspend() async {
         active = false; lifecycleGeneration += 1

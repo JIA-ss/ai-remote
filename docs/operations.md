@@ -49,6 +49,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote revoke <peer>` / `unrevoke <peer>` | refuse a controller, or lift that |
 | `ai-remote forget <peer>` | remove a controller's pairing |
 | `ai-remote stop-host` | stop the running host |
+| `ai-remote bypass [on\|off <peer>\|--all] [--for 2h]` | trust controllers with everything: every tool, no approvals, no deny rules (section 6.1) |
 | `ai-remote approvers [add\|remove]` | approver keys: people who may approve from a paired device ([approvals.md](approvals.md)) |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | manage mounted MCP servers ([tools.md](tools.md#7-mounted-mcp-servers)) |
 
@@ -57,11 +58,13 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | Command | What it does |
 |---|---|
 | `ai-remote pair <ticket> [--name N]` | pair with a host |
-| `ai-remote hosts` | paired hosts and the level each granted at pairing |
+| `ai-remote hosts` | paired hosts and the level each granted at pairing; `(default)` marks the default host |
+| `ai-remote hosts default [<host>\|--clear]` | show, set or clear the host commands and agents use when they name none |
 | `ai-remote unpair <host> [--local]` | unpair a host: it drops this device too when it can be reached, then this controller forgets it (`--local`: only here) |
 | `ai-remote access [--host H]` | what this device may do on a host: your level, the standing rules that concern you, the paired devices (all of them for an admin) and the tools on offer |
 | `ai-remote lower <level> [--host H]` | lower this device's level on a host; raising it again takes someone at that computer (`ai-remote level`) |
 | `ai-remote call <tool> ['{json args}'] [--host H]` | call one tool and print the result |
+| `ai-remote exec`, `job`, `shot`, `windows`, `info`, `doctor --host`, `ls`, `stat`, `mkdir`, `rm`, `push`, `pull` | operate a host from a terminal or script (section 4.1) |
 | `ai-remote watch [--host H]` | follow a host's activity live: recent history, then every call and session as it happens |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | watch a host's screen for a while and report the stream (frames, size, rate); `--out` saves the H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | list, allow or deny calls waiting for approval ([approvals.md](approvals.md)) |
@@ -263,8 +266,8 @@ The controller side is two programs:
 - `ai-remote mcp` is what an MCP client starts. It connects to the agent (starting it if needed),
   relays stdio to it and exits when the client closes stdin.
 
-The agent starts on demand: `pair`, `hosts`, `unpair`, `call` and `mcp` all start it in the
-background when it is not running (waiting up to 20 seconds), with its output appended to
+The agent starts on demand: every controller command (`pair`, `hosts`, `call`, `exec`, `mcp`, ...)
+starts it in the background when it is not running (waiting up to 20 seconds), with its output appended to
 `<profile>/controller/controller.log`. It exits after 30 minutes without any client; an open MCP
 session counts as a client. `ai-remote stop-agent` stops it now, and `ai-remote agent` runs it in the
 foreground for debugging (it fails if one already runs for the profile).
@@ -284,6 +287,74 @@ result (images as a one-line summary). It exits with code 2 when the tool report
 refusal included) and with code 1 when the call could not be made (host unreachable, bad
 arguments). `--json` prints the raw result instead and does not use code 2. Each `call` is a new
 MCP session, so screenshot ids from an earlier `call` are unknown to the next one.
+
+### 4.1 Operating a host from the command line
+
+`ai-remote call` reaches every tool, but its JSON arguments and raw results are clumsy for daily work.
+These commands cover what people and scripts do most, with plain arguments and output. Each one is
+one or more tool calls through the agent, so the host's levels, policy, approval and audit apply
+exactly as they do to an agent's calls. `--json` prints machine-readable output.
+
+| Command | Tool(s) | Level |
+|---|---|---|
+| `ai-remote info` | `system_info` | observe |
+| `ai-remote doctor --host H` | `doctor` | observe |
+| `ai-remote shot [-o F.png] [--monitor N] [--max-long-edge PX]` | `screenshot` | observe |
+| `ai-remote windows [--filter T] [--all]` | `list_windows` | observe |
+| `ai-remote exec "<command>" [--shell S] [--cwd D] [--timeout S] [--env K=V] [--stdin F]` | `shell` | admin, asks |
+| `ai-remote job start "<command>"` / `list` / `status <id>` / `log <id> [-f]` / `wait <id> [--timeout S]` / `kill <id>` | `jobs_*` | admin; `start` asks |
+| `ai-remote ls <dir> [--pattern P]` / `stat <path>` | `files_list` / `files_stat` | admin |
+| `ai-remote mkdir <dir>` / `rm <path> [-r]` | `files_mkdir` / `files_delete` | admin, asks |
+| `ai-remote push <local> <remote> [--force] [--mkdir]` | `files_push` + the file channel | admin, asks |
+| `ai-remote pull <remote> [<local>] [--force]` | `files_pull` + the file channel | admin, asks |
+
+**Which host.** `--host <name>`, else the environment variable `AI_REMOTE_HOST`, else this device's
+default host, else the only paired host. `ai-remote hosts default <name>` sets the default (kept in
+`controller/hosts.json`; MCP sessions use it too when a call names no host and `use_host` was not
+called), `ai-remote hosts default --clear` removes it, and `ai-remote hosts` marks it.
+`AI_REMOTE_HOST` applies to every controller command that takes `--host`, but not to `doctor`, which
+checks this machine unless `--host` is given.
+
+**Exit codes.** 0: done. 2: the host refused the call or the tool failed (the host's message is on
+stderr). 1: the call could not be made (no agent, host unreachable, bad arguments). `exec` exits with
+the remote command's own exit code instead, like ssh: 124 when it timed out and was killed, 255 when
+it did not run at all. `job wait` exits with the job's exit code (124: still running at `--timeout`;
+137: killed; 255: unknown, such as a job the host re-adopted after a restart).
+
+**Files.** File commands take absolute paths on the host. `push` hashes the local file, asks the host
+to approve exactly that size and SHA-256, then streams it; the host writes a temporary file next to
+the target and moves it into place only when size and hash match, so a broken transfer never leaves
+a half-written target. A remote path that ends with `/` or `\`, or names a folder that exists, gets
+the file under its own name; `--mkdir` creates missing folders and `--force` replaces an existing
+file. `pull` streams into a local temporary file and keeps it only when the host's SHA-256 matches;
+it refuses to replace a local file without `--force` before it asks the host anything. One file per
+transfer: pack a folder first (`tar -czf`). Every transfer is in the audit log (`transfer` lines with
+path, bytes, duration and outcome).
+
+**Approval.** `exec`, `job start`, `mkdir`, `rm`, `push` and `pull` ask the owner by default, as an
+agent's calls would. For a test machine you drive from your own controller, a rule on that host
+spares the prompt for your device only:
+
+```toml
+[[rule]]
+tool = "files_*"
+principal = "my-laptop"   # this controller's name in `ai-remote peers` on the host
+action = "allow"
+```
+
+For example:
+
+```sh
+ai-remote hosts default lab-pc
+ai-remote info
+ai-remote exec "Get-Process game -ErrorAction SilentlyContinue | Select-Object Id, WS"
+ai-remote push build.zip 'D:\deploy\' --mkdir
+ai-remote exec "Expand-Archive D:\deploy\build.zip D:\deploy\build -Force" --timeout 300
+ai-remote job start "D:\deploy\build\game.exe" --intent "performance baseline"
+ai-remote job log <id> -f
+ai-remote shot -o lab.png
+ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
+```
 
 ## 5. Pairing step by step
 
@@ -336,7 +407,7 @@ also accept a unique prefix of either.
 |---|---|
 | `observe` | `system_info`, `doctor`, `screenshot`, `zoom`, `list_windows`, observe tools of mounts |
 | `control` | + `focus_window`, `mouse`, `keyboard`, `clipboard_read`, `clipboard_write`, control tools of mounts |
-| `admin` | + `shell`, `jobs_*`, admin tools of mounts |
+| `admin` | + `shell`, `jobs_*`, `files_*`, admin tools of mounts |
 
 A controller only sees the tools its level allows. All four commands below run on the host and take
 effect immediately; changes to `ai-remote.toml` (policy rules, mounts, approval timeout, relays,
@@ -365,6 +436,48 @@ Details:
 - MCP clients usually cache the tool list. After a level change, reconnect the client (or start a
   new session) to see the tools of the new level; calls are checked against the current level either
   way.
+
+### 6.1 Bypass: trusting a controller with everything
+
+For a computer you only operate from your own devices (a test machine, say), approvals and levels can
+be in the way. **Bypass** lets you trust chosen controllers with everything:
+
+```sh
+ai-remote bypass                       # each paired controller, BYPASS where it is on
+ai-remote bypass on my-laptop          # until you turn it off
+ai-remote bypass on --all --for 2h     # every controller that can connect, ending by itself after 2 hours
+ai-remote bypass off my-laptop         # or --all
+```
+
+The desktop app on that computer does the same in **Settings, This device, Controllers trusted with
+everything**: each paired controller is either *Asks first* (the default) or *Everything allowed*,
+and choosing the latter asks you to confirm.
+
+While a controller is bypassed, its calls (and those of every agent working through it):
+
+- are checked as `admin`, whatever its level, so it sees and can use every tool, file transfers
+  included;
+- never wait for approval, and are not stopped by `deny` rules (or `approve = "deny"` on a mounted
+  tool);
+- are still audited, with `"bypass": true` on their records.
+
+An MCP client that cached its tool list sees the extra tools after it reconnects, as after a level
+change.
+
+What still holds: the device needs its pairing and some level (`level <peer> none`, `revoke` and
+`forget` cut it off, and also end its bypass, as does a controller lowering its own level); a person
+can still take over or pause the agent (section 9.3). The controller can see that it is bypassed
+(`ai-remote access`, `ai-remote info`, `system_info.you.bypass`; the desktop app marks the computer
+Everything allowed in its header and Access tab, the iPhone app in the session's permission label,
+which also enables taking over whatever the level), and
+`ai-remote doctor` warns while any controller is bypassed.
+
+Bypass is set only at this computer, over the host's local control channel; no controller can ask
+for it, so an agent cannot give it to itself through ai-remote. It is kept in
+`<profile>/host/bypass.json` and survives restarts; every change is an audit line (`kind:
+"bypass"`). An agent that already runs `shell` on the host as its user could still change that
+file, as it could any of the host's configuration (see the threat model in
+[approvals.md](approvals.md)).
 
 ## 7. When a host refuses
 
@@ -464,6 +577,7 @@ Overall: warn
 | `dpi` | per-monitor DPI aware (v2) | **fail**: clicks on scaled displays land in the wrong place | remove any high-DPI compatibility override on the executable (Properties > Compatibility) |
 | `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
 | `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
+| `bypass` | no controller is bypassed | **warn**: the named controllers use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`) when you no longer need it |
 | `firewall` | an inbound allow rule covers UDP for the host program, or the firewall is off | **fail**: a block rule applies to the program (traffic falls back to the relay); **warn**: no allow rule (Windows will prompt at the first connection), or a block rule for every program's inbound UDP | `host install` from an elevated terminal; review rules of other programs in `wf.msc` |
 | `autostart` | the task (or LaunchAgent) starts this installation's background host with this profile | **warn**: none installed, or it runs something else | run `ai-remote host install` (again) |
 | `audit` | the audit log can be opened for appending | **fail**: actions are not recorded | fix the profile directory's permissions, or use another `--home` |
@@ -474,9 +588,10 @@ without a host the one autostart would run.
 
 ## 9. Approvals
 
-A call needs approval when its action is `ask`: the default for `shell` and `jobs_start`, for admin
-tools of mounted servers without an `approve` setting and for mounted tools with `approve = "ask"`,
-or whenever a policy rule says `ask` (see [tools.md](tools.md#8-policy-rules)).
+A call needs approval when its action is `ask`: the default for `shell`, `jobs_start`, `files_mkdir`,
+`files_delete`, `files_push` and `files_pull`, for admin tools of mounted servers without an `approve`
+setting and for mounted tools with `approve = "ask"`, or whenever a policy rule says `ask` (see
+[tools.md](tools.md#8-policy-rules)). Calls of a bypassed controller never ask (section 6.1).
 
 Two kinds of people can answer, and the first answer wins: someone at the host, in a dialog on its
 desktop (9.1), and the owner on a paired device whose approver key the host accepted (9.2).
@@ -589,6 +704,7 @@ gets only the `decision` record.
 | `duration_ms` | how long the call ran |
 | `result_bytes` | size of the result's content as JSON, after the result budget |
 | `error` | the error text; over 300 characters it is cut to its first and last 140 |
+| `bypass` | `true` when the caller is a bypassed controller (section 6.1): checked as admin, no policy, no approval |
 
 ```json
 {"ts":1791021600123,"kind":"decision","session":"5f2c19ab","peer":"laptop","principal":"eid:3b7e...","tool":"shell","decision":"approved","intent":"Check free disk space","args_hash":"9f2d...","args_preview":"{\"command\":\"Get-PSDrive C\",\"intent\":\"Check free disk space\"}"}

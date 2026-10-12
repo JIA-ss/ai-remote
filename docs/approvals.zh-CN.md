@@ -2,7 +2,7 @@
 
 [English](approvals.md)
 
-有些调用要等人点头：`shell`、`jobs_start`、挂载 server 的 admin 级工具，以及策略规则标成 `ask` 的任何工具。
+有些调用要等人点头：`shell`、`jobs_start`、会改动或传输文件的文件工具（`files_mkdir`、`files_delete`、`files_push`、`files_pull`）、挂载 server 的 admin 级工具，以及策略规则标成 `ask` 的任何工具。
 M0 只会在被控端自己的桌面上弹对话框，所以审批时必须有人坐在被控机器前。远程审批让机主也能在已配对的设备上回答
 （目前是控制端命令行，接下来是桌面应用和 iPhone 应用），同时保证 AI Agent 永远批准不了自己的请求，哪怕它就跑在
 机主审批用的那台设备上。
@@ -95,6 +95,8 @@ approval_prompt = false       # 可选：这台机器没人坐着，只在设备
 | 网络上的第三方 | 每条连接都双向认证并加密（iroh QUIC）；只有有权限级别的已配对设备能进入审批通道 | 无 |
 | 控制端设备被偷 | 在被控端撤销或忘记它；忘记会删除它的审批密钥。每次允许仍有 Windows Hello 把关 | 与一般设备失窃相同 |
 | Agent 已经能在被控端用 `shell` | shell 以被控端用户的身份运行，能改被控端自己的配置。批准 `shell` 和 `jobs_start` 前请读清命令 | shell 权限本身的风险 |
+| Agent 给自己开 bypass | bypass 只能经被控端的本地控制通道设置（`ai-remote bypass`、那台电脑上的桌面应用），控制端的任何请求都到不了 | 已经能在被控端运行 `shell` 的 Agent 可以像改其他配置一样改它 |
+| 处于 bypass 的控制端被盗或被滥用 | 按设计它的调用不经审批、不受级别限制；开启期间 `ai-remote doctor` 会警告，`--for` 到期自动结束，revoke、forget、`level none` 都会结束它 | 机主开启时接受的风险 |
 
 ## 通信格式
 

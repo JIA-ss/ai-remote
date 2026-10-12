@@ -52,7 +52,7 @@
 | :-- | :-- |
 | **原生 MCP 接入** | 通过本地 stdio 桥接发现和调用远端工具；一份客户端配置访问多台已配对电脑。[客户端配置](docs/mcp-clients.md) |
 | **结构化 UI** | 使用 `ui_tree`、`ui_read`、`ui_action` 读取 macOS AX / Windows UIA 元素树并操作控件，也保留截图能力。[UI 合约](docs/structured-ui.md) |
-| **电脑工具** | 查看屏幕、检查窗口、发送鼠标键盘输入，按权限运行 shell 与后台任务。[工具参考](docs/tools.zh-CN.md) |
+| **电脑工具** | 查看屏幕、检查窗口、发送鼠标键盘输入，按权限运行 shell 与后台任务、传输文件；Agent 能用，终端里也能直接用（`ai-remote exec`、`job`、`shot`、`push`、`pull`）。[工具参考](docs/tools.zh-CN.md) · [命令行](docs/operations.zh-CN.md#41-用命令行操作被控端) |
 | **人机共享控制** | 你查看实时画面与活动记录；接管时阻止智能体控制调用，交还后恢复。[控制与审批](docs/approvals.zh-CN.md) |
 | **扩展现有集成** | 指定本地可执行文件与工具白名单，挂载已有 MCP 服务。 |
 
@@ -115,9 +115,9 @@ Cursor 使用 `~/.cursor/mcp.json` 中的 `mcpServers` JSON，VS Code 使用 MCP
 | :-- | :-- |
 | `observe` | 屏幕、窗口列表、系统信息与已允许的只读集成 |
 | `control` | observe 加鼠标、键盘与剪贴板 |
-| `admin` | control 加 shell 与后台任务；高风险调用先等待批准 |
+| `admin` | control 加 shell、后台任务与文件；高风险调用先等待批准 |
 
-高风险请求等待主人确认，未响应则拒绝。每次决策与结果写入被控端审计日志；撤销或取消配对即可移除设备访问权。
+高风险请求等待主人确认，未响应则拒绝。每次决策与结果写入被控端审计日志；撤销或取消配对即可移除设备访问权。只由你自己操作的电脑，可以开 **bypass**（在那台电脑上设置：`ai-remote bypass on <控制端>` 或桌面应用的本设备设置），完全信任选定的控制端：全部工具、无需审批。[Bypass](docs/operations.zh-CN.md#61-bypass完全信任某台控制端)
 
 **远程允许签名当前需要 Windows Hello。** Mac 与 iPhone 控制端可以拒绝；Touch ID / Face ID 允许签名尚未实现。被控电脑桌面可用时，也可通过本机提示批准。[审批设计](docs/approvals.zh-CN.md)
 
