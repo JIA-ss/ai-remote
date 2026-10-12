@@ -63,6 +63,14 @@ export const commands = {
 	/**  Lowers this device's level on `host` (`observe` or `control`); raising it takes someone there. */
 	lowerLevel: (host: string, level: string) => typedError<null, string>(__TAURI_INVOKE("lower_level", { host, level })),
 	/**
+	 *  This computer as a host: each controller paired with it and whether its owner trusts it with
+	 *  everything (bypass: every tool, no approval, no deny rules). `None` when no host runs here for this
+	 *  profile. Read and changed only over the host's local control channel, never from a controller.
+	 */
+	localHostBypass: () => typedError<unknown | null, string>(__TAURI_INVOKE("local_host_bypass")),
+	/**  Turns bypass on or off for a controller paired with this computer (see `local_host_bypass`). */
+	setLocalHostBypass: (peer: string, on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_local_host_bypass", { peer, on })),
+	/**
 	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
 	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
 	 */

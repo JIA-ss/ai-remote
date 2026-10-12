@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use ar_core::Profile;
+use ar_core::{Profile, Role};
 use ar_net::ipc::Conn;
 use serde_json::{Value, json};
 use tauri::{State, ipc::Channel};
@@ -148,6 +148,27 @@ async fn lower_level(state: State<'_, AppState>, host: String, level: String) ->
     let mut conn = state.agent().await.map_err(text)?;
     ar_controller::approver::channel(&mut conn, Some(&host), json!({"lower": {"level": level}})).await.map_err(text)?;
     Ok(())
+}
+
+/// This computer as a host: each controller paired with it and whether its owner trusts it with
+/// everything (bypass: every tool, no approval, no deny rules). `None` when no host runs here for this
+/// profile. Read and changed only over the host's local control channel, never from a controller.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_bypass(state: State<'_, AppState>) -> Result<Option<Json>, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let Ok(mut conn) = Conn::connect(&endpoint).await else { return Ok(None) };
+    conn.request(&json!({"op": "bypass"})).await.map(|v| Some(Json(v))).map_err(text)
+}
+
+/// Turns bypass on or off for a controller paired with this computer (see `local_host_bypass`).
+#[tauri::command]
+#[specta::specta]
+async fn set_local_host_bypass(state: State<'_, AppState>, peer: String, on: bool) -> Result<Json, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let mut conn =
+        Conn::connect(&endpoint).await.map_err(|_| "ai-remote host is not running on this computer".to_string())?;
+    conn.request(&json!({"op": "set_bypass", "peer": peer, "on": on})).await.map(Json).map_err(text)
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -422,6 +443,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tell_agent,
         host_access,
         lower_level,
+        local_host_bypass,
+        set_local_host_bypass,
         watch_screen,
         request_keyframe,
         stop_screen,

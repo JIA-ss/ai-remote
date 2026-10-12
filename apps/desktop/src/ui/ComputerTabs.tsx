@@ -55,7 +55,7 @@ function Waiting({ host, error }: { host: string; error: string | null }) {
 }
 
 /** A confirmation over the window: Cancel has the first focus, Esc cancels. */
-function Confirm({
+export function Confirm({
   title,
   body,
   verb,
@@ -130,6 +130,11 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
         hl={level ? t("acc_hl", { level: lvlName(level), host }) : t("acc_hl_none", { host })}
         lede={level ? t(ledes[level], { host }) : null}
       />
+      {access.bypass && (
+        <div className="cp-lede body c-danger" role="note" style={{ marginTop: 8 }}>
+          {t("acc_bypass", { host })}
+        </div>
+      )}
       <div className="tab-grid">
         <div>
           <div className="grp-h">{t("acc_level", { host })}</div>

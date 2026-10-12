@@ -34,6 +34,21 @@ export interface HostAccess {
   devices: Array<{ name: string; level: Level | null; revoked: boolean; you: boolean }>;
   builtin: HostTool[];
   mounts: Array<{ name: string; tools: HostTool[]; needs_desktop: boolean; lazy: boolean }>;
+  /** The host's owner trusts this device with everything: every tool, no approvals, no deny rules. */
+  bypass?: boolean;
+}
+
+/** A controller paired with this computer (as a host), and whether its owner bypasses it. */
+export interface LocalController {
+  name: string;
+  device: string | null;
+  level: Level | null;
+  revoked: boolean;
+  /** Every tool on this computer, no approvals, no deny rules, whatever its level. */
+  bypass: boolean;
+  since_ms: number | null;
+  /** When it ends by itself; `null` until someone turns it off. */
+  until_ms: number | null;
 }
 
 export interface AgentStatus {

@@ -52,7 +52,7 @@ The desktop apps, experimental iOS controller and MCP bridge share the Rust cont
 | :-- | :-- |
 | **Native MCP** | Discover and call remote tools through the local stdio bridge; reach multiple paired hosts from one client configuration. [Client setup](docs/mcp-clients.md) |
 | **Structured UI** | Read native macOS AX / Windows UIA trees and act on elements with `ui_tree`, `ui_read` and `ui_action`, alongside screenshots. [UI contracts](docs/structured-ui.md) |
-| **Computer tools** | Capture screens, inspect windows, send mouse/keyboard input, and run shell/background jobs at the permitted access level. [Tools](docs/tools.md) |
+| **Computer tools** | Capture screens, inspect windows, send mouse/keyboard input, run shell/background jobs and copy files at the permitted access level, from an agent or straight from a terminal (`ai-remote exec`, `job`, `shot`, `push`, `pull`). [Tools](docs/tools.md) · [Command line](docs/operations.md#41-operating-a-host-from-the-command-line) |
 | **Shared human / agent control** | Watch live video and activity. Taking over stops agent control calls; handing back lets the agent resume. [Control and approvals](docs/approvals.md) |
 | **Extensible integrations** | Mount existing local MCP servers with a pinned executable and an explicit tool allowlist. |
 
@@ -115,9 +115,9 @@ Cursor uses `mcpServers` JSON in `~/.cursor/mcp.json`. VS Code uses `servers` JS
 | :-- | :-- |
 | `observe` | Screen, window list, system info and permitted read-only integrations |
 | `control` | Observe plus mouse, keyboard and clipboard |
-| `admin` | Control plus shell and background jobs; risky calls ask first |
+| `admin` | Control plus shell, background jobs and files; risky calls ask first |
 
-High-risk steps wait for owner approval. An unanswered request is denied. Every decision and outcome goes to the host's audit log. Revoke/unpair a device to remove its access.
+High-risk steps wait for owner approval. An unanswered request is denied. Every decision and outcome goes to the host's audit log. Revoke/unpair a device to remove its access. On a machine you only drive yourself, **bypass** (set at that machine: `ai-remote bypass on <controller>` or the app's device settings) trusts chosen controllers with everything: every tool, no approvals. [Bypass](docs/operations.md#61-bypass-trusting-a-controller-with-everything)
 
 **Allowing remotely currently requires Windows Hello.** Mac and iPhone controllers can deny; their Touch ID / Face ID signing backends are not implemented. The native host prompt remains an approval path when the host's desktop is usable. [Approval design](docs/approvals.md)
 

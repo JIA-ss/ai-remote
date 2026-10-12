@@ -36,6 +36,9 @@ pub const ALPN_EVENTS: &[u8] = b"app/ai-remote/events/1";
 /// ALPN of the live view: video of the host's screen for a person at a controller.
 pub const ALPN_SCREEN: &[u8] = b"app/ai-remote/screen/1";
 
+/// ALPN of file transfers: the bytes of a file move approved with a `files_push` / `files_pull` call.
+pub const ALPN_FILES: &[u8] = b"app/ai-remote/file/1";
+
 const SERVICE_PREFIX: &str = "ai-remote.";
 
 fn service_name(level: Level) -> String {

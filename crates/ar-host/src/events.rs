@@ -18,7 +18,8 @@
 //! - `{"tell":{"text":".."}}`: a message for the agent, delivered with its next call result.
 //! - `{"access":true}`: what this device may do here: its level, the standing rules that concern it,
 //!   the devices paired with this computer (all of them for an admin, otherwise only itself) and
-//!   the tools on offer, built in and mounted, with the level each needs and whether it asks first.
+//!   the tools on offer, built in and mounted, with the level each needs and whether it asks first;
+//!   `bypass: true` when the owner trusts this device with everything (every tool allowed then).
 //! - `{"lower":{"level":".."}}`: lower this device's own level. Raising it takes someone at this
 //!   computer (`ai-remote level`), so a stolen controller cannot climb back.
 //! - `{"leave":true}`: remove this device's pairing here (unpairing from the controller's side);
@@ -190,8 +191,10 @@ impl ProtocolHandler for EventsProtocol {
 
 async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<Value> {
     let approver = host.approver();
-    // The level now, not when this connection opened: it may have been lowered since.
-    let level = host.current_level(peer).await;
+    // The level now, not when this connection opened: it may have been lowered since. Checks use
+    // the effective one (admin while the owner bypasses this device); lowering uses its own.
+    let own = host.current_level(peer).await;
+    let level = host.effective_level(peer).await;
     Ok(match req {
         Request::Subscribe(_) => unreachable!("served as a feed"),
         Request::Pending(_) => json!({"device": host.mesh().principal(), "pending": approver.pending()}),
@@ -238,9 +241,9 @@ async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<V
             host.audit().event(json!({"kind": "note", "from": peer.name, "text": t.text}));
             json!({})
         }
-        Request::Access(_) => access(host, peer, level).await?,
+        Request::Access(_) => access(host, peer, own).await?,
         Request::Lower(l) => {
-            let Some(current) = level else { anyhow::bail!("this device has no level here") };
+            let Some(current) = own else { anyhow::bail!("this device has no level here") };
             if l.level > current {
                 anyhow::bail!(
                     "raising a level takes someone at this computer (ai-remote level {} {})",
@@ -265,7 +268,13 @@ enum After {
 async fn apply(host: &HostState, peer: &Peer, after: After) {
     match after {
         After::Lower(level) => match host.mesh().set_level(peer, Some(level)).await {
-            Ok(()) => host.audit().event(json!({"kind": "level", "peer": peer.name, "level": level, "by": peer.name})),
+            Ok(()) => {
+                host.audit().event(json!({"kind": "level", "peer": peer.name, "level": level, "by": peer.name}));
+                // Asking for less access ends the bypass too, or lowering would change nothing.
+                if let Some(device) = &peer.principal {
+                    crate::control::end_bypass(host, &peer.name, device, "lowered its level");
+                }
+            }
             Err(e) => {
                 tracing::warn!("{} asked to lower its level to {}, but it failed: {e:#}", peer.name, level.as_str())
             }
@@ -285,7 +294,8 @@ async fn access(host: &HostState, peer: &Peer, level: Option<Level>) -> anyhow::
         .filter(|r| crate::policy::applies(r, peer))
         .map(|r| json!({"tool": r.tool, "action": r.action, "scope": if r.principal.is_some() { "you" } else { "everyone" }}))
         .collect();
-    let admin = level == Some(Level::Admin);
+    let bypass = host.bypass().covers(peer);
+    let admin = bypass || level == Some(Level::Admin);
     let devices: Vec<Value> = host
         .mesh()
         .peers()
@@ -300,7 +310,11 @@ async fn access(host: &HostState, peer: &Peer, level: Option<Level>) -> anyhow::
     let tool = |name: &str| {
         host.registry().get(name).map(|t| {
             let spec = t.spec();
-            let action = crate::policy::decide(rules, &spec.name, peer, spec.default_action);
+            let action = if bypass {
+                ar_core::config::Action::Allow
+            } else {
+                crate::policy::decide(rules, &spec.name, peer, spec.default_action)
+            };
             json!({"name": spec.name, "description": spec.description, "level": spec.level, "action": action})
         })
     };
@@ -327,6 +341,7 @@ async fn access(host: &HostState, peer: &Peer, level: Option<Level>) -> anyhow::
         "host": host.name(),
         "you": peer.name,
         "level": level,
+        "bypass": bypass,
         "rules": standing,
         "devices": devices,
         "builtin": builtin,
@@ -340,6 +355,7 @@ async fn feed(host: &HostState, peer: &Peer, mut send: SendStream) {
     let hello = json!({
         // This device's level now (a change cuts the connection, so a new feed brings the new one).
         "level": host.current_level(peer).await,
+        "bypass": host.bypass().covers(peer),
         "kind": "hello",
         "host": host.name(),
         "device": host.mesh().principal(),

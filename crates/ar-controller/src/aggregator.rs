@@ -33,10 +33,15 @@ const REUSED_START_TIMEOUT: Duration = Duration::from_secs(8);
 
 const INSTRUCTIONS: &str = "\
 These tools operate real computers (\"hosts\") paired with this machine through ai-remote. Each \
-host tool takes a `host` argument; it may be omitted when only one host is paired or after \
-use_host. Start with list_hosts, then use_host or system_info on the host you want. The host's \
-owner sees an audit log of every call and may have to approve some of them; if a call is refused \
-or not approved, do not retry it automatically.";
+host tool takes a `host` argument; it may be omitted when only one host is paired, when the user \
+set a default host, or after use_host. Start with list_hosts, then use_host or system_info on the \
+host you want. The host's owner sees an audit log of every call and may have to approve some of \
+them; if a call is refused or not approved, do not retry it automatically. To copy files between \
+this machine and a host, run `ai-remote push` / `ai-remote pull` in a terminal.";
+
+/// Host tools an MCP client cannot complete: they hand out a ticket for the files channel, which
+/// only `ai-remote push` / `pull` speak. Kept out of an agent's tool list.
+const CHANNEL_TOOLS: [&str; 2] = ["files_push", "files_pull"];
 
 #[derive(Clone)]
 pub(crate) struct Aggregator {
@@ -184,15 +189,24 @@ impl Aggregator {
         self.agent.invalidate(host).await;
     }
 
-    /// The single paired host, or an error asking for a choice.
-    pub async fn only_host(&self) -> Result<String> {
+    /// The host a call that names none goes to: this device's default host (`ai-remote hosts
+    /// default`) while it is still paired, else the single paired host; an error asking for a
+    /// choice otherwise.
+    pub async fn implicit_host(&self) -> Result<String> {
         let hosts = self.agent.host_names().await?;
+        if let Some(default) = self.agent.known_hosts().default.filter(|d| hosts.contains(d)) {
+            return Ok(default);
+        }
         match hosts.as_slice() {
             [one] => Ok(one.clone()),
             [] => bail!(
                 "no host is paired yet; on the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here"
             ),
-            _ => bail!("several hosts are paired ({}); say which one with `host`", hosts.join(", ")),
+            _ => bail!(
+                "several hosts are paired ({}); say which one with `host` (or set a default: ai-remote hosts default \
+                 <name>)",
+                hosts.join(", ")
+            ),
         }
     }
 
@@ -203,7 +217,7 @@ impl Aggregator {
         if let Some(h) = self.default_host.lock().await.clone() {
             return Ok(h);
         }
-        self.only_host().await
+        self.implicit_host().await
     }
 
     /// Calls `tool` on `host`. A session found dead before the call is replaced first (see
@@ -253,7 +267,7 @@ impl Aggregator {
 
     async fn list_hosts(&self) -> Result<Value> {
         let known = self.agent.known_hosts();
-        let default = self.default_host.lock().await.clone();
+        let default = self.default_host.lock().await.clone().or_else(|| known.default.clone());
         let mut out = Vec::new();
         for name in self.agent.host_names().await? {
             let (reachable, problem) = match self.client(&name).await {
@@ -306,7 +320,7 @@ fn with_host_param(mut tool: Tool) -> Tool {
             json!({
                 "type": "string",
                 "description": "Which paired host to run this on (see list_hosts). Optional when only one host \
-                                is paired or after use_host."
+                                is paired, a default host is set, or after use_host."
             }),
         );
     }
@@ -383,6 +397,9 @@ impl ServerHandler for Aggregator {
             match list {
                 Ok(list) => {
                     for t in list {
+                        if CHANNEL_TOOLS.contains(&t.name.as_ref()) {
+                            continue;
+                        }
                         if seen.insert(t.name.to_string(), ()).is_none() {
                             tools.push(with_host_param(t));
                         }
@@ -425,6 +442,11 @@ impl ServerHandler for Aggregator {
                     Err(e) => error_result(format!("{e:#}")),
                 }
             }
+            tool if CHANNEL_TOOLS.contains(&tool) => error_result(format!(
+                "'{tool}' is not available to MCP clients: the bytes move on a channel only the ai-remote command \
+                 line speaks. Run `ai-remote push <local> <remote>` or `ai-remote pull <remote> [local]` in a \
+                 terminal on this machine (add --host <name>)."
+            )),
             tool => {
                 let requested = args.remove("host").and_then(|v| v.as_str().map(str::to_string));
                 match self.resolve_host(requested).await {

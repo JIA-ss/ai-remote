@@ -61,6 +61,16 @@ pub enum HostRequest {
     },
     /// Run the graded preflight from inside the host (its session, token and network).
     Doctor,
+    /// The paired controllers and whether the owner bypasses each (see [`crate::bypass`]).
+    Bypass,
+    /// Turn bypass on (until `for_secs` from now, when given) or off for a paired controller. Only
+    /// here, at this computer: no controller can ask for it.
+    SetBypass {
+        peer: String,
+        on: bool,
+        #[serde(default)]
+        for_secs: Option<u64>,
+    },
     Shutdown,
 }
 
@@ -76,6 +86,25 @@ pub async fn serve(host: Arc<HostState>, mut conn: Conn, shutdown: CancellationT
     }
 }
 
+/// Turns off the bypass of the device `principal` (named `name` here), saying why in the audit log;
+/// whether it was on.
+pub(crate) fn end_bypass(host: &HostState, name: &str, principal: &str, why: &str) -> bool {
+    match host.bypass().clear(principal) {
+        Ok(true) => {
+            tracing::info!(peer = %name, why, "bypass off");
+            host.audit().event(
+                json!({"kind": "bypass", "peer": name, "principal": principal, "on": false, "why": why, "by": "host"}),
+            );
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            tracing::warn!(peer = %name, "could not turn bypass off: {e:#}");
+            false
+        }
+    }
+}
+
 /// Removes `p`'s pairing (every entry with its name), its live connections and its approver keys.
 /// Used by `ai-remote forget` here and by a controller that unpairs itself.
 pub(crate) async fn forget(host: &HostState, p: &Peer) -> Result<Value> {
@@ -87,10 +116,11 @@ pub(crate) async fn forget(host: &HostState, p: &Peer) -> Result<Value> {
         mesh.peers().await?.into_iter().filter(|x| x.name == p.name).filter_map(|x| x.principal).collect();
     let closed = host.live().close(&devices, CLOSE_NO_ACCESS, REASON_NOT_PAIRED);
     mesh.forget(p).await?;
-    // A forgotten device's approver keys go with it; pairing again starts from nothing.
+    // A forgotten device's approver keys and bypass go with it; pairing again starts from nothing.
     let mut approver_keys = 0;
     for device in &devices {
         approver_keys += host.approver().keys().remove(device, None)?;
+        end_bypass(host, &p.name, device, "forgotten");
     }
     // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
     Ok(json!({
@@ -122,16 +152,90 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,
         )?,
         HostRequest::PairCode { level, name } => serde_json::to_value(mesh.invite(level, name).await?)?,
-        HostRequest::Peers => serde_json::to_value(mesh.peers().await?)?,
+        HostRequest::Peers => {
+            let bypassed = host.bypass().list();
+            let peers: Vec<Value> = mesh
+                .peers()
+                .await?
+                .into_iter()
+                .map(|p| {
+                    let entry = bypassed.iter().find(|e| p.principal.as_deref() == Some(e.principal.as_str()));
+                    let mut v = serde_json::to_value(&p).unwrap_or_default();
+                    v["bypass"] = entry.is_some().into();
+                    v["bypass_until_ms"] = json!(entry.and_then(|e| e.until_ms));
+                    v
+                })
+                .collect();
+            Value::Array(peers)
+        }
         HostRequest::SetLevel { peer, level } => {
             let p = mesh.find_peer(&peer).await?;
             mesh.set_level(&p, level).await?;
+            if level.is_none()
+                && let Some(device) = &p.principal
+            {
+                end_bypass(host, &p.name, device, "level none");
+            }
             json!({"peer": p.name, "level": level})
         }
         HostRequest::Revoke { peer } => {
             let p = mesh.find_peer(&peer).await?;
             mesh.revoke(&p, Some("revoked by the host owner".into())).await?;
+            if let Some(device) = &p.principal {
+                end_bypass(host, &p.name, device, "revoked");
+            }
             json!({"peer": p.name, "device": p.principal, "revoked": true})
+        }
+        HostRequest::Bypass => {
+            let bypassed = host.bypass().list();
+            let devices: Vec<Value> = mesh
+                .peers()
+                .await?
+                .into_iter()
+                .map(|p| {
+                    let entry = bypassed.iter().find(|e| p.principal.as_deref() == Some(e.principal.as_str()));
+                    json!({
+                        "name": p.name,
+                        "device": p.principal,
+                        "level": p.level,
+                        "revoked": p.revoked,
+                        "bypass": entry.is_some(),
+                        "since_ms": entry.map(|e| e.since_ms),
+                        "until_ms": entry.and_then(|e| e.until_ms),
+                    })
+                })
+                .collect();
+            json!({"devices": devices})
+        }
+        HostRequest::SetBypass { peer, on, for_secs } => {
+            let p = mesh.find_peer(&peer).await?;
+            let device = p.principal.clone().ok_or_else(|| anyhow!("{} has no device id", p.name))?;
+            if !on {
+                let was = end_bypass(host, &p.name, &device, "turned off");
+                return Ok(json!({"peer": p.name, "bypass": false, "changed": was}));
+            }
+            if p.revoked {
+                return Err(anyhow!("{} is revoked here; unrevoke it first (ai-remote unrevoke {})", p.name, p.name));
+            }
+            if p.level.is_none() {
+                return Err(anyhow!(
+                    "{} has no level here, so it cannot connect at all; give it one first (ai-remote level {} observe)",
+                    p.name,
+                    p.name
+                ));
+            }
+            let until_ms = for_secs.map(|s| crate::audit::now_ms() as u64 + s.saturating_mul(1000));
+            let entry = host.bypass().set(&p, until_ms)?;
+            tracing::warn!(peer = %p.name, ?until_ms, "bypass on: this controller's calls skip levels, policy and approval");
+            host.audit().event(json!({
+                "kind": "bypass",
+                "peer": p.name,
+                "principal": device,
+                "on": true,
+                "until_ms": entry.until_ms,
+                "by": "host",
+            }));
+            json!({"peer": p.name, "bypass": true, "until_ms": entry.until_ms})
         }
         HostRequest::Unrevoke { peer } => {
             // A device revoked and then forgotten has no pairing left: find it by its device id.
@@ -207,4 +311,20 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             json!({"stopping": true})
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bypass_requests_as_the_desktop_app_and_the_cli_send_them() {
+        let app: HostRequest =
+            serde_json::from_value(json!({"op": "set_bypass", "peer": "laptop", "on": true})).unwrap();
+        assert!(matches!(app, HostRequest::SetBypass { on: true, for_secs: None, .. }));
+        let cli = serde_json::to_value(HostRequest::SetBypass { peer: "laptop".into(), on: false, for_secs: Some(60) })
+            .unwrap();
+        assert_eq!(cli, json!({"op": "set_bypass", "peer": "laptop", "on": false, "for_secs": 60}));
+        assert!(matches!(serde_json::from_value(json!({"op": "bypass"})).unwrap(), HostRequest::Bypass));
+    }
 }

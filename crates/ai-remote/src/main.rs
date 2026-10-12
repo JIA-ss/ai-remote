@@ -1,6 +1,7 @@
 //! `ai-remote`: run a host, pair with hosts, and bridge AI agents to them over MCP.
 
 mod hostops;
+mod remote;
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -40,8 +41,13 @@ enum Command {
         no_pair_code: bool,
     },
     /// Check whether this machine can be operated as a host (session, desktop, elevation, network,
-    /// firewall, autostart, ...). Asks the running host; checks from here when none runs.
-    Doctor,
+    /// firewall, autostart, ...). Asks the running host; checks from here when none runs. With --host,
+    /// asks that paired host instead.
+    Doctor {
+        /// A paired host to check (from this controller) instead of this machine.
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// [host] Print a one-time pairing ticket for a new controller.
     PairCode {
         /// Level to grant: observe, control or admin.
@@ -64,6 +70,13 @@ enum Command {
     Forget { peer: String },
     /// [host] Stop the running host.
     StopHost,
+    /// [host] Trust paired controllers with everything: their calls (an agent's included) use every
+    /// tool here, with no approval and no deny rules, whatever their level. Without a subcommand:
+    /// who has it now.
+    Bypass {
+        #[command(subcommand)]
+        action: Option<BypassAction>,
+    },
     /// [host] People allowed to approve actions from a paired device: list their approver keys, or
     /// add / remove one.
     Approvers {
@@ -82,8 +95,12 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// [controller] List paired hosts.
-    Hosts,
+    /// [controller] List paired hosts; `hosts default <name>` sets the host commands and agents use
+    /// when they name none.
+    Hosts {
+        #[command(subcommand)]
+        action: Option<HostsAction>,
+    },
     /// [controller] The agents (MCP clients) connected to this controller now; --disconnect cuts one
     /// off by its id.
     Agents {
@@ -100,21 +117,21 @@ enum Command {
     /// [controller] What this device may do on a host: your level, the standing rules that concern
     /// you, the paired devices (all of them for an admin) and the tools on offer.
     Access {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Lower this device's level on a host (observe, control). Raising it takes someone
     /// at that computer.
     Lower {
         level: Level,
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Follow a host's activity live: every tool call (decision and outcome) and every
     /// session, starting with recent history. --json prints the raw events.
     Watch {
-        /// Host name (optional when only one host is paired).
-        #[arg(long)]
+        /// Host name (default: AI_REMOTE_HOST, the default host, or the only paired host).
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Show this device's approver key (created on first use; Windows Hello confirms
@@ -130,21 +147,21 @@ enum Command {
     },
     /// [controller] List actions waiting for approval on a host.
     Approvals {
-        /// Host name (optional when only one host is paired).
-        #[arg(long)]
+        /// Host name (default: AI_REMOTE_HOST, the default host, or the only paired host).
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Allow one waiting action (Windows Hello asks you first).
     Approve {
         /// The approval id from `ai-remote approvals` (or its first 6+ characters).
         id: String,
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Deny one waiting action.
     Deny {
         id: String,
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
         /// Tell the agent why, or what to do instead.
         #[arg(long)]
@@ -152,7 +169,7 @@ enum Command {
     },
     /// [controller] Take the controls of a host: the agent's calls are refused until you hand back.
     TakeOver {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
         /// Let the agent keep looking at the screen (observe-level tools) meanwhile.
         #[arg(long)]
@@ -160,33 +177,33 @@ enum Command {
     },
     /// [controller] Give the controls back to the agent, optionally telling it what you changed.
     HandBack {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
         #[arg(long)]
         note: Option<String>,
     },
     /// [controller] Stop the agent on a host until you resume it.
     Pause {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Let a paused agent go on.
     Resume {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Leave a message for the agent working on a host; it arrives with its next call
     /// result.
     Tell {
         text: String,
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
     },
     /// [controller] Watch a host's screen for a while and report the stream (frames, sizes, rate,
     /// codec, arrival gaps); --out saves the raw stream for a player. The desktop app shows the same
     /// stream live.
     View {
-        #[arg(long)]
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
         #[arg(long, default_value_t = 5)]
         seconds: u64,
@@ -211,13 +228,42 @@ enum Command {
         /// Tool arguments as a JSON object.
         #[arg(default_value = "{}")]
         args: String,
-        /// Host name (optional when only one host is paired).
-        #[arg(long)]
+        /// Host name (default: AI_REMOTE_HOST, the default host, or the only paired host).
+        #[arg(long, env = "AI_REMOTE_HOST")]
         host: Option<String>,
         /// You make this call yourself (it runs while you have taken over).
         #[arg(long)]
         person: bool,
     },
+    /// [controller] Run a command on a host and wait for it; prints its output and exits with its exit
+    /// code (124: timed out; 255: it did not run).
+    Exec(remote::ExecArgs),
+    /// [controller] Background jobs on a host: start, list, status, log (-f), wait, kill.
+    Job {
+        #[command(subcommand)]
+        command: remote::JobCommand,
+    },
+    /// [controller] Save a screenshot of a host's monitor.
+    Shot(remote::ShotArgs),
+    /// [controller] A host's visible windows.
+    Windows(remote::WindowsArgs),
+    /// [controller] A host's system, session, monitors and your level there.
+    Info {
+        #[command(flatten)]
+        target: remote::Target,
+    },
+    /// [controller] List a folder on a host.
+    Ls(remote::LsArgs),
+    /// [controller] Whether a path exists on a host, and what it is.
+    Stat(remote::PathArgs),
+    /// [controller] Create a folder on a host.
+    Mkdir(remote::MkdirArgs),
+    /// [controller] Delete a file or folder on a host.
+    Rm(remote::RmArgs),
+    /// [controller] Send a file to a host (streamed, SHA-256 checked, moved into place when complete).
+    Push(remote::PushArgs),
+    /// [controller] Fetch a file from a host (streamed, SHA-256 checked).
+    Pull(remote::PullArgs),
     /// [controller] stdio MCP server for AI agents (e.g. `claude mcp add ai-remote -- ai-remote mcp`).
     Mcp,
     /// [controller] Run the controller agent in the foreground (normally started automatically).
@@ -226,6 +272,38 @@ enum Command {
     StopAgent,
     /// Show this machine's device ids and whether the host and agent are running.
     Status,
+}
+
+#[derive(Subcommand)]
+enum BypassAction {
+    /// Turn it on for a controller (by its name in `ai-remote peers`), or for every paired one.
+    On {
+        #[arg(required_unless_present = "all")]
+        peer: Option<String>,
+        #[arg(long, conflicts_with = "peer")]
+        all: bool,
+        /// End it by itself after this long (90s, 30m, 2h, 1d); default: until you turn it off.
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: Option<String>,
+    },
+    /// Turn it off for a controller, or for every one.
+    Off {
+        #[arg(required_unless_present = "all")]
+        peer: Option<String>,
+        #[arg(long, conflicts_with = "peer")]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HostsAction {
+    /// Show, set (`default <host>`) or clear (`default --clear`) the host commands and agents use when
+    /// they name none.
+    Default {
+        host: Option<String>,
+        #[arg(long, conflicts_with = "host")]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -372,7 +450,8 @@ async fn run(cli: Cli) -> Result<()> {
             hostops::host_uninstall(&profile, dry_run, firewall_only).await
         }
         Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
-        Command::Doctor => hostops::doctor(&profile, json_out).await,
+        Command::Doctor { host: None } => hostops::doctor(&profile, json_out).await,
+        Command::Doctor { host: Some(host) } => remote::doctor(&profile, host, json_out).await,
         Command::PairCode { level, name } => {
             let v = host_request(&profile, HostRequest::PairCode { level, name }).await?;
             if json_out {
@@ -394,11 +473,12 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for p in peers {
                 println!(
-                    "{:<24} level={:<8} {}{}",
+                    "{:<24} level={:<8} {}{}{}",
                     p["name"].as_str().unwrap_or("?"),
                     p["level"].as_str().unwrap_or("none"),
                     p["principal"].as_str().unwrap_or(""),
-                    if p["revoked"].as_bool() == Some(true) { "  REVOKED" } else { "" }
+                    if p["revoked"].as_bool() == Some(true) { "  REVOKED" } else { "" },
+                    if p["bypass"].as_bool() == Some(true) { "  BYPASS" } else { "" }
                 );
             }
             Ok(())
@@ -440,6 +520,7 @@ async fn run(cli: Cli) -> Result<()> {
             let v = host_request(&profile, HostRequest::Shutdown).await?;
             print_result(json_out, &v, "host is stopping")
         }
+        Command::Bypass { action } => bypass_command(&profile, action, json_out).await,
         Command::Mount { command } => mount_command(&profile, command, json_out).await,
         Command::Approvers { command } => approvers_command(&profile, command, json_out).await,
         Command::Approver { create, enroll } => approver_command(&profile, create, enroll, json_out).await,
@@ -514,7 +595,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Hosts => {
+        Command::Hosts { action: None } => {
             let v = agent_request(&profile, json!({"op": "hosts"})).await?;
             if json_out {
                 return print_json(&v);
@@ -527,12 +608,32 @@ async fn run(cli: Cli) -> Result<()> {
             }
             for h in hosts {
                 println!(
-                    "{:<24} level-at-pairing={}",
+                    "{:<24} level-at-pairing={}{}",
                     h["name"].as_str().unwrap_or("?"),
-                    h["level_at_pairing"].as_str().unwrap_or("?")
+                    h["level_at_pairing"].as_str().unwrap_or("?"),
+                    if h["default"] == true { "  (default)" } else { "" }
                 );
             }
             Ok(())
+        }
+        Command::Hosts { action: Some(HostsAction::Default { host, clear }) } => {
+            if host.is_none() && !clear {
+                let v = agent_request(&profile, json!({"op": "hosts"})).await?;
+                let default =
+                    v.as_array().and_then(|a| a.iter().find(|h| h["default"] == true)).map(|h| h["name"].clone());
+                let default = default.unwrap_or(Value::Null);
+                let text = match default.as_str() {
+                    Some(name) => format!("default host: {name}"),
+                    None => "no default host: calls that name none go to the only paired host".to_string(),
+                };
+                return print_result(json_out, &json!({ "default": default }), &text);
+            }
+            let v = agent_request(&profile, json!({"op": "set_default", "host": host})).await?;
+            let text = match v["default"].as_str() {
+                Some(name) => format!("default host is now {name}"),
+                None => "default host cleared".to_string(),
+            };
+            print_result(json_out, &v, &text)
         }
         Command::Agents { disconnect: Some(id) } => {
             let v = agent_request(&profile, json!({"op": "disconnect_agent", "id": id})).await?;
@@ -584,6 +685,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let s = |v: &Value| v.as_str().unwrap_or("-").to_string();
             println!("{}: you are {} with level {}", s(&v["host"]), s(&v["you"]), s(&v["level"]));
+            if v["bypass"] == true {
+                println!(
+                    "bypass: on. The owner trusts this device with everything: every tool, no approvals, no deny rules"
+                );
+            }
             let rules = v["rules"].as_array().cloned().unwrap_or_default();
             if rules.is_empty() {
                 println!("standing rules: none (each tool's default applies)");
@@ -647,6 +753,17 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Exec(a) => remote::exec(&profile, a, json_out).await,
+        Command::Job { command } => remote::job(&profile, command, json_out).await,
+        Command::Shot(a) => remote::shot(&profile, a, json_out).await,
+        Command::Windows(a) => remote::windows(&profile, a, json_out).await,
+        Command::Info { target } => remote::info(&profile, target, json_out).await,
+        Command::Ls(a) => remote::ls(&profile, a, json_out).await,
+        Command::Stat(a) => remote::stat(&profile, a, json_out).await,
+        Command::Mkdir(a) => remote::mkdir(&profile, a, json_out).await,
+        Command::Rm(a) => remote::rm(&profile, a, json_out).await,
+        Command::Push(a) => remote::push(&profile, a, json_out).await,
+        Command::Pull(a) => remote::pull(&profile, a, json_out).await,
         Command::Watch { host } => watch(&profile, host, json_out).await,
         Command::View { host, seconds, max_fps, max_long_edge, bitrate_kbps, codecs, out } => {
             let request = json!({"max_fps": max_fps, "max_long_edge": max_long_edge, "bitrate_kbps": bitrate_kbps,
@@ -781,6 +898,97 @@ async fn approver_command(profile: &Profile, create: bool, enroll: Option<String
         format!("{host} had already accepted this key.")
     };
     print_result(json_out, &v, &msg)
+}
+
+/// `ai-remote bypass`: who the owner trusts with everything here, and turning that on or off.
+async fn bypass_command(profile: &Profile, action: Option<BypassAction>, json_out: bool) -> Result<()> {
+    let list = |v: &Value| v["devices"].as_array().cloned().unwrap_or_default();
+    let (on, peer, duration) = match action {
+        None => {
+            let v = host_request(profile, HostRequest::Bypass).await?;
+            if json_out {
+                return print_json(&v);
+            }
+            let devices = list(&v);
+            if devices.is_empty() {
+                println!("No controller is paired.");
+            }
+            for d in devices {
+                let state = match (d["bypass"].as_bool(), d["until_ms"].as_u64()) {
+                    (Some(true), Some(until)) => format!("BYPASS until {}", local_time(until)),
+                    (Some(true), None) => "BYPASS".to_string(),
+                    _ => "-".to_string(),
+                };
+                println!("{:<24} level={:<8} {state}", s_or(&d["name"]), d["level"].as_str().unwrap_or("none"));
+            }
+            return Ok(());
+        }
+        Some(BypassAction::On { peer, duration, .. }) => (true, peer, duration),
+        Some(BypassAction::Off { peer, .. }) => (false, peer, None),
+    };
+    let for_secs = duration.as_deref().map(parse_duration).transpose()?;
+    let peers: Vec<String> = match peer {
+        Some(p) => vec![p],
+        // --all: on for every device that can connect at all; off for every one that has it.
+        None => list(&host_request(profile, HostRequest::Bypass).await?)
+            .iter()
+            .filter(|d| if on { d["level"].is_string() && d["revoked"] != true } else { d["bypass"] == true })
+            .filter_map(|d| d["name"].as_str().map(str::to_string))
+            .collect(),
+    };
+    let mut results = Vec::new();
+    for peer in peers {
+        let v = host_request(profile, HostRequest::SetBypass { peer, on, for_secs }).await?;
+        if !json_out {
+            let name = s_or(&v["peer"]);
+            match (on, v["until_ms"].as_u64()) {
+                (true, Some(until)) => println!("bypass on for {name} until {}", local_time(until)),
+                (true, None) => println!("bypass on for {name} until you turn it off"),
+                (false, _) if v["changed"] == true => println!("bypass off for {name}"),
+                (false, _) => println!("{name} had no bypass"),
+            }
+        }
+        results.push(v);
+    }
+    if json_out {
+        return print_json(&Value::Array(results));
+    }
+    if results.is_empty() {
+        println!(
+            "{}",
+            if on { "No controller can connect here, so nothing changed." } else { "No controller had bypass." }
+        );
+    } else if on {
+        println!(
+            "Their calls now use every tool here (shell, files, input, ...) without approval, whatever their level or \
+             the deny rules. Turn it off with: ai-remote bypass off <controller> (or --all)"
+        );
+    }
+    Ok(())
+}
+
+/// `90s`, `30m`, `2h`, `1d` or plain seconds.
+fn parse_duration(text: &str) -> Result<u64> {
+    let t = text.trim();
+    let (number, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len()));
+    let n: u64 = number.parse().map_err(|_| anyhow!("'{text}' is not a duration (e.g. 90s, 30m, 2h, 1d)"))?;
+    let secs = match unit {
+        "" | "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86_400,
+        _ => bail!("'{text}' is not a duration (e.g. 90s, 30m, 2h, 1d)"),
+    };
+    if secs == 0 {
+        bail!("give a duration longer than zero");
+    }
+    Ok(secs)
+}
+
+fn local_time(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "?".into())
 }
 
 fn s_or(v: &Value) -> &str {
@@ -1249,6 +1457,18 @@ fn describe_event(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("90s").unwrap(), 90);
+        assert_eq!(parse_duration("45").unwrap(), 45);
+        assert_eq!(parse_duration("30m").unwrap(), 1800);
+        assert_eq!(parse_duration("2h").unwrap(), 7200);
+        assert_eq!(parse_duration("1d").unwrap(), 86_400);
+        for bad in ["", "h", "2x", "0m", "-1h", "1.5h"] {
+            assert!(parse_duration(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn tool_entries() {

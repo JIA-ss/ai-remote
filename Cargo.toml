@@ -29,7 +29,7 @@ futures = "0.3"
 arboard = "3"
 base64 = "0.22"
 blake3 = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 data-encoding = "2"
 directories = "6"
 # Canonical paths without the `\\?\` prefix on Windows (shown to people and passed to system tools).

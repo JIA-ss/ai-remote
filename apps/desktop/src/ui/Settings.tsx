@@ -7,8 +7,9 @@ import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n"
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
-import type { AgentStatus } from "../lib/types";
+import type { AgentStatus, LocalController } from "../lib/types";
 import { CmdLine } from "./CmdLine";
+import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
 import { TitleBar } from "./Shell";
@@ -314,6 +315,99 @@ function Device({ status }: { status: AgentStatus | null }) {
           </div>
         </div>
       </div>
+      <TrustedControllers />
+    </>
+  );
+}
+
+const levelKey = { observe: "lvl_observe", control: "lvl_control", admin: "lvl_admin" } as const;
+
+/**
+ * This computer as a host: the controllers paired with it, each either asking first (the default)
+ * or trusted with everything (bypass). Set over the host's local channel only, so no controller or
+ * agent can give it to itself; turning it on asks for a confirmation that says what it means.
+ */
+function TrustedControllers() {
+  const [list, setList] = useState<LocalController[] | null | undefined>(undefined);
+  const [ask, setAsk] = useState<LocalController | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () =>
+    api.localControllers().then(setList, (e) => {
+      setList(null);
+      setError(String(e));
+    });
+  useEffect(() => {
+    void load();
+  }, []);
+  if (list === undefined) return null;
+  const describe = (c: LocalController) => {
+    if (c.revoked) return t("bp_d_revoked");
+    if (c.level === null) return t("bp_d_nolevel");
+    if (c.bypass) return c.until_ms ? t("bp_d_until", { time: clock(c.until_ms, false) }) : t("bp_d_on");
+    return t("bp_d_off", { level: t(levelKey[c.level]) });
+  };
+  return (
+    <>
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("bp_h")}
+      </div>
+      <div className="grp-sub">{t("bp_sub")}</div>
+      {list === null ? (
+        <div className="gnote" style={{ marginTop: 0 }}>
+          {error ?? t("bp_no_host")}
+        </div>
+      ) : list.length === 0 ? (
+        <div className="gnote" style={{ marginTop: 0 }}>
+          {t("bp_none")}
+        </div>
+      ) : (
+        <div className="grp">
+          {list.map((c) => (
+            <Row
+              key={c.name}
+              ic={<Icon name="laptop" />}
+              tt={c.name}
+              ds={<span className={cx(c.bypass && "c-danger")}>{describe(c)}</span>}
+            >
+              <span className="dd-wrap">
+                <select
+                  className="dd"
+                  aria-label={t("bp_h")}
+                  value={c.bypass ? "all" : "ask"}
+                  disabled={!c.bypass && (c.revoked || c.level === null)}
+                  onChange={(e) => {
+                    setError(null);
+                    if (e.target.value === "all") {
+                      setAsk(c);
+                    } else {
+                      api.setLocalBypass(c.name, false).then(load, (err) => setError(String(err)));
+                    }
+                  }}
+                >
+                  <option value="ask">{t("bp_v_ask")}</option>
+                  <option value="all">{t("bp_v_all")}</option>
+                </select>
+                <Icon name="chevD" size={12} />
+              </span>
+            </Row>
+          ))}
+        </div>
+      )}
+      {error && list !== null && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
+      {ask && (
+        <Confirm
+          title={t("bp_q", { name: ask.name })}
+          body={t("bp_body", { name: ask.name, level: ask.level ? t(levelKey[ask.level]) : "" })}
+          verb={t("bp_btn")}
+          danger
+          onNo={() => setAsk(null)}
+          onYes={async () => {
+            await api.setLocalBypass(ask.name, true);
+            setAsk(null);
+            await load();
+          }}
+        />
+      )}
     </>
   );
 }
