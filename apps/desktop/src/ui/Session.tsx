@@ -545,6 +545,16 @@ export function SessionPage({
             {relay.note}
           </span>
         )}
+        {c.online === true && c.host.p2pObstacle === "firewall" && (
+          <button
+            className="pill stream-fix"
+            onClick={() =>
+              api.fixFirewall().catch((e) => setActionError(t("relay_fix_firewall_failed", { error: e instanceof Error ? e.message : String(e) })))
+            }
+          >
+            {t("relay_fix_firewall")}
+          </button>
+        )}
         <span className="stream-metrics" title={stats ? t("stream_metrics_detail", { dropped: stats.droppedFrames, backlog: stats.drops.backlog, awaiting: stats.drops.awaitingKeyframe, errors: stats.drops.error + stats.drops.invalid, queue: stats.decodeQueueSize }) : undefined}>
           {api.kind === "demo"
             ? t("stream_preview_metrics")

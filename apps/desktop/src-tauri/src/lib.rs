@@ -111,6 +111,14 @@ async fn list_hosts(state: State<'_, AppState>) -> Result<Json, String> {
     state.request(json!({"op": "hosts"})).await
 }
 
+/// Lets direct (P2P) connections in through the system firewall: removes this app's inbound block
+/// rules and allows inbound UDP. Asks for an administrator's consent on Windows.
+#[tauri::command]
+#[specta::specta]
+async fn fix_firewall(state: State<'_, AppState>) -> Result<Json, String> {
+    state.request(json!({"op": "fix_firewall"})).await
+}
+
 /// Redeems a host's pairing ticket; returns the host's name, the safety code and the level.
 #[tauri::command]
 #[specta::specta]
@@ -460,6 +468,7 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         disconnect_agent,
         open_appearance_settings,
         list_hosts,
+        fix_firewall,
         pair,
         unpair,
         call_tool,

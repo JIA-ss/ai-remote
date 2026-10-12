@@ -9,6 +9,7 @@
 mod agent;
 mod aggregator;
 pub mod approver;
+pub mod firewall;
 mod hosts;
 pub mod sessions;
 mod shim;

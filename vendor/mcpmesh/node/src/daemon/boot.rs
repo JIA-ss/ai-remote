@@ -909,6 +909,27 @@ pub(crate) async fn build_endpoint(
     roster_mode: bool,
     hooks: Option<crate::daemon::hooks::MeshHooks>,
 ) -> Result<iroh::Endpoint> {
+    // ai-remote patch: a taken `bind_port` must not keep the node from starting.
+    match build_endpoint_on(secret.clone(), net, roster_mode, hooks.clone()).await {
+        Err(e) if net.bind_port.is_some_and(|p| p != 0) => {
+            tracing::warn!(
+                port = net.bind_port,
+                error = %format!("{e:#}"),
+                "[network] bind_port cannot be used; binding a random port instead"
+            );
+            let random = crate::config::NetworkCfg { bind_port: None, ..net.clone() };
+            build_endpoint_on(secret, &random, roster_mode, hooks).await
+        }
+        built => built,
+    }
+}
+
+async fn build_endpoint_on(
+    secret: iroh::SecretKey,
+    net: &crate::config::NetworkCfg,
+    roster_mode: bool,
+    hooks: Option<crate::daemon::hooks::MeshHooks>,
+) -> Result<iroh::Endpoint> {
     let builder = match net_plan(net)? {
         NetPlan::Hermetic => iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled),
@@ -961,6 +982,12 @@ pub(crate) async fn build_endpoint(
     let builder = apply_relay_only(builder, net);
     let builder = apply_transport_config(builder, net)?;
     let builder = apply_proxy(builder, net)?;
+    let builder = match net.bind_port.filter(|&p| p != 0) {
+        None => builder,
+        Some(port) => builder
+            .bind_addr(std::net::SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, port))
+            .map_err(|e| anyhow::anyhow!("[network] bind_port {port}: {e}"))?,
+    };
     // #229: the outbound revocation veto + the per-peer connection registry. Installed on EVERY
     // booted endpoint; `None` only for test fixtures that assemble a mesh by hand.
     let builder = match hooks {
@@ -2500,6 +2527,37 @@ mod tests {
             .expect_err("doctor must refuse what boot refuses");
         super::validate_transport_config(&cfg(Some(30), Some(5)))
             .expect("and must still pass the working configuration");
+    }
+
+    /// ai-remote patch: a free `bind_port` is used; a taken one falls back to a random port
+    /// instead of keeping the node from starting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bind_port_is_used_when_free_and_skipped_when_taken() {
+        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let taken = held.local_addr().unwrap().port();
+        let free = {
+            let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let net = |port| crate::config::NetworkCfg {
+            relay_mode: "disabled".into(),
+            bind_port: Some(port),
+            ..Default::default()
+        };
+        let v4_port = |ep: &iroh::Endpoint| {
+            ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).map(|a| a.port())
+        };
+        let ep = build_endpoint(iroh::SecretKey::from_bytes(&[30u8; 32]), &net(free), false, None)
+            .await
+            .expect("a free port binds");
+        assert_eq!(v4_port(&ep), Some(free));
+        ep.close().await;
+        let ep = build_endpoint(iroh::SecretKey::from_bytes(&[31u8; 32]), &net(taken), false, None)
+            .await
+            .expect("a taken port falls back to a random one");
+        assert_ne!(v4_port(&ep), Some(taken));
+        ep.close().await;
+        drop(held);
     }
 
     /// #56: an absent config changes NOTHING — the endpoint gets iroh's defaults verbatim, so a

@@ -113,7 +113,7 @@ No parameters. Tries to open a session with every paired host and returns a list
 | `path` | `direct`, `relay` or `unknown` for the live connection; `relay` means P2P (hole punching) failed |
 | `relay` | the relay carrying the traffic (`https://host`), when relayed |
 | `relay_n0` | `true` when that relay is one of n0's free public relays (rate-limited; the default without `[network] relays`) |
-| `p2p_obstacle` | when relayed, the likely reason: `udp_blocked`, `symmetric_nat` or `captive_portal` on this controller's network, or `remote` (this side allows direct connections, so the host's network is the likely cause) |
+| `p2p_obstacle` | when relayed, the likely reason: `udp_blocked`, `symmetric_nat` or `captive_portal` on this controller's network, `firewall` (this computer's firewall blocks the controller program; the desktop app offers "Allow in firewall"), or `remote` (this side allows direct connections, so the host's network is the likely cause) |
 | `level_at_pairing` | the level the host granted when you paired (it may have changed since; `system_info.you.level` is current) |
 | `default` | this host is the session's default |
 
