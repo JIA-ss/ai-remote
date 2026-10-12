@@ -10,6 +10,7 @@ import type {
   HostAccess,
   HostTool,
   Level,
+  LocalController,
   PendingApproval,
   RawPending,
 } from "./types";
@@ -98,6 +99,12 @@ const toPending = (p: RawPending): PendingApproval => ({
   argsPreview: p.args_preview,
   expiresMs: p.expires_ms,
 });
+
+/** Controllers paired with this computer, as its host would list them. */
+const localControllers: LocalController[] = [
+  { name: "work-laptop", device: "eid:7f3a91c2", level: "admin", revoked: false, bypass: false, since_ms: null, until_ms: null },
+  { name: "iphone", device: "eid:2b8e10d4", level: "observe", revoked: false, bypass: false, since_ms: null, until_ms: null },
+];
 
 function reachable(host: string) {
   if (offline.has(host)) throw new Error(`host '${host}' is offline or unreachable`);
@@ -195,6 +202,15 @@ export const demoBackend: Backend = {
   async approverStatus(host) {
     reachable(host);
     return host === "office-pc" ? true : null;
+  },
+  async localControllers() {
+    await wait(120);
+    return localControllers.map((c) => ({ ...c }));
+  },
+  async setLocalBypass(peer, on) {
+    await wait(200);
+    const c = localControllers.find((x) => x.name === peer);
+    if (c) Object.assign(c, { bypass: on, since_ms: on ? Date.now() : null, until_ms: null });
   },
   async enrollApprover(host) {
     reachable(host);

@@ -221,7 +221,7 @@ public struct PhoneRootView: View {
 
     private var sessionDetail: String {
         guard store.connected else { return store.image != nil ? "画面已停止更新" : "等待实时画面" }
-        return store.ownsControls ? "轻点、拖动或输入文字" : levelName(store.level)
+        return store.ownsControls ? "轻点、拖动或输入文字" : accessName
     }
 
     private var turnButton: some View {
@@ -342,7 +342,8 @@ public struct PhoneRootView: View {
     }
 
     private var permissionLabel: some View {
-        Label(levelName(store.level), systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
+        Label(accessName, systemImage: store.bypass ? "checkmark.shield" : "lock.shield").font(.caption)
+            .foregroundStyle(store.bypass ? Color.red : Color.secondary)
     }
 
     private var screenView: some View {
@@ -485,6 +486,8 @@ public struct PhoneRootView: View {
         }.modifier(PhoneErrorAlert(store: store))
     }
 
+    /// This device's access on the connected computer: its level, or that the owner trusts it with everything.
+    private var accessName: String { store.bypass ? "全部放开（无需审批）" : levelName(store.level) }
     private func levelName(_ level: String?) -> String { switch level { case "admin": "管理权限"; case "control": "控制权限"; case "observe": "仅观看"; default: "等待权限信息" } }
 }
 

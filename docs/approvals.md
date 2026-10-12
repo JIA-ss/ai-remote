@@ -2,7 +2,8 @@
 
 [中文](approvals.zh-CN.md)
 
-Some calls wait for a person: `shell`, `jobs_start`, admin tools of mounted servers, and anything a
+Some calls wait for a person: `shell`, `jobs_start`, the file tools that change or move files
+(`files_mkdir`, `files_delete`, `files_push`, `files_pull`), admin tools of mounted servers, and anything a
 policy rule marks `ask`. M0 asked only in a dialog on the host's own desktop, so an approval needed
 someone sitting at the controlled machine. Remote approvals let the owner answer from a paired device
 too (the controller CLI today, the desktop and iPhone apps next), while making sure that an AI agent
@@ -104,6 +105,8 @@ operates, on the controller device the person approves from, or both.
 | Someone on the network | Every connection is mutually authenticated and encrypted (iroh QUIC); only paired devices with a level reach the channel | none |
 | A stolen controller device | Revoke or forget it on the host; forgetting removes its approver keys. Windows Hello still guards each allow | none beyond normal device theft |
 | The agent already has `shell` on the host | A shell runs as the host's user and can change the host's own configuration. Approve `shell` and `jobs_start` only after reading the command | inherent to shell access |
+| The agent turns on bypass for itself | Bypass is set only over the host's local control channel (`ai-remote bypass`, the desktop app on that computer); no controller request reaches it | an agent that already runs `shell` on the host can change it like any host configuration |
+| A bypassed controller is stolen or misused | Its calls skip approval and levels by design; `ai-remote doctor` warns while bypass is on, `--for` ends it by itself, and revoke, forget or `level none` end it | the risk the owner accepted when turning it on |
 
 ## Wire format
 

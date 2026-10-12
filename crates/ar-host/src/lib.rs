@@ -9,9 +9,11 @@
 mod approval;
 mod approvers;
 mod audit;
+pub mod bypass;
 mod control;
 pub mod doctor;
 mod events;
+mod files_channel;
 mod gate;
 pub mod install;
 pub mod mounts;
@@ -29,7 +31,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
-use ar_net::{ALPN_EVENTS, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, Peer, ipc};
+use ar_net::{ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, Peer, ipc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{approval::Approver, audit::AuditLog, tools::Registry};
@@ -52,6 +54,10 @@ pub struct HostState {
     approver: Approver,
     turns: turns::Turns,
     jobs: tools::jobs::JobManager,
+    /// Approved file transfers waiting for their bytes.
+    transfers: tools::files::Transfers,
+    /// Controllers the owner trusts with everything (see [`bypass`]).
+    bypass: bypass::Bypass,
     background: bool,
     /// Cancelled when the host stops.
     stopping: CancellationToken,
@@ -81,6 +87,14 @@ impl HostState {
 
     pub fn jobs(&self) -> &tools::jobs::JobManager {
         &self.jobs
+    }
+
+    pub fn transfers(&self) -> &tools::files::Transfers {
+        &self.transfers
+    }
+
+    pub fn bypass(&self) -> &bypass::Bypass {
+        &self.bypass
     }
 
     /// Runs without a console (started at login); messages go to the host log only.
@@ -120,6 +134,13 @@ impl HostState {
     pub async fn current_level(&self, peer: &Peer) -> Option<Level> {
         let peers = self.mesh.peers().await.ok()?;
         peers.into_iter().find(|p| p.principal.is_some() && p.principal == peer.principal).and_then(|p| p.level)
+    }
+
+    /// The level `peer`'s calls are checked against: admin while the owner bypasses it (see
+    /// [`bypass`]) and it still has a level here, its own level otherwise.
+    pub async fn effective_level(&self, peer: &Peer) -> Option<Level> {
+        let level = self.current_level(peer).await?;
+        Some(if self.bypass.covers(peer) { Level::Admin } else { level })
     }
 }
 
@@ -222,6 +243,8 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         ),
         turns: turns::Turns::default(),
         jobs: tools::jobs::JobManager::new(profile.jobs_dir()?),
+        transfers: tools::files::Transfers::default(),
+        bypass: bypass::Bypass::open(&profile.bypass_path()?)?,
         profile,
         name,
         config,
@@ -234,6 +257,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
     mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
     mesh.accept(ALPN_SCREEN, Arc::new(stream::protocol::ScreenProtocol::new(state.clone())))?;
+    mesh.accept(ALPN_FILES, Arc::new(files_channel::FilesProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
     announce_pairings(&mesh, owner).await;
 

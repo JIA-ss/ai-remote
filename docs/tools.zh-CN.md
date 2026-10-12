@@ -40,6 +40,12 @@
 | `jobs_log` | admin | allow | 只读 | 从指定偏移读取任务日志 |
 | `jobs_wait` | admin | allow | 只读 | 等待任务结束 |
 | `jobs_kill` | admin | allow | 破坏性 | 停止任务及其启动的所有进程 |
+| `files_list` | admin | allow | 只读 | 列出文件夹内容 |
+| `files_stat` | admin | allow | 只读 | 路径是否存在、是什么 |
+| `files_mkdir` | admin | ask | 非破坏性 | 创建文件夹 |
+| `files_delete` | admin | ask | 破坏性 | 删除文件、链接或文件夹 |
+| `files_push` | admin | ask | 破坏性 | 批准写入一个文件，返回文件通道的票据（仅命令行用） |
+| `files_pull` | admin | ask | 非破坏性 | 批准读取一个文件，返回文件通道的票据（仅命令行用） |
 | `<挂载名>_<工具>` | 按白名单 | 按白名单 | 来自 server | 挂载 MCP server 的工具 |
 
 - **级别**：能调用该工具的最低设备级别。控制端只能看到它的级别允许的工具，被控端每次调用时都会重新检查级别。
@@ -134,7 +140,7 @@
 | `uptime_secs` | 系统已运行时长 |
 | `session` | `session_id`（0 是服务会话）、`on_console`、`elevated`、`input_desktop`（未锁定时为 `Default`）、`desktop_usable`、`problem`（不可用的原因） |
 | `monitors` | 每块显示器的 `index`、`name`、`primary`、`x`、`y`、`width`、`height`、`scale_factor` |
-| `you` | `peer_name`（被控端给你起的名字）和你当前的 `level` |
+| `you` | `peer_name`（被控端给你起的名字）、你当前的 `level`，以及 `bypass`：机主完全信任这台设备时为 `true`，此时不管级别，所有工具都无需审批（见 [operations.zh-CN.md](operations.zh-CN.md#61-bypass完全信任某台控制端)） |
 
 ### 5.2 `doctor`
 
@@ -447,6 +453,53 @@
 结束任务的进程及其启动的所有进程（包括残余进程），等几秒让它们退出，然后返回状态（附 1 KiB 日志末尾）和一句
 `result` 说明，比如 `killed the job and every process it started`，或者主进程没能在 5 秒内结束。它对任何用
 `jobs_start` 启动的任务都有效，不管是哪台设备启动的；对其他进程无效。
+
+### 5.13 文件
+
+级别 admin：文件名和文件内容的敏感程度和 `shell` 能碰到的一样。读元数据直接执行；创建、删除、传输文件默认先问机主。
+所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）。
+
+**`files_list`**：`path`（文件夹），可选 `pattern`（`*`、`?` 通配，不区分大小写）和 `offset`。返回
+`{path, total, offset, next_offset, entries: [{name, kind, size, modified}]}`：`kind` 为 `file`、`dir`、`link`
+或 `other`，`size` 是字节数（只有文件有），`modified` 是 Unix 毫秒。文件夹在前，再按名字排序；每次最多 500 条，
+下一页从 `next_offset` 开始。
+
+**`files_stat`**：`path`。返回 `{path, exists, kind, size, modified, readonly}`，链接另有 `target` 和 `target_kind`。
+路径不存在时返回 `exists: false`，不算错误。
+
+**`files_mkdir`**：`path`、`intent`。创建文件夹及缺少的上级文件夹；已经存在时 `created: false`。
+
+**`files_delete`**：`path`、`recursive`（默认 false）、`intent`。永久删除（不进回收站）。非空文件夹需要
+`recursive: true`；链接只删链接本身，不删它指向的东西。驱动器或文件系统的根目录、被控端自己的配置目录以及包含它的
+文件夹都会被拒绝。
+
+**`files_push`** 和 **`files_pull`** 传输整个文件，字节不经过 MCP（MCP 结果约 1 MiB 封顶）。调用本身和其他工具一样
+经过审批，返回一张一次性票据 `ticket`，2 分钟内有效，只能由签发给的设备兑换；控制端随后在文件通道
+（`app/ai-remote/file/1`，见 [architecture.zh-CN.md](architecture.zh-CN.md)）上兑换。只有 ai-remote 命令行会用这个通道
+（`ai-remote push` / `pull`，见 [operations.zh-CN.md](operations.zh-CN.md#41-用命令行操作被控端)），所以 MCP 客户端看不到这两个工具。
+
+| `files_push` 参数 | 类型 | 含义 |
+|---|---|---|
+| `path` | string，必填 | 要写入的文件的绝对路径 |
+| `size` | integer，必填 | 准确的字节数 |
+| `sha256` | string，必填 | 内容的 SHA-256，64 位十六进制 |
+| `overwrite` | boolean | 替换已有文件（默认 false） |
+| `mkdir` | boolean | 创建缺少的上级文件夹（默认 false） |
+| `intent` | string | 理由 |
+
+签发票据之前，被控端会拒绝以下情况：路径是文件夹；文件已存在且没给 `overwrite`；上级文件夹不存在且没给 `mkdir`。
+字节先写到目标旁的临时文件（`.<文件名>.ai-remote-<id>.part`），大小和 SHA-256 都与批准的一致才移动到目标位置；
+`overwrite` 为 false 时，移动前还会再确认这期间没有出现同名文件。传输中断或哈希不符不会留下任何文件。
+
+| `files_pull` 参数 | 类型 | 含义 |
+|---|---|---|
+| `path` | string，必填 | 要读取的文件的绝对路径 |
+| `intent` | string | 理由 |
+
+签发票据时就打开文件，读不了的文件在传输之前就会被拒绝。传输依次发送文件大小、字节，最后是它们的 SHA-256。
+
+兑换票据时，被控端会再检查一次该设备仍是 admin 级别；Agent 的票据还要求 Agent 仍持有控制权，接管或暂停会中途停下传输。
+每次传输都在审计日志里写一条 `transfer` 记录（`tool`、`path`、`outcome`、`bytes`、`duration_ms`、`error`）。
 
 ## 6. 结果预算
 

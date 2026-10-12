@@ -69,6 +69,10 @@ pub struct AuditRecord<'a> {
     pub result_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<&'a str>,
+    /// The caller is a device the owner bypasses (see [`crate::bypass`]): checked as admin, no
+    /// policy, no approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bypass: Option<bool>,
 }
 
 impl AuditLog {

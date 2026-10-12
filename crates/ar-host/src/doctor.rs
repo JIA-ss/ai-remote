@@ -93,6 +93,7 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
         None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(approval_check(platform::prompt_blocker()));
+    checks.push(bypass_check(inputs.profile));
 
     let profile = inputs.profile.clone();
     let in_host = inputs.mesh.is_some();
@@ -253,6 +254,32 @@ fn approval_check(blocker: Option<String>) -> Check {
         )
         .fix("unlock the desktop, or allow trusted tools with [[rule]] entries in ai-remote.toml"),
     }
+}
+
+/// Controllers the owner trusts with everything: not a fault, but nobody should forget it is on.
+fn bypass_check(profile: &Profile) -> Check {
+    let entries = match profile.bypass_path().and_then(|p| crate::bypass::Bypass::open(&p)) {
+        Ok(b) => b.list(),
+        Err(e) => return Check::new("bypass", Grade::Warn, format!("cannot read the bypass list: {e:#}")),
+    };
+    grade_bypass(&entries)
+}
+
+fn grade_bypass(entries: &[crate::bypass::Entry]) -> Check {
+    if entries.is_empty() {
+        return Check::new("bypass", Grade::Ok, "no controller bypasses levels, policy and approval");
+    }
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    Check::new(
+        "bypass",
+        Grade::Warn,
+        format!(
+            "{} can use every tool here without approval, whatever its level or the deny rules: {}",
+            if entries.len() == 1 { "1 controller" } else { "these controllers" },
+            names.join(", ")
+        ),
+    )
+    .fix("turn it off when you no longer need it: ai-remote bypass off <controller> (or --all)")
 }
 
 /// The program whose firewall rules matter: the running host, or the one autostart would run.
@@ -429,6 +456,16 @@ mod tests {
     use ar_net::RelayState;
 
     use super::*;
+
+    #[test]
+    fn bypass_is_reported_while_on() {
+        assert_eq!(grade_bypass(&[]).grade, Grade::Ok);
+        let entry =
+            crate::bypass::Entry { principal: "eid:a".into(), name: "laptop".into(), since_ms: 1, until_ms: None };
+        let c = grade_bypass(&[entry]);
+        assert_eq!(c.grade, Grade::Warn);
+        assert!(c.summary.contains("laptop") && c.fix.unwrap().contains("bypass off"));
+    }
 
     fn grades(checks: &[Check]) -> Vec<(&str, Grade)> {
         checks.iter().map(|c| (c.id.as_str(), c.grade)).collect()

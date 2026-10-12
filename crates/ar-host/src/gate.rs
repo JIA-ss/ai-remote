@@ -1,9 +1,9 @@
 //! The gate every tool call passes through, in this order:
 //!
-//! 1. the caller's current level (re-read on every call, so a downgrade applies immediately), and
-//!    whose turn it is (an agent's calls wait while a person drives or the agent is paused, see
-//!    [`crate::turns`]);
-//! 2. policy (`allow` / `ask` / `deny`);
+//! 1. the caller's current level (re-read on every call, so a downgrade applies immediately; admin
+//!    for a device the owner bypasses, see [`crate::bypass`]), and whose turn it is (an agent's
+//!    calls wait while a person drives or the agent is paused, see [`crate::turns`]);
+//! 2. policy (`allow` / `ask` / `deny`), skipped for a bypassed device;
 //! 3. owner approval when the policy says `ask`, at the host or on an approver device (see
 //!    [`crate::approval`]);
 //! 4. audit record of the decision;
@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use ar_core::{budget, config::Action};
+use ar_core::{Level, budget, config::Action};
 use rmcp::{
     ErrorData,
     model::{CallToolResult, ContentBlock, JsonObject},
@@ -89,6 +89,7 @@ async fn call_gated(
     let shown = serde_json::to_string(&tools::shown_args(&args, secret)).unwrap_or_default();
     let preview = budget::head_tail(&shown, 400, 190);
     let intent = args.get("intent").and_then(|v| v.as_str()).map(str::to_string);
+    let bypassed = host.bypass().covers(&session.peer);
 
     let record = |kind: &'static str| AuditRecord {
         ts: now_ms(),
@@ -107,10 +108,13 @@ async fn call_gated(
         duration_ms: None,
         result_bytes: None,
         error: None,
+        bypass: bypassed.then_some(true),
     };
 
     // 1. Current level.
+    // One answer for the whole call: the level check and the policy below agree on `bypassed`.
     let level = match host.current_level(&session.peer).await {
+        Some(_) if bypassed => Level::Admin,
         Some(level) => level,
         None => {
             host.audit().write(&AuditRecord {
@@ -149,7 +153,11 @@ async fn call_gated(
 
     // 2-3. Policy and approval.
     let (mut approval, mut approved_by) = (None::<String>, None::<String>);
-    let action = policy::decide(&host.config().rules, name, &session.peer, spec.default_action);
+    let action = if bypassed {
+        Action::Allow
+    } else {
+        policy::decide(&host.config().rules, name, &session.peer, spec.default_action)
+    };
     let decision = match action {
         Action::Allow => "allow",
         Action::Deny => {
