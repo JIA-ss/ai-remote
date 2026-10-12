@@ -5,7 +5,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
-import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, PathKind, PendingApproval } from "./types";
+import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, PathKind, PendingApproval } from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
@@ -58,6 +58,13 @@ export interface Backend {
   access(host: string): Promise<HostAccess>;
   /** Lowers this device's level on `host`; raising it takes someone at that computer. */
   lowerLevel(host: string, level: Level): Promise<void>;
+  /**
+   * This computer as a host: the controllers paired with it and whether each is trusted with
+   * everything (bypass). `null` when ai-remote host does not run here.
+   */
+  localControllers(): Promise<LocalController[] | null>;
+  /** Turns bypass on or off for a controller paired with this computer. */
+  setLocalBypass(peer: string, on: boolean): Promise<void>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
@@ -153,6 +160,13 @@ const tauriBackend: Backend = {
   },
   async lowerLevel(host, level) {
     unwrap(await commands.lowerLevel(host, level));
+  },
+  async localControllers() {
+    const v = unwrap(await commands.localHostBypass()) as { devices: LocalController[] } | null;
+    return v ? v.devices : null;
+  },
+  async setLocalBypass(peer, on) {
+    unwrap(await commands.setLocalHostBypass(peer, on));
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));

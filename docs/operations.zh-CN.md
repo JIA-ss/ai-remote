@@ -48,6 +48,7 @@
 | `ai-remote revoke <设备>` / `unrevoke <设备>` | 拒绝某个控制端，或解除拒绝 |
 | `ai-remote forget <设备>` | 删除某个控制端的配对 |
 | `ai-remote stop-host` | 停止正在运行的被控端 |
+| `ai-remote bypass [on\|off <设备>\|--all] [--for 2h]` | 完全信任控制端：全部工具、无需审批、不受 deny 规则限制（6.1 节） |
 | `ai-remote approvers [add\|remove]` | 审批密钥：哪些人可以在已配对设备上审批（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | 管理挂载的 MCP server（见 [tools.zh-CN.md](tools.zh-CN.md#7-挂载-mcp-server)） |
 
@@ -56,11 +57,13 @@
 | 命令 | 作用 |
 |---|---|
 | `ai-remote pair <票据> [--name N]` | 与被控端配对 |
-| `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别 |
+| `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别；默认被控端标为 `(default)` |
+| `ai-remote hosts default [<被控端>\|--clear]` | 查看、设置或清除默认被控端：命令和 Agent 没指定被控端时用它 |
 | `ai-remote unpair <被控端> [--local]` | 解除配对：能连上时被控端也会删掉本设备，然后本控制端忘掉它（`--local`：只在本机忘掉） |
 | `ai-remote access [--host H]` | 本设备在某台被控端上能做什么：你的级别、与你有关的长期规则、已配对的设备（管理级别能看到全部）和可用的工具 |
 | `ai-remote lower <级别> [--host H]` | 降低本设备在某台被控端上的级别；要再提升，需要那台电脑前的人执行 `ai-remote level` |
 | `ai-remote call <工具> ['{JSON 参数}'] [--host H]` | 调用一个工具并打印结果 |
+| `ai-remote exec`、`job`、`shot`、`windows`、`info`、`doctor --host`、`ls`、`stat`、`mkdir`、`rm`、`push`、`pull` | 在终端或脚本里操作被控端（4.1 节） |
 | `ai-remote watch [--host H]` | 实时跟踪被控端的活动：先是最近的记录，然后是发生中的每次调用和会话 |
 | `ai-remote view [--host H] [--seconds N] [--out F]` | 观看被控端屏幕一段时间并报告视频流情况（帧数、尺寸、帧率）；`--out` 保存 H.264 |
 | `ai-remote approvals` / `approve <id>` / `deny <id>` | 列出、允许或拒绝等待审批的调用（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
@@ -238,7 +241,7 @@ ai-remote host uninstall
 - `ai-remote mcp` 是 MCP 客户端启动的程序。它连到常驻进程（需要时先启动它），把 stdio 转发过去，
   客户端关闭 stdin 后退出。
 
-常驻进程按需启动：`pair`、`hosts`、`unpair`、`call`、`mcp` 发现它没在运行时，都会在后台把它拉起来
+常驻进程按需启动：控制端命令（`pair`、`hosts`、`call`、`exec`、`mcp` 等）发现它没在运行时，都会在后台把它拉起来
 （最多等 20 秒），输出追加到 `<配置目录>/controller/controller.log`。连续 30 分钟没有任何客户端时它会自动退出；
 打开着的 MCP 会话也算客户端。`ai-remote stop-agent` 立即停止它；`ai-remote agent` 在前台运行它，方便调试
 （这个配置目录已有常驻进程在运行时会报错）。
@@ -255,6 +258,66 @@ claude mcp add ai-remote -- ai-remote mcp
 脚本里可以用 `ai-remote call <工具> '<JSON 参数>' [--host <名称>]` 调用一个工具并打印结果（图片只打印一行摘要）。
 工具报错（包括被拒绝）时退出码为 2；调用根本没能发出（被控端连不上、参数有误）时退出码为 1。加 `--json`
 则打印原始结果，不使用退出码 2。每次 `call` 都是一个新的 MCP 会话，所以上一次 `call` 拿到的截图 ID，下一次用不了。
+
+### 4.1 用命令行操作被控端
+
+`ai-remote call` 能调用任何工具，但 JSON 参数和原始结果不适合日常使用。下面这些命令覆盖人和脚本最常做的事，
+参数和输出都是普通的命令行形式。每条命令都是经常驻进程发出的一次或几次工具调用，所以被控端的级别、策略、
+审批和审计对它们的作用和对 Agent 的调用完全一样。加 `--json` 输出机器可读的 JSON。
+
+| 命令 | 对应工具 | 级别 |
+|---|---|---|
+| `ai-remote info` | `system_info` | observe |
+| `ai-remote doctor --host H` | `doctor` | observe |
+| `ai-remote shot [-o F.png] [--monitor N] [--max-long-edge PX]` | `screenshot` | observe |
+| `ai-remote windows [--filter T] [--all]` | `list_windows` | observe |
+| `ai-remote exec "<命令>" [--shell S] [--cwd D] [--timeout S] [--env K=V] [--stdin F]` | `shell` | admin，默认要审批 |
+| `ai-remote job start "<命令>"` / `list` / `status <id>` / `log <id> [-f]` / `wait <id> [--timeout S]` / `kill <id>` | `jobs_*` | admin；`start` 要审批 |
+| `ai-remote ls <目录> [--pattern P]` / `stat <路径>` | `files_list` / `files_stat` | admin |
+| `ai-remote mkdir <目录>` / `rm <路径> [-r]` | `files_mkdir` / `files_delete` | admin，默认要审批 |
+| `ai-remote push <本地> <远端> [--force] [--mkdir]` | `files_push` + 文件通道 | admin，默认要审批 |
+| `ai-remote pull <远端> [<本地>] [--force]` | `files_pull` + 文件通道 | admin，默认要审批 |
+
+**发往哪台被控端。** 依次取 `--host <名称>`、环境变量 `AI_REMOTE_HOST`、本设备的默认被控端、唯一配对的被控端。
+`ai-remote hosts default <名称>` 设置默认被控端（保存在 `controller/hosts.json`；MCP 会话里调用没指定 `host`
+且没用过 `use_host` 时也用它），`ai-remote hosts default --clear` 清除，`ai-remote hosts` 会把它标出来。
+`AI_REMOTE_HOST` 对所有带 `--host` 的控制端命令生效，但不影响 `doctor`：不带 `--host` 时它检查的是本机。
+
+**退出码。** 0：完成。2：被控端拒绝了调用或工具执行失败（被控端的说明打印在 stderr）。1：调用没能发出
+（常驻进程起不来、被控端连不上、参数有误）。`exec` 和 ssh 一样直接用远端命令自己的退出码：超时被结束为 124，
+根本没有执行为 255。`job wait` 用任务的退出码（到 `--timeout` 时仍在运行为 124；被结束为 137；退出码未知为 255，
+例如被控端重启后重新接管的任务）。
+
+**文件。** 文件命令用被控端上的绝对路径。`push` 先在本地算出文件的 SHA-256，请被控端批准恰好这个大小和哈希，
+再流式发送；被控端写到目标旁边的临时文件，大小和哈希都对上才原子替换到目标位置，传输中断不会留下写了一半的
+目标文件。远端路径以 `/` 或 `\` 结尾、或者指向一个已存在的文件夹时，文件按原名放进去；`--mkdir` 创建缺少的
+文件夹，`--force` 替换已有文件。`pull` 流式写到本地临时文件，和被控端给出的 SHA-256 一致才保留；本地文件已存在
+且没加 `--force` 时，在询问被控端之前就拒绝。每次传一个文件，文件夹请先打包（`tar -czf`）。每次传输都写进审计日志
+（`transfer` 记录：路径、字节数、耗时、结果）。
+
+**审批。** `exec`、`job start`、`mkdir`、`rm`、`push`、`pull` 默认都要机主审批，和 Agent 的调用一样。
+自己用控制端操作的测试机，可以在那台被控端上加一条只针对本设备的规则，省掉审批框：
+
+```toml
+[[rule]]
+tool = "files_*"
+principal = "my-laptop"   # 本控制端在被控端 `ai-remote peers` 里的名字
+action = "allow"
+```
+
+示例：
+
+```sh
+ai-remote hosts default lab-pc
+ai-remote info
+ai-remote exec "Get-Process game -ErrorAction SilentlyContinue | Select-Object Id, WS"
+ai-remote push build.zip 'D:\deploy\' --mkdir
+ai-remote exec "Expand-Archive D:\deploy\build.zip D:\deploy\build -Force" --timeout 300
+ai-remote job start "D:\deploy\build\game.exe" --intent "性能基线"
+ai-remote job log <id> -f
+ai-remote shot -o lab.png
+ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
+```
 
 ## 5. 配对步骤
 
@@ -300,7 +363,7 @@ claude mcp add ai-remote -- ai-remote mcp
 |---|---|
 | `observe` | `system_info`、`doctor`、`screenshot`、`zoom`、`list_windows`，以及挂载 server 中 observe 级的工具 |
 | `control` | 再加 `focus_window`、`mouse`、`keyboard`、`clipboard_read`、`clipboard_write`，以及挂载 server 中 control 级的工具 |
-| `admin` | 再加 `shell`、`jobs_*`，以及挂载 server 中 admin 级的工具 |
+| `admin` | 再加 `shell`、`jobs_*`、`files_*`，以及挂载 server 中 admin 级的工具 |
 
 控制端只能看到它的级别允许的工具。下面几条命令都在被控端执行，立即生效；而 `ai-remote.toml` 的改动
 （策略规则、挂载、审批超时、中继、名称）要重启被控端才生效。
@@ -324,6 +387,38 @@ claude mcp add ai-remote -- ai-remote mcp
 - 控制端上的 **unpair** 只是让控制端忘掉这台被控端；被控端上仍会列出这个控制端，直到你在被控端也执行 `forget`。
 - MCP 客户端通常会缓存工具列表。修改级别后，重连客户端（或开一个新会话）才能看到新级别下的工具；
   不论哪种情况，调用都会按当前级别检查。
+
+### 6.1 Bypass：完全信任某台控制端
+
+只从自己的设备操作的电脑（比如测试机）上，审批和级别可能反而碍事。**Bypass** 让你完全信任选定的控制端：
+
+```sh
+ai-remote bypass                       # 列出已配对的控制端，开启的标 BYPASS
+ai-remote bypass on my-laptop          # 直到你关闭
+ai-remote bypass on --all --for 2h     # 所有能连接的控制端，2 小时后自动结束
+ai-remote bypass off my-laptop         # 或 --all
+```
+
+那台电脑上的桌面应用在 **设置 → 本设备 → 完全信任的控制端** 里做同样的事：每台已配对的控制端是 *先问我*（默认）
+或 *全部放开*，选后者时会先请你确认。
+
+控制端处于 bypass 时，它的调用（以及通过它工作的每个 Agent 的调用）：
+
+- 一律按 `admin` 检查，不管它的级别，所以能看到并使用全部工具，包括文件传输；
+- 不等审批，也不受 `deny` 规则（以及挂载工具上的 `approve = "deny"`）限制；
+- 照样写审计日志，记录上带 `"bypass": true`。
+
+缓存了工具列表的 MCP 客户端要重连后才能看到新增的工具，和修改级别后一样。
+
+仍然有效的：设备必须仍有配对和某个级别（`level <设备> none`、`revoke`、`forget` 会切断它，并同时结束它的 bypass；
+控制端自己降低级别也会结束 bypass）；人仍然可以接管或暂停 Agent（9.3 节）。控制端能看到自己处于 bypass
+（`ai-remote access`、`ai-remote info`、电脑页的“权限”标签、`system_info.you.bypass`），只要有控制端处于 bypass，
+`ai-remote doctor` 就会给出警告。
+
+Bypass 只能在这台电脑上、经被控端的本地控制通道设置，控制端无法请求，所以 Agent 不能经 ai-remote 给自己开。
+它保存在 `<配置目录>/host/bypass.json`，重启后仍然有效；每次改动都写一条审计记录（`kind: "bypass"`）。
+已经能以被控端用户身份运行 `shell` 的 Agent 仍然可以改这个文件，就像能改被控端的任何配置一样
+（见 [approvals.zh-CN.md](approvals.zh-CN.md) 的威胁模型）。
 
 ## 7. 被控端拒绝了怎么办
 
@@ -419,6 +514,7 @@ Overall: warn
 | `dpi` | 逐显示器 DPI 感知（v2） | **fail**：在有缩放的显示器上点击位置会偏 | 去掉可执行文件上的高 DPI 兼容性覆盖设置（属性 > 兼容性） |
 | `relay` | 已连上主中继（home relay） | **warn**：没有使用中继，或一个都连不上；其他网络里的控制端可能连不进来 | 检查网络连接、出站防火墙或代理（中继走 HTTPS），或检查 `[network] relays` |
 | `approval` | 能弹出审批框 | **warn**：需要审批的操作都会被拒绝 | 解锁桌面，或用 `[[rule]]` 放行可信的工具 |
+| `bypass` | 没有控制端处于 bypass | **warn**：列出的控制端可以不经审批使用全部工具（6.1 节） | 不再需要时 `ai-remote bypass off <设备>`（或 `--all`） |
 | `firewall` | 有入站允许规则覆盖被控端程序的 UDP，或防火墙已关闭 | **fail**：有阻止规则作用于该程序（流量会退回中继）；**warn**：没有允许规则（Windows 会在第一次连接时弹提示），或者有针对所有程序入站 UDP 的阻止规则 | 在管理员终端执行 `host install`；其他程序的规则在 `wf.msc` 里检查 |
 | `autostart` | 任务（或 LaunchAgent）会用本配置目录启动本次安装的后台被控端 | **warn**：没有安装，或者运行的是别的程序 | （再）执行一次 `ai-remote host install` |
 | `audit` | 审计日志能以追加方式打开 | **fail**：操作不会被记录 | 修正配置目录的权限，或换一个 `--home` |
@@ -428,9 +524,9 @@ Overall: warn
 
 ## 9. 审批
 
-调用的动作为 `ask` 时需要审批。这是 `shell` 和 `jobs_start` 的默认动作，也是两类挂载工具的默认动作：
+调用的动作为 `ask` 时需要审批。这是 `shell`、`jobs_start`、`files_mkdir`、`files_delete`、`files_push`、`files_pull` 的默认动作，也是两类挂载工具的默认动作：
 没有 `approve` 设置的 admin 级挂载工具，以及设置了 `approve = "ask"` 的挂载工具。此外，任何策略规则写了 `ask`
-时同样需要审批（见 [tools.zh-CN.md](tools.zh-CN.md#8-策略规则)）。
+时同样需要审批（见 [tools.zh-CN.md](tools.zh-CN.md#8-策略规则)）。处于 bypass 的控制端的调用从不需要审批（6.1 节）。
 
 能回答的人有两类，先到的回答生效：被控端前的人，在它桌面上的对话框里回答（9.1）；机主，在被控端接受了其审批密钥的
 已配对设备上回答（9.2）。
@@ -531,6 +627,7 @@ ai-remote tell "Use the D: drive for the export"
 | `duration_ms` | 调用耗时 |
 | `result_bytes` | 结果内容序列化为 JSON 后的大小，按结果预算处理之后计算 |
 | `error` | 错误文本；超过 300 个字符时只保留首尾各 140 个 |
+| `bypass` | 调用方是处于 bypass 的控制端时为 `true`（6.1 节）：按 admin 检查，不走策略和审批 |
 
 ```json
 {"ts":1791021600123,"kind":"decision","session":"5f2c19ab","peer":"laptop","principal":"eid:3b7e...","tool":"shell","decision":"approved","intent":"Check free disk space","args_hash":"9f2d...","args_preview":"{\"command\":\"Get-PSDrive C\",\"intent\":\"Check free disk space\"}"}

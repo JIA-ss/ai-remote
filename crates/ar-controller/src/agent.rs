@@ -13,7 +13,8 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection, refusal::Refusal,
+    ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection,
+    refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -80,6 +81,17 @@ pub enum AgentRequest {
     Channel {
         host: Option<String>,
         request: Value,
+    },
+    /// Upgrade this connection to a file transfer: `request` (`{"ticket":".."}`, from a `files_push`
+    /// or `files_pull` call) goes to the host's files channel; after the host's JSON reply, the bytes
+    /// pass both ways unchanged (see the host's files protocol).
+    Files {
+        host: Option<String>,
+        request: Value,
+    },
+    /// Set (or with `None`, clear) the host calls go to when they name none.
+    SetDefault {
+        host: Option<String>,
     },
     Shutdown,
 }
@@ -300,6 +312,11 @@ impl EmbeddedController {
                         let cancelled = stop.clone();
                         (reply, tokio::spawn(async move { tokio::select! { _ = feed.relay(server) => {}, _ = cancelled.cancelled() => {} } }))
                     }
+                    AgentRequest::Files { host, request } => {
+                        let (transfer, reply) = open_files(&agent, host, &request).await?;
+                        let cancelled = stop.clone();
+                        (reply, tokio::spawn(async move { tokio::select! { _ = transfer.relay(server, vec![]) => {}, _ = cancelled.cancelled() => {} } }))
+                    }
                     AgentRequest::Screen { host, request } => {
                         let (view, reply) = open_screen(&agent, host, &request).await?;
                         let cancelled = stop.clone();
@@ -487,6 +504,23 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 }
             }
         }
+        if let AgentRequest::Files { host, request } = req {
+            match open_files(agent, host, &request).await {
+                Ok((transfer, reply)) => {
+                    conn.reply(Ok(reply)).await?;
+                    let (stream, buffered) = conn.into_raw();
+                    tokio::select! {
+                        _ = transfer.relay(stream, buffered) => {},
+                        _ = shutdown.cancelled() => {},
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    conn.reply(Err(e)).await?;
+                    continue;
+                }
+            }
+        }
         let result = handle(agent, req, shutdown).await;
         conn.reply(result).await?;
     }
@@ -526,9 +560,20 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                     "level_at_pairing": k.and_then(|k| k.level),
                     "paired_at": k.map(|k| k.paired_at),
                     "path": agent.path_of(&name).await,
+                    "default": known.default.as_deref() == Some(name.as_str()),
                 }));
             }
             Value::Array(out)
+        }
+        AgentRequest::SetDefault { host } => {
+            let name = match host {
+                Some(h) => Some(agent.mesh.find_peer(&h).await?.name),
+                None => None,
+            };
+            let mut known = agent.known_hosts();
+            known.default = name.clone();
+            known.save(&agent.hosts_path)?;
+            json!({"default": name})
         }
         AgentRequest::Unpair { host } => {
             let peer = agent.mesh.find_peer(&host).await?;
@@ -548,7 +593,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             };
             let host = match host {
                 Some(h) => h,
-                None => aggregator.only_host().await?,
+                None => aggregator.implicit_host().await?,
             };
             let result = aggregator
                 .call_on_host(&host, &tool, args, &CancellationToken::new())
@@ -557,7 +602,9 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             serde_json::to_value(result)?
         }
         AgentRequest::Channel { host, request } => channel_request(agent, host, &request).await?,
-        AgentRequest::Mcp | AgentRequest::Events { .. } | AgentRequest::Screen { .. } => bail!("unreachable"),
+        AgentRequest::Mcp | AgentRequest::Events { .. } | AgentRequest::Screen { .. } | AgentRequest::Files { .. } => {
+            bail!("unreachable")
+        }
         AgentRequest::Shutdown => {
             shutdown.cancel();
             json!({"stopping": true})
@@ -579,7 +626,7 @@ async fn channel_request(agent: &Arc<Agent>, host: Option<String>, request: &Val
     }
     let host = match host {
         Some(h) => agent.mesh.find_peer(&h).await?.name,
-        None => Aggregator::new(agent.clone()).only_host().await?,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
     };
     let conn = agent
         .mesh
@@ -624,7 +671,7 @@ struct ScreenView {
 async fn open_screen(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<(ScreenView, Value)> {
     let host = match host {
         Some(h) => agent.mesh.find_peer(&h).await?.name,
-        None => Aggregator::new(agent.clone()).only_host().await?,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
     };
     let conn = agent
         .mesh
@@ -694,6 +741,82 @@ impl ScreenView {
     }
 }
 
+/// One file transfer with a host, after its first reply.
+struct FileTransfer {
+    conn: Connection,
+    send: ar_net::iroh::endpoint::SendStream,
+    recv: ar_net::iroh::endpoint::RecvStream,
+}
+
+/// Redeems a transfer ticket on `host`'s files channel and returns the transfer with the host's
+/// first reply (`{"ok":true,"op":"push"|"pull","size":N}`).
+async fn open_files(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<(FileTransfer, Value)> {
+    let ticket = request["ticket"].as_str().filter(|t| !t.is_empty());
+    let Some(ticket) = ticket else { bail!("a file transfer needs the ticket from files_push or files_pull") };
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
+    };
+    let conn = agent
+        .mesh
+        .dial(&host, ALPN_FILES)
+        .await
+        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let line = format!("{}\n", json!({ "ticket": ticket }));
+    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    // Byte by byte, so none of the file that follows a pull's reply is consumed here.
+    let mut reply = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match tokio::time::timeout(Duration::from_secs(30), recv.read_exact(&mut byte)).await {
+            Ok(Ok(_)) if byte[0] == b'\n' => break,
+            Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
+            Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
+            Ok(Err(e)) => bail!("host '{host}' closed the transfer: {e} (a host without file transfers?)"),
+            Err(_) => bail!("host '{host}' did not answer"),
+        }
+    }
+    let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
+    if reply["ok"] != true {
+        bail!("host '{host}': {}", reply["error"].as_str().unwrap_or("refused"));
+    }
+    reply["host"] = host.into();
+    Ok((FileTransfer { conn, send, recv }, reply))
+}
+
+impl FileTransfer {
+    /// Passes bytes both ways until the host has said everything (or the local client goes away).
+    async fn relay<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(self, local: T, buffered: Vec<u8>) {
+        let FileTransfer { conn, mut send, recv } = self;
+        let (local_read, mut local_write) = tokio::io::split(local);
+        // Large buffers: `copy`'s own is a few KiB, which costs a system call per few KiB of a file.
+        let (mut local_read, mut recv) = (
+            tokio::io::BufReader::with_capacity(1 << 20, local_read),
+            tokio::io::BufReader::with_capacity(1 << 20, recv),
+        );
+        let up = async {
+            if !buffered.is_empty() && send.write_all(&buffered).await.is_err() {
+                return;
+            }
+            let _ = tokio::io::copy_buf(&mut local_read, &mut send).await;
+        };
+        let down = async {
+            let _ = tokio::io::copy_buf(&mut recv, &mut local_write).await;
+            let _ = tokio::io::AsyncWriteExt::flush(&mut local_write).await;
+        };
+        tokio::pin!(down);
+        tokio::select! {
+            _ = &mut down => {}
+            // The host stopped reading an upload it refused; its answer saying why is still on its way.
+            _ = up => {
+                let _ = tokio::time::timeout(Duration::from_secs(30), &mut down).await;
+            }
+        }
+        conn.close(0u32.into(), b"done");
+    }
+}
+
 /// A subscribed activity feed of one host.
 struct EventFeed {
     host: String,
@@ -706,7 +829,7 @@ struct EventFeed {
 async fn open_events(agent: &Arc<Agent>, host: Option<String>) -> Result<EventFeed> {
     let host = match host {
         Some(h) => agent.mesh.find_peer(&h).await?.name,
-        None => Aggregator::new(agent.clone()).only_host().await?,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
     };
     let conn = agent
         .mesh

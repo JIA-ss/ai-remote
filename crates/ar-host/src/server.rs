@@ -52,7 +52,7 @@ impl ServerHandler for HostServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         // Only tools this caller's level can use: hidden tools cost context and invite failed calls.
-        let level = self.host.current_level(&self.session.peer).await;
+        let level = self.host.effective_level(&self.session.peer).await;
         let tools = self
             .host
             .registry()

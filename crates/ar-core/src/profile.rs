@@ -101,6 +101,11 @@ impl Profile {
         Ok(self.role_dir(Role::Host)?.join("approvers.json"))
     }
 
+    /// Host: the controllers whose calls bypass levels, policy and approval (`ai-remote bypass`).
+    pub fn bypass_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Host)?.join("bypass.json"))
+    }
+
     /// Host: background job logs and metadata.
     pub fn jobs_dir(&self) -> Result<PathBuf> {
         let dir = self.role_dir(Role::Host)?.join("jobs");

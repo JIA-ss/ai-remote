@@ -120,7 +120,13 @@ flowchart LR
   Windows 当前保留 Graphics Capture + OpenH264。桌面应用用 WebCodecs 解码，iPhone 用 VideoToolbox；
   静止画面也能重新编码关键帧恢复解码。流上是 18 字节帧头加 H.264 Annex B，任何有权限级别的设备都能看，
   观看会写入审计（`view_start`、`view_end`）。画质配置和实测范围见[性能说明](stream-performance.md)。
-- （规划中）`app/ai-remote/file/1` 用于大文件传输。
+- **ALPN `app/ai-remote/file/1`。** 整个文件的传输（`ai-remote push` / `pull`）。字节不经过 MCP（MCP 结果约 1 MiB
+  封顶）：先调用 `files_push` / `files_pull` 工具，它和其他工具一样过闸门（级别、策略、审批、审计），返回一张
+  一次性票据，绑定签发给的设备、路径，上传还绑定获批的大小和 SHA-256，2 分钟内有效；控制端再在这个 ALPN 上
+  开一条流，写一行 `{"ticket":..}`，被控端回一行（`op`、`size`）后开始传字节。上传先写到目标旁的临时文件，
+  大小和 SHA-256 都对上才原子替换；下载在字节后附一行 SHA-256 供控制端核对。双方都按事先知道的大小读写，
+  不依赖对方关闭半条流。兑换时再查一次级别（须为 admin）和轮次（接管、暂停会中途停下传输）；每次传输都写一条
+  审计记录（`transfer`）。MCP 客户端的工具列表里没有这两个签票工具（它们拿到票据也用不了）。
 
 ## 6. 闸门
 
@@ -128,7 +134,8 @@ flowchart LR
 
 1. **级别与轮次**：每次调用都重新读取调用方的级别，必须够得上工具要求的级别。超出调用方级别的工具，
    也不会出现在它拿到的工具列表里。有人接管或暂停了 Agent 时，Agent 的调用会被拒绝，并附一句说明
-   （见 [operations.zh-CN.md](operations.zh-CN.md#93-接管暂停和给-agent-留言)）。
+   （见 [operations.zh-CN.md](operations.zh-CN.md#93-接管暂停和给-agent-留言)）。机主设为 bypass 的控制端
+   （只能在被控端设置）按 admin 检查，并跳过第 2、3 步（见 [operations.zh-CN.md](operations.zh-CN.md#61-bypass完全信任某台控制端)）。
 2. **策略**：按顺序匹配 `ai-remote.toml` 里的规则，第一条命中的生效；都不命中就用工具自身的默认动作
    （observe、control 级直接执行，admin 级先询问，只读取或停止后台任务的那几个 job 工具除外）。
    挂载 server 自带的工具标注只作参考，从不作为依据。
@@ -181,6 +188,9 @@ action = "deny"
 | `shell` | admin，需审批 | 带超时执行一条命令直到结束；调用结束时整棵进程树一起结束 |
 | `jobs_start` | admin，需审批 | 启动一个后台命令，输出写入日志文件，会话结束后继续运行 |
 | `jobs_status` / `jobs_log` / `jobs_wait` / `jobs_kill` | admin | 查看、等待和停止后台任务 |
+| `files_list` / `files_stat` | admin | 列文件夹、查看路径 |
+| `files_mkdir` / `files_delete` | admin，需审批 | 建文件夹、删除路径（拒绝根目录和被控端配置目录） |
+| `files_push` / `files_pull` | admin，需审批 | 批准一次整文件传输，签发 `file/1` 的票据（仅命令行用） |
 | `<挂载名>_<工具>` | 按白名单 | 挂载 MCP server 的工具 |
 
 通过 `ai-remote mcp` 使用时，控制端还会加上 `list_hosts`、`use_host` 两个工具，并给每个被控端工具加一个

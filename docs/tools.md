@@ -41,6 +41,12 @@ behaviour on macOS is *(planned)*. For installing and running hosts see
 | `jobs_log` | admin | allow | read-only | read a job's log from an offset |
 | `jobs_wait` | admin | allow | read-only | wait for a job to end |
 | `jobs_kill` | admin | allow | destructive | stop a job and everything it started |
+| `files_list` | admin | allow | read-only | list a folder |
+| `files_stat` | admin | allow | read-only | whether a path exists, and what it is |
+| `files_mkdir` | admin | ask | non-destructive | create a folder |
+| `files_delete` | admin | ask | destructive | delete a file, link or folder |
+| `files_push` | admin | ask | destructive | approve writing a file; returns a ticket for the file channel (CLI only) |
+| `files_pull` | admin | ask | non-destructive | approve reading a file; returns a ticket for the file channel (CLI only) |
 | `<mount>_<tool>` | per allowlist | per allowlist | from the server | tools of mounted MCP servers |
 
 - **Level** is the lowest device level that may call the tool. A controller only sees the tools its
@@ -152,7 +158,7 @@ Level observe. No parameters. Call it first. Returns:
 | `uptime_secs` | system uptime |
 | `session` | `session_id` (0 is the services session), `on_console`, `elevated`, `input_desktop` (`Default` when unlocked), `desktop_usable`, `problem` (why not usable) |
 | `monitors` | per monitor: `index`, `name`, `primary`, `x`, `y`, `width`, `height`, `scale_factor` |
-| `you` | `peer_name` (the host's name for you) and your current `level` |
+| `you` | `peer_name` (the host's name for you), your current `level`, and `bypass`: `true` when the owner trusts this device with everything, so every tool runs without approval whatever the level ([operations.md](operations.md#61-bypass-trusting-a-controller-with-everything)) |
 
 ### 5.2 `doctor`
 
@@ -502,6 +508,63 @@ Kills the job's process and every process it started, including leftovers, waits
 them to go, and returns the status (with a 1 KiB log tail) and a `result` sentence: for example
 "killed the job and every process it started", or that the main process had not ended within 5 s.
 It works on any job started with `jobs_start`, whichever device started it, and on nothing else.
+
+### 5.13 Files
+
+Admin level: file names and contents are as sensitive as what `shell` reaches. Reading metadata runs
+without asking; creating, deleting and moving files ask the owner by default. Every path must be
+absolute (the host's working directory is not something a caller can know).
+
+**`files_list`**: `path` (a folder), optional `pattern` (`*` and `?`, case-insensitive) and `offset`.
+Returns `{path, total, offset, next_offset, entries: [{name, kind, size, modified}]}`: `kind` is
+`file`, `dir`, `link` or `other`, `size` is in bytes (files only), `modified` in Unix ms. Folders come
+first, then names; at most 500 entries per call, the next page starts at `next_offset`.
+
+**`files_stat`**: `path`. Returns `{path, exists, kind, size, modified, readonly}`, plus `target` and
+`target_kind` for a link. A missing path is `exists: false`, not an error.
+
+**`files_mkdir`**: `path`, `intent`. Creates the folder and any missing parents; `created: false`
+when it already existed.
+
+**`files_delete`**: `path`, `recursive` (default false), `intent`. Deletes for good (not to the
+recycle bin). A folder with anything in it needs `recursive: true`; a link is removed, never what it
+points to. Drive and file system roots, and the host's own profile folder or any folder that contains
+it, are refused.
+
+**`files_push`** and **`files_pull`** move whole files without passing the bytes through MCP (whose
+results stay near 1 MiB). The call is approved like any other and returns a one-time `ticket`, valid
+for 2 minutes and only for the device it was issued to; the controller then redeems it on the file
+channel (`app/ai-remote/file/1`, see [architecture.md](architecture.md)), which only the ai-remote
+command line speaks (`ai-remote push` / `pull`, [operations.md](operations.md#41-operating-a-host-from-the-command-line)).
+MCP clients therefore do not see these two tools.
+
+| `files_push` parameter | Type | Meaning |
+|---|---|---|
+| `path` | string, required | absolute path of the file to write |
+| `size` | integer, required | exact size in bytes |
+| `sha256` | string, required | SHA-256 of the content, 64 hex digits |
+| `overwrite` | boolean | replace an existing file (default false) |
+| `mkdir` | boolean | create missing parent folders (default false) |
+| `intent` | string | why |
+
+Before it issues a ticket the host refuses a path that is a folder, an existing file without
+`overwrite`, and a missing parent without `mkdir`. The bytes go to a temporary file next to the
+target (`.<name>.ai-remote-<id>.part`); the file is moved into place only when its size and SHA-256
+are the approved ones, and it is checked again that no file appeared meanwhile when `overwrite` is
+false. A broken or mismatched upload leaves nothing behind.
+
+| `files_pull` parameter | Type | Meaning |
+|---|---|---|
+| `path` | string, required | absolute path of the file to read |
+| `intent` | string | why |
+
+The file is opened when the ticket is issued, so one that cannot be read is refused before anything
+moves. The transfer sends the file's size, the bytes, then their SHA-256.
+
+When a ticket is redeemed the host checks again that the device still has admin level and, for an
+agent's ticket, that the agent still has the controls; a takeover or pause stops a transfer midway.
+Each transfer writes a `transfer` line to the audit log (`tool`, `path`, `outcome`, `bytes`,
+`duration_ms`, `error`).
 
 ## 6. Result budgets
 
