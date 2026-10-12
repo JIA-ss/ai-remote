@@ -89,6 +89,13 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 高码率压测用被控端的合成图案源：`AI_REMOTE_TEST_PATTERN=5120x2160`（Windows 被控端，整屏滚动，不读屏幕；
 脚本里是 `--pattern 5120x2160`）。用屏幕上的噪点窗口做压力源不可靠（窗口被遮挡或浏览器生成慢时画面不变）。
 
+高码率压测（`--pattern 5120x2160`，整屏滚动，单次运行）：命令行端 5K AV1 99.0 fps / 197 Mbit/s、HEVC 99.0 fps /
+124 Mbit/s，4K60 三种编码 59.4~59.6 fps / 43~46 Mbit/s。桌面端（调试版后端，每档约 12 s）：均衡 60.0 fps 11.9 Mbps、
+流畅 100.0 fps 25.2 Mbps、清晰 60.0 fps 40.3 Mbps、**极致 5120×2160 100.0 fps 192 Mbps**，解码队列都是 0，
+累计丢帧 19 / 4 / 4 / 34。**结论：Tauri Channel + WebView2 在 5K@100fps、约 190 Mbps 下仍跑满帧，暂时不是瓶颈。**
+两个遗留：丢帧发生在哪（起流时等关键帧，还是积压重置）没逐帧确认；AV1 在极端画面下超出请求码率约 30%
+（请求 150、实际约 190 Mbps，LowDelayVBR 的峰值没被 NVENC AV1 严格遵守）。
+
 两处由实测驱动的修正：
 - **帧率按刷新取整**：WGC 只能在刷新时出帧，"最小间隔 1/fps"会凑成整刷新：100 Hz 屏上请求 60 得 50、30 得 25；
   144 Hz 上 60 会变 48。现在 WGC 放行 1/(2fps)，在编码循环里用按时间累积的令牌桶节流（`protocol.rs` 的 `Pacer`）。
@@ -127,9 +134,12 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 
 **Windows（这台机器能测）**
 - [x] 真实端到端（见上表）：5K2K@100Hz 原生推流，命令行 99 fps、桌面端 100 fps 丢帧 0。
-- [ ] 高码率下 Tauri Channel 的开销：每帧 >1 KB 时 Tauri 2.12 先 `eval` 一段 JS，页面再走一次 `ipc://` fetch 取数据
-      （`tauri/src/ipc/channel.rs`），100 fps 就是每秒 200 次跨进程往返。用 `--pattern` 压测；若丢帧/排队，
-      换本地 WebSocket（带随机令牌，只听 127.0.0.1）或 WebView2 SharedBuffer。
+- [x] 高码率下 Tauri Channel：5K@100fps / 192 Mbps 跑满帧（见上）。原理备忘：每帧 >1 KB 时 Tauri 2.12 先 `eval`
+      一段 JS，页面再走一次 `ipc://` fetch（`tauri/src/ipc/channel.rs`）；更高帧率/码率若出现排队，再换本地 WebSocket
+      （随机令牌、只听 127.0.0.1）或 WebView2 SharedBuffer。
+- [ ] 桌面端丢帧定位：给 `video.ts` 的丢帧按原因计数（等关键帧 / 积压重置 / 解析失败），用 `--pattern` 复测。
+- [ ] 码率上限：AV1 极端画面超出请求约 30%；试 `CODECAPI_AVEncCommonBufferSize` 更小的 VBV 或 CBR+低 VBV，
+      并配合自适应码率。
 - [ ] 画质客观对比：CBR vs LowDelayVBR、三种编码同码率的 PSNR/VMAF（可用 ffmpeg 解 `target/stream-bench/*.bin`）。
 - [ ] 端到端延迟指标：主机时间戳 + 时钟偏移回显，在会话界面显示"采集→显示"延迟。
 - [ ] 自适应码率：写帧阻塞（背压）时降码率/分辨率，恢复后回升；现在只有固定档位。
