@@ -274,11 +274,14 @@ impl Aggregator {
                 Ok(_) => (true, None),
                 Err(e) => (false, Some(format!("{e:#}"))),
             };
+            let route = if reachable { self.agent.route_of(&name).await } else { None };
             out.push(json!({
                 "host": name,
                 "reachable": reachable,
                 "problem": problem,
-                "path": if reachable { self.agent.path_of(&name).await } else { None },
+                "path": route.as_ref().map(|r| r.path),
+                "relay": route.as_ref().and_then(|r| r.relay.clone()),
+                "relay_n0": route.as_ref().is_some_and(ar_net::Route::via_n0),
                 "level_at_pairing": known.get(&name).and_then(|k| k.level),
                 "default": default.as_deref() == Some(name.as_str()),
             }));

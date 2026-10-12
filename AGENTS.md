@@ -354,3 +354,38 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
 - [ ] 光标合成（或者和"光标改为客户端绘制"一起做）。
 - [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。
 - [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关。
+
+## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
+
+目标：开源工具给很多人用，配对后各种网络里都尽量不用配置就能连上；打不通直连、走中继时，各端明确提示
+"P2P 直连失败，经 n0 公共中继转发"。n0 公共中继免费但有限流，官方定位开发测试。
+
+### 已做（默认开启，`[network]` 可关；用户文档在 `docs/operations*.md` 第 12 节）
+
+- **中继提示（四端 + 命令行 + MCP）**：`ar-net` 的 `Mesh::route` 返回 `Route { path, relay }`，`is_n0_relay` 按 iroh
+  `defaults::prod` 的四个主机名精确比对（防 `*.n0.iroh.link.evil.example`）。controller 的 `hosts` 和 MCP `list_hosts`
+  多了 `relay`、`relay_n0`（只加不改）。桌面端：会话工具栏橙色提示 + 悬停说明，标题栏/设备页"n0 公共中继"，浮条保持短词
+  （长词在窄窗口被截断）；demo 模式的 lab-pc 就是 n0 中继。iOS（iPhone/iPad 同一套 SwiftUI）：会话期间每 5 s 查一次
+  `hosts` 刷新线路（iroh 可能中途升级为直连），顶栏橙色徽章，点开看说明。
+- **HTTP 代理**：vendored mcpmesh 加了 `[network].proxy_url`（`boot.rs` 的 `apply_proxy`，记在
+  `vendor/mcpmesh/README.ai-remote.md` 和 `PROVENANCE.json` 的 `ai_remote_patches`）。`ar-net/src/proxy.rs` 按
+  配置 → `HTTPS_PROXY/ALL_PROXY/HTTP_PROXY` → 系统设置（Windows 注册表 Internet Settings、macOS `scutil --proxy`）识别。
+  **只有中继连接走代理**；pkarr 地址发布/查询不走（实测：本地 CONNECT 代理日志里只有 4 台中继，没有 dns.iroh.link）。
+- **局域网发现（mDNS）**：被控端默认 `on`，控制端默认 `resolve`（mcpmesh 自己默认 off，理由是公共网络里会广播
+  设备 ID 和公网地址；我们为了无感连通改了默认，文档写明并给了关闭方法）。
+- **中继兜底**：配了自建中继时默认把 n0 四台中继也写进中继表（`relay_fallback_n0`）。控制端也能配中继了
+  （`<profile>/controller/ai-remote.toml`，`ar_core::config::ControllerConfig`）。
+- **拨号重试**：`agent.rs` 的 `connection()` 对 `Unreachable` 在 1 s、3 s 后重拨（`retry_after`，已跑满 20 s 的不重拨）；
+  拨号改为按主机加锁，不再在拨号期间锁住全部连接（以前一台主机拨 20 s 会卡住其他主机和线路查询）。
+
+实测（本机，单次）：本地 CONNECT 代理 + 配置 `proxy`、或只设 `HTTPS_PROXY`，被控端中继都经代理连上
+（`doctor` 的 relay ok）；自建中继配成不存在的地址，回落到 n0 中继；`tools/stream-e2e.py` 1080p30 正常（29.2 fps）。
+**未测**：跨机器的 mDNS 直连、真实公司代理、iOS 编译（Windows 上编不了，靠 CI）。
+
+### 下一步
+
+- [ ] 打不通的原因诊断：iroh `Endpoint::net_report()`（要开 `iroh/unstable-net-report`，从 mcpmesh 透出）给出 UDP v4/v6、
+      对称 NAT、公网地址；放进 `doctor` 和中继提示（"本机网络阻断了 UDP"等）。
+- [ ] Windows 桌面控制端防火墙：检查 `ai-remote-desktop.exe` 的阻止规则，设置页一键修复（UAC + `netsh`），安装包钩子加放行。
+- [ ] 可选固定 UDP 端口 `[network] port`，给能手动端口转发的用户。
+- [ ] 用局域网里的另一台机器做跨机器验证：mDNS（断外网）、强制中继（`unstable-relay-only` 构建）看提示。

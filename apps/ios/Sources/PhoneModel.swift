@@ -34,8 +34,44 @@ public struct PhoneHost: Identifiable, Sendable, Equatable {
     public var id: String { name }
     public let name: String
     public let level: String?
+    /// "direct", "relay" or "unknown"; known only while a connection is open.
     public let path: String?
-    public init(_ v: JSONValue) { name = v["name"].string ?? ""; level = v["level_at_pairing"].string; path = v["path"].string }
+    /// The relay host carrying the traffic, when relayed and known.
+    public let relay: String?
+    /// The relay is one of n0's public relays (rate-limited, meant by n0 for development).
+    public let relayN0: Bool
+    public init(_ v: JSONValue) {
+        name = v["name"].string ?? ""; level = v["level_at_pairing"].string; path = v["path"].string
+        relay = v["relay"].string.flatMap(Self.relayHost); relayN0 = v["relay_n0"] == .bool(true)
+    }
+
+    /// Short name of the route, or nil while it is not known.
+    public var routeLabel: String? {
+        switch path {
+        case "direct": "直连"
+        case "relay": relayN0 ? "n0 公共中继" : "中继"
+        default: nil
+        }
+    }
+
+    /// While relayed: a one-line note that P2P failed and who forwards the traffic, and its explanation.
+    public var relayNote: (note: String, detail: String)? {
+        guard path == "relay" else { return nil }
+        let relay = relay ?? "?"
+        return relayN0
+            ? ("P2P 直连失败 · 经 n0 公共中继转发",
+               "没能建立直连（P2P），流量正经 n0 的免费公共中继 \(relay) 转发。仍是端到端加密，但延迟更高，而且 n0 会限速。改用自建中继可以避开限速。")
+            : ("P2P 直连失败 · 经中继转发",
+               "没能建立直连（P2P），流量正经中继 \(relay) 转发。仍是端到端加密，延迟会更高。")
+    }
+
+    /// `https://host:port` → `host`, without the trailing root dot.
+    static func relayHost(_ url: String) -> String? {
+        let rest = url.range(of: "://").map { String(url[$0.upperBound...]) } ?? url
+        var host = String(rest.split(whereSeparator: { $0 == "/" || $0 == ":" }).first ?? "")
+        while host.hasSuffix(".") { host.removeLast() }
+        return host.isEmpty ? nil : host
+    }
 }
 
 public struct ScreenGeometry: Sendable, Equatable {

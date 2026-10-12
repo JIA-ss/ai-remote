@@ -98,7 +98,9 @@
 | `host` | 被控端在本控制端上的名称 |
 | `reachable` | 现在能否建立会话 |
 | `problem` | 连不上时的原因（拒绝或连接错误） |
-| `path` | 在线连接的路径：`direct`、`relay` 或 `unknown` |
+| `path` | 在线连接的路径：`direct`、`relay` 或 `unknown`；`relay` 表示 P2P 打洞失败 |
+| `relay` | 走中继时，转发流量的中继（`https://主机名`） |
+| `relay_n0` | 这个中继是 n0 的免费公共中继时为 `true`（有限流；没配 `[network] relays` 时默认用它） |
 | `level_at_pairing` | 配对时被控端授予的级别（之后可能改过；当前级别看 `system_info.you.level`） |
 | `default` | 是否为本会话的默认被控端 |
 
