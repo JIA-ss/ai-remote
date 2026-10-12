@@ -113,6 +113,8 @@ button:disabled { cursor: default; }
 .stream-route { display: inline-flex; align-items: center; gap: 6px; }
 .stream-route.relayed { padding: 2px 10px; border-radius: 10px; background: rgb(214 148 38 / .14); color: #e3a23b; font-weight: 550; }
 .stream-metrics { margin-left: auto; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* The host's pointer, drawn over the video when the host sends it separately (lib/pointer.ts). */
+.remote-pointer { position: absolute; left: 0; top: 0; z-index: 5; display: none; pointer-events: none; transform-origin: 0 0; }
 .stream-ended { position: absolute; inset: 0; z-index: 12; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; padding: 24px; text-align: center; background: var(--stage); color: var(--text-1); }
 .stream-ended strong { font-size: 18px; }
 .stream-ended p { max-width: 480px; margin: 0; color: var(--text-2); line-height: 1.65; }

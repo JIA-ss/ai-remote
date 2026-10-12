@@ -769,7 +769,7 @@ async fn open_screen(agent: &Arc<Agent>, host: Option<String>, request: &Value) 
 /// The request without the optional field an older host refused as unknown (serde's
 /// "unknown field `name`"), when there is one to drop; `None` otherwise.
 fn without_unknown_field(request: &Value, error: &str) -> Option<Value> {
-    const OPTIONAL: [&str; 1] = ["codecs"];
+    const OPTIONAL: [&str; 2] = ["codecs", "cursor"];
     let field = OPTIONAL.into_iter().find(|f| error.contains(&format!("unknown field `{f}`")))?;
     let mut older = request.clone();
     older.as_object_mut()?.remove(field)?;
@@ -787,8 +787,14 @@ impl ScreenView {
             }
             let _ = tokio::io::copy(&mut local_read, &mut send).await;
         };
+        let down = async {
+            match test_link_bps() {
+                Some(bps) => copy_paced(&mut recv, &mut local_write, bps).await,
+                None => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
+            }
+        };
         tokio::select! {
-            _ = tokio::io::copy(&mut recv, &mut local_write) => {}
+            _ = down => {}
             _ = up => {}
         }
         conn.close(0u32.into(), b"done");
@@ -868,6 +874,39 @@ impl FileTransfer {
             }
         }
         conn.close(0u32.into(), b"done");
+    }
+}
+
+/// `AI_REMOTE_TEST_LINK_KBPS`, for tests only: live video is read no faster than this, as a slow
+/// network would deliver it. QUIC's own windows then fill as on such a link, so latency and
+/// adaptive bitrate can be measured on one machine (`tools/stream-e2e.py --link-mbps`).
+fn test_link_bps() -> Option<u64> {
+    let kbps: u64 = std::env::var("AI_REMOTE_TEST_LINK_KBPS").ok()?.parse().ok()?;
+    (kbps > 0).then_some(kbps * 1000)
+}
+
+async fn copy_paced<R, W>(read: &mut R, write: &mut W, bps: u64) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 16 * 1024];
+    // When the link is free again; an idle link does not bank time for a later burst.
+    let mut free = tokio::time::Instant::now();
+    loop {
+        let n = read.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        write.write_all(&buf[..n]).await?;
+        let now = tokio::time::Instant::now();
+        free = free.max(now) + Duration::from_secs_f64(n as f64 * 8.0 / bps as f64);
+        // Sleep in steps of at least 20 ms: timers round short sleeps up (to a millisecond or
+        // more), which would make the link far slower than `bps` for small reads.
+        if free > now + Duration::from_millis(20) {
+            tokio::time::sleep_until(free).await;
+        }
     }
 }
 
@@ -978,5 +1017,9 @@ mod tests {
         assert_eq!(without_unknown_field(&request, "too many people are watching this computer right now"), None);
         assert_eq!(without_unknown_field(&serde_json::json!({"max_fps": 60}), "unknown field `codecs`"), None);
         assert_eq!(without_unknown_field(&request, "unknown field `monitor`"), None);
+        // A host from before the separate pointer refuses `cursor` (then perhaps `codecs`): one at a time.
+        let both = serde_json::json!({"max_fps": 60, "codecs": ["hevc"], "cursor": "client"});
+        let first = without_unknown_field(&both, "bad request: unknown field `cursor`, expected one of").unwrap();
+        assert_eq!(first, serde_json::json!({"max_fps": 60, "codecs": ["hevc"]}));
     }
 }

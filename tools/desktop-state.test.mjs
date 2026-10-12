@@ -361,3 +361,174 @@ test("HEVC and AV1 keyframes configure their decoder with the coded size; unknow
   assert.equal(s.parseFrame(packet(0b111, 64, 64, new Uint8Array([1]))), null);
   s.decoder.close();
 });
+
+test("the host clock takes the shortest round trip and bounds its error by half of it", () => {
+  let now = 1000;
+  const { createHostClock } = module("../apps/desktop/src/lib/clock.ts", {}, clock());
+  const c = createHostClock(() => now);
+  assert.equal(c.toLocalMs(0), null);
+  // The host's stream clock reads 500 ms when our clock reads 1010 ms (true offset 510 ms).
+  const a = c.ping(); now += 30; c.pong(a, (now - 15 - 510) * 1000 + 5000); // a slow, asymmetric reply
+  const b = c.ping(); now += 4; c.pong(b, (now - 2 - 510) * 1000);
+  assert.equal(c.errorMs(), 2);
+  assert.ok(Math.abs(c.toLocalMs(500_000) - 1010) < 0.001);
+  // Unknown and repeated pongs change nothing.
+  c.pong(99, 0); c.pong(b, 0);
+  assert.ok(Math.abs(c.toLocalMs(500_000) - 1010) < 0.001);
+  // A host that never answers does not grow the clock without bound.
+  for (let i = 0; i < 1000; i++) c.ping();
+});
+
+test("drawn frames report their latency from capture through the host clock", async () => {
+  const s = videoFixture();
+  s.decoder.close();
+  const hostClock = { toLocalMs: (us) => us / 1000 + 100, errorMs: () => 0.5 };
+  const decoder = s.createDecoder({ width: 0, height: 0, getContext: () => ({ drawImage() {} }) }, () => {}, () => {},
+    (value) => s.stats.push(value), hostClock);
+  decoder.push(s.packet(true));
+  const instance = s.instances.at(-1);
+  // Captured at stream time 0 (local 100 ms), drawn at local 112 ms.
+  s.advance(112);
+  instance.callbacks.output({ displayWidth: 1920, displayHeight: 1080, timestamp: 0, close() {} });
+  s.advance(1000);
+  await s.timers.run(1000);
+  assert.equal(s.stats.at(-1).latencyMs, 12);
+  assert.equal(s.stats.at(-1).latencyErrorMs, 0.5);
+  decoder.close();
+});
+
+test("adaptive bitrate cuts to what arrives, holds while the queue drains, and climbs back when calm", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const applied = [];
+  const rate = createRateController(12_000, (kbps, why) => applied.push({ kbps, why }));
+  let now = 0;
+  // 60 fps for `seconds` at `latency(t)` ms, with `kbps` arriving.
+  const run = (seconds, latency, kbps = 9_000) => {
+    for (let i = 0; i < seconds * 60; i++) {
+      now += 1000 / 60;
+      rate.received(kbps * 1000 / 8 / 60, now);
+      rate.observe(latency(now), now);
+    }
+  };
+  run(5, () => 15);
+  assert.deepEqual(applied, [], "a steady latency changes nothing");
+  // The link carries 8 Mbit/s: the queue grows 100 ms a second.
+  const congested = now;
+  run(2, (t) => 15 + (t - congested) / 10, 8_000);
+  assert.equal(applied.length, 1, "one cut once the queue lasted a second");
+  assert.equal(applied[0].kbps, 6_800, "to what arrives, with room to drain");
+  assert.match(applied[0].why, /8000 kbit\/s arriving/);
+  // Draining: a long queue that shrinks is left alone.
+  const peak = 15 + (now - congested) / 10;
+  const draining = now;
+  run(2, (t) => Math.max(15, peak - (t - draining) / 5), 8_000);
+  assert.equal(applied.length, 1, "no cut while the queue drains");
+  // Calm: back up in steps, but under 90% of what queued for 20 s after the cut, then to the request.
+  run(15, () => 15);
+  assert.ok(applied.length > 1 && applied.every((a, i) => i === 0 || a.kbps > applied[i - 1].kbps));
+  assert.ok(rate.current() <= 10_800, `held under what queued: ${rate.current()}`);
+  run(20, () => 15);
+  assert.equal(rate.current(), 12_000);
+});
+
+test("adaptive bitrate never goes under its floor", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const rate = createRateController(40_000, () => {});
+  let now = 0;
+  for (let i = 0; i < 30 * 60; i++) {
+    now += 1000 / 60;
+    rate.received(100, now);
+    rate.observe(15 + now / 5, now);
+  }
+  assert.equal(rate.current(), 4_000, "a tenth of the request");
+});
+
+test("adaptive bitrate ignores a busy machine: late frames that are not a queue", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const applied = [];
+  const rate = createRateController(12_000, (kbps) => applied.push(kbps));
+  let now = 0;
+  let held = [];
+  // Every 4 s nothing is delivered for 800 ms; then the held frames arrive at once.
+  for (let i = 0; i < 40 * 60; i++) {
+    now += 1000 / 60;
+    held.push(now);
+    if (now % 4000 < 800) continue;
+    for (const captured of held) {
+      rate.received(9_000 * 1000 / 8 / 60, now);
+      rate.observe(now - captured + 12, now);
+    }
+    held = [];
+  }
+  assert.deepEqual(applied, []);
+});
+
+test("adaptive bitrate ignores a single slow frame", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const applied = [];
+  const rate = createRateController(20_000, (kbps) => applied.push(kbps));
+  let now = 0;
+  for (let i = 0; i < 600; i++) {
+    now += 1000 / 60;
+    rate.observe(i % 120 === 0 ? 400 : 12, now);
+  }
+  assert.deepEqual(applied, []);
+});
+
+/** The live view over a link of `linkKbps` (a queue in front of it) for `seconds` at 60 fps:
+ * bitrate requested over time and latency, as the controller saw them. */
+function simulateLink(createRateController, requestedKbps, linkKbps, seconds, baseMs = 15) {
+  let target = requestedKbps;
+  const rate = createRateController(requestedKbps, (kbps) => { target = kbps; });
+  let queued = 0; // kbit
+  const samples = [];
+  for (let i = 1; i <= seconds * 60; i++) {
+    const now = i * 1000 / 60;
+    queued += target / 60;
+    const sent = Math.min(queued, linkKbps(now) / 60);
+    queued -= sent;
+    rate.received(sent * 1000 / 8, now);
+    const latency = baseMs + queued / linkKbps(now) * 1000;
+    rate.observe(latency, now);
+    samples.push({ now, target, latency });
+  }
+  return samples;
+}
+
+test("adaptive bitrate settles under a slower link without collapsing to the floor", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const samples = simulateLink(createRateController, 12_000, () => 8_000, 60);
+  const lowest = Math.min(...samples.map((s) => s.target));
+  assert.ok(lowest >= 3_000, `never far under the link: lowest ${lowest} kbit/s`);
+  const late = samples.filter((s) => s.now > 30_000);
+  const meanTarget = late.reduce((sum, s) => sum + s.target, 0) / late.length;
+  const sortedLatency = late.map((s) => s.latency).sort((a, b) => a - b);
+  assert.ok(meanTarget > 5_500 && meanTarget <= 8_400, `uses most of the link: ${Math.round(meanTarget)} kbit/s`);
+  assert.ok(sortedLatency[Math.floor(sortedLatency.length / 2)] < 15 + 60, "the queue stays drained");
+});
+
+test("adaptive bitrate follows a link that drops and recovers", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const link = (now) => (now > 10_000 && now < 30_000 ? 4_000 : 20_000);
+  const samples = simulateLink(createRateController, 16_000, link, 70);
+  const at = (t) => samples.find((s) => s.now >= t);
+  assert.equal(at(9_000).target, 16_000, "untouched while the link has room");
+  assert.ok(at(29_000).target <= 4_400, `about the narrow link: ${at(29_000).target}`);
+  assert.ok(at(29_000).latency < 15 + 100, `drained under the narrow link: ${at(29_000).latency}`);
+  assert.equal(at(70_000).target, 16_000, "back to the request once the link recovers");
+});
+
+test("adaptive bitrate sees a queue that formed before the first latency, through the ping delay", () => {
+  const { createRateController } = module("../apps/desktop/src/lib/rate.ts", {}, clock());
+  const applied = [];
+  const rate = createRateController(12_000, (kbps) => applied.push(kbps));
+  rate.pathDelay(1);
+  let now = 0;
+  // The first latency known is already 800 ms of queue, growing; 8 Mbit/s arrives.
+  for (let i = 0; i < 90; i++) {
+    now += 1000 / 60;
+    rate.received(8_000 * 1000 / 8 / 60, now);
+    rate.observe(800 + now / 2, now);
+  }
+  assert.equal(applied[0], 4_800, "a deep cut within 1.5 s: 0.6 of what arrives");
+});

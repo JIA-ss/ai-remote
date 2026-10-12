@@ -128,6 +128,8 @@ pub struct Capture {
     slot: Arc<Slot>,
     geometry: Option<(i32, i32, u32, u32)>,
     max_long_edge: Arc<AtomicU32>,
+    /// Whether the pointer is drawn into the picture.
+    pointer_drawn: bool,
 }
 
 impl Capture {
@@ -139,6 +141,12 @@ impl Capture {
     /// encoder can lower it when the codec it ends up with has a smaller size limit.
     pub fn max_long_edge(&self) -> Arc<AtomicU32> {
         self.max_long_edge.clone()
+    }
+
+    /// Whether the pointer is in the picture: always unless the caller asked otherwise and the
+    /// capture path can leave it out (Windows Graphics Capture, Desktop Duplication).
+    pub fn pointer_drawn(&self) -> bool {
+        self.pointer_drawn
     }
 
     /// Point coordinates for the exact monitor chosen when capture started, not Retina pixels.
@@ -226,7 +234,9 @@ pub fn geometry(index: Option<usize>) -> Option<(i32, i32, u32, u32)> {
 
 /// Starts capturing monitor `index` (`None`: the primary one) at most `max_fps` times a second.
 /// Both platforms scale on the GPU to the requested long edge before handing frames to the encoder.
-pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<Capture> {
+/// `draw_pointer: false` leaves the pointer out where the capture path allows it (see
+/// [`Capture::pointer_drawn`]); the viewer then draws it from `pointer`.
+pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointer: bool) -> Result<Capture> {
     let slot = Arc::new(Slot::default());
     let edge = Arc::new(AtomicU32::new(max_long_edge));
     #[cfg(windows)]
@@ -242,6 +252,8 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                 slot,
                 geometry,
                 max_long_edge: edge,
+                // The synthetic picture has no pointer in it.
+                pointer_drawn: false,
             });
         }
         let monitor = win::monitor(index)?;
@@ -258,6 +270,8 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                         slot,
                         geometry: geometry(index),
                         max_long_edge: edge,
+                        // Desktop Duplication does not draw it (yet).
+                        pointer_drawn: false,
                     });
                 }
                 Err(error) => {
@@ -267,7 +281,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
         }
         // The GPU path is the normal one; the CPU path keeps a live view where the GPU has no
         // video processor (a basic display driver, some virtual adapters).
-        match win::start(monitor, max_fps, edge.clone(), slot.clone()) {
+        match win::start(monitor, max_fps, edge.clone(), slot.clone(), draw_pointer) {
             Ok(native) => Ok(Capture {
                 control: None,
                 native: Some(native),
@@ -276,6 +290,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                 slot,
                 geometry: geometry(index),
                 max_long_edge: edge,
+                pointer_drawn: draw_pointer,
             }),
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "GPU screen capture unavailable; using the CPU path");
@@ -288,19 +303,22 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                     slot,
                     geometry: geometry(index),
                     max_long_edge: edge,
+                    pointer_drawn: true,
                 })
             }
         }
     }
     #[cfg(target_os = "macos")]
     {
+        // ScreenCaptureKit draws the pointer; leaving it out waits for a macOS pointer reader.
+        let _ = draw_pointer;
         let native = mac::start(index, max_fps, max_long_edge, slot.clone())?;
         let geometry = Some(native.geometry());
-        Ok(Capture { native: Some(native), slot, geometry, max_long_edge: edge })
+        Ok(Capture { native: Some(native), slot, geometry, max_long_edge: edge, pointer_drawn: true })
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = (index, max_fps, max_long_edge, slot);
+        let _ = (index, max_fps, max_long_edge, slot, draw_pointer);
         Err(anyhow!("live view is not available on this platform yet"))
     }
 }
@@ -394,7 +412,7 @@ mod tests {
     #[test]
     #[ignore]
     fn capture_and_encode_the_screen() {
-        let capture = start(None, 30, 1920).unwrap();
+        let capture = start(None, 30, 1920, true).unwrap();
         let slot = capture.slot();
         let mut enc = FrameEncoder::new(30, 6_000_000, 1920).unwrap();
         let mut dec = openh264::decoder::Decoder::new().unwrap();

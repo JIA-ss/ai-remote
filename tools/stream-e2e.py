@@ -36,10 +36,19 @@ parser.add_argument("--skip-cli", action="store_true", help="only the desktop me
 parser.add_argument("--pattern", metavar="WxH",
                     help="the host streams a synthetic scrolling desktop of this size instead of the screen "
                          "(AI_REMOTE_TEST_PATTERN; Windows hosts): repeatable, full motion, no screen read")
+parser.add_argument("--link-mbps", type=float,
+                    help="the controller reads live video no faster than this (AI_REMOTE_TEST_LINK_KBPS): a slow "
+                         "network, with QUIC's windows filling as on one")
+parser.add_argument("--only", help="comma-separated substrings: run only the CLI configurations whose label matches")
+parser.add_argument("--pointer", action="store_true",
+                    help="the CLI asks for the pointer separately, as the desktop app does (counts its messages)")
 parser.add_argument("--stress", action="store_true",
                     help="a larger animated window of random noise, so the stream runs at its bitrate cap")
 options = parser.parse_args()
 options.out.mkdir(parents=True, exist_ok=True)
+if options.link_mbps:
+    # Every controller process started from here (the agent, by `pair`) inherits it.
+    os.environ["AI_REMOTE_TEST_LINK_KBPS"] = str(int(options.link_mbps * 1000))
 
 # (label, max_fps, max_long_edge, bitrate_kbps, codecs)
 CONFIGS = [
@@ -92,7 +101,8 @@ def wait_for(check, what, timeout=30):
     raise TimeoutError(what)
 
 
-report = {"platform": sys.platform, "seconds": options.seconds, "animated": options.animate, "pattern": options.pattern, "results": []}
+report = {"platform": sys.platform, "seconds": options.seconds, "animated": options.animate, "pattern": options.pattern,
+          "link_mbps": options.link_mbps, "results": []}
 with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True) as tmp:
     base = Path(tmp)
     host_home, ctl_home = base / "host", base / "controller"
@@ -123,9 +133,13 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
                                 "Add-Type -Name W -Namespace U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr a, int x, int y, int cx, int cy, uint f);';"
                                 f"Get-Process | Where-Object {{ $_.MainWindowTitle -eq '{title}' }} | ForEach-Object {{ [U.W]::SetWindowPos($_.MainWindowHandle, [System.IntPtr](-1), 0, 0, 0, 0, 3) }}"],
                                capture_output=True, timeout=30)
-        for label, fps, edge, kbps, codecs in [] if options.skip_cli else CONFIGS:
+        only = [o.strip() for o in options.only.split(",")] if options.only else None
+        configs = [c for c in CONFIGS if not only or any(o in c[0] for o in only)]
+        for label, fps, edge, kbps, codecs in [] if options.skip_cli else configs:
             args = [options.cli, "--home", ctl_home, "--json", "view", "--host", "self", "--seconds", options.seconds,
                     "--max-fps", fps, "--max-long-edge", edge, "--bitrate-kbps", kbps]
+            if options.pointer:
+                args += ["--pointer"]
             if codecs:
                 args += ["--codecs", codecs]
             try:
@@ -140,7 +154,11 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
             g = v["gap_ms"]
             print(f"{label:28} {v['codec']:5} {v['width']}x{v['height']:<5} {v['fps']:6.1f} fps "
                   f"{v['kbit_per_s'] / 1000:7.1f} Mbit/s  first {v['first_frame_ms'] or 0:6.0f} ms  "
-                  f"gap p50 {g['p50'] or 0:5.1f} p95 {g['p95'] or 0:5.1f} max {g['max'] or 0:6.1f} ms")
+                  f"gap p50 {g['p50'] or 0:5.1f} p95 {g['p95'] or 0:5.1f} max {g['max'] or 0:6.1f} ms  "
+                  + (f"latency p50 {l['p50']:5.1f} p95 {l['p95']:5.1f} ms (+/-{l['error']:.1f})"
+                     if (l := v.get("latency_ms") or {}).get("p50") is not None else "latency n/a")
+                  + (f"  pointer {p['positions']} positions {p['shapes']} shapes {p['bytes']} B"
+                     if (p := v.get("pointer") or {}).get("separate") else ""))
         if options.desktop:
             # The real desktop app (debug build: `cd apps/desktop && npx tauri build --debug --no-bundle`)
             # off screen, on the session page, once per quality; it reports its own receiver metrics.
@@ -154,13 +172,21 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
                                    errors="replace", env=env, timeout=options.seconds + 90)
                 smoke = next((json.loads(l.split("] ", 1)[1]) for l in p.stderr.splitlines() if l.startswith("[page smoke]")), {})
                 errors = [l for l in p.stderr.splitlines() if l.startswith("[page error]")]
-                video = [l for l in p.stderr.splitlines() if "Live video:" in l]
+                # The page's per-second metrics (debug smoke runs): a latency / bitrate timeline.
+                timeline = [json.loads(l.split("Live video: stats ", 1)[1]) for l in p.stderr.splitlines()
+                            if "Live video: stats " in l]
+                video = [l for l in p.stderr.splitlines() if "Live video:" in l and "Live video: stats " not in l]
                 (options.out / f"desktop-{quality}.log").write_text(p.stderr, encoding="utf-8")
-                report.setdefault("desktop", []).append({"quality": quality, **smoke, "page_errors": errors, "video_log": video})
+                report.setdefault("desktop", []).append({"quality": quality, **smoke, "page_errors": errors,
+                                                         "video_log": video, "timeline": timeline})
                 print(f"desktop {quality:9} {smoke.get('metrics')} | {smoke.get('metricsDetail')} | canvases {smoke.get('canvases')}"
                       + (f" | {len(errors)} page errors: {errors[0][:160]}" if errors else ""))
-                for line in video[:6]:
+                for line in video[:12]:
                     print(f"    {line[:200]}")
+                if timeline:
+                    print("    t(s) Mbit/s latency(ms) target(Mbit/s)  " + "  ".join(
+                        f"{s['t'] / 1000:.0f}:{s['kbps'] / 1000:.1f}/{s['latency'] if s['latency'] is not None else '-'}"
+                        f"/{s['target'] / 1000:.1f}" for s in timeline))
     finally:
         if browser:
             # The browser starts helper processes; stop the whole tree.

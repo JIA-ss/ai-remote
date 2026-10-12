@@ -27,13 +27,13 @@ function module(path, dependencies = {}, globals = {}) {
   return exports;
 }
 
-function apiFixture() {
+function apiFixture(reply = { screen: { x: 0, y: 0, width: 1600, height: 1000 } }) {
   const channels = [], requests = [], frames = [], ended = [];
   class Channel { constructor() { channels.push(this); } }
   const commands = {
     async watchScreen(host, request, channel) {
       requests.push({ host, request, channel });
-      return { status: "ok", data: [42, { screen: { x: 0, y: 0, width: 1600, height: 1000 } }] };
+      return { status: "ok", data: [42, reply] };
     },
     async requestKeyframe() {}, async stopScreen() {},
   };
@@ -41,7 +41,7 @@ function apiFixture() {
     "@tauri-apps/api/core": { Channel }, "../bindings": { commands }, "./demo": { demoBackend: { kind: "demo" } },
   }, { window: { __TAURI_INTERNALS__: {} } });
   return {
-    channels, requests, frames, ended,
+    channels, requests, frames, ended, api,
     start: () => api.watchScreen("test-host", (frame) => frames.push(frame), {
       maxFps: 60, maxLongEdge: 1920, bitrateKbps: 10000, onEnded: (reason) => ended.push(reason),
     }),
@@ -79,6 +79,32 @@ test("native request serializes only profile fields, excluding the onEnded callb
   assert.equal(s.requests[0].host, "test-host");
   assert.deepEqual(plain(s.requests[0].request), { monitor: null, max_fps: 60, max_long_edge: 1920, bitrate_kbps: 10000 });
   assert.ok(!("onEnded" in s.requests[0].request));
+});
+
+test("the pointer is asked for, and its positions and shapes are parsed apart from video", async () => {
+  const s = apiFixture({ screen: { x: 0, y: 0, width: 1600, height: 1000 }, cursor: "client" });
+  const positions = [], shapes = [];
+  const view = await s.api.watchScreen("test-host", (frame) => s.frames.push(frame), {
+    onPointer: (at) => positions.push(at), onPointerShape: (shape) => shapes.push(shape),
+  });
+  assert.equal(s.requests[0].request.cursor, "client");
+  assert.equal(view.pointer, true);
+  const header = (kind, w, h, body) => Uint8Array.from([kind, 0, 0, w, 0, h, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, body.length, ...body]);
+  // A 2x1 shape: id 7, hot spot (1, 0), BGRA pixels become RGBA.
+  s.channels[0].onmessage(header(5, 2, 1, [0, 0, 0, 7, 0, 1, 0, 0, 10, 20, 30, 255, 40, 50, 60, 0]).buffer);
+  s.channels[0].onmessage(header(4, 0, 0, [...new TextEncoder().encode('{"x":5,"y":6,"visible":true,"shape":7}')]).buffer);
+  // A shape whose pixels do not match its size is dropped.
+  s.channels[0].onmessage(header(5, 3, 3, [0, 0, 0, 8, 0, 0, 0, 0, 1, 2, 3, 4]).buffer);
+  assert.equal(s.frames.length, 0, "pointer messages never reach the video decoder");
+  assert.deepEqual(plain(positions), [{ x: 5, y: 6, visible: true, shape: 7 }]);
+  assert.equal(shapes.length, 1);
+  assert.deepEqual([shapes[0].id, shapes[0].width, shapes[0].height, shapes[0].hotX, shapes[0].hotY], [7, 2, 1, 1, 0]);
+  assert.deepEqual([...shapes[0].rgba], [30, 20, 10, 255, 60, 50, 40, 0]);
+  // An older host does not answer `cursor`: the pointer stays in the picture.
+  const old = apiFixture();
+  const oldView = await old.api.watchScreen("test-host", () => {}, { onPointer: () => {} });
+  assert.equal(oldView.pointer, false);
 });
 
 const jsx = (type, props, key) => ({ type, props, key });
@@ -129,6 +155,10 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/stream-quality": quality,
     "../lib/video": { createDecoder },
     "../lib/codec": { preferredCodecs: () => ["hevc", "h264"] },
+    "../lib/clock": { createHostClock: () => ({ pong() {}, ping: () => 0, toLocalMs: () => null, errorMs: () => null }),
+      startPinging: () => () => {} },
+    "../lib/pointer": { createPointerLayer: () => ({ shape() {}, move() {}, hide() {} }) },
+    "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
     "./Decide": { DecisionCard: () => {} },
     "./RemoteInput": { RemoteInput },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
@@ -138,7 +168,7 @@ function sessionModule(hooks, api, createDecoder) {
     "./util": { agentLabel: () => "Test agent", clock: () => "12:00", countdown: () => "1:00", cx: (...values) => values.filter(Boolean).join(" "),
       relayNote: () => null,
       useNow: () => 1000, useSize: () => [{ current: null }, { w: 1000, h: 700 }] },
-  });
+  }, { localStorage: { getItem: () => null }, performance });
   return { ...exported, RemoteInput };
 }
 
@@ -158,7 +188,7 @@ function streamFixture(kind = "tauri") {
     watchScreen(host, onFrame, options) {
       let resolve, reject;
       const promise = new Promise((done, failed) => { resolve = done; reject = failed; });
-      const view = { stops: 0, requestKeyframe() {}, stop() { this.stops++; }, screen: { x: 0, y: 0, width: 1600, height: 1000 } };
+      const view = { stops: 0, requestKeyframe() {}, ping() {}, setBitrate() {}, stop() { this.stops++; }, screen: { x: 0, y: 0, width: 1600, height: 1000 } };
       views.push({ host, onFrame, options, resolve, reject, view });
       return promise;
     },

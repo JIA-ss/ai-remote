@@ -220,7 +220,7 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
   必须在消费端节流：在采集端丢帧会丢掉"静止前的最后一次变化"，画面会停在旧帧。帧率另以显示器刷新率封顶
   （`capture::refresh_hz`），编码器按实际帧率分配码率。
 - **码控改 LowDelayVBR（峰值=目标码率）**：4K60/40 Mbps 下（只算非关键帧），CBR 静止画面 19~28 Mbps、AV1 滚动画面
-  超到 44 Mbps；LowDelayVBR 为 12~19 / 17~20 Mbps，编码耗时不变。**画质没有做客观对比（PSNR/VMAF），待补。**
+  超到 44 Mbps；LowDelayVBR 为 12~19 / 17~20 Mbps，编码耗时不变。（后来为了运行中改码率又改回 CBR，见 `encode/win.rs` 的 `rate_control`；画质对比见下文。）
 
 ### 协议变化（`screen/1`，向后兼容）
 
@@ -228,6 +228,9 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 - 回复新增 `codec`（起始编码）。帧头 `flags` 第 0 位是关键帧，**第 1~2 位是编码**（0 H.264、1 HEVC、2 AV1）；
   旧观看端永远收不到非 0 的编码（它们不发 `codecs`）。编码可能在关键帧处改变（硬件失败回退软件 H.264）。
 - 上限：帧率 240、长边 8192、码率 500 Mbps（旧被控端仍按 60 / 3840 / 50 Mbps 截断）。
+- 观看端控制行（都可选，旧被控端忽略）：`{"ping":n}` → kind-3 回流时钟；`{"bitrate_kbps":n}` 运行中改码率
+  （≤ 请求值）。请求 `"cursor":"client"` → 回复带 `"cursor":"client"` 时另发 kind-4 光标位置、kind-5 光标形状。
+  格式以 `protocol.rs` 的模块注释为准。
 
 ### 桌面端（Tauri，Windows + Mac 共用）
 
@@ -235,7 +238,82 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
   原因见"码率与丢帧"），会话请求时带上。
 - `video.ts`：按帧头编码选 codec 字符串；**配置时必须带 codedWidth/codedHeight**——不带的话 Chromium 的 HEVC 路径
   把显示尺寸报成 1280×720（2026-10-12 实测）。编码或尺寸变化时重建解码器。
+- 延迟、自适应码率、光标叠加见下面"延迟、自适应码率、画质、光标"。
 - 画质档：均衡 1080p60/12 Mbps（默认）、流畅 1440p120/25 Mbps、清晰 4K60/40 Mbps、**极致 原生/240 fps/150 Mbps**、低带宽。
+
+### 延迟、自适应码率、画质、光标（2026-10-12 第三轮）
+
+**延迟指标**（被控端在 `5ff8ff5`，观看端本轮）：帧头 `ts_us` 是按流时钟的采集时间；观看端发 `{"ping":n}`，被控端回
+kind-3 带流时钟。桌面端 `lib/clock.ts` 取 60 s 内往返最短的一次做映射（NTP 规则，误差 ≤ 半个往返），会话页指标显示
+"采集后 N 毫秒显示（±误差）"（解码出帧绘制时刻 − 采集时刻，中位数/秒）。命令行 `ai-remote view` 报"采集→到达"分位数。
+
+**自适应码率**（`apps/desktop/src/lib/rate.ts`，被控端 `{"bitrate_kbps":n}` 在 `5ff8ff5`）：
+- 排队信号：延迟比 60 s 内最低值高出的部分。每 0.5 s 评估一次，取这 0.5 s 内**最快 1/5 帧**的延迟（网络排队会推迟
+  每一帧，机器忙造成的卡顿只推迟部分帧）。基线另以"半个最短 ping + 80 ms"封顶：慢链路上起流时第一次测到延迟前
+  队列就已形成。
+- 降：排队 > 50 ms 持续 1 s（两次评估）且没在缩短，降到"过去 1 s 实际到达速率 × 0.85"（排队 > 250 ms 用 × 0.6），
+  一次最多降到 × 0.7，每秒最多一次；**队列在缩短时不再降**。到达速率不到目标一半且排队 > 250 ms 时不等第二次评估。
+  排队很浅、到达又远低于目标时不动（静止画面后的突发、解码忙，不是码率的问题）。
+- 升：排队 < 15 ms 持续 3 s 升 × 1.15，连续两次之后每次 × 1.3；降速后 20 s 内不超过"引发排队的码率 × 0.9"，之后
+  再试探（稳定链路上大约每 20 s 一次短暂排队）。下限是请求的 1/10、至少 500 kbit/s。
+- 测试工具：controller agent 的 `AI_REMOTE_TEST_LINK_KBPS`（`stream-e2e.py --link-mbps`）按给定速率读 QUIC 流，
+  QUIC 窗口会像真实慢链路一样填满；桌面端 smoke 模式每秒在日志里写一行 `Live video: stats {...}`，脚本打印时间线。
+- 单元测试含闭环仿真（固定链路、链路骤降再恢复、机器卡顿、起流前已排队），`tools/desktop-state.test.mjs`。
+
+实测（本机，被控端合成图案 1920×1080 整屏滚动、HEVC、均衡档请求 12 Mbit/s，桌面端调试版；**同时有其他会话在编译，
+CPU 占满**，所以有与网络无关的卡顿；每组单次运行 45 s）：
+
+| 场景 | 控制器 | 结果 |
+|---|---|---|
+| 不限速 | 无（命令行，固定 12 Mbit/s） | 54 fps，到达延迟 p50 14 ms / p95 35 ms，最大帧间隔 240 ms |
+| 限速 8 Mbit/s | 无（命令行） | 32 fps，到达延迟 p50 1.2 s / p95 2.0 s |
+| 限速 8 Mbit/s | 旧版（每秒排队就 × 0.7） | 28 s 内从 12 降到下限 1.2 Mbit/s 并停在那里 |
+| 限速 8 Mbit/s | 本版 | 起流 1.5 s 内首次降速、约 6 s 排空；15 s 之后平均接收 5.2 Mbit/s、延迟中位 18 ms、p95 216 ms（试探上探时的短暂排队）、58.3 fps |
+| 不限速 | 本版 | 45 s 内一次也没降，延迟中位 13.5 ms、最大 20 ms |
+
+限速工具实际只能过约 7 Mbit/s（降速日志里的到达速率 6.4~7.0）。另外 NVENC HEVC 在这个图案上 CBR 实际产出约为目标
+的 0.75~0.85。**没测的**：真实网络（Wi-Fi、蜂窝、跨洲中继）、丢包、链路中途变化（只在仿真里测了）、4K/5K 档。
+
+**画质客观对比**（`encoded_quality` 测试 + `tools/stream-quality.py`）：合成的类桌面画面（像素级伪文字、窗口标题栏、
+带颗粒的渐变）每帧整屏滚动 7 行，原生尺寸，按 60 fps 真实节奏喂 300 帧，NVENC（RTX 4070 Ti，驱动 581.57）经 Media
+Foundation；参考帧用 ffmpeg 从同一张源图按同样的滚动位置重建并转 BT.709 limited 4:2:0（与 GPU 转换器的色度插值
+不同，这部分误差各行相同，只适合横向比较）。已逐帧确认对齐（错一帧 PSNR 掉到 10 dB）。每组单次运行：
+
+| 尺寸 | 请求 | H.264（实际 / PSNR-Y / SSIM-Y） | HEVC | AV1 |
+|---|---|---|---|---|
+| 1920×1080 | 6 Mbit/s | 5.0 / 27.95 dB / 0.905 | 4.9 / 33.40 / 0.953 | 5.0 / 35.67 / 0.960 |
+| 1920×1080 | 12 Mbit/s | 10.4 / 36.36 / 0.974 | 10.2 / 39.40 / 0.984 | 10.5 / 42.93 / 0.991 |
+| 3840×2160 | 20 Mbit/s | 15.1 / 28.93 / 0.929 | 14.6 / 34.23 / 0.962 | **42.8 / 16.03 / 0.739** |
+| 3840×2160 | 40 Mbit/s | 32.5 / 36.74 / 0.981 | 34.4 / 39.86 / 0.988 | 34.0 / 41.72 / 0.993 |
+
+（"实际"是非关键帧的码率，Mbit/s。）结论：
+- 同码率 AV1 > HEVC > H.264：1080p 上 HEVC 比 H.264 高 3~5.5 dB，AV1 再高 2.3~3.5 dB。
+- **AV1 在 4K/20 Mbit/s 失灵**：码率超到 2 倍多，关键帧就只有 20.5 dB、之后逐帧降到 16 dB（画面糊成一片）。这和
+  之前"NVENC 经 MF 的 AV1 码控不可靠"一致，所以"HEVC 优先 + 码率守卫（超 1.2 倍换编码）"的选择是对的；码率守卫
+  会在 2 s 内把这种流换走。
+- **CBR 与 LowDelayVBR 在这个内容上逐字节相同**（H.264/HEVC 8 对中 7 对 `cmp` 逐字节一致，第 8 对字节数相同、其 VBR 文件后来被调试运行覆盖没能 cmp；AV1 的 4 对大小相差 ≤0.6%）：整屏运动时
+  预算吃满，峰值=均值的 VBR 就是 CBR。所以为了自适应码率改用 CBR，在难画面上不损失画质；代价只在简单画面上多花码率
+  （见上文的 19~28 vs 12~19 Mbit/s）。
+- VMAF 在这类合成内容上饱和（H.264 6 Mbit/s 28 dB 的流 VMAF 99.9），不能用来比较，脚本默认仍算，`--no-vmaf` 跳过。
+- **没测的**：真实桌面内容（文字、视频、游戏）、缩放档（5K→4K/1080p）、AMD/Intel 编码器、主观画质。
+
+```sh
+AR_RC=both cargo test -p ar-host --release --lib encoded_quality -- --ignored --nocapture --test-threads=1
+python tools/stream-quality.py --no-vmaf
+```
+
+**光标本地绘制**（`stream/pointer.rs`、`protocol.rs` 的 `PointerFeed`，桌面端 `lib/pointer.ts`）：
+- 观看端请求带 `"cursor":"client"`；Windows 被控端走 WGC 时 `SetIsCursorCaptureEnabled(false)`（DDA 和测试图案本来就不画），
+  回复 `"cursor":"client"`，然后按帧率（30~120 Hz）查 `GetCursorInfo`，变了才发 kind-4 位置（JSON，相对被串流显示器，
+  单位同回复的 `screen`）；新形状先发 kind-5（`GetIconInfo` + `GetDIBits` 转直通 alpha 的 BGRA；单色光标的反色像素画成
+  黑色加白边）。CPU 回退路径（`windows-capture`）和 macOS 仍把光标画进画面、不回 `cursor`，观看端照旧。
+- 兼容：旧被控端拒绝未知字段 → controller agent 去掉 `cursor` 重试（`without_unknown_field`）；只有请求了的观看端才会
+  收到 kind 4/5，命令行默认不请求（`ai-remote view --pointer` 请求并计数），iOS 未接入。
+- 桌面端：叠加一个 `pointer-events: none` 的 canvas，位置变化只改 CSS transform（不经过 React），形状按"CSS 像素 / 屏幕像素"
+  缩放；形状 0 或没收到形状时画一个默认箭头。
+- 实测（本机，单次）：请求后收到 1 个位置 + 1 个形状（48×48，9.3 KB）；桌面端 smoke 收到形状、60 fps、无页面错误。
+  **没测的**：移动鼠标时省下多少编码帧/码率（要移动这台电脑上正在用的鼠标，没做）、多显示器 / 不同 DPI 下的位置、
+  动画光标（只取第一帧）、手动操控时本地光标和远端光标同时显示的观感。
 
 ### 踩过的坑（都已修，别再踩）
 
@@ -260,11 +338,11 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
       （随机令牌、只听 127.0.0.1）或 WebView2 SharedBuffer。
 - [x] 桌面端丢帧：定位并修复（见"码率与丢帧"），压测 12 次 0 丢帧。
 - [x] AV1 码率超标：HEVC 优先 + 码率守卫（见"码率与丢帧"）。直接用 NVENC SDK 的 AV1 也许码控正常，未试。
-- [ ] 画质客观对比：CBR vs LowDelayVBR、三种编码同码率的 PSNR/VMAF（可用 ffmpeg 解 `target/stream-bench/*.bin`）。
-- [ ] 端到端延迟指标：主机时间戳 + 时钟偏移回显，在会话界面显示"采集→显示"延迟。
-- [ ] 自适应码率：写帧阻塞（背压）时降码率/分辨率，恢复后回升；现在只有固定档位。
+- [x] 画质客观对比：见"延迟、自适应码率、画质、光标"。真实桌面内容和缩放档还没测。
+- [x] 端到端延迟指标：会话页显示"采集后 N 毫秒显示（±误差）"。
+- [x] 自适应码率（只调码率，不调分辨率/帧率）。下一步：真实网络实测；码率很低时改降分辨率。
 - [ ] 调 NVENC 参数：`CODECAPI_AVEncCommonQualityVsSpeed`、VBV（现为 2 帧）、文字清晰度（4:4:4 解码端普遍不支持，暂不做）。
-- [ ] 光标改为客户端绘制（现在合成进画面，光标移动就要整帧编码）。
+- [x] 光标改为客户端绘制（Windows 被控端 + 桌面端）。待做：macOS 被控端、iOS 观看端、移动鼠标时的收益实测。
 
 **Mac 被控端（需要在 Mac 上做）** — `crates/ar-host/src/stream/encode/mac.rs`、`capture/mac.rs`
 - [ ] `capture::refresh_hz` 在 Mac 上返回 `None`（帧率只受请求限制）；用 CGDisplayMode 的刷新率补上。
@@ -295,6 +373,12 @@ node tools/webcodecs-decode-check.mjs
 # 端到端：隔离 host/controller + 真实 QUIC；--desktop 再测桌面端（先 cd apps/desktop && npx tauri build --debug --no-bundle）
 python tools/stream-e2e.py --animate --desktop target/debug/ai-remote-desktop.exe
 python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-desktop.exe   # 高码率、可重复
+# 自适应码率：限速 8 Mbit/s，桌面端每秒一行指标（日志里的 "Live video: stats"）
+python tools/stream-e2e.py --pattern 1920x1080 --link-mbps 8 --skip-cli --qualities balanced --seconds 45 --desktop target/debug/ai-remote-desktop.exe
+# 画质：PSNR/SSIM（VMAF 在合成内容上饱和）
+AR_RC=both cargo test -p ar-host --release --lib encoded_quality -- --ignored --nocapture --test-threads=1 && python tools/stream-quality.py --no-vmaf
+# 光标单独发送：命令行计数 kind 4/5
+python tools/stream-e2e.py --pattern 1920x1080 --pointer --only balanced
 # 旧的真实屏幕采集 + 编码（会读当前屏幕，只在内存里）
 cargo test -p ar-host --release --lib capture_and_encode_the_screen -- --ignored --nocapture
 ```
@@ -351,7 +435,7 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
 ### 下一步
 
 - [ ] 本机验证桌面切换后的恢复：锁屏→解锁、改分辨率、独占全屏游戏进出，看重建要多久、有没有漏帧或黑帧。
-- [ ] 光标合成（或者和"光标改为客户端绘制"一起做）。
+- [ ] 光标：观看端请求 `cursor:"client"` 时 DDA 已经可用（光标单独发）；不请求的观看端在 DDA 下仍看不到光标。
 - [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。
 - [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关。
 

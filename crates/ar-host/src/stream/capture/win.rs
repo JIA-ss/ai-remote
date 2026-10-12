@@ -338,6 +338,7 @@ pub(super) fn start(
     max_fps: u32,
     max_long_edge: Arc<AtomicU32>,
     slot: Arc<Slot>,
+    draw_pointer: bool,
 ) -> Result<NativeCapture> {
     // SAFETY: initializes WinRT for this thread (an already-initialized thread is fine).
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
@@ -413,7 +414,7 @@ pub(super) fn start(
         })
     };
     let token = pool.FrameArrived(&handler)?;
-    let _ = session.SetIsCursorCaptureEnabled(true);
+    let _ = session.SetIsCursorCaptureEnabled(draw_pointer);
     // No yellow border on the person's screen (Windows 11; older builds ignore it).
     let _ = session.SetIsBorderRequired(false);
     // Without this Windows paces capture at 60 Hz, and a minimum interval of exactly 1/fps rounds
@@ -816,6 +817,130 @@ mod bench {
             assert!(out.is_some_and(|f| f.keyframe && f.codec == codec), "round {round}: no hardware keyframe");
         }
         assert!(slowest < Duration::from_secs(1), "an encoder took {slowest:?} to start");
+    }
+
+    /// An encoder's output, kept for scoring.
+    #[derive(Default)]
+    struct Sink {
+        stream: Vec<u8>,
+        outputs: u32,
+        keyframes: u32,
+        actual: Option<Codec>,
+        delta_bytes: usize,
+        deltas: usize,
+    }
+
+    impl Sink {
+        fn take(&mut self, out: Encoded) {
+            self.actual = Some(out.codec);
+            self.outputs += 1;
+            self.keyframes += u32::from(out.keyframe);
+            if !out.keyframe {
+                self.delta_bytes += out.data.len();
+                self.deltas += 1;
+            }
+            self.stream.extend_from_slice(&out.data);
+        }
+    }
+
+    /// Streams for the objective quality comparison (`tools/stream-quality.py` scores them with
+    /// ffmpeg: PSNR, SSIM, VMAF). The scrolling desktop-like picture at its native size, fed at its
+    /// real frame rate (rate control works from timestamps), for every codec and bitrate; with
+    /// `AR_RC=both` also in low-delay VBR, to see what the CBR that adaptive bitrate needs costs.
+    /// Writes `target/stream-quality/`: the tall source picture once per size (`ref-WxH.bgra`, the
+    /// reference: frame n shows its rows from `scroll_top(7 n)`), one elementary stream per case
+    /// and `cases.json`. `AR_SIZES` (`1920x1080,3840x2160`), `AR_CODECS`, `AR_FPS` (60),
+    /// `AR_FRAMES` (300), `AR_KBPS` (per size: 1080p 6000,12000; larger 20000,40000).
+    #[test]
+    #[ignore]
+    fn encoded_quality() {
+        use std::sync::atomic::Ordering;
+
+        use crate::stream::encode::LOW_DELAY_VBR_FOR_TESTS;
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "warn")).with_test_writer().try_init();
+        let gpu =
+            Gpu::for_monitor(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) }).unwrap();
+        let fps: u32 = env("AR_FPS", "60").parse().unwrap();
+        let frames: u32 = env("AR_FRAMES", "300").parse().unwrap();
+        let modes: &[bool] = match env("AR_RC", "cbr").as_str() {
+            "both" => &[false, true],
+            "vbr" => &[true],
+            _ => &[false],
+        };
+        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/stream-quality");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let mut cases = Vec::new();
+        for size in env("AR_SIZES", "1920x1080,3840x2160").split(',') {
+            let (w, h) =
+                size.split_once('x').map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap())).unwrap();
+            let source = desktop_like(w, h * 2);
+            std::fs::write(out_dir.join(format!("ref-{w}x{h}.bgra")), &source).unwrap();
+            let tall = bgra_texture(&gpu, w, h * 2, Some(&source)).unwrap();
+            let screen = bgra_texture(&gpu, w, h, None).unwrap();
+            let rates = std::env::var("AR_KBPS")
+                .unwrap_or_else(|_| if w.max(h) <= 1920 { "6000,12000" } else { "20000,40000" }.into());
+            for &vbr in modes {
+                LOW_DELAY_VBR_FOR_TESTS.store(vbr, Ordering::Relaxed);
+                for codec in env("AR_CODECS", "h264,hevc,av1").split(',').filter_map(Codec::parse) {
+                    for kbps in rates.split(',').map(|k| k.parse::<u32>().unwrap()) {
+                        let mut converter = Converter::new(gpu.clone(), (w, h), (w, h), fps).unwrap();
+                        let mut encoder = FrameEncoder::new(fps, kbps * 1000, w.max(h)).unwrap().with_codecs(&[codec]);
+                        let mut sink = Sink::default();
+                        let start = Instant::now();
+                        for f in 0..frames {
+                            let top = scroll_top(f * 7, h);
+                            let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
+                            unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
+                            let frame = converter.convert(&screen).unwrap().unwrap();
+                            let raw = super::super::Raw {
+                                bgra: Vec::new(),
+                                width: w,
+                                height: h,
+                                captured: Instant::now(),
+                                gpu: Some(frame),
+                            };
+                            let mut ready = encoder.encode_raw(&raw).unwrap();
+                            while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
+                                sink.take(out);
+                            }
+                            let due = start + Duration::from_secs_f64(f64::from(f + 1) / f64::from(fps));
+                            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                        }
+                        let drain = Instant::now();
+                        while sink.outputs < frames && drain.elapsed() < Duration::from_millis(500) {
+                            match encoder.poll().unwrap() {
+                                Some(out) => sink.take(out),
+                                None => std::thread::sleep(Duration::from_millis(2)),
+                            }
+                        }
+                        let Sink { stream, outputs, keyframes, actual, delta_bytes, deltas } = sink;
+                        let actual = actual.map(|c| c.name()).unwrap_or("none");
+                        let rc = if vbr { "vbr" } else { "cbr" };
+                        let ext = match actual {
+                            "hevc" => "hevc",
+                            "av1" => "obu",
+                            _ => "h264",
+                        };
+                        let file = format!("{actual}-{w}x{h}-{kbps}-{rc}.{ext}");
+                        std::fs::write(out_dir.join(&file), &stream).unwrap();
+                        let mbps = delta_bytes as f64 * 8.0 * f64::from(fps) / deltas.max(1) as f64 / 1e6;
+                        println!(
+                            "{w}x{h} {actual} {rc} {kbps} kbit/s: {outputs}/{frames} frames, {keyframes} keyframes, \
+                             non-key {mbps:.1} Mbit/s, {} bytes -> {file}",
+                            stream.len()
+                        );
+                        cases.push(serde_json::json!({
+                            "file": file, "codec": actual, "width": w, "height": h, "fps": fps, "kbps": kbps,
+                            "rate_control": rc, "frames": frames, "outputs": outputs, "keyframes": keyframes,
+                            "bytes": stream.len(), "delta_mbps": mbps, "backend": encoder.backend_name(),
+                            "reference": format!("ref-{w}x{h}.bgra"), "scroll_rows": 7,
+                        }));
+                    }
+                }
+            }
+        }
+        LOW_DELAY_VBR_FOR_TESTS.store(false, Ordering::Relaxed);
+        std::fs::write(out_dir.join("cases.json"), serde_json::to_string_pretty(&cases).unwrap()).unwrap();
     }
 
     #[test]

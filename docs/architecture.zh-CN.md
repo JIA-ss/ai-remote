@@ -116,12 +116,15 @@ flowchart LR
   改变设备自身权限的操作在回复发出之后才执行，因为授权一变，传输层就会切断该设备的连接。活动流的 hello 行带有
   该设备当前的级别。
 - **ALPN `app/ai-remote/screen/1`。** 给控制端前的人看的被控端实时画面（桌面应用的会话画面；排查时用
-  `ai-remote view`）。Windows Graphics Capture 只在屏幕变化时才给出一帧，最新的一帧放在只有一格的缓冲里
-  （网络慢时在编码前替换旧帧，编码输出最多等待一帧）。macOS 13+ 使用 ScreenCaptureKit 原生事件采集和
-  GPU 缩放，保留 IOSurface 并优先使用经查询确认的 VideoToolbox 硬件 H.264；失败时回退 OpenH264。
-  Windows 当前保留 Graphics Capture + OpenH264。桌面应用用 WebCodecs 解码，iPhone 用 VideoToolbox；
-  静止画面也能重新编码关键帧恢复解码。流上是 18 字节帧头加 H.264 Annex B，任何有权限级别的设备都能看，
-  观看会写入审计（`view_start`、`view_end`）。画质配置和实测范围见[性能说明](stream-performance.md)。
+  `ai-remote view`）。采集只在屏幕变化时给出一帧，最新的一帧放在只有一格的缓冲里，网络慢时在编码前就跳过旧帧。
+  Windows：Windows Graphics Capture 跑在被控端自建的 D3D11 设备上，GPU 缩放并转 NV12，Media Foundation
+  硬件编码（H.264、HEVC、AV1），OpenH264 兜底。macOS 13+：ScreenCaptureKit 加 VideoToolbox H.264。
+  观看端列出自己能硬解的编码（桌面端 WebCodecs，iPhone VideoToolbox），被控端选第一个能编的。每帧是 18 字节
+  帧头（类型、标志位含关键帧和编码、尺寸、按流时钟的采集时间戳、长度）加编码数据。观看端可以在自己那半条流上写
+  控制行：请求关键帧、ping（被控端回流时钟，观看端据此显示"采集→显示"延迟）、改码率（桌面端按这个延迟随网络
+  自适应）、请求单独发送光标（`"cursor":"client"`：发位置和形状消息，不再画进画面；目前只有 Windows 被控端）。
+  任何有权限级别的设备都能看，观看会写入审计（`view_start`、`view_end`）。线上格式见
+  `crates/ar-host/src/stream/protocol.rs`，画质配置和实测范围见[性能说明](stream-performance.md)。
 - **ALPN `app/ai-remote/file/1`。** 整个文件的传输（`ai-remote push` / `pull`）。字节不经过 MCP（MCP 结果约 1 MiB
   封顶）：先调用 `files_push` / `files_pull` 工具，它和其他工具一样过闸门（级别、策略、审批、审计），返回一张
   一次性票据，绑定签发给的设备、路径，上传还绑定获批的大小和 SHA-256，2 分钟内有效；控制端再在这个 ALPN 上

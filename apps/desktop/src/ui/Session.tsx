@@ -3,14 +3,17 @@
 // document of steps with the one pending decision lifted above it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type LiveView } from "../lib/api";
+import { api, type LiveView, type PointerPosition } from "../lib/api";
 import { commands } from "../bindings";
 import { demoScreenUrl } from "../lib/demo";
 import { currentLang, t } from "../lib/i18n";
 import { loadStreamQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
+import { createHostClock, startPinging } from "../lib/clock";
 import { preferredCodecs } from "../lib/codec";
+import { createPointerLayer, type PointerLayer } from "../lib/pointer";
+import { createRateController } from "../lib/rate";
 import { createDecoder, type VideoStats } from "../lib/video";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
@@ -161,6 +164,7 @@ export function Stream({
   bitrateKbps?: number;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const pointerCanvas = useRef<HTMLCanvasElement>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const callbacks = useRef({ onFrame, onSize, onScreen, onStats, onRestart, onError });
@@ -179,6 +183,25 @@ export function Stream({
     let view: LiveView | null = null;
     let stopped = false;
     let first = true;
+    const clock = createHostClock();
+    let stopPinging = () => {};
+    // The host's pointer, when it sends it separately; positions may come before the start reply.
+    let pointer: PointerLayer | null = null;
+    let pointerAt: PointerPosition | null = null;
+    const pointerLayer = () =>
+      (pointer ??= pointerCanvas.current && canvas.current ? createPointerLayer(pointerCanvas.current, canvas.current) : null);
+    const movePointer = () => {
+      if (!stopped && pointerAt && view?.screen) pointerLayer()?.move(pointerAt, view.screen);
+    };
+    // A per-second line of receiver metrics, for measurement runs (tools/stream-e2e.py sets it).
+    const trace = localStorage.getItem("ai-remote.video-trace") === "1";
+    const started = performance.now();
+    // The api's default when no quality was chosen.
+    const requestedKbps = bitrateKbps ?? 6000;
+    const rate = createRateController(requestedKbps, (kbps, why) => {
+      view?.setBitrate(kbps);
+      void commands.logFromPage("info", `Live video: bitrate ${kbps} kbit/s (${why}; requested ${requestedKbps})`);
+    });
     const decoder = createDecoder(
       canvas.current,
       () => view?.requestKeyframe(),
@@ -191,12 +214,24 @@ export function Stream({
         }
       },
       (stats) => {
-        if (!stopped) callbacks.current.onStats?.(stats);
+        const path = clock.errorMs();
+        if (path !== null) rate.pathDelay(path);
+        const adapted = rate.current();
+        if (trace) {
+          void commands.logFromPage("info", `Live video: stats ${JSON.stringify({ t: Math.round(performance.now() - started),
+            fps: +stats.decodedFps.toFixed(1), kbps: Math.round(stats.receivedKbps),
+            latency: stats.latencyMs === null ? null : Math.round(stats.latencyMs), target: adapted })}`);
+        }
+        if (!stopped) callbacks.current.onStats?.(adapted < requestedKbps ? { ...stats, adaptedKbps: adapted } : stats);
       },
+      clock,
+      (latencyMs, now) => rate.observe(latencyMs, now),
     );
     const end = (reason: string) => {
       if (stopped) return;
       stopped = true;
+      stopPinging();
+      pointer?.hide();
       view?.stop();
       decoder.close();
       if (canvas.current) {
@@ -211,13 +246,25 @@ export function Stream({
       callbacks.current.onError?.(message);
     };
     api
-      .watchScreen(host, (f) => { if (!stopped) decoder.push(f); },
-        { maxFps, maxLongEdge, bitrateKbps, codecs: preferredCodecs(), onEnded: end })
+      .watchScreen(host, (f) => {
+        if (stopped) return;
+        rate.received(f.byteLength, performance.now());
+        decoder.push(f);
+      },
+        { maxFps, maxLongEdge, bitrateKbps, codecs: preferredCodecs(), onPong: clock.pong, onEnded: end,
+          onPointer: (at) => { pointerAt = at; movePointer(); },
+          onPointerShape: (shape) => {
+            if (stopped) return;
+            pointerLayer()?.shape(shape);
+            if (trace) void commands.logFromPage("info", `Live video: pointer shape ${shape.id} ${shape.width}x${shape.height}`);
+          } })
       .then((v) => {
         if (stopped) v?.stop();
         else {
           view = v;
           callbacks.current.onScreen?.(v?.screen ?? null);
+          if (v) stopPinging = startPinging(clock, (n) => v.ping(n));
+          movePointer();
         }
       })
       .catch((e) => {
@@ -227,6 +274,8 @@ export function Stream({
       });
     return () => {
       stopped = true;
+      stopPinging();
+      pointer?.hide();
       view?.stop();
       decoder.close();
       callbacks.current.onScreen?.(null);
@@ -240,6 +289,7 @@ export function Stream({
   return (
     <>
       <canvas ref={canvas} className="rd-holder" style={{ width: "100%", height: "100%" }} />
+      <canvas ref={pointerCanvas} className="remote-pointer" aria-hidden="true" />
       {ended && (
         <div className="stream-ended" role="alert">
           <Icon name="warn" size={24} />
@@ -502,6 +552,12 @@ export function SessionPage({
               ? t("st_offline")
               : hasFrame && stats
                 ? t("stream_actual_metrics", { width: stats.width, height: stats.height, fps: stats.decodedFps.toFixed(1), mbps: (stats.receivedKbps / 1000).toFixed(2) })
+                  + (stats.latencyMs !== null
+                    ? ` · ${t("stream_latency", { ms: Math.round(stats.latencyMs), error: (stats.latencyErrorMs ?? 0).toFixed(1) })}`
+                    : "")
+                  + (stats.adaptedKbps !== undefined
+                    ? ` · ${t("stream_adapted", { mbps: (stats.adaptedKbps / 1000).toFixed(1) })}`
+                    : "")
                 : t("stream_awaiting_metrics")}
         </span>
       </div>

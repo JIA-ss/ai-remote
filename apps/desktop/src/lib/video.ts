@@ -2,6 +2,7 @@
 // through WebCodecs onto a canvas. Hardware decoding where the platform has it.
 
 import { commands } from "../bindings";
+import type { HostClock } from "./clock";
 import { codecOfFlags, codecString, type VideoCodec } from "./codec";
 
 function logVideo(level: "error" | "info", text: string) {
@@ -37,6 +38,13 @@ export interface VideoStats {
   /** `droppedFrames` by reason, since the stream started. */
   drops: Record<DropReason, number>;
   decodeQueueSize: number;
+  /** Capture on the host to drawn here, median over the interval; null until the host's clock is
+   * mapped (or never, with a host that does not answer pings). */
+  latencyMs: number | null;
+  /** How far `latencyMs` may be off either way: half the best ping round trip. */
+  latencyErrorMs: number | null;
+  /** The bitrate adaptive control asks of the host now, when it is below the request (kbit/s). */
+  adaptedKbps?: number;
 }
 
 export function parseFrame(buf: ArrayBuffer): { header: FrameHeader; data: Uint8Array } | null {
@@ -85,6 +93,8 @@ export function createDecoder(
   onNeedKeyframe: () => void,
   onSize?: (w: number, h: number) => void,
   onStats?: (stats: VideoStats) => void,
+  clock?: HostClock,
+  onLatency?: (latencyMs: number, now: number) => void,
 ): LiveDecoder {
   const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
   let decoder: VideoDecoder | null = null;
@@ -106,6 +116,7 @@ export function createDecoder(
   };
   const started = performance.now();
   let totalDecoded = 0;
+  let latencies: number[] = [];
   // Stream timestamps of the frames given to the current decoder, newest last (a bounded window).
   let submitted: number[] = [];
   // How far the decoder is behind `newest`: from the oldest frame still queued to it, in us.
@@ -130,8 +141,12 @@ export function createDecoder(
     if (closed) return;
     const now = performance.now();
     const seconds = Math.max((now - intervalStart) / 1000, .001);
+    latencies.sort((a, b) => a - b);
+    const latencyMs = latencies.length ? latencies[Math.floor(latencies.length / 2)] : null;
     onStats?.({ width, height, decodedFps: decodedFrames / seconds, receivedKbps: receivedBytes * 8 / seconds / 1000,
-      droppedFrames, drops: { ...drops }, decodeQueueSize: decoder?.decodeQueueSize ?? 0 });
+      droppedFrames, drops: { ...drops }, decodeQueueSize: decoder?.decodeQueueSize ?? 0,
+      latencyMs, latencyErrorMs: latencyMs === null ? null : clock?.errorMs() ?? null });
+    latencies = [];
     intervalStart = now;
     receivedBytes = decodedFrames = 0;
   }, 1000);
@@ -163,7 +178,18 @@ export function createDecoder(
           caughtUp = true;
           logVideo("info", `decoder caught up ${Math.round(performance.now() - createdAt)} ms after it started`);
         }
-        try { ctx?.drawImage(frame, 0, 0); decodedFrames++; totalDecoded++; }
+        try {
+          ctx?.drawImage(frame, 0, 0);
+          decodedFrames++;
+          totalDecoded++;
+          // The frame's timestamp is its capture time on the host's stream clock.
+          const captured = clock?.toLocalMs(frame.timestamp);
+          if (captured != null) {
+            const now = performance.now();
+            latencies.push(now - captured);
+            onLatency?.(now - captured, now);
+          }
+        }
         finally { frame.close(); }
       },
       error: (e) => {
