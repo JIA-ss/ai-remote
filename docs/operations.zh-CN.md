@@ -24,7 +24,7 @@
 9. [审批](#9-审批)
 10. [审计日志](#10-审计日志)
 11. [被控端配置文件](#11-被控端配置文件)
-12. [自建中继](#12-自建中继)
+12. [跨网络连接](#12-跨网络连接)
 13. [故障排查](#13-故障排查)
 
 ## 1. 命令一览
@@ -652,6 +652,9 @@ approval_prompt = true       # false：本机不弹对话框，只在设备上�
 
 [network]
 relays = []                  # 留空：使用默认的公共中继（第 12 节）
+relay_fallback_n0 = true     # 配了 relays 时，保留 n0 公共中继作兜底
+proxy = ""                   # 留空：自动识别 HTTP 代理；"none"：不用代理；或填代理地址
+lan_discovery = "on"         # "on"、"resolve"（只查找不广播）或 "off"
 
 [[rule]]                     # 策略规则，第一条命中的生效
 tool = "shell"
@@ -670,20 +673,42 @@ click = "control"
 其他地方拼错的键（比如规则里把 `principal` 写成 `principle`）会被直接忽略，没有任何警告，所以请仔细核对拼写。
 `ai-remote mount ...` 修改这个文件时会保留你的注释和排版。
 
-## 12. 自建中继
+## 12. 跨网络连接
 
-被控端默认使用 n0 的公共中继。设备借助中继找到彼此，在没有直连路径时也由中继转发流量；中继只能看到它解不开的
-加密流量。要使用自己的 [iroh-relay](https://github.com/n0-computer/iroh) 服务器，把它们的 URL 写进被控端配置：
+配对后的设备不需要端口映射或 VPN 就能找到并连上对方。下面这些方式都默认开启，尽量在各种网络里不用配置就能连通：
+
+| 方式 | 作用 | 关闭 |
+|---|---|---|
+| 直连（P2P） | UDP 打洞，IPv4 和 IPv6，并自动在路由器上做端口映射（UPnP、NAT-PMP、PCP） | — |
+| 局域网 | 用 mDNS 在同一网络里找到对方，不连外网也行 | `lan_discovery = "off"` |
+| 中继 | 打不通直连时由加密中继经 HTTPS（443 端口）转发；一旦打通直连就自动切过去 | — |
+| HTTP 代理 | 只能经代理出网的网络里，中继连接走代理 | `proxy = "none"` |
+| 中继兜底 | 配了自建中继时，保留 n0 公共中继作兜底 | `relay_fallback_n0 = false` |
+| 重试 | 控制端连不上时，1 秒和 3 秒后各重拨一次（刚切换网络时常常能连上） | — |
+
+走中继仍是端到端加密，但延迟更高；n0 的免费公共中继还有限速。走中继期间各端都会提示“P2P 直连失败，经 n0 公共中继转发”。
+
+**配置。** 被控端读 `<profile>/host/ai-remote.toml` 里的 `[network]`（第 11 节）；控制端读
+`<profile>/controller/ai-remote.toml` 里同样的 `[network]` 段。都在进程启动时读取。
 
 ```toml
 [network]
 relays = ["https://relay1.example.org", "https://relay2.example.org"]
+relay_fallback_n0 = true
+proxy = ""            # 留空或不写：自动识别；"none"：不用；或者如 "http://proxy.corp:3128"
+lan_discovery = "on"  # 被控端默认 "on"，控制端默认 "resolve"
 ```
 
-- 列表为空（或没有 `[network]` 段）表示使用默认的公共中继。
-- 这项设置在被控端启动时读取。配对票据里记录着生成票据时被控端所用的中继，所以改完设置后要重新生成票据。
-- 在被控端执行 `ai-remote doctor` 可以看到是否连上了中继（`relay` 检查）。
-- M0 中控制端常驻进程没有中继设置，它自己的连接使用默认中继。
+- **中继。** 列表为空表示用 n0 的公共中继。列出自建的 [iroh-relay](https://github.com/n0-computer/iroh) 服务器后，
+  默认仍保留 n0 的中继作兜底，设 `relay_fallback_n0 = false` 可去掉。配对票据里记录着生成时被控端所用的中继，
+  改了中继要重新生成票据。在被控端执行 `ai-remote doctor` 可以看到是否连上了中继（`relay` 检查）。
+- **代理。** 按这个顺序识别：`proxy` 设置、环境变量 `HTTPS_PROXY` / `ALL_PROXY` / `HTTP_PROXY`、系统设置
+  （Windows：当前登录用户的 Internet 设置；macOS：`scutil --proxy`）。不解析代理自动配置（PAC）脚本，这种网络请直接填
+  `proxy`。只支持 HTTP(S) 代理，不支持 SOCKS。只有中继连接走代理：直连是 UDP；对方换了地址时的地址查询仍直接访问 n0 的
+  DNS 服务。被控端日志里会写明用的是哪个代理。
+- **局域网。** `"on"` 会在局域网里广播本机（设备 ID 和地址，包括公网地址，大约每秒一次），让同网设备能找到它；
+  `"resolve"` 只查找别人、不广播自己。被控端默认 `"on"`，这样同一网络里的控制端不连外网也能连上；在公共网络里使用的
+  笔记本被控端，可以改成 `"resolve"` 或 `"off"`。
 
 ## 13. 故障排查
 
@@ -705,7 +730,9 @@ relays = ["https://relay1.example.org", "https://relay2.example.org"]
 `ai-remote host install`（任务以最高权限运行）。UAC 的同意提示本身在安全桌面上，完全无法操作。
 
 **走了中继而不是直连。** `list_hosts`（在 MCP 客户端里）和 `ai-remote hosts --json` 会给出在线连接的 `path`：
-`direct`、`relay` 或 `unknown`。走中继也能用，只是延迟更高。被控端上的常见原因：有针对被控端程序的防火墙阻止规则
+`direct`、`relay` 或 `unknown`，以及 `relay`（哪个中继）和 `relay_n0`（是否为 n0 的免费公共中继，有限流）。
+`ai-remote hosts` 会打印线路；桌面端会话工具栏、iPhone/iPad 会话顶栏在走中继期间会显示“P2P 直连失败 · 经 n0 公共中继转发”。
+走中继也能用，仍是端到端加密，只是延迟更高。被控端上的常见原因：有针对被控端程序的防火墙阻止规则
 （doctor 的 `firewall` 检查失败；在管理员终端执行 `host install` 会删掉它）；有阻止所有入站 UDP 的规则
 （doctor 会警告，请在 `wf.msc` 里检查）；或者所在网络无法完成 UDP 打洞（部分企业网络和移动网络）。
 

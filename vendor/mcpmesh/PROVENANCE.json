@@ -202,7 +202,7 @@
     },
     {
       "path": "node/src/config.rs",
-      "sha256": "f227d623a227944e1a92ccac2c18fe11b81c699b3300ba8caaa85ab7e982b6b5"
+      "sha256": "ed6182ff0fadf9e9aec3e1bd644c59576d9bef3c5700689c6824a3514606fcbd"
     },
     {
       "path": "node/src/control.rs",
@@ -214,7 +214,7 @@
     },
     {
       "path": "node/src/daemon/boot.rs",
-      "sha256": "f493d53ed6380bc420c24b24762715dc7ad5fc9ca5f8e4c3d62fc805f7b53fc0"
+      "sha256": "2a36a404c5932c0ce32b1d70e9133998229e99792006a04fce2917e96131ce3b"
     },
     {
       "path": "node/src/daemon/config_write.rs",
@@ -415,6 +415,15 @@
     {
       "path": "trust/src/roster/validate.rs",
       "sha256": "648744aa9faae29f996c8ef86bb1498eb317ba6ff8e46c47aba41f70ddd0cd86"
+    }
+  ],
+  "ai_remote_patches": [
+    {
+      "files": [
+        "node/src/config.rs",
+        "node/src/daemon/boot.rs"
+      ],
+      "summary": "[network].proxy_url: route relay connections through an HTTP(S) proxy (Builder::proxy_url), with a unit test"
     }
   ]
 }

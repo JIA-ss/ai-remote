@@ -19,7 +19,7 @@ const minute = 60_000;
 
 const hosts: Host[] = [
   { name: "office-pc", device: "eid:7f3a…", levelAtPairing: "admin", pairedAt: 1_727_654_400, path: "direct" },
-  { name: "lab-pc", device: "eid:21c9…", levelAtPairing: "control", pairedAt: 1_727_740_800, path: "relay" },
+  { name: "lab-pc", device: "eid:21c9…", levelAtPairing: "control", pairedAt: 1_727_740_800, path: "relay", relay: "aps1-1.relay.n0.iroh.link", relayN0: true },
   { name: "studio-mac", device: "eid:b04e…", levelAtPairing: "control", pairedAt: 1_728_000_000, path: null },
   { name: "render-box", device: "eid:e88d…", levelAtPairing: "observe", pairedAt: 1_728_086_400, path: null },
 ];

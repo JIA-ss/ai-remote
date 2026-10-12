@@ -245,6 +245,14 @@ pub struct NetworkCfg {
     /// Read at BOOT. Like `relay_mode`/`presence_mode`, an unknown value is a startup ERROR.
     #[serde(default = "default_local_discovery")]
     pub local_discovery: String,
+    /// `[network].proxy_url` (ai-remote patch) — an HTTP(S) proxy for the relay connections, for
+    /// networks that only let traffic out through one. `None` = connect to relays directly.
+    ///
+    /// Only the relay's HTTPS/WebSocket connection uses it; QUIC (direct paths, QUIC address
+    /// discovery) is UDP and never goes through a proxy. Read at BOOT; an unparsable URL is a
+    /// startup ERROR, like the other `[network]` knobs.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 fn default_local_discovery() -> String {
@@ -262,6 +270,7 @@ impl Default for NetworkCfg {
             idle_timeout_secs: None,
             keep_alive_secs: None,
             local_discovery: default_local_discovery(),
+            proxy_url: None,
         }
     }
 }

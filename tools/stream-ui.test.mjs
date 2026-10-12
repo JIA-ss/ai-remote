@@ -136,6 +136,7 @@ function sessionModule(hooks, api, createDecoder) {
     "./Shell": { computerFacts: () => [], Facts: () => {}, NavRail: () => {}, TitleBar: () => {} },
     "./TurnLine": { TurnLine: () => {}, turnSpec: () => null },
     "./util": { agentLabel: () => "Test agent", clock: () => "12:00", countdown: () => "1:00", cx: (...values) => values.filter(Boolean).join(" "),
+      relayNote: () => null,
       useNow: () => 1000, useSize: () => [{ current: null }, { w: 1000, h: 700 }] },
   });
   return { ...exported, RemoteInput };

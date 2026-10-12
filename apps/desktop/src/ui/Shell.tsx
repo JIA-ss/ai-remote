@@ -8,7 +8,7 @@ import { groupOf, type Computer, type Group } from "../lib/store";
 import { Glyph, Mark, OsGlyph } from "./glyphs";
 import { Icon } from "./Icon";
 import { TurnLine, turnSpec } from "./TurnLine";
-import { clock, cx } from "./util";
+import { clock, cx, routeLabel } from "./util";
 
 export type Nav = "devices" | "approvals" | "activity" | "pair" | "settings" | { computer: string };
 
@@ -67,7 +67,7 @@ export function computerFacts(c: Computer): Array<[ReactNode, string]> {
   if (lvl) out.push([<Glyph key="lvl" name={levelGlyph[lvl]} size={12} />, t(levelName[lvl])]);
   if (c.feed.bypass) out.push([<Glyph key="bypass" name="approval" size={12} />, t("bypass_fact")]);
   if (c.online === true && (c.host.path === "direct" || c.host.path === "relay"))
-    out.push([<Glyph key="p" name={c.host.path === "relay" ? "relayed" : "direct"} size={12} />, t(c.host.path === "relay" ? "relayed" : "direct")]);
+    out.push([<Glyph key="p" name={c.host.path === "relay" ? "relayed" : "direct"} size={12} />, routeLabel(c.host)]);
   return out;
 }
 
