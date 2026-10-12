@@ -4,9 +4,12 @@ import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/700.css";
 import "./index.css";
 import App from "./App";
+import { probeCodecs } from "./lib/codec";
 import { applyPlatform, detectOs } from "./lib/platform";
 
 applyPlatform();
+// Which codecs this machine decodes in hardware decides what live views ask hosts for.
+void probeCodecs();
 createRoot(document.getElementById("root") as HTMLElement).render(
   <StrictMode>
     <App />

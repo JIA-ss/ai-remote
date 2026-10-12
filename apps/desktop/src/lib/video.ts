@@ -1,7 +1,8 @@
-// The live view's decoder: frames from the host (18-byte header + H.264 Annex B) through WebCodecs
-// onto a canvas. Hardware decoding where the platform has it.
+// The live view's decoder: frames from the host (18-byte header + H.264/HEVC Annex B or AV1 OBUs)
+// through WebCodecs onto a canvas. Hardware decoding where the platform has it.
 
 import { commands } from "../bindings";
+import { codecOfFlags, codecString, type VideoCodec } from "./codec";
 
 function reportVideoError(e: unknown) {
   const message = `Live video: ${String(e)}`;
@@ -11,6 +12,7 @@ function reportVideoError(e: unknown) {
 
 export interface FrameHeader {
   keyframe: boolean;
+  codec: VideoCodec;
   width: number;
   height: number;
   /** Microseconds since the stream started. */
@@ -30,8 +32,11 @@ export function parseFrame(buf: ArrayBuffer): { header: FrameHeader; data: Uint8
   if (buf.byteLength < 18) return null;
   const v = new DataView(buf);
   if (v.getUint8(0) !== 1) return null;
+  const codec = codecOfFlags(v.getUint8(1));
+  if (!codec) return null;
   const header = {
     keyframe: (v.getUint8(1) & 1) === 1,
+    codec,
     width: v.getUint16(2),
     height: v.getUint16(4),
     tsUs: Number(v.getBigUint64(6)),
@@ -39,20 +44,6 @@ export function parseFrame(buf: ArrayBuffer): { header: FrameHeader; data: Uint8
   const len = v.getUint32(14);
   if (!header.width || !header.height || !len || len !== buf.byteLength - 18) return null;
   return { header, data: new Uint8Array(buf, 18, len) };
-}
-
-/** The `avc1.PPCCLL` codec string from the SPS in an Annex B keyframe. */
-export function codecFromKeyframe(data: Uint8Array): string | null {
-  for (let i = 0; i + 4 < data.length; i++) {
-    const start3 = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1;
-    if (!start3) continue;
-    const nal = i + 3;
-    if ((data[nal] & 0x1f) === 7 && nal + 3 < data.length) {
-      const hex = (b: number) => b.toString(16).padStart(2, "0");
-      return `avc1.${hex(data[nal + 1])}${hex(data[nal + 2])}${hex(data[nal + 3])}`;
-    }
-  }
-  return null;
 }
 
 export interface LiveDecoder {
@@ -72,7 +63,9 @@ export function createDecoder(
 ): LiveDecoder {
   const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
   let decoder: VideoDecoder | null = null;
-  let codec: string | null = null;
+  // The configuration the decoder was made with: codec string and coded size. Chromium's HEVC
+  // path reports a 1280x720 display size unless the coded size is given (seen 2026-10-12).
+  let config: VideoDecoderConfig | null = null;
   let waitingForKey = true;
   let closed = false;
   let lastKeyframeRequest = -Infinity;
@@ -106,12 +99,12 @@ export function createDecoder(
       /* already closed */
     }
     decoder = null;
-    codec = null;
+    config = null;
     waitingForKey = true;
     requestKeyframe();
   };
 
-  const make = (c: string) => {
+  const make = (c: VideoDecoderConfig) => {
     const next = new VideoDecoder({
       output: (frame) => {
         if (closed || decoder !== next) { frame.close(); return; }
@@ -132,9 +125,9 @@ export function createDecoder(
       },
     });
     decoder = next;
-    // Annex B input: no `description`, the parameter sets travel in the keyframes.
-    decoder.configure({ codec: c, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
-    codec = c;
+    // Annex B / OBU input: no `description`, the parameter sets travel in the keyframes.
+    decoder.configure(c);
+    config = c;
   };
 
   return {
@@ -145,8 +138,14 @@ export function createDecoder(
       if (!f) { droppedFrames++; reset(); return; }
       if (waitingForKey && !f.header.keyframe) { droppedFrames++; requestKeyframe(); return; }
       if (f.header.keyframe) {
-        const c = codecFromKeyframe(f.data);
-        if (c && (c !== codec || !decoder || decoder.state === "closed")) {
+        const string = codecString(f.header.codec, f.data);
+        const c: VideoDecoderConfig | null = string
+          ? { codec: string, codedWidth: f.header.width, codedHeight: f.header.height,
+            optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" }
+          : null;
+        const changed = c && (c.codec !== config?.codec || c.codedWidth !== config?.codedWidth
+          || c.codedHeight !== config?.codedHeight);
+        if (c && (changed || !decoder || decoder.state === "closed")) {
           try {
             decoder?.close();
           } catch {
@@ -168,11 +167,11 @@ export function createDecoder(
         droppedFrames += decoder.decodeQueueSize;
         // An IDR is independent of the discarded queue. Recreate immediately with
         // this keyframe instead of waiting for another desktop change.
-        const currentCodec = codec;
+        const current = config;
         decoder.close();
         decoder = null;
-        if (!currentCodec) { reset(); return; }
-        try { make(currentCodec); }
+        if (!current) { reset(); return; }
+        try { make(current); }
         catch (e) { reportVideoError(e); reset(); return; }
       }
       try {

@@ -1,6 +1,8 @@
-//! H.264 for the live stream. macOS prefers a verified VideoToolbox hardware encoder and accepts
-//! capture's retained native pixel buffer without copying BGRA through the CPU. OpenH264 is the
-//! portable fallback. Both paths emit Annex B, including SPS/PPS on keyframes.
+//! Video for the live stream. Hardware encoders are the normal path: VideoToolbox on macOS (fed
+//! capture's retained native pixel buffer) and the GPU vendor's Media Foundation encoder on Windows
+//! (fed capture's NV12 textures). Both avoid any CPU copy of the picture. OpenH264 is the portable
+//! fallback. Output is Annex B (H.264/HEVC, parameter sets on every keyframe) or AV1 OBUs (sequence
+//! header on every keyframe).
 
 use anyhow::{Context, Result, anyhow};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image};
@@ -21,14 +23,101 @@ mod hardware_bench;
 #[cfg(target_os = "macos")]
 #[path = "encode/mac.rs"]
 mod mac;
+#[cfg(windows)]
+#[path = "encode/win.rs"]
+mod win;
+
+/// A codec of the live stream. A viewer lists what it can decode, best first; the host picks the
+/// first it can encode in hardware, and H.264 always works (in software if need be).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Codec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+impl Codec {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "h264" | "avc" => Some(Self::H264),
+            "hevc" | "h265" => Some(Self::Hevc),
+            "av1" => Some(Self::Av1),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::Hevc => "hevc",
+            Self::Av1 => "av1",
+        }
+    }
+
+    /// The codec's id in bits 1-2 of a frame header's flags.
+    pub fn wire_id(self) -> u8 {
+        match self {
+            Self::H264 => 0,
+            Self::Hevc => 1,
+            Self::Av1 => 2,
+        }
+    }
+
+    /// The largest long edge to give this codec's encoders: H.264 hardware stops at 4096 (and its
+    /// highest level at 4096x2304), HEVC and AV1 hardware reach 8192.
+    pub fn max_long_edge(self) -> u32 {
+        match self {
+            Self::H264 => 4096,
+            Self::Hevc | Self::Av1 => 8192,
+        }
+    }
+}
+
+/// Whether this machine can encode `codec` in hardware.
+pub fn hardware_available(codec: Codec) -> bool {
+    #[cfg(windows)]
+    {
+        win::available(codec)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        codec == Codec::H264
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = codec;
+        false
+    }
+}
+
+/// The software encoder's size limit: beyond it OpenH264 manages a few frames a second at most.
+const SOFTWARE_MAX_LONG_EDGE: u32 = 3840;
+
+/// The codecs to try, in order, for a viewer that decodes `wanted` (best first): those this host
+/// has hardware for, then H.264 (software if need be). Also the long edge to capture at.
+pub fn plan(wanted: &[Codec], max_long_edge: u32) -> (Vec<Codec>, u32) {
+    let mut codecs: Vec<Codec> = Vec::new();
+    for &codec in wanted {
+        if !codecs.contains(&codec) && hardware_available(codec) {
+            codecs.push(codec);
+        }
+    }
+    if !codecs.contains(&Codec::H264) {
+        codecs.push(Codec::H264);
+    }
+    let first = codecs[0];
+    let limit = if hardware_available(first) { first.max_long_edge() } else { SOFTWARE_MAX_LONG_EDGE };
+    (codecs, max_long_edge.min(limit))
+}
 
 /// One encoded frame.
 pub struct Encoded {
-    /// Annex B NAL units; a keyframe starts with SPS and PPS.
+    /// Annex B NAL units (a keyframe starts with its parameter sets), or AV1 OBUs.
     pub data: Vec<u8>,
     pub keyframe: bool,
     pub width: u32,
     pub height: u32,
+    pub codec: Codec,
 }
 
 /// The stream size for a source size: the long edge at most `max_long_edge`, both sides even (4:2:0
@@ -41,51 +130,71 @@ pub fn stream_size(width: u32, height: u32, max_long_edge: u32) -> (u32, u32) {
 }
 
 enum Backend {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     PendingHardware,
     #[cfg(target_os = "macos")]
     Hardware(Box<mac::HardwareEncoder>),
+    #[cfg(windows)]
+    Hardware(Box<win::HardwareEncoder>),
     Software(Box<SoftwareEncoder>),
 }
 
 pub struct FrameEncoder {
     backend: Backend,
-    #[cfg(any(target_os = "macos", test))]
+    /// Codecs to try in hardware, best first.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    codecs: Vec<Codec>,
     max_fps: u32,
-    #[cfg(any(target_os = "macos", test))]
     bitrate_bps: u32,
-    #[cfg(any(target_os = "macos", test))]
     max_long_edge: u32,
+    /// Capture's scaling target, lowered when the codec in use cannot take the size.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    capture_edge: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     force_next: bool,
 }
 
 impl FrameEncoder {
     pub fn new(max_fps: u32, bitrate_bps: u32, max_long_edge: u32) -> Result<Self> {
         anyhow::ensure!(max_fps > 0 && bitrate_bps > 0 && max_long_edge >= 2, "invalid stream settings");
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let backend = Backend::PendingHardware;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         let backend = Backend::Software(Box::new(SoftwareEncoder::new(max_fps, bitrate_bps, max_long_edge)?));
         Ok(Self {
             backend,
-            #[cfg(any(target_os = "macos", test))]
+            codecs: vec![Codec::H264],
             max_fps,
-            #[cfg(any(target_os = "macos", test))]
             bitrate_bps,
-            #[cfg(any(target_os = "macos", test))]
             max_long_edge,
+            capture_edge: None,
             force_next: true,
         })
     }
 
+    /// Codecs to try in hardware, best first (see `plan`).
+    pub fn with_codecs(mut self, codecs: &[Codec]) -> Self {
+        if !codecs.is_empty() {
+            self.codecs = codecs.to_vec();
+        }
+        self
+    }
+
+    /// Lets the encoder lower capture's long edge when its codec has a smaller size limit.
+    pub fn with_capture_edge(mut self, edge: std::sync::Arc<std::sync::atomic::AtomicU32>) -> Self {
+        self.capture_edge = Some(edge);
+        self
+    }
+
     /// The backend actually selected, rather than the requested hardware preference.
-    pub fn backend_name(&self) -> &'static str {
+    pub fn backend_name(&self) -> String {
         match &self.backend {
+            #[cfg(any(target_os = "macos", windows))]
+            Backend::PendingHardware => "pending".into(),
             #[cfg(target_os = "macos")]
-            Backend::PendingHardware => "pending",
-            #[cfg(target_os = "macos")]
-            Backend::Hardware(_) => "videotoolbox-hardware",
-            Backend::Software(_) => "openh264-software",
+            Backend::Hardware(_) => "videotoolbox-hardware".into(),
+            #[cfg(windows)]
+            Backend::Hardware(encoder) => format!("{} ({}, hardware)", encoder.name(), encoder.codec().name()),
+            Backend::Software(_) => "openh264-software".into(),
         }
     }
 
@@ -93,7 +202,6 @@ impl FrameEncoder {
         self.force_next = true;
     }
 
-    #[cfg(any(target_os = "macos", test))]
     fn use_software(&mut self) -> Result<()> {
         self.backend =
             Backend::Software(Box::new(SoftwareEncoder::new(self.max_fps, self.bitrate_bps, self.max_long_edge)?));
@@ -126,8 +234,79 @@ impl FrameEncoder {
         Ok(())
     }
 
-    /// A captured native buffer can stay in Apple media memory through hardware encoding.
+    /// Sets up (or re-sets up, after a size change) the hardware encoder for a GPU frame: the
+    /// first codec in preference order that takes this size. `false` when this frame must be
+    /// skipped because capture was asked for a smaller size.
+    #[cfg(windows)]
+    fn prepare_windows_hardware(&mut self, frame: &super::capture::win::GpuTexture) -> Result<bool> {
+        let size = (frame.width, frame.height);
+        let initialize = match &self.backend {
+            Backend::PendingHardware => true,
+            Backend::Hardware(encoder) => encoder.size() != size,
+            Backend::Software(_) => false,
+        };
+        if !initialize {
+            return Ok(true);
+        }
+        let long = size.0.max(size.1);
+        for &codec in &self.codecs {
+            if long > codec.max_long_edge() {
+                continue;
+            }
+            match win::HardwareEncoder::new(frame, codec, self.max_fps, self.bitrate_bps) {
+                Ok(encoder) => {
+                    self.backend = Backend::Hardware(Box::new(encoder));
+                    self.force_next = true;
+                    return Ok(true);
+                }
+                Err(error) => tracing::warn!(codec = codec.name(), "hardware encoder unavailable: {error:#}"),
+            }
+        }
+        // Nothing took this size. A codec with a smaller limit might, or software at most 4K.
+        let any_hardware = self.codecs.iter().any(|c| hardware_available(*c));
+        let smaller = if any_hardware {
+            self.codecs.iter().map(|c| c.max_long_edge()).filter(|&edge| edge < long).max()
+        } else {
+            (SOFTWARE_MAX_LONG_EDGE < long).then_some(SOFTWARE_MAX_LONG_EDGE)
+        };
+        if let (Some(smaller), Some(edge)) = (smaller, &self.capture_edge) {
+            tracing::warn!(long, smaller, "lowering the live view size for the encoder");
+            edge.store(smaller, std::sync::atomic::Ordering::Relaxed);
+            self.max_long_edge = self.max_long_edge.min(smaller);
+            return Ok(false);
+        }
+        tracing::warn!("no hardware encoder takes this stream; using OpenH264");
+        self.use_software()?;
+        Ok(true)
+    }
+
+    /// Encodes a captured frame on its fastest path: the native buffer (macOS) or GPU texture
+    /// (Windows) straight into the hardware encoder.
     pub fn encode_raw(&mut self, raw: &super::capture::Raw) -> Result<Option<Encoded>> {
+        #[cfg(windows)]
+        if let Some(frame) = &raw.gpu {
+            if !self.prepare_windows_hardware(frame)? {
+                return Ok(None);
+            }
+            if let Backend::Hardware(encoder) = &mut self.backend {
+                match encoder.encode(frame.clone(), self.force_next) {
+                    Ok(out) => {
+                        // The keyframe request went with this frame, whenever its output comes.
+                        self.force_next = false;
+                        return Ok(out);
+                    }
+                    Err(error) => {
+                        tracing::warn!("hardware encoding failed; using OpenH264: {error:#}");
+                        self.use_software()?;
+                        if let Some(edge) = &self.capture_edge {
+                            edge.fetch_min(SOFTWARE_MAX_LONG_EDGE, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            let (y, uv) = super::capture::win::read_nv12(frame)?;
+            return self.encode_nv12(&y, &uv, frame.width, frame.height);
+        }
         #[cfg(target_os = "macos")]
         if let Some(buffer) = &raw.pixel_buffer {
             anyhow::ensure!(
@@ -157,6 +336,29 @@ impl FrameEncoder {
         self.encode(&raw.bgra, raw.width, raw.height, raw.width.saturating_mul(4))
     }
 
+    /// An encoded frame an asynchronous hardware encoder finished after `encode_raw` returned.
+    /// Call it while no new frame arrives, so a static screen still gets its last frame out.
+    pub fn poll(&mut self) -> Result<Option<Encoded>> {
+        #[cfg(windows)]
+        if let Backend::Hardware(encoder) = &mut self.backend {
+            return encoder.poll();
+        }
+        Ok(None)
+    }
+
+    #[cfg(windows)]
+    fn encode_nv12(&mut self, y: &[u8], uv: &[u8], width: u32, height: u32) -> Result<Option<Encoded>> {
+        let Backend::Software(encoder) = &mut self.backend else { anyhow::bail!("no software encoder") };
+        if self.force_next {
+            encoder.force_keyframe();
+        }
+        let frame = encoder.encode_nv12(y, uv, width, height)?;
+        if frame.is_some() {
+            self.force_next = false;
+        }
+        Ok(frame)
+    }
+
     pub fn encode(&mut self, bgra: &[u8], width: u32, height: u32, stride: u32) -> Result<Option<Encoded>> {
         validate_bgra(bgra, width, height, stride)?;
         #[cfg(target_os = "macos")]
@@ -177,13 +379,12 @@ impl FrameEncoder {
                 }
             }
         }
-        #[cfg(target_os = "macos")]
-        let encoder = match &mut self.backend {
-            Backend::Software(encoder) => encoder,
-            _ => unreachable!("encoder was initialized"),
-        };
-        #[cfg(not(target_os = "macos"))]
-        let Backend::Software(encoder) = &mut self.backend;
+        // Windows BGRA frames come from the CPU capture path, which only the software encoder takes.
+        #[cfg(windows)]
+        if !matches!(self.backend, Backend::Software(_)) {
+            self.use_software()?;
+        }
+        let Backend::Software(encoder) = &mut self.backend else { unreachable!("encoder was initialized") };
         if self.force_next {
             encoder.force_keyframe();
         }
@@ -200,6 +401,64 @@ impl FrameEncoder {
         encoder.use_software()?;
         Ok(encoder)
     }
+}
+
+/// Whether `data` starts a picture that decodes on its own.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
+    match codec {
+        Codec::H264 => nal_headers(data).any(|b| b & 0x1f == 5),
+        // IDR_W_RADL, IDR_N_LP, CRA.
+        Codec::Hevc => nal_headers(data).any(|b| matches!((b >> 1) & 0x3f, 19..=21)),
+        // A temporal unit with a sequence header (encoders send one with each keyframe).
+        Codec::Av1 => av1_obu_types(data).any(|t| t == 1),
+    }
+}
+
+/// Whether an access unit carries the parameter sets a decoder joining here needs.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn has_parameter_sets(codec: Codec, data: &[u8]) -> bool {
+    match codec {
+        Codec::H264 => nal_headers(data).any(|b| b & 0x1f == 7),
+        Codec::Hevc => nal_headers(data).any(|b| (b >> 1) & 0x3f == 33),
+        Codec::Av1 => av1_obu_types(data).any(|t| t == 1),
+    }
+}
+
+/// The first header byte of each Annex B NAL unit.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn nal_headers(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    (0..data.len().saturating_sub(3))
+        .filter(|&i| data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+        .filter_map(move |i| data.get(i + 3).copied())
+}
+
+/// OBU types of a low-overhead AV1 temporal unit.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn av1_obu_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    let mut at = 0usize;
+    std::iter::from_fn(move || {
+        let header = *data.get(at)?;
+        let kind = (header >> 3) & 0x0f;
+        let mut next = at + 1 + usize::from(header & 0x04 != 0);
+        if header & 0x02 == 0 {
+            // No size field: the OBU runs to the end of the unit.
+            at = data.len();
+            return Some(kind);
+        }
+        let (mut size, mut shift) = (0usize, 0u32);
+        loop {
+            let byte = *data.get(next)?;
+            next += 1;
+            size |= usize::from(byte & 0x7f) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 || shift > 56 {
+                break;
+            }
+        }
+        at = next.checked_add(size)?;
+        Some(kind)
+    })
 }
 
 fn validate_bgra(bgra: &[u8], width: u32, height: u32, stride: u32) -> Result<()> {
@@ -320,7 +579,28 @@ impl SoftwareEncoder {
         if self.out.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Encoded { data: std::mem::take(&mut self.out), keyframe, width: w, height: h }))
+        Ok(Some(Encoded { data: std::mem::take(&mut self.out), keyframe, width: w, height: h, codec: Codec::H264 }))
+    }
+
+    /// Encodes an NV12 frame already at the stream size (read back from the GPU path).
+    #[cfg(windows)]
+    pub fn encode_nv12(&mut self, y: &[u8], uv: &[u8], width: u32, height: u32) -> Result<Option<Encoded>> {
+        let (w, h) = (width as usize, height as usize);
+        anyhow::ensure!(y.len() >= w * h && uv.len() >= w * h / 2 && w % 2 == 0 && h % 2 == 0, "invalid NV12 frame");
+        let (mut u, mut v) = (Vec::with_capacity(w * h / 4), Vec::with_capacity(w * h / 4));
+        for pair in uv[..w * h / 2].chunks_exact(2) {
+            u.push(pair[0]);
+            v.push(pair[1]);
+        }
+        let slices = YUVSlices::new((&y[..w * h], &u, &v), (w, h), (w, w / 2, w / 2));
+        let stream = self.encoder.encode(&slices).context("encode a frame")?;
+        let keyframe = matches!(stream.frame_type(), FrameType::IDR | FrameType::I);
+        self.out.clear();
+        stream.write_vec(&mut self.out);
+        if self.out.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Encoded { data: std::mem::take(&mut self.out), keyframe, width, height, codec: Codec::H264 }))
     }
 }
 
