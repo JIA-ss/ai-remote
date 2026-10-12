@@ -6,6 +6,8 @@ import AIRemoteCore
 @MainActor @Observable public final class PhoneStore {
     public var hosts: [PhoneHost] = []
     public var selected: PhoneHost?
+    /// The selected host as last reported while connected: its route (direct or relayed) can change.
+    public var route: PhoneHost?
     public var error: String?
     public var pairingCode = ""
     public var safetyCode: String?
@@ -33,6 +35,7 @@ import AIRemoteCore
     private var keyframePending = false
     private var generation = 0
     private var inputTail: Task<Void, Never>?
+    private var routeWatch: Task<Void, Never>?
     private var suspending: Task<Void, Never>?
     private var lifecycleGeneration = 0
     private var active = true
@@ -116,11 +119,29 @@ import AIRemoteCore
             videoID = view.subscription
             screen = ScreenGeometry(try JSONValue.parse(view.replyJson)["screen"])
             if keyframePending { await requestVideoKeyframe(token: token) }
+            watchRoute(host: host.name, token: token)
         } catch { if token == generation { self.error = error.localizedDescription } }
+    }
+    /// Re-reads the route while the session lasts: iroh may move a relayed connection to a direct path
+    /// (or back) at any time, and the person should know when P2P failed.
+    private func watchRoute(host: String, token: Int) {
+        routeWatch?.cancel()
+        routeWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, token == self.generation else { return }
+                if let result = try? await self.client.request(["op": .string("hosts")]),
+                   token == self.generation,
+                   let entry = result.array.map(PhoneHost.init).first(where: { $0.name == host }) {
+                    self.route = entry
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
     private func videoEnded(reason: String, token: Int) async {
         guard token == generation, reason != "stopped" else { return }
         generation += 1
+        routeWatch?.cancel(); routeWatch = nil; route = nil
         let oldSubscriptions = [videoID, eventID].compactMap { $0 }
         videoID = nil; eventID = nil; screen = nil; keyframePending = false
         imageRelay?.close(); decoder?.close()
@@ -195,6 +216,7 @@ import AIRemoteCore
         let handBack = hasDriver
         leaving = true; defer { leaving = false }
         generation += 1; inputTail?.cancel(); inputTail = nil
+        routeWatch?.cancel(); routeWatch = nil; route = nil
         for id in [eventID, videoID].compactMap({ $0 }) { await client.stop(id) }
         eventID = nil; videoID = nil; keyframePending = false
         imageRelay?.close(); imageRelay = nil; decoder?.close(); decoder = nil

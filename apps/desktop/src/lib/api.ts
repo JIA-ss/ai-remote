@@ -91,6 +91,13 @@ export interface LiveView {
 
 class BridgeError extends Error {}
 
+/** `https://host:port` → `host` (no trailing root dot), or null. */
+function relayHost(url: unknown): string | null {
+  if (typeof url !== "string" || !url) return null;
+  const rest = url.includes("://") ? url.slice(url.indexOf("://") + 3) : url;
+  return rest.split(/[/:]/)[0].replace(/\.$/, "") || null;
+}
+
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: string }): T {
   if (r.status === "error") throw new BridgeError(r.error);
   return r.data;
@@ -115,6 +122,8 @@ const tauriBackend: Backend = {
       levelAtPairing: (h.level_at_pairing as Level) ?? null,
       pairedAt: (h.paired_at as number) ?? null,
       path: ((h.path as string)?.toLowerCase() as PathKind) ?? null,
+      relay: relayHost(h.relay),
+      relayN0: h.relay_n0 === true,
     }));
   },
   async pair(ticket, name) {

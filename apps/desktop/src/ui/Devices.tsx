@@ -4,7 +4,7 @@ import type { Level } from "../lib/types";
 import { OsGlyph } from "./glyphs";
 import { Icon } from "./Icon";
 import { statusOf } from "./Shell";
-import { agentLabel, cx } from "./util";
+import { agentLabel, cx, routeLabel } from "./util";
 
 const levelName = (level: Level | null) =>
   level ? t(level === "admin" ? "lvl_admin" : level === "control" ? "lvl_control" : "lvl_observe") : t("devices_no_access");
@@ -22,7 +22,7 @@ function accessText(c: Computer): string {
 function connectionText(c: Computer): string {
   if (c.online === false) return t("st_offline");
   if (c.online === null) return t("st_connecting");
-  return c.host.path === "direct" ? t("direct") : c.host.path === "relay" ? t("relayed") : t("devices_path_unknown");
+  return c.host.path === "direct" || c.host.path === "relay" ? routeLabel(c.host) : t("devices_path_unknown");
 }
 
 /** A workspace overview built only from paired hosts and their live feeds. */

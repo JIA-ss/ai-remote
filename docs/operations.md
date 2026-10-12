@@ -25,7 +25,7 @@ the configuration formats.
 9. [Approvals](#9-approvals)
 10. [Audit log](#10-audit-log)
 11. [Host configuration file](#11-host-configuration-file)
-12. [Self-hosted relays](#12-self-hosted-relays)
+12. [Connecting across networks](#12-connecting-across-networks)
 13. [Troubleshooting](#13-troubleshooting)
 
 ## 1. Command overview
@@ -731,6 +731,9 @@ approval_prompt = true       # false: no dialog here, approve only from devices 
 
 [network]
 relays = []                  # empty: the default public relays (section 12)
+relay_fallback_n0 = true     # with relays set: keep n0's public relays as a fallback
+proxy = ""                   # empty: detect the HTTP proxy; "none": never use one; or a URL
+lan_discovery = "on"         # "on", "resolve" (find peers, do not announce) or "off"
 
 [[rule]]                     # policy rules, first match wins
 tool = "shell"
@@ -750,24 +753,50 @@ unknown keys; a misspelled key elsewhere (for example `principle` instead of `pr
 ignored without a warning, so check the spelling. `ai-remote mount ...` edits the file and keeps your
 comments and layout.
 
-## 12. Self-hosted relays
+## 12. Connecting across networks
 
-By default hosts use the public n0 relays. Devices use a relay to find each other and to carry traffic
-while no direct path works; a relay only sees encrypted traffic it cannot read. To use your own
-[iroh-relay](https://github.com/n0-computer/iroh) servers, list their URLs in the host's
-configuration:
+Paired devices find and reach each other without port forwarding or a VPN. Every way below is on by
+default, so a connection gets through on as many networks as possible without configuration:
+
+| Way | What it does | Turn off |
+|---|---|---|
+| Direct (P2P) | UDP hole punching, IPv4 and IPv6, with automatic port mapping (UPnP, NAT-PMP, PCP) on the router | — |
+| Local network | Finds the other device on the same network by mDNS, even with no internet | `lan_discovery = "off"` |
+| Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | — |
+| HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | `proxy = "none"` |
+| Relay fallback | With your own relays set, n0's public relays stay as a fallback | `relay_fallback_n0 = false` |
+| Retry | The controller dials an unreachable host again after 1 s and 3 s (a network that is just switching often gets through) | — |
+
+Relayed traffic stays encrypted end to end, but adds latency; n0's free public relays are also
+rate-limited. Every client says so while it lasts ("P2P failed, relayed by n0's public relay").
+
+**Configuration.** The host reads `[network]` in `<profile>/host/ai-remote.toml` (section 11); the
+controller reads the same `[network]` section from `<profile>/controller/ai-remote.toml`. Both are read
+when the process starts.
 
 ```toml
 [network]
 relays = ["https://relay1.example.org", "https://relay2.example.org"]
+relay_fallback_n0 = true
+proxy = ""            # empty or absent: detect; "none": never; or e.g. "http://proxy.corp:3128"
+lan_discovery = "on"  # host default "on", controller default "resolve"
 ```
 
-- An empty list (or no `[network]` section) means the default public relays.
-- The setting is read when the host starts. A pairing ticket records the relay the host used when the
-  ticket was minted, so mint new tickets after changing it.
-- `ai-remote doctor` on the host shows whether it is connected to a relay (`relay` check).
-- The controller agent has no relay setting in M0; it uses the default relays for its own
-  connection.
+- **Relays.** An empty list means n0's public relays. With your own
+  [iroh-relay](https://github.com/n0-computer/iroh) servers listed, n0's relays are kept as a fallback
+  unless `relay_fallback_n0 = false`. A pairing ticket records the relay the host used when it was
+  minted, so mint new tickets after changing relays. `ai-remote doctor` on the host shows whether it is
+  connected to a relay (`relay` check).
+- **Proxy.** Detected in this order: the `proxy` setting, the `HTTPS_PROXY` / `ALL_PROXY` /
+  `HTTP_PROXY` environment variables, the system setting (Windows: Internet Settings of the signed-in
+  user; macOS: `scutil --proxy`). Proxy auto-config (PAC) scripts are not evaluated; set `proxy`
+  explicitly there. Only HTTP(S) proxies work (not SOCKS). Only the relay connection uses the proxy:
+  direct paths are UDP, and the address lookup of a peer whose address changed still goes to n0's DNS
+  service directly. The host log names the proxy in use.
+- **Local network.** `"on"` announces this device on the local network (its device id and addresses,
+  including its public address, about once a second) so others there can find it; `"resolve"` finds
+  others without announcing. The host defaults to `"on"` so a controller on the same network can reach
+  it without internet; set `"resolve"` or `"off"` on a laptop host used on public networks.
 
 ## 13. Troubleshooting
 
@@ -795,7 +824,10 @@ administrator's elevated terminal (the task runs with highest privileges). UAC c
 themselves are on the secure desktop and cannot be operated at all.
 
 **Relayed instead of direct.** `list_hosts` (in the MCP client) and `ai-remote hosts --json` show
-`path`: `direct`, `relay` or `unknown` for a live connection. Relayed traffic works but adds latency.
+`path`: `direct`, `relay` or `unknown` for a live connection, plus `relay` (which relay) and `relay_n0` (it is
+one of n0's free, rate-limited public relays). `ai-remote hosts` prints the route, and the desktop app (session
+toolbar) and the iPhone/iPad app (session bar) say "P2P failed · relayed by n0's public relay" while it lasts.
+Relayed traffic works and stays encrypted end to end, but adds latency.
 Common causes on the host: a firewall block rule for the host program (doctor `firewall` fails;
 `host install` from an elevated terminal removes it), a block rule for all inbound UDP (doctor warns;
 review it in `wf.msc`), or networks where UDP hole punching cannot succeed (some corporate and mobile

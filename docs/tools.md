@@ -110,7 +110,9 @@ No parameters. Tries to open a session with every paired host and returns a list
 | `host` | the host's name on this controller |
 | `reachable` | a session could be opened now |
 | `problem` | why not (the refusal or connection error), when unreachable |
-| `path` | `direct`, `relay` or `unknown` for the live connection |
+| `path` | `direct`, `relay` or `unknown` for the live connection; `relay` means P2P (hole punching) failed |
+| `relay` | the relay carrying the traffic (`https://host`), when relayed |
+| `relay_n0` | `true` when that relay is one of n0's free public relays (rate-limited; the default without `[network] relays`) |
 | `level_at_pairing` | the level the host granted when you paired (it may have changed since; `system_info.you.level` is current) |
 | `default` | this host is the session's default |
 

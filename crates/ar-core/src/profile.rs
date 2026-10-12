@@ -91,6 +91,11 @@ impl Profile {
         Ok(self.role_dir(Role::Host)?.join("ai-remote.toml"))
     }
 
+    /// Controller configuration: network settings (relays, proxy, local discovery).
+    pub fn controller_config_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Controller)?.join("ai-remote.toml"))
+    }
+
     /// Host: append-only log of every tool call.
     pub fn audit_log_path(&self) -> Result<PathBuf> {
         Ok(self.role_dir(Role::Host)?.join("audit.jsonl"))

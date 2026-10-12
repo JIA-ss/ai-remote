@@ -16,7 +16,7 @@ import { Stream } from "./Session";
 import { computerFacts, Facts, statusOf } from "./Shell";
 import { TurnLine, turnSpec, type TurnSpec } from "./TurnLine";
 import { WelcomeFigure } from "./WelcomeFigure";
-import { agentLabel, clock, cx, useNow, useShortWindow, useSize } from "./util";
+import { agentLabel, clock, cx, relayNote, useNow, useShortWindow, useSize } from "./util";
 
 const levelName = (l: string | null) =>
   l === "admin" ? t("lvl_admin") : l === "control" ? t("lvl_control") : l === "observe" ? t("lvl_observe") : "—";
@@ -225,7 +225,9 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
             <div className="colh">{t("this_computer")}</div>
             <dl className="dl">
               <dt>{t("connection")}</dt>
-              <dd>{c.host.path ? t(c.host.path === "relay" ? "conn_relayed" : "conn_direct") : "—"}</dd>
+              <dd title={relayNote(c.host)?.detail}>
+                {c.host.path ? t(c.host.path === "relay" ? (c.host.relayN0 ? "conn_relayed_n0" : "conn_relayed") : "conn_direct") : "—"}
+              </dd>
               <dt>{t("your_level")}</dt>
               <dd>
                 {levelName(c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing)}

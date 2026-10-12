@@ -18,7 +18,7 @@ import { Glyph, Pointer, SeatMark, type Seat } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, NavRail, TitleBar, type Nav } from "./Shell";
 import { TurnLine, turnSpec } from "./TurnLine";
-import { agentLabel, clock, countdown, cx, useNow, useSize } from "./util";
+import { agentLabel, clock, countdown, cx, relayNote, useNow, useSize } from "./util";
 
 type Bar = "agent" | "waiting" | "you" | "paused" | "idle" | "offline" | "connecting";
 
@@ -48,6 +48,7 @@ function Capsule({
   device,
   tool,
   path,
+  pathTitle,
   mayWatch,
   busy,
   onAction,
@@ -59,6 +60,8 @@ function Capsule({
   /** The tool a pending approval is for. */
   tool: string;
   path: "direct" | "relay" | null;
+  /** On hover: why the connection is relayed. */
+  pathTitle?: string;
   mayWatch: boolean;
   busy: boolean;
   onAction: (a: "take_over" | "pause" | "hand_back" | "resume") => void;
@@ -120,7 +123,7 @@ function Capsule({
       {path && (
         <>
           <span className="vr" />
-          <span className="q">
+          <span className="q" title={pathTitle}>
             <Glyph name={path === "relay" ? "relayed" : "direct"} size={16} />
             {t(path === "relay" ? "relayed" : "direct")}
           </span>
@@ -373,6 +376,7 @@ export function SessionPage({
   const now = useNow(1000);
   const zh = currentLang() === "zh";
   const host = c.host.name;
+  const relay = relayNote(c.host);
   const agent = agentLabel(c.feed.agent);
   const [stageRef, stage] = useSize<HTMLDivElement>();
   const [aspect, setAspect] = useState(16 / 10);
@@ -485,6 +489,12 @@ export function SessionPage({
           {STREAM_QUALITIES.map((profile) => <option key={profile.id} value={profile.id}>{t(profile.label)}</option>)}
         </select>
         <span className="stream-request" title={t("stream_requested_note")}>{t("stream_requested_limits", { edge: quality.maxLongEdge, fps: quality.maxFps, mbps: quality.bitrateKbps / 1000 })}</span>
+        {c.online === true && relay && (
+          <span className="stream-route relayed" role="status" title={relay.detail}>
+            <Glyph name="relayed" size={14} />
+            {relay.note}
+          </span>
+        )}
         <span className="stream-metrics" title={stats ? t("stream_metrics_detail", { dropped: stats.droppedFrames, backlog: stats.drops.backlog, awaiting: stats.drops.awaitingKeyframe, errors: stats.drops.error + stats.drops.invalid, queue: stats.decodeQueueSize }) : undefined}>
           {api.kind === "demo"
             ? t("stream_preview_metrics")
@@ -506,6 +516,7 @@ export function SessionPage({
               device={device}
               tool={pending?.tool ?? ""}
               path={c.online === true ? c.host.path === "relay" ? "relay" : c.host.path === "direct" ? "direct" : null : null}
+              pathTitle={relayNote(c.host)?.detail}
               mayWatch={c.feed.driver.state === "person" && c.feed.driver.agent_may_watch}
               busy={acting}
               onAction={act}

@@ -8,6 +8,9 @@
 //!
 //! [network]
 //! relays = []            # empty: the default public relays
+//! relay_fallback_n0 = true # with relays set: keep n0's public relays as a fallback
+//! proxy = ""             # empty: detect (HTTPS_PROXY, system setting); "none": never; or a URL
+//! lan_discovery = "on"   # find peers on the local network: "on", "resolve" (do not announce), "off"
 //!
 //! [[rule]]               # evaluated in order; the first match wins
 //! tool = "shell"
@@ -86,6 +89,36 @@ pub struct NetworkSection {
     /// Relay URLs to use instead of the default public relays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relays: Vec<String>,
+    /// With `relays` set, keep n0's public relays as a fallback (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_fallback_n0: Option<bool>,
+    /// HTTP(S) proxy for relay connections: absent or empty detects it (environment, then the
+    /// system setting), `"none"` never uses one, anything else is the proxy URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+    /// Local-network (mDNS) discovery: `"on"`, `"resolve"` (find peers, do not announce) or `"off"`.
+    /// Absent: `"on"` on a host, `"resolve"` on a controller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_discovery: Option<String>,
+}
+
+/// The controller's configuration file (`ai-remote.toml` in the controller role directory): only
+/// the network settings, which a missing file leaves at their defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerConfig {
+    #[serde(default)]
+    pub network: NetworkSection,
+}
+
+impl ControllerConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text).with_context(|| format!("parse {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+        }
+    }
 }
 
 /// What the gate does with a matching call.

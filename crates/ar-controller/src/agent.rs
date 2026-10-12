@@ -11,10 +11,10 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use ar_core::{Profile, Role, VERSION, identity, machine_name, unix_now};
+use ar_core::{Profile, Role, VERSION, config::ControllerConfig, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, PathKind, ipc, iroh::endpoint::Connection,
-    refusal::Refusal,
+    ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route, ipc,
+    iroh::endpoint::Connection, refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -116,11 +116,25 @@ impl Refusals {
     }
 }
 
+/// Pauses before redialing an unreachable host.
+const DIAL_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+/// No retry would start past this much dialing: one dial waits up to 20 s for its paths, and a dial
+/// that used all of that gave every path its chance.
+const DIAL_RETRY_BUDGET: Duration = Duration::from_secs(20);
+
+/// How long to wait before dial attempt `attempt + 1`, or `None` to give up.
+fn retry_after(refusal: &Refusal, attempt: usize, elapsed: Duration) -> Option<Duration> {
+    let delay = *DIAL_RETRY_DELAYS.get(attempt)?;
+    (matches!(refusal, Refusal::Unreachable) && elapsed + delay < DIAL_RETRY_BUDGET).then_some(delay)
+}
+
 /// State shared by every client of the agent.
 pub(crate) struct Agent {
     pub mesh: Mesh,
     hosts_path: PathBuf,
     conns: Mutex<HashMap<String, Connection>>,
+    /// One dial at a time per host, without holding `conns` (and every other host) while it runs.
+    dialing: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     refusals: std::sync::Mutex<Refusals>,
     active: AtomicUsize,
     last_activity: std::sync::Mutex<Instant>,
@@ -135,21 +149,16 @@ impl Agent {
     /// A live connection to `host`, dialing (or redialing) when needed. One connection per host is
     /// shared by all sessions: each MCP session is a stream on it.
     pub async fn connection(&self, host: &str) -> Result<Connection> {
-        let mut conns = self.conns.lock().await;
-        if let Some(c) = conns.get(host) {
-            let Some(reason) = c.close_reason() else {
-                return Ok(c.clone());
-            };
-            conns.remove(host);
-            // Report a refusal once instead of redialing straight into it; the next use dials
-            // again, so a fix on the host (unrevoke, a granted level) is picked up.
-            let refusal = Refusal::from_connection_error(&reason);
-            if refusal.is_final() {
-                return Err(self.refused(host, refusal));
-            }
-            self.note_refusal(host, refusal);
+        if let Some(c) = self.cached(host).await? {
+            return Ok(c);
         }
-        let conn = match self.mesh.dial(host, ALPN_MCP).await {
+        let gate = self.dialing.lock().unwrap().entry(host.to_string()).or_default().clone();
+        let _dialing = gate.lock().await;
+        // Another caller may have connected while this one waited for the gate.
+        if let Some(c) = self.cached(host).await? {
+            return Ok(c);
+        }
+        let conn = match self.dial(host).await {
             Ok(conn) => conn,
             Err(e) => {
                 let cause = format!("{e:#}");
@@ -164,8 +173,45 @@ impl Agent {
                 return Err(self.refused(host, refusal));
             }
         };
-        conns.insert(host.to_string(), conn.clone());
+        self.conns.lock().await.insert(host.to_string(), conn.clone());
         Ok(conn)
+    }
+
+    /// The open cached connection to `host`. A closed one is dropped, and a refusal it ended with
+    /// is reported once instead of redialing straight into it; the next use dials again, so a fix
+    /// on the host (unrevoke, a granted level) is picked up.
+    async fn cached(&self, host: &str) -> Result<Option<Connection>> {
+        let mut conns = self.conns.lock().await;
+        let Some(c) = conns.get(host) else { return Ok(None) };
+        let Some(reason) = c.close_reason() else { return Ok(Some(c.clone())) };
+        conns.remove(host);
+        let refusal = Refusal::from_connection_error(&reason);
+        if refusal.is_final() {
+            return Err(self.refused(host, refusal));
+        }
+        self.note_refusal(host, refusal);
+        Ok(None)
+    }
+
+    /// Dials `host`, trying again after 1 s and 3 s while it is unreachable: a network that is just
+    /// switching, a relay reconnecting or a fresh address lookup often gets through a moment later.
+    /// Refusals (revoked, not paired) are answers, not failures, and are never retried; nor is a
+    /// dial that already ran for [`DIAL_RETRY_BUDGET`], which gave every path its chance.
+    async fn dial(&self, host: &str) -> Result<Connection> {
+        let started = Instant::now();
+        let mut attempt = 0;
+        loop {
+            let err = match self.mesh.dial(host, ALPN_MCP).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => e,
+            };
+            let Some(delay) = retry_after(&Refusal::from_dial_error(&err), attempt, started.elapsed()) else {
+                return Err(err);
+            };
+            tracing::debug!(host, attempt, error = %format!("{err:#}"), "dial failed; retrying");
+            tokio::time::sleep(delay).await;
+            attempt += 1;
+        }
     }
 
     /// Whether a connection to `host` is kept from earlier and not known to be closed.
@@ -230,12 +276,13 @@ impl Agent {
         *self.last_activity.lock().unwrap() = Instant::now();
     }
 
-    pub async fn path_of(&self, host: &str) -> Option<PathKind> {
+    /// The route of the open connection to `host`: direct or relayed, and through which relay.
+    pub async fn route_of(&self, host: &str) -> Option<Route> {
         let conn = self.conns.lock().await.get(host).cloned()?;
         if conn.close_reason().is_some() {
             return None;
         }
-        Some(Mesh::path(&conn).await)
+        Some(Mesh::route(&conn).await)
     }
 }
 
@@ -246,13 +293,17 @@ async fn start_state(profile: &Profile) -> Result<Arc<Agent>> {
         root: profile.mesh_dir(Role::Controller)?,
         device_key,
         nickname: machine_name(),
-        relays: Vec::new(),
+        network: NetworkOptions::from_config(
+            &ControllerConfig::load(&profile.controller_config_path()?)?.network,
+            LanDiscovery::Resolve,
+        )?,
     })
     .await?;
     let agent = Arc::new(Agent {
         mesh,
         hosts_path: profile.role_dir(Role::Controller)?.join("hosts.json"),
         conns: Mutex::new(HashMap::new()),
+        dialing: std::sync::Mutex::new(HashMap::new()),
         refusals: std::sync::Mutex::new(Refusals::default()),
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
@@ -554,12 +605,15 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             for name in agent.host_names().await? {
                 let k = known.get(&name);
                 let device = peers.iter().find(|p| p.name == name).and_then(|p| p.principal.clone());
+                let route = agent.route_of(&name).await;
                 out.push(json!({
                     "name": name,
                     "device": device,
                     "level_at_pairing": k.and_then(|k| k.level),
                     "paired_at": k.map(|k| k.paired_at),
-                    "path": agent.path_of(&name).await,
+                    "path": route.as_ref().map(|r| r.path),
+                    "relay": route.as_ref().and_then(|r| r.relay.clone()),
+                    "relay_n0": route.as_ref().is_some_and(Route::via_n0),
                     "default": known.default.as_deref() == Some(name.as_str()),
                 }));
             }
@@ -863,6 +917,17 @@ impl EventFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_only_an_unreachable_host_and_only_while_there_is_time() {
+        let s = Duration::from_secs;
+        assert_eq!(retry_after(&Refusal::Unreachable, 0, s(0)), Some(s(1)));
+        assert_eq!(retry_after(&Refusal::Unreachable, 1, s(2)), Some(s(3)));
+        assert_eq!(retry_after(&Refusal::Unreachable, 2, s(5)), None, "two retries at most");
+        assert_eq!(retry_after(&Refusal::Unreachable, 0, s(20)), None, "a timed-out dial is not repeated");
+        assert_eq!(retry_after(&Refusal::NotPaired, 0, s(0)), None);
+        assert_eq!(retry_after(&Refusal::Revoked, 0, s(0)), None);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn embedded_close_waits_for_an_in_flight_state_borrow() {
