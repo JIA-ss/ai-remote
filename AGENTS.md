@@ -201,3 +201,59 @@ python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-
 # 旧的真实屏幕采集 + 编码（会读当前屏幕，只在内存里）
 cargo test -p ar-host --release --lib capture_and_encode_the_screen -- --ignored --nocapture
 ```
+
+## 锁屏 / 登录界面下的远程访问（2026-10 起）
+
+背景与方案见 `CLAUDE.md` 的"当前专项"（RustDesk 式：服务 + 跟随输入桌面 + DXGI 采集）。按模块推进，每步编译、测试、本机验证。
+
+### 已做：DXGI Desktop Duplication 采集后端（`stream/capture/dda.rs`，2026-10-12）
+
+- 和 WGC 共用 `win.rs` 的 `Gpu`（同一个 D3D11 设备）和 `Converter`（GPU 缩放 + BGRA→NV12），产出同样的
+  `Raw { gpu }` 放进 `Slot`，后面的硬件编码链路不变。`win.rs` 只把 `Gpu::for_monitor`、`Converter` 及其
+  `new`/`convert` 改成 `pub(super)`。
+- 采集线程：`OpenInputDesktop` + `SetThreadDesktop` 跟随输入桌面（RustDesk `windows.cc` 的
+  `selectInputDesktop`）；`AcquireNextFrame` 出错（`DXGI_ERROR_ACCESS_LOST`：桌面切换、改分辨率、独占全屏）或
+  `ReleaseFrame` 失败就重建 duplication，失败时每 500 ms 重试一次，只记一条警告；画面静止时每 100 ms 比对一次
+  线程桌面和输入桌面的名字，不一致也重建。首次 duplication 失败时 `start` 直接返回错误。
+- **不是默认路径**：只有 `AI_REMOTE_CAPTURE=dda` 时 `capture::start` 才用它，失败就回退 WGC。
+- TODO：光标没合成进画面（要用 `DXGI_OUTDUPL_FRAME_INFO` 和 `GetFramePointerShape` 画上去）；旋转屏的画面是
+  没转正的（只记一条警告）；HDR 桌面走 `DuplicateOutput`，拿到的是被截断的 BGRA8。
+- **还没验证锁屏/UAC**：现在被控端以登录用户身份运行，锁屏后 `OpenInputDesktop(Winlogon)` 会被拒，DDA 只会
+  反复重试，等解锁后恢复。真正采到安全桌面要等服务化（SYSTEM 身份、在会话里启动）那一步。本机解锁/锁屏切换的
+  恢复也还没实测。
+
+**坑：不能让 `AcquireNextFrame` 自己等。** 第一版用 `AcquireNextFrame(100 ms)` 阻塞等新帧，同设备上的 MF 编码器
+被拖慢 4~6 倍。对照实验（5120×2160 HEVC，同一张 NV12 纹理反复编码，每 10 ms 一帧，各 120 帧单次运行）：
+DDA 线程停掉时编码 p50 6.4 ms；DDA 线程在跑、阻塞等待时 25~49 ms；改成不等待（timeout 0）后 5.3 ms。
+推测是设备开了多线程保护，`AcquireNextFrame` 等待期间一直持有设备锁（未查证）。现在的做法是先
+`IDXGIOutput::WaitForVBlank` 等到刷新，再 `AcquireNextFrame(0)`；`WaitForVBlank` 失败时睡 1 ms 兜底。
+RustDesk 不受影响，因为它的采集器单线程、独占自己的设备。
+
+**实测**：`dda_encode_throughput`，RTX 4070 Ti / 驱动 581.57，主屏 5120×2160@100Hz，release。采的是真实屏幕，
+测试在左上角开一个 96×96 的窗口约每 4 ms 变一次色，好让屏幕持续刷新（DDA 在静止画面上不出帧），屏幕其余部分
+基本静止。所以这是"小区域变化"的常见场景，**和 `gpu_encode_throughput` 的整屏滚动不可比**，码率也不能用来
+比较。各编码每轮 120 帧，跑了 3 轮；首帧（编码器初始化）不计。"采集→编码完成"从 `AcquireNextFrame` 返回算到
+`encode_raw` 返回，包括 GPU 转换、经 Slot 交接、编码器提交和取回输出：
+
+| 输出尺寸 | 编码 | 采集→编码完成 p50 / p95 | 其中 encode_raw p50 / p95 | 帧率 |
+|---|---|---|---|---:|
+| 5120×2160 | HEVC | 5.39~5.45 / 5.66~5.72 ms | 5.18~5.24 / 5.46~5.47 ms | 99.7~100.6 |
+| 5120×2160 | AV1 | 4.29~4.36 / 4.43~4.57 ms | 4.08~4.12 / 4.22~4.31 ms | 99.9~100.4 |
+| 4096×1728（H.264 上限） | H.264 | 5.26~5.29 / 5.45~5.51 ms | 5.05~5.07 / 5.23~5.26 ms | 99.7~100.1 |
+| 1920×810（`AR_EDGE=1920`，1 轮） | HEVC / AV1 / H.264 | 2.08 / 1.46 / 1.61 ms（p50） | 1.87 / 1.22 / 1.39 ms | 100~101 |
+
+帧率被 100 Hz 刷新率封顶（DDA 每次刷新最多出一帧）。单帧最大值偶尔有 7~18 ms（每轮 120 帧里有一两帧），
+原因没查。DDA 线程本身的 CPU 占用没测。
+
+```sh
+cargo test -p ar-host --release --lib dda_encode_throughput -- --ignored --nocapture
+AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_throughput -- --ignored --nocapture
+# 端到端试用：被控端设 AI_REMOTE_CAPTURE=dda 后照常连接
+```
+
+### 下一步
+
+- [ ] 本机验证桌面切换后的恢复：锁屏→解锁、改分辨率、独占全屏游戏进出，看重建要多久、有没有漏帧或黑帧。
+- [ ] 光标合成（或者和"光标改为客户端绘制"一起做）。
+- [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。
+- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关。

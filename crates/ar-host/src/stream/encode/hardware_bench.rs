@@ -57,7 +57,13 @@ fn native_without_iosurface_keeps_a_decodable_software_fallback() {
         eprintln!("non-IOSurface fallback probe unavailable: OS allocated an IOSurface");
         return;
     }
-    let raw = super::super::capture::Raw { bgra: Vec::new(), width, height, pixel_buffer: Some(buffer) };
+    let raw = super::super::capture::Raw {
+        bgra: Vec::new(),
+        width,
+        height,
+        captured: Instant::now(),
+        pixel_buffer: Some(buffer),
+    };
     let mut encoder = FrameEncoder::new(30, 2_000_000, 160).unwrap();
     let first = encoder.encode_raw(&raw).unwrap().expect("software fallback frame");
     assert_eq!(encoder.backend_name(), "openh264-software");
@@ -76,7 +82,13 @@ fn hardware_native_annex_b_roundtrip() {
     let (width, height) = (640, 360);
     let pixels = synthetic(width, height);
     let buffer = native_buffer(&pixels, width, height);
-    let raw = super::super::capture::Raw { bgra: Vec::new(), width, height, pixel_buffer: Some(buffer) };
+    let raw = super::super::capture::Raw {
+        bgra: Vec::new(),
+        width,
+        height,
+        captured: Instant::now(),
+        pixel_buffer: Some(buffer),
+    };
     // 640->320 checks native transfer scaling rather than CPU BGRA resizing.
     let mut encoder = require_hardware(width, height, 320, 2_000_000).expect("actual hardware encoder");
     let frame = encoder.encode_raw(&raw).unwrap().expect("hardware output");
@@ -137,8 +149,13 @@ fn synthetic_encoder_ab() {
                     continue;
                 }
             };
-            let raw =
-                super::super::capture::Raw { bgra: Vec::new(), width, height, pixel_buffer: Some(native.clone()) };
+            let raw = super::super::capture::Raw {
+                bgra: Vec::new(),
+                width,
+                height,
+                captured: Instant::now(),
+                pixel_buffer: Some(native.clone()),
+            };
             let encode = |encoder: &mut FrameEncoder| -> anyhow::Result<Option<Encoded>> {
                 if mode == "videotoolbox-native" {
                     encoder.encode_raw(&raw)

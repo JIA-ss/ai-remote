@@ -129,7 +129,13 @@ impl SCStreamOutputTrait for FrameHandler {
         }
         // pixel_buffer() retains the CF object; releasing CMSampleBuffer is safe. The native
         // surface stays immutable and owned through encoding, then returns to the capture pool.
-        self.slot.put(Raw { bgra: Vec::new(), width, height, pixel_buffer: Some(pixel_buffer) });
+        self.slot.put(Raw {
+            bgra: Vec::new(),
+            width,
+            height,
+            captured: std::time::Instant::now(),
+            pixel_buffer: Some(pixel_buffer),
+        });
     }
 }
 
