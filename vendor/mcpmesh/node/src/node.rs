@@ -420,6 +420,14 @@ impl Node {
         self.mesh().endpoint.addr()
     }
 
+    /// The endpoint's latest network report (ai-remote patch): whether UDP works over IPv4 and IPv6,
+    /// whether the NAT maps differently per destination (hole punching then rarely works), and the
+    /// public addresses seen. `None` until the first report completes, a few seconds after start.
+    pub fn net_report(&self) -> Option<iroh::unstable_net_report::NetReport> {
+        use iroh::Watcher as _;
+        self.mesh().endpoint.net_report().get()
+    }
+
     /// Dial `peer` on a custom `alpn` — the client half of [`accept_protocol`](Self::accept_protocol)
     /// (#67).
     ///

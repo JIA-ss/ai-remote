@@ -154,7 +154,7 @@
     },
     {
       "path": "node/Cargo.toml",
-      "sha256": "a7a8c3ae0eb08c50f1f4268e392e7238fb980f43777d256cfbffb5d2816a69e9"
+      "sha256": "5ae42fbc5c064ffc1a650fa3bd1b95883b90b42423cda1a964fe486a1b58b14b"
     },
     {
       "path": "node/src/allowlist.rs",
@@ -306,7 +306,7 @@
     },
     {
       "path": "node/src/node.rs",
-      "sha256": "a3f43b00f71274b91786994b009bee8e65bbaf58f0b1685a2eaf02cc1876a975"
+      "sha256": "4bde7df1e8719bbc4ff9ec74e633884ebf3f19219fcd1d8974922733378ae476"
     },
     {
       "path": "node/src/pairing/mod.rs",
@@ -424,6 +424,13 @@
         "node/src/daemon/boot.rs"
       ],
       "summary": "[network].proxy_url: route relay connections through an HTTP(S) proxy (Builder::proxy_url), with a unit test"
+    },
+    {
+      "files": [
+        "node/Cargo.toml",
+        "node/src/node.rs"
+      ],
+      "summary": "iroh feature unstable-net-report and Node::net_report(): UDP reachability and NAT mapping for connectivity diagnostics"
     }
   ]
 }
