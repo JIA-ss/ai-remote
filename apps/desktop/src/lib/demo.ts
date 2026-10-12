@@ -152,6 +152,7 @@ export const demoBackend: Backend = {
       mcp: { command: "ai-remote", args: ["mcp"] } };
   },
   async openAppearanceSettings() {},
+  async fixFirewall() {},
   async disconnectAgent(id) {
     const i = demoAgents.findIndex((a) => a.id === id);
     if (i >= 0) demoAgents.splice(i, 1);

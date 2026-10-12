@@ -29,6 +29,8 @@ tracing.workspace = true
 software-approver = ["dep:ring"]
 
 [target.'cfg(windows)'.dependencies]
+# Inbound block rules for this program (a dismissed "allow access?" prompt), which defeat hole punching.
+windows_firewall.workspace = true
 windows = { version = "0.62", features = [
   "Foundation",
   "Security_Credentials",

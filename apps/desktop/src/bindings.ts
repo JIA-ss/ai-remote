@@ -12,6 +12,11 @@ export const commands = {
 	openAppearanceSettings: () => typedError<null, string>(__TAURI_INVOKE("open_appearance_settings")),
 	/**  Paired hosts with the level granted at pairing and the current path (direct or relay). */
 	listHosts: () => typedError<Json, string>(__TAURI_INVOKE("list_hosts")),
+	/**
+	 *  Lets direct (P2P) connections in through the system firewall: removes this app's inbound block
+	 *  rules and allows inbound UDP. Asks for an administrator's consent on Windows.
+	 */
+	fixFirewall: () => typedError<Json, string>(__TAURI_INVOKE("fix_firewall")),
 	/**  Redeems a host's pairing ticket; returns the host's name, the safety code and the level. */
 	pair: (ticket: string, name: string | null) => typedError<Json, string>(__TAURI_INVOKE("pair", { ticket, name })),
 	/**

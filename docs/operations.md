@@ -767,6 +767,7 @@ default, so a connection gets through on as many networks as possible without co
 | Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | — |
 | HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | `proxy = "none"` |
 | Relay fallback | With your own relays set, n0's public relays stay as a fallback | `relay_fallback_n0 = false` |
+| Firewall check | The controller notices when the system firewall blocks it (a dismissed "allow access?" prompt leaves block rules) and the desktop app offers "Allow in firewall" (one administrator prompt) | — |
 | Retry | The controller dials an unreachable host again after 1 s and 3 s (a network that is just switching often gets through) | — |
 
 Relayed traffic stays encrypted end to end, but adds latency; n0's free public relays are also
@@ -782,6 +783,7 @@ relays = ["https://relay1.example.org", "https://relay2.example.org"]
 relay_fallback_n0 = true
 proxy = ""            # empty or absent: detect; "none": never; or e.g. "http://proxy.corp:3128"
 lan_discovery = "on"  # host default "on", controller default "resolve"
+port = 0              # a fixed UDP port to forward on your router; 0 or absent: random
 ```
 
 - **Relays.** An empty list means n0's public relays. With your own
@@ -799,6 +801,9 @@ lan_discovery = "on"  # host default "on", controller default "resolve"
   including its public address, about once a second) so others there can find it; `"resolve"` finds
   others without announcing. The host defaults to `"on"` so a controller on the same network can reach
   it without internet; set `"resolve"` or `"off"` on a laptop host used on public networks.
+- **Fixed port.** Behind a NAT that defeats hole punching (`doctor` reports `p2p` warn), forward a UDP port
+  on the router to the host and set `port` to it: controllers then reach the host directly. If the port is
+  taken when the host starts, it uses a random port and says so in the log.
 
 ## 13. Troubleshooting
 
