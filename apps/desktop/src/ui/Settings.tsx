@@ -277,6 +277,17 @@ const shortKey = (id: string) => {
 function Device({ status }: { status: AgentStatus | null }) {
   const [copied, setCopied] = useState(false);
   const id = status?.device ?? "";
+  // This computer as a host: its paired controllers when ai-remote host runs here, `null` when not.
+  const [controllers, setControllers] = useState<LocalController[] | null | undefined>(undefined);
+  const [hostError, setHostError] = useState<string | null>(null);
+  const reload = () =>
+    api.localControllers().then(setControllers, (e) => {
+      setControllers(null);
+      setHostError(String(e));
+    });
+  useEffect(() => {
+    void reload();
+  }, []);
   return (
     <>
       <div className="grp">
@@ -304,18 +315,24 @@ function Device({ status }: { status: AgentStatus | null }) {
       <div className="grp-h" style={{ marginTop: 28 }}>
         {t("dv_host")}
       </div>
-      <div className="grp">
-        <div className="gr noic" style={{ display: "block", padding: 16 }}>
-          <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
-            {t("dv_host_d")}
-          </div>
-          <CmdLine cmd="ai-remote host install" />
-          <div className="ds" style={{ marginTop: 10 }}>
-            {t("dv_host_note")}
+      {controllers ? (
+        <div className="grp">
+          <Row ic={<Icon name="check" />} tt={t("dv_host_running")} ds={t("dv_host_running_d")} />
+        </div>
+      ) : (
+        <div className="grp">
+          <div className="gr noic" style={{ display: "block", padding: 16 }}>
+            <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
+              {t("dv_host_d")}
+            </div>
+            <CmdLine cmd="ai-remote host install" />
+            <div className="ds" style={{ marginTop: 10 }}>
+              {t("dv_host_note")}
+            </div>
           </div>
         </div>
-      </div>
-      <TrustedControllers />
+      )}
+      {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
     </>
   );
 }
@@ -327,19 +344,18 @@ const levelKey = { observe: "lvl_observe", control: "lvl_control", admin: "lvl_a
  * or trusted with everything (bypass). Set over the host's local channel only, so no controller or
  * agent can give it to itself; turning it on asks for a confirmation that says what it means.
  */
-function TrustedControllers() {
-  const [list, setList] = useState<LocalController[] | null | undefined>(undefined);
+function TrustedControllers({
+  list,
+  hostError,
+  reload,
+}: {
+  list: LocalController[] | null;
+  hostError: string | null;
+  reload: () => Promise<void>;
+}) {
   const [ask, setAsk] = useState<LocalController | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = () =>
-    api.localControllers().then(setList, (e) => {
-      setList(null);
-      setError(String(e));
-    });
-  useEffect(() => {
-    void load();
-  }, []);
-  if (list === undefined) return null;
+  const load = reload;
   const describe = (c: LocalController) => {
     if (c.revoked) return t("bp_d_revoked");
     if (c.level === null) return t("bp_d_nolevel");
@@ -354,7 +370,7 @@ function TrustedControllers() {
       <div className="grp-sub">{t("bp_sub")}</div>
       {list === null ? (
         <div className="gnote" style={{ marginTop: 0 }}>
-          {error ?? t("bp_no_host")}
+          {hostError ?? t("bp_no_host")}
         </div>
       ) : list.length === 0 ? (
         <div className="gnote" style={{ marginTop: 0 }}>
