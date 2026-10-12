@@ -869,6 +869,17 @@ impl Progress {
     }
 }
 
+/// An error from redeeming a transfer ticket: the host's refusal (an expired or used ticket, a level
+/// lowered meanwhile, a takeover) exits 2 like any refusal; anything else (unreachable) is returned.
+fn refused_transfer(e: anyhow::Error) -> anyhow::Error {
+    let text = format!("{e:#}");
+    if text.starts_with("host '") {
+        eprintln!("{text}");
+        exit(2);
+    }
+    e
+}
+
 /// Redeems a transfer ticket through the agent: the host's first reply and the stream after it.
 async fn open_transfer(
     profile: &Profile,
@@ -922,7 +933,7 @@ pub async fn push(profile: &Profile, a: PushArgs, json_out: bool) -> Result<()> 
     put(&mut args, "intent", a.intent);
     let issued = call(profile, &a.target, "files_push", Value::Object(args)).await?.ok();
     let ticket = issued["ticket"].as_str().ok_or_else(|| anyhow!("the host issued no transfer ticket"))?;
-    let (reply, mut reader, mut writer) = open_transfer(profile, &a.target, ticket).await?;
+    let (reply, mut reader, mut writer) = open_transfer(profile, &a.target, ticket).await.map_err(refused_transfer)?;
     let total = reply["size"].as_u64().unwrap_or(meta.len());
     let started = Instant::now();
     let mut progress = Progress::new("push", total, json_out);
@@ -994,7 +1005,7 @@ pub async fn pull(profile: &Profile, a: PullArgs, json_out: bool) -> Result<()> 
     put(&mut args, "intent", a.intent);
     let issued = call(profile, &a.target, "files_pull", Value::Object(args)).await?.ok();
     let ticket = issued["ticket"].as_str().ok_or_else(|| anyhow!("the host issued no transfer ticket"))?;
-    let (reply, mut reader, _writer) = open_transfer(profile, &a.target, ticket).await?;
+    let (reply, mut reader, _writer) = open_transfer(profile, &a.target, ticket).await.map_err(refused_transfer)?;
     let total = reply["size"].as_u64().ok_or_else(|| anyhow!("the host did not say how big the file is"))?;
     let dir = dest.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let part = dir.join(format!(".{}.ai-remote.part", dest.file_name().unwrap_or_default().to_string_lossy()));

@@ -412,7 +412,8 @@ ai-remote bypass off my-laptop         # 或 --all
 
 仍然有效的：设备必须仍有配对和某个级别（`level <设备> none`、`revoke`、`forget` 会切断它，并同时结束它的 bypass；
 控制端自己降低级别也会结束 bypass）；人仍然可以接管或暂停 Agent（9.3 节）。控制端能看到自己处于 bypass
-（`ai-remote access`、`ai-remote info`、电脑页的“权限”标签、`system_info.you.bypass`），只要有控制端处于 bypass，
+（`ai-remote access`、`ai-remote info`、`system_info.you.bypass`；桌面应用在电脑页顶部和“访问权限”标签里标出“全部放开”，
+iPhone 应用在会话的权限标签里显示，并且不论级别都可以接管），只要有控制端处于 bypass，
 `ai-remote doctor` 就会给出警告。
 
 Bypass 只能在这台电脑上、经被控端的本地控制通道设置，控制端无法请求，所以 Agent 不能经 ai-remote 给自己开。

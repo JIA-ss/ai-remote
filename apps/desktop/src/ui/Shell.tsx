@@ -65,6 +65,7 @@ export function computerFacts(c: Computer): Array<[ReactNode, string]> {
   if (c.os) out.push([<OsGlyph key="os" os={c.os} size={12} />, t(c.os === "mac" ? "mac" : "win")]);
   const lvl = c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing;
   if (lvl) out.push([<Glyph key="lvl" name={levelGlyph[lvl]} size={12} />, t(levelName[lvl])]);
+  if (c.feed.bypass) out.push([<Glyph key="bypass" name="approval" size={12} />, t("bypass_fact")]);
   if (c.online === true && (c.host.path === "direct" || c.host.path === "relay"))
     out.push([<Glyph key="p" name={c.host.path === "relay" ? "relayed" : "direct"} size={12} />, t(c.host.path === "relay" ? "relayed" : "direct")]);
   return out;

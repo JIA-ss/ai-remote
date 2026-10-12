@@ -99,6 +99,8 @@ export type FeedEvent =
       driver?: Driver;
       /** This device's level on the host now. */
       level?: Level | null;
+      /** The host's owner trusts this device with everything (every tool, no approvals). */
+      bypass?: boolean;
     }
   | {
       kind: "session_start" | "session_end";

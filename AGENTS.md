@@ -97,6 +97,14 @@ MCP 工具列表。
   （设置页没有开关组件，其他选项也都是下拉框），选"全部放开"弹红色确认框写明后果；电脑页"权限"标签对被信任的设备显示红字说明。
   `bindings.ts` 手写后由 debug 构建重新生成核对。
 
+### 多端
+
+- Windows / macOS 桌面端：被控端那台的"设置 → 本设备"在 host 运行时显示"正在运行"和逐台信任设置（不再显示安装命令）；
+  控制端的电脑页顶部事实栏和"访问权限"标签标出"全部放开"（feed hello 的 `bypass`），bypass 下不再显示"只有管理权限能看到其他设备"。
+  审批卡和标题给 `files_*` 写了专门的问句。macOS 走 Unix socket 控制通道，代码不分平台，由 CI（macos-15）编译和测试。
+- iPhone：`PhoneStore.bypass`（access 应答和 hello），`mayControl` 包含 bypass，否则 observe 级的手机在 bypass 下"接管"会被错误置灰；
+  权限标签显示"全部放开（无需审批）"。Swift 只能在 Mac 上编，靠 iOS CI。
+
 ### 验证
 
 - `python tools/bypass-smoke.py`：observe 级控制端 + 无审批框 + deny 规则的被控端，21 项：开启前 shell 被级别拒；开启后 shell 免审批、

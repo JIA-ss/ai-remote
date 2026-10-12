@@ -66,6 +66,18 @@ test("cold connections query the actual path after hello; reconnect clears an ol
   assert.equal(s.store.get().computers[0].feed.level, "observe");
 });
 
+test("each hello says whether the host bypasses this device; the level stays the real one", async () => {
+  const s = setupStore();
+  await s.store.start();
+  assert.equal(s.store.get().computers[0].feed.bypass, false);
+  s.event({ kind: "hello", host: "test-mac", version: "test", level: "observe", bypass: true });
+  assert.equal(s.store.get().computers[0].feed.bypass, true);
+  assert.equal(s.store.get().computers[0].feed.level, "observe");
+  // Hosts from before bypass do not send the field: not bypassed.
+  s.event({ kind: "hello", host: "test-mac", version: "old", level: "observe" });
+  assert.equal(s.store.get().computers[0].feed.bypass, false);
+});
+
 test("refresh replaces host metadata without discarding active approvals or driver", async () => {
   const s = setupStore();
   await s.store.start();

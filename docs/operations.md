@@ -467,7 +467,9 @@ change.
 What still holds: the device needs its pairing and some level (`level <peer> none`, `revoke` and
 `forget` cut it off, and also end its bypass, as does a controller lowering its own level); a person
 can still take over or pause the agent (section 9.3). The controller can see that it is bypassed
-(`ai-remote access`, `ai-remote info`, the computer page's Access tab, `system_info.you.bypass`), and
+(`ai-remote access`, `ai-remote info`, `system_info.you.bypass`; the desktop app marks the computer
+Everything allowed in its header and Access tab, the iPhone app in the session's permission label,
+which also enables taking over whatever the level), and
 `ai-remote doctor` warns while any controller is bypassed.
 
 Bypass is set only at this computer, over the host's local control channel; no controller can ask

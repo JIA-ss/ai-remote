@@ -131,7 +131,7 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
         lede={level ? t(ledes[level], { host }) : null}
       />
       {access.bypass && (
-        <div className="cp-lede body c-danger" role="note" style={{ marginTop: 8 }}>
+        <div className="body c-danger" role="note" style={{ margin: "8px 0 0", maxWidth: 760, fontSize: 14, lineHeight: 1.65 }}>
           {t("acc_bypass", { host })}
         </div>
       )}
@@ -218,7 +218,7 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
               </div>
             ))}
           </div>
-          {!admin && <div className="gnote">{t("acc_devices_note")}</div>}
+          {!admin && !access.bypass && <div className="gnote">{t("acc_devices_note")}</div>}
           <div className="grp" style={{ marginTop: 20 }}>
             <div className="gr noic" style={{ alignItems: "start" }}>
               <div>

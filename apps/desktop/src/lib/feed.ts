@@ -18,6 +18,8 @@ export interface FeedState {
   turns: Array<{ ts: number; driver?: Driver; by: string; note?: string; message?: string }>;
   /** This device's level on the host as the host last said (`undefined`: not said yet). */
   level?: Level | null;
+  /** The host's owner trusts this device with everything: every tool, no approvals, no deny rules. */
+  bypass?: boolean;
   /** False once the feed ended (host stopped, connection lost). */
   live: boolean;
   missed: number;
@@ -74,6 +76,7 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
         pending: (e.pending ?? []).map(toPending),
         driver: e.driver ?? state.driver,
         level: e.level !== undefined ? e.level : state.level,
+        bypass: e.bypass ?? false,
       };
     case "session_start":
       return {
