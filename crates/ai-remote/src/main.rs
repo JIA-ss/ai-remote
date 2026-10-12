@@ -1499,11 +1499,18 @@ fn print_json(v: &Value) -> Result<()> {
 /// How a host's open connection travels, for `ai-remote hosts`.
 fn route_text(h: &Value) -> String {
     let relay = h["relay"].as_str().map(|r| r.split_once("://").map_or(r, |(_, host)| host).trim_end_matches('.'));
+    let why = match h["p2p_obstacle"].as_str() {
+        Some("udp_blocked") => " (this network blocks UDP)",
+        Some("symmetric_nat") => " (this network's NAT is symmetric)",
+        Some("captive_portal") => " (this network wants a sign-in page first)",
+        Some(_) => " (likely the host's network)",
+        None => "",
+    };
     match (h["path"].as_str(), relay) {
         (Some("direct"), _) => "direct (P2P)".into(),
-        (Some("relay"), Some(relay)) if h["relay_n0"] == true => format!("n0 public relay ({relay}): P2P failed"),
-        (Some("relay"), Some(relay)) => format!("relay {relay}: P2P failed"),
-        (Some("relay"), None) => "relay: P2P failed".into(),
+        (Some("relay"), Some(relay)) if h["relay_n0"] == true => format!("n0 public relay ({relay}): P2P failed{why}"),
+        (Some("relay"), Some(relay)) => format!("relay {relay}: P2P failed{why}"),
+        (Some("relay"), None) => format!("relay: P2P failed{why}"),
         (Some(_), _) => "route unknown".into(),
         (None, _) => "not connected".into(),
     }

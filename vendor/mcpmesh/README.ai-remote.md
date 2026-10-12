@@ -9,6 +9,9 @@ ai-remote patch (listed under `ai_remote_patches` in `PROVENANCE.json`, hashes u
 `[network].proxy_url` in `node/src/config.rs`, applied in `node/src/daemon/boot.rs` (`apply_proxy`) so
 relay connections can go through an HTTP(S) proxy on networks that only allow traffic out that way.
 Test: `cargo test -p mcpmesh-node --lib proxy_url` from this directory.
+Second patch: `node/Cargo.toml` enables iroh's `unstable-net-report` and `node/src/node.rs` adds
+`Node::net_report()` (UDP v4/v6, symmetric NAT, captive portal) for `ai-remote doctor` and the relay
+notice. The feature is iroh's unstable API: recheck it on every iroh bump.
 
 Only the five library crates and their original tests are included. CLI/release tooling is
 excluded and the nested workspace member list is shortened accordingly. Sources are unchanged.

@@ -40,9 +40,12 @@ public struct PhoneHost: Identifiable, Sendable, Equatable {
     public let relay: String?
     /// The relay is one of n0's public relays (rate-limited, meant by n0 for development).
     public let relayN0: Bool
+    /// While relayed, what likely kept the connection from going direct.
+    public let p2pObstacle: String?
     public init(_ v: JSONValue) {
         name = v["name"].string ?? ""; level = v["level_at_pairing"].string; path = v["path"].string
         relay = v["relay"].string.flatMap(Self.relayHost); relayN0 = v["relay_n0"] == .bool(true)
+        p2pObstacle = v["p2p_obstacle"].string
     }
 
     /// Short name of the route, or nil while it is not known.
@@ -58,11 +61,18 @@ public struct PhoneHost: Identifiable, Sendable, Equatable {
     public var relayNote: (note: String, detail: String)? {
         guard path == "relay" else { return nil }
         let relay = relay ?? "?"
+        let why = switch p2pObstacle {
+        case "udp_blocked": "\n可能的原因：这台设备所在网络不放行 UDP。"
+        case "symmetric_nat": "\n可能的原因：这台设备所在网络是对称型 NAT，打洞很难成功。"
+        case "captive_portal": "\n可能的原因：这台设备所在网络需要先在网页上登录。"
+        case "remote": "\n这台设备的网络允许直连，原因多半在电脑那边的网络。"
+        default: ""
+        }
         return relayN0
             ? ("P2P 直连失败 · 经 n0 公共中继转发",
-               "没能建立直连（P2P），流量正经 n0 的免费公共中继 \(relay) 转发。仍是端到端加密，但延迟更高，而且 n0 会限速。改用自建中继可以避开限速。")
+               "没能建立直连（P2P），流量正经 n0 的免费公共中继 \(relay) 转发。仍是端到端加密，但延迟更高，而且 n0 会限速。改用自建中继可以避开限速。" + why)
             : ("P2P 直连失败 · 经中继转发",
-               "没能建立直连（P2P），流量正经中继 \(relay) 转发。仍是端到端加密，延迟会更高。")
+               "没能建立直连（P2P），流量正经中继 \(relay) 转发。仍是端到端加密，延迟会更高。" + why)
     }
 
     /// `https://host:port` → `host`, without the trailing root dot.

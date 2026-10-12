@@ -1,7 +1,7 @@
 // Small helpers shared by the views.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { t } from "../lib/i18n";
+import { t, type Key } from "../lib/i18n";
 import type { Host } from "../lib/types";
 
 export const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
@@ -111,7 +111,8 @@ export function routeLabel(h: Host): string {
 export function relayNote(h: Host): { note: string; detail: string } | null {
   if (h.path !== "relay") return null;
   const relay = h.relay ?? "?";
+  const why = h.p2pObstacle ? ` ${t(`relay_why_${h.p2pObstacle}` as Key)}` : "";
   return h.relayN0
-    ? { note: t("relay_note_n0"), detail: t("relay_detail_n0", { relay }) }
-    : { note: t("relay_note", { relay }), detail: t("relay_detail", { relay }) };
+    ? { note: t("relay_note_n0"), detail: t("relay_detail_n0", { relay }) + why }
+    : { note: t("relay_note", { relay }), detail: t("relay_detail", { relay }) + why };
 }
