@@ -37,6 +37,8 @@ export interface Backend {
   /** Opens the system's light and dark settings (the app follows them). */
   openAppearanceSettings(): Promise<void>;
   hosts(): Promise<Host[]>;
+  /** Removes this app's firewall block rules and allows inbound UDP (asks for administrator consent). */
+  fixFirewall(): Promise<void>;
   pair(ticket: string, name?: string): Promise<Paired>;
   unpair(host: string): Promise<void>;
   /** `person`: the person at this device makes the call (it runs while they have taken over). */
@@ -175,6 +177,9 @@ const tauriBackend: Backend = {
       relayN0: h.relay_n0 === true,
       p2pObstacle: (h.p2p_obstacle as Host["p2pObstacle"]) ?? null,
     }));
+  },
+  async fixFirewall() {
+    unwrap(await commands.fixFirewall());
   },
   async pair(ticket, name) {
     const v = unwrap(await commands.pair(ticket, name ?? null)) as Record<string, unknown>;

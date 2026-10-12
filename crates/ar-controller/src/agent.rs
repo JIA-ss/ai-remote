@@ -44,6 +44,9 @@ pub enum AgentRequest {
         name: Option<String>,
     },
     Hosts,
+    /// Remove the firewall's inbound block rules for this program and allow inbound UDP (asks for
+    /// an administrator's consent on Windows).
+    FixFirewall,
     /// Forget a host (its pairing on this controller).
     Unpair {
         host: String,
@@ -133,6 +136,8 @@ pub(crate) struct Agent {
     pub mesh: Mesh,
     hosts_path: PathBuf,
     conns: Mutex<HashMap<String, Connection>>,
+    /// Whether the firewall blocks this program, read at most once a minute.
+    firewall: Arc<crate::firewall::FirewallCache>,
     /// One dial at a time per host, without holding `conns` (and every other host) while it runs.
     dialing: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     refusals: std::sync::Mutex<Refusals>,
@@ -279,8 +284,17 @@ impl Agent {
     /// While `route` is relayed: what on this side's network likely kept it from going direct
     /// (`"udp_blocked"`, `"symmetric_nat"`, `"captive_portal"`), or `"remote"` when nothing here
     /// explains it, so the other side's network is the likely cause.
-    pub fn p2p_obstacle(&self, route: Option<&Route>) -> Option<&'static str> {
-        (route?.path == ar_net::PathKind::Relay).then(|| self.mesh.nat().and_then(|n| n.obstacle()).unwrap_or("remote"))
+    /// `"firewall"` when the system firewall refuses inbound traffic for this program.
+    pub async fn p2p_obstacle(&self, route: Option<&Route>) -> Option<&'static str> {
+        if route?.path != ar_net::PathKind::Relay {
+            return None;
+        }
+        if let Some(obstacle) = self.mesh.nat().and_then(|n| n.obstacle()) {
+            return Some(obstacle);
+        }
+        let firewall = self.firewall.clone();
+        let blocked = tokio::task::spawn_blocking(move || firewall.blocked()).await.unwrap_or(false);
+        Some(if blocked { "firewall" } else { "remote" })
     }
 
     /// The route of the open connection to `host`: direct or relayed, and through which relay.
@@ -311,6 +325,7 @@ async fn start_state(profile: &Profile) -> Result<Arc<Agent>> {
         hosts_path: profile.role_dir(Role::Controller)?.join("hosts.json"),
         conns: Mutex::new(HashMap::new()),
         dialing: std::sync::Mutex::new(HashMap::new()),
+        firewall: Default::default(),
         refusals: std::sync::Mutex::new(Refusals::default()),
         active: AtomicUsize::new(0),
         last_activity: std::sync::Mutex::new(Instant::now()),
@@ -587,6 +602,11 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
 
 async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationToken) -> Result<Value> {
     Ok(match req {
+        AgentRequest::FixFirewall => {
+            tokio::task::spawn_blocking(crate::firewall::fix).await??;
+            agent.firewall.clear();
+            json!({"fixed": true})
+        }
         AgentRequest::Status => json!({
             "device": agent.mesh.principal(),
             "name": machine_name(),
@@ -621,7 +641,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                     "path": route.as_ref().map(|r| r.path),
                     "relay": route.as_ref().and_then(|r| r.relay.clone()),
                     "relay_n0": route.as_ref().is_some_and(Route::via_n0),
-                    "p2p_obstacle": agent.p2p_obstacle(route.as_ref()),
+                    "p2p_obstacle": agent.p2p_obstacle(route.as_ref()).await,
                     "default": known.default.as_deref() == Some(name.as_str()),
                 }));
             }

@@ -253,6 +253,11 @@ pub struct NetworkCfg {
     /// startup ERROR, like the other `[network]` knobs.
     #[serde(default)]
     pub proxy_url: Option<String>,
+    /// `[network].bind_port` (ai-remote patch) — a fixed UDP port for the IPv4 socket, for someone
+    /// who forwards that port on their router. `None` = a random port. When the port is taken, the
+    /// node warns and falls back to a random port instead of failing to start.
+    #[serde(default)]
+    pub bind_port: Option<u16>,
 }
 
 fn default_local_discovery() -> String {
@@ -271,6 +276,7 @@ impl Default for NetworkCfg {
             keep_alive_secs: None,
             local_discovery: default_local_discovery(),
             proxy_url: None,
+            bind_port: None,
         }
     }
 }

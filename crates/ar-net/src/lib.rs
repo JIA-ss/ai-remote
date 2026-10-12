@@ -71,6 +71,8 @@ pub struct NetworkOptions {
     pub proxy: proxy::ProxySetting,
     /// Finding peers on the local network (mDNS), which works with no internet at all.
     pub lan: LanDiscovery,
+    /// A fixed UDP port for IPv4 (to forward on a router); `None` for a random one.
+    pub port: Option<u16>,
 }
 
 impl NetworkOptions {
@@ -81,6 +83,7 @@ impl NetworkOptions {
             relay_fallback_n0: net.relay_fallback_n0.unwrap_or(true),
             proxy: proxy::ProxySetting::parse(net.proxy.as_deref()),
             lan: LanDiscovery::parse(net.lan_discovery.as_deref(), lan_default)?,
+            port: net.port.filter(|&p| p != 0),
         })
     }
 }
@@ -686,6 +689,10 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
         }
     }
     network.insert("local_discovery".into(), net.lan.as_str().into());
+    match net.port {
+        Some(port) => network.insert("bind_port".into(), i64::from(port).into()),
+        None => network.remove("bind_port"),
+    };
     std::fs::write(&path, toml::to_string(&doc)?).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
@@ -722,6 +729,7 @@ mod tests {
                     relay_fallback_n0,
                     proxy,
                     lan,
+                    port: (lan == LanDiscovery::Resolve).then_some(41641),
                 },
             })
             .unwrap();
@@ -741,11 +749,13 @@ mod tests {
         assert_eq!(urls(&net), 5, "the self-hosted relay plus n0's four as a fallback");
         assert_eq!(net["proxy_url"].as_str(), Some("http://proxy.corp:3128"));
         assert_eq!(net["local_discovery"].as_str(), Some("resolve"));
+        assert_eq!(net["bind_port"].as_integer(), Some(41641));
 
         assert_eq!(urls(&write(&["https://relay.example.org"], false, proxy::ProxySetting::Off, LanDiscovery::Off)), 1);
         let with_n0 = write(&["https://euc1-1.relay.n0.iroh.link"], true, proxy::ProxySetting::Off, LanDiscovery::Off);
         assert_eq!(urls(&with_n0), 4, "an n0 relay already listed is not added twice");
         assert!(with_n0.get("proxy_url").is_none(), "turning the proxy off removes the old one");
+        assert!(with_n0.get("bind_port").is_none(), "dropping the port removes the old one");
     }
 
     #[test]

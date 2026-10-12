@@ -12,6 +12,9 @@ Test: `cargo test -p mcpmesh-node --lib proxy_url` from this directory.
 Second patch: `node/Cargo.toml` enables iroh's `unstable-net-report` and `node/src/node.rs` adds
 `Node::net_report()` (UDP v4/v6, symmetric NAT, captive portal) for `ai-remote doctor` and the relay
 notice. The feature is iroh's unstable API: recheck it on every iroh bump.
+Third patch: `[network].bind_port` (`node/src/config.rs`, `build_endpoint` in `node/src/daemon/boot.rs`)
+binds the IPv4 socket on a fixed port for router port forwarding, falling back to a random port when it
+is taken. Test: `cargo test -p mcpmesh-node --lib bind_port`.
 
 Only the five library crates and their original tests are included. CLI/release tooling is
 excluded and the nested workspace member list is shortened accordingly. Sources are unchanged.

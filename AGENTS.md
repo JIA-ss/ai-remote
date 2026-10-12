@@ -474,6 +474,11 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
       控制端 `hosts`/`list_hosts` 在走中继时带 `p2p_obstacle`（本端没问题就是 `remote`，即原因多半在被控端网络），
       桌面端、iOS、命令行的中继说明里写出原因。本机实测 `doctor`：`p2p ok`（UDP 通，无 IPv6）。被控端自己的 NAT 情况
       目前不传给控制端（要走 events 通道），控制端只能判断本端。
-- [ ] Windows 桌面控制端防火墙：检查 `ai-remote-desktop.exe` 的阻止规则，设置页一键修复（UAC + `netsh`），安装包钩子加放行。
-- [ ] 可选固定 UDP 端口 `[network] port`，给能手动端口转发的用户。
+- [x] 控制端防火墙（`ar-controller/src/firewall.rs`）：Windows 防火墙开着且有启用的入站阻止规则指向本程序（点掉"允许访问"
+      弹窗留下的）时，`p2p_obstacle` 为 `firewall`；桌面端中继提示旁出现"在防火墙中允许"，走 agent 的 `fix_firewall`：
+      一次 UAC，提权 PowerShell（`-EncodedCommand`，免引号问题）删掉本程序的入站阻止规则并放行入站 UDP。macOS 只诊断
+      （`socketfilterfw --getblockall/--getappblocked`），不改设置。实测：本机防火墙关闭，读取结果 `false`（正确）；
+      **阻止规则存在时的判断和 UAC 修复都没实测**（要打开防火墙、点 UAC，属于改系统安全设置）。安装包钩子没做。
+- [x] 固定 UDP 端口 `[network] port`（vendored mcpmesh 第三处补丁 `bind_port`）：IPv4 绑定到该端口，端口被占用时
+      回退随机端口并告警（测试 `bind_port_is_used_when_free_and_skipped_when_taken`）。
 - [ ] 用局域网里的另一台机器做跨机器验证：mDNS（断外网）、强制中继（`unstable-relay-only` 构建）看提示。
