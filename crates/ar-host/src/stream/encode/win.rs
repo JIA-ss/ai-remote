@@ -4,7 +4,7 @@
 //! Hardware MFTs are asynchronous: the transform asks for input and announces output through
 //! events. A small thread blocks on `GetEvent` and forwards them; the encoder thread submits one
 //! frame, then waits (briefly) for its output, so a frame normally leaves in the same call.
-//! Low-latency mode, no B-frames and CBR keep each frame's output prompt and bounded.
+//! Low-latency mode, no B-frames and low-delay VBR keep each frame's output prompt and bounded.
 
 use std::{
     collections::VecDeque,
@@ -269,13 +269,7 @@ impl HardwareEncoder {
             let api = transform.cast::<ICodecAPI>().ok();
             if let Some(api) = &api {
                 // Rate control before the media types: several vendors only read it there.
-                set(
-                    api,
-                    &CODECAPI_AVEncCommonRateControlMode,
-                    variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32),
-                    "rate control",
-                );
-                set(api, &CODECAPI_AVEncCommonMeanBitRate, variant_u32(bitrate_bps), "bitrate");
+                rate_control(api, bitrate_bps);
                 set(api, &CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
                 set(api, &CODECAPI_AVEncMPVGOPSize, variant_u32(KEYFRAME_SPACING), "GOP");
             }
@@ -302,13 +296,7 @@ impl HardwareEncoder {
             transform.SetInputType(input_id, &input, 0).context("set the NV12 input format")?;
 
             if let Some(api) = &api {
-                set(
-                    api,
-                    &CODECAPI_AVEncCommonRateControlMode,
-                    variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32),
-                    "rate control",
-                );
-                set(api, &CODECAPI_AVEncCommonMeanBitRate, variant_u32(bitrate_bps), "bitrate");
+                rate_control(api, bitrate_bps);
                 // A couple of frames of buffer: a scene change is not starved, latency stays bounded.
                 set(
                     api,
@@ -502,6 +490,21 @@ impl HardwareEncoder {
         self.ready.push_back(Encoded { data, keyframe, width: self.width, height: self.height, codec: self.codec });
         Ok(())
     }
+}
+
+/// Low-delay VBR capped at the requested bitrate. Measured 2026-10-12 on NVENC at 4K60 / 40 Mbps
+/// (non-keyframes): CBR spent 19-28 Mbit/s on a still picture and AV1 overshot to 44 Mbit/s on a
+/// scrolling one; low-delay VBR spent 12-19 and 17-20 Mbit/s with the same encode time. Picture
+/// quality was not compared. Encoders without the mode keep their default (logged at debug).
+fn rate_control(api: &ICodecAPI, bitrate_bps: u32) {
+    set(
+        api,
+        &CODECAPI_AVEncCommonRateControlMode,
+        variant_u32(eAVEncCommonRateControlMode_LowDelayVBR.0 as u32),
+        "rate control",
+    );
+    set(api, &CODECAPI_AVEncCommonMeanBitRate, variant_u32(bitrate_bps), "bitrate");
+    set(api, &CODECAPI_AVEncCommonMaxBitRate, variant_u32(bitrate_bps), "peak bitrate");
 }
 
 fn video_type(t: &IMFMediaType, width: u32, height: u32, fps: u32) -> Result<()> {

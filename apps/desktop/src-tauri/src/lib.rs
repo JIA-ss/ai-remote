@@ -505,6 +505,12 @@ fn smoke(app: &tauri::App) {
         } else {
             let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
         }
+        // `AI_REMOTE_SMOKE_QUALITY=ultra` picks a live-view quality first (a stream-quality id; run
+        // with a throwaway `WEBVIEW2_USER_DATA_FOLDER` so the choice does not stick).
+        if let Ok(quality) = std::env::var("AI_REMOTE_SMOKE_QUALITY") {
+            let quality = quality.replace('\'', "");
+            let _ = w.eval(format!("localStorage.setItem('ai-remote.stream-quality', '{quality}')"));
+        }
         // `AI_REMOTE_SMOKE_QUERY=view=session&host=office-pc` opens a page directly.
         if let Ok(q) = std::env::var("AI_REMOTE_SMOKE_QUERY") {
             let q = q.replace('\'', "");
@@ -515,7 +521,7 @@ fn smoke(app: &tauri::App) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(secs));
         if let Some(w) = handle.get_webview_window("main") {
-            let _ = w.eval("window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'smoke', message: JSON.stringify({ secure: isSecureContext, decoder: typeof VideoDecoder, visibility: document.visibilityState, canvases: Array.from(document.querySelectorAll('canvas')).map(c => [c.width, c.height]) }) })");
+            let _ = w.eval("window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'smoke', message: JSON.stringify({ secure: isSecureContext, decoder: typeof VideoDecoder, visibility: document.visibilityState, canvases: Array.from(document.querySelectorAll('canvas')).map(c => [c.width, c.height]), metrics: document.querySelector('.stream-metrics')?.textContent ?? null, metricsDetail: document.querySelector('.stream-metrics')?.title ?? null }) })");
             let _ = w.eval("window.__TAURI_INTERNALS__.invoke('agent_status').then(s => window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'mcp', message: JSON.stringify(s.mcp) }))");
             let visible = w.is_visible().unwrap_or(false);
             eprintln!("[smoke] window visible: {visible}, url: {:?}", w.url().map(|u| u.to_string()));

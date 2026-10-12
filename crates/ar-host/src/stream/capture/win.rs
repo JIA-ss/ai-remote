@@ -414,8 +414,10 @@ pub(super) fn start(
     let _ = session.SetIsCursorCaptureEnabled(true);
     // No yellow border on the person's screen (Windows 11; older builds ignore it).
     let _ = session.SetIsBorderRequired(false);
-    // Without this Windows paces capture at 60 Hz; ask for every refresh up to `fps`.
-    let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000_000 / fps as i64 });
+    // Without this Windows paces capture at 60 Hz, and a minimum interval of exactly 1/fps rounds
+    // up to whole refreshes (60 fps on a 100 Hz display gave 50). Half the interval lets every
+    // refresh that could be needed through; the encode loop's pacer keeps `fps` exactly.
+    let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000_000 / (2 * fps as i64) });
     session.StartCapture().context("start Windows Graphics Capture")?;
     Ok(NativeCapture { pool, session, token, slot })
 }
@@ -429,6 +431,157 @@ pub(super) fn monitor(index: Option<usize>) -> Result<HMONITOR> {
     }
     .map_err(|e| anyhow!("no such monitor: {e}"))?;
     Ok(HMONITOR(monitor.as_raw_hmonitor()))
+}
+
+/// Text-like glyph rows, window bars and a photo-like gradient with grain, BGRA.
+pub(super) fn desktop_like(width: u32, height: u32) -> Vec<u8> {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (w, h) = (width as usize, height as usize);
+    let mut px = vec![255u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 4;
+            if (y / 540) % 3 == 1 && x > w / 2 {
+                let n = (rand() & 31) as u8;
+                px[i] = ((x * 255 / w) as u8).wrapping_add(n);
+                px[i + 1] = ((y * 255 / h) as u8).wrapping_add(n);
+                px[i + 2] = (((x + y) * 127 / (w + h)) as u8).wrapping_add(n);
+            } else if y % 540 < 28 {
+                px[i..i + 3].copy_from_slice(&[0x40, 0x30, 0x28]);
+            } else {
+                // Glyph cells of 8x14 with a 4-row gap; every sixth cell is blank.
+                let (cx, cy, gx, gy) = (x / 8, y / 18, x % 8, y % 18);
+                let cell = (cx as u64).wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (cy as u64).wrapping_mul(0x9e37_79b9);
+                if gy < 14 && gx < 7 && !cell.is_multiple_of(6) && (cell >> (gx * 7 + gy % 7)) & 1 == 1 {
+                    px[i..i + 3].copy_from_slice(&[0x20, 0x20, 0x20]);
+                }
+            }
+            px[i + 3] = 255;
+        }
+    }
+    px
+}
+
+fn bgra_texture(gpu: &Gpu, width: u32, height: u32, pixels: Option<&[u8]>) -> Result<ID3D11Texture2D> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let data = pixels.map(|p| D3D11_SUBRESOURCE_DATA {
+        pSysMem: p.as_ptr().cast(),
+        SysMemPitch: width * 4,
+        SysMemSlicePitch: 0,
+    });
+    let mut texture = None;
+    // SAFETY: the initial data (if any) outlives the call and matches the descriptor's size.
+    unsafe { gpu.device.CreateTexture2D(&desc, data.as_ref().map(|d| d as *const _), Some(&mut texture)) }
+        .context("BGRA texture")?;
+    texture.context("D3D11 returned no texture")
+}
+
+/// `AI_REMOTE_TEST_PATTERN=<width>x<height>` on the host replaces the screen with a synthetic,
+/// desktop-like picture of that size that scrolls 7 rows a frame at the requested rate: every frame
+/// changes everywhere, so the stream runs at its frame rate and bitrate cap. Everything after
+/// capture (GPU conversion, hardware encoding, transport, the viewer's decoder) is the real path.
+/// For repeatable end-to-end measurements (`tools/stream-e2e.py --pattern`); no screen is read.
+pub(super) fn test_pattern_size() -> Option<(u32, u32)> {
+    let value = std::env::var("AI_REMOTE_TEST_PATTERN").ok()?;
+    let (w, h) = value.split_once('x')?;
+    let size = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    (size.0 >= 64 && size.1 >= 64 && size.0 <= 8192 && size.1 <= 8192).then_some(size)
+}
+
+/// A running test pattern; stops when dropped.
+pub(super) struct TestPattern {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for TestPattern {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub(super) fn start_test_pattern(
+    (width, height): (u32, u32),
+    max_fps: u32,
+    max_long_edge: Arc<AtomicU32>,
+    slot: Arc<Slot>,
+) -> Result<TestPattern> {
+    use windows::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
+    };
+    // SAFETY: a plain query for the primary monitor's handle.
+    let gpu = Gpu::for_monitor(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })?;
+    let tall = bgra_texture(&gpu, width, height * 2, Some(&desktop_like(width, height * 2)))?;
+    let screen = bgra_texture(&gpu, width, height, None)?;
+    let fps = max_fps.clamp(1, 240);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread = {
+        let (stop, gpu, tall, screen) = (stop.clone(), Shared(gpu), Shared(tall), Shared(screen));
+        std::thread::Builder::new().name("ai-remote-test-pattern".into()).spawn(move || {
+            let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
+            let mut next = std::time::Instant::now();
+            let mut converter: Option<Converter> = None;
+            let mut frame = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                let top = (frame * 7) % height;
+                frame = frame.wrapping_add(1);
+                let region = D3D11_BOX { left: 0, top, front: 0, right: width, bottom: top + height, back: 1 };
+                // SAFETY: copies between two private textures of the same device.
+                unsafe {
+                    gpu.get().context.CopySubresourceRegion(screen.get(), 0, 0, 0, 0, tall.get(), 0, Some(&region))
+                };
+                let output = crate::stream::encode::stream_size(width, height, max_long_edge.load(Ordering::Relaxed));
+                if converter.as_ref().is_none_or(|c| c.output != output) {
+                    match Converter::new(gpu.get().clone(), (width, height), output, fps) {
+                        Ok(c) => converter = Some(c),
+                        Err(e) => {
+                            tracing::warn!(error = %format!("{e:#}"), "test pattern conversion");
+                            slot.close();
+                            return;
+                        }
+                    }
+                }
+                if let Some(Ok(Some(converted))) = converter.as_mut().map(|c| c.convert(screen.get())) {
+                    slot.put(Raw {
+                        bgra: Vec::new(),
+                        width: converted.width,
+                        height: converted.height,
+                        gpu: Some(converted),
+                    });
+                }
+                next += interval;
+                let now = std::time::Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                } else {
+                    next = now;
+                }
+            }
+        })?
+    };
+    tracing::warn!(width, height, fps, "AI_REMOTE_TEST_PATTERN: streaming a synthetic picture instead of the screen");
+    Ok(TestPattern { stop, thread: Some(thread) })
 }
 
 /// GPU conversion + hardware encoding throughput on a synthetic, desktop-like picture that scrolls
@@ -446,10 +599,7 @@ mod bench {
 
     use windows::Win32::{
         Foundation::POINT,
-        Graphics::{
-            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-            Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
-        },
+        Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
     };
 
     use super::*;
@@ -459,69 +609,13 @@ mod bench {
         std::env::var(key).unwrap_or_else(|_| default.into())
     }
 
-    /// Text-like glyph rows, window bars and a photo-like gradient with grain, BGRA.
-    fn desktop_like(width: u32, height: u32) -> Vec<u8> {
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        let mut rand = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed
-        };
-        let (w, h) = (width as usize, height as usize);
-        let mut px = vec![255u8; w * h * 4];
-        for y in 0..h {
-            for x in 0..w {
-                let i = (y * w + x) * 4;
-                if (y / 540) % 3 == 1 && x > w / 2 {
-                    let n = (rand() & 31) as u8;
-                    px[i] = ((x * 255 / w) as u8).wrapping_add(n);
-                    px[i + 1] = ((y * 255 / h) as u8).wrapping_add(n);
-                    px[i + 2] = (((x + y) * 127 / (w + h)) as u8).wrapping_add(n);
-                } else if y % 540 < 28 {
-                    px[i..i + 3].copy_from_slice(&[0x40, 0x30, 0x28]);
-                } else {
-                    // Glyph cells of 8x14 with a 4-row gap; every sixth cell is blank.
-                    let (cx, cy, gx, gy) = (x / 8, y / 18, x % 8, y % 18);
-                    let cell = (cx as u64).wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (cy as u64).wrapping_mul(0x9e37_79b9);
-                    if gy < 14 && gx < 7 && !cell.is_multiple_of(6) && (cell >> (gx * 7 + gy % 7)) & 1 == 1 {
-                        px[i..i + 3].copy_from_slice(&[0x20, 0x20, 0x20]);
-                    }
-                }
-                px[i + 3] = 255;
-            }
-        }
-        px
-    }
-
-    fn bgra_texture(gpu: &Gpu, width: u32, height: u32, pixels: Option<&[u8]>) -> ID3D11Texture2D {
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let data = pixels.map(|p| D3D11_SUBRESOURCE_DATA {
-            pSysMem: p.as_ptr().cast(),
-            SysMemPitch: width * 4,
-            SysMemSlicePitch: 0,
-        });
-        let mut texture = None;
-        unsafe { gpu.device.CreateTexture2D(&desc, data.as_ref().map(|d| d as *const _), Some(&mut texture)).unwrap() };
-        texture.unwrap()
-    }
-
+    /// Appends a frame to the saved stream; returns its codec and its size unless it is a keyframe.
     fn keep(frame: Encoded, stream: &mut Vec<u8>) -> (Codec, usize) {
+        let delta = if frame.keyframe { 0 } else { frame.data.len() };
         stream.push(frame.keyframe as u8);
         stream.extend_from_slice(&(frame.data.len() as u32).to_le_bytes());
         stream.extend_from_slice(&frame.data);
-        (frame.codec, frame.data.len())
+        (frame.codec, delta)
     }
 
     fn decode_h264(stream: &[u8]) -> usize {
@@ -546,7 +640,7 @@ mod bench {
         let gpu =
             Gpu::for_monitor(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) }).unwrap();
         let (w, h) = (3840, 2160);
-        let screen = bgra_texture(&gpu, w, h, Some(&desktop_like(w, h)));
+        let screen = bgra_texture(&gpu, w, h, Some(&desktop_like(w, h))).unwrap();
         let mut converter = Converter::new(gpu.clone(), (w, h), (w, h), 60).unwrap();
         let mut slowest = Duration::ZERO;
         for round in 0..12 {
@@ -573,22 +667,24 @@ mod bench {
         let fps: u32 = env("AR_FPS", "120").parse().unwrap();
         let kbps: u32 = env("AR_KBPS", "80000").parse().unwrap();
         let frames: u32 = env("AR_FRAMES", "240").parse().unwrap();
+        let scroll: u32 = env("AR_SCROLL", "7").parse().unwrap();
         let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/stream-bench");
         std::fs::create_dir_all(&out_dir).unwrap();
         for size in env("AR_SIZES", "5120x2160,3840x2160,1920x1080").split(',') {
             let (w, h) =
                 size.split_once('x').map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap())).unwrap();
-            let tall = bgra_texture(&gpu, w, h * 2, Some(&desktop_like(w, h * 2)));
-            let screen = bgra_texture(&gpu, w, h, None);
+            let tall = bgra_texture(&gpu, w, h * 2, Some(&desktop_like(w, h * 2))).unwrap();
+            let screen = bgra_texture(&gpu, w, h, None).unwrap();
             for codec in env("AR_CODECS", "h264,hevc,av1").split(',').filter_map(Codec::parse) {
                 let mut converter = Converter::new(gpu.clone(), (w, h), (w, h), fps).unwrap();
                 let mut encoder = FrameEncoder::new(fps, kbps * 1000, w.max(h)).unwrap().with_codecs(&[codec]);
                 let (mut times, mut stream, mut outputs, mut bytes, mut actual) =
                     (Vec::new(), Vec::new(), 0usize, 0usize, None);
+                let mut deltas = 0usize;
                 let started = Instant::now();
                 for f in 0..frames {
-                    // Scroll 7 rows a frame through the tall picture.
-                    let top = (f * 7) % h;
+                    // Scroll `AR_SCROLL` rows a frame (7; 0 is a still screen) through the tall picture.
+                    let top = (f * scroll) % h;
                     let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
                     unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
                     // A viewer joining halfway asks for a keyframe.
@@ -602,7 +698,8 @@ mod bench {
                     times.push(t.elapsed());
                     while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
                         let (c, n) = keep(out, &mut stream);
-                        (actual, outputs, bytes) = (Some(c), outputs + 1, bytes + n);
+                        (actual, outputs, bytes, deltas) =
+                            (Some(c), outputs + 1, bytes + n, deltas + usize::from(n > 0));
                     }
                 }
                 let elapsed = started.elapsed();
@@ -610,7 +707,8 @@ mod bench {
                 while drain.elapsed() < Duration::from_millis(300) {
                     if let Some(out) = encoder.poll().unwrap() {
                         let (c, n) = keep(out, &mut stream);
-                        (actual, outputs, bytes) = (Some(c), outputs + 1, bytes + n);
+                        (actual, outputs, bytes, deltas) =
+                            (Some(c), outputs + 1, bytes + n, deltas + usize::from(n > 0));
                     }
                 }
                 times.sort();
@@ -624,7 +722,7 @@ mod bench {
                     format!("saved {name}")
                 };
                 println!(
-                    "{w}x{h} want {}: {} | {} in, {outputs} out | p50 {:.2} ms p95 {:.2} ms max {:.2} ms | {:.0} fps back-to-back | {:.1} Mbit/s at {fps} fps | {check}",
+                    "{w}x{h} want {}: {} | {} in, {outputs} out | p50 {:.2} ms p95 {:.2} ms max {:.2} ms | {:.0} fps back-to-back | non-key frames {:.1} Mbit/s at {fps} fps | {check}",
                     codec.name(),
                     encoder.backend_name(),
                     times.len(),
@@ -632,7 +730,7 @@ mod bench {
                     pct(0.95),
                     pct(1.0),
                     times.len() as f64 / elapsed.as_secs_f64(),
-                    bytes as f64 * 8.0 * fps as f64 / outputs.max(1) as f64 / 1e6,
+                    bytes as f64 * 8.0 * fps as f64 / deltas.max(1) as f64 / 1e6,
                 );
             }
         }

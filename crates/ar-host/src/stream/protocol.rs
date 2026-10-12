@@ -173,7 +173,9 @@ async fn serve(
     }
     let monitors = capture::monitors().unwrap_or_default();
     let wanted: Vec<Codec> = req.codecs.iter().filter_map(|c| Codec::parse(c)).collect();
-    let (fps, kbps) = (req.max_fps.clamp(1, MAX_FPS), req.bitrate_kbps.clamp(300, MAX_KBPS));
+    // No faster than the display refreshes: the encoder budgets bits per frame from this rate.
+    let refresh = capture::refresh_hz(req.monitor).unwrap_or(MAX_FPS);
+    let (fps, kbps) = (req.max_fps.clamp(1, MAX_FPS).min(refresh), req.bitrate_kbps.clamp(300, MAX_KBPS));
     let requested_edge = req.max_long_edge.clamp(320, MAX_LONG_EDGE);
     let started = tokio::task::spawn_blocking(move || {
         // Hardware probing and capture setup both block; the codec decides the capture size.
@@ -229,6 +231,7 @@ async fn serve(
             };
             let mut latest = None;
             let mut backend = String::new();
+            let mut pacer = Pacer::new(fps, Instant::now());
             while !stop.load(Ordering::Relaxed) {
                 // An asynchronous hardware encoder may finish a frame after its call returned.
                 match enc.poll() {
@@ -240,6 +243,13 @@ async fn serve(
                     }
                     Ok(None) => {}
                     Err(e) => tracing::warn!(error = %format!("{e:#}"), "live view frame"),
+                }
+                // Paced here, not in capture: the slot keeps the newest frame, so the last change
+                // before a still screen is always sent once its turn comes.
+                let wait = pacer.wait(Instant::now());
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                    continue;
                 }
                 let Some(next) = slot.take(Duration::from_millis(5)) else { break };
                 if let Some(raw) = next {
@@ -257,6 +267,7 @@ async fn serve(
                 if keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
+                pacer.spend();
                 let frame = enc.encode_raw(raw);
                 if enc.backend_name() != backend {
                     backend = enc.backend_name();
@@ -306,6 +317,36 @@ async fn serve(
     let _ = encoder.await;
     let _ = send.finish();
     host.audit().event(audit_line("view_end"));
+}
+
+/// Holds the stream to `fps` frames a second on average. A display only delivers frames on its
+/// refreshes, so a fixed minimum interval rounds up to whole refreshes: 60 fps on a 100 Hz display
+/// became 50 and 30 became 25 (measured 2026-10-12), and on 144 Hz 60 would become 48. Credit
+/// accrues continuously instead, and a frame may go once nine tenths of a frame's credit is there
+/// (refresh jitter), so the average is exact; gaps alternate between neighbouring refreshes.
+struct Pacer {
+    fps: f64,
+    credit: f64,
+    last: Instant,
+}
+
+impl Pacer {
+    fn new(fps: u32, now: Instant) -> Self {
+        Self { fps: f64::from(fps.max(1)), credit: 1.0, last: now }
+    }
+
+    /// How long until the next frame may go; zero when it may go now.
+    fn wait(&mut self, now: Instant) -> Duration {
+        let earned = now.saturating_duration_since(self.last).as_secs_f64() * self.fps;
+        self.last = now;
+        // At most one frame saved up: after a still screen the next change goes at once, no burst.
+        self.credit = (self.credit + earned).min(1.0);
+        if self.credit >= 0.9 { Duration::ZERO } else { Duration::from_secs_f64((0.9 - self.credit) / self.fps) }
+    }
+
+    fn spend(&mut self) {
+        self.credit -= 1.0;
+    }
 }
 
 /// A partial frame is terminal on failure. Keep cancellation and keyframe controls responsive
@@ -408,6 +449,51 @@ mod tests {
         peer.write_all(b"frame\":true}\n").await.unwrap();
         reader.read_until(b'\n', &mut line).await.unwrap();
         assert!(serde_json::from_slice::<Control>(&line).unwrap().keyframe);
+    }
+
+    /// Frames taken by an encode loop when a display with `refresh_hz` delivers every refresh.
+    fn paced(fps: u32, refresh_hz: f64, seconds: f64) -> usize {
+        let start = Instant::now();
+        let mut pacer = Pacer::new(fps, start);
+        let (mut now, mut next_refresh, mut sent) = (0.0f64, 0.0f64, 0);
+        while now < seconds {
+            let wait = pacer.wait(start + Duration::from_secs_f64(now)).as_secs_f64();
+            if wait > 0.0 {
+                now += wait;
+                continue;
+            }
+            // Take the newest frame; wait for the next refresh when none is pending.
+            if next_refresh > now {
+                now = next_refresh;
+            }
+            pacer.spend();
+            sent += 1;
+            next_refresh = ((now * refresh_hz + 1e-6).floor() + 1.0) / refresh_hz;
+        }
+        sent
+    }
+
+    #[test]
+    fn pacing_keeps_the_requested_rate_on_any_refresh_rate() {
+        for (fps, hz, expected) in [(60, 100.0, 600), (30, 100.0, 300), (60, 144.0, 600), (120, 144.0, 1200)] {
+            let sent = paced(fps, hz, 10.0);
+            assert!(sent.abs_diff(expected) <= 2, "{fps} fps on {hz} Hz sent {sent}");
+        }
+        // Never more than the display delivers.
+        assert!(paced(240, 100.0, 10.0) <= 1001);
+        assert!(paced(100, 100.0, 10.0) >= 998);
+    }
+
+    #[test]
+    fn a_change_after_a_still_screen_goes_at_once_without_a_burst() {
+        let start = Instant::now();
+        let mut pacer = Pacer::new(30, start);
+        assert!(pacer.wait(start).is_zero());
+        pacer.spend();
+        let later = start + Duration::from_secs(5);
+        assert!(pacer.wait(later).is_zero());
+        pacer.spend();
+        assert!(!pacer.wait(later + Duration::from_millis(10)).is_zero());
     }
 
     #[test]
