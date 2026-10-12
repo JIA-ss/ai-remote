@@ -4,7 +4,7 @@
 //! Hardware MFTs are asynchronous: the transform asks for input and announces output through
 //! events. A small thread blocks on `GetEvent` and forwards them; the encoder thread submits one
 //! frame, then waits (briefly) for its output, so a frame normally leaves in the same call.
-//! Low-latency mode, no B-frames and low-delay VBR keep each frame's output prompt and bounded.
+//! Low-latency mode, no B-frames and CBR keep each frame's output prompt and bounded.
 
 use std::{
     collections::VecDeque,
@@ -192,8 +192,9 @@ pub(super) struct HardwareEncoder {
     provides_samples: bool,
     output_size: u32,
     need_input: u32,
-    /// Frames submitted whose output has not arrived; each keeps its texture out of the pool.
-    in_flight: VecDeque<Arc<GpuTexture>>,
+    /// Frames submitted whose output has not arrived, oldest first, with their capture instants;
+    /// each keeps its texture out of the pool. Outputs come in submission order (no B-frames).
+    in_flight: VecDeque<(Arc<GpuTexture>, Instant)>,
     ready: VecDeque<Encoded>,
     started: Instant,
     parameter_sets: Vec<u8>,
@@ -363,7 +364,12 @@ impl HardwareEncoder {
     }
 
     /// Submits `frame` and returns an encoded frame when one is ready (normally this one's).
-    pub(super) fn encode(&mut self, frame: Arc<GpuTexture>, keyframe: bool) -> Result<Option<Encoded>> {
+    pub(super) fn encode(
+        &mut self,
+        frame: Arc<GpuTexture>,
+        captured: Instant,
+        keyframe: bool,
+    ) -> Result<Option<Encoded>> {
         anyhow::ensure!((frame.width, frame.height) == (self.width, self.height), "frame size changed");
         self.drain()?;
         let deadline = Instant::now() + INPUT_TIMEOUT;
@@ -388,13 +394,21 @@ impl HardwareEncoder {
             self.transform.ProcessInput(self.input_id, &sample, 0).context("submit a frame")?;
         }
         self.need_input -= 1;
-        self.in_flight.push_back(frame);
+        self.in_flight.push_back((frame, captured));
         let deadline = Instant::now() + OUTPUT_WAIT;
         while self.ready.is_empty() && !self.in_flight.is_empty() && self.wait(deadline)? {}
         Ok(self.ready.pop_front())
     }
 
     /// An encoded frame that became ready since the last call, without submitting anything.
+    /// A new bitrate for the running stream; Media Foundation encoders take it between frames.
+    pub(super) fn set_bitrate(&mut self, bitrate_bps: u32, fps: u32) {
+        if let Some(api) = &self.api {
+            rate_control(api, bitrate_bps);
+            set(api, &CODECAPI_AVEncCommonBufferSize, variant_u32((bitrate_bps / fps.max(1)).saturating_mul(2)), "VBV");
+        }
+    }
+
     pub(super) fn poll(&mut self) -> Result<Option<Encoded>> {
         self.drain()?;
         Ok(self.ready.pop_front())
@@ -466,7 +480,7 @@ impl HardwareEncoder {
             return Err(anyhow!("read encoded output: {e}"));
         }
         let sample = sample.context("the encoder returned no sample")?;
-        self.in_flight.pop_front();
+        let captured = self.in_flight.pop_front().map(|(_, captured)| captured);
         // SAFETY: reads a locked contiguous buffer of the sample we now own.
         let (mut data, clean) = unsafe {
             let clean = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
@@ -487,20 +501,30 @@ impl HardwareEncoder {
             with_sets.append(&mut data);
             data = with_sets;
         }
-        self.ready.push_back(Encoded { data, keyframe, width: self.width, height: self.height, codec: self.codec });
+        self.ready.push_back(Encoded {
+            data,
+            keyframe,
+            width: self.width,
+            height: self.height,
+            codec: self.codec,
+            captured,
+        });
         Ok(())
     }
 }
 
-/// Low-delay VBR capped at the requested bitrate. Measured 2026-10-12 on NVENC at 4K60 / 40 Mbps
-/// (non-keyframes): CBR spent 19-28 Mbit/s on a still picture and AV1 overshot to 44 Mbit/s on a
-/// scrolling one; low-delay VBR spent 12-19 and 17-20 Mbit/s with the same encode time. Picture
-/// quality was not compared. Encoders without the mode keep their default (logged at debug).
+/// CBR at the requested bitrate, because it is the only mode in which NVENC's Media Foundation
+/// encoders take a new bitrate while streaming (adaptive bitrate). Measured 2026-10-12 at 4K60,
+/// lowering 40 -> 10 Mbit/s mid-stream: CBR gave 8.6 (H.264) and 10.9 (HEVC) Mbit/s, while
+/// low-delay and peak-constrained VBR silently kept 32-40. CBR costs bits on easy content (non-
+/// keyframes at 40 requested: 19-23 vs 13-19 Mbit/s with low-delay VBR), still under the request;
+/// and a still screen sends no frames at all. Encoders without the mode keep their default (logged
+/// at debug). AV1 ignores rate control altogether (see `RateGuard`).
 fn rate_control(api: &ICodecAPI, bitrate_bps: u32) {
     set(
         api,
         &CODECAPI_AVEncCommonRateControlMode,
-        variant_u32(eAVEncCommonRateControlMode_LowDelayVBR.0 as u32),
+        variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32),
         "rate control",
     );
     set(api, &CODECAPI_AVEncCommonMeanBitRate, variant_u32(bitrate_bps), "bitrate");

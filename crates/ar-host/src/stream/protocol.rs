@@ -13,7 +13,7 @@
 //! u8  flags    bit 0: keyframe; bits 1-2: codec (0 H.264, 1 HEVC, 2 AV1)
 //! u16 width    big-endian, the stream size of this frame
 //! u16 height
-//! u64 ts_us    encoder emission time, microseconds since the stream started
+//! u64 ts_us    when the picture was captured, microseconds on the stream's clock
 //! u32 length
 //! ..  H.264/HEVC Annex B or AV1 OBUs, `length` bytes
 //! ```
@@ -22,13 +22,19 @@
 //! H.264); a viewer reconfigures its decoder when a keyframe's codec differs.
 //!
 //! The controller may write more lines on its half of the stream: `{"keyframe":true}` asks for a
-//! keyframe (after a decoder error, or a viewer that joined late). Any device with a level may watch;
+//! keyframe (after a decoder error, or a viewer that joined late); `{"bitrate_kbps":9000}` changes
+//! the bitrate of the running stream (a viewer adapting to its network; at most the request, at
+//! least 300); `{"ping":7}` is answered, after
+//! the frame being written, with a kind-3 message: the same 18-byte header (width and height 0,
+//! `ts_us` the stream clock as it answers) and `{"pong":7}`. A viewer maps the stream clock onto its
+//! own with these (the reply with the shortest round trip is the best) to tell how long ago a frame
+//! was captured. Only a viewer that pings receives kind 3; older hosts ignore pings. Any device with a level may watch;
 //! watching is recorded in the audit log (`view_start`, `view_end`).
 
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -91,6 +97,37 @@ fn default_kbps() -> u32 {
 struct Control {
     #[serde(default)]
     keyframe: bool,
+    #[serde(default)]
+    ping: Option<u64>,
+    #[serde(default)]
+    bitrate_kbps: Option<u32>,
+}
+
+/// What the viewer asked for on its half of the stream, also read while a frame is being written.
+struct Controls<'a> {
+    keyframe: &'a AtomicBool,
+    /// The bitrate the viewer asked for, in kbit/s, and the most it may ask for (its request).
+    bitrate: &'a AtomicU32,
+    max_kbps: u32,
+    /// Pings to answer once the frame being written is out (a few at most).
+    pings: Vec<u64>,
+}
+
+impl Controls<'_> {
+    fn apply(&mut self, line: &[u8]) {
+        let Ok(control) = serde_json::from_slice::<Control>(line) else { return };
+        if control.keyframe {
+            self.keyframe.store(true, Ordering::Relaxed);
+        }
+        if let Some(kbps) = control.bitrate_kbps {
+            self.bitrate.store(kbps.clamp(300, self.max_kbps.max(300)), Ordering::Relaxed);
+        }
+        if let Some(n) = control.ping
+            && self.pings.len() < 8
+        {
+            self.pings.push(n);
+        }
+    }
 }
 
 pub struct ScreenProtocol {
@@ -177,6 +214,8 @@ async fn serve(
     let refresh = capture::refresh_hz(req.monitor).unwrap_or(MAX_FPS);
     let (fps, kbps) = (req.max_fps.clamp(1, MAX_FPS).min(refresh), req.bitrate_kbps.clamp(300, MAX_KBPS));
     let requested_edge = req.max_long_edge.clamp(320, MAX_LONG_EDGE);
+    // The stream's clock: frame timestamps and pongs both count from here.
+    let epoch = Instant::now();
     let started = tokio::task::spawn_blocking(move || {
         // Hardware probing and capture setup both block; the codec decides the capture size.
         let (codecs, edge) = encode::plan(&wanted, requested_edge);
@@ -211,10 +250,12 @@ async fn serve(
     // makes the encoder wait, and the capture slot skips frames meanwhile.
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
     let keyframe = Arc::new(AtomicBool::new(false));
+    let bitrate = Arc::new(AtomicU32::new(kbps));
     let stop = Arc::new(AtomicBool::new(false));
     let encoder = {
         let (slot, keyframe, stop, capture_edge) =
             (capture.slot(), keyframe.clone(), stop.clone(), capture.max_long_edge());
+        let bitrate = bitrate.clone();
         tokio::task::spawn_blocking(move || {
             let mut enc = match FrameEncoder::new(fps, kbps * 1000, edge) {
                 Ok(e) => e.with_codecs(&codecs).with_capture_edge(capture_edge),
@@ -223,9 +264,9 @@ async fn serve(
                     return;
                 }
             };
-            let started = Instant::now();
             let send = |frame: encode::Encoded| {
-                let ts = started.elapsed().as_micros() as u64;
+                let ts = frame.captured.map_or_else(|| epoch.elapsed(), |c| c.saturating_duration_since(epoch));
+                let ts = ts.as_micros() as u64;
                 tx.blocking_send(frame_bytes(&frame.data, frame.keyframe, frame.codec, frame.width, frame.height, ts))
                     .is_ok()
             };
@@ -252,6 +293,7 @@ async fn serve(
                     continue;
                 }
                 let Some(next) = slot.take(Duration::from_millis(5)) else { break };
+                let fresh = next.is_some();
                 if let Some(raw) = next {
                     latest = Some(raw);
                 } else if !keyframe.load(Ordering::Relaxed) {
@@ -259,7 +301,11 @@ async fn serve(
                 }
                 // Event-driven capture emits no new pixels for a static desktop. A decoder
                 // recovering from loss must still get an IDR of the last complete frame.
-                let Some(raw) = latest.as_ref() else { continue };
+                let Some(raw) = latest.as_mut() else { continue };
+                if !fresh {
+                    // Re-sent pixels: how long the screen stood still is not a delay of the stream.
+                    raw.captured = Instant::now();
+                }
                 if crate::platform::prompt_blocker().is_some() {
                     slot.close();
                     break;
@@ -267,8 +313,13 @@ async fn serve(
                 if keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
+                let want = bitrate.load(Ordering::Relaxed).saturating_mul(1000);
+                if want != enc.bitrate() {
+                    tracing::info!(from = enc.bitrate(), to = want, "live view bitrate changed by the viewer");
+                    enc.set_bitrate(want);
+                }
                 pacer.spend();
-                let frame = enc.encode_raw(raw);
+                let frame = enc.encode_raw(&*raw);
                 if enc.backend_name() != backend {
                     backend = enc.backend_name();
                     tracing::info!(%backend, "live view encoder");
@@ -289,19 +340,18 @@ async fn serve(
     };
 
     let mut line = Vec::new();
+    let mut controls = Controls { keyframe: &keyframe, bitrate: &bitrate, max_kbps: kbps, pings: Vec::new() };
     loop {
         tokio::select! {
             frame = rx.recv() => match frame {
                 Some(bytes) => {
-                    if !write_frame(&mut send, &mut reader, &bytes, &mut line, &keyframe, host.stopping()).await { break; }
+                    if !write_frame(&mut send, &mut reader, &bytes, &mut line, &mut controls, host.stopping()).await { break; }
                 },
                 None => break,
             },
             read = reader.read_until(b'\n', &mut line) => match read {
                 Ok(n) if n > 0 => {
-                    if serde_json::from_slice::<Control>(&line).is_ok_and(|c| c.keyframe) {
-                        keyframe.store(true, Ordering::Relaxed);
-                    }
+                    controls.apply(&line);
                     line.clear();
                 }
                 // The controller finished its half: it stopped watching.
@@ -309,6 +359,9 @@ async fn serve(
             },
             _ = host.stopping().cancelled() => break,
             _ = send.stopped() => break,
+        }
+        if !answer_pings(&mut send, &mut controls.pings, epoch).await {
+            break;
         }
     }
     stop.store(true, Ordering::Relaxed);
@@ -356,7 +409,7 @@ async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     reader: &mut R,
     bytes: &[u8],
     line: &mut Vec<u8>,
-    keyframe: &AtomicBool,
+    controls: &mut Controls<'_>,
     stop: &tokio_util::sync::CancellationToken,
 ) -> bool {
     let write = tokio::time::timeout(Duration::from_secs(2), send.write_all(bytes));
@@ -366,7 +419,7 @@ async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
             result = &mut write => return matches!(result, Ok(Ok(()))),
             read = reader.read_until(b'\n', line) => match read {
                 Ok(n) if n > 0 => {
-                    if serde_json::from_slice::<Control>(line).is_ok_and(|c| c.keyframe) { keyframe.store(true, Ordering::Relaxed); }
+                    controls.apply(line);
                     line.clear();
                 },
                 _ => return false,
@@ -374,6 +427,28 @@ async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
             _ = stop.cancelled() => return false,
         }
     }
+}
+
+/// Answers the pings read so far with the stream clock; `false` when the controller is gone.
+async fn answer_pings<W: AsyncWrite + Unpin>(send: &mut W, pings: &mut Vec<u64>, epoch: Instant) -> bool {
+    for n in pings.drain(..) {
+        let pong = pong_bytes(n, epoch.elapsed().as_micros() as u64);
+        if !matches!(tokio::time::timeout(Duration::from_secs(2), send.write_all(&pong)).await, Ok(Ok(()))) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A kind-3 reply to `{"ping":n}`, stamped with the stream clock.
+pub fn pong_bytes(n: u64, ts_us: u64) -> Vec<u8> {
+    let payload = format!("{{\"pong\":{n}}}");
+    let mut out = Vec::with_capacity(18 + payload.len());
+    out.extend_from_slice(&[3, 0, 0, 0, 0, 0]);
+    out.extend_from_slice(&ts_us.to_be_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload.as_bytes());
+    out
 }
 
 /// Writes one JSON line; `false` when the controller is gone.
@@ -407,10 +482,12 @@ mod tests {
         let mut reader = BufReader::new(control);
         let stop = tokio_util::sync::CancellationToken::new();
         let keyframe = AtomicBool::new(false);
+        let bitrate = AtomicU32::new(8000);
+        let mut controls = Controls { keyframe: &keyframe, bitrate: &bitrate, max_kbps: 8000, pings: Vec::new() };
         let mut line = Vec::new();
         let started = Instant::now();
-        let controls = async {
-            peer.write_all(b"{\"keyframe\":true}\n").await.unwrap();
+        let viewer = async {
+            peer.write_all(b"{\"keyframe\":true}\n{\"ping\":5}\n").await.unwrap();
             tokio::time::timeout(Duration::from_millis(500), async {
                 while !keyframe.load(Ordering::Relaxed) {
                     tokio::task::yield_now().await;
@@ -421,10 +498,11 @@ mod tests {
             stop.cancel();
         };
         let (sent, _) =
-            tokio::join!(write_frame(&mut send, &mut reader, &[0; 4096], &mut line, &keyframe, &stop), controls);
+            tokio::join!(write_frame(&mut send, &mut reader, &[0; 4096], &mut line, &mut controls, &stop), viewer);
         assert!(!sent, "cancelled partial frames must terminate instead of continuing");
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(keyframe.load(Ordering::Relaxed));
+        assert_eq!(controls.pings, [5], "a ping read during a write is answered after it");
     }
 
     #[tokio::test]
@@ -434,6 +512,8 @@ mod tests {
         let mut reader = BufReader::new(control);
         let stop = tokio_util::sync::CancellationToken::new();
         let keyframe = AtomicBool::new(false);
+        let bitrate = AtomicU32::new(8000);
+        let mut controls = Controls { keyframe: &keyframe, bitrate: &bitrate, max_kbps: 8000, pings: Vec::new() };
         let mut line = Vec::new();
         peer.write_all(b"{\"key").await.unwrap();
         let receive = async {
@@ -443,7 +523,7 @@ mod tests {
             assert_eq!(bytes, [1, 2, 3, 4]);
         };
         let (sent, _) =
-            tokio::join!(write_frame(&mut send, &mut reader, &[1, 2, 3, 4], &mut line, &keyframe, &stop), receive);
+            tokio::join!(write_frame(&mut send, &mut reader, &[1, 2, 3, 4], &mut line, &mut controls, &stop), receive);
         assert!(sent);
         assert_eq!(line, b"{\"key");
         peer.write_all(b"frame\":true}\n").await.unwrap();
@@ -494,6 +574,40 @@ mod tests {
         assert!(pacer.wait(later).is_zero());
         pacer.spend();
         assert!(!pacer.wait(later + Duration::from_millis(10)).is_zero());
+    }
+
+    #[tokio::test]
+    async fn pings_are_answered_with_the_stream_clock() {
+        let epoch = Instant::now() - Duration::from_millis(1500);
+        let (mut send, mut receiver) = tokio::io::duplex(1024);
+        let mut pings = vec![7, 8];
+        assert!(answer_pings(&mut send, &mut pings, epoch).await);
+        assert!(pings.is_empty());
+        for n in [7u64, 8] {
+            let mut header = [0u8; 18];
+            receiver.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[0], 3);
+            let ts = u64::from_be_bytes(header[6..14].try_into().unwrap());
+            assert!((1_500_000..2_500_000).contains(&ts), "{ts}");
+            let mut payload = vec![0; u32::from_be_bytes(header[14..18].try_into().unwrap()) as usize];
+            receiver.read_exact(&mut payload).await.unwrap();
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&payload).unwrap(), serde_json::json!({"pong": n}));
+        }
+        // Old controls still parse: a keyframe line, and unknown fields are ignored.
+        let keyframe = AtomicBool::new(false);
+        let bitrate = AtomicU32::new(8000);
+        let mut controls = Controls { keyframe: &keyframe, bitrate: &bitrate, max_kbps: 8000, pings: Vec::new() };
+        controls.apply(br#"{"keyframe":true,"later":1}"#);
+        controls.apply(br#"{"ping":3}"#);
+        assert!(keyframe.load(Ordering::Relaxed));
+        assert_eq!(controls.pings, [3]);
+        // A viewer lowers the bitrate; it cannot raise it past its request, nor below 300.
+        controls.apply(br#"{"bitrate_kbps":2500}"#);
+        assert_eq!(bitrate.load(Ordering::Relaxed), 2500);
+        controls.apply(br#"{"bitrate_kbps":90000}"#);
+        assert_eq!(bitrate.load(Ordering::Relaxed), 8000);
+        controls.apply(br#"{"bitrate_kbps":1}"#);
+        assert_eq!(bitrate.load(Ordering::Relaxed), 300);
     }
 
     #[test]
