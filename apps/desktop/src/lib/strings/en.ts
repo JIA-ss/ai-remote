@@ -42,7 +42,7 @@ export const en = {
   stream_requested_limits: "Requested: {edge} px · {fps} fps · {mbps} Mbps",
   stream_requested_note: "Requested encoder limits. Actual resolution, frame rate and bitrate depend on the host and connection.",
   stream_actual_metrics: "Actual: {width} × {height} · {fps} fps · receiving {mbps} Mbps",
-  stream_metrics_detail: "Dropped frames: {dropped}. Decoder queue: {queue}. These are receiver measurements; no latency is inferred.",
+  stream_metrics_detail: "Dropped frames: {dropped} (decoder behind: {backlog}, waiting for a keyframe: {awaiting}, errors: {errors}). Decoder queue: {queue}. These are receiver measurements; no latency is inferred.",
   stream_awaiting_metrics: "Waiting for decoded video…",
   stream_preview_metrics: "Preview · no live measurements",
   stream_ended_title: "Live view stopped",

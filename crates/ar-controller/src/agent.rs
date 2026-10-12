@@ -631,30 +631,48 @@ async fn open_screen(agent: &Arc<Agent>, host: Option<String>, request: &Value) 
         .dial(&host, ALPN_SCREEN)
         .await
         .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
-    let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
-    let request = if request.is_null() { json!({}) } else { request.clone() };
-    let mut line = request.to_string();
-    line.push('\n');
-    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
-    // The reply line is read byte by byte so no video after it is consumed here.
-    let mut recv = recv;
-    let mut reply = Vec::new();
+    let mut request = if request.is_null() { json!({}) } else { request.clone() };
     loop {
-        let mut byte = [0u8; 1];
-        match tokio::time::timeout(Duration::from_secs(15), recv.read_exact(&mut byte)).await {
-            Ok(Ok(_)) if byte[0] == b'\n' => break,
-            Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
-            Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
-            Ok(Err(e)) => bail!("host '{host}' closed the live view: {e} (an older host?)"),
-            Err(_) => bail!("host '{host}' did not answer"),
+        let (mut send, recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+        let mut line = request.to_string();
+        line.push('\n');
+        send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+        // The reply line is read byte by byte so no video after it is consumed here.
+        let mut recv = recv;
+        let mut reply = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            match tokio::time::timeout(Duration::from_secs(15), recv.read_exact(&mut byte)).await {
+                Ok(Ok(_)) if byte[0] == b'\n' => break,
+                Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
+                Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
+                Ok(Err(e)) => bail!("host '{host}' closed the live view: {e} (an older host?)"),
+                Err(_) => bail!("host '{host}' did not answer"),
+            }
         }
+        let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
+        if reply["ok"] != true {
+            let error = reply["error"].as_str().unwrap_or("refused");
+            // A host from before codec negotiation refuses the field; it streams H.264 without it.
+            if let Some(older) = without_unknown_field(&request, error) {
+                request = older;
+                continue;
+            }
+            bail!("host '{host}': {error}");
+        }
+        reply["host"] = host.into();
+        return Ok((ScreenView { conn, send, recv }, reply));
     }
-    let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
-    if reply["ok"] != true {
-        bail!("host '{host}': {}", reply["error"].as_str().unwrap_or("refused"));
-    }
-    reply["host"] = host.into();
-    Ok((ScreenView { conn, send, recv }, reply))
+}
+
+/// The request without the optional field an older host refused as unknown (serde's
+/// "unknown field `name`"), when there is one to drop; `None` otherwise.
+fn without_unknown_field(request: &Value, error: &str) -> Option<Value> {
+    const OPTIONAL: [&str; 1] = ["codecs"];
+    let field = OPTIONAL.into_iter().find(|f| error.contains(&format!("unknown field `{f}`")))?;
+    let mut older = request.clone();
+    older.as_object_mut()?.remove(field)?;
+    Some(older)
 }
 
 impl ScreenView {
@@ -758,5 +776,19 @@ mod tests {
         assert_eq!(r.note("office", Refusal::NotPaired), Refusal::NotPaired);
         assert_eq!(r.note("office", Refusal::NoLevel), Refusal::NoLevel);
         assert!(!r.0.contains_key("lab"));
+    }
+
+    #[test]
+    fn an_older_host_gets_the_request_without_the_field_it_refused() {
+        let request = serde_json::json!({"max_fps": 60, "codecs": ["hevc", "h264"]});
+        let older = without_unknown_field(
+            &request,
+            "bad request: unknown field `codecs`, expected one of `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` at line 1 column 30",
+        );
+        assert_eq!(older, Some(serde_json::json!({"max_fps": 60})));
+        // Other refusals are reported, not retried; nor is a field that was not sent.
+        assert_eq!(without_unknown_field(&request, "too many people are watching this computer right now"), None);
+        assert_eq!(without_unknown_field(&serde_json::json!({"max_fps": 60}), "unknown field `codecs`"), None);
+        assert_eq!(without_unknown_field(&request, "unknown field `monitor`"), None);
     }
 }

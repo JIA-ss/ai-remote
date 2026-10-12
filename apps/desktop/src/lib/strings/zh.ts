@@ -44,7 +44,7 @@ export const zh: Record<keyof typeof en, string> = {
   stream_requested_limits: "请求：{edge} 像素 · {fps} 帧 · {mbps} Mbps",
   stream_requested_note: "以上为请求的编码上限，实际分辨率、帧率和码率取决于被控端与连接。",
   stream_actual_metrics: "实测：{width} × {height} · {fps} 帧/秒 · 接收 {mbps} Mbps",
-  stream_metrics_detail: "已丢弃 {dropped} 帧，解码队列 {queue} 帧。这些是接收端测量值，不代表延迟。",
+  stream_metrics_detail: "已丢弃 {dropped} 帧（解码跟不上 {backlog}，等待关键帧 {awaiting}，出错 {errors}），解码队列 {queue} 帧。这些是接收端测量值，不代表延迟。",
   stream_awaiting_metrics: "等待实际解码画面……",
   stream_preview_metrics: "界面预览 · 无实时测量",
   stream_ended_title: "实时画面已停止",

@@ -150,7 +150,44 @@ pub struct FrameEncoder {
     /// Capture's scaling target, lowered when the codec in use cannot take the size.
     #[cfg_attr(not(windows), allow(dead_code))]
     capture_edge: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    guard: RateGuard,
     force_next: bool,
+}
+
+/// Watches a hardware encoder's output against the requested bitrate, because some encoders do not
+/// keep to it at all. NVENC's AV1 through Media Foundation (driver 581.57, 2026-10-12) produced
+/// 11-122 Mbit/s for 12 requested depending on the size, and opening its QP ceiling only moved the
+/// failure from native sizes (50-122) to scaled ones (99-321); it ignored the rate-control mode
+/// entirely; at 5K with 150 Mbit/s requested it ran at 191. HEVC and H.264 kept within 1.13x of the
+/// request in the same runs. When the output (keyframes aside, they are expected bursts) runs over
+/// 1.2x the request for two seconds, the stream moves to the next codec the viewer accepts.
+#[derive(Default)]
+struct RateGuard {
+    since: Option<std::time::Instant>,
+    bits: u64,
+}
+
+const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+const RATE_TOLERANCE: f64 = 1.2;
+
+impl RateGuard {
+    /// Adds a frame; `true` when the window just ended over the tolerance.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn over(&mut self, frame: &Encoded, bitrate_bps: u32, now: std::time::Instant) -> bool {
+        if frame.keyframe {
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        self.bits += frame.data.len() as u64 * 8;
+        let elapsed = now.saturating_duration_since(since);
+        if elapsed < RATE_WINDOW {
+            return false;
+        }
+        let rate = self.bits as f64 / elapsed.as_secs_f64();
+        *self = Self { since: Some(now), bits: 0 };
+        rate > f64::from(bitrate_bps) * RATE_TOLERANCE
+    }
 }
 
 impl FrameEncoder {
@@ -167,6 +204,7 @@ impl FrameEncoder {
             bitrate_bps,
             max_long_edge,
             capture_edge: None,
+            guard: RateGuard::default(),
             force_next: true,
         })
     }
@@ -293,7 +331,7 @@ impl FrameEncoder {
                     Ok(out) => {
                         // The keyframe request went with this frame, whenever its output comes.
                         self.force_next = false;
-                        return Ok(out);
+                        return Ok(self.guarded(out));
                     }
                     Err(error) => {
                         tracing::warn!("hardware encoding failed; using OpenH264: {error:#}");
@@ -303,6 +341,10 @@ impl FrameEncoder {
                         }
                     }
                 }
+            }
+            // OpenH264 refuses frames past 4K; capture sends smaller ones once it has rescaled.
+            if frame.width.max(frame.height) > SOFTWARE_MAX_LONG_EDGE {
+                return Ok(None);
             }
             let (y, uv) = super::capture::win::read_nv12(frame)?;
             return self.encode_nv12(&y, &uv, frame.width, frame.height);
@@ -341,9 +383,33 @@ impl FrameEncoder {
     pub fn poll(&mut self) -> Result<Option<Encoded>> {
         #[cfg(windows)]
         if let Backend::Hardware(encoder) = &mut self.backend {
-            return encoder.poll();
+            let out = encoder.poll()?;
+            return Ok(self.guarded(out));
         }
         Ok(None)
+    }
+
+    /// Passes a hardware encoder's output through the rate guard. When the codec does not keep to
+    /// the requested bitrate, the next frame sets up the next codec (with a keyframe); this output
+    /// still goes out, so the viewer is never left without a picture.
+    #[cfg(windows)]
+    fn guarded(&mut self, out: Option<Encoded>) -> Option<Encoded> {
+        let frame = out?;
+        if self.guard.over(&frame, self.bitrate_bps, std::time::Instant::now())
+            && let Backend::Hardware(encoder) = &self.backend
+            && self.codecs.len() > 1
+        {
+            let codec = encoder.codec();
+            tracing::warn!(
+                codec = codec.name(),
+                requested_bps = self.bitrate_bps,
+                "the hardware encoder does not keep to the requested bitrate; moving to the next codec"
+            );
+            self.codecs.retain(|c| *c != codec);
+            self.backend = Backend::PendingHardware;
+            self.guard = RateGuard::default();
+        }
+        Some(frame)
     }
 
     #[cfg(windows)]
@@ -609,6 +675,31 @@ mod tests {
     use openh264::decoder::Decoder;
 
     use super::*;
+
+    #[test]
+    fn the_rate_guard_trips_only_on_sustained_non_keyframe_overshoot() {
+        let start = std::time::Instant::now();
+        let frame = |bytes: usize, keyframe: bool| Encoded {
+            data: vec![0; bytes],
+            keyframe,
+            width: 2,
+            height: 2,
+            codec: Codec::Av1,
+        };
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        // 1 Mbit/s requested; 60 frames a second of 4 kB is 1.9 Mbit/s, of 2.7 kB 1.3 Mbit/s.
+        let mut guard = RateGuard::default();
+        let tripped = (0..=130u64).any(|i| guard.over(&frame(4_000, false), 1_000_000, at(i * 1000 / 60)));
+        assert!(tripped, "2 s at 1.9x must trip");
+        // Keyframes do not count, however big.
+        let mut guard = RateGuard::default();
+        assert!(!(0..=130u64).any(|i| guard.over(&frame(4_000_000, true), 1_000_000, at(i * 1000 / 60))));
+        let mut guard = RateGuard::default();
+        assert!((0..=130u64).any(|i| guard.over(&frame(2_700, false), 1_000_000, at(i * 1000 / 60))));
+        // 1.15x (2.4 kB) for any length of time is within the tolerance.
+        let mut guard = RateGuard::default();
+        assert!(!(0..=600u64).any(|i| guard.over(&frame(2_400, false), 1_000_000, at(i * 1000 / 60))));
+    }
 
     #[test]
     fn stream_sizes_are_even_and_never_upscaled() {

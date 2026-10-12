@@ -35,14 +35,16 @@ export function codecString(codec: VideoCodec, keyframe: Uint8Array): string | n
   return codec === "hevc" ? HEVC : AV1;
 }
 
-/** Probe sizes: what a 4K or a 5K/ultrawide host sends at most. */
-const PROBES: Array<[VideoCodec, string]> = [["av1", AV1], ["hevc", HEVC], ["h264", "avc1.640034"]];
-
 /**
- * Codecs this machine decodes in hardware (probed once, at 4K), best first, always ending with
- * H.264. AV1 and HEVC encoders take sizes past 4096 and, on NVENC, encode 4K in a third to a half
- * of H.264's time (measured 2026-10-12, docs/stream-performance.md).
+ * In order of preference. HEVC first: its hardware encoders keep to the requested bitrate at every
+ * size measured, encode 4K in half of H.264's time and take sizes past 4096, and almost every GPU
+ * and Apple device decodes it. NVENC's AV1 encodes faster still but does not keep to the requested
+ * bitrate (the host moves away from it when that shows); it stays as the choice when HEVC is
+ * missing. Measured 2026-10-12, see AGENTS.md.
  */
+const PROBES: Array<[VideoCodec, string]> = [["hevc", HEVC], ["av1", AV1], ["h264", "avc1.640034"]];
+
+/** Codecs this machine decodes in hardware (probed once, at 4K), best first, always ending with H.264. */
 export function probeCodecs(): Promise<VideoCodec[]> {
   probed ??= probe(3840, 2160).then((codecs) => (known = codecs));
   return probed;

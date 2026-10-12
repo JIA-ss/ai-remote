@@ -485,7 +485,7 @@ export function SessionPage({
           {STREAM_QUALITIES.map((profile) => <option key={profile.id} value={profile.id}>{t(profile.label)}</option>)}
         </select>
         <span className="stream-request" title={t("stream_requested_note")}>{t("stream_requested_limits", { edge: quality.maxLongEdge, fps: quality.maxFps, mbps: quality.bitrateKbps / 1000 })}</span>
-        <span className="stream-metrics" title={stats ? t("stream_metrics_detail", { dropped: stats.droppedFrames, queue: stats.decodeQueueSize }) : undefined}>
+        <span className="stream-metrics" title={stats ? t("stream_metrics_detail", { dropped: stats.droppedFrames, backlog: stats.drops.backlog, awaiting: stats.drops.awaitingKeyframe, errors: stats.drops.error + stats.drops.invalid, queue: stats.decodeQueueSize }) : undefined}>
           {api.kind === "demo"
             ? t("stream_preview_metrics")
             : c.online === false

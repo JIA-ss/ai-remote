@@ -93,8 +93,29 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 124 Mbit/s，4K60 三种编码 59.4~59.6 fps / 43~46 Mbit/s。桌面端（调试版后端，每档约 12 s）：均衡 60.0 fps 11.9 Mbps、
 流畅 100.0 fps 25.2 Mbps、清晰 60.0 fps 40.3 Mbps、**极致 5120×2160 100.0 fps 192 Mbps**，解码队列都是 0，
 累计丢帧 19 / 4 / 4 / 34。**结论：Tauri Channel + WebView2 在 5K@100fps、约 190 Mbps 下仍跑满帧，暂时不是瓶颈。**
-两个遗留：丢帧发生在哪（起流时等关键帧，还是积压重置）没逐帧确认；AV1 在极端画面下超出请求码率约 30%
-（请求 150、实际约 190 Mbps，LowDelayVBR 的峰值没被 NVENC AV1 严格遵守）。
+这一轮的丢帧和 AV1 码率问题已经定位并修复，见下面"码率与丢帧"。修复后同样的压测连跑 3 轮 × 4 档：
+**全部 0 丢帧、解码队列 0**，均衡 59.8~60.0 fps / 11.8~12.1 Mbps、流畅 99.9~100.0 / 25.3~25.6、清晰 59.9~60.1 /
+38.8~40.0、极致 5120×2160 99.2~100.0 fps / 155~157 Mbps（请求 150；指标是最后 1 秒的窗口值）。
+
+### 码率与丢帧（2026-10-12 第二轮）
+
+- **NVENC 的 AV1 码控不可靠**（驱动 581.57，经 Media Foundation）：目标 12 Mbps 时，原生 4K/5K 出 51/122 Mbps，
+  缩放到 1080p/4K 时 11/17。把 `CODECAPI_AVEncVideoMaxQP` 设成 51（255 被拒）只是把失败从原生尺寸挪到缩放尺寸
+  （99/113，设 40 时 184/321）；CBR、峰值约束 VBR、LowDelayVBR 三种码控模式结果完全一样（它不看码控模式）。
+  同样条件下 H.264/HEVC 都在目标的 1.13 倍以内。**所以：**
+  - 桌面端偏好改为 HEVC > AV1 > H.264（`codec.ts`）。
+  - 被控端加**码率守卫**（`encode.rs` 的 `RateGuard`）：非关键帧码率连续 2 s 超过请求的 1.2 倍，就换到观看端接受的
+    下一个编码（带关键帧）。回归测试 `streams_keep_to_the_requested_bitrate`：4 种尺寸 × 3 种编码 × 2 档码率，
+    H.264/HEVC 不得被换走，最终码率不超过 1.15 倍。AMD/Intel 的编码器若有同类问题也会被它兜住。
+- **丢帧根因**（`video.ts` 现在按原因计数并写日志，会话页指标的提示里能看到）：
+  1. 积压判断太激进：排队 2 帧就丢到下一个关键帧。100 fps 下这只是 20 ms 的抖动，代价却是丢掉之后所有帧，
+     外加一个几 MB 的关键帧（它又引发下一次积压）——极致档 0.5 s 内连续重置 4 次、12 s 丢 89 帧。
+  2. 起流误判：WebView2 的硬件解码器启动要 100~700 ms，期间排队的帧被当成积压。
+  **修复**：积压按流时间算（最老的待解帧落后最新帧多少，和帧率无关）；解码器出帧且追上之前不判（或启动 2 s 后）；
+  落后 150 ms 要**持续 300 ms** 才丢（短卡顿让解码器自己追回），落后 1 s 立刻丢；关键帧到来时落后就直接用它重建。
+- **兼容性修复**：旧版被控端的请求解析拒绝未知字段，新观看端带 `codecs` 会被拒（实时画面打不开）。controller agent
+  遇到 "unknown field `codecs`" 时去掉该字段、在同一连接上重试（`agent.rs` 的 `without_unknown_field`）。
+  已用改动前的旧版二进制当被控端实测通过（`tools/stream-e2e.py --host-cli <旧版>`）。
 
 两处由实测驱动的修正：
 - **帧率按刷新取整**：WGC 只能在刷新时出帧，"最小间隔 1/fps"会凑成整刷新：100 Hz 屏上请求 60 得 50、30 得 25；
@@ -113,8 +134,8 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 
 ### 桌面端（Tauri，Windows + Mac 共用）
 
-- `apps/desktop/src/lib/codec.ts`：启动时用 `VideoDecoder.isConfigSupported` 探测 4K 下能硬解的编码（AV1 > HEVC > H.264），
-  会话请求时带上。
+- `apps/desktop/src/lib/codec.ts`：启动时用 `VideoDecoder.isConfigSupported` 探测 4K 下能硬解的编码（HEVC > AV1 > H.264，
+  原因见"码率与丢帧"），会话请求时带上。
 - `video.ts`：按帧头编码选 codec 字符串；**配置时必须带 codedWidth/codedHeight**——不带的话 Chromium 的 HEVC 路径
   把显示尺寸报成 1280×720（2026-10-12 实测）。编码或尺寸变化时重建解码器。
 - 画质档：均衡 1080p60/12 Mbps（默认）、流畅 1440p120/25 Mbps、清晰 4K60/40 Mbps、**极致 原生/240 fps/150 Mbps**、低带宽。
@@ -129,6 +150,9 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 3. OpenH264 的解码器解不了 NVENC 的 4K H.264（High、level 6.0），但 WebCodecs 能解；验证码流用 WebCodecs。
 4. `windows-capture` 的 `Frame::buffer()` 每帧分配整屏 staging 纹理，且它建设备不带 VIDEO_SUPPORT，所以自己写了 WGC。
 5. 闭包捕获 `Shared(x).0` 会按字段捕获（edition 2021 disjoint capture），绕过 `unsafe impl Send` 包装；用方法访问。
+6. 测码率要按真实帧率节奏喂帧：背靠背喂帧时编码器按时间戳看到的是 2 倍帧率，"平均帧大小 × 帧率"会掩盖超标。
+   而且要测**缩放后的尺寸**：AV1 的问题在原生尺寸和缩放尺寸上表现相反。
+7. 单个"修复"要在所有画质档上复测：MaxQP=51 修好了原生 4K/5K，却让 1080p/4K 缩放档的 AV1 从 12 Mbps 涨到 105。
 
 ### 下一步（按收益排序）
 
@@ -137,9 +161,8 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 - [x] 高码率下 Tauri Channel：5K@100fps / 192 Mbps 跑满帧（见上）。原理备忘：每帧 >1 KB 时 Tauri 2.12 先 `eval`
       一段 JS，页面再走一次 `ipc://` fetch（`tauri/src/ipc/channel.rs`）；更高帧率/码率若出现排队，再换本地 WebSocket
       （随机令牌、只听 127.0.0.1）或 WebView2 SharedBuffer。
-- [ ] 桌面端丢帧定位：给 `video.ts` 的丢帧按原因计数（等关键帧 / 积压重置 / 解析失败），用 `--pattern` 复测。
-- [ ] 码率上限：AV1 极端画面超出请求约 30%；试 `CODECAPI_AVEncCommonBufferSize` 更小的 VBV 或 CBR+低 VBV，
-      并配合自适应码率。
+- [x] 桌面端丢帧：定位并修复（见"码率与丢帧"），压测 12 次 0 丢帧。
+- [x] AV1 码率超标：HEVC 优先 + 码率守卫（见"码率与丢帧"）。直接用 NVENC SDK 的 AV1 也许码控正常，未试。
 - [ ] 画质客观对比：CBR vs LowDelayVBR、三种编码同码率的 PSNR/VMAF（可用 ffmpeg 解 `target/stream-bench/*.bin`）。
 - [ ] 端到端延迟指标：主机时间戳 + 时钟偏移回显，在会话界面显示"采集→显示"延迟。
 - [ ] 自适应码率：写帧阻塞（背压）时降码率/分辨率，恢复后回升；现在只有固定档位。
