@@ -606,12 +606,22 @@ async fn run(cli: Cli) -> Result<()> {
                     "No host is paired. On the host run `ai-remote pair-code`, then `ai-remote pair <ticket>` here."
                 );
             }
+            let mut via_n0 = false;
             for h in hosts {
+                via_n0 |= h["relay_n0"] == true;
                 println!(
-                    "{:<24} level-at-pairing={}{}",
+                    "{:<24} level-at-pairing={:<8} {}{}",
                     h["name"].as_str().unwrap_or("?"),
                     h["level_at_pairing"].as_str().unwrap_or("?"),
+                    route_text(&h),
                     if h["default"] == true { "  (default)" } else { "" }
+                );
+            }
+            if via_n0 {
+                println!(
+                    "\nP2P failed for the hosts marked \"n0 public relay\": their traffic is forwarded by n0's free \
+                     public relay (still end-to-end encrypted, but higher latency and rate-limited). \
+                     To use your own relay see docs/operations.md, section 12 (Connecting across networks)."
                 );
             }
             Ok(())
@@ -1392,6 +1402,19 @@ async fn restart_hint(profile: &Profile) {
 fn print_json(v: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
+}
+
+/// How a host's open connection travels, for `ai-remote hosts`.
+fn route_text(h: &Value) -> String {
+    let relay = h["relay"].as_str().map(|r| r.split_once("://").map_or(r, |(_, host)| host).trim_end_matches('.'));
+    match (h["path"].as_str(), relay) {
+        (Some("direct"), _) => "direct (P2P)".into(),
+        (Some("relay"), Some(relay)) if h["relay_n0"] == true => format!("n0 public relay ({relay}): P2P failed"),
+        (Some("relay"), Some(relay)) => format!("relay {relay}: P2P failed"),
+        (Some("relay"), None) => "relay: P2P failed".into(),
+        (Some(_), _) => "route unknown".into(),
+        (None, _) => "not connected".into(),
+    }
 }
 
 fn print_result(json_out: bool, v: &Value, human: &str) -> Result<()> {

@@ -12,6 +12,10 @@ export interface Host {
   pairedAt: number | null;
   /** Known only while a connection is open. */
   path: PathKind | null;
+  /** The relay host carrying the traffic, when relayed and known. */
+  relay?: string | null;
+  /** The relay is one of n0's public relays (rate-limited, meant for development). */
+  relayN0?: boolean;
 }
 
 /** A tool a host offers, with the level it needs and what the gate does with it for this device. */

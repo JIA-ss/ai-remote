@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { t } from "../lib/i18n";
+import type { Host } from "../lib/types";
 
 export const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
 
@@ -99,4 +100,18 @@ export function destructive(command: string): boolean {
   return /\b(Remove-Item|rm|rmdir|del|erase|rd|format|Format-Volume|Clear-Content|Stop-Computer|Restart-Computer|shutdown|reg\s+delete|Remove-|diskpart|mkfs|dd)\b/i.test(
     command,
   );
+}
+
+/** Short name of a host's route: direct, n0's public relay, or another relay. */
+export function routeLabel(h: Host): string {
+  return h.path === "direct" ? t("direct") : h.relayN0 ? t("relayed_n0") : t("relayed");
+}
+
+/** While relayed: a one-line note that P2P failed and who forwards the traffic, and its longer explanation. */
+export function relayNote(h: Host): { note: string; detail: string } | null {
+  if (h.path !== "relay") return null;
+  const relay = h.relay ?? "?";
+  return h.relayN0
+    ? { note: t("relay_note_n0"), detail: t("relay_detail_n0", { relay }) }
+    : { note: t("relay_note", { relay }), detail: t("relay_detail", { relay }) };
 }

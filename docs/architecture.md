@@ -118,9 +118,12 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   already have run on the host, so the agent is told the outcome is unknown. Starting a session has
   no side effects, so a session start on a kept connection that fails or gets no answer within 8
   seconds is retried once on a fresh connection (unless the host refused this device).
-- **Relays.** The public n0 relays by default (they only see ciphertext); a host can use
-  self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
-  `[network] relays = [...]`. The controller agent has no relay setting in M0.
+- **Relays and reaching a peer.** The public n0 relays by default (they only see ciphertext); host and
+  controller can use self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
+  `[network] relays = [...]`, with n0's relays kept as a fallback. Local-network (mDNS) discovery, an
+  HTTP proxy for the relay connection (detected from the environment or the system) and dial retries
+  are on by default; see [operations.md](operations.md#12-connecting-across-networks). The controller
+  reports each connection's route (`path`, `relay`, `relay_n0`) and every client says when P2P failed.
 - **ALPN `app/ai-remote/events/1`.** The activity feed and the approval channel. A controller opens
   a stream per request and writes one JSON line: `{"subscribe":true}` returns the host's recent audit
   lines and then every new one (tool decisions and outcomes, sessions, approvals), which `ai-remote

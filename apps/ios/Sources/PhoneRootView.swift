@@ -6,6 +6,7 @@ public struct PhoneRootView: View {
     @PhoneViewState<Bool> private var fullscreen = false
     @PhoneViewState<Bool> private var controlsExpanded = true
     @PhoneViewState<Bool> private var showKeyboard = false
+    @PhoneViewState<Bool> private var showRouteDetail = false
     @PhoneViewState<PhoneViewportRequest> private var viewportRequest = PhoneViewportRequest()
     @PhoneViewState<EdgeInsets> private var viewportInsets = EdgeInsets()
     @FocusState private var textFocused: Bool
@@ -158,6 +159,7 @@ public struct PhoneRootView: View {
                     .padding(.horizontal, 12).frame(minHeight: 36)
                     .modifier(PhoneGlassSurface())
                     .accessibilityLabel("\(host.name)，\(sessionTitle)，\(sessionDetail)")
+                    if let relay = store.route?.relayNote { relayBadge(relay) }
                     Spacer(minLength: 8)
                     Button { requestViewport(.fit) } label: {
                         Image(systemName: "arrow.down.right.and.arrow.up.left").frame(width: 44, height: 44).contentShape(Rectangle())
@@ -196,6 +198,26 @@ public struct PhoneRootView: View {
         }
         .onChange(of: store.ownsControls) { _, owns in
             if !owns { showKeyboard = false; textFocused = false }
+        }
+    }
+
+    /// Says plainly that P2P failed and the traffic is relayed (by n0's public relay unless self-hosted).
+    private func relayBadge(_ relay: (note: String, detail: String)) -> some View {
+        Button { showRouteDetail = true } label: {
+            ViewThatFits(in: .horizontal) {
+                Label(relay.note, systemImage: "arrow.triangle.branch")
+                Label(store.route?.routeLabel ?? "中继", systemImage: "arrow.triangle.branch")
+            }
+            .font(.caption.weight(.medium)).foregroundStyle(.orange).lineLimit(1)
+            .padding(.horizontal, 12).frame(minHeight: 36)
+        }
+        .buttonStyle(.plain).modifier(PhoneGlassSurface())
+        .accessibilityLabel(relay.note).accessibilityHint("查看说明")
+        .accessibilityIdentifier("session-relay")
+        .alert("P2P 直连失败", isPresented: $showRouteDetail) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(relay.detail)
         }
     }
 

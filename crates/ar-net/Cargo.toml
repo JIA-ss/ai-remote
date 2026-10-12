@@ -21,3 +21,7 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The user's system proxy (Internet Settings), for relay connections on proxy-only networks.
+windows-registry = "0.6"

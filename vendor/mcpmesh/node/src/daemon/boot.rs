@@ -960,6 +960,7 @@ pub(crate) async fn build_endpoint(
     let alpns = alpns_for(roster_mode);
     let builder = apply_relay_only(builder, net);
     let builder = apply_transport_config(builder, net)?;
+    let builder = apply_proxy(builder, net)?;
     // #229: the outbound revocation veto + the per-peer connection registry. Installed on EVERY
     // booted endpoint; `None` only for test fixtures that assemble a mesh by hand.
     let builder = match hooks {
@@ -1156,6 +1157,24 @@ fn apply_transport_config(
     Ok(match build_transport_config(net)? {
         None => builder,
         Some(cfg) => builder.transport_config(cfg),
+    })
+}
+
+/// Route the relay connections through `[network].proxy_url` (ai-remote patch), if set.
+///
+/// Networks that only allow HTTP(S) out through a proxy otherwise lose the relay — and with it
+/// every path to a peer that cannot be reached directly. An unparsable URL fails the boot rather
+/// than silently connecting without the proxy the operator asked for.
+fn apply_proxy(
+    builder: iroh::endpoint::Builder,
+    net: &crate::config::NetworkCfg,
+) -> Result<iroh::endpoint::Builder> {
+    Ok(match net.proxy_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        None => builder,
+        Some(u) => builder.proxy_url(
+            u.parse::<url::Url>()
+                .map_err(|e| anyhow::anyhow!("[network] proxy_url {u:?}: {e}"))?,
+        ),
     })
 }
 
@@ -1868,6 +1887,22 @@ mod tests {
     }
     /// `net_plan` implements EXACTLY the shipped `[network]` surface — the privacy knobs are
     /// real, validated, and never silently fall back to public infrastructure.
+    #[test]
+    fn proxy_url_must_parse_and_blank_means_none() {
+        let net = |p: Option<&str>| crate::config::NetworkCfg {
+            proxy_url: p.map(str::to_string),
+            ..Default::default()
+        };
+        let b = || iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
+        assert!(apply_proxy(b(), &net(None)).is_ok());
+        assert!(apply_proxy(b(), &net(Some("  "))).is_ok());
+        assert!(apply_proxy(b(), &net(Some("http://proxy.corp.example:8080"))).is_ok());
+        let e = apply_proxy(b(), &net(Some("not a url")))
+            .err()
+            .expect("an unparsable proxy must fail the boot");
+        assert!(e.to_string().contains("proxy_url"), "{e}");
+    }
+
     #[test]
     fn net_plan_validates_the_shipped_network_surface() {
         use crate::config::NetworkCfg;
