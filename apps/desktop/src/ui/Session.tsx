@@ -10,6 +10,7 @@ import { currentLang, t } from "../lib/i18n";
 import { loadStreamQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
+import { preferredCodecs } from "../lib/codec";
 import { createDecoder, type VideoStats } from "../lib/video";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
@@ -207,7 +208,8 @@ export function Stream({
       callbacks.current.onError?.(message);
     };
     api
-      .watchScreen(host, (f) => { if (!stopped) decoder.push(f); }, { maxFps, maxLongEdge, bitrateKbps, onEnded: end })
+      .watchScreen(host, (f) => { if (!stopped) decoder.push(f); },
+        { maxFps, maxLongEdge, bitrateKbps, codecs: preferredCodecs(), onEnded: end })
       .then((v) => {
         if (stopped) v?.stop();
         else {

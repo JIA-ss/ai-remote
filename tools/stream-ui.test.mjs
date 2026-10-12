@@ -128,6 +128,7 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/i18n": { t: (key) => key, currentLang: () => "en" },
     "../lib/stream-quality": quality,
     "../lib/video": { createDecoder },
+    "../lib/codec": { preferredCodecs: () => ["hevc", "h264"] },
     "./Decide": { DecisionCard: () => {} },
     "./RemoteInput": { RemoteInput },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },

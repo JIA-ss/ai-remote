@@ -3,6 +3,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
+import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, PathKind, PendingApproval } from "./types";
 
@@ -64,7 +65,12 @@ export interface Backend {
   watchScreen(
     host: string,
     onFrame: (frame: ArrayBuffer) => void,
-    opts?: { monitor?: number; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number; onEnded?: (reason: string) => void },
+    opts?: {
+      monitor?: number; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number;
+      /** What this machine decodes, best first (see codec.ts); the host defaults to H.264. */
+      codecs?: VideoCodec[];
+      onEnded?: (reason: string) => void;
+    },
   ): Promise<LiveView | null>;
 }
 
@@ -171,6 +177,7 @@ const tauriBackend: Backend = {
       max_fps: opts.maxFps ?? 30,
       max_long_edge: opts.maxLongEdge ?? 1920,
       bitrate_kbps: opts.bitrateKbps ?? 6000,
+      ...(opts.codecs?.length ? { codecs: opts.codecs } : {}),
     };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
       number,

@@ -1,23 +1,27 @@
-//! Screen capture for the live view: Windows Graphics Capture through `windows-capture`, and
-//! event-driven ScreenCaptureKit on macOS. Frames
-//! arrive only when the screen changes; the newest one waits in a slot for the encoder, so a slow
-//! encoder or network skips frames before they are encoded instead of queueing them.
+//! Screen capture for the live view: Windows Graphics Capture on our own D3D11 device with GPU
+//! scaling and NV12 conversion (`capture/win.rs`; the older `windows-capture` BGRA path remains as
+//! a fallback), and event-driven ScreenCaptureKit on macOS. Frames arrive only when the screen
+//! changes; the newest one waits in a slot for the encoder, so a slow encoder or network skips
+//! frames before they are encoded instead of queueing them.
 
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, atomic::AtomicU32},
     time::Duration,
 };
 
 use anyhow::{Result, anyhow};
 
-/// A captured frame. Windows uses tightly packed BGRA; macOS retains the native, immutable
-/// IOSurface-backed pixel buffer for VideoToolbox instead of mapping/copying pixels on the CPU.
+/// A captured frame. Windows keeps an NV12 texture at the stream size on the GPU (`bgra` empty), or
+/// tightly packed BGRA on the fallback path; macOS retains the native, immutable IOSurface-backed
+/// pixel buffer for VideoToolbox instead of mapping/copying pixels on the CPU.
 pub struct Raw {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
     #[cfg(target_os = "macos")]
     pub pixel_buffer: Option<apple_cf::cv::CVPixelBuffer>,
+    #[cfg(windows)]
+    pub gpu: Option<Arc<win::GpuTexture>>,
 }
 
 /// The newest frame not yet taken, shared by the capture thread and the encoder.
@@ -110,16 +114,25 @@ impl Slot {
 /// A running capture; stops when dropped.
 pub struct Capture {
     #[cfg(windows)]
-    control: Option<windows_capture::capture::CaptureControl<win::Handler, win::Error>>,
+    control: Option<windows_capture::capture::CaptureControl<legacy::Handler, legacy::Error>>,
+    #[cfg(windows)]
+    native: Option<win::NativeCapture>,
     #[cfg(target_os = "macos")]
     native: Option<mac::NativeCapture>,
     slot: Arc<Slot>,
     geometry: Option<(i32, i32, u32, u32)>,
+    max_long_edge: Arc<AtomicU32>,
 }
 
 impl Capture {
     pub fn slot(&self) -> Arc<Slot> {
         self.slot.clone()
+    }
+
+    /// The long edge frames are scaled to. Windows' GPU path reads it for every frame, so the
+    /// encoder can lower it when the codec it ends up with has a smaller size limit.
+    pub fn max_long_edge(&self) -> Arc<AtomicU32> {
+        self.max_long_edge.clone()
     }
 
     /// Point coordinates for the exact monitor chosen when capture started, not Retina pixels.
@@ -135,7 +148,7 @@ impl Drop for Capture {
         if let Some(control) = self.control.take() {
             let _ = control.stop();
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(native) = self.native.take() {
             drop(native);
         }
@@ -182,20 +195,41 @@ pub fn geometry(index: Option<usize>) -> Option<(i32, i32, u32, u32)> {
 }
 
 /// Starts capturing monitor `index` (`None`: the primary one) at most `max_fps` times a second.
-/// macOS scales on the GPU to the requested long edge before handing frames to the encoder.
+/// Both platforms scale on the GPU to the requested long edge before handing frames to the encoder.
 pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<Capture> {
     let slot = Arc::new(Slot::default());
+    let edge = Arc::new(AtomicU32::new(max_long_edge));
     #[cfg(windows)]
     {
-        let control = win::start(index, max_fps, slot.clone())?;
-        let _ = max_long_edge; // Windows scaling remains in the encoder.
-        Ok(Capture { control: Some(control), slot, geometry: geometry(index) })
+        let monitor = win::monitor(index)?;
+        // The GPU path is the normal one; the CPU path keeps a live view where the GPU has no
+        // video processor (a basic display driver, some virtual adapters).
+        match win::start(monitor, max_fps, edge.clone(), slot.clone()) {
+            Ok(native) => Ok(Capture {
+                control: None,
+                native: Some(native),
+                slot,
+                geometry: geometry(index),
+                max_long_edge: edge,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "GPU screen capture unavailable; using the CPU path");
+                let control = legacy::start(index, max_fps, slot.clone())?;
+                Ok(Capture {
+                    control: Some(control),
+                    native: None,
+                    slot,
+                    geometry: geometry(index),
+                    max_long_edge: edge,
+                })
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     {
         let native = mac::start(index, max_fps, max_long_edge, slot.clone())?;
         let geometry = Some(native.geometry());
-        Ok(Capture { native: Some(native), slot, geometry })
+        Ok(Capture { native: Some(native), slot, geometry, max_long_edge: edge })
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -206,9 +240,12 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
 
 #[cfg(target_os = "macos")]
 mod mac;
-
 #[cfg(windows)]
-mod win {
+pub mod win;
+
+/// The CPU path through `windows-capture`: BGRA read back into memory for the software encoder.
+#[cfg(windows)]
+mod legacy {
     use std::{sync::Arc, time::Duration};
 
     use anyhow::{Result, anyhow};
@@ -244,7 +281,7 @@ mod win {
             let buffer = frame.buffer()?;
             let (width, height) = (buffer.width(), buffer.height());
             let bgra = buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
-            self.slot.put(Raw { bgra, width, height });
+            self.slot.put(Raw { bgra, width, height, gpu: None });
             Ok(())
         }
 
@@ -266,7 +303,7 @@ mod win {
             // The yellow capture border would be on the person's screen the whole time.
             DrawBorderSettings::WithoutBorder,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1000 / max_fps.clamp(1, 60) as u64)),
+            MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1000 / max_fps.clamp(1, 240) as u64)),
             DirtyRegionSettings::Default,
             ColorFormat::Bgra8,
             slot,
@@ -332,6 +369,8 @@ mod slot_tests {
             height: 2,
             #[cfg(target_os = "macos")]
             pixel_buffer: None,
+            #[cfg(windows)]
+            gpu: None,
         }
     }
 

@@ -168,7 +168,8 @@ function videoFixture() {
       assert.ok(closed, "every decoded frame must be released");
     }
   }
-  const exports = module("../apps/desktop/src/lib/video.ts", { "../bindings": { commands: {} } }, timers, "", {
+  const codec = module("../apps/desktop/src/lib/codec.ts", {}, timers);
+  const exports = module("../apps/desktop/src/lib/video.ts", { "../bindings": { commands: {} }, "./codec": codec }, timers, "", {
     performance: { now: () => now }, VideoDecoder: MockDecoder, EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
   });
   const canvas = { width: 0, height: 0, getContext: () => ({ drawImage() { drawn++; } }) };
@@ -236,5 +237,40 @@ test("back-to-back keyframes cannot bypass the decoder queue bound", () => {
     assert.equal(s.instances.at(-1).decoded.length, 1);
   }
   assert.equal(s.requested(), 0, "the arriving IDR is already sufficient for recovery");
+  s.decoder.close();
+});
+
+test("HEVC and AV1 keyframes configure their decoder with the coded size; unknown codec ids are dropped", () => {
+  const s = videoFixture();
+  const packet = (flags, width, height, payload) => {
+    const buffer = new ArrayBuffer(18 + payload.length);
+    const head = new DataView(buffer);
+    head.setUint8(0, 1); head.setUint8(1, flags); head.setUint16(2, width); head.setUint16(4, height);
+    head.setUint32(14, payload.length);
+    new Uint8Array(buffer, 18).set(payload);
+    return buffer;
+  };
+  // HEVC (codec id 1) keyframe: VPS, SPS, PPS, IDR.
+  const hevc = new Uint8Array([0, 0, 0, 1, 0x40, 1, 0, 0, 0, 1, 0x42, 1, 0, 0, 0, 1, 0x44, 1, 0, 0, 0, 1, 0x26, 1]);
+  s.decoder.push(packet(0b011, 5120, 2160, hevc));
+  assert.equal(s.instances.length, 1);
+  assert.match(s.instances[0].config.codec, /^hev1\./);
+  assert.equal(s.instances[0].config.codedWidth, 5120);
+  assert.equal(s.instances[0].config.codedHeight, 2160);
+  assert.equal(s.instances[0].decoded.length, 1);
+  // A delta of the same stream reuses the decoder.
+  s.decoder.push(packet(0b010, 5120, 2160, new Uint8Array([0, 0, 0, 1, 0x02, 1])));
+  assert.equal(s.instances.length, 1);
+  assert.equal(s.instances[0].decoded.length, 2);
+  // The host falls back to H.264 at a keyframe: a new decoder for the new codec.
+  s.decoder.push(packet(0b001, 3840, 1620, new Uint8Array([0, 0, 0, 1, 0x67, 0x64, 0, 0x33, 0, 0, 0, 1, 0x65, 1])));
+  assert.equal(s.instances.length, 2);
+  assert.equal(s.instances[0].state, "closed");
+  assert.equal(s.instances[1].config.codec, "avc1.640033");
+  // AV1 (codec id 2): sequence header OBU first.
+  s.decoder.push(packet(0b101, 5120, 2160, new Uint8Array([0x0a, 1, 0])));
+  assert.match(s.instances[2].config.codec, /^av01\./);
+  // A codec id this viewer does not know is not a frame it can use.
+  assert.equal(s.parseFrame(packet(0b111, 64, 64, new Uint8Array([1]))), null);
   s.decoder.close();
 });

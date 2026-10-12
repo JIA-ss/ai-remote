@@ -1,20 +1,25 @@
 //! `app/ai-remote/screen/1`: live video of the host's screen for a person at a paired device.
 //!
 //! The controller opens a bi-stream and writes one JSON line:
-//! `{"monitor":null,"max_fps":30,"max_long_edge":1920,"bitrate_kbps":6000}` (every field optional).
-//! The host answers with one JSON line (`{"ok":true,"monitors":[...],"screen":{x,y,width,height}}`,
-//! the streamed monitor's place in screen coordinates, or `{"ok":false,"error":..}`)
+//! `{"monitor":null,"max_fps":30,"max_long_edge":1920,"bitrate_kbps":6000,"codecs":["hevc","h264"]}`
+//! (every field optional). `codecs` lists what the viewer decodes, best first; without it the
+//! stream is H.264, which every viewer decodes. The host answers with one JSON line
+//! (`{"ok":true,"monitors":[...],"screen":{x,y,width,height},"codec":"hevc"}`: the streamed
+//! monitor's place in screen coordinates and the codec it starts with; or `{"ok":false,"error":..}`)
 //! and then binary frames until either side closes:
 //!
 //! ```text
 //! u8  kind     1 = video frame
-//! u8  flags    bit 0: keyframe
+//! u8  flags    bit 0: keyframe; bits 1-2: codec (0 H.264, 1 HEVC, 2 AV1)
 //! u16 width    big-endian, the stream size of this frame
 //! u16 height
 //! u64 ts_us    encoder emission time, microseconds since the stream started
 //! u32 length
-//! ..  H.264 Annex B, `length` bytes
+//! ..  H.264/HEVC Annex B or AV1 OBUs, `length` bytes
 //! ```
+//!
+//! The codec can change at a keyframe (a hardware encoder failed and the host fell back to software
+//! H.264); a viewer reconfigures its decoder when a keyframe's codec differs.
 //!
 //! The controller may write more lines on its half of the stream: `{"keyframe":true}` asks for a
 //! keyframe (after a decoder error, or a viewer that joined late). Any device with a level may watch;
@@ -42,7 +47,10 @@ use tokio::{
     sync::mpsc,
 };
 
-use super::{capture, encode::FrameEncoder};
+use super::{
+    capture,
+    encode::{self, Codec, FrameEncoder},
+};
 use crate::HostState;
 
 /// Viewers served at once; each one has its own capture and encoder.
@@ -59,7 +67,15 @@ struct Request {
     max_long_edge: u32,
     #[serde(default = "default_kbps")]
     bitrate_kbps: u32,
+    /// What the viewer decodes, best first; unknown names are ignored.
+    #[serde(default)]
+    codecs: Vec<String>,
 }
+
+/// Request limits: high-refresh displays, 8K, and a LAN's worth of bitrate.
+const MAX_FPS: u32 = 240;
+const MAX_LONG_EDGE: u32 = 8192;
+const MAX_KBPS: u32 = 500_000;
 
 fn default_fps() -> u32 {
     30
@@ -156,11 +172,16 @@ async fn serve(
         return;
     }
     let monitors = capture::monitors().unwrap_or_default();
-    let capture = match tokio::task::spawn_blocking(move || {
-        capture::start(req.monitor, req.max_fps, req.max_long_edge.clamp(320, 3840))
+    let wanted: Vec<Codec> = req.codecs.iter().filter_map(|c| Codec::parse(c)).collect();
+    let (fps, kbps) = (req.max_fps.clamp(1, MAX_FPS), req.bitrate_kbps.clamp(300, MAX_KBPS));
+    let requested_edge = req.max_long_edge.clamp(320, MAX_LONG_EDGE);
+    let started = tokio::task::spawn_blocking(move || {
+        // Hardware probing and capture setup both block; the codec decides the capture size.
+        let (codecs, edge) = encode::plan(&wanted, requested_edge);
+        capture::start(req.monitor, fps, edge).map(|capture| (capture, codecs, edge))
     })
-    .await
-    {
+    .await;
+    let (capture, codecs, edge) = match started {
         Ok(Ok(c)) => c,
         result => {
             let error = match result {
@@ -177,7 +198,7 @@ async fn serve(
     // Where the streamed monitor is on the screen, so a viewer can turn a point of the picture into
     // screen coordinates for the mouse tool.
     let screen = capture.geometry().map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
-    if !reply(&mut send, json!({"ok": true, "monitors": list, "screen": screen})).await {
+    if !reply(&mut send, json!({"ok": true, "monitors": list, "screen": screen, "codec": codecs[0].name()})).await {
         return;
     }
     let audit_line =
@@ -190,20 +211,37 @@ async fn serve(
     let keyframe = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
     let encoder = {
-        let (slot, keyframe, stop) = (capture.slot(), keyframe.clone(), stop.clone());
-        let (fps, kbps, edge) = (req.max_fps.clamp(1, 60), req.bitrate_kbps.clamp(300, 50_000), req.max_long_edge);
+        let (slot, keyframe, stop, capture_edge) =
+            (capture.slot(), keyframe.clone(), stop.clone(), capture.max_long_edge());
         tokio::task::spawn_blocking(move || {
-            let mut enc = match FrameEncoder::new(fps, kbps * 1000, edge.clamp(320, 3840)) {
-                Ok(e) => e,
+            let mut enc = match FrameEncoder::new(fps, kbps * 1000, edge) {
+                Ok(e) => e.with_codecs(&codecs).with_capture_edge(capture_edge),
                 Err(e) => {
                     tracing::warn!(error = %format!("{e:#}"), "live view encoder");
                     return;
                 }
             };
             let started = Instant::now();
+            let send = |frame: encode::Encoded| {
+                let ts = started.elapsed().as_micros() as u64;
+                tx.blocking_send(frame_bytes(&frame.data, frame.keyframe, frame.codec, frame.width, frame.height, ts))
+                    .is_ok()
+            };
             let mut latest = None;
+            let mut backend = String::new();
             while !stop.load(Ordering::Relaxed) {
-                let Some(next) = slot.take(Duration::from_millis(50)) else { break };
+                // An asynchronous hardware encoder may finish a frame after its call returned.
+                match enc.poll() {
+                    Ok(Some(frame)) => {
+                        if !send(frame) {
+                            break;
+                        }
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %format!("{e:#}"), "live view frame"),
+                }
+                let Some(next) = slot.take(Duration::from_millis(5)) else { break };
                 if let Some(raw) = next {
                     latest = Some(raw);
                 } else if !keyframe.load(Ordering::Relaxed) {
@@ -219,7 +257,12 @@ async fn serve(
                 if keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
-                let frame = match enc.encode_raw(raw) {
+                let frame = enc.encode_raw(raw);
+                if enc.backend_name() != backend {
+                    backend = enc.backend_name();
+                    tracing::info!(%backend, "live view encoder");
+                }
+                let frame = match frame {
                     Ok(Some(f)) => f,
                     Ok(None) => continue,
                     Err(e) => {
@@ -227,8 +270,7 @@ async fn serve(
                         continue;
                     }
                 };
-                let ts = started.elapsed().as_micros() as u64;
-                if tx.blocking_send(frame_bytes(&frame.data, frame.keyframe, frame.width, frame.height, ts)).is_err() {
+                if !send(frame) {
                     break;
                 }
             }
@@ -301,10 +343,10 @@ async fn reply(send: &mut SendStream, v: serde_json::Value) -> bool {
 }
 
 /// One frame in the wire format of this module.
-pub fn frame_bytes(data: &[u8], keyframe: bool, width: u32, height: u32, ts_us: u64) -> Vec<u8> {
+pub fn frame_bytes(data: &[u8], keyframe: bool, codec: Codec, width: u32, height: u32, ts_us: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(18 + data.len());
     out.push(1);
-    out.push(keyframe as u8);
+    out.push(keyframe as u8 | codec.wire_id() << 1);
     out.extend_from_slice(&(width as u16).to_be_bytes());
     out.extend_from_slice(&(height as u16).to_be_bytes());
     out.extend_from_slice(&ts_us.to_be_bytes());
@@ -370,9 +412,12 @@ mod tests {
 
     #[test]
     fn frames_have_an_18_byte_header() {
-        let b = super::frame_bytes(&[0, 0, 0, 1, 0x67], true, 1920, 1080, 42);
+        let b = super::frame_bytes(&[0, 0, 0, 1, 0x67], true, Codec::H264, 1920, 1080, 42);
         assert_eq!(b.len(), 18 + 5);
         assert_eq!(&b[..2], &[1, 1]);
+        // Codec ids sit above the keyframe bit; H.264 keeps the header older viewers read.
+        assert_eq!(super::frame_bytes(&[0], false, Codec::Hevc, 2, 2, 0)[1], 0b010);
+        assert_eq!(super::frame_bytes(&[0], true, Codec::Av1, 2, 2, 0)[1], 0b101);
         assert_eq!(u16::from_be_bytes([b[2], b[3]]), 1920);
         assert_eq!(u16::from_be_bytes([b[4], b[5]]), 1080);
         assert_eq!(u64::from_be_bytes(b[6..14].try_into().unwrap()), 42);

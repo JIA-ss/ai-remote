@@ -160,7 +160,7 @@ impl HardwareEncoder {
             &parameter_sets.parameter_sets,
             keyframe,
         )?;
-        Ok(Some(Encoded { data, keyframe, width: self.width, height: self.height }))
+        Ok(Some(Encoded { data, keyframe, width: self.width, height: self.height, codec: super::Codec::H264 }))
     }
 }
 
