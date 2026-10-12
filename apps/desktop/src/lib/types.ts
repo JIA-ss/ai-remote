@@ -16,6 +16,8 @@ export interface Host {
   relay?: string | null;
   /** The relay is one of n0's public relays (rate-limited, meant for development). */
   relayN0?: boolean;
+  /** While relayed, what likely kept the connection from going direct. */
+  p2pObstacle?: "udp_blocked" | "symmetric_nat" | "captive_portal" | "remote" | null;
 }
 
 /** A tool a host offers, with the level it needs and what the gate does with it for this device. */

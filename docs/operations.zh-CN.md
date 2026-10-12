@@ -498,6 +498,7 @@ Checked by the running host:
                    fix: run the host with highest privileges; `ai-remote host install` registers it that way
   ok    dpi        per-monitor DPI aware (v2): screenshot and click coordinates agree
   ok    relay      connected to https://...; 3 direct address(es)
+  ok    p2p        UDP gets through, so direct (P2P) connections can form; IPv6 works
   ok    approval   approval prompts can be shown on this desktop
   ok    firewall   inbound connections allowed for C:\...\ai-remote-hostw.exe (UDP, TCP)
   ok    autostart  Task Scheduler task \ai-remote\host-1a2b3c4d starts the background host at login
@@ -513,6 +514,7 @@ Overall: warn
 | `desktop` | 输入桌面是 `Default`（未锁定） | **fail**：已锁定，或正显示登录界面、UAC 提示 | 解锁；无人值守的机器关闭自动锁屏 |
 | `elevation` | 被控端以管理员权限运行 | **warn**：以管理员身份运行的程序的窗口会忽略它的输入 | 以最高权限运行（由管理员执行 `host install`） |
 | `dpi` | 逐显示器 DPI 感知（v2） | **fail**：在有缩放的显示器上点击位置会偏 | 去掉可执行文件上的高 DPI 兼容性覆盖设置（属性 > 兼容性） |
+| `p2p` | UDP 能出去，NAT 不是对称型 | **warn**：UDP 被阻断（所有连接都走中继）、对称型 NAT（直连常常失败）或需要网页登录的网络 | 放行出站 UDP、在路由器上开 UPnP/NAT-PMP、用 IPv6，或先完成网络登录 |
 | `relay` | 已连上主中继（home relay） | **warn**：没有使用中继，或一个都连不上；其他网络里的控制端可能连不进来 | 检查网络连接、出站防火墙或代理（中继走 HTTPS），或检查 `[network] relays` |
 | `approval` | 能弹出审批框 | **warn**：需要审批的操作都会被拒绝 | 解锁桌面，或用 `[[rule]]` 放行可信的工具 |
 | `bypass` | 没有控制端处于 bypass | **warn**：列出的控制端可以不经审批使用全部工具（6.1 节） | 不再需要时 `ai-remote bypass off <设备>`（或 `--all`） |
