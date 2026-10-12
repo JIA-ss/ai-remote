@@ -68,7 +68,7 @@ unsafe impl Sync for Gpu {}
 impl Gpu {
     /// A hardware device on the adapter that scans out `monitor` (no cross-adapter copy), or the
     /// default adapter when that cannot be found (e.g. an indirect display driver).
-    fn for_monitor(monitor: HMONITOR) -> Result<Arc<Self>> {
+    pub(super) fn for_monitor(monitor: HMONITOR) -> Result<Arc<Self>> {
         let adapter = adapter_for(monitor);
         let flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
         let levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
@@ -134,7 +134,7 @@ pub struct GpuTexture {
 unsafe impl Send for GpuTexture {}
 unsafe impl Sync for GpuTexture {}
 
-struct Converter {
+pub(super) struct Converter {
     gpu: Arc<Gpu>,
     input: (u32, u32),
     output: (u32, u32),
@@ -147,7 +147,7 @@ struct Converter {
 unsafe impl Send for Converter {}
 
 impl Converter {
-    fn new(gpu: Arc<Gpu>, input: (u32, u32), output: (u32, u32), fps: u32) -> Result<Self> {
+    pub(super) fn new(gpu: Arc<Gpu>, input: (u32, u32), output: (u32, u32), fps: u32) -> Result<Self> {
         let rate = DXGI_RATIONAL { Numerator: fps, Denominator: 1 };
         let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -189,7 +189,7 @@ impl Converter {
 
     /// Converts `source` into a free pool texture; `None` when every texture is still in use (the
     /// frame is skipped, as the newest-frame slot would have dropped it anyway).
-    fn convert(&mut self, source: &ID3D11Texture2D) -> Result<Option<Arc<GpuTexture>>> {
+    pub(super) fn convert(&mut self, source: &ID3D11Texture2D) -> Result<Option<Arc<GpuTexture>>> {
         let Some(target) = self.pool.iter().find(|t| Arc::strong_count(t) == 1).cloned() else {
             return Ok(None);
         };
@@ -366,6 +366,7 @@ pub(super) fn start(
         TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
             let Some(pool) = pool.as_ref() else { return Ok(()) };
             let Ok(frame) = pool.TryGetNextFrame() else { return Ok(()) };
+            let captured = std::time::Instant::now();
             let content = frame.ContentSize()?;
             {
                 let mut last = last_size.lock().unwrap();
@@ -402,6 +403,7 @@ pub(super) fn start(
                     bgra: Vec::new(),
                     width: gpu_frame.width,
                     height: gpu_frame.height,
+                    captured,
                     gpu: Some(gpu_frame),
                 }),
                 Some(Ok(None)) | None => {}
@@ -493,6 +495,14 @@ fn bgra_texture(gpu: &Gpu, width: u32, height: u32, pixels: Option<&[u8]>) -> Re
     texture.context("D3D11 returned no texture")
 }
 
+/// Where a `height`-row view of a `2 * height`-row picture starts after scrolling `rows`: down to
+/// the end and back up, never jumping. A wrap back to the top would change the whole picture at
+/// once, like a scene cut, and its large frame every few seconds skewed bitrate measurements.
+fn scroll_top(rows: u32, height: u32) -> u32 {
+    let phase = rows % (2 * height);
+    if phase <= height { phase } else { 2 * height - phase }
+}
+
 /// `AI_REMOTE_TEST_PATTERN=<width>x<height>` on the host replaces the screen with a synthetic,
 /// desktop-like picture of that size that scrolls 7 rows a frame at the requested rate: every frame
 /// changes everywhere, so the stream runs at its frame rate and bitrate cap. Everything after
@@ -544,7 +554,7 @@ pub(super) fn start_test_pattern(
             let mut converter: Option<Converter> = None;
             let mut frame = 0u32;
             while !stop.load(Ordering::Relaxed) {
-                let top = (frame * 7) % height;
+                let top = scroll_top(frame.wrapping_mul(7), height);
                 frame = frame.wrapping_add(1);
                 let region = D3D11_BOX { left: 0, top, front: 0, right: width, bottom: top + height, back: 1 };
                 // SAFETY: copies between two private textures of the same device.
@@ -567,6 +577,7 @@ pub(super) fn start_test_pattern(
                         bgra: Vec::new(),
                         width: converted.width,
                         height: converted.height,
+                        captured: std::time::Instant::now(),
                         gpu: Some(converted),
                     });
                 }
@@ -670,11 +681,17 @@ mod bench {
                     let total = fps * 4;
                     let start = Instant::now();
                     for f in 0..total {
-                        let top = (f * 7) % h;
+                        let top = scroll_top(f * 7, h);
                         let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
                         unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
                         let frame = converter.convert(&screen).unwrap().unwrap();
-                        let raw = super::super::Raw { bgra: Vec::new(), width: sw, height: sh, gpu: Some(frame) };
+                        let raw = super::super::Raw {
+                            bgra: Vec::new(),
+                            width: sw,
+                            height: sh,
+                            captured: Instant::now(),
+                            gpu: Some(frame),
+                        };
                         let mut ready = encoder.encode_raw(&raw).unwrap();
                         while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
                             last = out.codec;
@@ -702,6 +719,77 @@ mod bench {
         assert!(failures.is_empty(), "{failures:?}");
     }
 
+    /// A bitrate change from the viewer takes effect on the running encoder, down and back up, for
+    /// the codecs that keep to a bitrate at all (H.264, HEVC), without a new keyframe. Each phase
+    /// runs 4 s: its last 2 s must settle within 1.15x of the new rate, and no 2 s of it may run
+    /// over 1.2x (the rate guard would take that for a runaway encoder and change codec).
+    #[test]
+    #[ignore]
+    fn bitrate_changes_take_effect_mid_stream() {
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "info")).with_test_writer().try_init();
+        let gpu =
+            Gpu::for_monitor(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) }).unwrap();
+        let (w, h, fps) = (3840u32, 2160u32, 60u32);
+        let tall = bgra_texture(&gpu, w, h * 2, Some(&desktop_like(w, h * 2))).unwrap();
+        let screen = bgra_texture(&gpu, w, h, None).unwrap();
+        let mut failures = Vec::new();
+        for codec in [Codec::H264, Codec::Hevc] {
+            let mut converter = Converter::new(gpu.clone(), (w, h), (w, h), fps).unwrap();
+            let mut encoder = FrameEncoder::new(fps, 40_000_000, w).unwrap().with_codecs(&[codec]);
+            // A cut, the controller's 15% steps back up, and a jump.
+            let phases = [40_000_000u32, 10_000_000, 11_500_000, 25_000_000];
+            let (mut f, mut keyframes) = (0u32, 0usize);
+            for &bps in &phases {
+                encoder.set_bitrate(bps);
+                let target = f64::from(bps) / 1e6;
+                // Non-keyframe bytes per half second.
+                let mut bins = [0usize; 8];
+                let start = Instant::now();
+                for i in 0..fps * 4 {
+                    let top = scroll_top(f * 7, h);
+                    f += 1;
+                    let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
+                    unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
+                    let frame = converter.convert(&screen).unwrap().unwrap();
+                    let raw = super::super::Raw {
+                        bgra: Vec::new(),
+                        width: w,
+                        height: h,
+                        captured: Instant::now(),
+                        gpu: Some(frame),
+                    };
+                    let mut ready = encoder.encode_raw(&raw).unwrap();
+                    while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
+                        assert_eq!(out.codec, codec);
+                        keyframes += usize::from(out.keyframe);
+                        if !out.keyframe {
+                            bins[(i / (fps / 2)) as usize] += out.data.len();
+                        }
+                    }
+                    let due = start + Duration::from_secs_f64(f64::from(i + 1) / f64::from(fps));
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                }
+                let mbps: Vec<f64> = bins.iter().map(|b| *b as f64 * 8.0 * 2.0 / 1e6).collect();
+                let settled = mbps[4..].iter().sum::<f64>() / 4.0;
+                let worst_2s = mbps.windows(4).map(|w| w.iter().sum::<f64>() / 4.0).fold(0.0, f64::max);
+                println!(
+                    "{} set {target} Mbit/s: per 0.5 s {mbps:.1?}, last 2 s {settled:.1}, worst 2 s {worst_2s:.1}",
+                    codec.name()
+                );
+                if settled > target * 1.15 || settled < target * 0.4 {
+                    failures.push(format!("{} at {target}: settled at {settled:.1}", codec.name()));
+                }
+                if worst_2s > target * 1.2 {
+                    failures.push(format!("{} at {target}: {worst_2s:.1} over 2 s", codec.name()));
+                }
+            }
+            if keyframes != 1 {
+                failures.push(format!("{}: {keyframes} keyframes (a change must not add any)", codec.name()));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
     /// Opening encoders one after another must stay fast: each one has to release its GPU
     /// session when dropped (a leaked session made the next one wait seconds, then fail).
     #[test]
@@ -719,7 +807,8 @@ mod bench {
             let mut encoder = FrameEncoder::new(60, 20_000_000, w).unwrap().with_codecs(&[codec]);
             let t = Instant::now();
             let frame = converter.convert(&screen).unwrap().unwrap();
-            let raw = super::super::Raw { bgra: Vec::new(), width: w, height: h, gpu: Some(frame) };
+            let raw =
+                super::super::Raw { bgra: Vec::new(), width: w, height: h, captured: Instant::now(), gpu: Some(frame) };
             let out = encoder.encode_raw(&raw).unwrap().or_else(|| encoder.poll().unwrap());
             let took = t.elapsed();
             slowest = slowest.max(took);
@@ -755,7 +844,7 @@ mod bench {
                 let started = Instant::now();
                 for f in 0..frames {
                     // Scroll `AR_SCROLL` rows a frame (7; 0 is a still screen) through the tall picture.
-                    let top = (f * scroll) % h;
+                    let top = scroll_top(f * scroll, h);
                     let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
                     unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
                     // A viewer joining halfway asks for a keyframe.
@@ -764,7 +853,13 @@ mod bench {
                     }
                     let t = Instant::now();
                     let Some(frame) = converter.convert(&screen).unwrap() else { continue };
-                    let raw = super::super::Raw { bgra: Vec::new(), width: w, height: h, gpu: Some(frame) };
+                    let raw = super::super::Raw {
+                        bgra: Vec::new(),
+                        width: w,
+                        height: h,
+                        captured: Instant::now(),
+                        gpu: Some(frame),
+                    };
                     let mut ready = encoder.encode_raw(&raw).unwrap();
                     times.push(t.elapsed());
                     while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {

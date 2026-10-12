@@ -39,6 +39,7 @@ tracing.workspace = true
 getrandom.workspace = true
 xcap.workspace = true
 openh264 = "0.9"
+openh264-sys2 = "0.9"
 fast_image_resize = "6"
 yuvutils-rs = "0.8"
 

@@ -290,6 +290,7 @@ dependencies = [
  "getrandom 0.3.4",
  "image",
  "openh264",
+ "openh264-sys2",
  "plist",
  "process-wrap",
  "quick-xml 0.42.0",

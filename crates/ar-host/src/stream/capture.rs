@@ -18,6 +18,8 @@ pub struct Raw {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    /// When the picture was captured: the start of the latency a viewer sees.
+    pub captured: std::time::Instant,
     #[cfg(target_os = "macos")]
     pub pixel_buffer: Option<apple_cf::cv::CVPixelBuffer>,
     #[cfg(windows)]
@@ -119,6 +121,8 @@ pub struct Capture {
     native: Option<win::NativeCapture>,
     #[cfg(windows)]
     pattern: Option<win::TestPattern>,
+    #[cfg(windows)]
+    dda: Option<dda::DdaCapture>,
     #[cfg(target_os = "macos")]
     native: Option<mac::NativeCapture>,
     slot: Arc<Slot>,
@@ -156,6 +160,8 @@ impl Drop for Capture {
         }
         #[cfg(windows)]
         drop(self.pattern.take());
+        #[cfg(windows)]
+        drop(self.dda.take());
     }
 }
 
@@ -232,12 +238,33 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                 control: None,
                 native: None,
                 pattern: Some(pattern),
+                dda: None,
                 slot,
                 geometry,
                 max_long_edge: edge,
             });
         }
         let monitor = win::monitor(index)?;
+        // `AI_REMOTE_CAPTURE=dda`: Desktop Duplication instead of Windows Graphics Capture. For testing
+        // only until it is chosen automatically (the secure desktop); falls through to WGC on failure.
+        if std::env::var("AI_REMOTE_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("dda")) {
+            match dda::start(monitor, max_fps, edge.clone(), slot.clone()) {
+                Ok(dda) => {
+                    return Ok(Capture {
+                        control: None,
+                        native: None,
+                        pattern: None,
+                        dda: Some(dda),
+                        slot,
+                        geometry: geometry(index),
+                        max_long_edge: edge,
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "Desktop Duplication unavailable; using WGC");
+                }
+            }
+        }
         // The GPU path is the normal one; the CPU path keeps a live view where the GPU has no
         // video processor (a basic display driver, some virtual adapters).
         match win::start(monitor, max_fps, edge.clone(), slot.clone()) {
@@ -245,6 +272,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                 control: None,
                 native: Some(native),
                 pattern: None,
+                dda: None,
                 slot,
                 geometry: geometry(index),
                 max_long_edge: edge,
@@ -256,6 +284,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                     control: Some(control),
                     native: None,
                     pattern: None,
+                    dda: None,
                     slot,
                     geometry: geometry(index),
                     max_long_edge: edge,
@@ -276,6 +305,8 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
     }
 }
 
+#[cfg(windows)]
+mod dda;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(windows)]
@@ -319,7 +350,7 @@ mod legacy {
             let buffer = frame.buffer()?;
             let (width, height) = (buffer.width(), buffer.height());
             let bgra = buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
-            self.slot.put(Raw { bgra, width, height, gpu: None });
+            self.slot.put(Raw { bgra, width, height, captured: std::time::Instant::now(), gpu: None });
             Ok(())
         }
 
@@ -405,6 +436,7 @@ mod slot_tests {
             bgra: vec![value; 16],
             width: 2,
             height: 2,
+            captured: std::time::Instant::now(),
             #[cfg(target_os = "macos")]
             pixel_buffer: None,
             #[cfg(windows)]
