@@ -11,6 +11,7 @@
 //! relay_fallback_n0 = true # with relays set: keep n0's public relays as a fallback
 //! proxy = ""             # empty: detect (HTTPS_PROXY, system setting); "none": never; or a URL
 //! lan_discovery = "on"   # find peers on the local network: "on", "resolve" (do not announce), "off"
+//! port = 0               # a fixed UDP port to forward on the router; 0 or absent: random
 //!
 //! [[rule]]               # evaluated in order; the first match wins
 //! tool = "shell"
@@ -100,6 +101,10 @@ pub struct NetworkSection {
     /// Absent: `"on"` on a host, `"resolve"` on a controller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_discovery: Option<String>,
+    /// A fixed UDP port (IPv4) for someone who forwards it on their router; absent or 0: random. A
+    /// taken port falls back to a random one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 /// The controller's configuration file (`ai-remote.toml` in the controller role directory): only

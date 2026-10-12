@@ -1411,6 +1411,7 @@ fn route_text(h: &Value) -> String {
         Some("udp_blocked") => " (this network blocks UDP)",
         Some("symmetric_nat") => " (this network's NAT is symmetric)",
         Some("captive_portal") => " (this network wants a sign-in page first)",
+        Some("firewall") => " (this computer's firewall blocks incoming connections for ai-remote)",
         Some(_) => " (likely the host's network)",
         None => "",
     };

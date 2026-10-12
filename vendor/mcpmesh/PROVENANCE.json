@@ -202,7 +202,7 @@
     },
     {
       "path": "node/src/config.rs",
-      "sha256": "ed6182ff0fadf9e9aec3e1bd644c59576d9bef3c5700689c6824a3514606fcbd"
+      "sha256": "09ad83f03c392358f71d16c5e8a211d16b53c1915735d340dc6f2fe3893433a8"
     },
     {
       "path": "node/src/control.rs",
@@ -214,7 +214,7 @@
     },
     {
       "path": "node/src/daemon/boot.rs",
-      "sha256": "2a36a404c5932c0ce32b1d70e9133998229e99792006a04fce2917e96131ce3b"
+      "sha256": "e9b6efe17379f4c7abfdad44d9ba808c9ad753d53039a45210de32de35f03b82"
     },
     {
       "path": "node/src/daemon/config_write.rs",
@@ -431,6 +431,13 @@
         "node/src/node.rs"
       ],
       "summary": "iroh feature unstable-net-report and Node::net_report(): UDP reachability and NAT mapping for connectivity diagnostics"
+    },
+    {
+      "files": [
+        "node/src/config.rs",
+        "node/src/daemon/boot.rs"
+      ],
+      "summary": "[network].bind_port: fixed IPv4 UDP port for router port forwarding, falling back to a random port when taken"
     }
   ]
 }

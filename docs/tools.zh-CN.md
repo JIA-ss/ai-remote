@@ -101,7 +101,7 @@
 | `path` | 在线连接的路径：`direct`、`relay` 或 `unknown`；`relay` 表示 P2P 打洞失败 |
 | `relay` | 走中继时，转发流量的中继（`https://主机名`） |
 | `relay_n0` | 这个中继是 n0 的免费公共中继时为 `true`（有限流；没配 `[network] relays` 时默认用它） |
-| `p2p_obstacle` | 走中继时的可能原因：控制端所在网络 `udp_blocked`（UDP 被阻断）、`symmetric_nat`（对称型 NAT）、`captive_portal`（需要网页登录），或 `remote`（本端允许直连，原因多半在被控端网络） |
+| `p2p_obstacle` | 走中继时的可能原因：控制端所在网络 `udp_blocked`（UDP 被阻断）、`symmetric_nat`（对称型 NAT）、`captive_portal`（需要网页登录）、`firewall`（本机防火墙阻止了控制端程序；桌面端提供“在防火墙中允许”），或 `remote`（本端允许直连，原因多半在被控端网络） |
 | `level_at_pairing` | 配对时被控端授予的级别（之后可能改过；当前级别看 `system_info.you.level`） |
 | `default` | 是否为本会话的默认被控端 |
 

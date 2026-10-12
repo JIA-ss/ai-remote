@@ -282,7 +282,7 @@ impl Aggregator {
                 "path": route.as_ref().map(|r| r.path),
                 "relay": route.as_ref().and_then(|r| r.relay.clone()),
                 "relay_n0": route.as_ref().is_some_and(ar_net::Route::via_n0),
-                "p2p_obstacle": self.agent.p2p_obstacle(route.as_ref()),
+                "p2p_obstacle": self.agent.p2p_obstacle(route.as_ref()).await,
                 "level_at_pairing": known.get(&name).and_then(|k| k.level),
                 "default": default.as_deref() == Some(name.as_str()),
             }));
