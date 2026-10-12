@@ -174,11 +174,14 @@ function videoFixture() {
   });
   const canvas = { width: 0, height: 0, getContext: () => ({ drawImage() { drawn++; } }) };
   const decoder = exports.createDecoder(canvas, () => { requested++; }, () => {}, (value) => stats.push(value));
+  // Frames 1/60 s apart in stream time, as a 60 fps host sends them.
+  let ts = 0n;
   const packet = (key = false) => {
     const payload = new Uint8Array([0, 0, 0, 1, key ? 0x67 : 0x61, 0x42, 0, 0x28]);
     const buffer = new ArrayBuffer(18 + payload.length);
     const head = new DataView(buffer);
     head.setUint8(0, 1); head.setUint8(1, key ? 1 : 0); head.setUint16(2, 1920); head.setUint16(4, 1080); head.setUint32(14, payload.length);
+    head.setBigUint64(6, ts); ts += 16_667n;
     new Uint8Array(buffer, 18).set(payload);
     return buffer;
   };
@@ -200,13 +203,24 @@ test("video packets reject truncated payloads and telemetry counts displayed fra
   s.decoder.close();
 });
 
+// At 60 fps, 150 ms of stream time is 9 queued frames.
+const BEHIND = 9;
+// Frames the current decoder has decoded without falling behind, so a queue can be that long.
+const fill = (s, n = BEHIND) => { for (let i = 0; i < n; i++) s.decoder.push(s.packet()); };
+
 test("decoder backlog is discarded, recovery requests bounded, and stale output is released", () => {
   const s = videoFixture();
   s.decoder.push(s.packet(true));
   const retired = s.instances[0];
-  retired.decodeQueueSize = 2;
+  retired.output();
+  fill(s);
+  const shown = s.drawn();
+  retired.decodeQueueSize = BEHIND;
   s.decoder.push(s.packet());
-  assert.equal(retired.state, "closed");
+  assert.equal(retired.state, "configured", "a lag is ridden out at first");
+  s.advance(300);
+  s.decoder.push(s.packet());
+  assert.equal(retired.state, "closed", "a lag that lasts drops to the next keyframe");
   assert.equal(s.requested(), 1);
   s.decoder.push(s.packet());
   assert.equal(s.requested(), 1);
@@ -215,15 +229,74 @@ test("decoder backlog is discarded, recovery requests bounded, and stale output 
   assert.equal(s.requested(), 2);
   s.decoder.push(s.packet(true));
   retired.output();
-  assert.equal(s.drawn(), 0, "old decoder output cannot paint after recovery");
+  assert.equal(s.drawn(), shown, "old decoder output cannot paint after recovery");
   s.instances[1].output();
-  assert.equal(s.drawn(), 1);
+  assert.equal(s.drawn(), shown + 1);
   retired.callbacks.error(new Error("late retired decoder error"));
   assert.equal(s.instances[1].state, "configured");
   s.decoder.close();
   s.instances[1].output();
-  assert.equal(s.drawn(), 1);
+  assert.equal(s.drawn(), shown + 1);
   assert.equal(s.timers.pending.size, 0);
+});
+
+test("a starting decoder is not behind until it has caught up, or 2 s have passed", () => {
+  const s = videoFixture();
+  s.decoder.push(s.packet(true));
+  for (let i = 0; i < 15; i++) {
+    s.instances[0].decodeQueueSize = i + 1;
+    s.decoder.push(s.packet());
+  }
+  // Its first frame comes out with the start-up queue still waiting: not caught up yet.
+  s.instances[0].decodeQueueSize = 15;
+  s.instances[0].output();
+  s.decoder.push(s.packet());
+  assert.equal(s.instances[0].state, "configured");
+  assert.equal(s.instances[0].decoded.length, 17);
+  assert.equal(s.requested(), 0);
+  // Never catching up is judged after 2 s (and, as any lag, dropped once it lasts).
+  s.advance(2001);
+  s.decoder.push(s.packet());
+  s.advance(300);
+  s.decoder.push(s.packet());
+  assert.equal(s.instances[0].state, "closed");
+  assert.equal(s.requested(), 1);
+  s.decoder.close();
+});
+
+test("a lag under the allowance, or one that clears within 300 ms, is ridden out", () => {
+  const s = videoFixture();
+  s.decoder.push(s.packet(true));
+  s.instances[0].output();
+  fill(s);
+  s.instances[0].decodeQueueSize = BEHIND - 1;
+  s.decoder.push(s.packet());
+  s.instances[0].decodeQueueSize = BEHIND;
+  s.decoder.push(s.packet());
+  s.advance(250);
+  s.instances[0].decodeQueueSize = 1;
+  s.decoder.push(s.packet());
+  // A new stall restarts the clock.
+  s.instances[0].decodeQueueSize = BEHIND;
+  s.decoder.push(s.packet());
+  s.advance(250);
+  s.decoder.push(s.packet());
+  assert.equal(s.instances[0].state, "configured");
+  assert.equal(s.instances[0].decoded.length, BEHIND + 6);
+  assert.equal(s.requested(), 0);
+  s.decoder.close();
+});
+
+test("a lag of a second drops at once", () => {
+  const s = videoFixture();
+  s.decoder.push(s.packet(true));
+  s.instances[0].output();
+  fill(s, 70);
+  s.instances[0].decodeQueueSize = 61;
+  s.decoder.push(s.packet());
+  assert.equal(s.instances[0].state, "closed");
+  assert.equal(s.requested(), 1);
+  s.decoder.close();
 });
 
 test("back-to-back keyframes cannot bypass the decoder queue bound", () => {
@@ -231,7 +304,9 @@ test("back-to-back keyframes cannot bypass the decoder queue bound", () => {
   s.decoder.push(s.packet(true));
   for (let i = 0; i < 5; i++) {
     const previous = s.instances.at(-1);
-    previous.decodeQueueSize = 2;
+    previous.output();
+    fill(s);
+    previous.decodeQueueSize = BEHIND;
     s.decoder.push(s.packet(true));
     assert.equal(previous.state, "closed");
     assert.equal(s.instances.at(-1).decoded.length, 1);

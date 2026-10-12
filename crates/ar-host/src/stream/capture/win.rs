@@ -631,6 +631,77 @@ mod bench {
         ok
     }
 
+    /// The stream keeps to the requested bitrate on full-screen motion, fed at its real frame rate,
+    /// at the display's size and scaled down from 5K (the usual presets). H.264 and HEVC keep to it
+    /// themselves and must stay in use; NVENC's AV1 does not (11-321 Mbit/s for 12 requested,
+    /// whatever the QP ceiling or rate-control mode), and the rate guard must move such a stream to
+    /// the next codec within its window. Measured over the last 1.5 s of 4 s. `AR_CODECS` /
+    /// `AR_KBPS` narrow the run.
+    #[test]
+    #[ignore]
+    fn streams_keep_to_the_requested_bitrate() {
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "info")).with_test_writer().try_init();
+        let gpu =
+            Gpu::for_monitor(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) }).unwrap();
+        let codecs: Vec<Codec> = env("AR_CODECS", "h264,hevc,av1").split(',').filter_map(Codec::parse).collect();
+        let rates: Vec<u32> = env("AR_KBPS", "12000,40000").split(',').map(|k| k.parse().unwrap()).collect();
+        let mut failures = Vec::new();
+        // (source, stream size, fps): native 4K and 5K, and 5K scaled to the 1080p and 4K presets.
+        let cases = [
+            ((3840u32, 2160u32), (3840u32, 2160u32), 60u32),
+            ((5120, 2160), (5120, 2160), 100),
+            ((5120, 2160), (1920, 810), 60),
+            ((5120, 2160), (3840, 1620), 60),
+        ];
+        for ((w, h), (sw, sh), fps) in cases {
+            let tall = bgra_texture(&gpu, w, h * 2, Some(&desktop_like(w, h * 2))).unwrap();
+            let screen = bgra_texture(&gpu, w, h, None).unwrap();
+            for &codec in &codecs {
+                if sw.max(sh) > codec.max_long_edge() {
+                    continue;
+                }
+                // What a viewer that decodes everything offers, led by the codec under test.
+                let mut offered = vec![codec];
+                offered.extend([Codec::Hevc, Codec::H264].into_iter().filter(|c| *c != codec));
+                for &kbps in &rates {
+                    let mut converter = Converter::new(gpu.clone(), (w, h), (sw, sh), fps).unwrap();
+                    let mut encoder = FrameEncoder::new(fps, kbps * 1000, sw.max(sh)).unwrap().with_codecs(&offered);
+                    let (mut bytes, mut frames, mut last) = (0usize, 0usize, codec);
+                    let total = fps * 4;
+                    let start = Instant::now();
+                    for f in 0..total {
+                        let top = (f * 7) % h;
+                        let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
+                        unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
+                        let frame = converter.convert(&screen).unwrap().unwrap();
+                        let raw = super::super::Raw { bgra: Vec::new(), width: sw, height: sh, gpu: Some(frame) };
+                        let mut ready = encoder.encode_raw(&raw).unwrap();
+                        while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
+                            last = out.codec;
+                            if f >= total - fps * 3 / 2 && !out.keyframe {
+                                bytes += out.data.len();
+                                frames += 1;
+                            }
+                        }
+                        let due = start + Duration::from_secs_f64(f64::from(f + 1) / f64::from(fps));
+                        std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    }
+                    let mbps = bytes as f64 * 8.0 * f64::from(fps) / frames.max(1) as f64 / 1e6;
+                    let target = f64::from(kbps) / 1000.0;
+                    let case = format!("{w}x{h} -> {sw}x{sh} @{fps} {}", codec.name());
+                    println!("{case}: {target:.0} Mbit/s requested, {mbps:.1} produced, ending on {}", last.name());
+                    if mbps > target * 1.15 {
+                        failures.push(format!("{case}: {mbps:.1}/{target:.0} Mbit/s"));
+                    }
+                    if codec != Codec::Av1 && last != codec {
+                        failures.push(format!("{case}: moved off {} to {}", codec.name(), last.name()));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
     /// Opening encoders one after another must stay fast: each one has to release its GPU
     /// session when dropped (a leaked session made the next one wait seconds, then fail).
     #[test]

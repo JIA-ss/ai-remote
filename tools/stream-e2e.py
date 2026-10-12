@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/release/ai-remote{EXE}")
+parser.add_argument("--host-cli", type=Path,
+                    help="a different ai-remote for the host side (e.g. an older release, for compatibility)")
 parser.add_argument("--seconds", type=int, default=6)
 parser.add_argument("--animate", action="store_true", help="show a small animated window while measuring")
 parser.add_argument("--browser", default=r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
@@ -42,13 +44,13 @@ options.out.mkdir(parents=True, exist_ok=True)
 # (label, max_fps, max_long_edge, bitrate_kbps, codecs)
 CONFIGS = [
     ("1080p30 h264 (old default)", 30, 1920, 6000, ""),
-    ("1080p60 av1 (balanced)", 60, 1920, 12000, "av1,hevc,h264"),
-    ("1440p120 av1 (smooth)", 120, 2560, 25000, "av1,hevc,h264"),
-    ("4K60 av1 (detail)", 60, 3840, 40000, "av1,hevc,h264"),
-    ("4K60 hevc", 60, 3840, 40000, "hevc,h264"),
+    ("1080p60 (balanced)", 60, 1920, 12000, "hevc,av1,h264"),
+    ("1440p120 (smooth)", 120, 2560, 25000, "hevc,av1,h264"),
+    ("4K60 (detail)", 60, 3840, 40000, "hevc,av1,h264"),
+    ("4K60 av1", 60, 3840, 40000, "av1,hevc,h264"),
     ("4K60 h264", 60, 3840, 40000, "h264"),
-    ("native 240 av1 (ultra)", 240, 8192, 150000, "av1,hevc,h264"),
-    ("native 240 hevc", 240, 8192, 150000, "hevc,h264"),
+    ("native 240 (ultra)", 240, 8192, 150000, "hevc,av1,h264"),
+    ("native 240 av1", 240, 8192, 150000, "av1,hevc,h264"),
 ]
 
 ANIMATION = """<!doctype html><title>ai-remote stream test</title>
@@ -98,11 +100,12 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
     env = {**os.environ, "RUST_LOG": os.environ.get("RUST_LOG", "ar_host=info")}
     if options.pattern:
         env["AI_REMOTE_TEST_PATTERN"] = options.pattern
-    host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
+    host_cli = options.host_cli or options.cli
+    host = subprocess.Popen([str(host_cli), "--home", str(host_home), "host", "--no-pair-code"],
                             stdout=log, stderr=log, env=env)
     browser = None
     try:
-        ticket = wait_for(lambda: json.loads(run(options.cli, "--home", host_home, "--json", "pair-code", "--level", "observe")).get("line"),
+        ticket = wait_for(lambda: json.loads(run(host_cli, "--home", host_home, "--json", "pair-code", "--level", "observe")).get("line"),
                           "host ready")
         run(options.cli, "--home", ctl_home, "pair", ticket, "--name", "self")
         if options.animate or options.stress:
@@ -151,9 +154,13 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
                                    errors="replace", env=env, timeout=options.seconds + 90)
                 smoke = next((json.loads(l.split("] ", 1)[1]) for l in p.stderr.splitlines() if l.startswith("[page smoke]")), {})
                 errors = [l for l in p.stderr.splitlines() if l.startswith("[page error]")]
-                report.setdefault("desktop", []).append({"quality": quality, **smoke, "page_errors": errors})
+                video = [l for l in p.stderr.splitlines() if "Live video:" in l]
+                (options.out / f"desktop-{quality}.log").write_text(p.stderr, encoding="utf-8")
+                report.setdefault("desktop", []).append({"quality": quality, **smoke, "page_errors": errors, "video_log": video})
                 print(f"desktop {quality:9} {smoke.get('metrics')} | {smoke.get('metricsDetail')} | canvases {smoke.get('canvases')}"
                       + (f" | {len(errors)} page errors: {errors[0][:160]}" if errors else ""))
+                for line in video[:6]:
+                    print(f"    {line[:200]}")
     finally:
         if browser:
             # The browser starts helper processes; stop the whole tree.
