@@ -182,8 +182,9 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
-    /// [controller] Watch a host's screen for a while and report the stream (frames, sizes, rate);
-    /// --out saves the raw H.264 for a player. The desktop app shows the same stream live.
+    /// [controller] Watch a host's screen for a while and report the stream (frames, sizes, rate,
+    /// codec, arrival gaps); --out saves the raw stream for a player. The desktop app shows the same
+    /// stream live.
     View {
         #[arg(long)]
         host: Option<String>,
@@ -191,7 +192,15 @@ enum Command {
         seconds: u64,
         #[arg(long, default_value_t = 30)]
         max_fps: u32,
-        /// Save the H.264 elementary stream (Annex B) here.
+        /// Longest edge of the stream in pixels (the host never upscales).
+        #[arg(long, default_value_t = 1920)]
+        max_long_edge: u32,
+        #[arg(long, default_value_t = 6000)]
+        bitrate_kbps: u32,
+        /// Codecs to offer, best first, comma-separated (h264, hevc, av1); H.264 when omitted.
+        #[arg(long, value_delimiter = ',')]
+        codecs: Vec<String>,
+        /// Save the elementary stream (Annex B, or AV1 OBUs) here.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -639,7 +648,11 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Watch { host } => watch(&profile, host, json_out).await,
-        Command::View { host, seconds, max_fps, out } => view(&profile, host, seconds, max_fps, out, json_out).await,
+        Command::View { host, seconds, max_fps, max_long_edge, bitrate_kbps, codecs, out } => {
+            let request = json!({"max_fps": max_fps, "max_long_edge": max_long_edge, "bitrate_kbps": bitrate_kbps,
+                "codecs": codecs});
+            view(&profile, host, seconds, request, out, json_out).await
+        }
         Command::Mcp => {
             let ended = ar_controller::run_shim(&profile).await;
             // Exit now: the stdin reader is a blocking read the runtime would wait for, so an MCP
@@ -784,13 +797,13 @@ async fn view(
     profile: &Profile,
     host: Option<String>,
     seconds: u64,
-    max_fps: u32,
+    request: Value,
     out: Option<PathBuf>,
     json_out: bool,
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
     let mut conn = ar_controller::connect_agent(profile).await?;
-    let reply = conn.request(&json!({"op": "screen", "host": host, "request": {"max_fps": max_fps}})).await?;
+    let reply = conn.request(&json!({"op": "screen", "host": host, "request": request})).await?;
     let host = reply["host"].as_str().unwrap_or("?").to_string();
     let (stream, buffered) = conn.into_raw();
     let mut stream = std::io::Cursor::new(buffered).chain(stream);
@@ -799,6 +812,7 @@ async fn view(
         None => None,
     };
     let (mut frames, mut keyframes, mut bytes, mut size) = (0u64, 0u64, 0u64, (0u16, 0u16));
+    let (mut codec, mut gaps, mut last, mut first_ms) = (0u8, Vec::new(), None, None);
     let started = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
     loop {
@@ -817,35 +831,51 @@ async fn view(
         frames += 1;
         keyframes += (header[1] & 1) as u64;
         bytes += len as u64;
+        codec = (header[1] >> 1) & 3;
+        let now = std::time::Instant::now();
+        first_ms.get_or_insert(now.duration_since(started).as_secs_f64() * 1000.0);
+        if let Some(previous) = last.replace(now) {
+            gaps.push(now.duration_since(previous).as_secs_f64() * 1000.0);
+        }
         size = (u16::from_be_bytes([header[2], header[3]]), u16::from_be_bytes([header[4], header[5]]));
         if let Some(f) = file.as_mut() {
             std::io::Write::write_all(f, &data)?;
         }
     }
     let secs = started.elapsed().as_secs_f64();
+    let codec = ["h264", "hevc", "av1"].get(codec as usize).copied().unwrap_or("unknown");
+    gaps.sort_by(f64::total_cmp);
+    let gap = |p: f64| gaps.get(((gaps.len().max(1) - 1) as f64 * p) as usize).copied();
     let v = json!({
         "host": host,
         "monitors": reply["monitors"],
+        "codec": codec,
         "frames": frames,
         "keyframes": keyframes,
         "width": size.0,
         "height": size.1,
         "fps": frames as f64 / secs,
         "kbit_per_s": bytes as f64 * 8.0 / secs / 1000.0,
+        "first_frame_ms": first_ms,
+        "gap_ms": {"p50": gap(0.5), "p95": gap(0.95), "max": gap(1.0)},
     });
     if json_out {
         return print_json(&v);
     }
     println!(
-        "{host}: {frames} frames ({keyframes} keyframes) at {}x{} in {secs:.1} s, {:.1} fps, {:.0} kbit/s",
+        "{host}: {frames} {codec} frames ({keyframes} keyframes) at {}x{} in {secs:.1} s, {:.1} fps, {:.0} kbit/s; first after {:.0} ms, gaps p50 {:.1} / p95 {:.1} / max {:.1} ms",
         size.0,
         size.1,
         frames as f64 / secs,
-        bytes as f64 * 8.0 / secs / 1000.0
+        bytes as f64 * 8.0 / secs / 1000.0,
+        first_ms.unwrap_or(0.0),
+        gap(0.5).unwrap_or(0.0),
+        gap(0.95).unwrap_or(0.0),
+        gap(1.0).unwrap_or(0.0),
     );
     println!("Frames arrive only when the screen changes; a still screen sends almost nothing.");
     if let Some(p) = out {
-        println!("Saved to {} (H.264 Annex B; e.g. ffplay -f h264 <file>)", p.display());
+        println!("Saved to {} ({codec} elementary stream; e.g. ffplay <file>)", p.display());
     }
     Ok(())
 }

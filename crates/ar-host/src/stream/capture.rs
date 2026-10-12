@@ -117,6 +117,8 @@ pub struct Capture {
     control: Option<windows_capture::capture::CaptureControl<legacy::Handler, legacy::Error>>,
     #[cfg(windows)]
     native: Option<win::NativeCapture>,
+    #[cfg(windows)]
+    pattern: Option<win::TestPattern>,
     #[cfg(target_os = "macos")]
     native: Option<mac::NativeCapture>,
     slot: Arc<Slot>,
@@ -152,6 +154,8 @@ impl Drop for Capture {
         if let Some(native) = self.native.take() {
             drop(native);
         }
+        #[cfg(windows)]
+        drop(self.pattern.take());
     }
 }
 
@@ -183,6 +187,26 @@ pub fn monitors() -> Result<Vec<(usize, u32, u32, bool)>> {
     Err(anyhow!("live view is not available on this platform yet"))
 }
 
+/// Monitor `index`'s refresh rate in Hz (`None`: the primary one), when the platform reports it.
+/// Frames cannot come faster, so it bounds the stream's frame rate and the encoder's budget per frame.
+pub fn refresh_hz(index: Option<usize>) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        use windows_capture::monitor::Monitor;
+        let monitor = match index {
+            Some(i) => Monitor::from_index(i + 1),
+            None => Monitor::primary(),
+        };
+        // 0 and 1 mean "the hardware default" rather than a rate.
+        monitor.ok()?.refresh_rate().ok().filter(|&hz| hz > 1)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = index;
+        None
+    }
+}
+
 /// Where monitor `index` (`None`: the primary one) sits on the screen, as (x, y, width, height) in
 /// screen coordinates, the space the mouse tool takes with `space: "screen"`.
 pub fn geometry(index: Option<usize>) -> Option<(i32, i32, u32, u32)> {
@@ -201,6 +225,18 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
     let edge = Arc::new(AtomicU32::new(max_long_edge));
     #[cfg(windows)]
     {
+        if let Some(size) = win::test_pattern_size() {
+            let pattern = win::start_test_pattern(size, max_fps, edge.clone(), slot.clone())?;
+            let geometry = Some((0, 0, size.0, size.1));
+            return Ok(Capture {
+                control: None,
+                native: None,
+                pattern: Some(pattern),
+                slot,
+                geometry,
+                max_long_edge: edge,
+            });
+        }
         let monitor = win::monitor(index)?;
         // The GPU path is the normal one; the CPU path keeps a live view where the GPU has no
         // video processor (a basic display driver, some virtual adapters).
@@ -208,6 +244,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
             Ok(native) => Ok(Capture {
                 control: None,
                 native: Some(native),
+                pattern: None,
                 slot,
                 geometry: geometry(index),
                 max_long_edge: edge,
@@ -218,6 +255,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32) -> Result<C
                 Ok(Capture {
                     control: Some(control),
                     native: None,
+                    pattern: None,
                     slot,
                     geometry: geometry(index),
                     max_long_edge: edge,

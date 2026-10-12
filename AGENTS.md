@@ -68,6 +68,35 @@ release；每档 120~480 帧单次运行；"p50/p95"是 GPU 转换 + 提交 + �
 split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebCodecs 按桌面端同一套 codec 字符串解码通过，
 尺寸正确，批量解码 290~965 fps（`tools/webcodecs-decode-check.mjs`）。**AMD/Intel 显卡未测**。
 
+### 端到端实测（真实链路）
+
+`tools/stream-e2e.py`：本机起隔离的 host 和 controller，经真实 QUIC + controller agent 拉流（`ai-remote view`，
+已扩展 `--max-long-edge/--bitrate-kbps/--codecs`，输出编码、首帧时间、帧间隔分位数）；`--desktop <exe>` 再用桌面端
+调试版的 smoke 模式（屏幕外、临时 WebView2 数据目录）按画质档读取页面上的实测指标。主屏 5120×2160@100Hz，
+屏幕左上角开一个小动画窗口（`--animate`），每组 6~8 s，单次运行：
+
+| 配置 | 编码 | 尺寸 | 帧率 | 码率 | 首帧 | 帧间隔 p50/p95 |
+|---|---|---|---:|---:|---:|---|
+| 1080p30 | H.264 | 1920×810 | 29.8 | 1.0 Mbps | 100 ms | 33.3 / 34.0 ms |
+| 1080p60（均衡） | AV1 | 1920×810 | 59.3 | 2.5 Mbps | 89 ms | 16.6 / 17.2 ms |
+| 1440p120（流畅） | AV1 | 2560×1080 | 99.1 | 4.9 Mbps | 80 ms | 10.0 / 10.7 ms |
+| 4K60（清晰） | AV1 | 3840×1620 | 59.5 | 9.4 Mbps | 82 ms | 16.7 / 17.4 ms |
+| 原生（极致） | AV1 | 5120×2160 | 99.0 | 22.8 Mbps | 86 ms | 10.0 / 10.8 ms |
+| 原生 | HEVC | 5120×2160 | 98.8 | 8.2 Mbps | 83 ms | 10.0 / 10.6 ms |
+
+桌面端（Tauri Channel → WebView2 WebCodecs 硬解 → canvas，调试版 Rust 后端）同场景：均衡 60.0 fps、流畅 100.0、
+清晰 60.1、极致 5120×2160 100.1 fps，丢帧 0、解码队列 0。这个场景码率低（1~23 Mbps），**还没压到 IPC 通道**；
+高码率压测用被控端的合成图案源：`AI_REMOTE_TEST_PATTERN=5120x2160`（Windows 被控端，整屏滚动，不读屏幕；
+脚本里是 `--pattern 5120x2160`）。用屏幕上的噪点窗口做压力源不可靠（窗口被遮挡或浏览器生成慢时画面不变）。
+
+两处由实测驱动的修正：
+- **帧率按刷新取整**：WGC 只能在刷新时出帧，"最小间隔 1/fps"会凑成整刷新：100 Hz 屏上请求 60 得 50、30 得 25；
+  144 Hz 上 60 会变 48。现在 WGC 放行 1/(2fps)，在编码循环里用按时间累积的令牌桶节流（`protocol.rs` 的 `Pacer`）。
+  必须在消费端节流：在采集端丢帧会丢掉"静止前的最后一次变化"，画面会停在旧帧。帧率另以显示器刷新率封顶
+  （`capture::refresh_hz`），编码器按实际帧率分配码率。
+- **码控改 LowDelayVBR（峰值=目标码率）**：4K60/40 Mbps 下（只算非关键帧），CBR 静止画面 19~28 Mbps、AV1 滚动画面
+  超到 44 Mbps；LowDelayVBR 为 12~19 / 17~20 Mbps，编码耗时不变。**画质没有做客观对比（PSNR/VMAF），待补。**
+
 ### 协议变化（`screen/1`，向后兼容）
 
 - 请求新增 `codecs: ["av1","hevc","h264"]`（可选，未知名字忽略）；不带时仍是 H.264，旧观看端不受影响。
@@ -97,15 +126,19 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 ### 下一步（按收益排序）
 
 **Windows（这台机器能测）**
-- [ ] 真实端到端：本机 host + 桌面端连自己，看实测帧率/码率/首帧时间，确认 WGC 在 100 Hz 屏上真能到 100 fps。
-- [ ] 测 Tauri Channel 在 WebView2 上的帧传输开销（每帧走一次 `ipc://` fetch）；高帧率下如有瓶颈，换本地 WebSocket
-      或 WebView2 SharedBuffer。
+- [x] 真实端到端（见上表）：5K2K@100Hz 原生推流，命令行 99 fps、桌面端 100 fps 丢帧 0。
+- [ ] 高码率下 Tauri Channel 的开销：每帧 >1 KB 时 Tauri 2.12 先 `eval` 一段 JS，页面再走一次 `ipc://` fetch 取数据
+      （`tauri/src/ipc/channel.rs`），100 fps 就是每秒 200 次跨进程往返。用 `--pattern` 压测；若丢帧/排队，
+      换本地 WebSocket（带随机令牌，只听 127.0.0.1）或 WebView2 SharedBuffer。
+- [ ] 画质客观对比：CBR vs LowDelayVBR、三种编码同码率的 PSNR/VMAF（可用 ffmpeg 解 `target/stream-bench/*.bin`）。
 - [ ] 端到端延迟指标：主机时间戳 + 时钟偏移回显，在会话界面显示"采集→显示"延迟。
 - [ ] 自适应码率：写帧阻塞（背压）时降码率/分辨率，恢复后回升；现在只有固定档位。
 - [ ] 调 NVENC 参数：`CODECAPI_AVEncCommonQualityVsSpeed`、VBV（现为 2 帧）、文字清晰度（4:4:4 解码端普遍不支持，暂不做）。
 - [ ] 光标改为客户端绘制（现在合成进画面，光标移动就要整帧编码）。
 
 **Mac 被控端（需要在 Mac 上做）** — `crates/ar-host/src/stream/encode/mac.rs`、`capture/mac.rs`
+- [ ] `capture::refresh_hz` 在 Mac 上返回 `None`（帧率只受请求限制）；用 CGDisplayMode 的刷新率补上。
+- [ ] `AI_REMOTE_TEST_PATTERN` 只在 Windows 实现；Mac 上可在 `capture/mac.rs` 里用 IOSurface 生成同样的滚动图案。
 - [ ] VideoToolbox HEVC（Apple Silicon 全系硬件支持）：`Codec::HEVC`，参数集用 HEVC 的 VPS/SPS/PPS 转 Annex B；
       `hardware_available` 里放开 `Codec::Hevc`；`Encoded.codec` 填 Hevc。AV1 苹果没有硬件编码。
 - [ ] 帧率上限：`capture/mac.rs` 里 `max_fps.clamp(1, 60)` 改为 240（ProMotion 120 Hz）；`native_size` 的 3840 上限放开。
@@ -129,6 +162,9 @@ AR_SIZES=5120x2160 AR_CODECS=hevc,av1 AR_KBPS=120000 cargo test -p ar-host --rel
 cargo test -p ar-host --release --lib hardware_encoders_open_and_close_repeatedly -- --ignored --nocapture
 # 用 WebCodecs 解上面的码流（默认 Edge，可传 Chrome 路径）
 node tools/webcodecs-decode-check.mjs
+# 端到端：隔离 host/controller + 真实 QUIC；--desktop 再测桌面端（先 cd apps/desktop && npx tauri build --debug --no-bundle）
+python tools/stream-e2e.py --animate --desktop target/debug/ai-remote-desktop.exe
+python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-desktop.exe   # 高码率、可重复
 # 旧的真实屏幕采集 + 编码（会读当前屏幕，只在内存里）
 cargo test -p ar-host --release --lib capture_and_encode_the_screen -- --ignored --nocapture
 ```
