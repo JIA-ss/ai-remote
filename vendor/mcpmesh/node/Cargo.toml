@@ -66,7 +66,9 @@ data-encoding = "2"
 blake3 = "1"
 # OS CSPRNG for the 32-byte pairing invite secret (spec §4.2).
 rand.workspace = true
-iroh.workspace = true
+# ai-remote patch: `unstable-net-report` exposes the endpoint's network report (UDP, NAT mapping) for
+# connectivity diagnostics (`Node::net_report`).
+iroh = { workspace = true, features = ["unstable-net-report"] }
 # Roster + presence gossip topics (spec §4.3/§10.1). iroh-gossip 0.101.0 depends on
 # iroh "1" → unifies on the workspace-pinned iroh =1.0.1, NO iroh bump.
 iroh-gossip = { workspace = true }

@@ -22,6 +22,13 @@ final class PhoneRouteTests: XCTestCase {
         XCTAssertTrue(note.detail.contains("aps1-1.relay.n0.iroh.link"))
     }
 
+    func testRelayNoteNamesTheLikelyCause() throws {
+        let h = host(["path": .string("relay"), "relay_n0": .bool(true), "p2p_obstacle": .string("udp_blocked")])
+        XCTAssertTrue(try XCTUnwrap(h.relayNote).detail.contains("UDP"))
+        let remote = host(["path": .string("relay"), "p2p_obstacle": .string("remote")])
+        XCTAssertTrue(try XCTUnwrap(remote.relayNote).detail.contains("电脑那边"))
+    }
+
     func testSelfHostedRelayIsNotCalledN0() throws {
         let h = host(["path": .string("relay"), "relay": .string("https://relay.example.org:8443"), "relay_n0": .bool(false)])
         XCTAssertEqual(h.relay, "relay.example.org")

@@ -276,6 +276,13 @@ impl Agent {
         *self.last_activity.lock().unwrap() = Instant::now();
     }
 
+    /// While `route` is relayed: what on this side's network likely kept it from going direct
+    /// (`"udp_blocked"`, `"symmetric_nat"`, `"captive_portal"`), or `"remote"` when nothing here
+    /// explains it, so the other side's network is the likely cause.
+    pub fn p2p_obstacle(&self, route: Option<&Route>) -> Option<&'static str> {
+        (route?.path == ar_net::PathKind::Relay).then(|| self.mesh.nat().and_then(|n| n.obstacle()).unwrap_or("remote"))
+    }
+
     /// The route of the open connection to `host`: direct or relayed, and through which relay.
     pub async fn route_of(&self, host: &str) -> Option<Route> {
         let conn = self.conns.lock().await.get(host).cloned()?;
@@ -614,6 +621,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                     "path": route.as_ref().map(|r| r.path),
                     "relay": route.as_ref().and_then(|r| r.relay.clone()),
                     "relay_n0": route.as_ref().is_some_and(Route::via_n0),
+                    "p2p_obstacle": agent.p2p_obstacle(route.as_ref()),
                     "default": known.default.as_deref() == Some(name.as_str()),
                 }));
             }

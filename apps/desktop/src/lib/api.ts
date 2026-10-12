@@ -173,6 +173,7 @@ const tauriBackend: Backend = {
       path: ((h.path as string)?.toLowerCase() as PathKind) ?? null,
       relay: relayHost(h.relay),
       relayN0: h.relay_n0 === true,
+      p2pObstacle: (h.p2p_obstacle as Host["p2pObstacle"]) ?? null,
     }));
   },
   async pair(ticket, name) {

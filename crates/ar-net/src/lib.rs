@@ -212,6 +212,37 @@ pub struct RelayState {
     pub connected: bool,
 }
 
+/// What this node's network allows for direct (P2P) connections, from the transport's latest
+/// network report. Addresses are deliberately left out: this travels to local clients and agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NatReport {
+    /// UDP gets out and back over IPv4.
+    pub udp_v4: bool,
+    /// UDP gets out and back over IPv6.
+    pub udp_v6: bool,
+    /// The IPv4 NAT gives each destination its own public port ("symmetric"); hole punching
+    /// through it rarely works.
+    pub symmetric_nat: Option<bool>,
+    /// A captive portal (a sign-in page of a hotel or café network) seems to intercept traffic.
+    pub captive_portal: Option<bool>,
+}
+
+impl NatReport {
+    /// The likely reason direct connections fail from this side, if any: `"udp_blocked"`,
+    /// `"symmetric_nat"` or `"captive_portal"`.
+    pub fn obstacle(&self) -> Option<&'static str> {
+        if self.captive_portal == Some(true) {
+            Some("captive_portal")
+        } else if !self.udp_v4 && !self.udp_v6 {
+            Some("udp_blocked")
+        } else if self.symmetric_nat == Some(true) && !self.udp_v6 {
+            Some("symmetric_nat")
+        } else {
+            None
+        }
+    }
+}
+
 /// Whether a connection's traffic goes direct or through a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -468,6 +499,18 @@ impl Mesh {
         self.node.connect_protocol(peer, alpn).await
     }
 
+    /// What this node's network allows for direct connections (`None` until the first network
+    /// report, a few seconds after start).
+    pub fn nat(&self) -> Option<NatReport> {
+        let r = self.node.net_report()?;
+        Some(NatReport {
+            udp_v4: r.udp_v4,
+            udp_v6: r.udp_v6,
+            symmetric_nat: r.mapping_varies_by_dest_ipv4,
+            captive_portal: r.captive_portal,
+        })
+    }
+
     /// Measures whether a connection's traffic is direct or relayed (takes up to ~0.75 s).
     pub async fn path(conn: &iroh::endpoint::Connection) -> PathKind {
         Self::route(conn).await.path
@@ -703,6 +746,16 @@ mod tests {
         let with_n0 = write(&["https://euc1-1.relay.n0.iroh.link"], true, proxy::ProxySetting::Off, LanDiscovery::Off);
         assert_eq!(urls(&with_n0), 4, "an n0 relay already listed is not added twice");
         assert!(with_n0.get("proxy_url").is_none(), "turning the proxy off removes the old one");
+    }
+
+    #[test]
+    fn names_what_keeps_direct_connections_from_working() {
+        let open = NatReport { udp_v4: true, udp_v6: false, symmetric_nat: Some(false), captive_portal: None };
+        assert_eq!(open.obstacle(), None);
+        assert_eq!(NatReport { udp_v4: false, udp_v6: false, ..open }.obstacle(), Some("udp_blocked"));
+        assert_eq!(NatReport { symmetric_nat: Some(true), ..open }.obstacle(), Some("symmetric_nat"));
+        assert_eq!(NatReport { symmetric_nat: Some(true), udp_v6: true, ..open }.obstacle(), None, "IPv6 needs no NAT");
+        assert_eq!(NatReport { captive_portal: Some(true), ..open }.obstacle(), Some("captive_portal"));
     }
 
     #[test]

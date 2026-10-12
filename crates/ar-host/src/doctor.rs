@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use ar_core::{Profile, Role};
-use ar_net::{Mesh, NetworkStatus};
+use ar_net::{Mesh, NatReport, NetworkStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -91,6 +91,10 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
     checks.push(match inputs.mesh {
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
         None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
+    });
+    checks.push(match inputs.mesh {
+        Some(mesh) => nat_check(mesh.nat()),
+        None => Check::new("p2p", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(approval_check(platform::prompt_blocker()));
     checks.push(bypass_check(inputs.profile));
@@ -241,6 +245,35 @@ fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
             )
             .fix("check internet access and outbound firewall or proxy rules; relays use HTTPS")
         }
+    }
+}
+
+/// Whether this network lets direct (P2P) connections form; without them traffic is relayed.
+fn nat_check(nat: Option<NatReport>) -> Check {
+    let Some(n) = nat else {
+        return Check::new("p2p", Grade::Warn, "the network report is not ready yet; try again in a few seconds");
+    };
+    let v6 = if n.udp_v6 { "; IPv6 works" } else { "" };
+    match n.obstacle() {
+        None => Check::new("p2p", Grade::Ok, format!("UDP gets through, so direct (P2P) connections can form{v6}")),
+        Some("captive_portal") => Check::new(
+            "p2p",
+            Grade::Warn,
+            "a sign-in page (captive portal) seems to intercept this network's traffic",
+        )
+        .fix("open a browser and complete the network's sign-in"),
+        Some("udp_blocked") => Check::new(
+            "p2p",
+            Grade::Warn,
+            "UDP does not get out of this network: every connection will be relayed (slower, and n0's public relays are rate-limited)",
+        )
+        .fix("allow outbound UDP in the firewall or router, or use another network; a self-hosted relay avoids the rate limit"),
+        Some(_) => Check::new(
+            "p2p",
+            Grade::Warn,
+            "this network's NAT gives each destination its own port (symmetric NAT): direct connections often fail and are relayed",
+        )
+        .fix("enable UPnP or NAT-PMP on the router, use IPv6, or forward a UDP port; a self-hosted relay avoids n0's rate limit"),
     }
 }
 
@@ -566,6 +599,19 @@ mod tests {
         assert_eq!(relay_check(Ok(Some(net(false, vec![])))).grade, Grade::Warn);
         assert_eq!(relay_check(Ok(None)).grade, Grade::Warn);
         assert_eq!(relay_check(Err("boom".into())).grade, Grade::Warn);
+    }
+
+    #[test]
+    fn p2p_grades() {
+        let open = NatReport { udp_v4: true, udp_v6: true, symmetric_nat: Some(false), captive_portal: None };
+        assert_eq!(nat_check(Some(open)).grade, Grade::Ok);
+        assert!(nat_check(Some(open)).summary.contains("IPv6"));
+        let blocked = nat_check(Some(NatReport { udp_v4: false, udp_v6: false, ..open }));
+        assert_eq!(blocked.grade, Grade::Warn);
+        assert!(blocked.summary.contains("UDP"));
+        let symmetric = nat_check(Some(NatReport { udp_v6: false, symmetric_nat: Some(true), ..open }));
+        assert!(symmetric.summary.contains("symmetric"));
+        assert_eq!(nat_check(None).grade, Grade::Warn);
     }
 
     #[test]

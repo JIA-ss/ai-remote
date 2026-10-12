@@ -560,6 +560,7 @@ Checked by the running host:
                    fix: run the host with highest privileges; `ai-remote host install` registers it that way
   ok    dpi        per-monitor DPI aware (v2): screenshot and click coordinates agree
   ok    relay      connected to https://...; 3 direct address(es)
+  ok    p2p        UDP gets through, so direct (P2P) connections can form; IPv6 works
   ok    approval   approval prompts can be shown on this desktop
   ok    firewall   inbound connections allowed for C:\...\ai-remote-hostw.exe (UDP, TCP)
   ok    autostart  Task Scheduler task \ai-remote\host-1a2b3c4d starts the background host at login
@@ -575,6 +576,7 @@ Overall: warn
 | `desktop` | the input desktop is `Default` (unlocked) | **fail**: locked, or a sign-in or UAC prompt is showing | unlock; on unattended machines turn off automatic locking |
 | `elevation` | the host runs elevated | **warn**: windows of elevated programs ignore its input | run with highest privileges (`host install` as an administrator) |
 | `dpi` | per-monitor DPI aware (v2) | **fail**: clicks on scaled displays land in the wrong place | remove any high-DPI compatibility override on the executable (Properties > Compatibility) |
+| `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, enable UPnP/NAT-PMP on the router, use IPv6, or sign in to the network |
 | `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
 | `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
 | `bypass` | no controller is bypassed | **warn**: the named controllers use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`) when you no longer need it |

@@ -468,8 +468,12 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
 
 ### 下一步
 
-- [ ] 打不通的原因诊断：iroh `Endpoint::net_report()`（要开 `iroh/unstable-net-report`，从 mcpmesh 透出）给出 UDP v4/v6、
-      对称 NAT、公网地址；放进 `doctor` 和中继提示（"本机网络阻断了 UDP"等）。
+- [x] 打不通的原因诊断（分支 `feat/connectivity-diag`）：vendored mcpmesh 开 `iroh/unstable-net-report` 并加
+      `Node::net_report()`；`ar-net` 的 `Mesh::nat()` → `NatReport { udp_v4, udp_v6, symmetric_nat, captive_portal }`
+      （故意不带地址），`obstacle()` 给出 `udp_blocked` / `symmetric_nat` / `captive_portal`。被控端 `doctor` 新增 `p2p` 检查；
+      控制端 `hosts`/`list_hosts` 在走中继时带 `p2p_obstacle`（本端没问题就是 `remote`，即原因多半在被控端网络），
+      桌面端、iOS、命令行的中继说明里写出原因。本机实测 `doctor`：`p2p ok`（UDP 通，无 IPv6）。被控端自己的 NAT 情况
+      目前不传给控制端（要走 events 通道），控制端只能判断本端。
 - [ ] Windows 桌面控制端防火墙：检查 `ai-remote-desktop.exe` 的阻止规则，设置页一键修复（UAC + `netsh`），安装包钩子加放行。
 - [ ] 可选固定 UDP 端口 `[network] port`，给能手动端口转发的用户。
 - [ ] 用局域网里的另一台机器做跨机器验证：mDNS（断外网）、强制中继（`unstable-relay-only` 构建）看提示。
