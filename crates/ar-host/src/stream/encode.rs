@@ -118,6 +118,8 @@ pub struct Encoded {
     pub width: u32,
     pub height: u32,
     pub codec: Codec,
+    /// When the picture was captured, once known (the stream's timestamps).
+    pub captured: Option<std::time::Instant>,
 }
 
 /// The stream size for a source size: the long edge at most `max_long_edge`, both sides even (4:2:0
@@ -240,6 +242,34 @@ impl FrameEncoder {
         self.force_next = true;
     }
 
+    /// The bitrate in use: the request, or what the viewer lowered it to.
+    pub fn bitrate(&self) -> u32 {
+        self.bitrate_bps
+    }
+
+    /// Changes the bitrate of the running stream (the viewer adapting to its network). Windows
+    /// hardware encoders and OpenH264 take it on the next frame. On macOS the encoder is set up again
+    /// with a keyframe, until VideoToolbox's live AverageBitRate property is wired (see AGENTS.md).
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if bitrate_bps == self.bitrate_bps || bitrate_bps == 0 {
+            return;
+        }
+        self.bitrate_bps = bitrate_bps;
+        self.guard = RateGuard::default();
+        #[cfg(target_os = "macos")]
+        let rebuild = matches!(self.backend, Backend::Hardware(_));
+        match &mut self.backend {
+            #[cfg(windows)]
+            Backend::Hardware(encoder) => encoder.set_bitrate(bitrate_bps, self.max_fps),
+            Backend::Software(encoder) => encoder.set_bitrate(bitrate_bps),
+            _ => {}
+        }
+        #[cfg(target_os = "macos")]
+        if rebuild {
+            self.backend = Backend::PendingHardware;
+        }
+    }
+
     fn use_software(&mut self) -> Result<()> {
         self.backend =
             Backend::Software(Box::new(SoftwareEncoder::new(self.max_fps, self.bitrate_bps, self.max_long_edge)?));
@@ -319,15 +349,24 @@ impl FrameEncoder {
     }
 
     /// Encodes a captured frame on its fastest path: the native buffer (macOS) or GPU texture
-    /// (Windows) straight into the hardware encoder.
+    /// (Windows) straight into the hardware encoder. An output from a synchronous encoder is this
+    /// frame; an asynchronous one's output carries its own frame's capture instant.
     pub fn encode_raw(&mut self, raw: &super::capture::Raw) -> Result<Option<Encoded>> {
+        let out = self.encode_raw_inner(raw)?;
+        Ok(out.map(|mut frame| {
+            frame.captured.get_or_insert(raw.captured);
+            frame
+        }))
+    }
+
+    fn encode_raw_inner(&mut self, raw: &super::capture::Raw) -> Result<Option<Encoded>> {
         #[cfg(windows)]
         if let Some(frame) = &raw.gpu {
             if !self.prepare_windows_hardware(frame)? {
                 return Ok(None);
             }
             if let Backend::Hardware(encoder) = &mut self.backend {
-                match encoder.encode(frame.clone(), self.force_next) {
+                match encoder.encode(frame.clone(), raw.captured, self.force_next) {
                     Ok(out) => {
                         // The keyframe request went with this frame, whenever its output comes.
                         self.force_next = false;
@@ -599,6 +638,19 @@ impl SoftwareEncoder {
         self.encoder.force_intra_frame();
     }
 
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        use openh264_sys2::{ENCODER_OPTION_BITRATE, ENCODER_OPTION_MAX_BITRATE, SBitrateInfo, SPATIAL_LAYER_ALL};
+        let bitrate = i32::try_from(bitrate_bps).unwrap_or(i32::MAX);
+        for option in [ENCODER_OPTION_MAX_BITRATE, ENCODER_OPTION_BITRATE] {
+            let mut info = SBitrateInfo { iLayer: SPATIAL_LAYER_ALL, iBitrate: bitrate };
+            // SAFETY: an initialized encoder and a live, correctly typed option struct.
+            let status = unsafe { self.encoder.raw_api().set_option(option, std::ptr::addr_of_mut!(info).cast()) };
+            if status != 0 {
+                tracing::debug!(status, option, "OpenH264 refused a bitrate change");
+            }
+        }
+    }
+
     /// Encodes one BGRA frame (`stride` bytes per row). `None` when the encoder produced nothing.
     pub fn encode(&mut self, bgra: &[u8], width: u32, height: u32, stride: u32) -> Result<Option<Encoded>> {
         let (w, h) = stream_size(width, height, self.max_long_edge);
@@ -645,7 +697,14 @@ impl SoftwareEncoder {
         if self.out.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Encoded { data: std::mem::take(&mut self.out), keyframe, width: w, height: h, codec: Codec::H264 }))
+        Ok(Some(Encoded {
+            data: std::mem::take(&mut self.out),
+            keyframe,
+            width: w,
+            height: h,
+            codec: Codec::H264,
+            captured: None,
+        }))
     }
 
     /// Encodes an NV12 frame already at the stream size (read back from the GPU path).
@@ -666,7 +725,14 @@ impl SoftwareEncoder {
         if self.out.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Encoded { data: std::mem::take(&mut self.out), keyframe, width, height, codec: Codec::H264 }))
+        Ok(Some(Encoded {
+            data: std::mem::take(&mut self.out),
+            keyframe,
+            width,
+            height,
+            codec: Codec::H264,
+            captured: None,
+        }))
     }
 }
 
@@ -685,6 +751,7 @@ mod tests {
             width: 2,
             height: 2,
             codec: Codec::Av1,
+            captured: None,
         };
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         // 1 Mbit/s requested; 60 frames a second of 4 kB is 1.9 Mbit/s, of 2.7 kB 1.3 Mbit/s.
