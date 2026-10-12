@@ -513,6 +513,11 @@ impl HardwareEncoder {
     }
 }
 
+/// Encoders opened while set use low-delay VBR instead of CBR: the quality comparison
+/// (`encoded_quality`) measures what CBR costs.
+#[cfg(test)]
+pub(crate) static LOW_DELAY_VBR_FOR_TESTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// CBR at the requested bitrate, because it is the only mode in which NVENC's Media Foundation
 /// encoders take a new bitrate while streaming (adaptive bitrate). Measured 2026-10-12 at 4K60,
 /// lowering 40 -> 10 Mbit/s mid-stream: CBR gave 8.6 (H.264) and 10.9 (HEVC) Mbit/s, while
@@ -521,12 +526,15 @@ impl HardwareEncoder {
 /// and a still screen sends no frames at all. Encoders without the mode keep their default (logged
 /// at debug). AV1 ignores rate control altogether (see `RateGuard`).
 fn rate_control(api: &ICodecAPI, bitrate_bps: u32) {
-    set(
-        api,
-        &CODECAPI_AVEncCommonRateControlMode,
-        variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32),
-        "rate control",
-    );
+    #[cfg(test)]
+    let mode = if LOW_DELAY_VBR_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed) {
+        eAVEncCommonRateControlMode_LowDelayVBR
+    } else {
+        eAVEncCommonRateControlMode_CBR
+    };
+    #[cfg(not(test))]
+    let mode = eAVEncCommonRateControlMode_CBR;
+    set(api, &CODECAPI_AVEncCommonRateControlMode, variant_u32(mode.0 as u32), "rate control");
     set(api, &CODECAPI_AVEncCommonMeanBitRate, variant_u32(bitrate_bps), "bitrate");
     set(api, &CODECAPI_AVEncCommonMaxBitRate, variant_u32(bitrate_bps), "peak bitrate");
 }

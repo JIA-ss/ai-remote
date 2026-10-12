@@ -76,9 +76,51 @@ export interface Backend {
       monitor?: number; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number;
       /** What this machine decodes, best first (see codec.ts); the host defaults to H.264. */
       codecs?: VideoCodec[];
+      /** The host's answer to `LiveView.ping(n)`: its stream clock in microseconds. */
+      onPong?: (n: number, hostUs: number) => void;
+      /** Asks for the pointer separately (`LiveView.pointer`): where it is, and new shapes. */
+      onPointer?: (at: PointerPosition) => void;
+      onPointerShape?: (shape: PointerShape) => void;
       onEnded?: (reason: string) => void;
     },
   ): Promise<LiveView | null>;
+}
+
+/** The host's pointer, relative to the streamed monitor in the units of `LiveView.screen`. */
+export interface PointerPosition {
+  x: number;
+  y: number;
+  visible: boolean;
+  /** A shape from `onPointerShape`; 0 when the host could not read it. */
+  shape: number;
+}
+
+/** A pointer picture, in the units of `LiveView.screen`; `rgba` is width * height straight-alpha pixels. */
+export interface PointerShape {
+  id: number;
+  width: number;
+  height: number;
+  hotX: number;
+  hotY: number;
+  rgba: Uint8ClampedArray;
+}
+
+/** A kind-5 message (header, then u32 id, u16 hot spot x and y, BGRA) as a shape, or null. */
+export function parsePointerShape(bytes: Uint8Array): PointerShape | null {
+  if (bytes.length < 26) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint16(2);
+  const height = view.getUint16(4);
+  const pixels = bytes.subarray(26);
+  if (!width || !height || pixels.length !== width * height * 4) return null;
+  const rgba = new Uint8ClampedArray(pixels.length);
+  for (let i = 0; i < pixels.length; i += 4) {
+    rgba[i] = pixels[i + 2];
+    rgba[i + 1] = pixels[i + 1];
+    rgba[i + 2] = pixels[i];
+    rgba[i + 3] = pixels[i + 3];
+  }
+  return { id: view.getUint32(18), width, height, hotX: view.getUint16(22), hotY: view.getUint16(24), rgba };
 }
 
 export interface LiveView {
@@ -86,6 +128,13 @@ export interface LiveView {
   /** Where the streamed monitor sits in screen coordinates (what the mouse tool takes). */
   screen: { x: number; y: number; width: number; height: number } | null;
   requestKeyframe(): void;
+  /** Asks the host for its stream clock; the answer comes to `onPong`. Older hosts do not answer. */
+  ping(n: number): void;
+  /** Changes the stream's bitrate (kbit/s, at most the request); older hosts ignore it. */
+  setBitrate(kbps: number): void;
+  /** The pointer comes separately (to `onPointer`) and is not in the picture. Otherwise (an older
+   * host, or a platform that cannot) it is drawn into the picture as before. */
+  pointer: boolean;
   stop(): void;
 }
 
@@ -193,7 +242,29 @@ const tauriBackend: Backend = {
       if (!bytes) return;
       // Kind 2 is the local native-to-webview terminal marker, never a host video frame.
       if (bytes[0] === 2) opts.onEnded?.(new TextDecoder().decode(bytes.subarray(1)));
-      else onFrame(bytes.buffer);
+      else if (bytes[0] === 3) {
+        // A pong: the 18-byte header's timestamp is the host's stream clock, the body {"pong":n}.
+        if (bytes.length < 18) return;
+        const hostUs = Number(new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(6));
+        try {
+          const n = JSON.parse(new TextDecoder().decode(bytes.subarray(18))).pong;
+          if (typeof n === "number") opts.onPong?.(n, hostUs);
+        } catch {
+          // Not a pong this page understands.
+        }
+      } else if (bytes[0] === 4) {
+        try {
+          const at = JSON.parse(new TextDecoder().decode(bytes.subarray(18)));
+          if (typeof at.x === "number" && typeof at.y === "number") {
+            opts.onPointer?.({ x: at.x, y: at.y, visible: at.visible !== false, shape: Number(at.shape) || 0 });
+          }
+        } catch {
+          // Not a position this page understands.
+        }
+      } else if (bytes[0] === 5) {
+        const shape = parsePointerShape(bytes);
+        if (shape) opts.onPointerShape?.(shape);
+      } else onFrame(bytes.buffer);
     };
     const request = {
       monitor: opts.monitor ?? null,
@@ -201,15 +272,19 @@ const tauriBackend: Backend = {
       max_long_edge: opts.maxLongEdge ?? 1920,
       bitrate_kbps: opts.bitrateKbps ?? 6000,
       ...(opts.codecs?.length ? { codecs: opts.codecs } : {}),
+      ...(opts.onPointer ? { cursor: "client" } : {}),
     };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
       number,
-      { monitors?: LiveView["monitors"]; screen?: LiveView["screen"] },
+      { monitors?: LiveView["monitors"]; screen?: LiveView["screen"]; cursor?: string },
     ];
     return {
       monitors: reply.monitors ?? [],
       screen: reply.screen ?? null,
       requestKeyframe: () => void commands.requestKeyframe(id),
+      ping: (n) => void commands.pingScreen(id, n),
+      setBitrate: (kbps) => void commands.setScreenBitrate(id, kbps),
+      pointer: reply.cursor === "client",
       stop: () => void commands.stopScreen(id),
     };
   },

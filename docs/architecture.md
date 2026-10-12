@@ -136,15 +136,21 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   transport cuts the device's connections when its grant changes. The feed's hello line carries the
   device's current level.
 - **ALPN `app/ai-remote/screen/1`.** Live video of the host's screen for a person at a controller
-  (the desktop app's session view; `ai-remote view` for checks). Windows Graphics Capture delivers a
-  frame only when the screen changes, the newest frame waits in a one-slot buffer (a slow network
-  replaces old captures before encoding, with at most one encoded frame waiting). macOS13+ uses
-  event-driven ScreenCaptureKit with GPU scaling and native IOSurface buffers. VideoToolbox H.264
-  is preferred only after hardware is verified; OpenH264 remains the fallback and the Windows
-  encoder. The desktop uses WebCodecs; iPhone uses VideoToolbox. A keyframe can be re-encoded even
-  when the screen is static. Frames remain18-byte headers plus H.264 AnnexB on one stream; any
-  device with a level may watch, and watching is audited (`view_start`, `view_end`). See
-  [stream performance](stream-performance.md) for requested settings and measurement boundaries.
+  (the desktop app's session view; `ai-remote view` for checks). Capture delivers a frame only when
+  the screen changes and the newest frame waits in a one-slot buffer, so a slow network skips frames
+  before they are encoded. Windows: Windows Graphics Capture on the host's own D3D11 device, GPU
+  scaling and NV12 conversion, Media Foundation hardware encoders (H.264, HEVC, AV1), OpenH264 as the
+  fallback. macOS 13+: ScreenCaptureKit and VideoToolbox H.264. The viewer lists the codecs it decodes
+  in hardware (WebCodecs on the desktop, VideoToolbox on iPhone) and the host picks the first it can
+  encode. Frames are an 18-byte header (kind, flags with keyframe and codec, size, capture timestamp
+  on the stream's clock, length) and the encoded picture. The viewer may write control lines on its
+  half of the stream: ask for a keyframe, ping (answered with the stream clock, so it can show the
+  latency from capture to display), change the bitrate (the desktop adapts it to the network from
+  that latency), and ask for the pointer separately (`"cursor":"client"`: position and shape
+  messages instead of drawing it into the picture; Windows hosts). Any device with a level may watch,
+  and watching is audited (`view_start`, `view_end`). The wire format is documented in
+  `crates/ar-host/src/stream/protocol.rs`; see [stream performance](stream-performance.md) for
+  requested settings and measurement boundaries.
 - **ALPN `app/ai-remote/file/1`.** Whole-file transfers (`ai-remote push` / `pull`). The bytes do not
   pass through MCP (whose results stay near 1 MiB): a `files_push` / `files_pull` call goes through the
   gate like any tool (level, policy, approval, audit) and returns a one-time ticket bound to the device

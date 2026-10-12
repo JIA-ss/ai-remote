@@ -28,8 +28,18 @@
 //! the frame being written, with a kind-3 message: the same 18-byte header (width and height 0,
 //! `ts_us` the stream clock as it answers) and `{"pong":7}`. A viewer maps the stream clock onto its
 //! own with these (the reply with the shortest round trip is the best) to tell how long ago a frame
-//! was captured. Only a viewer that pings receives kind 3; older hosts ignore pings. Any device with a level may watch;
-//! watching is recorded in the audit log (`view_start`, `view_end`).
+//! was captured. Only a viewer that pings receives kind 3; older hosts ignore pings.
+//!
+//! `"cursor":"client"` in the request asks for the pointer separately instead of drawn into the
+//! picture (so moving it does not re-encode the frame under it). A host that can do that leaves it
+//! out of the picture, answers `"cursor":"client"`, and sends, whenever the pointer changes (at most
+//! at the stream's frame rate), a kind-4 message (same header, width and height 0) with
+//! `{"x":..,"y":..,"visible":true,"shape":n}`: the pointer's hot spot relative to the streamed
+//! monitor, in the units of the reply's `screen` rect. Before the first position with a new shape
+//! `n` comes a kind-5 message: width and height are the picture's, the body a big-endian u32 `n`,
+//! u16 hot spot x and y, then width * height straight-alpha BGRA pixels, top row first. Shape 0
+//! means unknown (draw a default arrow). Without the answer the pointer is in the picture as before.
+//! Any device with a level may watch; watching is recorded in the audit log (`view_start`, `view_end`).
 
 use std::{
     sync::{
@@ -76,6 +86,9 @@ struct Request {
     /// What the viewer decodes, best first; unknown names are ignored.
     #[serde(default)]
     codecs: Vec<String>,
+    /// `"client"`: the viewer draws the pointer itself (see the module docs).
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 /// Request limits: high-refresh displays, 8K, and a LAN's worth of bitrate.
@@ -214,12 +227,13 @@ async fn serve(
     let refresh = capture::refresh_hz(req.monitor).unwrap_or(MAX_FPS);
     let (fps, kbps) = (req.max_fps.clamp(1, MAX_FPS).min(refresh), req.bitrate_kbps.clamp(300, MAX_KBPS));
     let requested_edge = req.max_long_edge.clamp(320, MAX_LONG_EDGE);
+    let draw_pointer = !(req.cursor.as_deref() == Some("client") && super::pointer::supported());
     // The stream's clock: frame timestamps and pongs both count from here.
     let epoch = Instant::now();
     let started = tokio::task::spawn_blocking(move || {
         // Hardware probing and capture setup both block; the codec decides the capture size.
         let (codecs, edge) = encode::plan(&wanted, requested_edge);
-        capture::start(req.monitor, fps, edge).map(|capture| (capture, codecs, edge))
+        capture::start(req.monitor, fps, edge, draw_pointer).map(|capture| (capture, codecs, edge))
     })
     .await;
     let (capture, codecs, edge) = match started {
@@ -239,7 +253,14 @@ async fn serve(
     // Where the streamed monitor is on the screen, so a viewer can turn a point of the picture into
     // screen coordinates for the mouse tool.
     let screen = capture.geometry().map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
-    if !reply(&mut send, json!({"ok": true, "monitors": list, "screen": screen, "codec": codecs[0].name()})).await {
+    let mut answer = json!({"ok": true, "monitors": list, "screen": screen, "codec": codecs[0].name()});
+    // The pointer goes separately only when it really is out of the picture.
+    let mut pointer = (!draw_pointer && !capture.pointer_drawn())
+        .then(|| PointerFeed::new(capture.geometry().map_or((0, 0), |(x, y, _, _)| (x, y))));
+    if pointer.is_some() {
+        answer["cursor"] = "client".into();
+    }
+    if !reply(&mut send, answer).await {
         return;
     }
     let audit_line =
@@ -341,8 +362,17 @@ async fn serve(
 
     let mut line = Vec::new();
     let mut controls = Controls { keyframe: &keyframe, bitrate: &bitrate, max_kbps: kbps, pings: Vec::new() };
+    // The pointer is looked at once a frame (a still pointer sends nothing).
+    let mut pointer_tick = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(fps.clamp(30, 120))));
+    pointer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _ = pointer_tick.tick(), if pointer.is_some() => {
+                let messages = pointer.as_mut().map(|p| p.poll(epoch)).unwrap_or_default();
+                if !write_messages(&mut send, &messages).await {
+                    break;
+                }
+            },
             frame = rx.recv() => match frame {
                 Some(bytes) => {
                     if !write_frame(&mut send, &mut reader, &bytes, &mut line, &mut controls, host.stopping()).await { break; }
@@ -429,6 +459,85 @@ async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     }
 }
 
+/// The pointer for a viewer that draws it: the messages to send when it moved or changed shape.
+struct PointerFeed {
+    origin: (i32, i32),
+    last: Option<super::pointer::Position>,
+    /// Shapes sent, by the system's handle, with the id the viewer knows them by.
+    shapes: std::collections::HashMap<u64, u32>,
+}
+
+impl PointerFeed {
+    /// Shapes kept: a session cycles through a handful; a leaking app could make new ones forever.
+    const MAX_SHAPES: usize = 256;
+
+    fn new(origin: (i32, i32)) -> Self {
+        Self { origin, last: None, shapes: std::collections::HashMap::new() }
+    }
+
+    fn poll(&mut self, epoch: Instant) -> Vec<Vec<u8>> {
+        let Some(now) = super::pointer::position() else { return Vec::new() };
+        if self.last == Some(now) {
+            return Vec::new();
+        }
+        self.last = Some(now);
+        let ts = epoch.elapsed().as_micros() as u64;
+        let mut out = Vec::new();
+        let id = match self.shapes.get(&now.shape) {
+            Some(&id) => id,
+            None if now.visible => match super::pointer::shape(now.shape) {
+                Some(shape) => {
+                    if self.shapes.len() >= Self::MAX_SHAPES {
+                        self.shapes.clear();
+                    }
+                    let id = self.shapes.len() as u32 + 1;
+                    self.shapes.insert(now.shape, id);
+                    out.push(pointer_shape_bytes(id, &shape, ts));
+                    id
+                }
+                None => 0,
+            },
+            None => 0,
+        };
+        let body = json!({"x": now.x - self.origin.0, "y": now.y - self.origin.1, "visible": now.visible, "shape": id});
+        out.push(message_bytes(4, 0, 0, ts, body.to_string().as_bytes()));
+        out
+    }
+}
+
+/// A kind-5 pointer picture (see the module docs).
+fn pointer_shape_bytes(id: u32, shape: &super::pointer::Shape, ts_us: u64) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + shape.bgra.len());
+    body.extend_from_slice(&id.to_be_bytes());
+    body.extend_from_slice(&(shape.hotspot.0 as u16).to_be_bytes());
+    body.extend_from_slice(&(shape.hotspot.1 as u16).to_be_bytes());
+    body.extend_from_slice(&shape.bgra);
+    message_bytes(5, shape.width as u16, shape.height as u16, ts_us, &body)
+}
+
+/// A non-video message: the frame header with `kind`, no flags, and `body`.
+fn message_bytes(kind: u8, width: u16, height: u16, ts_us: u64, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(18 + body.len());
+    out.push(kind);
+    out.push(0);
+    out.extend_from_slice(&width.to_be_bytes());
+    out.extend_from_slice(&height.to_be_bytes());
+    out.extend_from_slice(&ts_us.to_be_bytes());
+    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
+/// Writes small messages between frames; `false` when the controller is gone.
+async fn write_messages<W: AsyncWrite + Unpin>(send: &mut W, messages: &[Vec<u8>]) -> bool {
+    for m in messages {
+        if !matches!(tokio::time::timeout(Duration::from_secs(2), send.write_all(m)).await, Ok(Ok(()))) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Answers the pings read so far with the stream clock; `false` when the controller is gone.
 async fn answer_pings<W: AsyncWrite + Unpin>(send: &mut W, pings: &mut Vec<u64>, epoch: Instant) -> bool {
     for n in pings.drain(..) {
@@ -442,13 +551,7 @@ async fn answer_pings<W: AsyncWrite + Unpin>(send: &mut W, pings: &mut Vec<u64>,
 
 /// A kind-3 reply to `{"ping":n}`, stamped with the stream clock.
 pub fn pong_bytes(n: u64, ts_us: u64) -> Vec<u8> {
-    let payload = format!("{{\"pong\":{n}}}");
-    let mut out = Vec::with_capacity(18 + payload.len());
-    out.extend_from_slice(&[3, 0, 0, 0, 0, 0]);
-    out.extend_from_slice(&ts_us.to_be_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(payload.as_bytes());
-    out
+    message_bytes(3, 0, 0, ts_us, format!("{{\"pong\":{n}}}").as_bytes())
 }
 
 /// Writes one JSON line; `false` when the controller is gone.
@@ -574,6 +677,18 @@ mod tests {
         assert!(pacer.wait(later).is_zero());
         pacer.spend();
         assert!(!pacer.wait(later + Duration::from_millis(10)).is_zero());
+    }
+
+    #[test]
+    fn pointer_shapes_carry_their_id_hot_spot_and_pixels() {
+        let shape =
+            crate::stream::pointer::Shape { width: 2, height: 1, hotspot: (1, 0), bgra: vec![1, 2, 3, 4, 5, 6, 7, 8] };
+        let bytes = pointer_shape_bytes(7, &shape, 42);
+        assert_eq!(&bytes[..6], &[5, 0, 0, 2, 0, 1]);
+        assert_eq!(u64::from_be_bytes(bytes[6..14].try_into().unwrap()), 42);
+        assert_eq!(u32::from_be_bytes(bytes[14..18].try_into().unwrap()), 16);
+        assert_eq!(&bytes[18..26], &[0, 0, 0, 7, 0, 1, 0, 0]);
+        assert_eq!(&bytes[26..], &shape.bgra[..]);
     }
 
     #[tokio::test]

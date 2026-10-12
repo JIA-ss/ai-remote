@@ -26,6 +26,8 @@ mod mac;
 #[cfg(windows)]
 #[path = "encode/win.rs"]
 mod win;
+#[cfg(all(test, windows))]
+pub(crate) use win::LOW_DELAY_VBR_FOR_TESTS;
 
 /// A codec of the live stream. A viewer lists what it can decode, best first; the host picks the
 /// first it can encode in hardware, and H.264 always works (in software if need be).

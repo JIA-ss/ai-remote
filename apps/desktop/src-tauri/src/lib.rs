@@ -346,7 +346,15 @@ async fn watch_screen(
                     break;
                 }
                 let len = u32::from_be_bytes([header[14], header[15], header[16], header[17]]) as usize;
-                if header[0] != 1 || len == 0 || len > 8 * 1024 * 1024 {
+                // Kind 1 is a video frame, kind 3 a host's reply to a ping (see `ping_screen`), 4 and 5
+                // the pointer's position and shape (requested with `"cursor":"client"`).
+                let known = match header[0] {
+                    1 => len <= 8 * 1024 * 1024,
+                    3 | 4 => len <= 4096,
+                    5 => len <= 8 + 1024 * 2048 * 4,
+                    _ => false,
+                };
+                if !known || len == 0 {
                     break;
                 }
                 let mut frame = Vec::with_capacity(18 + len);
@@ -390,6 +398,29 @@ async fn request_keyframe(state: State<'_, AppState>, id: u32) -> Result<(), Str
     let control = state.views.lock().unwrap().get(&id).map(|v| v.control.clone());
     if let Some(control) = control {
         let _ = control.send(b"{\"keyframe\":true}\n".to_vec()).await;
+    }
+    Ok(())
+}
+
+/// Sends ping `n` on live view `id`; the host answers with its stream clock (a kind-3 message on
+/// the view's channel), which maps frame timestamps onto the page's clock.
+#[tauri::command]
+#[specta::specta]
+async fn ping_screen(state: State<'_, AppState>, id: u32, n: u32) -> Result<(), String> {
+    let control = state.views.lock().unwrap().get(&id).map(|v| v.control.clone());
+    if let Some(control) = control {
+        let _ = control.try_send(format!("{{\"ping\":{n}}}\n").into_bytes());
+    }
+    Ok(())
+}
+
+/// Changes the bitrate of live view `id` while it runs (the page adapting to the network).
+#[tauri::command]
+#[specta::specta]
+async fn set_screen_bitrate(state: State<'_, AppState>, id: u32, kbps: u32) -> Result<(), String> {
+    let control = state.views.lock().unwrap().get(&id).map(|v| v.control.clone());
+    if let Some(control) = control {
+        let _ = control.send(format!("{{\"bitrate_kbps\":{kbps}}}\n").into_bytes()).await;
     }
     Ok(())
 }
@@ -447,6 +478,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         set_local_host_bypass,
         watch_screen,
         request_keyframe,
+        ping_screen,
+        set_screen_bitrate,
         stop_screen,
         log_from_page,
     ])
@@ -530,6 +563,8 @@ fn smoke(app: &tauri::App) {
         }
         // `AI_REMOTE_SMOKE_QUALITY=ultra` picks a live-view quality first (a stream-quality id; run
         // with a throwaway `WEBVIEW2_USER_DATA_FOLDER` so the choice does not stick).
+        // Measurement runs read the page's per-second live-video metrics from the log.
+        let _ = w.eval("localStorage.setItem('ai-remote.video-trace', '1')");
         if let Ok(quality) = std::env::var("AI_REMOTE_SMOKE_QUALITY") {
             let quality = quality.replace('\'', "");
             let _ = w.eval(format!("localStorage.setItem('ai-remote.stream-quality', '{quality}')"));

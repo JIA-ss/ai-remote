@@ -77,6 +77,13 @@ export const commands = {
 	watchScreen: (host: string | null, request: Json, onFrame: Channel<Frame>) => typedError<[number, Json], string>(__TAURI_INVOKE("watch_screen", { host, request, onFrame })),
 	/**  Asks the host for a keyframe on live view `id` (after a decoder error). */
 	requestKeyframe: (id: number) => typedError<null, string>(__TAURI_INVOKE("request_keyframe", { id })),
+	/**
+	 *  Sends ping `n` on live view `id`; the host answers with its stream clock (a kind-3 message on
+	 *  the view's channel), which maps frame timestamps onto the page's clock.
+	 */
+	pingScreen: (id: number, n: number) => typedError<null, string>(__TAURI_INVOKE("ping_screen", { id, n })),
+	/**  Changes the bitrate of live view `id` while it runs (the page adapting to the network). */
+	setScreenBitrate: (id: number, kbps: number) => typedError<null, string>(__TAURI_INVOKE("set_screen_bitrate", { id, kbps })),
 	/**  Ends live view `id`. */
 	stopScreen: (id: number) => typedError<null, string>(__TAURI_INVOKE("stop_screen", { id })),
 	/**

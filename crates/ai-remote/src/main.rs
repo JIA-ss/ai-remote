@@ -220,6 +220,10 @@ enum Command {
         /// Save the elementary stream (Annex B, or AV1 OBUs) here.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Ask for the pointer separately (`"cursor":"client"`, as the desktop app does) and count
+        /// its position and shape messages.
+        #[arg(long)]
+        pointer: bool,
     },
     /// [controller] Call one tool on a host and print the result.
     Call {
@@ -775,9 +779,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Push(a) => remote::push(&profile, a, json_out).await,
         Command::Pull(a) => remote::pull(&profile, a, json_out).await,
         Command::Watch { host } => watch(&profile, host, json_out).await,
-        Command::View { host, seconds, max_fps, max_long_edge, bitrate_kbps, codecs, out } => {
-            let request = json!({"max_fps": max_fps, "max_long_edge": max_long_edge, "bitrate_kbps": bitrate_kbps,
+        Command::View { host, seconds, max_fps, max_long_edge, bitrate_kbps, codecs, out, pointer } => {
+            let mut request = json!({"max_fps": max_fps, "max_long_edge": max_long_edge, "bitrate_kbps": bitrate_kbps,
                 "codecs": codecs});
+            if pointer {
+                request["cursor"] = "client".into();
+            }
             view(&profile, host, seconds, request, out, json_out).await
         }
         Command::Mcp => {
@@ -1024,13 +1031,37 @@ async fn view(
     let reply = conn.request(&json!({"op": "screen", "host": host, "request": request})).await?;
     let host = reply["host"].as_str().unwrap_or("?").to_string();
     let (stream, buffered) = conn.into_raw();
-    let mut stream = std::io::Cursor::new(buffered).chain(stream);
+    let (read, mut write) = tokio::io::split(stream);
+    let mut stream = std::io::Cursor::new(buffered).chain(read);
+    // Pings map the host's stream clock onto ours (the reply with the shortest round trip wins), so
+    // each frame's age since capture can be told. Hosts from before 2026-10-12 do not answer.
+    let pings: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>> =
+        Default::default();
+    let pinger = {
+        let pings = pings.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            for n in 0u64.. {
+                pings.lock().unwrap().insert(n, std::time::Instant::now());
+                if write.write_all(format!("{{\"ping\":{n}}}\n").as_bytes()).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(if n < 10 { 100 } else { 500 })).await;
+            }
+        })
+    };
+    // (round trip, the local instant of the host clock's zero) of the best pong so far.
+    let mut clock: Option<(std::time::Duration, std::time::Instant)> = None;
+    let mut arrivals: Vec<(u64, std::time::Instant)> = Vec::new();
     let mut file = match &out {
         Some(p) => Some(std::fs::File::create(p).with_context(|| format!("create {}", p.display()))?),
         None => None,
     };
     let (mut frames, mut keyframes, mut bytes, mut size) = (0u64, 0u64, 0u64, (0u16, 0u16));
     let (mut codec, mut gaps, mut last, mut first_ms) = (0u8, Vec::new(), None, None);
+    let separate_pointer = reply["cursor"] == "client";
+    // Positions and shapes received, and their bytes.
+    let (mut pointer_messages, mut pointer_bytes) = ([0u64; 2], 0u64);
     let started = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
     loop {
@@ -1040,12 +1071,39 @@ async fn view(
             Ok(Err(e)) => bail!("the live view ended: {e}"),
             Ok(Ok(_)) => {}
         }
+        let len = u32::from_be_bytes(header[14..18].try_into()?) as usize;
+        let ts = u64::from_be_bytes(header[6..14].try_into()?);
+        if header[0] == 3 && len <= 4096 {
+            let now = std::time::Instant::now();
+            let mut payload = vec![0u8; len];
+            stream.read_exact(&mut payload).await?;
+            let n = serde_json::from_slice::<Value>(&payload)?["pong"].as_u64();
+            if let Some(sent) = n.and_then(|n| pings.lock().unwrap().remove(&n)) {
+                let rtt = now.duration_since(sent);
+                // The host stamped the pong halfway through the round trip, as best we know.
+                let zero = (sent + rtt / 2).checked_sub(std::time::Duration::from_micros(ts));
+                if let Some(zero) = zero
+                    && clock.is_none_or(|(best, _)| rtt < best)
+                {
+                    clock = Some((rtt, zero));
+                }
+            }
+            continue;
+        }
+        if matches!(header[0], 4 | 5) {
+            // The pointer, asked for with --pointer: counted, not drawn.
+            let mut payload = vec![0u8; len];
+            stream.read_exact(&mut payload).await?;
+            pointer_messages[usize::from(header[0] - 4)] += 1;
+            pointer_bytes += 18 + len as u64;
+            continue;
+        }
         if header[0] != 1 {
             bail!("unexpected frame kind {}", header[0]);
         }
-        let len = u32::from_be_bytes(header[14..18].try_into()?) as usize;
         let mut data = vec![0u8; len];
         stream.read_exact(&mut data).await?;
+        arrivals.push((ts, std::time::Instant::now()));
         frames += 1;
         keyframes += (header[1] & 1) as u64;
         bytes += len as u64;
@@ -1061,6 +1119,22 @@ async fn view(
         }
     }
     let secs = started.elapsed().as_secs_f64();
+    pinger.abort();
+    // Capture -> received, for every frame, with the final (best) clock mapping.
+    let mut latency: Vec<f64> = match clock {
+        Some((_, zero)) => arrivals
+            .iter()
+            .map(|(ts, at)| {
+                let captured = zero + std::time::Duration::from_micros(*ts);
+                at.saturating_duration_since(captured).as_secs_f64() * 1000.0
+                    - captured.saturating_duration_since(*at).as_secs_f64() * 1000.0
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    latency.sort_by(f64::total_cmp);
+    let lat = |p: f64| latency.get(((latency.len().max(1) - 1) as f64 * p) as usize).copied();
+    let rtt_ms = clock.map(|(rtt, _)| rtt.as_secs_f64() * 1000.0);
     let codec = ["h264", "hevc", "av1"].get(codec as usize).copied().unwrap_or("unknown");
     gaps.sort_by(f64::total_cmp);
     let gap = |p: f64| gaps.get(((gaps.len().max(1) - 1) as f64 * p) as usize).copied();
@@ -1076,6 +1150,11 @@ async fn view(
         "kbit_per_s": bytes as f64 * 8.0 / secs / 1000.0,
         "first_frame_ms": first_ms,
         "gap_ms": {"p50": gap(0.5), "p95": gap(0.95), "max": gap(1.0)},
+        // Capture on the host to arrival here; error up to half the round trip either way.
+        "latency_ms": {"p50": lat(0.5), "p95": lat(0.95), "max": lat(1.0), "error": rtt_ms.map(|r| r / 2.0)},
+        "rtt_ms": rtt_ms,
+        "pointer": {"separate": separate_pointer, "positions": pointer_messages[0], "shapes": pointer_messages[1],
+            "bytes": pointer_bytes},
     });
     if json_out {
         return print_json(&v);
@@ -1091,6 +1170,19 @@ async fn view(
         gap(0.95).unwrap_or(0.0),
         gap(1.0).unwrap_or(0.0),
     );
+    match (lat(0.5), lat(0.95), rtt_ms) {
+        (Some(p50), Some(p95), Some(rtt)) => println!(
+            "Capture to arrival: p50 {p50:.1} ms, p95 {p95:.1} ms (within +/- {:.1} ms; round trip {rtt:.1} ms)",
+            rtt / 2.0
+        ),
+        _ => println!("Capture to arrival: unknown (the host does not answer pings; an older version?)"),
+    }
+    if separate_pointer {
+        println!(
+            "Pointer sent separately: {} positions, {} shapes, {pointer_bytes} bytes",
+            pointer_messages[0], pointer_messages[1]
+        );
+    }
     println!("Frames arrive only when the screen changes; a still screen sends almost nothing.");
     if let Some(p) = out {
         println!("Saved to {} ({codec} elementary stream; e.g. ffplay <file>)", p.display());
