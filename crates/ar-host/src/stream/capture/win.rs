@@ -828,6 +828,8 @@ mod bench {
         actual: Option<Codec>,
         delta_bytes: usize,
         deltas: usize,
+        /// Sizes of the non-key frames.
+        sizes: Vec<usize>,
     }
 
     impl Sink {
@@ -838,6 +840,7 @@ mod bench {
             if !out.keyframe {
                 self.delta_bytes += out.data.len();
                 self.deltas += 1;
+                self.sizes.push(out.data.len());
             }
             self.stream.extend_from_slice(&out.data);
         }
@@ -851,6 +854,11 @@ mod bench {
     /// reference: frame n shows its rows from `scroll_top(7 n)`), one elementary stream per case
     /// and `cases.json`. `AR_SIZES` (`1920x1080,3840x2160`), `AR_CODECS`, `AR_FPS` (60),
     /// `AR_FRAMES` (300), `AR_KBPS` (per size: 1080p 6000,12000; larger 20000,40000).
+    /// `AR_VARIANTS` tunes the encoder, `;`-separated: `default`, `qvs=N` (quality vs speed,
+    /// 0..100), `vbvms=N` (rate-control buffer in ms of the bitrate), `early=0` (the buffer size only
+    /// after the media types, where NVENC ignores it), `edge=N` (stream scaled to this long edge),
+    /// combinable as `qvs=100,vbvms=125`. Each case
+    /// also records the time `encode_raw` took and how bursty the frame sizes are.
     #[test]
     #[ignore]
     fn encoded_quality() {
@@ -879,13 +887,22 @@ mod bench {
             let screen = bgra_texture(&gpu, w, h, None).unwrap();
             let rates = std::env::var("AR_KBPS")
                 .unwrap_or_else(|_| if w.max(h) <= 1920 { "6000,12000" } else { "20000,40000" }.into());
-            for &vbr in modes {
+            let variants = env("AR_VARIANTS", "default");
+            for (&vbr, variant) in modes.iter().flat_map(|m| variants.split(';').map(move |v| (m, v))) {
                 LOW_DELAY_VBR_FOR_TESTS.store(vbr, Ordering::Relaxed);
+                let knob = |name: &str| {
+                    variant.split(',').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('=')?.parse::<u32>().ok())
+                };
+                crate::stream::encode::tuning::set(knob("qvs"), knob("vbvms"), knob("early").map(|v| v != 0));
                 for codec in env("AR_CODECS", "h264,hevc,av1").split(',').filter_map(Codec::parse) {
                     for kbps in rates.split(',').map(|k| k.parse::<u32>().unwrap()) {
-                        let mut converter = Converter::new(gpu.clone(), (w, h), (w, h), fps).unwrap();
-                        let mut encoder = FrameEncoder::new(fps, kbps * 1000, w.max(h)).unwrap().with_codecs(&[codec]);
+                        // `edge=N` streams a scaled-down picture (scored against the full-size source).
+                        let edge = knob("edge").unwrap_or(w.max(h)).min(w.max(h));
+                        let (sw, sh) = crate::stream::encode::stream_size(w, h, edge);
+                        let mut converter = Converter::new(gpu.clone(), (w, h), (sw, sh), fps).unwrap();
+                        let mut encoder = FrameEncoder::new(fps, kbps * 1000, edge).unwrap().with_codecs(&[codec]);
                         let mut sink = Sink::default();
+                        let mut times = Vec::with_capacity(frames as usize);
                         let start = Instant::now();
                         for f in 0..frames {
                             let top = scroll_top(f * 7, h);
@@ -894,12 +911,16 @@ mod bench {
                             let frame = converter.convert(&screen).unwrap().unwrap();
                             let raw = super::super::Raw {
                                 bgra: Vec::new(),
-                                width: w,
-                                height: h,
+                                width: sw,
+                                height: sh,
                                 captured: Instant::now(),
                                 gpu: Some(frame),
                             };
+                            let t = Instant::now();
                             let mut ready = encoder.encode_raw(&raw).unwrap();
+                            if f > 0 {
+                                times.push(t.elapsed().as_secs_f64() * 1000.0);
+                            }
                             while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
                                 sink.take(out);
                             }
@@ -913,7 +934,17 @@ mod bench {
                                 None => std::thread::sleep(Duration::from_millis(2)),
                             }
                         }
-                        let Sink { stream, outputs, keyframes, actual, delta_bytes, deltas } = sink;
+                        let Sink { stream, outputs, keyframes, actual, delta_bytes, deltas, mut sizes } = sink;
+                        times.sort_by(f64::total_cmp);
+                        sizes.sort_unstable();
+                        let pct = |v: &[f64], p: f64| v[((v.len() - 1) as f64 * p) as usize];
+                        let mean_size = delta_bytes as f64 / deltas.max(1) as f64;
+                        let size_pct = |p: f64| sizes[((sizes.len() - 1) as f64 * p) as usize] as f64 / mean_size;
+                        let tag = if variant == "default" {
+                            String::new()
+                        } else {
+                            format!("-{}", variant.replace([',', '='], ""))
+                        };
                         let actual = actual.map(|c| c.name()).unwrap_or("none");
                         let rc = if vbr { "vbr" } else { "cbr" };
                         let ext = match actual {
@@ -921,17 +952,23 @@ mod bench {
                             "av1" => "obu",
                             _ => "h264",
                         };
-                        let file = format!("{actual}-{w}x{h}-{kbps}-{rc}.{ext}");
+                        let file = format!("{actual}-{w}x{h}-{kbps}-{rc}{tag}.{ext}");
                         std::fs::write(out_dir.join(&file), &stream).unwrap();
                         let mbps = delta_bytes as f64 * 8.0 * f64::from(fps) / deltas.max(1) as f64 / 1e6;
                         println!(
-                            "{w}x{h} {actual} {rc} {kbps} kbit/s: {outputs}/{frames} frames, {keyframes} keyframes, \
-                             non-key {mbps:.1} Mbit/s, {} bytes -> {file}",
-                            stream.len()
+                            "{w}x{h} {actual} {rc} {variant} {kbps} kbit/s: {outputs}/{frames} frames, {keyframes} keyframes, \
+                             non-key {mbps:.1} Mbit/s, encode p50 {:.2} p95 {:.2} ms, frame size p95 {:.2}x max {:.2}x \
+                             mean -> {file}",
+                            pct(&times, 0.5),
+                            pct(&times, 0.95),
+                            size_pct(0.95),
+                            size_pct(1.0)
                         );
                         cases.push(serde_json::json!({
-                            "file": file, "codec": actual, "width": w, "height": h, "fps": fps, "kbps": kbps,
-                            "rate_control": rc, "frames": frames, "outputs": outputs, "keyframes": keyframes,
+                            "file": file, "codec": actual, "width": sw, "height": sh, "source": [w, h], "fps": fps, "kbps": kbps,
+                            "rate_control": rc, "variant": variant, "frames": frames, "outputs": outputs, "keyframes": keyframes,
+                            "encode_ms": {"p50": pct(&times, 0.5), "p95": pct(&times, 0.95)},
+                            "frame_size_vs_mean": {"p95": size_pct(0.95), "max": size_pct(1.0)},
                             "bytes": stream.len(), "delta_mbps": mbps, "backend": encoder.backend_name(),
                             "reference": format!("ref-{w}x{h}.bgra"), "scroll_rows": 7,
                         }));
@@ -940,6 +977,7 @@ mod bench {
             }
         }
         LOW_DELAY_VBR_FOR_TESTS.store(false, Ordering::Relaxed);
+        crate::stream::encode::tuning::set(None, None, None);
         std::fs::write(out_dir.join("cases.json"), serde_json::to_string_pretty(&cases).unwrap()).unwrap();
     }
 

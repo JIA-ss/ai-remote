@@ -273,6 +273,18 @@ impl HardwareEncoder {
                 rate_control(api, bitrate_bps);
                 set(api, &CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
                 set(api, &CODECAPI_AVEncMPVGOPSize, variant_u32(KEYFRAME_SPACING), "GOP");
+                // NVENC reads the buffer size only before the media types; set after them alone it was
+                // ignored, and every keyframe came out as up to a second of the bitrate (2.4 MB at 4K
+                // 20 Mbit/s), a second of delay on a link that carries just the stream.
+                #[cfg(test)]
+                let early_vbv = tuning::early_vbv();
+                #[cfg(not(test))]
+                let early_vbv = true;
+                if early_vbv {
+                    set(api, &CODECAPI_AVEncCommonBufferSize, variant_u32(vbv_bytes(bitrate_bps)), "VBV");
+                }
+                #[cfg(test)]
+                tuning::apply(api);
             }
 
             let output = MFCreateMediaType()?;
@@ -298,13 +310,9 @@ impl HardwareEncoder {
 
             if let Some(api) = &api {
                 rate_control(api, bitrate_bps);
-                // A couple of frames of buffer: a scene change is not starved, latency stays bounded.
-                set(
-                    api,
-                    &CODECAPI_AVEncCommonBufferSize,
-                    variant_u32((bitrate_bps / fps.max(1)).saturating_mul(2)),
-                    "VBV",
-                );
+                set(api, &CODECAPI_AVEncCommonBufferSize, variant_u32(vbv_bytes(bitrate_bps)), "VBV");
+                #[cfg(test)]
+                tuning::apply(api);
                 set(api, &CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
                 set(api, &CODECAPI_AVEncMPVDefaultBPictureCount, variant_u32(0), "B-frames");
                 // Keyframes come on request: a viewer joining or recovering. The stream is reliable.
@@ -402,10 +410,10 @@ impl HardwareEncoder {
 
     /// An encoded frame that became ready since the last call, without submitting anything.
     /// A new bitrate for the running stream; Media Foundation encoders take it between frames.
-    pub(super) fn set_bitrate(&mut self, bitrate_bps: u32, fps: u32) {
+    pub(super) fn set_bitrate(&mut self, bitrate_bps: u32) {
         if let Some(api) = &self.api {
             rate_control(api, bitrate_bps);
-            set(api, &CODECAPI_AVEncCommonBufferSize, variant_u32((bitrate_bps / fps.max(1)).saturating_mul(2)), "VBV");
+            set(api, &CODECAPI_AVEncCommonBufferSize, variant_u32(vbv_bytes(bitrate_bps)), "VBV");
         }
     }
 
@@ -518,6 +526,20 @@ impl HardwareEncoder {
 #[cfg(test)]
 pub(crate) static LOW_DELAY_VBR_FOR_TESTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The rate-control buffer (the HRD size, in bytes for H.264 and HEVC): `VBV_MS` of the bitrate. It
+/// bounds how large a frame may be, so how long one takes on a link at the stream's bitrate; a
+/// keyframe fits in it (measured 2026-10-13, 4K HEVC 20 Mbit/s: 595 KB). Smaller starves keyframes
+/// further, which start blurry already (about a second); larger lets them burst.
+fn vbv_bytes(bitrate_bps: u32) -> u32 {
+    #[cfg(test)]
+    let ms = tuning::vbv_ms().unwrap_or(VBV_MS);
+    #[cfg(not(test))]
+    let ms = VBV_MS;
+    (u64::from(bitrate_bps) / 8 * u64::from(ms) / 1000).min(u64::from(u32::MAX)) as u32
+}
+
+const VBV_MS: u32 = 250;
+
 /// CBR at the requested bitrate, because it is the only mode in which NVENC's Media Foundation
 /// encoders take a new bitrate while streaming (adaptive bitrate). Measured 2026-10-12 at 4K60,
 /// lowering 40 -> 10 Mbit/s mid-stream: CBR gave 8.6 (H.264) and 10.9 (HEVC) Mbit/s, while
@@ -579,5 +601,55 @@ fn friendly_name(activate: &IMFActivate) -> String {
         let name = text.to_string().unwrap_or_default();
         CoTaskMemFree(Some(text.0 as *const _));
         name
+    }
+}
+
+/// Encoder settings the tuning measurements (`encoded_quality`) vary; unset means the defaults.
+#[cfg(test)]
+pub(crate) mod tuning {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const UNSET: u32 = u32::MAX;
+    static QUALITY_VS_SPEED: AtomicU32 = AtomicU32::new(UNSET);
+    static VBV_MS: AtomicU32 = AtomicU32::new(UNSET);
+    static EARLY_VBV: AtomicU32 = AtomicU32::new(UNSET);
+
+    /// `CODECAPI_AVEncCommonQualityVsSpeed` (0 fastest .. 100 best), the rate-control buffer in ms
+    /// of the bitrate, and whether it is set before the media types too (NVENC reads it only then),
+    /// for encoders opened from now on.
+    pub fn set(quality_vs_speed: Option<u32>, vbv_ms: Option<u32>, early_vbv: Option<bool>) {
+        QUALITY_VS_SPEED.store(quality_vs_speed.unwrap_or(UNSET), Ordering::Relaxed);
+        VBV_MS.store(vbv_ms.unwrap_or(UNSET), Ordering::Relaxed);
+        EARLY_VBV.store(early_vbv.map_or(UNSET, u32::from), Ordering::Relaxed);
+    }
+
+    pub(super) fn early_vbv() -> bool {
+        EARLY_VBV.load(Ordering::Relaxed) != 0
+    }
+
+    pub(super) fn quality_vs_speed() -> Option<u32> {
+        Some(QUALITY_VS_SPEED.load(Ordering::Relaxed)).filter(|&v| v != UNSET)
+    }
+
+    pub(super) fn vbv_ms() -> Option<u32> {
+        Some(VBV_MS.load(Ordering::Relaxed)).filter(|&v| v != UNSET)
+    }
+
+    /// Sets quality vs speed when asked, and logs whether the encoder admits to both properties.
+    pub(super) fn apply(api: &super::ICodecAPI) {
+        use super::*;
+        if let Some(level) = quality_vs_speed() {
+            set(api, &CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(level), "quality vs speed");
+        }
+        for (name, key) in
+            [("quality vs speed", &CODECAPI_AVEncCommonQualityVsSpeed), ("VBV", &CODECAPI_AVEncCommonBufferSize)]
+        {
+            // SAFETY: queries on a live ICodecAPI; the VARIANT is owned here.
+            let (supported, value) = unsafe {
+                let value = api.GetValue(key).ok().map(|v| v.Anonymous.Anonymous.Anonymous.ulVal);
+                (api.IsSupported(key).is_ok(), value)
+            };
+            tracing::debug!(property = name, supported, value = ?value, "encoder property");
+        }
     }
 }
