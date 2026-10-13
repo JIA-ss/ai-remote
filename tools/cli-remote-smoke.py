@@ -58,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix="ar-cli-", ignore_cleanup_errors=True) a
         '[[rule]]\ntool = "files_mkdir"\naction = "deny"\n\n'
         '[[rule]]\ntool = "files_*"\naction = "allow"\n\n'
         '[[rule]]\ntool = "shell"\naction = "allow"\n\n'
-        '[[rule]]\ntool = "jobs_*"\naction = "allow"\n', encoding="utf-8")
+        '[[rule]]\ntool = "jobs_*"\naction = "allow"\n\n'
+        '[[rule]]\ntool = "process_*"\naction = "allow"\n', encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "AI_REMOTE_HOST"}
 
     def cli(*args, home=ctl_home, timeout=120, stdin=None, extra_env=None):
@@ -135,6 +136,27 @@ with tempfile.TemporaryDirectory(prefix="ar-cli-", ignore_cleanup_errors=True) a
             check("shot -o x.png saves the image under the right extension", ok, r.stdout.strip() or r.stderr[-200:])
         r = cli("windows")
         check("windows", r.returncode == 0, r.stderr[-200:])
+
+        r = cli("--json", "ps", "--pid", str(host.pid))
+        ps = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("ps --pid finds the host", ps.get("count") == 1 and ps["processes"][0]["pid"] == host.pid, r.stderr[-200:])
+        r = cli("ps", "ai-remote")
+        check("ps <name> lists it", r.returncode == 0 and str(host.pid) in r.stdout, r.stderr[-200:])
+        r = cli("kill", "--pid", str(host.pid))
+        check("kill refuses the host itself", r.returncode == 2 and "host itself" in r.stderr, r.stderr.strip()[-160:])
+        sleeper = subprocess.Popen(["cmd", "/C", "ping -n 30 127.0.0.1 > NUL"] if os.name == "nt" else ["sh", "-c", "sleep 30"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        r = cli("--json", "kill", "--pid", str(sleeper.pid), "--intent", "smoke")
+        killed = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("kill --pid stops a process tree", r.returncode == 0 and killed.get("count", 0) >= 1 and killed.get("still_running") == [],
+              (r.stdout + r.stderr).strip()[-200:])
+        try:
+            sleeper.wait(timeout=5)
+            check("the killed process is gone", True)
+        except subprocess.TimeoutExpired:
+            sleeper.kill()
+            check("the killed process is gone", False)
 
         r = cli("mkdir", remote / "denied")
         check("a refused call exits 2 with the host's reason", r.returncode == 2 and "policy" in r.stderr, r.stderr.strip())
