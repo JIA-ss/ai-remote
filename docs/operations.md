@@ -39,7 +39,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | Command | What it does |
 |---|---|
 | `ai-remote host [--no-pair-code]` | run the host in this terminal until Ctrl+C or `stop-host` |
-| `ai-remote host install` | start the host automatically at logon, in the background |
+| `ai-remote host install` | start the host automatically at logon, in the background (`--service`: as a Windows service that reaches the lock screen) |
 | `ai-remote host uninstall` | remove the autostart entry, stop the host, remove the firewall rules |
 | `ai-remote host status` | autostart entry, firewall rules, whether the host runs |
 | `ai-remote doctor` | graded checks: can this machine really be operated? |
@@ -195,6 +195,61 @@ What the install does (all of it is printed by `--dry-run`, including the full t
    run `ai-remote stop-host` and then `ai-remote host install` again.
 
 If a step fails, the steps after it are not run; fix the cause and run the same command again.
+
+#### Windows: as a service (lock screen, sign-in screen, UAC prompts)
+
+```sh
+ai-remote host install --service --dry-run   # elevated terminal; print every change, change nothing
+ai-remote host install --service
+```
+
+The logon task above runs the host as you, in your desktop session. Windows keeps a *user* process
+away from the secure desktop: once the screen locks, a UAC prompt opens, or the machine reboots to
+the sign-in screen, that host can neither see nor operate anything until someone unlocks it at the
+keyboard. `--service` registers a Windows service instead (RustDesk takes the same route): the
+service runs as LocalSystem, starts automatically, and keeps `ai-remote-hostw` running **as SYSTEM
+inside the console session**. A SYSTEM process in that session may open the secure desktop, so the
+live view (Desktop Duplication is chosen automatically in service mode), screenshots and input
+follow the lock screen, UAC prompts and the sign-in screen after a reboot; a controller can type a
+password at the lock screen or press `ctrl+alt+del` (the host asks the service to send it, since
+the keys themselves are ignored). The service follows the console session across log-offs and
+user switches, restarts the host after a crash with the supervisor's back-off, and stops with it
+after a clean `ai-remote stop-host`.
+
+**Consequence, read before installing:** that host, and so its `shell`, `jobs` and `files` tools,
+run as SYSTEM. Levels, policies, approvals and the audit log are the same code, but what an
+admin-level (or bypassed) controller can do grows from "what you can do" to "what SYSTEM can do".
+Grant levels accordingly. `--dry-run` prints this with the plan. Approval prompts still cannot be
+shown on the lock screen (nobody is there to answer): while it is locked, actions that need
+approval are approved from approver devices only (section 9.2).
+
+What the install does (administrator steps, all of them; a standard user is refused):
+
+1. Ends and deletes the logon task of this profile if there is one (both would start a host, and
+   the second would find the profile taken).
+2. Registers (or updates) the service `ai-remote-host-<8 hex digits>` with `sc.exe` (absolute path):
+   LocalSystem, automatic start, running
+   `ai-remote-hostw.exe --service --home "<profile>" --owner-sid <your SID>`, restarted by the
+   service manager after a crash. The `--owner-sid` is your account: the host's control endpoint
+   (an owner-only named pipe) admits it besides SYSTEM, so `ai-remote host status`, `stop-host`,
+   `doctor` and the desktop app keep working for you; other accounts are refused as before.
+3. Sets the `SoftwareSASGeneration` policy (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`)
+   to 1 ("services") when it is not already 1 or 3, so the service may send Ctrl+Alt+Del. The value
+   it found is written to `<profile>/host/sas-policy-before.txt`, and `host uninstall` puts it back.
+4. The same firewall steps as the logon task install.
+5. Unless `--no-start`, starts the service and waits for the host as above.
+
+`ai-remote host status` then shows `Windows service ai-remote-host-… is installed, running`.
+`ai-remote host uninstall` stops and deletes the service, restores the policy, and does the task and
+firewall steps as before. `stop-host` stops the host *and* the service (a clean exit ends both, like
+the supervisor); `ai-remote host install --service` again, or `sc start ai-remote-host-…`, brings it
+back. A host started in a terminal while the service runs takes the profile; the service retries
+every 30 seconds and takes over once that host stops.
+
+What a locked machine looks like from the controller: `doctor` reports `desktop` as **warn** ("locked
+or showing a security prompt …; this host can see and operate it"), `approval` as warn, and the
+tools work; the screen shows the lock screen. Without `--service` the same state is a **fail** and
+every screen and input tool refuses with "which this host cannot reach".
 
 #### macOS
 
@@ -525,12 +580,13 @@ call's outcome is unknown: it may have run on the host. Check the host's state b
 
 | Message contains | Cause | What to do |
 |---|---|---|
-| `the desktop is locked or showing a security prompt` | locked screen, sign-in screen, UAC prompt | unlock; on unattended machines turn off automatic locking |
-| `runs in the services session (session 0)` | the host runs as a service or from session 0 | run it in the user's session (`host install`) |
+| `the desktop is locked or showing a security prompt, which this host cannot reach` | locked screen, sign-in screen, UAC prompt, and the host runs as the user | unlock; or install the host as a service (`host install --service`, section 3.2), which reaches the secure desktop |
+| `runs in the services session (session 0)` | the host was started in session 0 by hand (the service's own host runs in the console session) | run it in the user's session (`host install`, with or without `--service`) |
 | `an ai-remote approval prompt is open on the host` | input is paused while a prompt waits for its answer | wait for the owner to answer, then retry |
 | `the input would go to one of ai-remote's own windows` | the target is the approval prompt or the host's terminal | act on another window |
 | `running with higher privileges` | the target window belongs to an elevated program | run the host elevated (`host install` as an administrator) |
 | `is refused: it locks the workstation` (and similar) | a lock or sign-out chord | do not send it; the owner decides |
+| `is refused: it opens the secure attention screen` | `ctrl+alt+del` on a host that does not run as a service | install the host as a service (`host install --service`); it then sends it through the service |
 | `mount '<m>' is not running: it failed N times in a row` | a mounted server keeps crashing | read `host/mounts/<m>.log`; see [tools.md](tools.md#75-lifecycle-crashes-and-restarts) |
 | `refusing to start ...: its SHA-256 is ...` | the mounted server's executable changed | re-add the mount if the update was intended |
 
@@ -571,9 +627,9 @@ Overall: warn
 
 | Check | ok when | Not ok means | Fix |
 |---|---|---|---|
-| `session` | an interactive Windows session (not 0) | **fail**: the services session has no desktop; screenshots are black, input goes nowhere | start the host from the user's session; `host install` registers it that way |
+| `session` | an interactive Windows session (not 0) | **fail**: the services session has no desktop; screenshots are black, input goes nowhere | start the host from the user's session; `host install` registers it that way (the service too: its host runs in the console session) |
 | `console` | the session is attached to the physical console | **warn**: a remote desktop session; capture and input stop when it disconnects, and the console stays locked | return the session to the console instead of disconnecting: `tscon <session> /dest:console` from an elevated prompt |
-| `desktop` | the input desktop is `Default` (unlocked) | **fail**: locked, or a sign-in or UAC prompt is showing | unlock; on unattended machines turn off automatic locking |
+| `desktop` | the input desktop is `Default` (unlocked) | **fail**: locked, or a sign-in or UAC prompt is showing, and the host cannot reach it; **warn**: the same, but the host runs as a service and can see and operate it (approval prompts cannot be shown) | unlock; on unattended machines turn off automatic locking, or install as a service (`host install --service`) |
 | `elevation` | the host runs elevated | **warn**: windows of elevated programs ignore its input | run with highest privileges (`host install` as an administrator) |
 | `dpi` | per-monitor DPI aware (v2) | **fail**: clicks on scaled displays land in the wrong place | remove any high-DPI compatibility override on the executable (Properties > Compatibility) |
 | `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, enable UPnP/NAT-PMP on the router, use IPv6, or sign in to the network |

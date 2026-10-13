@@ -399,6 +399,12 @@ enum HostAction {
         /// account's next logon).
         #[arg(long)]
         force: bool,
+        /// Windows, elevated: register a service instead of the logon task. It starts the host as
+        /// SYSTEM inside the console session, so the lock screen, the sign-in screen and UAC
+        /// prompts can be seen and operated; the host's shell, jobs and files tools then run as
+        /// SYSTEM too (see --dry-run for the full consequences).
+        #[arg(long, conflicts_with = "firewall_only")]
+        service: bool,
     },
     /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
     /// another profile's autostart still uses them.
@@ -446,8 +452,11 @@ async fn run(cli: Cli) -> Result<()> {
             let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
             ar_host::run(profile, opts).await
         }
-        Command::Host { action: Some(HostAction::Install { dry_run, no_start, firewall_only, force }), .. } => {
-            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force };
+        Command::Host {
+            action: Some(HostAction::Install { dry_run, no_start, firewall_only, force, service }),
+            ..
+        } => {
+            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force, service };
             hostops::host_install(&profile, flags).await
         }
         Command::Host { action: Some(HostAction::Uninstall { dry_run, firewall_only }), .. } => {

@@ -22,11 +22,19 @@ pub struct SessionState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elevated: Option<bool>,
     /// Name of the desktop receiving input: "Default" when unlocked; "Winlogon" when locked or
-    /// on a security prompt.
+    /// on a security prompt. `None` when this process may not open it (a user-session host while
+    /// the secure desktop is up).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_desktop: Option<String>,
-    /// True when screenshots and input can work: interactive session, unlocked desktop.
+    /// True when screenshots and input can work: an interactive session whose input desktop this
+    /// process can reach. A host the Windows service runs as SYSTEM reaches the lock screen and
+    /// UAC prompts too; a host running as the logged-in user only the unlocked desktop.
     pub desktop_usable: bool,
+    /// True when the desktop is usable but is a secure one (lock screen, sign-in, UAC prompt):
+    /// capture and input work, but nobody is there to answer an approval prompt and the host's
+    /// own windows cannot be shown.
+    #[serde(default)]
+    pub secure_desktop: bool,
     /// Plain-language explanation when `desktop_usable` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
@@ -78,10 +86,39 @@ pub fn session_state() -> SessionState {
     }
 }
 
-/// Why an approval prompt cannot be shown right now, if it cannot.
+/// Why an approval prompt cannot be shown right now, if it cannot: the desktop is out of reach, or
+/// it is a secure desktop (locked, sign-in, UAC) where nobody can answer.
 pub fn prompt_blocker() -> Option<String> {
     let s = session_state();
+    if !s.desktop_usable {
+        return s.problem.or_else(|| Some("the desktop is not usable".into()));
+    }
+    s.secure_desktop.then(|| {
+        format!(
+            "the desktop is locked or showing a security prompt (input desktop: {}); nobody is there to answer",
+            s.input_desktop.as_deref().unwrap_or("?")
+        )
+    })
+}
+
+/// Why the desktop can be neither seen nor operated right now, if it cannot. Unlike
+/// [`prompt_blocker`] a reachable secure desktop (a host running as SYSTEM, see `service`) is fine.
+pub fn desktop_blocker() -> Option<String> {
+    let s = session_state();
     if s.desktop_usable { None } else { s.problem.or_else(|| Some("the desktop is not usable".into())) }
+}
+
+/// Whether this process runs as the LocalSystem account: on Windows the host the service starts in
+/// the user's session, which may open the secure desktop. Always false elsewhere.
+pub fn runs_as_system() -> bool {
+    #[cfg(windows)]
+    {
+        windows::runs_as_system()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// The window injected input would reach.

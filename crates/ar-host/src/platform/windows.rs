@@ -61,14 +61,55 @@ pub fn session_state() -> SessionState {
     let elevated = is_elevated();
     let input_desktop = input_desktop_name();
 
+    // Reaching the input desktop is what counts, not its name: a host the service runs as SYSTEM
+    // opens the Winlogon desktop (lock screen, UAC) and captures and injects there through the
+    // Desktop Duplication path and `follow_input_desktop`; a user-session host is refused the
+    // handle and can do nothing until the desktop is unlocked.
     let problem = if session_id == Some(0) {
         Some("the host runs in the services session (session 0), which has no desktop; start it from the logged-in user's session".to_string())
-    } else if input_desktop.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("Default")) || input_desktop.is_none() {
-        Some("the desktop is locked or showing a security prompt".to_string())
+    } else if input_desktop.is_none() {
+        Some(
+            "the desktop is locked or showing a security prompt, which this host cannot reach (it runs as the \
+             logged-in user; `ai-remote host install --service` runs it as a service that can)"
+                .to_string(),
+        )
     } else {
         None
     };
-    SessionState { session_id, on_console, elevated, input_desktop, desktop_usable: problem.is_none(), problem }
+    let secure_desktop =
+        problem.is_none() && input_desktop.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("Default"));
+    SessionState {
+        session_id,
+        on_console,
+        elevated,
+        input_desktop,
+        desktop_usable: problem.is_none(),
+        secure_desktop,
+        problem,
+    }
+}
+
+/// Whether this process's token belongs to the LocalSystem account (`S-1-5-18`).
+pub fn runs_as_system() -> bool {
+    use windows::Win32::Security::{IsWellKnownSid, TOKEN_USER, TokenUser, WinLocalSystemSid};
+    // SAFETY: the token handle is closed below; the buffer is u64-aligned and as large as the API
+    // asked for, and the SID it points into lives inside that buffer for the whole check.
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut len = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+        let ok = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+        let _ = CloseHandle(token);
+        if ok.is_err() {
+            return false;
+        }
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        IsWellKnownSid(user.User.Sid, WinLocalSystemSid).as_bool()
+    }
 }
 
 fn current_session_id() -> Option<u32> {
