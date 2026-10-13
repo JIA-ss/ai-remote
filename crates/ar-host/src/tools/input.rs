@@ -585,7 +585,9 @@ fn plan_keys(chords: &[Pressed], repeat: usize) -> Plan {
 }
 
 /// Parses, resolves and vets a key spec; refused chords fail here, before anything is pressed.
-fn plan_key_spec(spec: &str, repeat: u32) -> Result<Plan> {
+/// `secure_attention`: the service event that sends Ctrl+Alt+Del when the host runs as a Windows
+/// service (see `service`); without it the chord stays refused.
+fn plan_key_spec(spec: &str, repeat: u32, secure_attention: Option<&str>) -> Result<Plan> {
     if !(1..=MAX_REPEAT).contains(&repeat) {
         bail!("repeat must be 1-{MAX_REPEAT}");
     }
@@ -597,6 +599,18 @@ fn plan_key_spec(spec: &str, repeat: u32) -> Result<Plan> {
     let mut pressed = Vec::with_capacity(chords.len());
     for chord in &chords {
         let p = keys::resolve_chord(chord)?;
+        if let Some(event) = secure_attention.filter(|_| keys::is_secure_attention(&p, Os::CURRENT)) {
+            // The service sends it as one step; Windows ignores the keys themselves.
+            if chords.len() != 1 {
+                bail!("'{chord}' must be sent on its own (one call with keys = \"{chord}\")");
+            }
+            let mut plan = Plan::new("chords");
+            for _ in 0..repeat {
+                plan.checked(Op::SecureAttention(event.to_string()), InputTarget::Focused);
+                plan.complete(1);
+            }
+            return Ok(plan);
+        }
         if let Some(why) = keys::forbidden(&p, Os::CURRENT) {
             bail!(
                 "'{chord}' is refused: {why}. That is the owner's decision; tell the user instead of working around it."
@@ -605,6 +619,20 @@ fn plan_key_spec(spec: &str, repeat: u32) -> Result<Plan> {
         pressed.push(p);
     }
     Ok(plan_keys(&pressed, repeat as usize))
+}
+
+/// The service event that sends Ctrl+Alt+Del for this host, when it runs as a Windows service.
+fn secure_attention_event(ctx: &ToolCtx<'_>) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let profile = ctx.host.profile();
+        crate::service::secure_attention_available(profile).then(|| crate::service::sas_event_name(profile))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = ctx;
+        None
+    }
 }
 
 struct Keyboard {
@@ -619,8 +647,9 @@ impl Keyboard {
                 Level::Control,
                 "Type text or press keys on the host; input goes to the focused window. Use text for literal text \
                  (any language) and keys for shortcuts and special keys (\"ctrl+l\", \"alt+tab\", \"Down Down \
-                 Return\"). Chords that lock the machine or sign the user out (win+l, ctrl+alt+del) are refused. \
-                 Returns once the input is sent; take a screenshot to see the effect.",
+                 Return\"). Chords that lock the machine or sign the user out (win+l) are refused; ctrl+alt+del is \
+                 sent only when the host runs as a Windows service (otherwise refused). Returns once the input is \
+                 sent; take a screenshot to see the effect.",
             ),
         }
     }
@@ -646,7 +675,7 @@ impl Tool for Keyboard {
                 (plan, json!({ "ok": true, "typed_characters": typed }))
             }
             (None, Some(spec)) => {
-                let plan = plan_key_spec(spec, p.repeat.unwrap_or(1))?;
+                let plan = plan_key_spec(spec, p.repeat.unwrap_or(1), secure_attention_event(ctx).as_deref())?;
                 let chords = plan.total;
                 (plan, json!({ "ok": true, "pressed": spec, "chords": chords }))
             }
@@ -1020,7 +1049,7 @@ mod tests {
 
     #[test]
     fn plans_chords_and_repeats() {
-        let plan = plan_key_spec("ctrl+shift+t", 1).unwrap();
+        let plan = plan_key_spec("ctrl+shift+t", 1, None).unwrap();
         assert_eq!(
             calls(&plan),
             [
@@ -1031,7 +1060,7 @@ mod tests {
                 "key Control Release"
             ]
         );
-        let plan = plan_key_spec("Down Return", 3).unwrap();
+        let plan = plan_key_spec("Down Return", 3, None).unwrap();
         assert_eq!((plan.unit, plan.total), ("chords", 6));
         // Every press and tap is checked against the focused window; releases never wait on a check.
         for step in &plan.steps {
@@ -1044,11 +1073,12 @@ mod tests {
 
     #[test]
     fn refuses_key_specs_before_pressing_anything() {
-        let err = |s: &str, r| plan_key_spec(s, r).unwrap_err().to_string();
+        let err = |s: &str, r| plan_key_spec(s, r, None).unwrap_err().to_string();
         #[cfg(windows)]
         {
             assert!(err("win+l", 1).contains("'win+l' is refused: it locks the workstation"));
             assert!(err("a ctrl+alt+del", 1).contains("secure attention"));
+            assert!(err("ctrl+alt+del", 1).contains("secure attention"));
         }
         #[cfg(target_os = "macos")]
         assert!(err("ctrl+cmd+q", 1).contains("locks"));
@@ -1056,5 +1086,23 @@ mod tests {
         assert!(err("a", 101).contains("repeat must be 1-100"));
         assert!(err(&"a ".repeat(20), 100).contains("2000 chords"));
         assert!(err("hyper+x", 1).contains("unknown key"));
+    }
+
+    /// With the service event known, Ctrl+Alt+Del becomes one service step instead of key presses.
+    #[cfg(windows)]
+    #[test]
+    fn ctrl_alt_del_goes_through_the_service_when_available() {
+        let plan = plan_key_spec("ctrl+alt+del", 1, Some(r"Global\\ai-remote-sas-test")).unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].op, Op::SecureAttention(r"Global\\ai-remote-sas-test".into()));
+        assert_eq!(plan.steps[0].check, Some(InputTarget::Focused));
+        let (result, calls) = inject::tests::run(&plan);
+        assert!(result.is_ok());
+        assert_eq!(calls, vec![r"sas Global\\ai-remote-sas-test".to_string()]);
+        // Only on its own: no slipping it into a sequence.
+        let err = plan_key_spec("a ctrl+alt+del", 1, Some("x")).unwrap_err().to_string();
+        assert!(err.contains("on its own"), "{err}");
+        // And win+l stays refused.
+        assert!(plan_key_spec("win+l", 1, Some("x")).unwrap_err().to_string().contains("refused"));
     }
 }

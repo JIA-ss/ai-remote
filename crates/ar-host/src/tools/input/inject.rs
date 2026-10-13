@@ -34,6 +34,9 @@ pub enum Op {
     Scroll(i32, Axis),
     /// Literal text without control characters.
     Text(String),
+    /// Ctrl+Alt+Del, sent by the Windows service (the named event to signal); pressing the keys
+    /// would be ignored by Windows.
+    SecureAttention(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +91,11 @@ pub trait Backend {
     fn text(&mut self, text: &str) -> Result<()>;
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+    /// Asks the service to send Ctrl+Alt+Del (see [`Op::SecureAttention`]).
+    fn secure_attention(&mut self, event: &str) -> Result<()> {
+        let _ = event;
+        Err(anyhow!("Ctrl+Alt+Del cannot be sent on this platform"))
     }
 }
 
@@ -161,6 +169,7 @@ impl<B: Backend> Held<'_, B> {
             Op::Click(b) => self.backend.button(*b, Direction::Click),
             Op::Scroll(n, axis) => self.backend.scroll(*n, *axis),
             Op::Text(t) => self.backend.text(t),
+            Op::SecureAttention(event) => self.backend.secure_attention(event),
         }
     }
 }
@@ -194,6 +203,11 @@ pub struct EnigoBackend {
 
 impl EnigoBackend {
     pub fn new() -> Result<Self> {
+        // Attach this thread to the desktop that now receives input, so `SendInput` and pointer
+        // moves below reach it rather than a stale desktop left over from a switch. Best-effort:
+        // see `platform::follow_input_desktop`.
+        #[cfg(windows)]
+        crate::platform::follow_input_desktop();
         #[cfg(target_os = "macos")]
         if !crate::platform::macos::accessibility_allowed() {
             anyhow::bail!(
@@ -247,6 +261,11 @@ impl Backend for EnigoBackend {
     fn text(&mut self, text: &str) -> Result<()> {
         enigo::Keyboard::text(&mut self.enigo, text).map_err(send_failed)
     }
+
+    #[cfg(windows)]
+    fn secure_attention(&mut self, event: &str) -> Result<()> {
+        crate::service::request_secure_attention(event)
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +304,9 @@ pub mod tests {
             self.record(format!("text {text}"))
         }
         fn pause(&mut self, _duration: Duration) {}
+        fn secure_attention(&mut self, event: &str) -> Result<()> {
+            self.record(format!("sas {event}"))
+        }
     }
 
     /// Runs `plan` with every check passing.

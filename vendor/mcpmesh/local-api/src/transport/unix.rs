@@ -123,6 +123,12 @@ mod server {
     pub fn bind_local(path: &Path) -> io::Result<LocalListener> {
         Ok(LocalListener(bind_uds(path)?))
     }
+
+    /// [`bind_local`] admitting other accounts too. Only Windows (a SYSTEM-run host serving
+    /// one user) needs it; here the 0600 socket and the peer-uid gate stay as they are.
+    pub fn bind_local_shared(path: &Path, _shared_with: &[String]) -> io::Result<LocalListener> {
+        bind_local(path)
+    }
 }
 #[cfg(feature = "service")]
 pub use server::*;

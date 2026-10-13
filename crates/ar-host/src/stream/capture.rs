@@ -257,9 +257,11 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
             });
         }
         let monitor = win::monitor(index)?;
-        // `AI_REMOTE_CAPTURE=dda`: Desktop Duplication instead of Windows Graphics Capture. For testing
-        // only until it is chosen automatically (the secure desktop); falls through to WGC on failure.
-        if std::env::var("AI_REMOTE_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("dda")) {
+        // Desktop Duplication instead of Windows Graphics Capture where the secure desktop (lock
+        // screen, UAC) must be seen: a host running as SYSTEM (service mode) can open it and WGC
+        // cannot show it, and a host already looking at a secure desktop. `AI_REMOTE_CAPTURE=dda`
+        // or `=wgc` forces either way (testing). Falls through to WGC on failure.
+        if want_dda() {
             match dda::start(monitor, max_fps, edge.clone(), slot.clone()) {
                 Ok(dda) => {
                     return Ok(Capture {
@@ -321,6 +323,17 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
         let _ = (index, max_fps, max_long_edge, slot, draw_pointer);
         Err(anyhow!("live view is not available on this platform yet"))
     }
+}
+
+/// Whether to capture with Desktop Duplication (see [`start`]).
+#[cfg(windows)]
+fn want_dda() -> bool {
+    match std::env::var("AI_REMOTE_CAPTURE") {
+        Ok(v) if v.eq_ignore_ascii_case("dda") => return true,
+        Ok(v) if v.eq_ignore_ascii_case("wgc") => return false,
+        _ => {}
+    }
+    crate::platform::runs_as_system() || crate::platform::session_state().secure_desktop
 }
 
 #[cfg(windows)]

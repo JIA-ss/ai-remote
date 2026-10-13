@@ -438,6 +438,14 @@
         "node/src/daemon/boot.rs"
       ],
       "summary": "[network].bind_port: fixed IPv4 UDP port for router port forwarding, falling back to a random port when taken"
+    },
+    {
+      "files": [
+        "local-api/src/transport.rs",
+        "local-api/src/transport/windows.rs",
+        "local-api/src/transport/unix.rs"
+      ],
+      "summary": "bind_local_shared(path, sids): the Windows named-pipe DACL admits extra accounts (plain S-1-... SIDs only) besides the owner, for a host the service runs as SYSTEM that the user's CLI must still reach; a no-op alias of bind_local on unix. With a unit test."
     }
   ]
 }

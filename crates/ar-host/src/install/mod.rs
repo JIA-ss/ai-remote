@@ -1,14 +1,16 @@
 //! Starting the host automatically at login, outside any terminal (`ai-remote host install`).
 //!
-//! The host must live in the logged-in user's interactive desktop session (capture, input and
-//! approval prompts all need that desktop), so it is never a system service:
+//! The host must live in the interactive desktop session (capture, input and approval prompts all
+//! need that desktop):
 //!
 //! - **Windows**: a Task Scheduler task triggered at the user's logon, run with highest privileges
-//!   and an interactive token, starting the windowless `ai-remote-hostw` binary. Plus inbound
-//!   firewall allow rules for the host programs: the first time a program listens, Windows asks
-//!   on the desktop whether to allow it; on an unattended machine nobody answers and the prompt
-//!   leaves *block* rules behind, which beat allow rules and quietly push connections onto the
-//!   relay.
+//!   and an interactive token, starting the windowless `ai-remote-hostw` binary. Or, with
+//!   `--service`, a Windows service that starts that binary as SYSTEM inside the console session
+//!   (the only way to reach the lock screen, the sign-in screen and UAC prompts; see
+//!   `crate::service`). Plus inbound firewall allow rules for the host programs: the first time a
+//!   program listens, Windows asks on the desktop whether to allow it; on an unattended machine
+//!   nobody answers and the prompt leaves *block* rules behind, which beat allow rules and quietly
+//!   push connections onto the relay.
 //! - **macOS**: a per-user LaunchAgent, which loads into the user's GUI session.
 //!
 //! Every change is first described as a [`Plan`]: `--dry-run` prints exactly what would run, and
@@ -245,6 +247,10 @@ pub struct InstallStatus {
     /// Whether that is this installation's background host with this profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<bool>,
+    /// Whether the entry's process runs right now (Windows service only; a task is judged by the
+    /// host answering on its control endpoint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
     /// Why the entry's state could not be read (or the tool's answer when it is absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -394,20 +400,24 @@ pub fn firewall_rules() -> Result<Vec<FwRule>> {
     }
 }
 
-/// The plan for `ai-remote host install`.
-pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
+/// The plan for `ai-remote host install`. `service`: on Windows, register the host as a service
+/// running as SYSTEM in the console session instead of a logon task.
+pub fn install_plan(profile: &Profile, scope: Scope, service: bool) -> Result<Plan> {
     #[cfg(windows)]
     {
-        windows::install_plan(profile, scope)
+        windows::install_plan(profile, scope, service)
     }
     #[cfg(target_os = "macos")]
     {
         no_firewall_scope(scope)?;
+        if service {
+            bail!("--service applies to Windows only; the macOS host runs as a LaunchAgent in the user's session");
+        }
         macos::install_plan(profile)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = (profile, scope);
+        let _ = (profile, scope, service);
         bail!("autostart is available on Windows and macOS only")
     }
 }

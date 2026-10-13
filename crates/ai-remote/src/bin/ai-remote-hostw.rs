@@ -9,6 +9,10 @@
 //! (`ai-remote stop-host`) ends both, as macOS's LaunchAgent does (restart after a crash, not after
 //! a clean exit). The child sits in a kill-on-close job object, so ending the task (or the
 //! supervisor dying) takes the host and everything it started down with it.
+//!
+//! `--service` (Windows, registered by `ai-remote host install --service`) is the same supervisor
+//! as a service: it runs the host as SYSTEM inside the console session (see `ar_host::service`),
+//! which is what reaches the lock screen and UAC prompts.
 
 // No console window on Windows; the attribute does nothing elsewhere.
 #![windows_subsystem = "windows"]
@@ -19,11 +23,11 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Mutex,
-    time::Duration,
 };
 
 use anyhow::Result;
 use ar_core::{Profile, Role};
+use ar_host::supervise::EXIT_ALREADY_RUNNING;
 use clap::Parser;
 use file_rotate::{ContentLimit, FileRotate, compression::Compression, suffix::AppendCount};
 
@@ -42,14 +46,23 @@ struct Args {
     #[arg(long, hide = true)]
     #[cfg_attr(not(windows), allow(dead_code))]
     supervised: bool,
+    /// Run as the Windows service registered by `ai-remote host install --service`: keeps the
+    /// host running as SYSTEM in the console session. Only the service control manager starts
+    /// this.
+    #[arg(long, hide = true, conflicts_with = "supervised")]
+    #[cfg_attr(not(windows), allow(dead_code))]
+    service: bool,
+    /// SID of the account whose CLI may talk to this host besides the account it runs as (the
+    /// service passes it to the host it starts as SYSTEM).
+    #[arg(long, hide = true, value_name = "SID")]
+    #[cfg_attr(not(windows), allow(dead_code))]
+    owner_sid: Option<String>,
 }
 
 /// The log is rotated once it passes this size, between two lines.
 const LOG_ROTATE_BYTES: usize = 8 * 1024 * 1024;
 /// Rotated logs kept (`host.log.1`, `host.log.2`).
 const LOG_KEEP: usize = 2;
-/// Exit code of a host that found another one running for its profile: nothing to restart.
-const EXIT_ALREADY_RUNNING: u8 = 3;
 
 fn main() -> ExitCode {
     // Nobody sees stderr here: every early failure goes to a file.
@@ -79,14 +92,23 @@ fn main() -> ExitCode {
         tracing::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
     }));
     #[cfg(windows)]
+    if args.service {
+        return run_service(profile, &log_path, args.owner_sid);
+    }
+    #[cfg(windows)]
     if !args.supervised {
         return supervise(&profile, &log_path);
     }
-    run_host(profile, &log_path)
+    #[cfg(windows)]
+    let shared_with: Vec<String> = args.owner_sid.into_iter().collect();
+    #[cfg(not(windows))]
+    let shared_with = Vec::new();
+    run_host(profile, &log_path, &shared_with)
 }
 
-/// Runs the host in this process until it is stopped.
-fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
+/// Runs the host in this process until it is stopped. `shared_with`: accounts besides this
+/// process's own that may use the control endpoint (see `ar_host::Claim::acquire_shared`).
+fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -98,7 +120,7 @@ fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
     // host alone, its log included, so it only appends a line saying why it quits.
     let claim = {
         let _in_runtime = runtime.enter();
-        ar_host::Claim::acquire(&profile)
+        ar_host::Claim::acquire_shared(&profile, shared_with)
     };
     let claim = match claim {
         Ok(c) => c,
@@ -127,6 +149,32 @@ fn run_host(profile: Profile, log_path: &Path) -> ExitCode {
     }
 }
 
+/// The Windows service: logs like the supervisor (it shares the file with the host it starts) and
+/// hands over to `ar_host::service`, which returns once the service control manager stopped it.
+#[cfg(windows)]
+fn run_service(profile: Profile, log_path: &Path, owner_sid: Option<String>) -> ExitCode {
+    log_appending(log_path);
+    let Some(owner_sid) = owner_sid else {
+        tracing::error!("--service needs --owner-sid <SID> (ai-remote host install --service registers it that way)");
+        return ExitCode::FAILURE;
+    };
+    let hostw = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            tracing::error!("cannot locate this program to start the host: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match ar_host::service::run(ar_host::service::ServiceArgs { profile, owner_sid, hostw }) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("service stopped: {e:#}");
+            last_resort(&format!("{e:#}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Runs the host as a child and restarts it after an abnormal exit; a clean stop ends both.
 #[cfg(windows)]
 fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
@@ -146,7 +194,7 @@ fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
         }
     };
     runtime.block_on(async {
-        let mut backoff = Backoff::default();
+        let mut backoff = ar_host::supervise::Backoff::default();
         loop {
             let mut cmd = tokio::process::Command::new(&exe);
             cmd.arg("--home").arg(profile.root()).arg("--supervised").kill_on_drop(true);
@@ -186,37 +234,6 @@ fn spawn_in_job(cmd: &mut tokio::process::Command) -> std::io::Result<(tokio::pr
     Ok((child, job))
 }
 
-/// How long to wait before restarting a host that exited abnormally: 5 s, doubling up to five
-/// minutes, so a host that fails at once (a broken config) does not spin. One that ran for ten
-/// minutes or more counts as healthy and starts the sequence over.
-#[cfg_attr(not(windows), allow(dead_code))]
-struct Backoff {
-    next: Duration,
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-impl Backoff {
-    const FIRST: Duration = Duration::from_secs(5);
-    const MAX: Duration = Duration::from_secs(300);
-    const HEALTHY: Duration = Duration::from_secs(600);
-
-    /// The delay before the next start, given how long the last run lasted.
-    fn after(&mut self, ran: Duration) -> Duration {
-        if ran >= Self::HEALTHY {
-            self.next = Self::FIRST;
-        }
-        let delay = self.next;
-        self.next = (self.next * 2).min(Self::MAX);
-        delay
-    }
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self { next: Self::FIRST }
-    }
-}
-
 fn log_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_env("AI_REMOTE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(ar_host::DEFAULT_LOG_FILTER))
@@ -254,21 +271,5 @@ fn last_resort(message: &str) {
     let path = std::env::temp_dir().join("ai-remote-hostw-error.log");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "[{}] {message}", ar_core::unix_now());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn restarts_back_off_and_recover() {
-        let mut b = Backoff::default();
-        let quick = Duration::from_secs(1);
-        let delays: Vec<u64> = (0..8).map(|_| b.after(quick).as_secs()).collect();
-        assert_eq!(delays, vec![5, 10, 20, 40, 80, 160, 300, 300]);
-        // A run that lasted counts as healthy: back to the first delay.
-        assert_eq!(b.after(Duration::from_secs(3600)).as_secs(), 5);
-        assert_eq!(b.after(quick).as_secs(), 10);
     }
 }
