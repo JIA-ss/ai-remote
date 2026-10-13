@@ -120,6 +120,8 @@ pub fn shape(_id: u64) -> Option<Shape> {
 }
 
 /// A colour pointer: its own alpha when it has one, otherwise opaque where the AND mask is clear.
+// Only `shape()` (Windows) calls it; the tests exercise it on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn color_shape(width: u32, height: u32, mut bgra: Vec<u8>, mask: Option<Vec<u8>>) -> Option<Shape> {
     let has_alpha = bgra.chunks_exact(4).any(|p| p[3] != 0);
     if !has_alpha {
@@ -135,6 +137,8 @@ fn color_shape(width: u32, height: u32, mut bgra: Vec<u8>, mask: Option<Vec<u8>>
 /// A monochrome pointer: an AND mask over an XOR mask, each `height` rows of the mask bitmap.
 /// Pixels that invert the screen (AND and XOR both set, as in the text cursor) become black with a
 /// white edge, which reads on any background.
+// Only `shape()` (Windows) calls it; the tests exercise it on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn monochrome_shape(width: u32, height: u32, mask: &[u8]) -> Option<Shape> {
     let (w, h) = (width as usize, height as usize);
     if mask.len() < w * h * 8 {
