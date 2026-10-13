@@ -1594,8 +1594,10 @@ mod tests {
         }
     }
 
+    /// Waits up to 60 s: on a loaded CI runner PowerShell's cold start plus `Start-Process` has
+    /// taken over 15 s while the rest of the suite runs alongside.
     async fn job_pids(m: &JobManager, id: &str) -> Vec<u32> {
-        for _ in 0..150 {
+        for _ in 0..600 {
             let (chunk, _) = m.log(id, 0, 65_536).await.unwrap();
             if let Some(line) = chunk.text.lines().find(|l| l.starts_with("PIDS ")) {
                 return line.split_whitespace().skip(1).filter_map(|p| p.parse().ok()).collect();
