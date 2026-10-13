@@ -35,6 +35,14 @@ pub struct Listener {
 impl Listener {
     /// Binds `path`. Fails with `AddrInUse` when another daemon of the same role already runs.
     pub fn bind(path: &Path) -> std::io::Result<Self> {
+        Self::bind_shared(path, &[])
+    }
+
+    /// [`bind`](Self::bind) that also admits the accounts in `shared_with` (Windows SIDs such as
+    /// `S-1-5-21-…`). For a daemon serving another account than its own: the host the Windows
+    /// service starts as SYSTEM in the user's session, which that user's CLI and desktop app must
+    /// still reach. Elsewhere the list is ignored (the endpoint stays owner-only).
+    pub fn bind_shared(path: &Path, shared_with: &[String]) -> std::io::Result<Self> {
         #[cfg(unix)]
         let lock = {
             use std::os::unix::fs::OpenOptionsExt;
@@ -61,7 +69,7 @@ impl Listener {
             })?;
             lock
         };
-        let inner = local::bind_local(path)?;
+        let inner = local::bind_local_shared(path, shared_with)?;
         Ok(Self {
             inner,
             #[cfg(unix)]

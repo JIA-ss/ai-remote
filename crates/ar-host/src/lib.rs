@@ -1,10 +1,12 @@
 //! The ai-remote host: serves this machine's capabilities as MCP tools to paired controllers, behind
 //! per-device permission levels, owner approval and an audit log.
 //!
-//! The host must run inside the interactive desktop session of the logged-in user (never as a
-//! service): capture, input injection and approval prompts all need that desktop. It runs either
-//! in a terminal (`ai-remote host`) or in the background, started at login by the entry
-//! `ai-remote host install` registers (see [`install`]).
+//! The host must run inside the interactive desktop session: capture, input injection and approval
+//! prompts all need that desktop. It runs either in a terminal (`ai-remote host`), in the
+//! background as the logged-in user, started at login by the entry `ai-remote host install`
+//! registers (see [`install`]), or on Windows as SYSTEM inside the console session, started by
+//! the service `ai-remote host install --service` registers (see [`service`]), which is what
+//! reaches the lock screen, the sign-in screen and UAC prompts.
 
 mod approval;
 mod approvers;
@@ -22,8 +24,11 @@ mod policy;
 mod protocol;
 pub mod result_budget;
 mod server;
+#[cfg(windows)]
+pub mod service;
 pub mod session;
 pub mod stream;
+pub mod supervise;
 pub mod tools;
 mod turns;
 
@@ -196,8 +201,14 @@ pub struct Claim {
 impl Claim {
     /// Fails with [`AlreadyRunning`] when a host already holds the slot.
     pub fn acquire(profile: &Profile) -> Result<Self> {
+        Self::acquire_shared(profile, &[])
+    }
+
+    /// [`acquire`](Self::acquire) whose control endpoint also admits the accounts in `shared_with`
+    /// (Windows SIDs): the host the service runs as SYSTEM lists the account that installed it.
+    pub fn acquire_shared(profile: &Profile, shared_with: &[String]) -> Result<Self> {
         let endpoint = profile.control_endpoint(Role::Host)?;
-        let listener = ipc::Listener::bind(&endpoint).map_err(|e| {
+        let listener = ipc::Listener::bind_shared(&endpoint, shared_with).map_err(|e| {
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 anyhow::Error::new(AlreadyRunning(profile.root().to_path_buf()))
             } else {
@@ -266,6 +277,9 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     let peers = mesh.peers().await.context("read paired devices")?;
     owner.say(&format!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id()));
     owner.say(&format!("  profile: {}", state.profile.root().display()));
+    if platform::runs_as_system() {
+        owner.say("  runs as SYSTEM (service mode): the lock screen and UAC prompts can be seen and operated; shell, jobs and files run as SYSTEM");
+    }
     owner.say(&format!("  paired controllers: {}", peers.len()));
     owner.say(&format!("  audit log: {}", state.audit.path().display()));
     let approvers = state.approver.keys().list().len();

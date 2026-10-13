@@ -38,13 +38,16 @@ pub struct InstallFlags {
     pub no_start: bool,
     pub firewall_only: bool,
     pub force: bool,
+    /// Windows: a service running the host as SYSTEM in the console session (lock screen, UAC).
+    pub service: bool,
 }
 
 pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> {
     let scope = if flags.firewall_only { Scope::FirewallOnly } else { Scope::All };
     let p = profile.clone();
-    let plan = tokio::task::spawn_blocking(move || install::install_plan(&p, scope)).await??;
-    print_plan(&plan, flags.dry_run);
+    let service = flags.service;
+    let plan = tokio::task::spawn_blocking(move || install::install_plan(&p, scope, service)).await??;
+    print_plan(&plan, flags.dry_run, flags.service);
     if let Some(blocker) = &plan.blocker {
         if !flags.dry_run && !flags.force {
             bail!("{blocker}");
@@ -54,13 +57,17 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
     if flags.dry_run {
         return Ok(());
     }
-    let with_admin = admin_steps_allowed(&plan, profile, "install", scope)?;
+    let with_admin = admin_steps_allowed(&plan, profile, "install", scope, flags.service)?;
     execute(&plan, with_admin)?;
     if scope == Scope::FirewallOnly {
         println!("\nThe firewall rules are in place.");
         return Ok(());
     }
-    println!("\nAutostart is installed.");
+    if flags.service {
+        println!("\nThe service is installed. The host it starts runs as SYSTEM: see the notes above.");
+    } else {
+        println!("\nAutostart is installed.");
+    }
     if !with_admin && plan.has_admin_steps() {
         println!(
             "\nThe firewall rules need an administrator. Ask one to run this from an elevated terminal (any \
@@ -109,14 +116,14 @@ pub async fn host_uninstall(profile: &Profile, dry_run: bool, firewall_only: boo
     let p = profile.clone();
     let plan = tokio::task::spawn_blocking(move || install::uninstall_plan(&p, scope)).await??;
     let running = if scope == Scope::All { running_host(profile).await } else { None };
-    print_plan(&plan, dry_run);
+    print_plan(&plan, dry_run, false);
     if let Some(host) = &running {
         println!("  - Also stops the running host (pid {}).", host["pid"]);
     }
     if dry_run {
         return Ok(());
     }
-    let with_admin = admin_steps_allowed(&plan, profile, "uninstall", scope)?;
+    let with_admin = admin_steps_allowed(&plan, profile, "uninstall", scope, false)?;
     if running.is_some() {
         stop_host(profile).await?;
     }
@@ -176,7 +183,12 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
     match status {
         Ok(s) => {
             if s.installed {
-                println!("autostart: {} {} is installed", s.kind, s.name);
+                let running = match s.running {
+                    Some(true) => ", running",
+                    Some(false) => ", not running",
+                    None => "",
+                };
+                println!("autostart: {} {} is installed{running}", s.kind, s.name);
                 if let Some(cmd) = &s.launches {
                     println!("           runs {cmd}");
                 }
@@ -272,7 +284,7 @@ fn print_report(report: &Report) {
     println!("Overall: {}", report.overall.as_str());
 }
 
-fn print_plan(plan: &Plan, dry_run: bool) {
+fn print_plan(plan: &Plan, dry_run: bool, service: bool) {
     println!("{}", plan.summary);
     for note in &plan.notes {
         println!("  - {note}");
@@ -290,7 +302,9 @@ fn print_plan(plan: &Plan, dry_run: bool) {
             }
         }
     }
-    if plan.needs_elevation {
+    if plan.needs_elevation && service {
+        println!("\nRun it without --dry-run to apply, from an elevated terminal: a service is administrator work.");
+    } else if plan.needs_elevation {
         println!(
             "\nRun it without --dry-run to apply: from an elevated terminal if this account is an administrator. A \
              standard user's run does the rest and leaves the steps marked \"administrator\" to `--firewall-only` \
@@ -301,8 +315,9 @@ fn print_plan(plan: &Plan, dry_run: bool) {
 
 /// Whether this process runs the plan's administrator steps too (`Ok(false)`: a standard user
 /// runs the rest). An administrator who is not elevated is sent to an elevated terminal: their
-/// logon task needs it for "highest privileges", and so do the firewall rules.
-fn admin_steps_allowed(plan: &Plan, profile: &Profile, verb: &str, scope: Scope) -> Result<bool> {
+/// logon task needs it for "highest privileges", and so do the firewall rules. A service is
+/// administrator work from the first step to the last.
+fn admin_steps_allowed(plan: &Plan, profile: &Profile, verb: &str, scope: Scope, service: bool) -> Result<bool> {
     use ar_host::platform::Rights;
     if !plan.needs_elevation {
         return Ok(true);
@@ -310,11 +325,19 @@ fn admin_steps_allowed(plan: &Plan, profile: &Profile, verb: &str, scope: Scope)
     let firewall_flag = if scope == Scope::FirewallOnly { " --firewall-only" } else { "" };
     match ar_host::platform::rights() {
         Rights::Elevated => Ok(true),
-        Rights::AdminNotElevated => bail!(
-            "this needs an elevated terminal: the logon task runs with highest privileges and firewall rules apply to \
-             the whole machine.\nOpen one (right-click the terminal, \"Run as administrator\") and run:\n\n  ai-remote \
-             --home {} host {verb}{firewall_flag}\n\nAdd --dry-run to see every change first.",
+        Rights::StandardUser if service => bail!(
+            "a service is registered by an administrator only. Ask one to run this from an elevated terminal:\n\n  \
+             {} --home {} host {verb} --service",
+            this_exe(),
             install::quote_arg(&profile.root().to_string_lossy())
+        ),
+        Rights::AdminNotElevated => bail!(
+            "this needs an elevated terminal: the logon task runs with highest privileges, a service is machine-wide \
+             and firewall rules apply to the whole machine.\nOpen one (right-click the terminal, \"Run as \
+             administrator\") and run:\n\n  ai-remote --home {} host {verb}{firewall_flag}{service_flag}\n\nAdd \
+             --dry-run to see every change first.",
+            install::quote_arg(&profile.root().to_string_lossy()),
+            service_flag = if service { " --service" } else { "" }
         ),
         Rights::StandardUser if scope == Scope::FirewallOnly => bail!(
             "firewall rules apply to the whole machine and need an administrator. Ask one to run this from an \
