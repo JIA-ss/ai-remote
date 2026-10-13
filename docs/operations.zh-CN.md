@@ -38,7 +38,7 @@
 | 命令 | 作用 |
 |---|---|
 | `ai-remote host [--no-pair-code]` | 在当前终端运行被控端，直到按 Ctrl+C 或执行 `stop-host` |
-| `ai-remote host install` | 登录时自动在后台启动被控端 |
+| `ai-remote host install` | 登录时自动在后台启动被控端（`--service`：作为能到达锁屏的 Windows 服务） |
 | `ai-remote host uninstall` | 删除自启项、停止被控端、删除防火墙规则 |
 | `ai-remote host status` | 查看自启项、防火墙规则，以及被控端是否在运行 |
 | `ai-remote doctor` | 分级体检：这台机器到底能不能被操作？ |
@@ -180,6 +180,49 @@ ai-remote host install
    再执行一次 `ai-remote host install`。
 
 某一步失败时，后面的步骤都不会执行；解决原因后重新执行同一条命令即可。
+
+#### Windows：作为服务运行（锁屏、登录界面、UAC 提示）
+
+```sh
+ai-remote host install --service --dry-run   # 管理员终端；列出每一处改动，但什么都不改
+ai-remote host install --service
+```
+
+上面的登录任务以你的身份、在你的桌面会话里运行被控端。Windows 不让*用户*进程接触安全桌面：一旦锁屏、弹出 UAC
+提示、或者重启后停在登录界面，这个被控端就既看不到也操作不了任何东西，只能等有人在键盘前解锁。`--service` 改为注册
+一个 Windows 服务（RustDesk 走的是同一条路）：服务以 LocalSystem 身份运行、自动启动，并让 `ai-remote-hostw`
+**以 SYSTEM 身份在控制台会话里**一直运行。该会话里的 SYSTEM 进程可以打开安全桌面，所以实时画面（服务模式下自动
+选用 Desktop Duplication 采集）、截图和输入都能跟上锁屏、UAC 提示和重启后的登录界面；控制端可以在锁屏上输密码，
+也可以按 `ctrl+alt+del`（被控端请服务代发，因为直接按键会被 Windows 忽略）。服务会跟着控制台会话走（注销、切换
+用户），崩溃后按守护进程同样的退避重启被控端，`ai-remote stop-host` 正常退出后服务也一起停。
+
+**安装前必读的后果：** 这个被控端，连同它的 `shell`、`jobs`、`files` 工具，都以 SYSTEM 身份运行。级别、策略、
+审批、审计日志的代码都没变，但一个 admin 级（或 bypass）控制端能做的事，从"你能做的"放大到"SYSTEM 能做的"。
+授予级别时要考虑到这一点。`--dry-run` 会把这段话和计划一起打印出来。锁屏时审批弹窗仍然显示不了（没人在那里回答）：
+锁屏期间需要审批的操作只能由审批设备批准（第 9.2 节）。
+
+安装做了什么（全部是管理员步骤；标准用户会被拒绝）：
+
+1. 如果这个配置目录有登录任务，先结束并删除它（两者都会启动被控端，后启动的会发现配置目录已被占用）。
+2. 用 `sc.exe`（绝对路径）注册或更新服务 `ai-remote-host-<8 位十六进制>`：LocalSystem、自动启动、运行
+   `ai-remote-hostw.exe --service --home "<配置目录>" --owner-sid <你的 SID>`，崩溃后由服务管理器重启。
+   `--owner-sid` 是你的账户：被控端的控制端点（只允许属主的命名管道）除 SYSTEM 外也允许它，所以
+   `ai-remote host status`、`stop-host`、`doctor` 和桌面端对你照常可用；其他账户和以前一样被拒。
+3. 当 `SoftwareSASGeneration` 策略（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`）
+   不是 1 或 3 时把它设为 1（"服务"），这样服务才能发送 Ctrl+Alt+Del。原值写到
+   `<配置目录>/host/sas-policy-before.txt`，`host uninstall` 会改回去。
+4. 和登录任务安装相同的防火墙步骤。
+5. 除非加了 `--no-start`，否则启动服务并像上面一样等待被控端响应。
+
+之后 `ai-remote host status` 显示 `Windows service ai-remote-host-… is installed, running`。
+`ai-remote host uninstall` 停止并删除服务、恢复策略，再做和以前一样的任务与防火墙步骤。`stop-host` 会把被控端
+*和*服务一起停掉（正常退出结束两者，和守护进程一致）；再执行一次 `ai-remote host install --service` 或
+`sc start ai-remote-host-…` 即可恢复。服务运行期间在终端里启动的被控端会占住配置目录，服务每 30 秒重试一次，
+等那个被控端停了再接管。
+
+锁屏的机器从控制端看是什么样：`doctor` 的 `desktop` 项为 **warn**（"locked or showing a security prompt …;
+this host can see and operate it"），`approval` 为 warn，工具照常可用，画面是锁屏界面。没有 `--service` 时同样的
+状态是 **fail**，所有截图和输入工具都会以 "which this host cannot reach" 拒绝。
 
 #### macOS
 
@@ -465,12 +508,13 @@ Bypass 只能在这台电脑上、经被控端的本地控制通道设置，控�
 
 | 提示包含 | 原因 | 怎么办 |
 |---|---|---|
-| `the desktop is locked or showing a security prompt` | 锁屏、登录界面、UAC 提示 | 解锁；无人值守的机器关闭自动锁屏 |
-| `runs in the services session (session 0)` | 被控端作为服务运行，或在 0 号会话中运行 | 改在用户会话里运行（`host install`） |
+| `the desktop is locked or showing a security prompt, which this host cannot reach` | 锁屏、登录界面、UAC 提示，且被控端以用户身份运行 | 解锁；或把被控端装成服务（`host install --service`，第 3.2 节），服务能到达安全桌面 |
+| `runs in the services session (session 0)` | 被控端被手动在 0 号会话里启动（服务自己拉起的被控端在控制台会话里） | 改在用户会话里运行（`host install`，带不带 `--service` 都行） |
 | `an ai-remote approval prompt is open on the host` | 有审批框在等回答，输入暂停 | 等机主回答后重试 |
 | `the input would go to one of ai-remote's own windows` | 目标是审批框或被控端所在的终端 | 换个窗口操作 |
 | `running with higher privileges` | 目标窗口属于以管理员身份运行的程序 | 以管理员权限运行被控端（由管理员执行 `host install`） |
 | `is refused: it locks the workstation`（及类似提示） | 锁屏或注销的组合键 | 不要发送，交给机主决定 |
+| `is refused: it opens the secure attention screen` | 被控端不是服务时按 `ctrl+alt+del` | 把被控端装成服务（`host install --service`），之后由服务代发 |
 | `mount '<m>' is not running: it failed N times in a row` | 挂载的 server 反复崩溃 | 查看 `host/mounts/<m>.log`；见 [tools.zh-CN.md](tools.zh-CN.md#75-生命周期崩溃与重启) |
 | `refusing to start ...: its SHA-256 is ...` | 挂载 server 的可执行文件变了 | 如果是有意更新，重新添加这个挂载 |
 
@@ -509,9 +553,9 @@ Overall: warn
 
 | 检查项 | 何时为 ok | 不是 ok 意味着 | 修复办法 |
 |---|---|---|---|
-| `session` | 处于交互式 Windows 会话（不是 0 号会话） | **fail**：服务会话没有桌面，截图全黑，输入没有去处 | 从用户会话中启动被控端；`host install` 就是这样注册的 |
+| `session` | 处于交互式 Windows 会话（不是 0 号会话） | **fail**：服务会话没有桌面，截图全黑，输入没有去处 | 从用户会话中启动被控端；`host install` 就是这样注册的（服务也是：它拉起的被控端在控制台会话里） |
 | `console` | 会话连接在物理控制台上 | **warn**：这是远程桌面会话；断开后截屏和输入都会停止，控制台保持锁定 | 不要直接断开，而是把会话交还给控制台：在管理员命令行执行 `tscon <会话> /dest:console` |
-| `desktop` | 输入桌面是 `Default`（未锁定） | **fail**：已锁定，或正显示登录界面、UAC 提示 | 解锁；无人值守的机器关闭自动锁屏 |
+| `desktop` | 输入桌面是 `Default`（未锁定） | **fail**：已锁定或正显示登录界面、UAC 提示，而被控端到不了那里；**warn**：同样状态但被控端是服务，能看能操作（审批弹窗显示不了） | 解锁；无人值守的机器关闭自动锁屏，或装成服务（`host install --service`） |
 | `elevation` | 被控端以管理员权限运行 | **warn**：以管理员身份运行的程序的窗口会忽略它的输入 | 以最高权限运行（由管理员执行 `host install`） |
 | `dpi` | 逐显示器 DPI 感知（v2） | **fail**：在有缩放的显示器上点击位置会偏 | 去掉可执行文件上的高 DPI 兼容性覆盖设置（属性 > 兼容性） |
 | `p2p` | UDP 能出去，NAT 不是对称型 | **warn**：UDP 被阻断（所有连接都走中继）、对称型 NAT（直连常常失败）或需要网页登录的网络 | 放行出站 UDP、在路由器上开 UPnP/NAT-PMP、用 IPv6，或先完成网络登录 |
