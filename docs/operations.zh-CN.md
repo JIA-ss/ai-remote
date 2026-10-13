@@ -49,6 +49,7 @@
 | `ai-remote forget <设备>` | 删除某个控制端的配对 |
 | `ai-remote stop-host` | 停止正在运行的被控端 |
 | `ai-remote bypass [on\|off <设备>\|--all] [--for 2h]` | 完全信任控制端：全部工具、无需审批、不受 deny 规则限制（6.1 节） |
+| `ai-remote bypass default on\|off` | 默认信任所有已配对的控制端（含以后配对的），直到你单独关掉某一台（6.1 节） |
 | `ai-remote approvers [add\|remove]` | 审批密钥：哪些人可以在已配对设备上审批（见 [approvals.zh-CN.md](approvals.zh-CN.md)） |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | 管理挂载的 MCP server（见 [tools.zh-CN.md](tools.zh-CN.md#7-挂载-mcp-server)） |
 
@@ -271,6 +272,8 @@ claude mcp add ai-remote -- ai-remote mcp
 | `ai-remote doctor --host H` | `doctor` | observe |
 | `ai-remote shot [-o F.png] [--monitor N] [--max-long-edge PX]` | `screenshot` | observe |
 | `ai-remote windows [--filter T] [--all]` | `list_windows` | observe |
+| `ai-remote ps [<名字>] [--pid N] [--limit N]` | `process_list` | admin |
+| `ai-remote kill --pid N \| --name X [--no-tree] [--intent 原因]` | `process_kill` | admin，默认要审批 |
 | `ai-remote exec "<命令>" [--shell S] [--cwd D] [--timeout S] [--env K=V] [--stdin F]` | `shell` | admin，默认要审批 |
 | `ai-remote job start "<命令>"` / `list` / `status <id>` / `log <id> [-f]` / `wait <id> [--timeout S]` / `kill <id>` | `jobs_*` | admin；`start` 要审批 |
 | `ai-remote ls <目录> [--pattern P]` / `stat <路径>` | `files_list` / `files_stat` | admin |
@@ -397,7 +400,16 @@ ai-remote bypass                       # 列出已配对的控制端，开启的
 ai-remote bypass on my-laptop          # 直到你关闭
 ai-remote bypass on --all --for 2h     # 所有能连接的控制端，2 小时后自动结束
 ai-remote bypass off my-laptop         # 或 --all
+ai-remote bypass default on            # 所有已配对的控制端，包括以后配对的
+ai-remote bypass default off
 ```
+
+**默认信任。** 只有你自己（和你的 Agent）会操作的电脑可以一开始就信任所有控制端：`ai-remote bypass default on`
+覆盖每一台已配对的控制端，以后配对的也算，不用逐台设置。发现不对劲时，`ai-remote bypass off <设备>` 把那一台
+从默认里拿掉（`ai-remote bypass` 里显示为“已关闭”），`level <设备> none`、`revoke` 和控制端自己降级也一样；
+`bypass on <设备>` 把它放回去。`forget` 会清掉关于那台设备的一切，重新配对后从默认开始。`bypass default off`
+回到只信任逐台打开的控制端。默认开关保存在同一个文件里，写审计（`kind: "bypass"`，带 `default`），开着时
+`doctor` 会警告。
 
 那台电脑上的桌面应用在 **设置 → 本设备 → 完全信任的控制端** 里做同样的事：每台已配对的控制端是 *先问我*（默认）
 或 *全部放开*，选后者时会先请你确认。
@@ -517,7 +529,7 @@ Overall: warn
 | `p2p` | UDP 能出去，NAT 不是对称型 | **warn**：UDP 被阻断（所有连接都走中继）、对称型 NAT（直连常常失败）或需要网页登录的网络 | 放行出站 UDP、在路由器上开 UPnP/NAT-PMP、用 IPv6，或先完成网络登录 |
 | `relay` | 已连上主中继（home relay） | **warn**：没有使用中继，或一个都连不上；其他网络里的控制端可能连不进来 | 检查网络连接、出站防火墙或代理（中继走 HTTPS），或检查 `[network] relays` |
 | `approval` | 能弹出审批框 | **warn**：需要审批的操作都会被拒绝 | 解锁桌面，或用 `[[rule]]` 放行可信的工具 |
-| `bypass` | 没有控制端处于 bypass | **warn**：列出的控制端可以不经审批使用全部工具（6.1 节） | 不再需要时 `ai-remote bypass off <设备>`（或 `--all`） |
+| `bypass` | 没有控制端处于 bypass | **warn**：列出的控制端（默认开着时是所有已配对的控制端）可以不经审批使用全部工具（6.1 节） | 不再需要时 `ai-remote bypass off <设备>`（或 `--all`、`bypass default off`） |
 | `firewall` | 有入站允许规则覆盖被控端程序的 UDP，或防火墙已关闭 | **fail**：有阻止规则作用于该程序（流量会退回中继）；**warn**：没有允许规则（Windows 会在第一次连接时弹提示），或者有针对所有程序入站 UDP 的阻止规则 | 在管理员终端执行 `host install`；其他程序的规则在 `wf.msc` 里检查 |
 | `autostart` | 任务（或 LaunchAgent）会用本配置目录启动本次安装的后台被控端 | **warn**：没有安装，或者运行的是别的程序 | （再）执行一次 `ai-remote host install` |
 | `audit` | 审计日志能以追加方式打开 | **fail**：操作不会被记录 | 修正配置目录的权限，或换一个 `--home` |

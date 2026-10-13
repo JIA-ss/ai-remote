@@ -143,6 +143,44 @@ with tempfile.TemporaryDirectory(prefix="ar-bypass-", ignore_cleanup_errors=True
         host_cli("level", "ctl", "observe")
         r = host_cli("bypass")
         check("taking the level away ends the bypass", "BYPASS" not in r.stdout, r.stdout.strip())
+        # `level none` cut the connection; give the controller a moment to dial again with the new level.
+        for attempt in range(20):
+            r = cli("exec", say)
+            if "requires level" in r.stderr:
+                break
+            time.sleep(0.5)
+        check("the controller connects again after the level is back (%d tries)" % (attempt + 1), "requires level" in r.stderr,
+              r.stderr.strip()[-160:])
+
+        # The default: every paired controller, until one is turned off.
+        r = host_cli("bypass", "default", "on")
+        check("bypass default on", r.returncode == 0 and "bypass default on" in r.stdout, r.stdout.strip()[:120])
+        r = cli("exec", say)
+        check("with the default: shell runs for an observe device", r.returncode == 0 and r.stdout.strip() == "hi",
+              (r.stderr or r.stdout).strip()[-120:])
+        r = host_cli("bypass")
+        check("status shows the default and marks the device", "default: on" in r.stdout and "BYPASS (default)" in r.stdout,
+              r.stdout.strip())
+        r = host_cli("--json", "doctor")
+        checks = {c["id"]: c for c in json.loads(r.stdout)["checks"]} if r.stdout.strip() else {}
+        check("doctor warns about the default", checks.get("bypass", {}).get("grade") == "warn"
+              and "every paired controller" in checks.get("bypass", {}).get("summary", ""), str(checks.get("bypass")))
+        r = host_cli("bypass", "off", "ctl")
+        check("turning one device off under the default", r.returncode == 0 and "bypass off for ctl" in r.stdout, r.stdout.strip())
+        r = cli("exec", say)
+        check("the excepted device is refused again", r.returncode == 255 and "requires level" in r.stderr, r.stderr.strip()[-120:])
+        r = host_cli("bypass")
+        check("status marks it as turned off", "turned off" in r.stdout, r.stdout.strip())
+        r = host_cli("bypass", "on", "ctl")
+        r = cli("exec", say)
+        check("bypass on takes it off the exception list", r.returncode == 0, r.stderr.strip()[-120:])
+        host_cli("bypass", "off", "ctl")
+        r = host_cli("bypass", "default", "off")
+        check("bypass default off", r.returncode == 0 and "bypass default off" in r.stdout, r.stdout.strip()[:120])
+        r = cli("exec", say)
+        check("after default off: refused", r.returncode == 255 and "requires level" in r.stderr)
+        audit = [json.loads(l) for l in (host_home / "host" / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+        check("audit records the default switch", any(a.get("kind") == "bypass" and a.get("default") is True for a in audit))
     finally:
         subprocess.run([str(options.cli), "--home", str(ctl_home), "stop-agent"], capture_output=True, timeout=30)
         host.terminate()
