@@ -509,8 +509,11 @@ fn scroll_top(rows: u32, height: u32) -> u32 {
 /// changes everywhere, so the stream runs at its frame rate and bitrate cap. Everything after
 /// capture (GPU conversion, hardware encoding, transport, the viewer's decoder) is the real path.
 /// For repeatable end-to-end measurements (`tools/stream-e2e.py --pattern`); no screen is read.
+/// `<width>x<height>,still` shows the first picture once and then nothing changes, as on an idle
+/// desktop (`--pattern 1920x1080,still`); `,stop=<seconds>` scrolls that long, then stands still.
 pub(super) fn test_pattern_size() -> Option<(u32, u32)> {
     let value = std::env::var("AI_REMOTE_TEST_PATTERN").ok()?;
+    let value = value.split(',').next()?;
     let (w, h) = value.split_once('x')?;
     let size = (w.trim().parse().ok()?, h.trim().parse().ok()?);
     (size.0 >= 64 && size.1 >= 64 && size.0 <= 8192 && size.1 <= 8192).then_some(size)
@@ -546,6 +549,13 @@ pub(super) fn start_test_pattern(
     let tall = bgra_texture(&gpu, width, height * 2, Some(&desktop_like(width, height * 2)))?;
     let screen = bgra_texture(&gpu, width, height, None)?;
     let fps = max_fps.clamp(1, 240);
+    // Frames to show before the picture stands still, if it ever does.
+    let still_after = std::env::var("AI_REMOTE_TEST_PATTERN").ok().and_then(|v| {
+        v.split(',').skip(1).find_map(|p| match p.trim() {
+            "still" => Some(1),
+            p => p.strip_prefix("stop=")?.parse::<f64>().ok().map(|s| ((s * f64::from(fps)) as u32).max(1)),
+        })
+    });
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let thread = {
         let (stop, gpu, tall, screen) = (stop.clone(), Shared(gpu), Shared(tall), Shared(screen));
@@ -555,6 +565,11 @@ pub(super) fn start_test_pattern(
             let mut converter: Option<Converter> = None;
             let mut frame = 0u32;
             while !stop.load(Ordering::Relaxed) {
+                // A still desktop: no new frames at all.
+                if still_after.is_some_and(|n| frame >= n) {
+                    std::thread::sleep(interval);
+                    continue;
+                }
                 let top = scroll_top(frame.wrapping_mul(7), height);
                 frame = frame.wrapping_add(1);
                 let region = D3D11_BOX { left: 0, top, front: 0, right: width, bottom: top + height, back: 1 };
@@ -857,7 +872,8 @@ mod bench {
     /// `AR_VARIANTS` tunes the encoder, `;`-separated: `default`, `qvs=N` (quality vs speed,
     /// 0..100), `vbvms=N` (rate-control buffer in ms of the bitrate), `early=0` (the buffer size only
     /// after the media types, where NVENC ignores it), `edge=N` (stream scaled to this long edge),
-    /// combinable as `qvs=100,vbvms=125`. Each case
+    /// `scroll=N` (rows a frame, 0 a still screen), `boost=K` (keyframes at K times the bitrate),
+    /// `rekey=N` (a keyframe asked for at frame N), combinable as `qvs=100,vbvms=125`. Each case
     /// also records the time `encode_raw` took and how bursty the frame sizes are.
     #[test]
     #[ignore]
@@ -900,12 +916,22 @@ mod bench {
                         let edge = knob("edge").unwrap_or(w.max(h)).min(w.max(h));
                         let (sw, sh) = crate::stream::encode::stream_size(w, h, edge);
                         let mut converter = Converter::new(gpu.clone(), (w, h), (sw, sh), fps).unwrap();
-                        let mut encoder = FrameEncoder::new(fps, kbps * 1000, edge).unwrap().with_codecs(&[codec]);
+                        // `scroll=N` rows a frame (0: a still screen); `boost=K` runs keyframes at K times
+                        // the bitrate, back to it right after; `rekey=N` asks for a keyframe at frame N.
+                        let rows = knob("scroll").unwrap_or(7);
+                        let boost = knob("boost").unwrap_or(1).max(1);
+                        let rekey = knob("rekey");
+                        let mut encoder =
+                            FrameEncoder::new(fps, kbps * 1000 * boost, edge).unwrap().with_codecs(&[codec]);
                         let mut sink = Sink::default();
                         let mut times = Vec::with_capacity(frames as usize);
                         let start = Instant::now();
                         for f in 0..frames {
-                            let top = scroll_top(f * 7, h);
+                            if Some(f) == rekey {
+                                encoder.set_bitrate(kbps * 1000 * boost);
+                                encoder.force_keyframe();
+                            }
+                            let top = scroll_top(f * rows, h);
                             let region = D3D11_BOX { left: 0, top, front: 0, right: w, bottom: top + h, back: 1 };
                             unsafe { gpu.context.CopySubresourceRegion(&screen, 0, 0, 0, 0, &tall, 0, Some(&region)) };
                             let frame = converter.convert(&screen).unwrap().unwrap();
@@ -922,6 +948,9 @@ mod bench {
                                 times.push(t.elapsed().as_secs_f64() * 1000.0);
                             }
                             while let Some(out) = ready.take().or_else(|| encoder.poll().unwrap()) {
+                                if out.keyframe && boost > 1 {
+                                    encoder.set_bitrate(kbps * 1000);
+                                }
                                 sink.take(out);
                             }
                             let due = start + Duration::from_secs_f64(f64::from(f + 1) / f64::from(fps));
@@ -970,7 +999,7 @@ mod bench {
                             "encode_ms": {"p50": pct(&times, 0.5), "p95": pct(&times, 0.95)},
                             "frame_size_vs_mean": {"p95": size_pct(0.95), "max": size_pct(1.0)},
                             "bytes": stream.len(), "delta_mbps": mbps, "backend": encoder.backend_name(),
-                            "reference": format!("ref-{w}x{h}.bgra"), "scroll_rows": 7,
+                            "reference": format!("ref-{w}x{h}.bgra"), "scroll_rows": rows,
                         }));
                     }
                 }

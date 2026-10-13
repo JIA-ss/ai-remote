@@ -294,10 +294,14 @@ async fn serve(
             let mut latest = None;
             let mut backend = String::new();
             let mut pacer = Pacer::new(fps, Instant::now());
+            let mut refine = Refine::new(Instant::now());
             while !stop.load(Ordering::Relaxed) {
                 // An asynchronous hardware encoder may finish a frame after its call returned.
                 match enc.poll() {
                     Ok(Some(frame)) => {
+                        if frame.keyframe {
+                            refine.observe(true, false, frame.data.len(), 0, fps, Instant::now());
+                        }
                         if !send(frame) {
                             break;
                         }
@@ -317,11 +321,12 @@ async fn serve(
                 let fresh = next.is_some();
                 if let Some(raw) = next {
                     latest = Some(raw);
-                } else if !keyframe.load(Ordering::Relaxed) {
+                } else if !keyframe.load(Ordering::Relaxed) && !refine.wanted(Instant::now()) {
                     continue;
                 }
                 // Event-driven capture emits no new pixels for a static desktop. A decoder
-                // recovering from loss must still get an IDR of the last complete frame.
+                // recovering from loss must still get an IDR of the last complete frame, and a
+                // still picture is re-encoded until it is sharp (see `Refine`).
                 let Some(raw) = latest.as_mut() else { continue };
                 if !fresh {
                     // Re-sent pixels: how long the screen stood still is not a delay of the stream.
@@ -353,6 +358,8 @@ async fn serve(
                         continue;
                     }
                 };
+                let share = (enc.bitrate() / 8 / fps.max(1)) as usize;
+                refine.observe(frame.keyframe, fresh, frame.data.len(), share, fps, Instant::now());
                 if !send(frame) {
                     break;
                 }
@@ -400,6 +407,65 @@ async fn serve(
     let _ = encoder.await;
     let _ = send.finish();
     host.audit().event(audit_line("view_end"));
+}
+
+/// Whether a still picture should be encoded again. After a keyframe, or a large frame (motion: a
+/// scroll, a window drawn), the picture on the viewer's screen is blurrier than the encoder can make
+/// it: a keyframe is held to the rate-control buffer, and moving frames get fewer bits each. Capture
+/// sends nothing for a still screen, so without this it would stay blurry until something changed.
+/// The still picture is re-encoded at the frame rate until the encoder has nothing left to add: its
+/// output stays under a tenth of a frame's share of the bitrate for a quarter second (not counted in
+/// the first [`Refine::GRACE`] after a keyframe, when the rate control pays the keyframe back with
+/// empty frames), or for [`Refine::CAP`] at most. Small fresh frames (a blinking caret) start nothing.
+///
+/// Measured 2026-10-13 (`encoded_quality`, `scroll=0`, the desktop-like test picture, one run each):
+/// a keyframe alone is 14-15 dB PSNR-Y; re-encoding the still picture reaches 46-47 dB in 1.5-1.8 s
+/// at 1080p 12 Mbit/s and 4K 40 Mbit/s (where this rule stops at the plateau), still rising after
+/// 2.5 s at the lower bitrates. Larger keyframes do not help: 4 times the bitrate for the keyframe
+/// made it 15.7 dB instead of 14.5.
+struct Refine {
+    settled: bool,
+    /// When the last keyframe came out, and since when the picture has been still.
+    keyframe_at: Instant,
+    since: Instant,
+    /// Re-encoded frames in a row that added almost nothing.
+    small: u32,
+}
+
+impl Refine {
+    const GRACE: Duration = Duration::from_millis(400);
+    const CAP: Duration = Duration::from_secs(5);
+
+    fn new(now: Instant) -> Self {
+        Self { settled: false, keyframe_at: now, since: now, small: 0 }
+    }
+
+    fn wanted(&self, now: Instant) -> bool {
+        !self.settled && now.duration_since(self.since) < Self::CAP
+    }
+
+    /// An encoded frame of `bytes`, of new pixels (`fresh`) or of the still picture again; `share` is
+    /// a frame's share of the bitrate in bytes.
+    fn observe(&mut self, keyframe: bool, fresh: bool, bytes: usize, share: usize, fps: u32, now: Instant) {
+        if keyframe {
+            self.keyframe_at = now;
+        }
+        if keyframe || (fresh && bytes * 10 >= share) {
+            *self = Self { settled: false, keyframe_at: self.keyframe_at, since: now, small: 0 };
+            return;
+        }
+        if fresh || now.duration_since(self.keyframe_at) < Self::GRACE {
+            return;
+        }
+        if bytes * 10 < share {
+            self.small += 1;
+            if self.small >= (fps / 4).max(8) {
+                self.settled = true;
+            }
+        } else {
+            self.small = 0;
+        }
+    }
 }
 
 /// Holds the stream to `fps` frames a second on average. A display only delivers frames on its
@@ -677,6 +743,36 @@ mod tests {
         assert!(pacer.wait(later).is_zero());
         pacer.spend();
         assert!(!pacer.wait(later + Duration::from_millis(10)).is_zero());
+    }
+
+    #[test]
+    fn a_still_picture_is_refined_until_the_encoder_has_nothing_to_add() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut r = Refine::new(t0);
+        r.observe(true, true, 150_000, 12_500, 60, at(0));
+        assert!(r.wanted(at(10)), "a keyframe is refined");
+        // Empty frames while the keyframe is paid back do not settle it.
+        for i in 1..20 {
+            r.observe(false, false, 0, 12_500, 60, at(i * 16));
+        }
+        assert!(r.wanted(at(330)));
+        // Real refinement, then a quarter second of almost nothing: settled.
+        for i in 25..60 {
+            r.observe(false, false, 12_000, 12_500, 60, at(i * 16));
+        }
+        assert!(r.wanted(at(960)));
+        for i in 60..75 {
+            r.observe(false, false, 500, 12_500, 60, at(i * 16));
+        }
+        assert!(!r.wanted(at(1200)), "settled after 15 small frames");
+        // A blinking caret (a small fresh frame) starts nothing; a scroll (a large one) does.
+        r.observe(false, true, 300, 12_500, 60, at(1300));
+        assert!(!r.wanted(at(1310)));
+        r.observe(false, true, 20_000, 12_500, 60, at(1400));
+        assert!(r.wanted(at(1410)));
+        // Never longer than the cap after the picture went still.
+        assert!(!r.wanted(at(1400) + Refine::CAP));
     }
 
     #[test]
