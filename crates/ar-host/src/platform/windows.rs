@@ -1,6 +1,8 @@
 //! Windows: DPI awareness, session id, console attachment, elevation, the input desktop, and the
 //! few input helpers enigo does not cover (virtual-desktop pointer moves, layout lookups, UIPI).
 
+use std::cell::RefCell;
+
 use anyhow::{Result, anyhow};
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, POINT},
@@ -14,10 +16,13 @@ use windows::Win32::{
         Console::GetConsoleWindow,
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{
-            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME,
+            CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+            DESKTOP_HOOKCONTROL, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, GetThreadDesktop,
+            GetUserObjectInformationW, HDESK, OpenInputDesktop, SetThreadDesktop, UOI_NAME,
         },
         Threading::{
-            GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, OpenProcessToken,
+            PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
     UI::{
@@ -151,22 +156,86 @@ pub fn decode_oem(bytes: &[u8]) -> Option<String> {
 /// Name of the desktop that currently receives input, or `None` when it cannot be opened (which
 /// happens while the secure desktop is active).
 fn input_desktop_name() -> Option<String> {
-    // SAFETY: desktop handle is closed below; buffer and length describe `buf`.
+    // SAFETY: the opened handle is closed before returning.
     unsafe {
         let desk = OpenInputDesktop(Default::default(), false, DESKTOP_ACCESS_FLAGS(0)).ok()?;
-        let mut buf = [0u16; 256];
-        let mut needed = 0u32;
-        let ok = GetUserObjectInformationW(
+        let name = desktop_name(desk);
+        let _ = CloseDesktop(desk);
+        name
+    }
+}
+
+/// The name of the desktop `desk` refers to (`Default`, `Winlogon`, a screen-saver desktop, ...),
+/// or `None` if it cannot be read.
+fn desktop_name(desk: HDESK) -> Option<String> {
+    let mut buf = [0u16; 256];
+    let mut needed = 0u32;
+    // SAFETY: `desk` is a live desktop handle; buffer and length describe `buf`.
+    unsafe {
+        GetUserObjectInformationW(
             HANDLE(desk.0),
             UOI_NAME,
             Some(buf.as_mut_ptr() as *mut _),
             (buf.len() * 2) as u32,
             Some(&mut needed),
-        );
-        let _ = CloseDesktop(desk);
-        ok.ok()?;
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..len]))
+        )
+        .ok()?;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+/// Desktop access for opening the input desktop and attaching a thread to it: the same set the
+/// capture side uses (`stream::capture::dda`).
+const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(
+    DESKTOP_CREATEMENU.0
+        | DESKTOP_CREATEWINDOW.0
+        | DESKTOP_ENUMERATE.0
+        | DESKTOP_HOOKCONTROL.0
+        | DESKTOP_WRITEOBJECTS.0
+        | DESKTOP_READOBJECTS.0
+        | DESKTOP_SWITCHDESKTOP.0,
+);
+
+thread_local! {
+    /// The input desktop this thread is attached to, kept alive while the thread stays on it and
+    /// closed only after a later switch (`CloseDesktop` refuses a desktop the thread still uses).
+    static INPUT_DESKTOP: RefCell<Option<HDESK>> = const { RefCell::new(None) };
+}
+
+/// Attaches the calling thread to the desktop that currently receives input, so injected input
+/// (`SendInput`, `SetCursorPos`) reaches it. Injection goes to the desktop the calling thread is
+/// attached to; after a desktop switch — unlocking, a UAC prompt, an app opening its own desktop —
+/// a thread can be left on a stale desktop where input lands nowhere. Call it right before
+/// injecting.
+///
+/// Best-effort and idempotent: when the input desktop cannot be opened (a user-session process
+/// cannot open the secure desktop) or the switch fails, the thread is left where it is and
+/// injection proceeds exactly as before, so the unlocked path never regresses. Mirrors the capture
+/// side (`stream::capture::dda`'s `InputDesktop`) and RustDesk's `input_service` `try_change_desktop`;
+/// it earns its keep once the host runs as SYSTEM in the session and injection must follow the lock
+/// screen and other secure desktops.
+pub fn follow_input_desktop() {
+    // SAFETY: the newly opened handle is either closed here or handed to the thread-local, which
+    // closes the previous handle only after this thread has switched off it. A fresh injection
+    // thread owns no windows or hooks (this runs before enigo creates anything), which
+    // `SetThreadDesktop` requires.
+    unsafe {
+        let Ok(input) = OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) else {
+            return;
+        };
+        let name = desktop_name(input);
+        let current = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
+        if name == current || SetThreadDesktop(input).is_err() {
+            let _ = CloseDesktop(input);
+            return;
+        }
+        INPUT_DESKTOP.with(|cell| {
+            if let Some(previous) = cell.borrow_mut().replace(input) {
+                let _ = CloseDesktop(previous);
+            }
+        });
+        tracing::debug!(desktop = name.as_deref().unwrap_or("?"), "input thread switched desktop");
     }
 }
 
@@ -384,6 +453,19 @@ mod tests {
     /// `move_pointer` checks the real landing pixel at run time and corrects it.
     fn back(n: i32, origin: i32, size: i32) -> i32 {
         origin + ((i64::from(n) * i64::from(size)) >> 16) as i32
+    }
+
+    #[test]
+    fn follow_input_desktop_is_safe_and_idempotent() {
+        // The real check is manual (inject, lock, unlock, inject again): see AGENTS.md. Here only
+        // that it never panics, survives a second call, and leaves the thread on a readable desktop
+        // — including on a build agent where the input desktop may not be openable (then it is a
+        // no-op and the thread stays on its original desktop).
+        follow_input_desktop();
+        follow_input_desktop();
+        // SAFETY: the handle is only read for its name, never stored or closed.
+        let name = unsafe { GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name) };
+        assert!(name.is_some(), "the thread should stay on a readable desktop");
     }
 
     #[test]

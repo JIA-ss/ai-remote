@@ -122,7 +122,7 @@ pub fn check_input_target(target: InputTarget) -> InputTargetCheck {
 }
 
 #[cfg(windows)]
-pub use self::windows::{char_key, move_pointer};
+pub use self::windows::{char_key, follow_input_desktop, move_pointer};
 
 /// This process's DPI awareness on Windows: `per_monitor_v2`, `per_monitor`, `system` or
 /// `unaware`. `None` where the question does not apply.
