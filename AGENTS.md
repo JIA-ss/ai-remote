@@ -473,12 +473,132 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
 # 端到端试用：被控端设 AI_REMOTE_CAPTURE=dda 后照常连接
 ```
 
+### 桌面切换恢复验证工具（`dda_desktop_switch_recovery`，2026-10-13，分支 `feat/lock-screen`）
+
+把"桌面切换后 DDA 能不能干净恢复"做成一个可手动跑的测量测试，放在 `stream/capture/dda.rs` 的 `bench` 模块，
+**只加测试、不改采集逻辑**。它采主屏 `AR_SECS` 秒并把帧从 slot 抽走，和吞吐测试共用那个每 ~4 ms 变色的 96×96
+窗口让屏幕一直在刷新——这样"长时间没帧"只会是重建，不会是静止画面。度量方式（都从观看端能观察到的角度）：
+
+- **卡顿时长**：相邻两帧间隔超过 `AR_GAP_MS`（默认 250 ms）就打一行 `t+<秒> frozen <ms>`。重建期间 slot 不出帧，
+  所以这个间隔就是观看端看到的冻结时长。模块自身的 `Desktop Duplication restarted` / `capture thread switched
+  desktop` / `... unavailable; retrying` 日志（测试开了 tracing）会穿插进来，和每次卡顿对上。
+- **黑帧**：每次卡顿后的第一帧、以及平时每 ~0.5 s，用 `win::read_nv12` 把 Y 平面读回 CPU 算均值；均值 ≤ 20
+  当作"接近黑"（视频黑 Y≈16，纯黑 0）。恢复后的第一帧是正常还是黑，就靠这个判出来——没有真实观看端显示画面也能看到。
+- 结束打印汇总：总帧数 / 平均帧率 / 卡顿次数 / 最长卡顿 / 接近黑的采样数；capture 自己提前关了会 `assert` 失败。
+
+一切都在本机、不出网。`AR_READBACK=0` 可只测间隔、不读回。跑法（跑起来后照提示手动操作）：
+
+```sh
+cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored --nocapture
+# 期间手动各做至少两次：Win+L 锁屏等 ~2 s 再解锁；改分辨率再改回；进独占全屏游戏再退出。
+```
+
+**实测结果：未测。** 工具编译通过（`cargo test --lib --no-run` 过），但锁屏→解锁要输密码、改分辨率是系统显示设置、
+开游戏都得人工操作，这些不由 agent 代劳，留给维护者跑一轮把"重建耗时 / 漏帧 / 黑帧"的实测数填进来。注意当前被控端以
+登录用户身份运行，锁屏后打不开 `Winlogon` 桌面，预期表现是"锁屏起到解锁为止一直冻结、解锁后恢复"（安全桌面采不到要等
+服务化那步）；这一轮要测的是**解锁后、改分辨率、全屏游戏进出**这些在普通桌面上就会发生的切换，恢复干不干净、要多久。
+
+### 设计决定：服务化边界选 A（2026-10-13，用户确认）
+
+被控端服务化时整个主进程以 **SYSTEM 身份在会话里启动**（RustDesk 式的 A 方案，而非只拉一个采集/注入助手的 B）。
+**后果（要在落地时写清）**：服务化后 `shell` / `jobs` / `files` 等工具都会以 SYSTEM 执行，一个 admin 级（或 bypass）
+控制端的"最坏情况"从"等于登录用户"升到"等于 SYSTEM"。闸门 / 级别 / 策略 / 审批 / 审计的代码不变，但一个级别授予的
+**实际权限被放大**了。这一点必须在 `install/windows.rs` 的 `--dry-run` 安装计划和用户文档里显式写出，让维护者在管理员
+终端执行服务注册前就看到；锁屏时审批弹窗仍不显示，需要审批的操作只能由审批设备批。本轮先做纯用户态、不碰系统权限的
+那一块（输入跟随输入桌面）。
+
+### 注入跟随输入桌面（`platform::follow_input_desktop`，2026-10-13）
+
+- 做了什么：`platform/windows.rs` 加 `follow_input_desktop()`，注入前把**注入线程**切到当前输入桌面
+  （`OpenInputDesktop` + `GetThreadDesktop` 比名字，不同才 `SetThreadDesktop`）。`EnigoBackend::new()`（Windows）
+  在建 enigo 前调它。注入跑在 `spawn_blocking` 线程、非 macOS 每次调用都新建 backend，所以**每次注入都重设一次**。
+  镜像采集侧 `stream/capture/dda.rs` 的 `InputDesktop` 和 RustDesk `input_service` 的 `try_change_desktop`。
+- 为什么现在（用户态）就有用：`SendInput` / `SetCursorPos` 发到**调用线程所在桌面**的输入队列；桌面切换（解锁、UAC、
+  应用自建桌面、屏保进出）之后线程可能停在旧桌面句柄上，输入落到空处。切桌面修这个。
+- 局限（说清）：用户态进程打不开 `Winlogon` 安全桌面，所以**锁屏本身的注入仍然要等服务化（SYSTEM）那步**才能恢复；
+  这一步是服务化的前置铺垫——服务化后它才让注入跟上锁屏 / UAC 桌面。
+- 不泄漏 + best-effort：`thread_local` 持已切到的桌面句柄，切换成功后才关旧句柄（`CloseDesktop` 拒绝关线程仍在用的桌面），
+  所以稳态下每个 blocking 池线程最多一个句柄，不是每次调用泄漏一个。打不开输入桌面或 `SetThreadDesktop` 失败就留在原桌面、
+  什么都不改——**已解锁路径零回退**。
+- 坑 / 取舍：注入线程是 tokio blocking 池线程，可能被别的 blocking 活（截图等）复用，`SetThreadDesktop` 要求线程无窗口 /
+  hook，失败即 no-op。和 `dda.rs` 的 `InputDesktop` 有约 20 行重复（`OpenInputDesktop`/`SetThreadDesktop`/`desktop_name`），
+  本轮不动采集逻辑没合并，列 TODO 以后统一。切桌面只在 `new()` 时（= 每个工具调用一次）做一次；长 plan 中途切桌面
+  （例如打字途中弹 UAC）未处理，RustDesk 是每次注入前都切——够用，列为后续细化。
+- 实测：`cargo build` / `cargo clippy --all-targets -D warnings` / `cargo test -p ar-host` 全过（222 passed, 9 ignored）；
+  新加的 `follow_input_desktop_is_safe_and_idempotent` 冒烟测试过（只验不 panic、幂等、线程仍停在可读桌面，不是功能验证）。
+  **真正的"解锁后注入恢复"未手动实测**——要本机：发一次注入 → Win+L 锁屏再解锁 → 再发注入，开 tracing（debug 级）看
+  `input thread switched desktop` 日志、确认注入恢复。留给能本机操作的维护者跑一轮填回。
+
+### 服务化（A 方案）落地：`host install --service`（2026-10-13，分支 `feat/lock-screen`）
+
+把上一节的设计决定做成代码。改动按模块：
+
+- **服务进程** `ar-host/src/service.rs`（仅 Windows）：裸 `windows` crate 实现 SCM 入口（`StartServiceCtrlDispatcherW` /
+  `RegisterServiceCtrlHandlerExW` / `SetServiceStatus`，没有引入 `windows-service` crate），服务进程本身跑在 session 0、
+  不碰桌面，只负责把 `ai-remote-hostw --supervised --owner-sid <sid>` 以 **SYSTEM 身份在活动控制台会话**里拉起来：
+  自己的令牌 `DuplicateTokenEx` → `SetTokenInformation(TokenSessionId)` → `CreateEnvironmentBlock` →
+  `CreateProcessAsUserW`（`lpDesktop = winsta0\default`，先挂起、进 kill-on-close + breakaway 的 job 再恢复）。
+  每秒轮询 `WTSGetActiveConsoleSessionId`：会话变了（注销 / 切用户 / 重启后的登录界面）就杀掉重拉；子进程异常退出按
+  `supervise::Backoff`（和 hostw 守护进程共用，抽成了 `ar-host/src/supervise.rs`）退避重启；退出码 3（配置目录被终端里
+  的被控端占着）每 30 s 重试；**退出码 0（`stop-host`）服务跟着停**，和守护进程"正常退出结束两者"语义一致。
+- **Ctrl+Alt+Del**：`SendSAS` 只在服务进程里可靠，所以服务创建一个自动复位的命名事件 `Global\ai-remote-sas-<id>`
+  （SYSTEM 建的，默认 DACL 只有 SYSTEM / 管理员能 signal），会话内被控端按 `ctrl+alt+del` 时不再按键而是 signal 它
+  （`inject.rs` 新增 `Op::SecureAttention(event)`，`keys::is_secure_attention` 识别 ctrl+alt+del / ctrl+alt+end），服务等到
+  事件就 `SendSAS(false)`。事件不存在（不是服务模式）时该组合键仍按原来的理由拒绝；必须单独发（不能混在序列里）。
+- **桌面可达性语义**（`platform/mod.rs` / `windows.rs`）：`SessionState` 的 `desktop_usable` 从"输入桌面叫 Default"改成
+  "能打开输入桌面"，新增 `secure_desktop`（能打开但不是 Default）。用户态被控端锁屏后 `OpenInputDesktop` 失败 → 和以前一样
+  不可用（错误文案多了一句"装成服务可达"）；SYSTEM 被控端能打开 `Winlogon` → 可用 + secure。`prompt_blocker()`（审批弹窗）
+  在 secure 时仍返回原因；新增 `desktop_blocker()` 给推流（`stream/protocol.rs` 连接与循环中的检查都换成它）。doctor 的
+  `desktop` 项：可达的安全桌面是 **warn** 而不是 fail。截图工具（`tools/screen.rs`）在 xcap 采集前也调
+  `follow_input_desktop()`（GDI 读的是线程所在桌面）。
+- **自动选 DDA**（`stream/capture.rs::want_dda`）：`runs_as_system()`（令牌是 `S-1-5-18`）或当前就在安全桌面上时默认走
+  Desktop Duplication；`AI_REMOTE_CAPTURE=dda|wgc` 仍可强制。用户态、已解锁时仍是 WGC，行为不变。
+- **控制管道**：vendored mcpmesh `local-api` 加 `bind_local_shared(path, sids)`（DACL 多加一条 ACE，只接受形如 `S-1-…` 的纯 SID，
+  防 SDDL 注入；unix 下是 `bind_local` 别名），`ar-net::ipc::Listener::bind_shared`、`ar_host::Claim::acquire_shared`
+  串起来；hostw 新增隐藏参数 `--service` / `--owner-sid`。已登记到 `vendor/mcpmesh/PROVENANCE.json`。
+- **安装计划**（`install/windows.rs`）：`install_plan(profile, scope, service)`。服务计划的 notes 里显式写了"SYSTEM 后果"、
+  管道允许的账户、锁屏时审批只能靠审批设备；步骤：删同配置目录的登录任务（若有）→ `sc create|config`（存在则 config，
+  `binPath=` 用 `quote_arg` 包整条命令行）→ `sc description` → `sc failure` → `SoftwareSASGeneration` 不是 1/3 时
+  `reg add … /d 1`，原值写进 `host/sas-policy-before.txt`，卸载时按它恢复或删除 → 原有防火墙步骤。全部标 admin；
+  标准用户执行直接拒绝（`hostops::admin_steps_allowed`）。`status` 优先识别服务（`sc qc` 解析 `BINARY_PATH_NAME`，
+  `running` 字段来自 `sc query`），`start_action` 有服务时用 `sc start`，卸载时顺带 `sc stop/delete`，防火墙规则保留判断
+  也把其他配置目录的服务算进去。macOS 传 `--service` 直接报错。
+- 文档：`docs/operations.md` / `.zh-CN.md` 第 3.2 节新增"作为服务运行"小节，7.3 / 8 节的表格补了服务模式下的新文案。
+
+**验证（实测 / 未测分清）：**
+
+- 实测：`cargo build`、`cargo clippy --workspace --all-targets -D warnings`、`cargo fmt`、前端 node 测试 48 过、`tsc` 过；
+  `cargo test --workspace --locked` 全过（ar-host 229 passed / 9 ignored，vendored mcpmesh local-api 75 passed）。单元测试覆盖：SDDL 多 ACE 与 SID 校验（mcpmesh）、服务名 / 事件名 /
+  事件不存在时的行为、非 SCM 启动 `run()` 干净失败、`sc qc` / `sc query` / `reg query` 输出解析、`binPath` 引号、
+  ctrl+alt+del 在有事件时变成单步 `SecureAttention`、doctor 对可达安全桌面给 warn。
+- 实测：本机用临时配置目录跑 `host install --service --dry-run`、`host uninstall --dry-run`、`host status`、`doctor`，
+  计划输出和预期一致（见 `docs/operations.md` 3.2 节描述），没有改系统。
+- **未测（需要管理员终端，agent 不执行系统改动）**：真正 `sc create` 注册、服务以 SYSTEM 在会话里拉起被控端、锁屏 /
+  UAC / 重启登录界面下的推流与注入、`SendSAS` 实际生效、`stop-host` 让服务一起停、卸载恢复策略。这一整条链路要维护者
+  在管理员终端执行 `ai-remote host install --service` 后本机走一遍：锁屏 → 从控制端看画面 / 输密码解锁 → 弹 UAC 看是否
+  能操作 → `ctrl+alt+del` → 重启后登录界面。`CreateProcessAsUserW` 这一段的参数照 RustDesk `LaunchProcessWin` 写的，
+  没在本机以服务身份跑过，第一次跑失败的话看 `host/host.log` 里服务的 `cannot start the host` 一行。
+- 已知没做：macOS 的 LoginWindow（`LimitLoadToSessionType`）——用户级 LaunchAgent 装不进 LoginWindow 会话，要改成
+  `/Library/LaunchAgents` 的系统级安装，本机没有 Mac 编译验证，没动。DDA 光标合成、`dda_desktop_switch_recovery` 实测、
+  `follow_input_desktop` 手动验证同上一节，仍未做。
+
 ### 下一步
 
-- [ ] 本机验证桌面切换后的恢复：锁屏→解锁、改分辨率、独占全屏游戏进出，看重建要多久、有没有漏帧或黑帧。
-- [ ] 光标：观看端请求 `cursor:"client"` 时 DDA 已经可用（光标单独发）；不请求的观看端在 DDA 下仍看不到光标。
-- [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。
-- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关。
+- [ ] **管理员终端实跑服务模式**（见上一节"未测"）：`ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
+      ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
+- [ ] 本机手动验证 `follow_input_desktop`：解锁后、切了别的桌面后注入是否恢复（见上上节）。
+- [ ] macOS 锁屏 / 登录界面：系统级 LaunchAgent + `LimitLoadToSessionType = [LoginWindow, Aqua]`，`stream/capture/mac.rs`
+      的 `check_access` 放行；要在 Mac 上做。
+- [ ] 跑 `dda_desktop_switch_recovery`，把解锁 / 改分辨率 / 全屏游戏进出三种切换的重建耗时、漏帧、黑帧实测填回上面。
+- [ ] DDA 下把光标画进画面（`DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`）。现状辨析：请求 `cursor:"client"`
+      的观看端在 DDA 下**已经能看到光标**（光标走带外单独发，`protocol.rs` 的 `PointerFeed`），桌面端 `Session.tsx`
+      总是带 `onPointer`、总会请求，所以**一级客户端在 DDA 下不缺光标**。真正缺的是"不请求 cursor:client、只认画面里光标"
+      的观看端——这类观看端不消费带外光标，唯一的办法是把光标合成进画面。做法建议：复用 `stream/pointer.rs` 的
+      `position()`（GetCursorInfo）+ `shape()`（GetIconInfo→直 alpha BGRA，已处理各种光标类型，省掉 DXGI 的
+      MONOCHROME/MASKED 分支），在 `dda.rs` 把 DDA 帧先拷到一张可当 RTV 的纹理、用一个 alpha 混合的贴图 quad（VS+PS+
+      BlendState）把光标画上去，再交给 `Converter::convert`。约 200+ 行 D3D11+HLSL，落在 5 ms 的热路径上，要测对热路径的
+      影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
+- [x] 服务化以后在锁屏和 UAC 场景下自动选 DDA：已做（`capture::want_dda`），环境变量保留为强制开关。
 
 ## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
 

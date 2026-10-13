@@ -217,7 +217,7 @@ async fn serve(
         return;
     }
     let _viewer = Viewer(viewers);
-    if let Some(reason) = crate::platform::prompt_blocker() {
+    if let Some(reason) = crate::platform::desktop_blocker() {
         reply(&mut send, json!({"ok": false, "error": format!("the host's desktop cannot be shown: {reason}")})).await;
         return;
     }
@@ -332,7 +332,7 @@ async fn serve(
                     // Re-sent pixels: how long the screen stood still is not a delay of the stream.
                     raw.captured = Instant::now();
                 }
-                if crate::platform::prompt_blocker().is_some() {
+                if crate::platform::desktop_blocker().is_some() {
                     slot.close();
                     break;
                 }

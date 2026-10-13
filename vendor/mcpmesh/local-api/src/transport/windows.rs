@@ -117,6 +117,8 @@ pub fn authorize_local_peer(_stream: &LocalStream) -> bool {
 #[derive(Debug)]
 pub struct LocalListener {
     path: std::path::PathBuf,
+    /// Accounts besides the owner that may connect (see [`bind_local_shared`]).
+    shared_with: Vec<String>,
     /// The pre-created instance the next client will connect to. Rotated in
     /// [`LocalListener::accept`]: the replacement is created BEFORE the connected one
     /// is handed out, so there is never a moment with no listening instance (a client
@@ -130,7 +132,8 @@ impl LocalListener {
     /// freshly created (non-first) instance before returning the connected one.
     pub async fn accept(&mut self) -> io::Result<LocalStream> {
         self.next.connect().await?;
-        let connected = std::mem::replace(&mut self.next, create_instance(&self.path, false)?);
+        let connected =
+            std::mem::replace(&mut self.next, create_instance(&self.path, false, &self.shared_with)?);
         Ok(LocalStream::Server(connected))
     }
 }
@@ -142,7 +145,25 @@ impl LocalListener {
 /// unix flock produces.
 #[cfg(feature = "service")]
 pub fn bind_local(path: &Path) -> io::Result<LocalListener> {
-    let first = create_instance(path, true).map_err(|e| {
+    bind_local_shared(path, &[])
+}
+
+/// [`bind_local`] whose DACL also admits the accounts in `shared_with` (SDDL SIDs such as
+/// `S-1-5-21-…`): for a daemon that runs as another account than the person it serves (a host the
+/// service starts as SYSTEM in the user's session, which the user's own CLI must still reach).
+/// A SID that is not a plain `S-1-…` string is refused, so nothing else can be smuggled into the
+/// descriptor. Everyone else is still refused by the kernel at connect.
+#[cfg(feature = "service")]
+pub fn bind_local_shared(path: &Path, shared_with: &[String]) -> io::Result<LocalListener> {
+    for sid in shared_with {
+        if !winsec::is_plain_sid(sid) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a SID: {sid:?}"),
+            ));
+        }
+    }
+    let first = create_instance(path, true, shared_with).map_err(|e| {
         if e.raw_os_error() == Some(ACCESS_DENIED) {
             io::Error::new(
                 io::ErrorKind::AddrInUse,
@@ -157,19 +178,21 @@ pub fn bind_local(path: &Path) -> io::Result<LocalListener> {
     })?;
     Ok(LocalListener {
         path: path.to_path_buf(),
+        shared_with: shared_with.to_vec(),
         next: first,
     })
 }
 
-/// One pipe server instance carrying the owner-only security descriptor. `first` is
-/// true only for the very first instance (the singleton-lock semantics live there).
+/// One pipe server instance carrying the owner-only security descriptor (plus the
+/// `shared_with` accounts). `first` is true only for the very first instance (the
+/// singleton-lock semantics live there).
 #[cfg(feature = "service")]
-fn create_instance(path: &Path, first: bool) -> io::Result<NamedPipeServer> {
+fn create_instance(path: &Path, first: bool, shared_with: &[String]) -> io::Result<NamedPipeServer> {
     use tokio::net::windows::named_pipe::ServerOptions;
     // The token→SID→descriptor dance is recomputed on every accepted connection —
     // deliberate; control-plane accept frequency makes caching not worth the lifetime
     // plumbing.
-    let sd = winsec::owner_only_attributes()?;
+    let sd = winsec::owner_only_attributes(shared_with)?;
     let mut opts = ServerOptions::new();
     opts.first_pipe_instance(first);
     // The raw-pointer contract is "a valid SECURITY_ATTRIBUTES for the duration of the
@@ -313,8 +336,26 @@ mod winsec {
         Ok(format!("D:P(A;;GA;;;{})", current_user_sid()?))
     }
 
-    pub(super) fn owner_only_attributes() -> io::Result<OwnedAttributes> {
-        let sddl: Vec<u16> = sddl_for_current_user()?.encode_utf16().chain([0]).collect();
+    /// The owner-only descriptor plus one allow-ACE per account in `shared_with`.
+    pub(super) fn sddl_shared_with(shared_with: &[String]) -> io::Result<String> {
+        let mut sddl = sddl_for_current_user()?;
+        for sid in shared_with {
+            sddl.push_str(&format!("(A;;GA;;;{sid})"));
+        }
+        Ok(sddl)
+    }
+
+    /// A plain SID string (`S-1-5-21-…`): digits and dashes after `S-`, nothing that SDDL
+    /// could read as more ACEs or flags.
+    pub(super) fn is_plain_sid(sid: &str) -> bool {
+        sid.len() > 4
+            && sid.starts_with("S-1-")
+            && sid[2..].bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            && !sid.ends_with('-')
+    }
+
+    pub(super) fn owner_only_attributes(shared_with: &[String]) -> io::Result<OwnedAttributes> {
+        let sddl: Vec<u16> = sddl_shared_with(shared_with)?.encode_utf16().chain([0]).collect();
         let mut descriptor: *mut c_void = core::ptr::null_mut();
         // SAFETY: `sddl` is a NUL-terminated UTF-16 string valid for the call;
         // `descriptor` receives a LocalAlloc'd buffer owned by OwnedAttributes (freed
@@ -352,6 +393,21 @@ mod tests {
             "one protected allow-ACE: {sddl}"
         );
         assert_eq!(sddl.matches("(A;").count(), 1, "no second ACE: {sddl}");
+    }
+
+    /// Sharing adds exactly one ACE per extra account, and takes only plain SIDs.
+    #[test]
+    fn sddl_shared_adds_one_ace_per_sid() {
+        let sddl = winsec::sddl_shared_with(&["S-1-5-21-1-2-3-1001".into()]).unwrap();
+        assert!(sddl.ends_with("(A;;GA;;;S-1-5-21-1-2-3-1001)"), "{sddl}");
+        assert_eq!(sddl.matches("(A;").count(), 2, "{sddl}");
+        assert!(winsec::is_plain_sid("S-1-5-18"));
+        assert!(!winsec::is_plain_sid("S-1-5-18)(A;;GA;;;WD"));
+        assert!(!winsec::is_plain_sid("WD"));
+        assert!(!winsec::is_plain_sid("S-1-"));
+        assert!(!winsec::is_plain_sid("S-1-5-"));
+        let err = bind_local_shared(Path::new(r"\\.\pipe\mcpmesh-transport-bad-sid"), &["WD".into()]);
+        assert_eq!(err.unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     /// Bind + same-user connect + a frame both ways; a second bind is AddrInUse (the

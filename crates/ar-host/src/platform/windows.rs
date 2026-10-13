@@ -1,6 +1,8 @@
 //! Windows: DPI awareness, session id, console attachment, elevation, the input desktop, and the
 //! few input helpers enigo does not cover (virtual-desktop pointer moves, layout lookups, UIPI).
 
+use std::cell::RefCell;
+
 use anyhow::{Result, anyhow};
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, POINT},
@@ -14,10 +16,13 @@ use windows::Win32::{
         Console::GetConsoleWindow,
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{
-            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME,
+            CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+            DESKTOP_HOOKCONTROL, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, GetThreadDesktop,
+            GetUserObjectInformationW, HDESK, OpenInputDesktop, SetThreadDesktop, UOI_NAME,
         },
         Threading::{
-            GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, OpenProcessToken,
+            PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
     UI::{
@@ -56,14 +61,55 @@ pub fn session_state() -> SessionState {
     let elevated = is_elevated();
     let input_desktop = input_desktop_name();
 
+    // Reaching the input desktop is what counts, not its name: a host the service runs as SYSTEM
+    // opens the Winlogon desktop (lock screen, UAC) and captures and injects there through the
+    // Desktop Duplication path and `follow_input_desktop`; a user-session host is refused the
+    // handle and can do nothing until the desktop is unlocked.
     let problem = if session_id == Some(0) {
         Some("the host runs in the services session (session 0), which has no desktop; start it from the logged-in user's session".to_string())
-    } else if input_desktop.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("Default")) || input_desktop.is_none() {
-        Some("the desktop is locked or showing a security prompt".to_string())
+    } else if input_desktop.is_none() {
+        Some(
+            "the desktop is locked or showing a security prompt, which this host cannot reach (it runs as the \
+             logged-in user; `ai-remote host install --service` runs it as a service that can)"
+                .to_string(),
+        )
     } else {
         None
     };
-    SessionState { session_id, on_console, elevated, input_desktop, desktop_usable: problem.is_none(), problem }
+    let secure_desktop =
+        problem.is_none() && input_desktop.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("Default"));
+    SessionState {
+        session_id,
+        on_console,
+        elevated,
+        input_desktop,
+        desktop_usable: problem.is_none(),
+        secure_desktop,
+        problem,
+    }
+}
+
+/// Whether this process's token belongs to the LocalSystem account (`S-1-5-18`).
+pub fn runs_as_system() -> bool {
+    use windows::Win32::Security::{IsWellKnownSid, TOKEN_USER, TokenUser, WinLocalSystemSid};
+    // SAFETY: the token handle is closed below; the buffer is u64-aligned and as large as the API
+    // asked for, and the SID it points into lives inside that buffer for the whole check.
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut len = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+        let ok = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+        let _ = CloseHandle(token);
+        if ok.is_err() {
+            return false;
+        }
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        IsWellKnownSid(user.User.Sid, WinLocalSystemSid).as_bool()
+    }
 }
 
 fn current_session_id() -> Option<u32> {
@@ -151,22 +197,86 @@ pub fn decode_oem(bytes: &[u8]) -> Option<String> {
 /// Name of the desktop that currently receives input, or `None` when it cannot be opened (which
 /// happens while the secure desktop is active).
 fn input_desktop_name() -> Option<String> {
-    // SAFETY: desktop handle is closed below; buffer and length describe `buf`.
+    // SAFETY: the opened handle is closed before returning.
     unsafe {
         let desk = OpenInputDesktop(Default::default(), false, DESKTOP_ACCESS_FLAGS(0)).ok()?;
-        let mut buf = [0u16; 256];
-        let mut needed = 0u32;
-        let ok = GetUserObjectInformationW(
+        let name = desktop_name(desk);
+        let _ = CloseDesktop(desk);
+        name
+    }
+}
+
+/// The name of the desktop `desk` refers to (`Default`, `Winlogon`, a screen-saver desktop, ...),
+/// or `None` if it cannot be read.
+fn desktop_name(desk: HDESK) -> Option<String> {
+    let mut buf = [0u16; 256];
+    let mut needed = 0u32;
+    // SAFETY: `desk` is a live desktop handle; buffer and length describe `buf`.
+    unsafe {
+        GetUserObjectInformationW(
             HANDLE(desk.0),
             UOI_NAME,
             Some(buf.as_mut_ptr() as *mut _),
             (buf.len() * 2) as u32,
             Some(&mut needed),
-        );
-        let _ = CloseDesktop(desk);
-        ok.ok()?;
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..len]))
+        )
+        .ok()?;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+/// Desktop access for opening the input desktop and attaching a thread to it: the same set the
+/// capture side uses (`stream::capture::dda`).
+const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(
+    DESKTOP_CREATEMENU.0
+        | DESKTOP_CREATEWINDOW.0
+        | DESKTOP_ENUMERATE.0
+        | DESKTOP_HOOKCONTROL.0
+        | DESKTOP_WRITEOBJECTS.0
+        | DESKTOP_READOBJECTS.0
+        | DESKTOP_SWITCHDESKTOP.0,
+);
+
+thread_local! {
+    /// The input desktop this thread is attached to, kept alive while the thread stays on it and
+    /// closed only after a later switch (`CloseDesktop` refuses a desktop the thread still uses).
+    static INPUT_DESKTOP: RefCell<Option<HDESK>> = const { RefCell::new(None) };
+}
+
+/// Attaches the calling thread to the desktop that currently receives input, so injected input
+/// (`SendInput`, `SetCursorPos`) reaches it. Injection goes to the desktop the calling thread is
+/// attached to; after a desktop switch — unlocking, a UAC prompt, an app opening its own desktop —
+/// a thread can be left on a stale desktop where input lands nowhere. Call it right before
+/// injecting.
+///
+/// Best-effort and idempotent: when the input desktop cannot be opened (a user-session process
+/// cannot open the secure desktop) or the switch fails, the thread is left where it is and
+/// injection proceeds exactly as before, so the unlocked path never regresses. Mirrors the capture
+/// side (`stream::capture::dda`'s `InputDesktop`) and RustDesk's `input_service` `try_change_desktop`;
+/// it earns its keep once the host runs as SYSTEM in the session and injection must follow the lock
+/// screen and other secure desktops.
+pub fn follow_input_desktop() {
+    // SAFETY: the newly opened handle is either closed here or handed to the thread-local, which
+    // closes the previous handle only after this thread has switched off it. A fresh injection
+    // thread owns no windows or hooks (this runs before enigo creates anything), which
+    // `SetThreadDesktop` requires.
+    unsafe {
+        let Ok(input) = OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) else {
+            return;
+        };
+        let name = desktop_name(input);
+        let current = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
+        if name == current || SetThreadDesktop(input).is_err() {
+            let _ = CloseDesktop(input);
+            return;
+        }
+        INPUT_DESKTOP.with(|cell| {
+            if let Some(previous) = cell.borrow_mut().replace(input) {
+                let _ = CloseDesktop(previous);
+            }
+        });
+        tracing::debug!(desktop = name.as_deref().unwrap_or("?"), "input thread switched desktop");
     }
 }
 
@@ -384,6 +494,19 @@ mod tests {
     /// `move_pointer` checks the real landing pixel at run time and corrects it.
     fn back(n: i32, origin: i32, size: i32) -> i32 {
         origin + ((i64::from(n) * i64::from(size)) >> 16) as i32
+    }
+
+    #[test]
+    fn follow_input_desktop_is_safe_and_idempotent() {
+        // The real check is manual (inject, lock, unlock, inject again): see AGENTS.md. Here only
+        // that it never panics, survives a second call, and leaves the thread on a readable desktop
+        // — including on a build agent where the input desktop may not be openable (then it is a
+        // no-op and the thread stays on its original desktop).
+        follow_input_desktop();
+        follow_input_desktop();
+        // SAFETY: the handle is only read for its name, never stored or closed.
+        let name = unsafe { GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name) };
+        assert!(name.is_some(), "the thread should stay on a readable desktop");
     }
 
     #[test]

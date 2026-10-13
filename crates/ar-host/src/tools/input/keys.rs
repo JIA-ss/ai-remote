@@ -367,6 +367,18 @@ pub fn forbidden(pressed: &Pressed, os: Os) -> Option<&'static str> {
     }
 }
 
+/// Whether `pressed` is the secure attention sequence (Ctrl+Alt+Del or Ctrl+Alt+End, which a
+/// remote session maps to it): refused by [`forbidden`], but a host running as a Windows service
+/// can send it through the service instead of pressing the keys.
+pub fn is_secure_attention(pressed: &Pressed, os: Os) -> bool {
+    use Modifier as M;
+    let has = |m| pressed.modifiers.contains(&m);
+    os == Os::Windows
+        && has(M::Ctrl)
+        && has(M::Alt)
+        && (is_key(pressed.key, Named::Delete) || is_key(pressed.key, Named::End))
+}
+
 /// Keys the refusal rules name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Named {
