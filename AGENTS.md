@@ -302,6 +302,31 @@ AR_RC=both cargo test -p ar-host --release --lib encoded_quality -- --ignored --
 python tools/stream-quality.py --no-vmaf
 ```
 
+**NVENC 参数（2026-10-13）**：`CODECAPI_AVEncCommonBufferSize`（VBV/HRD）和 `CODECAPI_AVEncCommonQualityVsSpeed` 在 NVENC
+的 MF 编码器上**只在设置媒体类型之前生效**。之前 VBV 只在之后设，被静默忽略（`GetValue` 读回的是我们的值，但码流逐字节
+不变）；而且单位按微软文档对 H.264 是**字节**，旧代码传的是"2 帧的比特数"。现在在媒体类型前后都设，值为 **0.25 s 码率的
+字节数**（`encode/win.rs` 的 `vbv_bytes`）。实测（`encoded_quality`，HEVC/H.264，1080p 6/12 Mbit/s、4K 20/40 Mbit/s，
+60 fps 每组 300 帧单次运行；"稳态"是第 3 秒起逐帧 PSNR-Y 均值，"起始"是第 1 秒）：
+
+| 4K HEVC 20 Mbit/s | 关键帧 | 实际码率 | 起始 / 稳态 PSNR-Y | 之后帧大小最大/均值 |
+|---|---|---|---|---|
+| 改前（VBV 被忽略） | 2.37 MB | 14.6 | 29.7 / 40.2 dB | 4.7× |
+| 现在（0.25 s） | 575 KB | 19.1 | 20.3 / 41.2 dB | 2.1× |
+
+- 改前每个关键帧约是 0.6~1.0 s 的码率预算（1080p 6 Mbit/s 468~497 KB，4K 20 Mbit/s 2.0~2.4 MB，之后几帧几乎为空在"还债"）：
+  链路刚好等于码率时，每次关键帧就是近 1 s 的延迟突发（以前记录的"5K 关键帧约 2 MB"就是它）。
+- 现在：8 组里 7 组稳态 +0.2~2.7 dB（4K HEVC 40 Mbit/s −0.1），实际码率从目标的 73~87% 提到 92~98%，之后帧大小最大
+  1.6~2.3 倍均值（改前 1.9~6.7 倍）。**代价**：关键帧压在缓冲内，起流、请求关键帧、换编码之后约 1 s 画面偏糊（起始 18~27 dB）。
+- 500 ms：稳态反而低 1.0~2.7 dB；125 ms：NVENC 像是不认（关键帧又变成 0.4~3.1 MB，部分组码率超 8~9%）。保持 250 ms。
+- QualityVsSpeed（0 最快，默认 33，66/100 更好）：4K HEVC 编码 2.4 / 4.3 / 11 / 22 ms，4K H.264 4.5 / 9.7 / 13.7 ms；
+  稳态 PSNR 0 档比默认低 0.06~1.0 dB，66 档高 ≤0.2 dB。收益不大，保持默认（4K H.264 想上 100 fps 时可考虑 0 档）。
+- 端到端（`--pattern 5120x2160`，命令行端，单次）：各档帧率不变（59.3~59.6 / 99.0~99.1 fps），采集→到达 p50 4.5~16 ms。
+  回归 `streams_keep_to_the_requested_bitrate`、`bitrate_changes_take_effect_mid_stream`、
+  `hardware_encoders_open_and_close_repeatedly` 都通过。
+- **低码率时降分辨率：不做。** 同一 1080p/4K 源在 1.5~10 Mbit/s 下缩到 0.5~0.75 倍编码再放大回来，PSNR-Y 只有 12 dB
+  （原尺寸 21.8~33.5 dB）：1 像素的文字笔画缩放后直接变成灰色。桌面内容（文字、界面）低码率时保持原尺寸只降码率；
+  视频、游戏类内容可能不同，未测。测量用 `AR_VARIANTS=edge=N`。
+
 **光标本地绘制**（`stream/pointer.rs`、`protocol.rs` 的 `PointerFeed`，桌面端 `lib/pointer.ts`）：
 - 观看端请求带 `"cursor":"client"`；Windows 被控端走 WGC 时 `SetIsCursorCaptureEnabled(false)`（DDA 和测试图案本来就不画），
   回复 `"cursor":"client"`，然后按帧率（30~120 Hz）查 `GetCursorInfo`，变了才发 kind-4 位置（JSON，相对被串流显示器，
@@ -340,8 +365,9 @@ python tools/stream-quality.py --no-vmaf
 - [x] AV1 码率超标：HEVC 优先 + 码率守卫（见"码率与丢帧"）。直接用 NVENC SDK 的 AV1 也许码控正常，未试。
 - [x] 画质客观对比：见"延迟、自适应码率、画质、光标"。真实桌面内容和缩放档还没测。
 - [x] 端到端延迟指标：会话页显示"采集后 N 毫秒显示（±误差）"。
-- [x] 自适应码率（只调码率，不调分辨率/帧率）。下一步：真实网络实测；码率很低时改降分辨率。
-- [ ] 调 NVENC 参数：`CODECAPI_AVEncCommonQualityVsSpeed`、VBV（现为 2 帧）、文字清晰度（4:4:4 解码端普遍不支持，暂不做）。
+- [x] 自适应码率（只调码率，不调分辨率/帧率；降分辨率在桌面内容上实测更差，见"NVENC 参数"末条）。下一步：真实网络实测。
+- [x] 调 NVENC 参数：VBV 之前没生效，现在 0.25 s；QualityVsSpeed 保持默认（见"NVENC 参数"）。文字清晰度（4:4:4）解码端普遍不支持，暂不做。
+- [ ] 关键帧起始偏糊约 1 s（VBV 生效的代价）：可试关键帧后短时提高码率，或在被控端请求关键帧时先发上一张已编码的关键帧。
 - [x] 光标改为客户端绘制（Windows 被控端 + 桌面端）。待做：macOS 被控端、iOS 观看端、移动鼠标时的收益实测。
 
 **Mac 被控端（需要在 Mac 上做）** — `crates/ar-host/src/stream/encode/mac.rs`、`capture/mac.rs`
@@ -377,6 +403,7 @@ python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-
 python tools/stream-e2e.py --pattern 1920x1080 --link-mbps 8 --skip-cli --qualities balanced --seconds 45 --desktop target/debug/ai-remote-desktop.exe
 # 画质：PSNR/SSIM（VMAF 在合成内容上饱和）
 AR_RC=both cargo test -p ar-host --release --lib encoded_quality -- --ignored --nocapture --test-threads=1 && python tools/stream-quality.py --no-vmaf
+# 编码器调参：AR_VARIANTS="early=0;default;vbvms=125;qvs=0"（见 encoded_quality 的注释）
 # 光标单独发送：命令行计数 kind 4/5
 python tools/stream-e2e.py --pattern 1920x1080 --pointer --only balanced
 # 旧的真实屏幕采集 + 编码（会读当前屏幕，只在内存里）

@@ -27,7 +27,7 @@ mod mac;
 #[path = "encode/win.rs"]
 mod win;
 #[cfg(all(test, windows))]
-pub(crate) use win::LOW_DELAY_VBR_FOR_TESTS;
+pub(crate) use win::{LOW_DELAY_VBR_FOR_TESTS, tuning};
 
 /// A codec of the live stream. A viewer lists what it can decode, best first; the host picks the
 /// first it can encode in hardware, and H.264 always works (in software if need be).
@@ -262,7 +262,7 @@ impl FrameEncoder {
         let rebuild = matches!(self.backend, Backend::Hardware(_));
         match &mut self.backend {
             #[cfg(windows)]
-            Backend::Hardware(encoder) => encoder.set_bitrate(bitrate_bps, self.max_fps),
+            Backend::Hardware(encoder) => encoder.set_bitrate(bitrate_bps),
             Backend::Software(encoder) => encoder.set_bitrate(bitrate_bps),
             _ => {}
         }
