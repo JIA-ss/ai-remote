@@ -50,6 +50,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote forget <peer>` | remove a controller's pairing |
 | `ai-remote stop-host` | stop the running host |
 | `ai-remote bypass [on\|off <peer>\|--all] [--for 2h]` | trust controllers with everything: every tool, no approvals, no deny rules (section 6.1) |
+| `ai-remote bypass default on\|off` | trust every paired controller, those paired later included, until you turn one off (section 6.1) |
 | `ai-remote approvers [add\|remove]` | approver keys: people who may approve from a paired device ([approvals.md](approvals.md)) |
 | `ai-remote mount list\|add\|add-profile\|remove\|test` | manage mounted MCP servers ([tools.md](tools.md#7-mounted-mcp-servers)) |
 
@@ -356,6 +357,8 @@ exactly as they do to an agent's calls. `--json` prints machine-readable output.
 | `ai-remote doctor --host H` | `doctor` | observe |
 | `ai-remote shot [-o F.png] [--monitor N] [--max-long-edge PX]` | `screenshot` | observe |
 | `ai-remote windows [--filter T] [--all]` | `list_windows` | observe |
+| `ai-remote ps [<name>] [--pid N] [--limit N]` | `process_list` | admin |
+| `ai-remote kill --pid N \| --name X [--no-tree] [--intent WHY]` | `process_kill` | admin, asks |
 | `ai-remote exec "<command>" [--shell S] [--cwd D] [--timeout S] [--env K=V] [--stdin F]` | `shell` | admin, asks |
 | `ai-remote job start "<command>"` / `list` / `status <id>` / `log <id> [-f]` / `wait <id> [--timeout S]` / `kill <id>` | `jobs_*` | admin; `start` asks |
 | `ai-remote ls <dir> [--pattern P]` / `stat <path>` | `files_list` / `files_stat` | admin |
@@ -386,7 +389,7 @@ it refuses to replace a local file without `--force` before it asks the host any
 transfer: pack a folder first (`tar -czf`). Every transfer is in the audit log (`transfer` lines with
 path, bytes, duration and outcome).
 
-**Approval.** `exec`, `job start`, `mkdir`, `rm`, `push` and `pull` ask the owner by default, as an
+**Approval.** `exec`, `job start`, `kill`, `mkdir`, `rm`, `push` and `pull` ask the owner by default, as an
 agent's calls would. For a test machine you drive from your own controller, a rule on that host
 spares the prompt for your device only:
 
@@ -502,7 +505,19 @@ ai-remote bypass                       # each paired controller, BYPASS where it
 ai-remote bypass on my-laptop          # until you turn it off
 ai-remote bypass on --all --for 2h     # every controller that can connect, ending by itself after 2 hours
 ai-remote bypass off my-laptop         # or --all
+ai-remote bypass default on            # every paired controller, including ones you pair later
+ai-remote bypass default off
 ```
+
+**The default.** A computer that only you (and your agents) ever operate can trust every controller
+up front: `ai-remote bypass default on` covers every paired controller, those you pair later
+included, with no per-device step. When something looks wrong, `ai-remote bypass off <peer>` takes
+that one controller out of the default (it is listed as *turned off* in `ai-remote bypass`), as do
+`level <peer> none`, `revoke` and the controller lowering its own level; `bypass on <peer>` puts it
+back. `forget` clears everything about a device, so pairing it again starts from the default.
+`bypass default off` goes back to trusting only the controllers you turned on one by one. The
+default is kept in the same file, is audited (`kind: "bypass"` with `default`), and `doctor` warns
+while it is on.
 
 The desktop app on that computer does the same in **Settings, This device, Controllers trusted with
 everything**: each paired controller is either *Asks first* (the default) or *Everything allowed*,
@@ -635,7 +650,7 @@ Overall: warn
 | `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, enable UPnP/NAT-PMP on the router, use IPv6, or sign in to the network |
 | `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
 | `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
-| `bypass` | no controller is bypassed | **warn**: the named controllers use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`) when you no longer need it |
+| `bypass` | no controller is bypassed | **warn**: the named controllers, or every paired controller when the default is on, use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`, or `bypass default off`) when you no longer need it |
 | `firewall` | an inbound allow rule covers UDP for the host program, or the firewall is off | **fail**: a block rule applies to the program (traffic falls back to the relay); **warn**: no allow rule (Windows will prompt at the first connection), or a block rule for every program's inbound UDP | `host install` from an elevated terminal; review rules of other programs in `wf.msc` |
 | `autostart` | the task (or LaunchAgent) starts this installation's background host with this profile | **warn**: none installed, or it runs something else | run `ai-remote host install` (again) |
 | `audit` | the audit log can be opened for appending | **fail**: actions are not recorded | fix the profile directory's permissions, or use another `--home` |
