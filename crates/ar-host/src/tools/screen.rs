@@ -650,6 +650,10 @@ struct MonitorInfo {
 
 /// Captures a whole monitor: `index` as in system_info, or the primary one.
 fn capture_monitor(index: Option<usize>) -> Result<(MonitorInfo, RgbaImage)> {
+    // xcap copies from the desktop this thread is attached to; follow a switch (lock screen, UAC)
+    // where this process may (see `platform::follow_input_desktop`).
+    #[cfg(windows)]
+    platform::follow_input_desktop();
     let monitors = xcap::Monitor::all().map_err(|e| anyhow!("cannot list monitors: {e}"))?;
     if monitors.is_empty() {
         bail!("no monitor is attached to this session (a headless or disconnected session); nothing to capture");
@@ -683,6 +687,8 @@ fn capture_monitor(index: Option<usize>) -> Result<(MonitorInfo, RgbaImage)> {
 /// Captures `rect` (monitor-relative) of the monitor with geometry `monitor`. The monitor is found
 /// by geometry rather than index: indices shift when displays come and go, geometry does not lie.
 fn capture_region(monitor: MonitorGeom, rect: Rect, shot_id: &str) -> Result<(usize, RgbaImage)> {
+    #[cfg(windows)]
+    platform::follow_input_desktop();
     let monitors = xcap::Monitor::all().map_err(|e| anyhow!("cannot list monitors: {e}"))?;
     let (index, m) =
         monitors.iter().enumerate().find(|(_, m)| MonitorGeom::of(m).ok() == Some(monitor)).ok_or_else(|| {

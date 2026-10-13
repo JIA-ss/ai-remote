@@ -1,11 +1,14 @@
 //! Windows autostart: a Task Scheduler task (registered with schtasks.exe from an XML definition)
-//! and inbound firewall rules (written with netsh.exe, read through the firewall's COM API).
+//! or, with `--service`, a Windows service (registered with sc.exe), plus inbound firewall rules
+//! (written with netsh.exe, read through the firewall's COM API).
 //!
-//! The two halves need different rights. The task belongs to the user it starts the host for: a
+//! The halves need different rights. The task belongs to the user it starts the host for: a
 //! standard user registers their own without elevation, an administrator needs an elevated
 //! terminal for "highest privileges". The firewall rules are machine-wide and per program: only an
 //! administrator writes them, from any account. So a plan tags its firewall steps, and a standard
-//! user's install does the task part and leaves `--firewall-only` to an administrator.
+//! user's install does the task part and leaves `--firewall-only` to an administrator. The service
+//! is machine-wide too (it runs as LocalSystem and sets the `SoftwareSASGeneration` policy so it
+//! can send Ctrl+Alt+Del): every one of its steps needs an administrator.
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +39,309 @@ fn schtasks() -> PathBuf {
 
 fn netsh() -> PathBuf {
     system32("netsh.exe")
+}
+
+fn sc() -> PathBuf {
+    system32("sc.exe")
+}
+
+fn reg() -> PathBuf {
+    system32("reg.exe")
+}
+
+/// The service that runs the host as SYSTEM in the console session (see `crate::service`).
+pub fn service_name(profile: &Profile) -> String {
+    crate::service::service_name(profile)
+}
+
+/// The command line the service runs (`sc.exe`'s `binPath=`).
+fn service_command(bins: &Binaries, profile: &Profile, owner_sid: &str) -> String {
+    format!(
+        "{} --service --home {} --owner-sid {owner_sid}",
+        quote_arg(&bins.hostw.to_string_lossy()),
+        quote_arg(&profile.root().to_string_lossy())
+    )
+}
+
+/// Runs sc.exe to read something (not a plan step).
+fn sc_read(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut cmd = std::process::Command::new(sc());
+    cmd.args(args).stdin(std::process::Stdio::null());
+    crate::platform::no_console_window(&mut cmd);
+    cmd.output()
+}
+
+/// `sc qc <name>`'s output when the service exists.
+fn query_service_config(name: &str) -> Option<String> {
+    let out = sc_read(&["qc", name]).ok()?;
+    out.status.success().then(|| crate::platform::decode_console_output(&out.stdout))
+}
+
+/// Whether `sc query <name>` reports the service running.
+fn service_running(name: &str) -> Option<bool> {
+    let out = sc_read(&["query", name]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = crate::platform::decode_console_output(&out.stdout);
+    Some(text.lines().any(|l| l.contains("STATE") && l.contains("RUNNING")))
+}
+
+/// The `BINARY_PATH_NAME` of an `sc qc` listing.
+fn service_binary_path(qc: &str) -> Option<String> {
+    qc.lines().find_map(|l| {
+        l.trim().strip_prefix("BINARY_PATH_NAME").map(|rest| rest.trim_start_matches([' ', ':']).trim().to_string())
+    })
+}
+
+/// The ai-remote host services in an `sc query type= service state= all` listing.
+fn host_services_in(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("SERVICE_NAME:").map(str::trim))
+        .filter(|n| n.len() > "ai-remote-host-".len() && n[..15].eq_ignore_ascii_case("ai-remote-host-"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Other profiles' services that start this installation's background host: they rely on the same
+/// program-scoped firewall rules.
+fn other_services_using(hostw: &Path, own: &str) -> Result<Vec<String>> {
+    let out =
+        sc_read(&["query", "type=", "service", "state=", "all"]).map_err(|e| anyhow!("cannot run sc.exe: {e}"))?;
+    if !out.status.success() {
+        bail!("sc.exe could not list the services: {}", super::tool_output(&out));
+    }
+    let mut users = Vec::new();
+    for name in host_services_in(&crate::platform::decode_console_output(&out.stdout)) {
+        if name.eq_ignore_ascii_case(own) {
+            continue;
+        }
+        let Some(qc) = query_service_config(&name) else { continue };
+        if service_binary_path(&qc).is_some_and(|p| command_names(&p, hostw)) {
+            users.push(name);
+        }
+    }
+    Ok(users)
+}
+
+/// Whether a service command line starts `program` (quoted or bare).
+fn command_names(command: &str, program: &Path) -> bool {
+    let first = command.trim();
+    let exe = if let Some(rest) = first.strip_prefix('"') {
+        rest.split('"').next().unwrap_or("")
+    } else {
+        first.split(' ').next().unwrap_or("")
+    };
+    super::same_path(exe, program)
+}
+
+/// Policy that lets a service simulate the secure attention sequence (Ctrl+Alt+Del): 1 =
+/// services, 3 = services and Ease of Access; absent or 0 = nobody.
+const SAS_POLICY_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
+const SAS_POLICY_VALUE: &str = "SoftwareSASGeneration";
+
+/// Where an install remembers the policy value it found, so the uninstall can put it back.
+fn sas_marker_path(profile: &Profile) -> Result<PathBuf> {
+    Ok(profile.role_dir(Role::Host)?.join("sas-policy-before.txt"))
+}
+
+/// The current `SoftwareSASGeneration` value; `None` when absent.
+fn sas_policy() -> Result<Option<u32>> {
+    let mut cmd = std::process::Command::new(reg());
+    cmd.args(["query", SAS_POLICY_KEY, "/v", SAS_POLICY_VALUE]).stdin(std::process::Stdio::null());
+    crate::platform::no_console_window(&mut cmd);
+    let out = cmd.output().map_err(|e| anyhow!("cannot run reg.exe: {e}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(parse_reg_dword(&crate::platform::decode_console_output(&out.stdout)))
+}
+
+/// The value of the first `REG_DWORD` line in a `reg query` listing (`0x1`).
+fn parse_reg_dword(text: &str) -> Option<u32> {
+    let line = text.lines().find(|l| l.contains("REG_DWORD"))?;
+    let raw = line.split_whitespace().last()?;
+    let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"))?;
+    u32::from_str_radix(hex, 16).ok()
+}
+
+fn reg_set_sas(value: u32) -> Vec<String> {
+    vec![
+        "add".into(),
+        quote_arg(SAS_POLICY_KEY),
+        "/v".into(),
+        SAS_POLICY_VALUE.into(),
+        "/t".into(),
+        "REG_DWORD".into(),
+        "/d".into(),
+        value.to_string(),
+        "/f".into(),
+    ]
+}
+
+fn reg_delete_sas() -> Vec<String> {
+    vec!["delete".into(), quote_arg(SAS_POLICY_KEY), "/v".into(), SAS_POLICY_VALUE.into(), "/f".into()]
+}
+
+/// The steps that register (or update) the service and let it send Ctrl+Alt+Del.
+fn service_actions(
+    profile: &Profile,
+    bins: &Binaries,
+    owner_sid: &str,
+    user: &str,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Action>> {
+    let name = service_name(profile);
+    let command = service_command(bins, profile, owner_sid);
+    let display = format!("ai-remote host ({})", &profile.instance_id()[..8]);
+    let description = format!(
+        "Keeps the ai-remote host running as SYSTEM in the console session for {user} (profile {}), so paired \
+         controllers can operate this machine, its lock screen and UAC prompts included.",
+        profile.root().display()
+    );
+    let mut actions = Vec::new();
+    // The logon task would start a second, user-level host that finds the profile taken: retire it.
+    let task = task_name(profile);
+    if query_task_xml(&task).is_ok_and(|out| out.status.success()) {
+        notes.push(format!("Replaces the logon task \\{task} with the service."));
+        actions.push(Action::run_tolerant(
+            schtasks(),
+            &["/End".into(), "/TN".into(), quote_arg(&task)],
+            "stop the logon task's running instance",
+        ));
+        actions.push(Action::run_tolerant(
+            schtasks(),
+            &["/Delete".into(), "/TN".into(), quote_arg(&task), "/F".into()],
+            "delete the logon task",
+        ));
+        actions.push(Action::RemoveFile { path: task_xml_path(profile)? });
+    }
+    let settings = |verb: &str| -> Vec<String> {
+        vec![
+            verb.into(),
+            name.clone(),
+            "binPath=".into(),
+            quote_arg(&command),
+            "start=".into(),
+            "auto".into(),
+            "obj=".into(),
+            "LocalSystem".into(),
+            "DisplayName=".into(),
+            quote_arg(&display),
+        ]
+    };
+    if query_service_config(&name).is_some() {
+        actions.push(Action::run_tolerant(sc(), &["stop".into(), name.clone()], "stop the running service").admin());
+        actions.push(Action::run(sc(), &settings("config"), "update the service").admin());
+    } else {
+        actions.push(Action::run(sc(), &settings("create"), "register the service").admin());
+    }
+    actions.push(
+        Action::run(sc(), &["description".into(), name.clone(), quote_arg(&description)], "describe the service")
+            .admin(),
+    );
+    actions.push(
+        Action::run(
+            sc(),
+            &[
+                "failure".into(),
+                name.clone(),
+                "reset=".into(),
+                "600".into(),
+                "actions=".into(),
+                "restart/5000/restart/10000/restart/60000".into(),
+            ],
+            "restart the service after a crash",
+        )
+        .admin(),
+    );
+    match sas_policy() {
+        Ok(Some(1 | 3)) => notes.push(
+            "The SoftwareSASGeneration policy already lets services send Ctrl+Alt+Del; it is left as it is.".into(),
+        ),
+        Ok(before) => {
+            let remembered = before.map(|v| v.to_string()).unwrap_or_else(|| "absent".into());
+            notes.push(format!(
+                "Sets the SoftwareSASGeneration policy (HKLM\\...\\Policies\\System) to 1 so the service can send \
+                 Ctrl+Alt+Del for the host; it was {remembered}, which `host uninstall` puts back."
+            ));
+            actions.push(Action::WriteFile {
+                path: sas_marker_path(profile)?,
+                contents: format!("{remembered}\n").into_bytes(),
+                preview: remembered,
+            });
+            actions.push(Action::run(reg(), &reg_set_sas(1), "let services send Ctrl+Alt+Del").admin());
+        }
+        Err(e) => notes.push(format!(
+            "Could not read the SoftwareSASGeneration policy ({e:#}); it is not changed, so Ctrl+Alt+Del may not work \
+             until an administrator sets it to 1 (services) in {SAS_POLICY_KEY}."
+        )),
+    }
+    Ok(actions)
+}
+
+/// Undoes [`service_actions`]: stops and deletes the service, restores the policy it changed.
+fn service_removal_actions(profile: &Profile, notes: &mut Vec<String>) -> Result<Vec<Action>> {
+    let name = service_name(profile);
+    let mut actions = Vec::new();
+    if query_service_config(&name).is_some() {
+        actions.push(Action::run_tolerant(sc(), &["stop".into(), name.clone()], "stop the service").admin());
+        actions.push(Action::run_tolerant(sc(), &["delete".into(), name.clone()], "delete the service").admin());
+    }
+    let marker = sas_marker_path(profile)?;
+    if let Ok(before) = std::fs::read_to_string(&marker) {
+        let before = before.trim();
+        match before.parse::<u32>() {
+            Ok(v) => {
+                notes.push(format!("Puts the SoftwareSASGeneration policy back to {v}."));
+                actions.push(Action::run_tolerant(reg(), &reg_set_sas(v), "restore the Ctrl+Alt+Del policy").admin());
+            }
+            Err(_) => {
+                notes.push("Removes the SoftwareSASGeneration policy value the install added.".into());
+                actions.push(Action::run_tolerant(reg(), &reg_delete_sas(), "remove the Ctrl+Alt+Del policy").admin());
+            }
+        }
+        actions.push(Action::RemoveFile { path: marker });
+    }
+    Ok(actions)
+}
+
+/// The plan for `ai-remote host install --service`: the service instead of the logon task.
+fn service_install_plan(profile: &Profile, bins: &Binaries) -> Result<Plan> {
+    bins.require_hostw()?;
+    let sid = current_user_id()?;
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| sid.clone());
+    let name = service_name(profile);
+    let mut notes = vec![
+        format!(
+            "The service {name} (LocalSystem, automatic start) runs {} and starts the host as SYSTEM inside the \
+             console session: the lock screen, the sign-in screen after a reboot and UAC prompts can then be seen \
+             and operated. It follows the console session across log-offs and user switches.",
+            service_command(bins, profile, &sid)
+        ),
+        format!(
+            "CONSEQUENCE: that host, and so its shell, jobs and files tools, run as SYSTEM. Levels, policies, \
+             approvals and the audit log are unchanged, but what an admin-level (or bypassed) controller can do \
+             grows from what {user} can do to what SYSTEM can do. Grant levels accordingly."
+        ),
+        format!(
+            "The host's control endpoint admits {user} ({sid}) besides SYSTEM, so `ai-remote` commands and the \
+             desktop app keep working for {user}; other accounts are refused as before."
+        ),
+        "Approval prompts cannot be shown on the lock screen: while it is locked, actions that need approval are \
+         approved from approver devices only."
+            .into(),
+    ];
+    let mut actions = service_actions(profile, bins, &sid, &user, &mut notes)?;
+    actions.extend(firewall_actions(bins, &mut notes));
+    Ok(Plan {
+        summary: format!("Install the ai-remote host as a Windows service (profile {})", profile.root().display()),
+        notes,
+        actions,
+        needs_elevation: true,
+        blocker: None,
+    })
 }
 
 fn task_xml_path(profile: &Profile) -> Result<PathBuf> {
@@ -199,9 +505,12 @@ fn firewall_actions(bins: &Binaries, notes: &mut Vec<String>) -> Vec<Action> {
     actions
 }
 
-pub fn install_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
+pub fn install_plan(profile: &Profile, scope: Scope, service: bool) -> Result<Plan> {
     let bins = Binaries::locate()?;
     let mut notes = Vec::new();
+    if service && scope != Scope::FirewallOnly {
+        return service_install_plan(profile, &bins);
+    }
     if scope == Scope::FirewallOnly {
         let actions = firewall_actions(&bins, &mut notes);
         notes.insert(
@@ -288,6 +597,7 @@ pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
     let mut notes = Vec::new();
     let mut actions = Vec::new();
     if scope == Scope::All {
+        actions.extend(service_removal_actions(profile, &mut notes)?);
         actions.push(Action::run_tolerant(
             schtasks(),
             &["/End".into(), "/TN".into(), quote_arg(&name)],
@@ -299,9 +609,13 @@ pub fn uninstall_plan(profile: &Profile, scope: Scope) -> Result<Plan> {
             "delete the logon task",
         ));
     }
-    // The rules are per program, not per profile: another profile's task that starts the same
-    // background host still needs them.
-    match other_tasks_using(&bins.hostw, &name) {
+    // The rules are per program, not per profile: another profile's task or service that starts
+    // the same background host still needs them.
+    let others = other_tasks_using(&bins.hostw, &name).and_then(|mut tasks| {
+        tasks.extend(other_services_using(&bins.hostw, &service_name(profile))?);
+        Ok(tasks)
+    });
+    match others {
         Ok(others) if others.is_empty() => {
             for program in bins.programs() {
                 actions.push(
@@ -338,6 +652,10 @@ fn dir_of(bins: &Binaries) -> String {
 }
 
 pub fn start_action(profile: &Profile) -> Action {
+    let service = service_name(profile);
+    if query_service_config(&service).is_some() {
+        return Action::run(sc(), &["start".into(), service], "start the service now").admin();
+    }
     Action::run(schtasks(), &["/Run".into(), "/TN".into(), quote_arg(&task_name(profile))], "start the task now")
 }
 
@@ -345,6 +663,32 @@ pub fn status(profile: &Profile) -> Result<InstallStatus> {
     let bins = Binaries::locate()?;
     let name = task_name(profile);
     let mut st = InstallStatus { kind: "Task Scheduler task".into(), name: format!(r"\{name}"), ..Default::default() };
+
+    let service = service_name(profile);
+    if let Some(qc) = query_service_config(&service) {
+        st.kind = "Windows service".into();
+        st.name = service.clone();
+        st.installed = true;
+        st.running = service_running(&service);
+        match service_binary_path(&qc) {
+            Some(command) => {
+                let expected_home = quote_arg(&profile.root().to_string_lossy()).to_lowercase();
+                st.current = Some(
+                    command_names(&command, &bins.hostw)
+                        && command.to_lowercase().contains("--service")
+                        && command.to_lowercase().contains(&expected_home),
+                );
+                st.launches = Some(command);
+            }
+            None => st.detail = Some("the service has no program to run".into()),
+        }
+        match firewall_rules() {
+            Ok(rules) => st.firewall = bins.programs().iter().map(|p| rules_for(&rules, p)).collect(),
+            Err(e) => st.firewall_error = Some(format!("{e:#}")),
+        }
+        st.firewall_enabled = firewall_enabled().ok();
+        return Ok(st);
+    }
 
     match query_task_xml(&name) {
         Ok(out) if out.status.success() => {
@@ -466,6 +810,42 @@ mod tests {
         assert!(!desktop_owned_by_someone_else(&mine, &[theirs, mine.clone()]));
         // Nobody logged on (e.g. installed over SSH before anyone logs in): nothing to compare.
         assert!(!desktop_owned_by_someone_else(&mine, &[]));
+    }
+
+    #[test]
+    fn service_command_and_listing_parsers() {
+        let dir = std::env::temp_dir().join(format!("ar-service-cmd-{}", std::process::id()));
+        let profile = Profile::at(&dir).unwrap();
+        let bins = Binaries {
+            cli: PathBuf::from(r"C:\x y\ai-remote.exe"),
+            hostw: PathBuf::from(r"C:\x y\ai-remote-hostw.exe"),
+        };
+        let cmd = service_command(&bins, &profile, "S-1-5-21-1-2-3-1001");
+        assert!(cmd.starts_with(r#""C:\x y\ai-remote-hostw.exe" --service --home ""#), "{cmd}");
+        assert!(cmd.ends_with("--owner-sid S-1-5-21-1-2-3-1001"), "{cmd}");
+        assert!(command_names(&cmd, &bins.hostw));
+        assert!(!command_names(&cmd, &bins.cli));
+        assert!(command_names(r"C:\x\ai-remote-hostw.exe --service", Path::new(r"c:\X\AI-REMOTE-HOSTW.EXE")));
+        let name = service_name(&profile);
+        assert!(name.starts_with("ai-remote-host-") && name.len() == "ai-remote-host-".len() + 8);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let qc = "[SC] QueryServiceConfig SUCCESS\r\n\r\nSERVICE_NAME: ai-remote-host-1a2b3c4d\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        BINARY_PATH_NAME   : \"C:\\x\\ai-remote-hostw.exe\" --service --home \"C:\\p\"\r\n        DISPLAY_NAME       : ai-remote host\r\n";
+        assert_eq!(service_binary_path(qc).as_deref(), Some(r#""C:\x\ai-remote-hostw.exe" --service --home "C:\p""#));
+        let listing = "\r\nSERVICE_NAME: ai-remote-host-1a2b3c4d\r\nDISPLAY_NAME: ai-remote host\r\n        STATE : 4  RUNNING\r\n\r\nSERVICE_NAME: AI-REMOTE-HOST-99999999\r\n\r\nSERVICE_NAME: ai-remote-hostx\r\nSERVICE_NAME: Spooler\r\n";
+        assert_eq!(
+            host_services_in(listing),
+            vec!["ai-remote-host-1a2b3c4d".to_string(), "AI-REMOTE-HOST-99999999".to_string()]
+        );
+        assert_eq!(
+            parse_reg_dword("\r\nHKEY_LOCAL_MACHINE\\...\r\n    SoftwareSASGeneration    REG_DWORD    0x3\r\n"),
+            Some(3)
+        );
+        assert_eq!(parse_reg_dword("nothing"), None);
+        assert_eq!(
+            reg_set_sas(1).join(" "),
+            format!(r#"add "{SAS_POLICY_KEY}" /v SoftwareSASGeneration /t REG_DWORD /d 1 /f"#)
+        );
     }
 
     #[test]

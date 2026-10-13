@@ -172,7 +172,20 @@ fn session_checks(s: &SessionState) -> Vec<Check> {
         ),
         None => out.push(Check::new("console", Grade::Skip, "not applicable on this platform")),
     }
-    if s.desktop_usable {
+    if s.desktop_usable && s.secure_desktop {
+        let which = s.input_desktop.as_deref().map(|d| format!(" (input desktop: {d})")).unwrap_or_default();
+        out.push(
+            Check::new(
+                "desktop",
+                Grade::Warn,
+                format!(
+                    "the desktop is locked or showing a security prompt{which}; this host can see and operate it, but \
+                     approval prompts cannot be shown"
+                ),
+            )
+            .fix("unlock the desktop for approval prompts; until then only approver devices can approve"),
+        );
+    } else if s.desktop_usable {
         let which = s.input_desktop.as_deref().map(|d| format!(" (input desktop: {d})")).unwrap_or_default();
         out.push(Check::new("desktop", Grade::Ok, format!("desktop unlocked{which}")));
     } else {
@@ -546,6 +559,7 @@ mod tests {
             elevated: Some(true),
             input_desktop: Some("Default".into()),
             desktop_usable: true,
+            secure_desktop: false,
             problem: None,
         };
         assert_eq!(
@@ -562,6 +576,7 @@ mod tests {
             elevated: Some(false),
             input_desktop: None,
             desktop_usable: false,
+            secure_desktop: false,
             problem: Some("the desktop is locked".into()),
         };
         let checks = session_checks(&s);
@@ -576,6 +591,23 @@ mod tests {
         );
         assert!(checks[1].fix.as_deref().unwrap().contains("tscon 0 /dest:console"));
         assert!(checks.iter().filter(|c| c.grade != Grade::Ok).all(|c| c.fix.is_some()));
+    }
+
+    #[test]
+    fn a_reachable_secure_desktop_warns() {
+        let s = SessionState {
+            session_id: Some(1),
+            on_console: Some(true),
+            elevated: Some(true),
+            input_desktop: Some("Winlogon".into()),
+            desktop_usable: true,
+            secure_desktop: true,
+            problem: None,
+        };
+        let checks = session_checks(&s);
+        let desktop = checks.iter().find(|c| c.id == "desktop").unwrap();
+        assert_eq!(desktop.grade, Grade::Warn);
+        assert!(desktop.summary.contains("can see and operate"), "{}", desktop.summary);
     }
 
     #[test]

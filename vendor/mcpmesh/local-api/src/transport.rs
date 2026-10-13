@@ -10,14 +10,14 @@
 #[cfg(unix)]
 mod unix;
 #[cfg(all(unix, feature = "service"))]
-pub use unix::{LocalListener, authorize_local_peer, bind_local};
+pub use unix::{LocalListener, authorize_local_peer, bind_local, bind_local_shared};
 #[cfg(unix)]
 pub use unix::{LocalReadHalf, LocalStream, LocalWriteHalf, connect_local, split_local};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(all(windows, feature = "service"))]
-pub use windows::{LocalListener, authorize_local_peer, bind_local};
+pub use windows::{LocalListener, authorize_local_peer, bind_local, bind_local_shared};
 #[cfg(windows)]
 pub use windows::{LocalReadHalf, LocalStream, LocalWriteHalf, connect_local, split_local};
 
