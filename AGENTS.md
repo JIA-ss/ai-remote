@@ -498,8 +498,43 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 登录用户身份运行，锁屏后打不开 `Winlogon` 桌面，预期表现是"锁屏起到解锁为止一直冻结、解锁后恢复"（安全桌面采不到要等
 服务化那步）；这一轮要测的是**解锁后、改分辨率、全屏游戏进出**这些在普通桌面上就会发生的切换，恢复干不干净、要多久。
 
+### 设计决定：服务化边界选 A（2026-10-13，用户确认）
+
+被控端服务化时整个主进程以 **SYSTEM 身份在会话里启动**（RustDesk 式的 A 方案，而非只拉一个采集/注入助手的 B）。
+**后果（要在落地时写清）**：服务化后 `shell` / `jobs` / `files` 等工具都会以 SYSTEM 执行，一个 admin 级（或 bypass）
+控制端的"最坏情况"从"等于登录用户"升到"等于 SYSTEM"。闸门 / 级别 / 策略 / 审批 / 审计的代码不变，但一个级别授予的
+**实际权限被放大**了。这一点必须在 `install/windows.rs` 的 `--dry-run` 安装计划和用户文档里显式写出，让维护者在管理员
+终端执行服务注册前就看到；锁屏时审批弹窗仍不显示，需要审批的操作只能由审批设备批。本轮先做纯用户态、不碰系统权限的
+那一块（输入跟随输入桌面）。
+
+### 注入跟随输入桌面（`platform::follow_input_desktop`，2026-10-13）
+
+- 做了什么：`platform/windows.rs` 加 `follow_input_desktop()`，注入前把**注入线程**切到当前输入桌面
+  （`OpenInputDesktop` + `GetThreadDesktop` 比名字，不同才 `SetThreadDesktop`）。`EnigoBackend::new()`（Windows）
+  在建 enigo 前调它。注入跑在 `spawn_blocking` 线程、非 macOS 每次调用都新建 backend，所以**每次注入都重设一次**。
+  镜像采集侧 `stream/capture/dda.rs` 的 `InputDesktop` 和 RustDesk `input_service` 的 `try_change_desktop`。
+- 为什么现在（用户态）就有用：`SendInput` / `SetCursorPos` 发到**调用线程所在桌面**的输入队列；桌面切换（解锁、UAC、
+  应用自建桌面、屏保进出）之后线程可能停在旧桌面句柄上，输入落到空处。切桌面修这个。
+- 局限（说清）：用户态进程打不开 `Winlogon` 安全桌面，所以**锁屏本身的注入仍然要等服务化（SYSTEM）那步**才能恢复；
+  这一步是服务化的前置铺垫——服务化后它才让注入跟上锁屏 / UAC 桌面。
+- 不泄漏 + best-effort：`thread_local` 持已切到的桌面句柄，切换成功后才关旧句柄（`CloseDesktop` 拒绝关线程仍在用的桌面），
+  所以稳态下每个 blocking 池线程最多一个句柄，不是每次调用泄漏一个。打不开输入桌面或 `SetThreadDesktop` 失败就留在原桌面、
+  什么都不改——**已解锁路径零回退**。
+- 坑 / 取舍：注入线程是 tokio blocking 池线程，可能被别的 blocking 活（截图等）复用，`SetThreadDesktop` 要求线程无窗口 /
+  hook，失败即 no-op。和 `dda.rs` 的 `InputDesktop` 有约 20 行重复（`OpenInputDesktop`/`SetThreadDesktop`/`desktop_name`），
+  本轮不动采集逻辑没合并，列 TODO 以后统一。切桌面只在 `new()` 时（= 每个工具调用一次）做一次；长 plan 中途切桌面
+  （例如打字途中弹 UAC）未处理，RustDesk 是每次注入前都切——够用，列为后续细化。
+- 实测：`cargo build` / `cargo clippy --all-targets -D warnings` / `cargo test -p ar-host` 全过（222 passed, 9 ignored）；
+  新加的 `follow_input_desktop_is_safe_and_idempotent` 冒烟测试过（只验不 panic、幂等、线程仍停在可读桌面，不是功能验证）。
+  **真正的"解锁后注入恢复"未手动实测**——要本机：发一次注入 → Win+L 锁屏再解锁 → 再发注入，开 tracing（debug 级）看
+  `input thread switched desktop` 日志、确认注入恢复。留给能本机操作的维护者跑一轮填回。
+
 ### 下一步
 
+- [ ] 本机手动验证 `follow_input_desktop`：解锁后、切了别的桌面后注入是否恢复（见上一节）。
+- [ ] 服务化与安装计划（`install/windows.rs`）：按 A 方案把服务注册（SYSTEM、会话内启动）、SAS 策略、防火墙规则作为
+      `--dry-run` 计划步骤，并在计划和文档里显式标注"工具将以 SYSTEM 执行"的后果。控制管道（`ar-net/src/ipc.rs`）现仅当前用户，
+      服务化后要另加 bind 让用户态 CLI / 桌面端仍能连上。agent 不自己执行系统改动，由维护者在管理员终端跑。
 - [ ] 跑 `dda_desktop_switch_recovery`，把解锁 / 改分辨率 / 全屏游戏进出三种切换的重建耗时、漏帧、黑帧实测填回上面。
 - [ ] DDA 下把光标画进画面（`DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`）。现状辨析：请求 `cursor:"client"`
       的观看端在 DDA 下**已经能看到光标**（光标走带外单独发，`protocol.rs` 的 `PointerFeed`），桌面端 `Session.tsx`
@@ -509,10 +544,7 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       MONOCHROME/MASKED 分支），在 `dda.rs` 把 DDA 帧先拷到一张可当 RTV 的纹理、用一个 alpha 混合的贴图 quad（VS+PS+
       BlendState）把光标画上去，再交给 `Converter::convert`。约 200+ 行 D3D11+HLSL，落在 5 ms 的热路径上，要测对热路径的
       影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
-- [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。**本轮没做**：
-      这段要让被控端以 SYSTEM 身份在锁屏 / UAC 安全桌面 / 登录界面上采集与注入，属于安全桌面级能力，agent 不设计不实现，
-      由维护者参照 `CLAUDE.md` 里列的 RustDesk 源码位置自行完成。
-- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关（依赖上一条）。
+- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关（依赖"服务化与安装计划"那条）。
 
 ## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
 

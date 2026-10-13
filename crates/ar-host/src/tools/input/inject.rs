@@ -194,6 +194,11 @@ pub struct EnigoBackend {
 
 impl EnigoBackend {
     pub fn new() -> Result<Self> {
+        // Attach this thread to the desktop that now receives input, so `SendInput` and pointer
+        // moves below reach it rather than a stale desktop left over from a switch. Best-effort:
+        // see `platform::follow_input_desktop`.
+        #[cfg(windows)]
+        crate::platform::follow_input_desktop();
         #[cfg(target_os = "macos")]
         if !crate::platform::macos::accessibility_allowed() {
             anyhow::bail!(
