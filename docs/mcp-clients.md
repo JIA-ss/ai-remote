@@ -14,6 +14,11 @@ path contains spaces. Mac commands are quoted for a POSIX shell; Windows command
 | VS Code / GitHub Copilot | `servers` JSON with `type: "stdio"`; open **MCP: Open User Configuration**, or use `.vscode/mcp.json` | [VS Code MCP](https://code.visualstudio.com/docs/agent-customization/mcp-servers) |
 | Other | `mcpServers` JSON where supported, or enter the shown `command` and `args` in the client's local stdio settings | Follow that client's configuration format |
 
+Once connected, the agent should also get the working method in
+[skills/ai-remote/SKILL.md](../skills/ai-remote/SKILL.md): session start, looking and acting,
+commands, files, and what levels, approvals and refusals mean. Claude Code loads it from
+`~/.claude/skills/ai-remote/`; other agents take its text as rules.
+
 Add or update the ai-remote entry while retaining other server settings. Reconnect/reload the
 client's server after configuring it; its initialized MCP session then appears in **Connected
 agents**. Tools become available after a host is paired. The app displays setup instructions;
