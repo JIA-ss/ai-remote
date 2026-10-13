@@ -154,6 +154,38 @@ pub struct WindowsArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct PsArgs {
+    /// Only processes whose name (or executable file name) contains this.
+    pub name: Option<String>,
+    /// Only this process.
+    #[arg(long, conflicts_with = "name")]
+    pub pid: Option<u32>,
+    /// At most this many (default 300, maximum 2000).
+    #[arg(long)]
+    pub limit: Option<usize>,
+    #[command(flatten)]
+    pub target: Target,
+}
+
+#[derive(Args, Debug)]
+pub struct KillArgs {
+    /// The process to stop, by pid.
+    #[arg(long, required_unless_present = "name", conflicts_with = "name")]
+    pub pid: Option<u32>,
+    /// Every process with exactly this name (case-insensitive), e.g. game.exe.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Only that process, not the processes it started.
+    #[arg(long)]
+    pub no_tree: bool,
+    /// Why (shown to the owner and in the audit log).
+    #[arg(long)]
+    pub intent: Option<String>,
+    #[command(flatten)]
+    pub target: Target,
+}
+
+#[derive(Args, Debug)]
 pub struct PathArgs {
     /// Absolute path on the host.
     pub path: String,
@@ -737,6 +769,56 @@ pub async fn ls(profile: &Profile, a: LsArgs, json_out: bool) -> Result<()> {
         );
     }
     eprintln!("{} entries in {}", entries.len(), path.as_str().unwrap_or("?"));
+    Ok(())
+}
+
+pub async fn ps(profile: &Profile, a: PsArgs, json_out: bool) -> Result<()> {
+    let mut args = Map::new();
+    put(&mut args, "name", a.name);
+    put(&mut args, "pid", a.pid);
+    put(&mut args, "limit", a.limit.map(|l| l as u64));
+    let v = call(profile, &a.target, "process_list", Value::Object(args)).await?.ok();
+    if json_out {
+        print_json(&v);
+        return Ok(());
+    }
+    println!("{:>8} {:>8} {:>10}  {:<28} EXE", "PID", "PPID", "MEM", "NAME");
+    for p in v["processes"].as_array().cloned().unwrap_or_default() {
+        println!(
+            "{:>8} {:>8} {:>10}  {:<28} {}",
+            p["pid"],
+            p["parent_pid"].as_u64().map(|x| x.to_string()).unwrap_or_else(|| "-".into()),
+            size(p["memory_bytes"].as_u64()),
+            p["name"].as_str().unwrap_or("?"),
+            p["exe"].as_str().unwrap_or("")
+        );
+    }
+    if v["truncated"] == true {
+        eprintln!("{} of {} shown; narrow it down with a name, or raise --limit", v["count"], v["total"]);
+    }
+    Ok(())
+}
+
+pub async fn kill(profile: &Profile, a: KillArgs, json_out: bool) -> Result<()> {
+    let mut args = Map::new();
+    put(&mut args, "pid", a.pid);
+    put(&mut args, "name", a.name);
+    put(&mut args, "intent", a.intent);
+    if a.no_tree {
+        args.insert("tree".into(), false.into());
+    }
+    let v = call(profile, &a.target, "process_kill", Value::Object(args)).await?.ok();
+    if json_out {
+        print_json(&v);
+        return Ok(());
+    }
+    for p in v["killed"].as_array().cloned().unwrap_or_default() {
+        println!("stopped {} {}", p["pid"], p["name"].as_str().unwrap_or(""));
+    }
+    println!("{}", v["result"].as_str().unwrap_or("?"));
+    if !v["still_running"].as_array().is_none_or(Vec::is_empty) {
+        std::process::exit(2);
+    }
     Ok(())
 }
 

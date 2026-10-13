@@ -12,7 +12,7 @@ use ar_core::{
 };
 use ar_host::{HostRequest, mounts};
 use ar_net::ipc::Conn;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -251,6 +251,10 @@ enum Command {
     Shot(remote::ShotArgs),
     /// [controller] A host's visible windows.
     Windows(remote::WindowsArgs),
+    /// [controller] A host's running processes, optionally filtered by name.
+    Ps(remote::PsArgs),
+    /// [controller] Stop a process on a host (and, by default, the processes it started).
+    Kill(remote::KillArgs),
     /// [controller] A host's system, session, monitors and your level there.
     Info {
         #[command(flatten)]
@@ -297,6 +301,16 @@ enum BypassAction {
         #[arg(long, conflicts_with = "peer")]
         all: bool,
     },
+    /// The default for every paired controller, those paired later included: `on` trusts them all
+    /// with everything until you turn one off (`bypass off <controller>`); `off` goes back to
+    /// trusting only the controllers you turned on.
+    Default { state: OnOff },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -771,6 +785,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Job { command } => remote::job(&profile, command, json_out).await,
         Command::Shot(a) => remote::shot(&profile, a, json_out).await,
         Command::Windows(a) => remote::windows(&profile, a, json_out).await,
+        Command::Ps(a) => remote::ps(&profile, a, json_out).await,
+        Command::Kill(a) => remote::kill(&profile, a, json_out).await,
         Command::Info { target } => remote::info(&profile, target, json_out).await,
         Command::Ls(a) => remote::ls(&profile, a, json_out).await,
         Command::Stat(a) => remote::stat(&profile, a, json_out).await,
@@ -927,16 +943,42 @@ async fn bypass_command(profile: &Profile, action: Option<BypassAction>, json_ou
                 return print_json(&v);
             }
             let devices = list(&v);
+            if v["default"] == true {
+                println!(
+                    "default: on. Every paired controller, including ones paired later, is trusted with everything \
+                     unless turned off below (ai-remote bypass off <controller>)."
+                );
+            }
             if devices.is_empty() {
                 println!("No controller is paired.");
             }
             for d in devices {
-                let state = match (d["bypass"].as_bool(), d["until_ms"].as_u64()) {
-                    (Some(true), Some(until)) => format!("BYPASS until {}", local_time(until)),
-                    (Some(true), None) => "BYPASS".to_string(),
+                let state = match (d["how"].as_str(), d["until_ms"].as_u64()) {
+                    (Some("device"), Some(until)) => format!("BYPASS until {}", local_time(until)),
+                    (Some("device"), None) => "BYPASS".to_string(),
+                    (Some("default"), _) => "BYPASS (default)".to_string(),
+                    (Some("excepted"), _) => "- (turned off; the default does not cover it)".to_string(),
                     _ => "-".to_string(),
                 };
                 println!("{:<24} level={:<8} {state}", s_or(&d["name"]), d["level"].as_str().unwrap_or("none"));
+            }
+            return Ok(());
+        }
+        Some(BypassAction::Default { state }) => {
+            let on = state == OnOff::On;
+            let v = host_request(profile, HostRequest::SetBypassDefault { on }).await?;
+            if json_out {
+                return print_json(&v);
+            }
+            match (on, v["changed"] == true) {
+                (true, true) => println!(
+                    "bypass default on. Every paired controller, including ones you pair later, now uses every tool \
+                     here (shell, files, input, ...) without approval, whatever its level or the deny rules. Turn one \
+                     off with: ai-remote bypass off <controller>; turn the default off with: ai-remote bypass default off"
+                ),
+                (true, false) => println!("bypass default was already on"),
+                (false, true) => println!("bypass default off. Only controllers turned on one by one stay bypassed."),
+                (false, false) => println!("bypass default was already off"),
             }
             return Ok(());
         }
@@ -949,7 +991,7 @@ async fn bypass_command(profile: &Profile, action: Option<BypassAction>, json_ou
         // --all: on for every device that can connect at all; off for every one that has it.
         None => list(&host_request(profile, HostRequest::Bypass).await?)
             .iter()
-            .filter(|d| if on { d["level"].is_string() && d["revoked"] != true } else { d["bypass"] == true })
+            .filter(|d| if on { d["level"].is_string() && d["revoked"] != true } else { d["how"] == "device" })
             .filter_map(|d| d["name"].as_str().map(str::to_string))
             .collect(),
     };

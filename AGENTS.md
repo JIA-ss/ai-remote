@@ -19,7 +19,7 @@
 
 目标：人、脚本和 CI 不经 MCP 也能直接操作被控端，形态参照内部测试机工具的命令行：
 `ai-remote exec / job / shot / windows / info / doctor --host / ls / stat / mkdir / rm / push / pull`，
-默认被控端，统一的退出码和 `--json`。用户文档：`docs/operations*.md` 4.1 节、`docs/tools*.md` 5.13 节。
+默认被控端，统一的退出码和 `--json`。用户文档：`docs/operations*.md` 4.1 节、`docs/tools*.md` 5.14 节。
 
 ### 设计
 
@@ -111,6 +111,47 @@ MCP 工具列表。
   deny 规则失效、文件传输可用、MCP 工具列表出现 shell/jobs/files；`info`/`access`/doctor/审计都有标记；接管仍能拦；关闭后恢复拒绝；
   `--all --for 3s` 到期自动失效；`level none` 清掉 bypass。
 - 桌面端：演示后端下在浏览器里点过整个流程（下拉 → 确认框 → 生效、红字说明）；真实被控端下用 debug 应用的 smoke 截图核对列表。
+
+## 方向调整：AI 走工具、人走画面，测试机默认全信任（2026-10-13，分支 `feat/trust-default`）
+
+和用户讨论后定下的定位（记在这里，免得再跑偏）：
+
+- ai-remote 相对内部测试机工具和 RustDesk 的**唯一差异点**是"人和 AI 共用一条配对连接"：人看推流、AI 调工具，
+  级别 / 策略 / 审批 / 审计对两者一视同仁。推流只要"看得清 AI 在干什么"，不追观感；精力放在工具面和权限闭环上。
+- AI 的工具面以内部测试机工具的形状为准（exec / job / 文件 / 截图 / 窗口 / 进程），**只走 ai-remote 的 QUIC 连接**，
+  不另起 HTTP agent；不做兼容层、不改工具名，也不接游戏侧的 MCP。命令行（`ai-remote exec/job/ps/kill/...`）就是人和脚本的入口。
+- 权限：自己的测试机**默认全放行**（下面的 bypass default），发现不对再手动收。日常电脑保持逐台 bypass 或审批。
+
+### 这次做的
+
+- **bypass 默认开关**（`crates/ar-host/src/bypass.rs`）：`bypass.json` 新增 `default: bool` 和 `except: [...]`。
+  `coverage(peer)` 的优先级：本设备条目（`bypass on <设备>`）> 默认关 → 不覆盖 > 在 `except` 里 → 不覆盖 > 默认覆盖。
+  `clear(principal, name, except)`：默认开着时关掉某台（`bypass off`、`level none`、`revoke`、控制端自己降级）进 `except`；
+  `forget` 传 `except=false`，重新配对从默认开始。`bypass default on` 清空 `except`（"重新信任所有人"）。
+  控制通道加 `SetBypassDefault { on }`；`Bypass` 应答多了顶层 `default` 和每台的 `how`（`device | default | excepted | no`），
+  `bypass` 字段改为**实际生效**值（桌面端按它显示，不用改）。审计 `kind: "bypass"` 带 `default: true/false`。
+  `doctor` 默认开着时 warn 并列出例外。命令行：`ai-remote bypass default on|off`，`ai-remote bypass` 列表标 `(default)` / `turned off`。
+- **进程工具**（`crates/ar-host/src/tools/process.rs`）：`process_list`（admin、allow、只读；按名字子串 / pid 过滤，不返回命令行和环境）、
+  `process_kill`（admin、默认 ask；pid 或全名，默认连子树）。杀法复用 `jobs.rs` 的 `ProcTable` / `kill_process`
+  （pid + 启动时间钉住，Windows 上先 OpenProcess 再核对再 TerminateProcess），为此把 `Proc` / `Root` / `ProcTable` 放成 `pub(super)`。
+  拒绝杀被控端自己、它的父进程（监护）、pid 0/4。命令行 `ai-remote ps [名字] [--pid N]`、`ai-remote kill --pid N | --name X [--no-tree]`。
+- 文档：`docs/tools*.md` 加 5.13 进程、文件改成 5.14；`docs/operations*.md` 4.1 表加 ps/kill，6.1 加"默认信任"。
+
+### 验证（2026-10-13，本机，Windows 11，debug）
+
+- `cargo test -p ar-host`：bypass 3 项（含默认 / 例外 / forget 语义）、process 3 项（按 pid / 名字列出；拒绝杀自己和不存在的 pid；
+  杀 `cmd /C ping` 树后父子都没了）。
+- `python tools/bypass-smoke.py`：原 21 项 + 默认信任 11 项全过（observe 级设备在默认下能跑 shell、状态和 doctor 标出默认、
+  `bypass off` 后被排除并再次被拒、`bypass on` 取消排除、`default off` 后恢复拒绝、审计有 `default` 记录）。
+  用例里 `level none` → `level observe` 之后要等控制端重拨（实测第 2 次、约 0.5 s 才连上），脚本里加了轮询。
+- `python tools/cli-remote-smoke.py --big-mib 4`：原 39 项 + ps/kill 5 项全过（`ps --pid` 找到被控端、`ps 名字`、`kill` 拒绝杀被控端、
+  `kill --pid` 杀掉 ping 树且进程真的退出）。
+
+### 下一步
+
+- [ ] 桌面端"设置 → 本设备"加默认信任的下拉项（现在只有命令行能开，桌面端列表能正确显示生效状态）。
+- [ ] 配对时的信任预设：`pair-code --trust` 之类，让新设备一配对就按默认处理（现在默认开着时已经自动覆盖新设备，只缺提示）。
+- [ ] `process_list` 的 `user` 字段（sysinfo 在 Windows 上要额外刷新，先没加）。
 
 ## 推流性能专项（2026-10-12 起，分支 `perf/stream-max`）
 

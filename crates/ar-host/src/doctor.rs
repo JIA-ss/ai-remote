@@ -291,14 +291,29 @@ fn approval_check(blocker: Option<String>) -> Check {
 
 /// Controllers the owner trusts with everything: not a fault, but nobody should forget it is on.
 fn bypass_check(profile: &Profile) -> Check {
-    let entries = match profile.bypass_path().and_then(|p| crate::bypass::Bypass::open(&p)) {
-        Ok(b) => b.list(),
+    let (default, entries, excepted) = match profile.bypass_path().and_then(|p| crate::bypass::Bypass::open(&p)) {
+        Ok(b) => (b.default_on(), b.list(), b.exceptions()),
         Err(e) => return Check::new("bypass", Grade::Warn, format!("cannot read the bypass list: {e:#}")),
     };
-    grade_bypass(&entries)
+    grade_bypass(default, &entries, &excepted)
 }
 
-fn grade_bypass(entries: &[crate::bypass::Entry]) -> Check {
+fn grade_bypass(default: bool, entries: &[crate::bypass::Entry], excepted: &[crate::bypass::Exception]) -> Check {
+    if default {
+        let except = match excepted.len() {
+            0 => String::new(),
+            _ => format!(" (except: {})", excepted.iter().map(|x| x.name.as_str()).collect::<Vec<_>>().join(", ")),
+        };
+        return Check::new(
+            "bypass",
+            Grade::Warn,
+            format!(
+                "every paired controller, including ones paired later, can use every tool here without approval, \
+                 whatever its level or the deny rules{except}"
+            ),
+        )
+        .fix("turn it off when you no longer need it: ai-remote bypass default off");
+    }
     if entries.is_empty() {
         return Check::new("bypass", Grade::Ok, "no controller bypasses levels, policy and approval");
     }
@@ -492,10 +507,10 @@ mod tests {
 
     #[test]
     fn bypass_is_reported_while_on() {
-        assert_eq!(grade_bypass(&[]).grade, Grade::Ok);
+        assert_eq!(grade_bypass(false, &[], &[]).grade, Grade::Ok);
         let entry =
             crate::bypass::Entry { principal: "eid:a".into(), name: "laptop".into(), since_ms: 1, until_ms: None };
-        let c = grade_bypass(&[entry]);
+        let c = grade_bypass(false, &[entry], &[]);
         assert_eq!(c.grade, Grade::Warn);
         assert!(c.summary.contains("laptop") && c.fix.unwrap().contains("bypass off"));
     }
