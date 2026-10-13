@@ -109,6 +109,8 @@ codex mcp add ai-remote -- ai-remote mcp
 
 Cursor 使用 `~/.cursor/mcp.json` 中的 `mcpServers` JSON，VS Code 使用 MCP 配置中的 `servers` JSON。Codex 还可在 `~/.codex/config.toml` 中添加 `[mcp_servers.ai-remote]`。路径、转义和完整示例见 [MCP 客户端配置](docs/mcp-clients.md)。
 
+接好之后，把操作方法交给智能体：[skills/ai-remote/SKILL.md](skills/ai-remote/SKILL.md) 讲清楚怎么开始会话、看屏幕、操作、跑命令和传文件，以及级别、审批、拒绝提示和机主接管各自意味着什么。Claude Code 把这个文件夹复制到 `~/.claude/skills/`，其他智能体把内容贴进它的规则即可。
+
 ## 你的电脑，你的规则
 
 | 等级 | 允许的工具 |
