@@ -354,6 +354,10 @@ mod bench {
     use super::*;
     use crate::stream::encode::{Codec, FrameEncoder};
 
+    /// How often `dda_desktop_switch_recovery` reads a frame back to check for black when the screen
+    /// is not switching desktops.
+    const HALF_SECOND: Duration = Duration::from_millis(500);
+
     fn env(key: &str, default: &str) -> String {
         std::env::var(key).unwrap_or_else(|_| default.into())
     }
@@ -468,5 +472,126 @@ mod bench {
         drop(capture);
         stop.store(true, Ordering::Relaxed);
         animation.join().unwrap();
+    }
+
+    /// Hands-on check that Desktop Duplication recovers from the desktop switches that cost it the
+    /// output (lock -> unlock, a display mode change, an exclusive-fullscreen app entering/leaving):
+    /// how long the viewer is frozen each time, and whether the first frame back is good or black.
+    ///
+    /// It captures the primary monitor for `AR_SECS` seconds and drains the slot. The 96x96 window
+    /// keeps the screen presenting, so a long gap between delivered frames is a rebuild, not a still
+    /// screen; each gap over `AR_GAP_MS` is printed with its wall-clock offset. Tracing is on, so the
+    /// module's own `Desktop Duplication restarted` / `capture thread switched desktop` /
+    /// `... unavailable; retrying` lines interleave and corroborate each gap. After every gap (and
+    /// every ~0.5 s otherwise) the frame's Y plane is read back and its mean reported, so a frame
+    /// that comes back black (mean near video-black 16, or 0) is caught even though nothing is
+    /// displaying the captured image. Nothing leaves this machine. Run by hand, then operate the
+    /// machine as the printed prompt says:
+    ///
+    /// `cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored --nocapture`
+    ///
+    /// `AR_SECS` (90), `AR_GAP_MS` (250: report freezes at least this long), `AR_FPS` (60),
+    /// `AR_EDGE` (1920), `AR_READBACK` (1; set 0 to skip the Y-plane read and only time gaps).
+    #[test]
+    #[ignore]
+    fn dda_desktop_switch_recovery() {
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "info")).with_test_writer().try_init();
+        let secs: u64 = env("AR_SECS", "90").parse().unwrap();
+        let gap_ms: u64 = env("AR_GAP_MS", "250").parse().unwrap();
+        let fps: u32 = env("AR_FPS", "60").parse().unwrap();
+        let edge: u32 = env("AR_EDGE", "1920").parse().unwrap();
+        let readback = env("AR_READBACK", "1") != "0";
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let animation = animate(stop.clone());
+        // SAFETY: a plain query for the primary monitor's handle.
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let slot = Arc::new(Slot::default());
+        let limit = Arc::new(AtomicU32::new(edge));
+        let capture = start(monitor, fps, limit, slot.clone()).unwrap();
+
+        println!(
+            "Recording {secs}s. While it runs, do each at least twice and note the time you act:\n  \
+             - lock the screen (Win+L), wait ~2 s, unlock;\n  \
+             - change the display resolution and change it back;\n  \
+             - enter an exclusive-fullscreen game and exit it.\n\
+             Each freeze prints below as `t+<when> frozen <ms>`; a rebuild also logs `Desktop Duplication restarted`."
+        );
+
+        let begin = Instant::now();
+        let deadline = begin + Duration::from_secs(secs);
+        let mut last_frame: Option<Instant> = None;
+        let mut frames = 0usize;
+        let mut gaps: Vec<f64> = Vec::new();
+        let mut black = 0usize;
+        let mut sample_next = true;
+        let mut last_sample = begin;
+        let mut readback_failed = false;
+        let mut closed = false;
+        while Instant::now() < deadline {
+            let Some(slotframe) = slot.take(Duration::from_millis(200)) else { continue };
+            let Some(raw) = slotframe else {
+                closed = true;
+                println!("  t+{:6.2}s  capture closed (slot shut)", begin.elapsed().as_secs_f64());
+                break;
+            };
+            let now = Instant::now();
+            frames += 1;
+            if let Some(prev) = last_frame {
+                let gap = (now - prev).as_secs_f64() * 1000.0;
+                if gap as u64 >= gap_ms {
+                    let froze_at = (prev - begin).as_secs_f64();
+                    println!("  t+{froze_at:6.2}s  frozen {gap:7.1} ms");
+                    gaps.push(gap);
+                    sample_next = true;
+                }
+            }
+            last_frame = Some(now);
+
+            if readback && !readback_failed && (sample_next || now.duration_since(last_sample) >= HALF_SECOND) {
+                let after_gap = sample_next;
+                sample_next = false;
+                last_sample = now;
+                if let Some(tex) = raw.gpu.as_ref() {
+                    match crate::stream::capture::win::read_nv12(tex) {
+                        Ok((y, _uv)) if !y.is_empty() => {
+                            let mean = y.iter().map(|&b| u64::from(b)).sum::<u64>() / y.len() as u64;
+                            if mean <= 20 {
+                                black += 1;
+                                println!(
+                                    "  t+{:6.2}s  frame Y mean {mean} (near black){}",
+                                    now.duration_since(begin).as_secs_f64(),
+                                    if after_gap { ", first frame after a freeze" } else { "" }
+                                );
+                            } else if after_gap {
+                                println!(
+                                    "  t+{:6.2}s  recovered, frame Y mean {mean}",
+                                    now.duration_since(begin).as_secs_f64()
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            readback_failed = true;
+                            println!("  read-back unavailable ({e:#}); timing gaps only from here on");
+                        }
+                    }
+                }
+            }
+        }
+        drop(capture);
+        stop.store(true, Ordering::Relaxed);
+        animation.join().unwrap();
+
+        let elapsed = begin.elapsed().as_secs_f64();
+        let fps_avg = frames as f64 / elapsed;
+        let longest = gaps.iter().copied().fold(0.0_f64, f64::max);
+        println!(
+            "Summary: {frames} frames in {elapsed:.1}s ({fps_avg:.1} fps avg); {} freezes >= {gap_ms} ms, longest {longest:.1} ms; {black} near-black samples{}.",
+            gaps.len(),
+            if closed { "; capture closed before the deadline" } else { "" }
+        );
+        assert!(!closed, "capture closed on its own before the recording ended");
+        assert!(frames > 0, "Desktop Duplication delivered no frames");
     }
 }

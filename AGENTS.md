@@ -473,12 +473,46 @@ AR_EDGE=1920 AR_CODECS=hevc cargo test -p ar-host --release --lib dda_encode_thr
 # 端到端试用：被控端设 AI_REMOTE_CAPTURE=dda 后照常连接
 ```
 
+### 桌面切换恢复验证工具（`dda_desktop_switch_recovery`，2026-10-13，分支 `feat/lock-screen`）
+
+把"桌面切换后 DDA 能不能干净恢复"做成一个可手动跑的测量测试，放在 `stream/capture/dda.rs` 的 `bench` 模块，
+**只加测试、不改采集逻辑**。它采主屏 `AR_SECS` 秒并把帧从 slot 抽走，和吞吐测试共用那个每 ~4 ms 变色的 96×96
+窗口让屏幕一直在刷新——这样"长时间没帧"只会是重建，不会是静止画面。度量方式（都从观看端能观察到的角度）：
+
+- **卡顿时长**：相邻两帧间隔超过 `AR_GAP_MS`（默认 250 ms）就打一行 `t+<秒> frozen <ms>`。重建期间 slot 不出帧，
+  所以这个间隔就是观看端看到的冻结时长。模块自身的 `Desktop Duplication restarted` / `capture thread switched
+  desktop` / `... unavailable; retrying` 日志（测试开了 tracing）会穿插进来，和每次卡顿对上。
+- **黑帧**：每次卡顿后的第一帧、以及平时每 ~0.5 s，用 `win::read_nv12` 把 Y 平面读回 CPU 算均值；均值 ≤ 20
+  当作"接近黑"（视频黑 Y≈16，纯黑 0）。恢复后的第一帧是正常还是黑，就靠这个判出来——没有真实观看端显示画面也能看到。
+- 结束打印汇总：总帧数 / 平均帧率 / 卡顿次数 / 最长卡顿 / 接近黑的采样数；capture 自己提前关了会 `assert` 失败。
+
+一切都在本机、不出网。`AR_READBACK=0` 可只测间隔、不读回。跑法（跑起来后照提示手动操作）：
+
+```sh
+cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored --nocapture
+# 期间手动各做至少两次：Win+L 锁屏等 ~2 s 再解锁；改分辨率再改回；进独占全屏游戏再退出。
+```
+
+**实测结果：未测。** 工具编译通过（`cargo test --lib --no-run` 过），但锁屏→解锁要输密码、改分辨率是系统显示设置、
+开游戏都得人工操作，这些不由 agent 代劳，留给维护者跑一轮把"重建耗时 / 漏帧 / 黑帧"的实测数填进来。注意当前被控端以
+登录用户身份运行，锁屏后打不开 `Winlogon` 桌面，预期表现是"锁屏起到解锁为止一直冻结、解锁后恢复"（安全桌面采不到要等
+服务化那步）；这一轮要测的是**解锁后、改分辨率、全屏游戏进出**这些在普通桌面上就会发生的切换，恢复干不干净、要多久。
+
 ### 下一步
 
-- [ ] 本机验证桌面切换后的恢复：锁屏→解锁、改分辨率、独占全屏游戏进出，看重建要多久、有没有漏帧或黑帧。
-- [ ] 光标：观看端请求 `cursor:"client"` 时 DDA 已经可用（光标单独发）；不请求的观看端在 DDA 下仍看不到光标。
-- [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。
-- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关。
+- [ ] 跑 `dda_desktop_switch_recovery`，把解锁 / 改分辨率 / 全屏游戏进出三种切换的重建耗时、漏帧、黑帧实测填回上面。
+- [ ] DDA 下把光标画进画面（`DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`）。现状辨析：请求 `cursor:"client"`
+      的观看端在 DDA 下**已经能看到光标**（光标走带外单独发，`protocol.rs` 的 `PointerFeed`），桌面端 `Session.tsx`
+      总是带 `onPointer`、总会请求，所以**一级客户端在 DDA 下不缺光标**。真正缺的是"不请求 cursor:client、只认画面里光标"
+      的观看端——这类观看端不消费带外光标，唯一的办法是把光标合成进画面。做法建议：复用 `stream/pointer.rs` 的
+      `position()`（GetCursorInfo）+ `shape()`（GetIconInfo→直 alpha BGRA，已处理各种光标类型，省掉 DXGI 的
+      MONOCHROME/MASKED 分支），在 `dda.rs` 把 DDA 帧先拷到一张可当 RTV 的纹理、用一个 alpha 混合的贴图 quad（VS+PS+
+      BlendState）把光标画上去，再交给 `Converter::convert`。约 200+ 行 D3D11+HLSL，落在 5 ms 的热路径上，要测对热路径的
+      影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
+- [ ] 输入跟随输入桌面（`tools/input/inject.rs`）、服务化与安装计划（`install/windows.rs`），见 `CLAUDE.md`。**本轮没做**：
+      这段要让被控端以 SYSTEM 身份在锁屏 / UAC 安全桌面 / 登录界面上采集与注入，属于安全桌面级能力，agent 不设计不实现，
+      由维护者参照 `CLAUDE.md` 里列的 RustDesk 源码位置自行完成。
+- [ ] 服务化以后，在锁屏和 UAC 场景下让 `capture::start` 自动选 DDA，去掉环境变量开关（依赖上一条）。
 
 ## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
 
