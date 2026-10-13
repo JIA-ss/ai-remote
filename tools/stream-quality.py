@@ -64,7 +64,7 @@ for case in cases:
     r = {**case, "psnr_y": float(psnr[1]), "psnr_avg": float(psnr[4]), "ssim_y": float(ssim[1]) if ssim else None,
          "vmaf": float(vmaf[1]) if vmaf else None,
          # The first second, and from the third on (arithmetic means of per-frame PSNR).
-         "psnr_y_start": mean(frames_y[:fps]), "psnr_y_steady": mean(frames_y[2 * fps:])}
+         "psnr_y_start": mean(frames_y[:fps]), "psnr_y_steady": mean(frames_y[2 * fps:]), "psnr_y_frames": frames_y}
     results.append(r)
     timing = case.get("encode_ms") or {}
     burst = case.get("frame_size_vs_mean") or {}

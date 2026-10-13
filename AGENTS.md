@@ -316,13 +316,25 @@ python tools/stream-quality.py --no-vmaf
 - 改前每个关键帧约是 0.6~1.0 s 的码率预算（1080p 6 Mbit/s 468~497 KB，4K 20 Mbit/s 2.0~2.4 MB，之后几帧几乎为空在"还债"）：
   链路刚好等于码率时，每次关键帧就是近 1 s 的延迟突发（以前记录的"5K 关键帧约 2 MB"就是它）。
 - 现在：8 组里 7 组稳态 +0.2~2.7 dB（4K HEVC 40 Mbit/s −0.1），实际码率从目标的 73~87% 提到 92~98%，之后帧大小最大
-  1.6~2.3 倍均值（改前 1.9~6.7 倍）。**代价**：关键帧压在缓冲内，起流、请求关键帧、换编码之后约 1 s 画面偏糊（起始 18~27 dB）。
+  1.6~2.3 倍均值（改前 1.9~6.7 倍）。代价是关键帧压在缓冲内、刚出来时偏糊，由下面的"静止画面补清"解决。
 - 500 ms：稳态反而低 1.0~2.7 dB；125 ms：NVENC 像是不认（关键帧又变成 0.4~3.1 MB，部分组码率超 8~9%）。保持 250 ms。
 - QualityVsSpeed（0 最快，默认 33，66/100 更好）：4K HEVC 编码 2.4 / 4.3 / 11 / 22 ms，4K H.264 4.5 / 9.7 / 13.7 ms；
   稳态 PSNR 0 档比默认低 0.06~1.0 dB，66 档高 ≤0.2 dB。收益不大，保持默认（4K H.264 想上 100 fps 时可考虑 0 档）。
 - 端到端（`--pattern 5120x2160`，命令行端，单次）：各档帧率不变（59.3~59.6 / 99.0~99.1 fps），采集→到达 p50 4.5~16 ms。
   回归 `streams_keep_to_the_requested_bitrate`、`bitrate_changes_take_effect_mid_stream`、
   `hardware_encoders_open_and_close_repeatedly` 都通过。
+- **静止画面补清**（`protocol.rs` 的 `Refine`）：关键帧本身在这张合成图上只有 14~15 dB，**加大关键帧没用**（关键帧时
+  码率 ×4、关键帧 1.5 MB，第 0 帧也只从 14.5 到 15.7 dB，第 30/60 帧和不加一样）；画面在动时后续 P 帧会自己补清，
+  但桌面静止时采集不出新帧，糊的关键帧（或滚动停下前最后一张运动中的帧）会一直停在屏幕上。现在：关键帧或较大的
+  新帧（≥ 每帧码率份额的 10%）之后，没有新帧时按帧率把最后一张图再编码，直到连续 0.25 s 输出都小于份额的 10%
+  （关键帧后头 0.4 s 不计：码率控制在用空帧还关键帧的债），最多 5 s。光标闪烁这类小新帧不触发。
+  实测（单次，命令行端存码流逐帧打分；桌面端 smoke 确认 0 丢帧）：
+  - 静止图案（`--pattern 1920x1080,still`，均衡档 HEVC 12 Mbit/s）：15.1 dB → 约 1.6 s 后 47.2 dB，随后停发；补清期间
+    1.8 MB（平均约 7.7 Mbit/s，低于请求）。4K 清晰档 40 Mbit/s：14.5 → 47.1 dB，6.7 MB。改动前屏幕会一直停在第 0 帧。
+  - 滚动 2 s 后停下（`--pattern 1920x1080,stop=2`）：停下那一帧 41.9 dB，20 帧后 43.5 dB 收敛，之后每帧 1.1 KB 后停发。
+  - 持续滚动时不介入：5K 图案各档帧率不变。
+  - **没测的**：真实桌面内容（文字界面的关键帧本来就比这张图清楚，补清应更快）、补清期间网络正好变慢时与自适应码率的
+    交互。
 - **低码率时降分辨率：不做。** 同一 1080p/4K 源在 1.5~10 Mbit/s 下缩到 0.5~0.75 倍编码再放大回来，PSNR-Y 只有 12 dB
   （原尺寸 21.8~33.5 dB）：1 像素的文字笔画缩放后直接变成灰色。桌面内容（文字、界面）低码率时保持原尺寸只降码率；
   视频、游戏类内容可能不同，未测。测量用 `AR_VARIANTS=edge=N`。
@@ -367,7 +379,7 @@ python tools/stream-quality.py --no-vmaf
 - [x] 端到端延迟指标：会话页显示"采集后 N 毫秒显示（±误差）"。
 - [x] 自适应码率（只调码率，不调分辨率/帧率；降分辨率在桌面内容上实测更差，见"NVENC 参数"末条）。下一步：真实网络实测。
 - [x] 调 NVENC 参数：VBV 之前没生效，现在 0.25 s；QualityVsSpeed 保持默认（见"NVENC 参数"）。文字清晰度（4:4:4）解码端普遍不支持，暂不做。
-- [ ] 关键帧起始偏糊约 1 s（VBV 生效的代价）：可试关键帧后短时提高码率，或在被控端请求关键帧时先发上一张已编码的关键帧。
+- [x] 关键帧起始偏糊（VBV 生效的代价）：加大关键帧无效，改为静止画面补清（见"NVENC 参数"）。
 - [x] 光标改为客户端绘制（Windows 被控端 + 桌面端）。待做：macOS 被控端、iOS 观看端、移动鼠标时的收益实测。
 
 **Mac 被控端（需要在 Mac 上做）** — `crates/ar-host/src/stream/encode/mac.rs`、`capture/mac.rs`
@@ -403,7 +415,9 @@ python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-
 python tools/stream-e2e.py --pattern 1920x1080 --link-mbps 8 --skip-cli --qualities balanced --seconds 45 --desktop target/debug/ai-remote-desktop.exe
 # 画质：PSNR/SSIM（VMAF 在合成内容上饱和）
 AR_RC=both cargo test -p ar-host --release --lib encoded_quality -- --ignored --nocapture --test-threads=1 && python tools/stream-quality.py --no-vmaf
-# 编码器调参：AR_VARIANTS="early=0;default;vbvms=125;qvs=0"（见 encoded_quality 的注释）
+# 编码器调参：AR_VARIANTS="early=0;default;vbvms=125;qvs=0;scroll=0;boost=2,rekey=150"（见 encoded_quality 的注释）
+# 静止画面补清：被控端只出一帧（或滚动 N 秒后停），存码流后逐帧打分
+python tools/stream-e2e.py --pattern 1920x1080,still --only balanced --save --out target/e2e-still
 # 光标单独发送：命令行计数 kind 4/5
 python tools/stream-e2e.py --pattern 1920x1080 --pointer --only balanced
 # 旧的真实屏幕采集 + 编码（会读当前屏幕，只在内存里）

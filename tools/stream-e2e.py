@@ -35,11 +35,13 @@ parser.add_argument("--qualities", default="balanced,smooth,detail,ultra")
 parser.add_argument("--skip-cli", action="store_true", help="only the desktop measurement")
 parser.add_argument("--pattern", metavar="WxH",
                     help="the host streams a synthetic scrolling desktop of this size instead of the screen "
-                         "(AI_REMOTE_TEST_PATTERN; Windows hosts): repeatable, full motion, no screen read")
+                         "(AI_REMOTE_TEST_PATTERN; Windows hosts): repeatable, full motion, no screen read; "
+                         "WxH,still shows one picture and then nothing changes")
 parser.add_argument("--link-mbps", type=float,
                     help="the controller reads live video no faster than this (AI_REMOTE_TEST_LINK_KBPS): a slow "
                          "network, with QUIC's windows filling as on one")
 parser.add_argument("--only", help="comma-separated substrings: run only the CLI configurations whose label matches")
+parser.add_argument("--save", action="store_true", help="keep each CLI configuration's elementary stream in --out")
 parser.add_argument("--pointer", action="store_true",
                     help="the CLI asks for the pointer separately, as the desktop app does (counts its messages)")
 parser.add_argument("--stress", action="store_true",
@@ -140,6 +142,8 @@ with tempfile.TemporaryDirectory(prefix="ar-stream-", ignore_cleanup_errors=True
                     "--max-fps", fps, "--max-long-edge", edge, "--bitrate-kbps", kbps]
             if options.pointer:
                 args += ["--pointer"]
+            if options.save:
+                args += ["--out", options.out / (label.split()[0] + ".bin")]
             if codecs:
                 args += ["--codecs", codecs]
             try:
