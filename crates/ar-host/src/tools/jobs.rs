@@ -739,11 +739,11 @@ fn spawn_job(make: impl Fn() -> Result<tokio::process::Command>) -> Result<Box<d
 
 /// One process in a snapshot of the process table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Proc {
-    pid: u32,
-    parent: Option<u32>,
+pub(super) struct Proc {
+    pub(super) pid: u32,
+    pub(super) parent: Option<u32>,
     /// Start time in seconds since the epoch.
-    start: u64,
+    pub(super) start: u64,
     /// Unix session id. `None` on Windows, whose "session" is the logon session.
     session: Option<u32>,
     /// An OS helper that lives and dies with the processes it serves (Windows' console host): never
@@ -753,21 +753,21 @@ struct Proc {
 
 /// A job's main process as recorded: the pid with the start time identifies it.
 #[derive(Debug, Clone, Copy)]
-struct Root {
-    pid: u32,
-    start: u64,
+pub(super) struct Root {
+    pub(super) pid: u32,
+    pub(super) start: u64,
     /// Seconds since the epoch until which it is known to have run.
-    alive_until: Option<u64>,
+    pub(super) alive_until: Option<u64>,
 }
 
 /// A snapshot of the process table, for finding a job's processes without its Job Object.
-struct ProcTable {
+pub(super) struct ProcTable {
     sys: System,
-    procs: Vec<Proc>,
+    pub(super) procs: Vec<Proc>,
 }
 
 impl ProcTable {
-    fn read() -> Self {
+    pub(super) fn read() -> Self {
         let mut sys = System::new();
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
         let procs = sys
@@ -784,8 +784,18 @@ impl ProcTable {
         Self { sys, procs }
     }
 
-    fn members(&self, root: &Root) -> Vec<Proc> {
+    pub(super) fn members(&self, root: &Root) -> Vec<Proc> {
         job_members(&self.procs, root)
+    }
+
+    /// The name of the process `pid` in this snapshot.
+    pub(super) fn name(&self, pid: u32) -> Option<String> {
+        self.sys.process(Pid::from_u32(pid)).map(|p| p.name().to_string_lossy().into_owned())
+    }
+
+    /// Kills one process of this snapshot, unless its pid was reused since (see [`kill_process`]).
+    pub(super) fn kill(&self, p: &Proc) -> bool {
+        kill_process(&self.sys, p.pid, p.start)
     }
 
     /// Kills the job's live processes; returns how many were killed.
@@ -806,7 +816,7 @@ fn unix_session(_: &sysinfo::Process) -> Option<u32> {
 
 /// Polls the process table until the job whose main process is `root` has no live process left, or
 /// `timeout` passes. Returns whether it emptied.
-fn wait_tree_empty(root: &Root, timeout: Duration) -> bool {
+pub(super) fn wait_tree_empty(root: &Root, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if ProcTable::read().members(root).is_empty() {
@@ -1594,8 +1604,10 @@ mod tests {
         }
     }
 
+    /// Waits up to 60 s: on a loaded CI runner PowerShell's cold start plus `Start-Process` has
+    /// taken over 15 s while the rest of the suite runs alongside.
     async fn job_pids(m: &JobManager, id: &str) -> Vec<u32> {
-        for _ in 0..150 {
+        for _ in 0..600 {
             let (chunk, _) = m.log(id, 0, 65_536).await.unwrap();
             if let Some(line) = chunk.text.lines().find(|l| l.starts_with("PIDS ")) {
                 return line.split_whitespace().skip(1).filter_map(|p| p.parse().ok()).collect();

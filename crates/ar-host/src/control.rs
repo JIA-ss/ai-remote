@@ -71,6 +71,11 @@ pub enum HostRequest {
         #[serde(default)]
         for_secs: Option<u64>,
     },
+    /// Turn the bypass default on or off: on, every paired controller (those paired later included)
+    /// is bypassed unless the owner turns it off for that one. Only here, at this computer.
+    SetBypassDefault {
+        on: bool,
+    },
     Shutdown,
 }
 
@@ -87,9 +92,10 @@ pub async fn serve(host: Arc<HostState>, mut conn: Conn, shutdown: CancellationT
 }
 
 /// Turns off the bypass of the device `principal` (named `name` here), saying why in the audit log;
-/// whether it was on.
-pub(crate) fn end_bypass(host: &HostState, name: &str, principal: &str, why: &str) -> bool {
-    match host.bypass().clear(principal) {
+/// whether it was on. While the default is on, the device is excepted from it (`except`), unless it
+/// is being forgotten: a device paired again starts from the default.
+pub(crate) fn end_bypass(host: &HostState, name: &str, principal: &str, why: &str, except: bool) -> bool {
+    match host.bypass().clear(principal, name, except) {
         Ok(true) => {
             tracing::info!(peer = %name, why, "bypass off");
             host.audit().event(
@@ -120,7 +126,7 @@ pub(crate) async fn forget(host: &HostState, p: &Peer) -> Result<Value> {
     let mut approver_keys = 0;
     for device in &devices {
         approver_keys += host.approver().keys().remove(device, None)?;
-        end_bypass(host, &p.name, device, "forgotten");
+        end_bypass(host, &p.name, device, "forgotten", false);
     }
     // Forgetting removes the pairing, not a refusal: a revoked device stays refused.
     Ok(json!({
@@ -161,7 +167,7 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
                 .map(|p| {
                     let entry = bypassed.iter().find(|e| p.principal.as_deref() == Some(e.principal.as_str()));
                     let mut v = serde_json::to_value(&p).unwrap_or_default();
-                    v["bypass"] = entry.is_some().into();
+                    v["bypass"] = host.bypass().covers(&p).into();
                     v["bypass_until_ms"] = json!(entry.and_then(|e| e.until_ms));
                     v
                 })
@@ -174,7 +180,7 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             if level.is_none()
                 && let Some(device) = &p.principal
             {
-                end_bypass(host, &p.name, device, "level none");
+                end_bypass(host, &p.name, device, "level none", true);
             }
             json!({"peer": p.name, "level": level})
         }
@@ -182,36 +188,54 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             let p = mesh.find_peer(&peer).await?;
             mesh.revoke(&p, Some("revoked by the host owner".into())).await?;
             if let Some(device) = &p.principal {
-                end_bypass(host, &p.name, device, "revoked");
+                end_bypass(host, &p.name, device, "revoked", true);
             }
             json!({"peer": p.name, "device": p.principal, "revoked": true})
         }
         HostRequest::Bypass => {
-            let bypassed = host.bypass().list();
+            let bypass = host.bypass();
+            let bypassed = bypass.list();
             let devices: Vec<Value> = mesh
                 .peers()
                 .await?
                 .into_iter()
                 .map(|p| {
                     let entry = bypassed.iter().find(|e| p.principal.as_deref() == Some(e.principal.as_str()));
+                    let coverage = bypass.coverage(&p);
                     json!({
                         "name": p.name,
                         "device": p.principal,
                         "level": p.level,
                         "revoked": p.revoked,
-                        "bypass": entry.is_some(),
+                        // Effective: its own entry or the default.
+                        "bypass": coverage.covered(),
+                        "how": coverage,
                         "since_ms": entry.map(|e| e.since_ms),
                         "until_ms": entry.and_then(|e| e.until_ms),
                     })
                 })
                 .collect();
-            json!({"devices": devices})
+            json!({"default": bypass.default_on(), "devices": devices})
+        }
+        HostRequest::SetBypassDefault { on } => {
+            let changed = host.bypass().set_default(on)?;
+            if changed {
+                if on {
+                    tracing::warn!(
+                        "bypass default on: every paired controller's calls skip levels, policy and approval"
+                    );
+                } else {
+                    tracing::info!("bypass default off");
+                }
+                host.audit().event(json!({"kind": "bypass", "default": on, "on": on, "by": "host"}));
+            }
+            json!({"default": on, "changed": changed})
         }
         HostRequest::SetBypass { peer, on, for_secs } => {
             let p = mesh.find_peer(&peer).await?;
             let device = p.principal.clone().ok_or_else(|| anyhow!("{} has no device id", p.name))?;
             if !on {
-                let was = end_bypass(host, &p.name, &device, "turned off");
+                let was = end_bypass(host, &p.name, &device, "turned off", true);
                 return Ok(json!({"peer": p.name, "bypass": false, "changed": was}));
             }
             if p.revoked {

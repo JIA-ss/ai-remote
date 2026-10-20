@@ -42,6 +42,8 @@ running hosts see
 | `jobs_log` | admin | allow | read-only | read a job's log from an offset |
 | `jobs_wait` | admin | allow | read-only | wait for a job to end |
 | `jobs_kill` | admin | allow | destructive | stop a job and everything it started |
+| `process_list` | admin | allow | read-only | the host's processes, filtered by name or pid |
+| `process_kill` | admin | ask | destructive | stop a process (and what it started) by pid or name |
 | `files_list` | admin | allow | read-only | list a folder |
 | `files_stat` | admin | allow | read-only | whether a path exists, and what it is |
 | `files_mkdir` | admin | ask | non-destructive | create a folder |
@@ -65,7 +67,7 @@ running hosts see
   unknown option value fails with `invalid arguments: ...` before anything happens, and fields the
   tool does not know are ignored. Mounted tools get their arguments as given; the server checks them.
 - **`intent`.** Tools that change something (`focus_window`, `mouse`, `keyboard`, `clipboard_write`,
-  `shell`, `jobs_start`, `jobs_kill`, and mounted tools above `observe` or with an approval setting)
+  `shell`, `jobs_start`, `jobs_kill`, `process_kill`, and mounted tools above `observe` or with an approval setting)
   take an optional `intent` string: why you are doing it. The owner sees it in approval prompts and
   the audit log. It changes nothing else.
 - **Results.** Most tools return one text block of pretty-printed JSON, plus the same value as
@@ -513,7 +515,27 @@ them to go, and returns the status (with a 1 KiB log tail) and a `result` senten
 "killed the job and every process it started", or that the main process had not ended within 5 s.
 It works on any job started with `jobs_start`, whichever device started it, and on nothing else.
 
-### 5.13 Files
+### 5.13 Processes
+
+Admin level. `process_list` runs without asking; `process_kill` asks the owner by default.
+
+**`process_list`**: optional `name` (a case-insensitive substring of the process name or executable
+file name), `pid` (one process) and `limit` (default 300, at most 2000). Returns
+`{processes: [{pid, parent_pid, name, exe, start_time, memory_bytes}], count, total, truncated}`,
+smallest pid first; `start_time` is in seconds since the Unix epoch, `exe` is `null` when the host
+may not read it. No command lines or environments: they can hold secrets, and `shell` reaches them
+when the owner allows it.
+
+**`process_kill`**: `pid` or `name` (exactly the process name, case-insensitive: `game.exe`), not
+both; optional `tree` (default `true`: also the processes it started, found through their parent
+links, and theirs) and `intent`. Each process is matched by pid *and* start time before it is
+stopped, as `jobs_kill` does, so a pid reused in between never hits an unrelated process. Waits up
+to 3 s and returns `{killed: [{pid, name}], count, still_running: [pid], result}`. It refuses the
+host's own process, the process that supervises it, and the system's idle and kernel processes;
+it fails when nothing matches (`process_list` shows what runs). For a job started with
+`jobs_start`, `jobs_kill` is the tool: it knows the job's whole tree, leftovers included.
+
+### 5.14 Files
 
 Admin level: file names and contents are as sensitive as what `shell` reaches. Reading metadata runs
 without asking; creating, deleting and moving files ask the owner by default. Every path must be

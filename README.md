@@ -109,6 +109,8 @@ codex mcp add ai-remote -- ai-remote mcp
 
 Cursor uses `mcpServers` JSON in `~/.cursor/mcp.json`. VS Code uses `servers` JSON in its MCP configuration. Codex also supports `[mcp_servers.ai-remote]` in `~/.codex/config.toml`. Paths, quoting and exact examples: [MCP client setup](docs/mcp-clients.md).
 
+Then give the agent the working method: [skills/ai-remote/SKILL.md](skills/ai-remote/SKILL.md) tells it how to start a session, look, act, run commands and files, and what levels, approvals, refusals and the owner taking over mean. Copy the folder to `~/.claude/skills/` for Claude Code, or paste it into any other agent's rules.
+
 ## Your computers, your rules
 
 | Level | Allowed tools |
