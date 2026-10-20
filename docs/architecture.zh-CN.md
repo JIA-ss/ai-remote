@@ -118,7 +118,8 @@ flowchart LR
 - **ALPN `app/ai-remote/screen/1`。** 给控制端前的人看的被控端实时画面（桌面应用的会话画面；排查时用
   `ai-remote view`）。采集只在屏幕变化时给出一帧，最新的一帧放在只有一格的缓冲里，网络慢时在编码前就跳过旧帧。
   Windows：Windows Graphics Capture 跑在被控端自建的 D3D11 设备上，GPU 缩放并转 NV12，Media Foundation
-  硬件编码（H.264、HEVC、AV1），OpenH264 兜底。macOS 13+：ScreenCaptureKit 加 VideoToolbox H.264。
+  硬件编码（H.264、HEVC、AV1），OpenH264 兜底。macOS 13+：ScreenCaptureKit 加 VideoToolbox（HEVC 和 H.264 High，
+  机器有低延迟码控器时优先用它）。
   观看端列出自己能硬解的编码（桌面端 WebCodecs，iPhone VideoToolbox），被控端选第一个能编的。每帧是 18 字节
   帧头（类型、标志位含关键帧和编码、尺寸、按流时钟的采集时间戳、长度）加编码数据。观看端可以在自己那半条流上写
   控制行：请求关键帧、ping（被控端回流时钟，观看端据此显示"采集→显示"延迟）、改码率（桌面端按这个延迟随网络
@@ -251,8 +252,9 @@ launch_app = { level = "control", approve = "ask" }
 
   每个配置目录只运行一个被控端：再启动一个，会发现这个配置目录的控制管道已被占用，随即退出。
 - **安装。** `ai-remote host install` 注册后台被控端：在 Windows 上是一个用户登录时触发、以最高权限和交互式令牌
-  运行的计划任务，外加入站防火墙规则，免得首次监听时弹出一个没人处理的提示；在 macOS 上是用户级 LaunchAgent
-  （macOS 被控端本身规划在 M1）。`--dry-run` 会先列出每一处改动。见
+  运行的计划任务，外加入站防火墙规则，免得首次监听时弹出一个没人处理的提示（加 `--service` 则是能到达锁屏和
+  UAC 的 Windows 服务）；在 macOS 上是用户级 LaunchAgent（加 `--service` 则是连登录界面也服务的系统级
+  LaunchAgent）。`--dry-run` 会先列出每一处改动。见
   [operations.zh-CN.md](operations.zh-CN.md#3-运行被控端)。
 - **会话状态如实上报，不靠猜。** `system_info` 和 `doctor` 会说明进程是否在交互会话、是否在控制台、
   是否以管理员权限运行、桌面是否已锁定，让 Agent 分得清是“我看不见”还是“屏幕上本来就没东西”。

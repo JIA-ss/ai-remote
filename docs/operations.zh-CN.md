@@ -231,8 +231,29 @@ this host can see and operate it"），`approval` 为 warn，工具照常可用�
 `launchctl bootstrap gui/<uid>` 加载。它在登录时运行 `ai-remote-hostw --home <配置目录>`，只在图形（Aqua）
 会话中、以交互进程运行；崩溃后 launchd 会重启它，正常退出则不会，所以执行 `ai-remote stop-host` 之后，
 它会一直保持停止，直到下次登录。安装不需要管理员权限。`ai-remote-hostw` 第一次截屏或操作时，macOS
-会请求“屏幕录制”和“辅助功能”权限，在“系统设置 > 隐私与安全性”里都允许即可。macOS 被控端本身规划在 M1；
-这里描述的 LaunchAgent 安装已经实现。
+会请求“屏幕录制”和“辅助功能”权限，在“系统设置 > 隐私与安全性”里都允许即可。
+
+**锁屏**对这个被控端是可达的：屏幕锁定时，`doctor` 的 `desktop` 项是 **warn**（“the desktop is locked …
+(input desktop: lock screen); this host can see and operate it”），控制端能看到锁屏画面、能输入密码；需要审批的
+操作会被拒绝（没人在场回答；审批设备仍然可以批准）。macOS 上做到这一步不需要 `--service`。
+
+**登录界面**（重启或注销之后）是另一个会话，用户级 agent 进不去。`host install --service` 改写一个*系统级*
+LaunchAgent：`/Library/LaunchAgents/io.github.jia-ss.ai-remote.host.<8 位十六进制>.plist`，
+`LimitLoadToSessionType` 为 `LoginWindow` 加 `Aqua`（RustDesk 就是这样到达登录界面的），并移除用户级的那份。
+这个文件归 root，所以要用 `sudo` 运行：
+
+```sh
+sudo ai-remote --home "$HOME/Library/Application Support/ai-remote" host install --service --dry-run
+sudo ai-remote --home "$HOME/Library/Application Support/ai-remote" host install --service
+```
+
+`--home` 指定你的配置目录（sudo 会改掉 `HOME`）；计划从配置目录的属主读出账号。在登录界面的会话里 launchd
+以 root 启动被控端，被控端随即切换成安装它的用户（plist 里写了 `--owner-uid`），这样配置目录仍归该用户，
+该用户给 `ai-remote-hostw` 的“屏幕录制”“辅助功能”授权也仍然有效。在用户自己的会话里，同一个 agent 就以
+该用户运行，和用户级 agent 完全一样。*尚未在真机验证*：从 root 降到用户的进程在登录界面能否拿到
+ScreenCaptureKit 的画面。如果 `doctor` 说桌面可用但那里的画面一直是黑的，在 agent 的环境里设
+`AI_REMOTE_KEEP_ROOT=1`（plist 加一项 `EnvironmentVariables`），让它像 RustDesk 一样在登录界面以 root 运行，
+并反馈。`sudo ai-remote … host uninstall` 移除系统级 agent；不加 sudo 的卸载会在这一步停下并说明。
 
 #### 查看与卸载
 
