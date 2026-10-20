@@ -1,13 +1,33 @@
 //! The maintained doom-fish bindings own all VideoToolbox callbacks and native retain/release.
 //! Capture's immutable IOSurface stays native; the BGRA API and software fallback explicitly copy.
+//!
+//! HEVC (every Apple Silicon Mac and T2 Intel Macs encode it in hardware) and H.264 High profile;
+//! AV1 has no Apple hardware encoder. The low-latency rate controller
+//! (`EnableLowLatencyRateControl`) is asked for first and the regular encoder taken when the
+//! machine has none.
 
-use anyhow::{Context, Result, anyhow};
-use apple_cf::{cm::CMTime, cv::CVPixelBuffer, iosurface::IOSurface};
+use anyhow::{Context, Result, anyhow, bail};
+use apple_cf::{
+    cf::{CFDictionary, CFNumber, CFString},
+    cm::CMTime,
+    cv::CVPixelBuffer,
+    iosurface::IOSurface,
+};
 use videotoolbox::{
-    Codec, CompressionSession, FrameProperties, HardwareAcceleration, PixelTransferSession, ProfileLevel, ScalingMode,
+    CompressionSession, FrameProperties, HardwareAcceleration, PixelTransferSession, ProfileLevel, ScalingMode,
 };
 
-use super::{Encoded, avcc_to_annex_b};
+use super::{Codec, Encoded, avcc_to_annex_b};
+
+/// Whether VideoToolbox can encode `codec` in hardware on some Mac: AV1 never; HEVC and H.264 on
+/// every Mac this host supports (macOS 13+), although `HardwareEncoder::new` is the real test.
+pub(super) fn available(codec: Codec) -> bool {
+    matches!(codec, Codec::H264 | Codec::Hevc)
+}
+
+/// Keyframes only when the stream asks (a new viewer, a decoder error): a periodic IDR costs a
+/// large frame for nothing on a desktop picture. VideoToolbox wants a positive bound.
+const KEYFRAME_INTERVAL_FRAMES: i32 = 1 << 30;
 
 const BGRA: u32 = u32::from_be_bytes(*b"BGRA");
 
@@ -55,6 +75,8 @@ impl SurfaceBuffer {
 
 pub(super) struct HardwareEncoder {
     session: CompressionSession,
+    codec: Codec,
+    low_latency: bool,
     width: u32,
     height: u32,
     fps: u32,
@@ -65,32 +87,84 @@ pub(super) struct HardwareEncoder {
 }
 
 impl HardwareEncoder {
-    pub(super) fn new(width: u32, height: u32, fps: u32, bitrate_bps: u32) -> Result<Self> {
-        let session = CompressionSession::builder(i32::try_from(width)?, i32::try_from(height)?, Codec::H264)
-            .with_hardware_acceleration(HardwareAcceleration::Required)
-            .with_real_time(true)
-            .with_allow_frame_reordering(false)
-            .with_average_bit_rate(i32::try_from(bitrate_bps)?)
-            .with_expected_frame_rate(f64::from(fps))
-            .with_max_keyframe_interval(i32::try_from(fps.saturating_mul(10))?)
-            .with_profile_level(ProfileLevel::H264BaselineAutoLevel)
-            .build()
-            .context("create required hardware H.264 session")?;
-        // SAFETY: This key is the system's valid, process-lifetime compression-property CFString.
-        // No raw session/callback ownership crosses our code; copy_property retains its result.
-        let hardware = unsafe {
-            session.copy_property(videotoolbox::ffi::kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder)
+    pub(super) fn new(width: u32, height: u32, fps: u32, bitrate_bps: u32, codec: Codec) -> Result<Self> {
+        let (vt_codec, profile) = match codec {
+            Codec::H264 => (videotoolbox::Codec::H264, ProfileLevel::H264HighAutoLevel),
+            Codec::Hevc => (videotoolbox::Codec::HEVC, ProfileLevel::HEVCMainAutoLevel),
+            Codec::Av1 => bail!("VideoToolbox has no AV1 hardware encoder"),
+        };
+        let build = |low_latency: bool| {
+            CompressionSession::builder(i32::try_from(width)?, i32::try_from(height)?, vt_codec)
+                .with_hardware_acceleration(HardwareAcceleration::Required)
+                .with_low_latency_rate_control(low_latency)
+                .with_real_time(true)
+                .with_allow_frame_reordering(false)
+                .with_average_bit_rate(i32::try_from(bitrate_bps)?)
+                .with_expected_frame_rate(f64::from(fps))
+                .with_max_keyframe_interval(KEYFRAME_INTERVAL_FRAMES)
+                .with_profile_level(profile)
+                .build()
+                .with_context(|| format!("create required hardware {} session", codec.name()))
+        };
+        let (session, low_latency) = match build(true) {
+            Ok(session) => (session, true),
+            Err(error) => {
+                tracing::debug!(codec = codec.name(), "no low-latency VideoToolbox encoder: {error:#}");
+                (build(false)?, false)
+            }
+        };
+        // `Required` already fails the session without a hardware encoder; the regular encoder
+        // also answers the question, the low-latency one does not (property not supported).
+        if !low_latency {
+            // SAFETY: This key is the system's valid, process-lifetime compression-property
+            // CFString. No raw session/callback ownership crosses our code; copy_property retains
+            // its result.
+            let hardware = unsafe {
+                session.copy_property(videotoolbox::ffi::kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder)
+            }
+            .context("query actual hardware encoder")?
+            .context("hardware-encoder property was unavailable")?;
+            // CFBoolean's two values are process-lifetime singleton objects; query must return true.
+            let is_hardware = unsafe { hardware.as_ptr().cast_const() == videotoolbox::ffi::kCFBooleanTrue.cast() };
+            anyhow::ensure!(is_hardware, "VideoToolbox did not confirm hardware acceleration");
         }
-        .context("query actual hardware encoder")?
-        .context("hardware-encoder property was unavailable")?;
-        // CFBoolean's two values are process-lifetime singleton objects; query must return true.
-        let is_hardware = unsafe { hardware.as_ptr().cast_const() == videotoolbox::ffi::kCFBooleanTrue.cast() };
-        anyhow::ensure!(is_hardware, "VideoToolbox did not confirm hardware acceleration");
-        Ok(Self { session, width, height, fps, sequence: 0, source: None, scaled: None, transfer: None })
+        Ok(Self {
+            session,
+            codec,
+            low_latency,
+            width,
+            height,
+            fps,
+            sequence: 0,
+            source: None,
+            scaled: None,
+            transfer: None,
+        })
     }
 
     pub(super) fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub(super) fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    /// Whether the low-latency rate controller took the session.
+    pub(super) fn low_latency(&self) -> bool {
+        self.low_latency
+    }
+
+    /// Changes the target bitrate of the running session; the next frames follow it.
+    pub(super) fn set_bitrate(&self, bitrate_bps: u32) -> Result<()> {
+        // SAFETY: the key is the system's process-lifetime constant; the borrowed wrapper retains it.
+        let key = unsafe {
+            CFString::from_raw_borrowed(videotoolbox::ffi::kVTCompressionPropertyKey_AverageBitRate.cast_mut().cast())
+        }
+        .context("AverageBitRate property key")?;
+        let value = CFNumber::from_i64(i64::from(bitrate_bps));
+        let properties = CFDictionary::from_pairs(&[(&key, &value)]);
+        self.session.set_properties(&properties).context("set VideoToolbox AverageBitRate")
     }
 
     pub(super) fn encode_bgra(
@@ -140,34 +214,29 @@ impl HardwareEncoder {
                 CMTime::new(self.sequence, i32::try_from(self.fps)?),
                 FrameProperties::new().with_force_key_frame(force),
             )
-            .context("encode native H.264 frame")?;
+            .with_context(|| format!("encode native {} frame", self.codec.name()))?;
         self.sequence = self.sequence.checked_add(1).context("encoder timestamp overflow")?;
         if encoded.data.is_empty() {
             return Ok(None);
         }
         let sample = encoded.cm_sample_buffer().context("encoded frame has no sample buffer")?;
         let keyframe = sample.is_sync_sample();
-        let format = sample.format_description().context("encoded frame has no H.264 format")?;
+        let format = sample.format_description().context("encoded frame has no video format")?;
         anyhow::ensure!(
             format.video_dimensions() == Some((self.width as i32, self.height as i32)),
             "hardware encoder output dimensions changed"
         );
-        let parameter_sets =
-            format.video_parameter_sets().map_err(|status| anyhow!("read H.264 parameter sets: {status}"))?;
+        let parameter_sets = format
+            .video_parameter_sets()
+            .map_err(|status| anyhow!("read {} parameter sets: {status}", self.codec.name()))?;
         let data = avcc_to_annex_b(
             &encoded.data,
             usize::try_from(parameter_sets.nal_unit_header_length)?,
             &parameter_sets.parameter_sets,
             keyframe,
+            self.codec,
         )?;
-        Ok(Some(Encoded {
-            data,
-            keyframe,
-            width: self.width,
-            height: self.height,
-            codec: super::Codec::H264,
-            captured: None,
-        }))
+        Ok(Some(Encoded { data, keyframe, width: self.width, height: self.height, codec: self.codec, captured: None }))
     }
 }
 

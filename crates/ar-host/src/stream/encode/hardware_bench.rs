@@ -36,11 +36,86 @@ fn native_buffer(pixels: &[u8], width: u32, height: u32) -> CVPixelBuffer {
     CVPixelBuffer::create_with_io_surface(&surface).unwrap()
 }
 
+/// Appends the frames as `tools/webcodecs-decode-check.mjs` reads them (`target/stream-bench/
+/// <codec>-<w>x<h>.bin`: a key byte and a little-endian u32 length before each frame), so the
+/// desktop decoder check can decode what this Mac encodes.
+fn save_stream(codec: super::Codec, width: u32, height: u32, frames: &[Encoded]) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/stream-bench");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut out = Vec::new();
+    for frame in frames {
+        out.push(u8::from(frame.keyframe));
+        out.extend_from_slice(&(frame.data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&frame.data);
+    }
+    std::fs::write(dir.join(format!("{}-{width}x{height}.bin", codec.name())), out).unwrap();
+}
+
+/// Frames of a scrolling desktop-like picture through `encoder` (every frame changes everywhere).
+fn scrolling_frames(encoder: &mut FrameEncoder, width: u32, height: u32, count: u32) -> Vec<Encoded> {
+    let tall = super::super::capture::pattern::desktop_like(width, height * 2);
+    let row = width as usize * 4;
+    (0..count)
+        .filter_map(|i| {
+            let top = super::super::capture::pattern::scroll_top(i * 7, height) as usize;
+            let buffer = native_buffer(&tall[top * row..(top + height as usize) * row], width, height);
+            let raw = super::super::capture::Raw {
+                bgra: Vec::new(),
+                width,
+                height,
+                captured: Instant::now(),
+                pixel_buffer: Some(buffer),
+            };
+            encoder.encode_raw(&raw).unwrap()
+        })
+        .collect()
+}
+
 fn require_hardware(width: u32, height: u32, edge: u32, bitrate: u32) -> anyhow::Result<FrameEncoder> {
     let (w, h) = super::stream_size(width, height, edge);
     let mut encoder = FrameEncoder::new(60, bitrate, edge)?;
-    encoder.backend = Backend::Hardware(Box::new(mac::HardwareEncoder::new(w, h, 60, bitrate)?));
+    encoder.backend = Backend::Hardware(Box::new(mac::HardwareEncoder::new(w, h, 60, bitrate, super::Codec::H264)?));
     Ok(encoder)
+}
+
+/// HEVC in hardware: an Annex B keyframe starting with VPS, SPS and PPS, deltas after it, a forced
+/// keyframe on request and a live bitrate change that takes without a restart. No HEVC decoder
+/// is available here; the desktop decoder check (`tools/webcodecs-decode-check.mjs`) decodes it.
+#[test]
+#[ignore = "requires a real hardware encoder, uses only synthetic pixels"]
+fn hardware_hevc_keyframes_carry_parameter_sets() {
+    let (width, height) = (640, 360);
+    let pixels = synthetic(width, height);
+    let buffer = native_buffer(&pixels, width, height);
+    let raw = super::super::capture::Raw {
+        bgra: Vec::new(),
+        width,
+        height,
+        captured: Instant::now(),
+        pixel_buffer: Some(buffer),
+    };
+    let mut encoder =
+        FrameEncoder::new(60, 2_000_000, 640).unwrap().with_codecs(&[super::Codec::Hevc, super::Codec::H264]);
+    let frame = encoder.encode_raw(&raw).unwrap().expect("hardware output");
+    assert!(encoder.backend_name().starts_with("videotoolbox (hevc, hardware"), "{}", encoder.backend_name());
+    assert_eq!(frame.codec, super::Codec::Hevc);
+    assert!(frame.keyframe);
+    let types: Vec<u8> = super::nal_headers(&frame.data).map(|b| (b >> 1) & 0x3f).collect();
+    assert_eq!(&types[..3], &[32, 33, 34], "VPS, SPS, PPS first: {types:?}");
+    assert!(types[3..].iter().any(|t| (16..=21).contains(t)), "an IRAP picture: {types:?}");
+    encoder.set_bitrate(1_000_000);
+    assert!(encoder.backend_name().starts_with("videotoolbox (hevc"), "the live bitrate change kept the encoder");
+    if let Some(delta) = encoder.encode_raw(&raw).unwrap() {
+        assert!(!delta.keyframe);
+    }
+    encoder.force_keyframe();
+    let forced = encoder.encode_raw(&raw).unwrap().expect("forced hardware keyframe");
+    assert!(forced.keyframe && forced.codec == super::Codec::Hevc);
+    let mut encoder = FrameEncoder::new(60, 4_000_000, 1280).unwrap().with_codecs(&[super::Codec::Hevc]);
+    let frames = scrolling_frames(&mut encoder, 1280, 720, 60);
+    assert!(frames.len() >= 59 && frames[0].keyframe && frames[0].codec == super::Codec::Hevc);
+    assert_eq!(frames[1..].iter().filter(|f| f.keyframe).count(), 0, "no periodic keyframes");
+    save_stream(super::Codec::Hevc, 1280, 720, &frames);
 }
 
 #[test]
@@ -92,7 +167,7 @@ fn hardware_native_annex_b_roundtrip() {
     // 640->320 checks native transfer scaling rather than CPU BGRA resizing.
     let mut encoder = require_hardware(width, height, 320, 2_000_000).expect("actual hardware encoder");
     let frame = encoder.encode_raw(&raw).unwrap().expect("hardware output");
-    assert_eq!(encoder.backend_name(), "videotoolbox-hardware");
+    assert!(encoder.backend_name().starts_with("videotoolbox (h264, hardware"), "{}", encoder.backend_name());
     assert_eq!((frame.width, frame.height), (320, 180));
     assert!(frame.keyframe);
     let mut decoder = Decoder::new().unwrap();
@@ -107,6 +182,10 @@ fn hardware_native_annex_b_roundtrip() {
     assert!(forced.keyframe);
     let mut late = Decoder::new().unwrap();
     assert!(late.decode(&forced.data).unwrap().is_some());
+    let mut encoder = FrameEncoder::new(60, 4_000_000, 1280).unwrap().with_codecs(&[super::Codec::H264]);
+    let frames = scrolling_frames(&mut encoder, 1280, 720, 60);
+    assert!(frames.len() >= 59 && frames[0].keyframe && frames[0].codec == super::Codec::H264);
+    save_stream(super::Codec::H264, 1280, 720, &frames);
 }
 
 fn cpu_ms(system: &mut System) -> u64 {
