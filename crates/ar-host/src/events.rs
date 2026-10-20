@@ -272,7 +272,7 @@ async fn apply(host: &HostState, peer: &Peer, after: After) {
                 host.audit().event(json!({"kind": "level", "peer": peer.name, "level": level, "by": peer.name}));
                 // Asking for less access ends the bypass too, or lowering would change nothing.
                 if let Some(device) = &peer.principal {
-                    crate::control::end_bypass(host, &peer.name, device, "lowered its level");
+                    crate::control::end_bypass(host, &peer.name, device, "lowered its level", true);
                 }
             }
             Err(e) => {

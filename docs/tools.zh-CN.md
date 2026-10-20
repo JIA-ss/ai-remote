@@ -40,6 +40,8 @@
 | `jobs_log` | admin | allow | 只读 | 从指定偏移读取任务日志 |
 | `jobs_wait` | admin | allow | 只读 | 等待任务结束 |
 | `jobs_kill` | admin | allow | 破坏性 | 停止任务及其启动的所有进程 |
+| `process_list` | admin | allow | 只读 | 被控端的进程，可按名字或 pid 过滤 |
+| `process_kill` | admin | ask | 破坏性 | 按 pid 或名字结束进程（及其启动的进程） |
 | `files_list` | admin | allow | 只读 | 列出文件夹内容 |
 | `files_stat` | admin | allow | 只读 | 路径是否存在、是什么 |
 | `files_mkdir` | admin | ask | 非破坏性 | 创建文件夹 |
@@ -59,7 +61,7 @@
 - **参数**是一个 JSON 对象。对内置工具，缺少必填字段、类型不对或选项值未知，都会在执行任何操作之前以
   `invalid arguments: ...` 失败；工具不认识的字段会被忽略。挂载工具的参数原样转发，由 server 自己检查。
 - **`intent`。** 会改变状态的工具（`focus_window`、`mouse`、`keyboard`、`clipboard_write`、`shell`、`jobs_start`、
-  `jobs_kill`，以及高于 `observe` 或带审批设置的挂载工具）接受一个可选的 `intent` 字符串，说明你为什么要这么做。
+  `jobs_kill`、`process_kill`，以及高于 `observe` 或带审批设置的挂载工具）接受一个可选的 `intent` 字符串，说明你为什么要这么做。
   机主会在审批框和审计日志里看到它，除此之外它不影响任何行为。
 - **返回值。** 大多数工具返回一个格式化的 JSON 文本块，同时把同样的值放在 `structuredContent` 里。
   返回大段文本的工具（剪贴板、日志）返回一行简短的 JSON，原始文本放在第二个块里。图片类工具返回一个 JSON 块和图片，
@@ -457,7 +459,22 @@
 `result` 说明，比如 `killed the job and every process it started`，或者主进程没能在 5 秒内结束。它对任何用
 `jobs_start` 启动的任务都有效，不管是哪台设备启动的；对其他进程无效。
 
-### 5.13 文件
+### 5.13 进程
+
+级别 admin。`process_list` 直接执行；`process_kill` 默认先问机主。
+
+**`process_list`**：可选 `name`（进程名或可执行文件名的子串，不区分大小写）、`pid`（只看一个进程）、`limit`（默认 300，
+最多 2000）。返回 `{processes: [{pid, parent_pid, name, exe, start_time, memory_bytes}], count, total, truncated}`，
+按 pid 从小到大；`start_time` 是 Unix 秒，被控端读不到可执行文件路径时 `exe` 为 `null`。不返回命令行和环境变量：
+它们可能含机密，机主允许时 `shell` 能拿到。
+
+**`process_kill`**：`pid` 或 `name`（进程名全名，不区分大小写，如 `game.exe`），二选一；可选 `tree`（默认 `true`：
+连同它启动的进程及其后代，按父进程链找）和 `intent`。结束前按 pid **和**启动时间核对，和 `jobs_kill` 一样，
+pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{pid, name}], count, still_running: [pid], result}`。
+拒绝结束被控端自己、启动它的监护进程和系统的空闲/内核进程；没有匹配时报错（用 `process_list` 看在跑什么）。
+`jobs_start` 启动的任务用 `jobs_kill`：它知道整棵任务树，包括遗留进程。
+
+### 5.14 文件
 
 级别 admin：文件名和文件内容的敏感程度和 `shell` 能碰到的一样。读元数据直接执行；创建、删除、传输文件默认先问机主。
 所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）。
