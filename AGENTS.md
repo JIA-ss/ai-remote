@@ -626,9 +626,12 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 ### 下一步
 
-- [ ] **管理员终端实跑服务模式**（见上一节"未测"）：`ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
+- [~] **服务模式真机实跑**（2026-10-20，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
+      SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面上的截图 / doctor / `ctrl+alt+del`（SendSAS）全部通过；
+      **安全桌面上的键鼠注入失败**（原因未定位，见下）；重启登录界面、stop-host、uninstall 未跑。原条目：
+      `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
-- [ ] 本机手动验证 `follow_input_desktop`：解锁后、切了别的桌面后注入是否恢复（见上上节）。
+- [ ] `follow_input_desktop` 在安全桌面上实测**没能让注入生效**（见"真机结果"），待定位。
 - [x] macOS 锁屏 / 登录界面：锁屏在 `platform/macos.rs` 里按"可达的安全桌面"处理；登录界面靠
       `host install --service` 的系统级 LaunchAgent（`LimitLoadToSessionType = [LoginWindow, Aqua]`）。代码 2026-10-20
       落地，**真机锁屏 / 注销 / 重启验证未做**，见"Mac 被控端补全"一节。
@@ -642,6 +645,28 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       BlendState）把光标画上去，再交给 `Converter::convert`。约 200+ 行 D3D11+HLSL，落在 5 ms 的热路径上，要测对热路径的
       影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
 - [x] 服务化以后在锁屏和 UAC 场景下自动选 DDA：已做（`capture::want_dda`），环境变量保留为强制开关。
+
+### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + bd9cd83）
+
+通过 zremote 的提权会话在开发机上执行，Mac 作控制端（Mac 10.1.120.x，开发机 10.1.77.x，不同网段）。
+
+- `host install --service --dry-run` 与文档 3.2 节一致；真装一次成功：服务 pid 在 session 0，
+  `ai-remote-hostw` 以 `NT AUTHORITY\SYSTEM` 跑在 Console 会话（session 1），`host status` / `doctor` 全绿
+  （relay 警告：公司网无外网）。`CreateProcessAsUserW` 这段第一次跑就对。
+- Mac 配对后 `hosts` 报 `path: direct`（跨网段直连，无中继）；`shot`、`info`、`doctor --host` 正常。
+- `keyboard ctrl+alt+del` 走 SendSAS 生效：`info` 变 `input_desktop: Winlogon, secure_desktop: true`，`doctor` 的
+  `desktop` / `approval` 按设计变 warn，**安全桌面截图正常**（DDA 在 SYSTEM 下采到 SAS 菜单）。
+- **安全桌面上的注入失败**：`mouse move` 报 `拒绝访问 (os error 5)`（SetCursorPos），`keyboard enter/escape` 报
+  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（bd9cd83）后仍失败，host.log 没有
+  `cannot switch` 的 warn。对照实验：用被控端的 `shell` 工具（同一个 SYSTEM 令牌、同一 Console 会话）跑一段
+  P/Invoke 脚本，在新线程里 OpenInputDesktop(GENERIC_ALL 或本项目的标志) → SetThreadDesktop → SetCursorPos →
+  SendInput **全部成功**，桌面名 Winlogon；以用户身份跑则 OpenInputDesktop 就是 err 5。所以系统层没问题，
+  差异在被控端进程内部，未定位。下一步排查方向：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
+  （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
+  核对被控端进程的 integrity level 与 shell 子进程是否相同。
+- 没跑：重启到登录界面、`stop-host` 连带停服务、`host uninstall` 恢复策略。开发机上服务**仍装着**
+  （`ai-remote-host-cc166525`，SAS 策略已改为 1），不再需要时在管理员终端 `ai-remote host uninstall`。
+- 跨机器连通性（原列在"连通性"一节）：跨网段直连已验证；mDNS 跨不了网段，本次没法测同网段发现；强制中继未测。
 
 ## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
 
