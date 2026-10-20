@@ -58,7 +58,7 @@
 
 每次执行都由被控端检查权限、轮次、策略与审批。AI 能访问哪些电脑、每台电脑允许哪些操作，由你决定。
 
-桌面屏幕流预设可请求 1080p30、1080p60 或 4K30，并显示实际解码分辨率、帧率和接收码率。macOS 13+ 使用原生 ScreenCaptureKit 与 VideoToolbox 硬件编码，保留软件回退。[性能证据与限制](docs/stream-performance.md)区分编码基准与真实远控表现；预设是请求上限，不是吞吐保证。
+桌面屏幕流预设可请求 1080p30、1080p60 或 4K30，并显示实际解码分辨率、帧率和接收码率。macOS 13+ 使用原生 ScreenCaptureKit 与 VideoToolbox 硬件编码（HEVC 或 H.264 High，按显示器刷新率，HEVC 最高 8K），保留软件回退。[性能证据与限制](docs/stream-performance.md)区分编码基准与真实远控表现；预设是请求上限，不是吞吐保证。
 
 ## 从源码开始
 

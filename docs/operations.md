@@ -259,8 +259,35 @@ The install writes a per-user LaunchAgent
 (Aqua) session, as an interactive process, and launchd restarts it after a crash but not after a
 clean exit, so `ai-remote stop-host` stays stopped until the next login. No elevation is needed.
 macOS asks to allow Screen Recording and Accessibility for `ai-remote-hostw` the first time it
-captures or acts; grant both in System Settings > Privacy & Security. The macOS host itself is
-*(planned)* for M1; the LaunchAgent install described here is already implemented.
+captures or acts; grant both in System Settings > Privacy & Security.
+
+**The lock screen** is reachable from this host: while the screen is locked, `doctor` reports
+`desktop` as **warn** ("the desktop is locked … (input desktop: lock screen); this host can see and
+operate it"), a controller sees the lock screen and can type the password, and actions that need
+approval are refused (nobody is there to answer; approver devices still can). The host does not
+need `--service` for that on macOS.
+
+**The login window** (after a reboot or a logout) is a different session, which a per-user agent
+never enters. `host install --service` writes a *system* LaunchAgent instead,
+`/Library/LaunchAgents/io.github.jia-ss.ai-remote.host.<8 hex digits>.plist`, with
+`LimitLoadToSessionType` `LoginWindow` and `Aqua` (the way RustDesk reaches the login window), and
+removes the per-user one. That file belongs to root, so run it with `sudo`:
+
+```sh
+sudo ai-remote --home "$HOME/Library/Application Support/ai-remote" host install --service --dry-run
+sudo ai-remote --home "$HOME/Library/Application Support/ai-remote" host install --service
+```
+
+`--home` names your profile (sudo changes `HOME`); the plan reads the account from the profile
+directory's owner. In the login window's session launchd starts the host as root; the host then
+becomes the installing user (`--owner-uid`, written into the plist), so the profile stays that
+user's and the Screen Recording and Accessibility grants that user gave `ai-remote-hostw` apply. In
+the user's own session the same agent runs as the user, exactly like the per-user one. *Untested on a
+real machine yet*: whether ScreenCaptureKit delivers the login window to a process that dropped from
+root to the user. If `doctor` says the desktop is usable but the picture stays black there, set
+`AI_REMOTE_KEEP_ROOT=1` in the agent's environment (an `EnvironmentVariables` entry in the plist) to
+run as root at the login window, as RustDesk does, and report it. `sudo ai-remote … host uninstall`
+removes the system agent; without sudo the uninstall stops at it and says so.
 
 #### Checking and removing it
 
