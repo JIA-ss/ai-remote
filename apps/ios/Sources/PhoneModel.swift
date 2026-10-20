@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 public enum JSONValue: Codable, Sendable, Equatable {
     case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
@@ -98,22 +99,89 @@ public struct ScreenGeometry: Sendable, Equatable {
     }
 }
 
+/// The codec of a video frame, from bits 1-2 of the header's flags.
+public enum ScreenCodec: UInt8, Sendable {
+    case h264 = 0, hevc = 1, av1 = 2
+}
+
+/// The 18-byte header every screen/1 message starts with (see the host's stream protocol).
+public struct ScreenHeader: Sendable {
+    public let kind: UInt8
+    public let flags: UInt8
+    public let width: Int
+    public let height: Int
+    public let microseconds: UInt64
+    public let length: Int
+    public init?(_ data: Data) {
+        guard data.count >= 18 else { return nil }
+        let b = [UInt8](data.prefix(18))
+        kind = b[0]; flags = b[1]
+        width = Int(b[2]) << 8 | Int(b[3]); height = Int(b[4]) << 8 | Int(b[5])
+        microseconds = b[6..<14].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        length = b[14..<18].reduce(0) { ($0 << 8) | Int($1) }
+        guard length > 0, length <= 8 * 1024 * 1024, data.count == 18 + length else { return nil }
+    }
+}
+
+/// Where the host's pointer is (kind 4): its hot spot relative to the streamed screen rect.
+public struct PointerPosition: Sendable, Equatable {
+    public let x: Double
+    public let y: Double
+    public let visible: Bool
+    /// The picture to draw (a kind-5 message with this id came before); 0: a default arrow.
+    public let shape: UInt32
+    public init?(_ data: Data) {
+        guard let header = ScreenHeader(data), header.kind == 4,
+              let json = try? JSONValue.parse(String(decoding: data.dropFirst(18), as: UTF8.self)),
+              let x = json["x"].number, let y = json["y"].number, x.isFinite, y.isFinite else { return nil }
+        self.x = x; self.y = y
+        visible = json["visible"] != .bool(false)
+        shape = UInt32(clamping: Int(json["shape"].number ?? 0))
+    }
+}
+
+/// A pointer picture (kind 5): straight-alpha BGRA turned into a CGImage.
+public struct PointerShape: Sendable {
+    public let id: UInt32
+    public let width: Int
+    public let height: Int
+    public let hotX: Int
+    public let hotY: Int
+    public let image: CGImage
+    public init?(_ data: Data) {
+        guard let header = ScreenHeader(data), header.kind == 5, header.width > 0, header.height > 0,
+              header.width <= 512, header.height <= 512, header.length == 8 + header.width * header.height * 4 else { return nil }
+        let b = [UInt8](data.dropFirst(18))
+        id = UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
+        hotX = Int(b[4]) << 8 | Int(b[5]); hotY = Int(b[6]) << 8 | Int(b[7])
+        width = header.width; height = header.height
+        let pixels = Data(b[8...])
+        guard let provider = CGDataProvider(data: pixels as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  // B, G, R, A in memory: little-endian ARGB with straight alpha.
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.first.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
+        self.image = image
+    }
+}
+
+/// A video frame (kind 1): H.264 or HEVC Annex B.
 public struct ScreenFrame: Sendable {
     public let width: Int
     public let height: Int
     public let keyframe: Bool
+    public let codec: ScreenCodec
     public let microseconds: UInt64
     public let payload: Data
     public init?(_ data: Data) {
-        let b = [UInt8](data)
-        guard b.count >= 18, b[0] == 1 else { return nil }
-        let length = b[14..<18].reduce(0) { ($0 << 8) | Int($1) }
-        guard length > 0, length <= 8 * 1024 * 1024, b.count == 18 + length else { return nil }
-        width = Int(b[2]) << 8 | Int(b[3]); height = Int(b[4]) << 8 | Int(b[5])
-        guard width > 0, height > 0 else { return nil }
-        keyframe = b[1] & 1 == 1
-        microseconds = b[6..<14].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-        payload = Data(b.dropFirst(18))
+        guard let header = ScreenHeader(data), header.kind == 1, header.width > 0, header.height > 0,
+              let codec = ScreenCodec(rawValue: (header.flags >> 1) & 3) else { return nil }
+        width = header.width; height = header.height
+        keyframe = header.flags & 1 == 1
+        self.codec = codec
+        microseconds = header.microseconds
+        payload = Data(data.dropFirst(18))
     }
     public var nalUnits: [Data] {
         let b = [UInt8](payload)
