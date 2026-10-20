@@ -63,8 +63,10 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
         println!("\nThe firewall rules are in place.");
         return Ok(());
     }
-    if flags.service {
+    if flags.service && cfg!(windows) {
         println!("\nThe service is installed. The host it starts runs as SYSTEM: see the notes above.");
+    } else if flags.service {
+        println!("\nThe system LaunchAgent is installed: the host also serves the login window. See the notes above.");
     } else {
         println!("\nAutostart is installed.");
     }
@@ -302,7 +304,9 @@ fn print_plan(plan: &Plan, dry_run: bool, service: bool) {
             }
         }
     }
-    if plan.needs_elevation && service {
+    if plan.needs_elevation && service && cfg!(target_os = "macos") {
+        println!("\nRun it without --dry-run to apply, with sudo: /Library/LaunchAgents belongs to root.");
+    } else if plan.needs_elevation && service {
         println!("\nRun it without --dry-run to apply, from an elevated terminal: a service is administrator work.");
     } else if plan.needs_elevation {
         println!(

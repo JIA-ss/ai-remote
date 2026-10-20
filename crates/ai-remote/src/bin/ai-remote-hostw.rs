@@ -57,6 +57,12 @@ struct Args {
     #[arg(long, hide = true, value_name = "SID")]
     #[cfg_attr(not(windows), allow(dead_code))]
     owner_sid: Option<String>,
+    /// macOS, set by the system LaunchAgent `ai-remote host install --service` registers: the
+    /// installing user's uid. The host serves the login window too, and becomes that user when
+    /// launchd started it as root there (see `ar_host::platform::macos::adopt_owner`).
+    #[arg(long, hide = true, value_name = "UID")]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    owner_uid: Option<u32>,
 }
 
 /// The log is rotated once it passes this size, between two lines.
@@ -94,6 +100,13 @@ fn main() -> ExitCode {
     #[cfg(windows)]
     if args.service {
         return run_service(profile, &log_path, args.owner_sid);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(uid) = args.owner_uid
+        && let Err(e) = ar_host::platform::macos::adopt_owner(uid)
+    {
+        last_resort(&format!("cannot become the installing user (uid {uid}): {e:#}"));
+        return ExitCode::FAILURE;
     }
     #[cfg(windows)]
     if !args.supervised {
