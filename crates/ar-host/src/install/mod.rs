@@ -11,7 +11,8 @@
 //!   program listens, Windows asks on the desktop whether to allow it; on an unattended machine
 //!   nobody answers and the prompt leaves *block* rules behind, which beat allow rules and quietly
 //!   push connections onto the relay.
-//! - **macOS**: a per-user LaunchAgent, which loads into the user's GUI session.
+//! - **macOS**: a per-user LaunchAgent, which loads into the user's GUI session; or, with
+//!   `--service`, a system LaunchAgent that loads into the login window's session too.
 //!
 //! Every change is first described as a [`Plan`]: `--dry-run` prints exactly what would run, and
 //! system tools are always called by absolute path (a polluted `PATH` must not pick them).
@@ -364,8 +365,8 @@ fn expand_env(text: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     out
 }
 
-/// The account id of this process: a SID on Windows, a numeric uid elsewhere.
-#[cfg(any(windows, target_os = "macos"))]
+/// The account id of this process: a SID on Windows.
+#[cfg(windows)]
 fn current_user_id() -> Result<String> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let pid = sysinfo::get_current_pid().map_err(|e| anyhow::anyhow!("current process id: {e}"))?;
@@ -401,7 +402,8 @@ pub fn firewall_rules() -> Result<Vec<FwRule>> {
 }
 
 /// The plan for `ai-remote host install`. `service`: on Windows, register the host as a service
-/// running as SYSTEM in the console session instead of a logon task.
+/// running as SYSTEM in the console session instead of a logon task; on macOS, a system
+/// LaunchAgent that serves the login window too. Both reach the machine before anyone logs in.
 pub fn install_plan(profile: &Profile, scope: Scope, service: bool) -> Result<Plan> {
     #[cfg(windows)]
     {
@@ -410,10 +412,7 @@ pub fn install_plan(profile: &Profile, scope: Scope, service: bool) -> Result<Pl
     #[cfg(target_os = "macos")]
     {
         no_firewall_scope(scope)?;
-        if service {
-            bail!("--service applies to Windows only; the macOS host runs as a LaunchAgent in the user's session");
-        }
-        macos::install_plan(profile)
+        macos::install_plan(profile, service)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
