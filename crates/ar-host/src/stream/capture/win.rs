@@ -44,6 +44,7 @@ use windows::{
     core::{IInspectable, Interface},
 };
 
+use super::pattern::{desktop_like, scroll_top, still_after};
 use super::{Raw, Slot};
 
 /// Textures in flight at most: one being encoded, one waiting in the slot, one being written, one
@@ -436,41 +437,6 @@ pub(super) fn monitor(index: Option<usize>) -> Result<HMONITOR> {
     Ok(HMONITOR(monitor.as_raw_hmonitor()))
 }
 
-/// Text-like glyph rows, window bars and a photo-like gradient with grain, BGRA.
-pub(super) fn desktop_like(width: u32, height: u32) -> Vec<u8> {
-    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-    let mut rand = move || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed
-    };
-    let (w, h) = (width as usize, height as usize);
-    let mut px = vec![255u8; w * h * 4];
-    for y in 0..h {
-        for x in 0..w {
-            let i = (y * w + x) * 4;
-            if (y / 540) % 3 == 1 && x > w / 2 {
-                let n = (rand() & 31) as u8;
-                px[i] = ((x * 255 / w) as u8).wrapping_add(n);
-                px[i + 1] = ((y * 255 / h) as u8).wrapping_add(n);
-                px[i + 2] = (((x + y) * 127 / (w + h)) as u8).wrapping_add(n);
-            } else if y % 540 < 28 {
-                px[i..i + 3].copy_from_slice(&[0x40, 0x30, 0x28]);
-            } else {
-                // Glyph cells of 8x14 with a 4-row gap; every sixth cell is blank.
-                let (cx, cy, gx, gy) = (x / 8, y / 18, x % 8, y % 18);
-                let cell = (cx as u64).wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (cy as u64).wrapping_mul(0x9e37_79b9);
-                if gy < 14 && gx < 7 && !cell.is_multiple_of(6) && (cell >> (gx * 7 + gy % 7)) & 1 == 1 {
-                    px[i..i + 3].copy_from_slice(&[0x20, 0x20, 0x20]);
-                }
-            }
-            px[i + 3] = 255;
-        }
-    }
-    px
-}
-
 fn bgra_texture(gpu: &Gpu, width: u32, height: u32, pixels: Option<&[u8]>) -> Result<ID3D11Texture2D> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
@@ -494,29 +460,6 @@ fn bgra_texture(gpu: &Gpu, width: u32, height: u32, pixels: Option<&[u8]>) -> Re
     unsafe { gpu.device.CreateTexture2D(&desc, data.as_ref().map(|d| d as *const _), Some(&mut texture)) }
         .context("BGRA texture")?;
     texture.context("D3D11 returned no texture")
-}
-
-/// Where a `height`-row view of a `2 * height`-row picture starts after scrolling `rows`: down to
-/// the end and back up, never jumping. A wrap back to the top would change the whole picture at
-/// once, like a scene cut, and its large frame every few seconds skewed bitrate measurements.
-fn scroll_top(rows: u32, height: u32) -> u32 {
-    let phase = rows % (2 * height);
-    if phase <= height { phase } else { 2 * height - phase }
-}
-
-/// `AI_REMOTE_TEST_PATTERN=<width>x<height>` on the host replaces the screen with a synthetic,
-/// desktop-like picture of that size that scrolls 7 rows a frame at the requested rate: every frame
-/// changes everywhere, so the stream runs at its frame rate and bitrate cap. Everything after
-/// capture (GPU conversion, hardware encoding, transport, the viewer's decoder) is the real path.
-/// For repeatable end-to-end measurements (`tools/stream-e2e.py --pattern`); no screen is read.
-/// `<width>x<height>,still` shows the first picture once and then nothing changes, as on an idle
-/// desktop (`--pattern 1920x1080,still`); `,stop=<seconds>` scrolls that long, then stands still.
-pub(super) fn test_pattern_size() -> Option<(u32, u32)> {
-    let value = std::env::var("AI_REMOTE_TEST_PATTERN").ok()?;
-    let value = value.split(',').next()?;
-    let (w, h) = value.split_once('x')?;
-    let size = (w.trim().parse().ok()?, h.trim().parse().ok()?);
-    (size.0 >= 64 && size.1 >= 64 && size.0 <= 8192 && size.1 <= 8192).then_some(size)
 }
 
 /// A running test pattern; stops when dropped.
@@ -550,12 +493,7 @@ pub(super) fn start_test_pattern(
     let screen = bgra_texture(&gpu, width, height, None)?;
     let fps = max_fps.clamp(1, 240);
     // Frames to show before the picture stands still, if it ever does.
-    let still_after = std::env::var("AI_REMOTE_TEST_PATTERN").ok().and_then(|v| {
-        v.split(',').skip(1).find_map(|p| match p.trim() {
-            "still" => Some(1),
-            p => p.strip_prefix("stop=")?.parse::<f64>().ok().map(|s| ((s * f64::from(fps)) as u32).max(1)),
-        })
-    });
+    let still_frames = still_after(fps);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let thread = {
         let (stop, gpu, tall, screen) = (stop.clone(), Shared(gpu), Shared(tall), Shared(screen));
@@ -566,7 +504,7 @@ pub(super) fn start_test_pattern(
             let mut frame = 0u32;
             while !stop.load(Ordering::Relaxed) {
                 // A still desktop: no new frames at all.
-                if still_after.is_some_and(|n| frame >= n) {
+                if still_frames.is_some_and(|n| frame >= n) {
                     std::thread::sleep(interval);
                     continue;
                 }
