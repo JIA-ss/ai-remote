@@ -262,12 +262,30 @@ pub fn follow_input_desktop() {
     // thread owns no windows or hooks (this runs before enigo creates anything), which
     // `SetThreadDesktop` requires.
     unsafe {
-        let Ok(input) = OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) else {
-            return;
+        let input = match OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) {
+            Ok(input) => input,
+            Err(error) => {
+                // A user-session host while the secure desktop is up: expected, and the caller's
+                // injection fails with a clear message anyway.
+                tracing::debug!(%error, "cannot open the input desktop");
+                return;
+            }
         };
         let name = desktop_name(input);
         let current = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
-        if name == current || SetThreadDesktop(input).is_err() {
+        if name == current {
+            let _ = CloseDesktop(input);
+            return;
+        }
+        if let Err(error) = SetThreadDesktop(input) {
+            // The thread owns a window or a hook (a reused pool thread that ran COM or WGC code):
+            // input would go to the stale desktop. The input tool runs on a fresh thread for this.
+            tracing::warn!(
+                %error,
+                from = current.as_deref().unwrap_or("?"),
+                to = name.as_deref().unwrap_or("?"),
+                "input thread cannot switch to the input desktop"
+            );
             let _ = CloseDesktop(input);
             return;
         }
