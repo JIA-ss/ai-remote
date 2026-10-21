@@ -6,7 +6,7 @@ import { commands } from "../bindings";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
-import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, PathKind, PendingApproval } from "./types";
+import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, NetworkSettings, PathKind, PendingApproval } from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
@@ -101,6 +101,10 @@ export interface Backend {
   localControllers(): Promise<LocalController[] | null>;
   /** Turns bypass on or off for a controller paired with this computer. */
   setLocalBypass(peer: string, on: boolean): Promise<void>;
+  /** This computer's router port mapping (UPnP), whether quiet mode locks it, whether a host runs here. */
+  networkSettings(): Promise<NetworkSettings>;
+  /** Turns router port mapping on or off here; the controller applies it at once, a running host at its next start. */
+  setPortMapping(on: boolean): Promise<NetworkSettings>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
@@ -265,6 +269,13 @@ const tauriBackend: Backend = {
   },
   async setLocalBypass(peer, on) {
     unwrap(await commands.setLocalHostBypass(peer, on));
+  },
+  async networkSettings() {
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async setPortMapping(on) {
+    unwrap(await commands.setPortMapping(on));
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));
