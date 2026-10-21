@@ -246,6 +246,8 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   有设备配对后切到三词核对页（一致 / 不一致并移除）。关闭未配对的窗口会撤码。演示后端 12 s 后模拟一台 iPhone 配上，方便看核对页。
 - 桌面控制端：`Pages.tsx` 的 `PairPage` 第一步改成一个大号数字输入框（自动分组，粘贴票据自动切到票据模式），"改用票据"链接。
 - iOS：`PhonePairing.swift`（扫码 + 输入 + 票据入口）、`PhonePairCode.swift`（与平台无关的码解析，`swiftc` 在 macOS 上能跑）。
+  输入框在 iOS 上是 `PairCodeField`（包 `UITextField`），在 `shouldChangeCharactersIn` 里同步过滤、分组后写回。原来用 SwiftUI `TextField` + `.onChange` 事后改写，
+  快速输入时改写和下一个按键抢，CI 上 `typeText("1234567")` 丢了一位（得到 `1234 56`）。本机 iOS 26.2 / iPhone 17 Pro 上该测试连跑 5 次、全部 15 个 UI 测试都过。
   扫码用 AVFoundation（`NSCameraUsageDescription`），拒绝权限时给"打开设置"；`CFBundleURLTypes` 注册 `ai-remote` scheme，
   系统相机扫到二维码直接打开 app 并配对（`PhoneStore.openPairLink`）；`NSBonjourServices` 加 `_ai-remote-pair._udp`。
 
