@@ -25,6 +25,7 @@ futures.workspace = true
 image.workspace = true
 plist.workspace = true
 process-wrap.workspace = true
+qrcode.workspace = true
 quick-xml.workspace = true
 rfd.workspace = true
 rmcp.workspace = true

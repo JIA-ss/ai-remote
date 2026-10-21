@@ -188,6 +188,48 @@ async fn stop_host(profile: &Profile) -> Result<()> {
     Ok(())
 }
 
+/// `ai-remote host start`: starts the installed background host (launchctl kickstart, the logon
+/// task or the service) and waits until it answers on its control channel.
+pub async fn host_start(profile: &Profile, json_out: bool) -> Result<()> {
+    if let Some(host) = running_host(profile).await {
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&json!({"started": false, "host": host}))?);
+        } else {
+            println!("A host is already running for this profile (pid {}).", host["pid"]);
+        }
+        return Ok(());
+    }
+    let p = profile.clone();
+    let status = tokio::task::spawn_blocking(move || install::status(&p)).await??;
+    if !status.installed {
+        bail!("no background host is installed for this profile: run `ai-remote host install` first");
+    }
+    let start = install::start_action(profile)?;
+    // A Windows service starts only for an administrator (its default access rights).
+    if start.needs_admin() && ar_host::platform::rights() != ar_host::platform::Rights::Elevated {
+        bail!(
+            "this host is a Windows service ({}), which only an administrator can start: run `ai-remote host start` \
+             in a terminal opened as administrator, or restart the computer",
+            status.name
+        );
+    }
+    if let Some(note) = start.execute()?
+        && !json_out
+    {
+        println!("  {note}");
+    }
+    let log = profile.log_path(Role::Host)?;
+    let Some(host) = wait_for_host(profile, Duration::from_secs(20)).await else {
+        bail!("the background host did not answer within 20 s; see {}", log.display());
+    };
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&json!({"started": true, "host": host}))?);
+    } else {
+        println!("The background host is running (pid {}); it logs to {}.", host["pid"], log.display());
+    }
+    Ok(())
+}
+
 pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
     let p = profile.clone();
     let status = tokio::task::spawn_blocking(move || install::status(&p)).await?;

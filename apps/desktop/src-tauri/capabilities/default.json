@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window. The page gets no tray commands: the tray icon is the owner's view of the host and only the app's native side draws it.",
   "windows": [
     "main"
   ],
@@ -17,6 +17,18 @@
     "core:window:allow-show",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen",
-    "core:window:allow-set-effects"
+    "core:window:allow-set-effects",
+    "core:tray:deny-new",
+    "core:tray:deny-get-by-id",
+    "core:tray:deny-remove-by-id",
+    "core:tray:deny-set-icon",
+    "core:tray:deny-set-icon-as-template",
+    "core:tray:deny-set-icon-with-as-template",
+    "core:tray:deny-set-menu",
+    "core:tray:deny-set-show-menu-on-left-click",
+    "core:tray:deny-set-temp-dir-path",
+    "core:tray:deny-set-title",
+    "core:tray:deny-set-tooltip",
+    "core:tray:deny-set-visible"
   ]
 }
