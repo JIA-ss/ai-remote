@@ -81,14 +81,14 @@ open target/debug/bundle/macos/ai-remote.app
 
 ```sh
 ai-remote host
-# 在这台电脑的另一终端生成票据：
+# 在这台电脑的另一终端（或桌面应用的“本设备 → 显示配对码”）：
 ai-remote pair-code --level control
 ```
 
-在**控制电脑**兑换一次性票据：
+它会显示一个二维码和 8 位配对码。用 iPhone 应用扫二维码，或在**控制电脑**上输入这 8 位数字（桌面应用的“配对电脑”页，或命令行）：
 
 ```sh
-ai-remote pair <ticket> --name office-pc
+ai-remote pair 4821 0937 --name office-pc
 ai-remote call system_info --host office-pc
 ```
 

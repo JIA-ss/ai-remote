@@ -20,8 +20,10 @@ mod gate;
 mod input_channel;
 pub mod install;
 pub mod mounts;
+pub mod pair_qr;
 pub mod platform;
 mod policy;
+mod presence;
 mod protocol;
 pub mod result_budget;
 mod server;
@@ -71,6 +73,8 @@ pub struct HostState {
     /// Cancelled when the host stops.
     stopping: CancellationToken,
     live: protocol::LiveConns,
+    /// Open controller connections on every channel and running tool calls, for `status`.
+    presence: presence::Presence,
 }
 
 impl HostState {
@@ -119,6 +123,11 @@ impl HostState {
     /// Controller connections being served.
     pub(crate) fn live(&self) -> &protocol::LiveConns {
         &self.live
+    }
+
+    /// Who is connected and which tool calls run, as reported to the owner (never used to decide).
+    pub(crate) fn presence(&self) -> &presence::Presence {
+        &self.presence
     }
 
     pub(crate) fn audit(&self) -> &AuditLog {
@@ -268,6 +277,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         background: opts.background,
         stopping: CancellationToken::new(),
         live: protocol::LiveConns::default(),
+        presence: presence::Presence::default(),
     });
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
     mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
@@ -275,7 +285,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     mesh.accept(ALPN_FILES, Arc::new(files_channel::FilesProtocol::new(state.clone())))?;
     mesh.accept(ALPN_INPUT, Arc::new(input_channel::InputProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
-    announce_pairings(&mesh, owner).await;
+    announce_pairings(&mesh, owner, state.clone()).await;
 
     let peers = mesh.peers().await.context("read paired devices")?;
     owner.say(&format!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id()));
@@ -302,11 +312,38 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     if peers.is_empty() && opts.pair_code_if_unpaired && !opts.background {
         let invite = mesh.invite(Level::Control, None).await?;
         owner.say("");
-        owner.say("No controller is paired yet. On the controlling machine, run:");
-        owner.say("");
-        owner.say(&format!("  ai-remote pair {}", invite.line));
-        owner.say("");
-        owner.say(&format!("It grants level \"control\" and is valid once, until {}.", fmt_epoch(invite.expires_at)));
+        match mesh.offer_code(&invite).await {
+            Ok(offer) => {
+                owner.say("No controller is paired yet. Scan this with the ai-remote app on a phone,");
+                owner.say("or type the pair code in the desktop app (or `ai-remote pair <code>`):");
+                owner.say("");
+                if let Some(qr) = pair_qr::terminal(&offer.link) {
+                    for line in qr.lines() {
+                        owner.say(&format!("  {line}"));
+                    }
+                }
+                owner.say("");
+                owner.say(&format!("  pair code: {}", offer.grouped));
+                owner.say("");
+                owner.say(&format!(
+                    "It grants level \"control\", works once and expires {}. Without a network between the two \
+                     machines, use the ticket instead: ai-remote pair {}",
+                    fmt_epoch(offer.expires_at),
+                    invite.line
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "no pair code; showing the ticket only");
+                owner.say("No controller is paired yet. On the controlling machine, run:");
+                owner.say("");
+                owner.say(&format!("  ai-remote pair {}", invite.line));
+                owner.say("");
+                owner.say(&format!(
+                    "It grants level \"control\" and is valid once, until {}.",
+                    fmt_epoch(invite.expires_at)
+                ));
+            }
+        }
         owner.say("Check that both machines show the same three-word safety code.");
     }
 
@@ -335,7 +372,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 /// Shows the host side of every pairing ceremony: the controller printed a three-word safety code
 /// when it redeemed the ticket, and the host owner must see the same words here. Different words
 /// mean someone else redeemed the ticket.
-async fn announce_pairings(mesh: &Mesh, owner: Owner) {
+async fn announce_pairings(mesh: &Mesh, owner: Owner, host: Arc<HostState>) {
     let mut watch = match mesh.watch_pairings().await {
         Ok(w) => w,
         Err(e) => {
@@ -349,6 +386,15 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
                 Ok(Some(p)) => {
                     let level = p.level.map(|l| l.to_string()).unwrap_or_else(|| "none".into());
                     tracing::info!(peer = %p.peer, %level, sas = %p.sas, principal = ?p.principal, "controller paired");
+                    // The safety code is not a secret: the owner's view at this computer (the
+                    // desktop app's pairing dialog, recent activity) compares it from here.
+                    host.audit().event(serde_json::json!({
+                        "kind": "paired",
+                        "peer": p.peer,
+                        "principal": p.principal,
+                        "level": level,
+                        "sas": p.sas,
+                    }));
                     if !owner.background {
                         println!();
                         println!("Paired with controller \"{}\" (level: {level}).", p.peer);
@@ -369,7 +415,8 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
     });
 }
 
-fn fmt_epoch(epoch: u64) -> String {
+/// `epoch` (seconds) as a local date and time for people.
+pub fn fmt_epoch(epoch: u64) -> String {
     let remaining = epoch.saturating_sub(ar_core::unix_now());
     format!("{} minutes from now", remaining / 60)
 }
