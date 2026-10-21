@@ -432,45 +432,7 @@ public struct PhoneRootView: View {
         store.input(tool: "mouse", args: ["action": .string("scroll"), "direction": .string(direction), "amount": .number(3), "x": .number(screen.x + screen.width/2), "y": .number(screen.y + screen.height/2), "space": .string("screen")])
     }
 
-    private var pairing: some View {
-        NavigationStack {
-            Form {
-                Section("在电脑上生成票据") {
-                    Label("配对属于你信任的电脑", systemImage: "lock.shield").font(.headline)
-                    Text("启动 ai-remote host，再运行 ai-remote pair-code --level control。").font(.callout)
-                    Text("可以通过通用剪贴板把票据复制到 iPhone。").font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("一次性配对票据") {
-                    TextEditor(text: $store.pairingCode).frame(height: 140).font(.system(.footnote, design: .monospaced)).autocorrectionDisabled()
-                        .ticketCapitalizationDisabled().accessibilityIdentifier("pairing-ticket")
-                        .scrollContentBackground(.hidden).padding(8).modifier(PhoneSurface(cornerRadius: 18))
-                }
-                if let code = store.safetyCode {
-                    Section("核对安全码") {
-                        Label("请在两台设备上确认", systemImage: "checkmark.shield")
-                        Text(code).font(.system(.title3, design: .monospaced)).textSelection(.enabled)
-                        Text("请确认电脑上显示的是相同的三个单词。配对票据使用一次后失效。").font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                // Keep the primary action above the keyboard while the ticket scrolls.
-                Button { Task { await store.pair() } } label: {
-                    HStack(spacing: 8) {
-                        if store.loading { ProgressView() }
-                        Text(store.loading ? "正在配对…" : "配对").fontWeight(.semibold)
-                    }.frame(maxWidth: .infinity, minHeight: 32)
-                }
-                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large)
-                .disabled(store.loading || store.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("pair-submit")
-                .padding(.horizontal, 20).padding(.vertical, 12)
-                .background(.bar)
-            }
-            .navigationTitle("配对电脑")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { store.pairSheet = false } } }
-        }.modifier(PhoneErrorAlert(store: store))
-    }
+    private var pairing: some View { PhonePairSheet(store: store) }
 
     private var activity: some View {
         NavigationStack {
@@ -539,7 +501,7 @@ private enum PhonePalette {
 }
 
 /// Content cards use standard materials; Liquid Glass is reserved for the controls.
-private struct PhoneSurface: ViewModifier {
+struct PhoneSurface: ViewModifier {
     var cornerRadius: CGFloat = 24
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -572,7 +534,7 @@ private struct PhoneGlassSurface: ViewModifier {
 }
 
 // Present errors from the visible sheet, so failed pairing/approval calls stay actionable.
-private struct PhoneErrorAlert: ViewModifier {
+struct PhoneErrorAlert: ViewModifier {
     var store: PhoneStore
     var enabled = true
     func body(content: Content) -> some View {
@@ -582,7 +544,7 @@ private struct PhoneErrorAlert: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder func ticketCapitalizationDisabled() -> some View {
         #if os(iOS)
         self.textInputAutocapitalization(.never)

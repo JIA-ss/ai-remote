@@ -20,11 +20,14 @@ use crate::HostState;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum HostRequest {
     Status,
-    /// Mint a one-time pairing ticket.
+    /// Mint a one-time pairing ticket and show it behind a fresh pair code (replacing the code
+    /// shown before).
     PairCode {
         level: Level,
         name: Option<String>,
     },
+    /// Stop answering the pair code shown now (the dialog showing it was closed).
+    WithdrawCode,
     Peers,
     /// Set or clear (`level: null`) a peer's level.
     SetLevel {
@@ -216,7 +219,21 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
         HostRequest::Doctor => serde_json::to_value(
             crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,
         )?,
-        HostRequest::PairCode { level, name } => serde_json::to_value(mesh.invite(level, name).await?)?,
+        HostRequest::PairCode { level, name } => {
+            let invite = mesh.invite(level, name).await?;
+            let mut v = serde_json::to_value(&invite)?;
+            // The ticket works without the code; a code that cannot be offered (no network to bind
+            // on) is reported next to it rather than failing the request.
+            match mesh.offer_code(&invite).await {
+                Ok(offer) => {
+                    v["qr"] = serde_json::to_value(crate::pair_qr::svg_path(&offer.link))?;
+                    v["code"] = serde_json::to_value(offer)?;
+                }
+                Err(e) => v["code_error"] = Value::String(format!("{e:#}")),
+            }
+            v
+        }
+        HostRequest::WithdrawCode => json!({"withdrawn": mesh.withdraw_code().await}),
         HostRequest::Peers => {
             let bypassed = host.bypass().list();
             let peers: Vec<Value> = mesh

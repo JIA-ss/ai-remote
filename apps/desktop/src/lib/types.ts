@@ -145,11 +145,27 @@ export interface TrayIntent {
 
 /** A one-time pairing ticket minted by the host here. */
 export interface PairTicket {
-  /** The whole line the other device pastes (`ai-remote pair <line>`). */
+  /** The whole line the other device pastes (`ai-remote pair <line>`): works with no network between them. */
   line: string;
   /** Seconds since the Unix epoch. */
   expires_at: number;
   level: Level;
+  /** The short code that hands the ticket out; absent when the host could not offer one (`code_error`). */
+  code?: PairCode;
+  /** The QR code of `code.link`, as an SVG path over a `size` x `size` grid. */
+  qr?: { size: number; path: string } | null;
+  code_error?: string;
+}
+
+/** An eight-digit pair code a host shows: once, for ten minutes. */
+export interface PairCode {
+  code: string;
+  /** `4821 0937` */
+  grouped: string;
+  /** `ai-remote://pair?code=...`, the QR code's content. */
+  link: string;
+  /** Seconds since the Unix epoch. */
+  expires_at: number;
 }
 
 export interface AgentStatus {

@@ -33,7 +33,7 @@ iOS can only be a controller: iOS does not let a third-party app control the dev
    answer is no.
 3. **Dial keys, not IP addresses.** Devices are Ed25519 identities. Connections are end-to-end
    encrypted QUIC with NAT hole punching and an encrypted relay fallback. No port forwarding, no VPN.
-4. **No server required.** Pairing uses a one-time ticket. An optional, self-hostable account service
+4. **No server required.** Pairing uses a one-time ticket, handed over behind an eight-digit pair code. An optional, self-hostable account service
    *(planned)* would only distribute device keys and grants, never session traffic.
 5. **Reuse before writing.** ai-remote builds on maintained open-source components (section 9) and
    writes only what is specific to it: the gate, the tools, the bridge and the apps.
@@ -63,19 +63,88 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
 - **Identity.** Each role (host, controller) has its own Ed25519 key in the user's profile directory
   (`identity.key`). We hold the key ourselves and hand it to the transport, so the device id would
   survive a change of transport library.
-- **Pairing.**
-  1. On the host: `ai-remote pair-code --level control` asks the running host for a single-use
-     ticket that expires after 24 hours. A host started in a terminal with nobody paired prints one
-     itself; the background host never does, because a ticket is a credential and a log is no place
-     for it.
-  2. On the controller: `ai-remote pair <ticket> --name office-pc`. It prints a three-word safety
-     code and the level the host grants.
-  3. The host shows the same three words: in its terminal, and always in its log. Different words
-     mean someone else redeemed the ticket; the host owner removes that device with
-     `ai-remote forget <controller>`.
+- **Pairing.** A person pairs with a short **pair code**: the host shows a QR code and eight digits
+  (`4821 0937`) for ten minutes; a phone scans the QR code, a computer types the digits. The long
+  **ticket** (`mcpmesh-invite:...`, about 1000 characters) is still there underneath and still works
+  on its own, for machines that cannot reach each other over the network.
+  1. On the host: the desktop app's This device → Show pair code (or the tray's Show Pairing Code),
+     or `ai-remote pair-code --level control` in a terminal (it prints the QR code in block
+     characters, the digits and the ticket). Each request mints a single-use ticket (24 hours) and a
+     fresh code that hands it out; showing a new code withdraws the old one. A host started in a
+     terminal with nobody paired shows one itself; the background host never does, because a code
+     and a ticket are credentials and a log is no place for them.
+  2. On the controller: the desktop app's Pair a computer page, the iPhone app's scanner or code
+     field, or `ai-remote pair 4821 0937 --name office-pc` (`ai-remote pair <ticket>` still works).
+     It shows a three-word safety code and the level the host grants.
+  3. The host shows the same three words (its pairing dialog, its terminal, and always its log).
+     Different words mean someone else used the code; the host owner removes that device.
 
   The ticket carries the host's public key, so the controller can only reach that host; the
   transport authenticates both ends, so the host learns the controller's real key.
+
+### How a short code reaches the host (design note, 2026-10)
+
+The problem: the ticket is the right credential (a 32-byte secret, the host's key and its
+addresses, so it needs no server), but nobody wants to read 1000 characters from one screen into
+another. What a short code has to do is *find* the host and *hand over* the ticket, without
+becoming the weak point.
+
+What others do, and what we took:
+
+| | How the short thing finds the other side | What stops guessing |
+|---|---|---|
+| Magic Wormhole | code = nameplate number + words; a mailbox server pairs the two sides by nameplate | SPAKE2 over the mailbox: one online guess per attempt, the code is burned after one failure |
+| AirDrop / screen-mirroring codes | the devices find each other on the local network (Bluetooth / mDNS); the code only authenticates | 4-digit code, a few tries, seconds of validity, and physical proximity |
+| RustDesk | a 9-digit ID registered at its rendezvous server + a one-time password | server-side rate limits on the password |
+| Tailscale / iroh tickets | no short code: the ticket *is* the address and the key, copied whole or as a QR code | the 256-bit secret |
+
+ai-remote has no rendezvous server of its own and should not need one, but every node already
+publishes its address through n0's DNS/pkarr service and (with `lan_discovery`) mDNS, keyed by its
+endpoint id. So the code is turned into an endpoint id:
+
+1. **Stretch.** Both sides run Argon2id over the eight digits (64 MiB, 3 passes, fixed salt)
+   into 64 bytes: the secret key of a short-lived **rendezvous endpoint**, and an authentication key.
+2. **Host.** While the code is shown, the host runs that rendezvous endpoint next to its node, with
+   the node's own relays, proxy and local discovery, serving only ALPN `app/ai-remote/pair-code/1`.
+   It publishes its address like any endpoint. It is a separate endpoint on purpose: the node's
+   default-deny gate admits paired devices only (an unpaired controller could never reach a new
+   ALPN on it), and the node's identity is never published under a key derived from 27 bits.
+3. **Controller.** Derives the same endpoint id from the code and dials it from a throwaway
+   endpoint (address lookup through DNS/pkarr, mDNS and the relays finds it on the same LAN or
+   across the internet). TLS proves the far side holds the code-derived key. The controller proves
+   it knows the code with a keyed BLAKE3 hash of both endpoint ids; then the host sends its ticket,
+   and the controller redeems it exactly as a pasted ticket (same mcpmesh ceremony, same safety
+   words).
+4. **Limits.** A code lasts 10 minutes (or less, if the ticket expires first), delivers one ticket,
+   and is burned after 5 connections that fail to prove it. The rendezvous endpoint shuts down as
+   soon as the code is used, burned or expired, so its id stops being published.
+
+Why not SPAKE2 with a public "channel" part, like Wormhole: the channel would have to name a
+rendezvous point everyone can compute, which on a shared DNS service means anyone can publish
+records for every channel (squatting, denial of service) and two hosts showing the same channel at
+once collide. Deriving the whole rendezvous id from the whole code avoids both, at the cost below.
+
+What resists what (derived from the parameters, not measured as attacks):
+
+- **Online guessing** (no knowledge of any code): each guess is one Argon2id run plus one DNS
+  lookup, and hits only while some host shows exactly that code; 10^8 codes, 10 minutes each.
+  Someone who reaches the rendezvous endpoint without the code has 5 tries.
+- **Offline search by an observer of the rendezvous id** (n0's DNS service, a relay, or a device on
+  the same LAN listening to mDNS): the id lets them test candidate codes offline, one Argon2id run
+  each. One run takes 78 ms on an Apple M5 Max core (release build; `kdf_cost` test, 20 runs), so
+  searching the whole code space within the 10 minutes needs about 13,000 such cores with 64 MiB
+  each (half that on average). That is out of reach of a casual attacker, not of a large
+  one; the safety words are the backstop (an attacker who wins pairs as a visible new device with
+  different words, and the owner removes it).
+- **Typos** are not detected locally (all eight digits are random); a wrong code ends with "no
+  device answered this pair code" after the 20-second search.
+- **No network between the two machines** (no internet and no shared LAN): only the ticket works.
+
+The QR code holds `ai-remote://pair?code=48210937`, not the ticket: it is a small version-3 code
+(29 modules) that phones read from across a desk, and the system camera opens the iPhone app on
+it. A QR code holding the ticket itself would need more than 100 modules a side (estimated from the
+ticket's length, not tried).
+
 - **Levels** (ordered):
 
   | Level | Allows |
