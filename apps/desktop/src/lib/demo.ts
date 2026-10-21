@@ -389,6 +389,23 @@ export const demoBackend: Backend = {
     reachable(host);
     return null;
   },
+  async openInput(host) {
+    reachable(host);
+    throw new Error("live input needs the app");
+  },
+  async clipboardText() {
+    return null;
+  },
+  async setClipboardText() {},
+  async clipboardFiles() {
+    return [];
+  },
+  async pushFile() {
+    throw new Error("file transfers need the app");
+  },
+  async pullFile() {
+    throw new Error("file transfers need the app");
+  },
 };
 
 /** The demo's stand-in for a live view: a still picture of office-pc's screen. */

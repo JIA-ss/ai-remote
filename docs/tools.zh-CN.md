@@ -477,7 +477,8 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 ### 5.14 文件
 
 级别 admin：文件名和文件内容的敏感程度和 `shell` 能碰到的一样。读元数据直接执行；创建、删除、传输文件默认先问机主。
-所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）。
+所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）；`~` 和 `~/...` 表示被控端登录用户的主目录（被控端
+以 Windows 服务运行时也是），`~/Desktop` 是该用户实际看到的桌面（Windows 上可能被 OneDrive 挪走）。
 
 **`files_list`**：`path`（文件夹），可选 `pattern`（`*`、`?` 通配，不区分大小写）和 `offset`。返回
 `{path, total, offset, next_offset, entries: [{name, kind, size, modified}]}`：`kind` 为 `file`、`dir`、`link`

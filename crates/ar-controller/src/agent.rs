@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, config::ControllerConfig, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route, ipc,
-    iroh::endpoint::Connection, refusal::Refusal,
+    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route,
+    ipc, iroh::endpoint::Connection, refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -90,6 +90,14 @@ pub enum AgentRequest {
     /// pass both ways unchanged (see the host's files protocol).
     Files {
         host: Option<String>,
+        request: Value,
+    },
+    /// Upgrade this connection to a person's live input on a host: `request` (`{"clipboard":true}`)
+    /// goes to the host's input channel; after the host's JSON reply, JSON lines pass both ways
+    /// unchanged (see the host's input protocol). For the app while someone drives.
+    Input {
+        host: Option<String>,
+        #[serde(default)]
         request: Value,
     },
     /// Set (or with `None`, clear) the host calls go to when they name none.
@@ -594,6 +602,23 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 }
             }
         }
+        if let AgentRequest::Input { host, request } = req {
+            match open_input(agent, host, &request).await {
+                Ok((input, reply)) => {
+                    conn.reply(Ok(reply)).await?;
+                    let (stream, buffered) = conn.into_raw();
+                    tokio::select! {
+                        _ = input.relay(stream, buffered) => {},
+                        _ = shutdown.cancelled() => {},
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    conn.reply(Err(e)).await?;
+                    continue;
+                }
+            }
+        }
         let result = handle(agent, req, shutdown).await;
         conn.reply(result).await?;
     }
@@ -689,7 +714,11 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             serde_json::to_value(result)?
         }
         AgentRequest::Channel { host, request } => channel_request(agent, host, &request).await?,
-        AgentRequest::Mcp | AgentRequest::Events { .. } | AgentRequest::Screen { .. } | AgentRequest::Files { .. } => {
+        AgentRequest::Mcp
+        | AgentRequest::Events { .. }
+        | AgentRequest::Screen { .. }
+        | AgentRequest::Files { .. }
+        | AgentRequest::Input { .. } => {
             bail!("unreachable")
         }
         AgentRequest::Shutdown => {
@@ -821,9 +850,10 @@ impl ScreenView {
             let _ = tokio::io::copy(&mut local_read, &mut send).await;
         };
         let down = async {
-            match test_link_bps() {
-                Some(bps) => copy_paced(&mut recv, &mut local_write, bps).await,
-                None => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
+            match (test_link_bps(), trace_hops()) {
+                (Some(bps), _) => copy_paced(&mut recv, &mut local_write, bps).await,
+                (None, Some(trace)) => copy_traced(&mut recv, &mut local_write, trace).await,
+                (None, None) => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
             }
         };
         tokio::select! {
@@ -831,6 +861,45 @@ impl ScreenView {
             _ = up => {}
         }
         conn.close(0u32.into(), b"done");
+    }
+}
+
+/// Measurement only: `AI_REMOTE_TRACE_HOPS=<dir>` makes the agent log, for each live-view frame,
+/// when its last byte arrived from the host and when it was written to the local client
+/// (`<dir>/agent.tsv`: capture timestamp, then both wall-clock times in µs).
+fn trace_hops() -> Option<std::io::BufWriter<std::fs::File>> {
+    let dir = std::env::var_os("AI_REMOTE_TRACE_HOPS")?;
+    std::fs::File::create(std::path::Path::new(&dir).join("agent.tsv")).ok().map(std::io::BufWriter::new)
+}
+
+/// Copies whole live-view messages (18-byte header + body), logging video frames' times.
+async fn copy_traced<R, W>(
+    read: &mut R,
+    write: &mut W,
+    mut trace: std::io::BufWriter<std::fs::File>,
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use std::io::Write;
+    use tokio::io::AsyncWriteExt;
+    let wall = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
+    let mut message = Vec::new();
+    loop {
+        let mut header = [0u8; 18];
+        read.read_exact(&mut header).await?;
+        let len = u32::from_be_bytes([header[14], header[15], header[16], header[17]]) as usize;
+        message.clear();
+        message.extend_from_slice(&header);
+        message.resize(18 + len, 0);
+        read.read_exact(&mut message[18..]).await?;
+        let arrived = wall();
+        write.write_all(&message).await?;
+        if header[0] == 1 {
+            let ts = u64::from_be_bytes(header[6..14].try_into().unwrap());
+            let _ = writeln!(trace, "{ts}\t{arrived}\t{}", wall());
+        }
     }
 }
 
@@ -876,6 +945,91 @@ async fn open_files(agent: &Arc<Agent>, host: Option<String>, request: &Value) -
     }
     reply["host"] = host.into();
     Ok((FileTransfer { conn, send, recv }, reply))
+}
+
+/// A person's live input stream to one host, after the host's first reply.
+struct LiveInput {
+    conn: Connection,
+    send: ar_net::iroh::endpoint::SendStream,
+    recv: ar_net::iroh::endpoint::RecvStream,
+}
+
+/// Opens `host`'s input channel and returns it with the host's first reply.
+async fn open_input(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<(LiveInput, Value)> {
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
+    };
+    let conn = agent.mesh.dial(&host, ALPN_INPUT).await.map_err(|e| {
+        anyhow!("cannot open live input on host '{host}' (an older host, or `ai-remote host` not running): {e:#}")
+    })?;
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let request = if request.is_null() { json!({}) } else { request.clone() };
+    let mut line = request.to_string();
+    line.push('\n');
+    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    // Byte by byte, so no line after the reply is consumed here.
+    let mut reply = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match tokio::time::timeout(Duration::from_secs(15), recv.read_exact(&mut byte)).await {
+            Ok(Ok(_)) if byte[0] == b'\n' => break,
+            Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
+            Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
+            Ok(Err(e)) => bail!("host '{host}' closed live input: {e} (an older host?)"),
+            Err(_) => bail!("host '{host}' did not answer"),
+        }
+    }
+    let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
+    if reply["ok"] != true {
+        bail!("host '{host}': {}", reply["error"].as_str().unwrap_or("refused"));
+    }
+    reply["host"] = host.into();
+    Ok((LiveInput { conn, send, recv }, reply))
+}
+
+impl LiveInput {
+    /// Passes lines both ways until either side ends. Every write is flushed at once: a pointer
+    /// move must not wait in a buffer.
+    async fn relay<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(self, local: T, buffered: Vec<u8>) {
+        use tokio::io::AsyncWriteExt;
+        let LiveInput { conn, mut send, mut recv } = self;
+        let (mut local_read, mut local_write) = tokio::io::split(local);
+        let up = async {
+            if !buffered.is_empty() && send.write_all(&buffered).await.is_err() {
+                return;
+            }
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                match local_read.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        if send.write_all(&buf[..n]).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        };
+        let down = async {
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                match recv.read(&mut buf).await {
+                    Ok(Some(n)) if n > 0 => {
+                        if local_write.write_all(&buf[..n]).await.is_err() || local_write.flush().await.is_err() {
+                            return;
+                        }
+                    }
+                    _ => return,
+                }
+            }
+        };
+        tokio::select! {
+            _ = down => {}
+            _ = up => {}
+        }
+        conn.close(0u32.into(), b"done");
+    }
 }
 
 impl FileTransfer {
