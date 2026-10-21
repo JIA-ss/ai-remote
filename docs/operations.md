@@ -767,6 +767,30 @@ ai-remote tell "Use the D: drive for the export"
 
 - While you drive, only your own calls run: those the desktop app makes for you, or
   `ai-remote call ... --person`. What you type is logged by size only.
+- In the desktop app your mouse and keyboard go over a live input stream (`input/1`) after you take
+  over: moves, presses, releases, wheel notches and keys by name, as they happen; the audit log keeps
+  the stream's start, end and refusals (`input_start`, `input_end` with event counts and the reason
+  it ended, `input_refused`). Only the device that has taken over may open it. It is checked again
+  every second: handing back, a pause, another device taking over, a lower level, a bypass that ended
+  or a policy change ends it within that second, after the host lets go of every key and button it
+  holds; so does three seconds without a word from the controller (the app sends a heartbeat every
+  second). When the host's policy says `deny` or `ask` for `mouse` or `keyboard` the stream is refused
+  and the app falls back to one tool call per action (which does ask the owner); older hosts get the
+  same fallback. On the live stream Cmd on a Mac driving a Windows host acts as Ctrl and Ctrl on a PC
+  driving a Mac acts as Cmd (the one-call-per-action fallback still sends Cmd as the Windows key);
+  with Ctrl, Option/Alt or Cmd held, letters and digits are sent by key position, whatever the local
+  layout; characters the host's layout cannot type are entered as text; lock and sign-out chords are
+  refused as for the tools.
+- Clipboard text follows both ways while you drive, changes only (taking over replaces neither
+  clipboard): text copied on the host lands here, text copied here lands on the host (the app reads
+  its clipboard once a second while it is in front, and when you switch back to it; at most 1 MB).
+  Reading and writing on the host follow its `clipboard_read` / `clipboard_write` policy (`allow`
+  only), and the host's clipboard is left alone while it is locked or on a secure desktop. Files on
+  the host's clipboard show a notice at the top of the session with a button that saves them to your
+  Downloads folder; files on your clipboard can be sent to the host's desktop; a file dropped on the
+  picture (no takeover needed) goes to the host's desktop (`~/Desktop`: the desktop the signed-in user
+  sees), never replacing a file of the same name (a `-1` suffix and so on is added). These transfers
+  use the same tickets, policy and approvals as `push` / `pull`.
 - Taking over or pausing invalidates the grant held by existing agent calls, including pending
   approvals and queued input. Handback/resume allows new calls; it never resumes old ones. Input
   workers check cancellation before every event, including pointer movement, and release held

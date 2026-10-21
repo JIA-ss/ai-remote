@@ -33,6 +33,9 @@ export interface VideoStats {
   width: number;
   height: number;
   decodedFps: number;
+  /** Frames drawn on the canvas per second: at most the display's refresh rate, as each refresh
+   * shows only the newest decoded frame. */
+  presentedFps: number;
   receivedKbps: number;
   droppedFrames: number;
   /** `droppedFrames` by reason, since the stream started. */
@@ -107,6 +110,64 @@ export function createDecoder(
   let intervalStart = performance.now();
   let receivedBytes = 0;
   let decodedFrames = 0;
+  let presentedFrames = 0;
+  // The newest decoded frame not drawn yet, drawn at the next display refresh. A frame decoded
+  // before the refresh comes replaces it: drawing every frame of a 100 fps stream on the main
+  // thread costs more than the display can show and starves the page's own redraws (the UI lagged
+  // seconds behind at 5K, 2026-10-21).
+  let pendingFrame: VideoFrame | null = null;
+  let presentScheduled = false;
+  // A hidden window gets no animation frames (and a smoke run is off screen): draw anyway then,
+  // at about the rate a display would (the timer loses to the animation frame while visible).
+  let presentFallback: number | null = null;
+  let presentFrame: number | null = null;
+  const PRESENT_FALLBACK_MS = 20;
+  const presentNow = () => {
+    presentScheduled = false;
+    // Whichever of the two fires first draws; the other is called off, so neither piles up.
+    if (presentFallback !== null) {
+      clearTimeout(presentFallback);
+      presentFallback = null;
+    }
+    if (presentFrame !== null) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(presentFrame);
+      presentFrame = null;
+    }
+    const frame = pendingFrame;
+    pendingFrame = null;
+    if (!frame) return;
+    try {
+      if (!closed) {
+        ctx?.drawImage(frame, 0, 0);
+        presentedFrames++;
+        // The frame's timestamp is its capture time on the host's stream clock.
+        const captured = clock?.toLocalMs(frame.timestamp);
+        if (captured != null) {
+          const now = performance.now();
+          latencies.push(now - captured);
+          onLatency?.(now - captured, now);
+        }
+      }
+    } finally {
+      frame.close();
+    }
+  };
+  const present = (frame: VideoFrame) => {
+    pendingFrame?.close();
+    pendingFrame = frame;
+    if (typeof requestAnimationFrame !== "function") {
+      presentNow();
+      return;
+    }
+    if (!presentScheduled) {
+      presentScheduled = true;
+      presentFrame = requestAnimationFrame(() => {
+        presentFrame = null;
+        presentNow();
+      });
+      presentFallback = window.setTimeout(presentNow, PRESENT_FALLBACK_MS);
+    }
+  };
   let width = 0, height = 0;
   let droppedFrames = 0;
   const drops: Record<DropReason, number> = { invalid: 0, backlog: 0, error: 0, awaitingKeyframe: 0 };
@@ -143,15 +204,23 @@ export function createDecoder(
     const seconds = Math.max((now - intervalStart) / 1000, .001);
     latencies.sort((a, b) => a - b);
     const latencyMs = latencies.length ? latencies[Math.floor(latencies.length / 2)] : null;
-    onStats?.({ width, height, decodedFps: decodedFrames / seconds, receivedKbps: receivedBytes * 8 / seconds / 1000,
+    onStats?.({ width, height, decodedFps: decodedFrames / seconds, presentedFps: presentedFrames / seconds,
+      receivedKbps: receivedBytes * 8 / seconds / 1000,
       droppedFrames, drops: { ...drops }, decodeQueueSize: decoder?.decodeQueueSize ?? 0,
       latencyMs, latencyErrorMs: latencyMs === null ? null : clock?.errorMs() ?? null });
     latencies = [];
     intervalStart = now;
-    receivedBytes = decodedFrames = 0;
+    receivedBytes = decodedFrames = presentedFrames = 0;
   }, 1000);
 
+  /** A decoded frame not drawn yet belongs to the decoder being replaced: never draw it. */
+  const discardPending = () => {
+    pendingFrame?.close();
+    pendingFrame = null;
+  };
+
   const reset = () => {
+    discardPending();
     try {
       decoder?.close();
     } catch {
@@ -178,19 +247,9 @@ export function createDecoder(
           caughtUp = true;
           logVideo("info", `decoder caught up ${Math.round(performance.now() - createdAt)} ms after it started`);
         }
-        try {
-          ctx?.drawImage(frame, 0, 0);
-          decodedFrames++;
-          totalDecoded++;
-          // The frame's timestamp is its capture time on the host's stream clock.
-          const captured = clock?.toLocalMs(frame.timestamp);
-          if (captured != null) {
-            const now = performance.now();
-            latencies.push(now - captured);
-            onLatency?.(now - captured, now);
-          }
-        }
-        finally { frame.close(); }
+        decodedFrames++;
+        totalDecoded++;
+        present(frame);
       },
       error: (e) => {
         if (closed || decoder !== next) return;
@@ -198,6 +257,7 @@ export function createDecoder(
         reset();
       },
     });
+    discardPending();
     decoder = next;
     caughtUp = false;
     createdAt = performance.now();
@@ -206,6 +266,7 @@ export function createDecoder(
     // Annex B / OBU input: no `description`, the parameter sets travel in the keyframes.
     decoder.configure(c);
     config = c;
+    logVideo("info", `decoder configured: ${c.codec} ${c.codedWidth}x${c.codedHeight}`);
   };
 
   return {
@@ -272,6 +333,8 @@ export function createDecoder(
     close() {
       closed = true;
       clearInterval(metricsTimer);
+      pendingFrame?.close();
+      pendingFrame = null;
       try {
         decoder?.close();
       } catch {
