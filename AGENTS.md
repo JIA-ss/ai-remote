@@ -121,6 +121,7 @@
   已有授权就失效**（实测：只换 `ai-remote-desktop`、hostw 的 CDHash 不变，新进程探测的屏幕录制从 true 变 false）；系统设置里仍显示旧条目为"开"，但对新版本无效，
   要选中它点"−"删掉再授权。页面现在会比较"运行中的被控端"和"新进程"的结果，前者有后者没有时标成"授权已失效"；授权超时的提示也写了删旧条目。根本解决要用固定身份
   签名（Developer ID，或至少一个固定的自签名代码签名证书，`APPLE_SIGNING_IDENTITY`），未做。
+- **把真实被控端从 `~/.local/opt` 换到 `/Applications`（2026-10-21）**：坑 3：`bootout` 返回时 launchd 还没放掉旧任务，紧接着 `bootstrap` 同名标签报 `5: Input/output error`，安装计划已加"等待卸载完成（最多 10 s）"一步；坑 4：载入成功但 launchd 没启动它，要 `kickstart`，app 开启后现在会兜底启动；坑 5：直接 `ditto` 覆盖 `/Applications` 里正在用的包，下次启动报 `OS_REASON_CODESIGNING`，要先删掉旧包再拷。真实被控端现已运行在 `/Applications/ai-remote.app`（服务形态，`current: true`），两项授权仍待机主在系统设置里删掉旧条目后重新允许。
 - 实测（本机，/tmp/ar-tray-fresh 全新配置）：包内 CLI 普通安装 → plist 指向包内 hostw、带 `AssociatedBundleIdentifiers`、被控端启动；`permissions`
   探测返回 `probed: true`；关闭（普通权限）移除 plist、被控端停止。管理员通路：用同样格式的 osascript 跑无害的 `/usr/bin/id`，系统管理员密码框弹出
   （截图里是黑的：SecurityAgent 窗口不让截），有人在机器前输入密码后返回 `uid=0(root)`。**没做**：从零点按钮装 `--service` 并在系统授权框里允许
