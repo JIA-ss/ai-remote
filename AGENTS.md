@@ -109,6 +109,8 @@
 
 **真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
 
+0. 前提：开发机上已经有一个服务在跑（`ai-remote-host-cc166525`，安静模式，`[network] quiet = true`，构建在 `ai-remote-quiet` 目录）。替换或重装它之前先问用户。本分支要先合入 PR #18（`feat/quiet-network`，或 cherry-pick 3017e90），否则读到 `quiet = true` 会启动失败。在公司网络里起任何测试用的被控端或控制端（包括隔离的 `--home`）时，都要在它的 `host/` 和 `controller/` 下各放一份写有 `[network] quiet = true` 的 `ai-remote.toml`。
+
 1. 构建并安装：`cargo build --release -p ai-remote`，管理员终端里 `ai-remote host install --service`（先 `--dry-run` 看计划）。`ai-remote host status` 为 running。
 2. 控制端 `ai-remote chat list --host <host>`：应列出用户装的 codex / claude 等且 `can_start: true`、版本和登录态与用户终端里一致（说明是用户身份探测的）。被控端机器上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"`：应有两个进程，一个用户名 `NT AUTHORITY\SYSTEM`（被控端），一个是登录用户（runner，命令行带 `--chat-runner`）。`host/chat-runner.log` 有 `connected to the host`。
 3. `ai-remote chat run --host <host> codex <某个用户目录> "列出当前目录"`（或桌面端「智能体」标签）：轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，且没有弹控制台窗口。
