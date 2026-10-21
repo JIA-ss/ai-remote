@@ -24,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
+# The CLI prints UTF-8; Windows would otherwise decode with the console code page.
+TEXT = {"text": True, "encoding": "utf-8", "errors": "replace"}
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 options = parser.parse_args()
@@ -38,7 +40,7 @@ def check(name, ok, detail=""):
 
 
 def run(*args, home, timeout=90):
-    p = subprocess.run([str(options.cli), *args, "--home", str(home)], capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run([str(options.cli), *args, "--home", str(home)], capture_output=True, timeout=timeout, **TEXT)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -65,7 +67,7 @@ def set_port(home, port):
 
 
 def start_host(home):
-    proc = subprocess.Popen([str(options.cli), "host", "--home", str(home)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen([str(options.cli), "host", "--home", str(home)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **TEXT)
     deadline = time.monotonic() + 60
     for line in proc.stdout:
         if "is running" in line:
@@ -88,9 +90,9 @@ def tcp_connections(pid):
     """The host process's TCP connections (any state), as text lines."""
     if os.name == "nt":
         ps = f"Get-NetTCPConnection -OwningProcess {pid} -ErrorAction SilentlyContinue | ForEach-Object {{ $_.RemoteAddress + ':' + $_.RemotePort + ' ' + $_.State }}"
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True).stdout
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, **TEXT).stdout
     else:
-        out = subprocess.run(["lsof", "-nP", "-a", "-p", str(pid), "-iTCP"], capture_output=True, text=True).stdout
+        out = subprocess.run(["lsof", "-nP", "-a", "-p", str(pid), "-iTCP"], capture_output=True, **TEXT).stdout
         out = "\n".join(out.splitlines()[1:])
     return [line for line in out.splitlines() if line.strip()]
 
@@ -124,7 +126,10 @@ def main():
         check("route is direct", h["path"] == "direct", h)
         check("stored address carries the host's port", any(a.endswith(f":{first_port}") for a in h["addresses"]), h["addresses"])
 
-        doctor = run_json("doctor", "--host", "e2e-host", home=ctl_home)
+        # Exits 1 when any check fails (a host started without a desktop session fails the screen
+        # checks); only the network checks matter here.
+        _, out, _ = run("doctor", "--host", "e2e-host", "--json", home=ctl_home)
+        doctor = json.loads(out)
         lan = next((c for c in doctor["checks"] if c["id"] == "lan"), None)
         check("doctor reports LAN mode and the host's addresses", lan is not None and lan["grade"] == "ok" and f":{first_port}" in lan["summary"], lan)
         net = next((c for c in doctor["checks"] if c["id"] == "network"), None)

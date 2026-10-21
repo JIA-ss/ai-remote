@@ -33,6 +33,8 @@
 - 测试：`tools/network-ui.test.mjs`（地址过滤与输入校验）；`tools/network-ui-smoke.py`（camofox REST 驱动演示页，17 项，
   截图在 `target/network-ui`）；`tools/network-e2e.py`（一台机器上隔离的被控端和控制端，真实 QUIC，15 项：默认安静、两端切
   仅限局域网、配对、调用、doctor `lan`、被控端零 TCP 连接、换端口后 20 s 拨号超时、`hosts address` 后 0.05 s 恢复、quiet 锁拒绝）。
+  macOS 和 Windows 开发机（debug、隔离目录）各跑一遍都 15 项全过。Windows 上要注意：子进程输出按 UTF-8 读（默认会按 GBK 解码失败）；
+  从 SSH 会话起的被控端没有桌面，远程 `doctor` 截屏类检查 fail、整体退出码 1，脚本只看 `lan` / `network` 两项。
   仓库里原来的 `tools/desktop-ui-smoke.py` 依赖的 camofox 命令行（另一个分支的包）本机没有，所以新脚本直接用 REST。
 - 坑：macOS 临时目录太长，控制端代理的 Unix 套接字路径会超长（`SUN_LEN`），e2e 的临时目录放 `/tmp`。
 
