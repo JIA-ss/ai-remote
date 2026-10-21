@@ -153,6 +153,9 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             "pid": std::process::id(),
             "exe": std::env::current_exe().ok().map(|p| dunce::simplified(&p).to_path_buf()),
             "background": host.background(),
+            // LAN mode: where controllers on this network reach this host.
+            "lan_direct": mesh.lan_direct(),
+            "addresses": mesh.network().await.ok().flatten().map(|n| n.direct_addrs).unwrap_or_default(),
         }),
         HostRequest::Doctor => serde_json::to_value(
             crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,

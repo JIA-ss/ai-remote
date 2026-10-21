@@ -105,6 +105,10 @@ export interface Backend {
   networkSettings(): Promise<NetworkSettings>;
   /** Turns router port mapping on or off here; the controller applies it at once, a running host at its next start. */
   setPortMapping(on: boolean): Promise<NetworkSettings>;
+  /** `auto` or `lan` (direct on the local network only), for this computer as a host and a controller. */
+  setNetworkMode(mode: NetworkSettings["mode"]): Promise<NetworkSettings>;
+  /** Where to dial a paired host (`ip`, `ip:port`, several separated by commas); returns the addresses kept. */
+  setHostAddress(host: string, address: string): Promise<string[]>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
@@ -214,6 +218,7 @@ const tauriBackend: Backend = {
       relay: relayHost(h.relay),
       relayN0: h.relay_n0 === true,
       p2pObstacle: (h.p2p_obstacle as Host["p2pObstacle"]) ?? null,
+      addresses: Array.isArray(h.addresses) ? (h.addresses as string[]) : [],
     }));
   },
   async fixFirewall() {
@@ -276,6 +281,13 @@ const tauriBackend: Backend = {
   async setPortMapping(on) {
     unwrap(await commands.setPortMapping(on));
     return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async setNetworkMode(mode) {
+    return unwrap(await commands.setNetworkMode(mode)) as NetworkSettings;
+  },
+  async setHostAddress(host, address) {
+    const v = unwrap(await commands.setHostAddress(host, address)) as { addresses: string[] };
+    return v.addresses;
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));

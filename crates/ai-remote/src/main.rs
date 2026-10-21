@@ -322,6 +322,10 @@ enum HostsAction {
         #[arg(long, conflicts_with = "host")]
         clear: bool,
     },
+    /// Show or set the addresses a host is dialled at: `ip`, `ip:port`, several separated by commas
+    /// (no port: 47800, a LAN-mode host's default). In LAN mode (`[network] mode = "lan"`) this is
+    /// how a host whose address changed is reached again.
+    Address { host: String, address: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -670,6 +674,25 @@ async fn run(cli: Cli) -> Result<()> {
                 Some(name) => format!("default host is now {name}"),
                 None => "default host cleared".to_string(),
             };
+            print_result(json_out, &v, &text)
+        }
+        Command::Hosts { action: Some(HostsAction::Address { host, address: None }) } => {
+            let v = agent_request(&profile, json!({"op": "hosts"})).await?;
+            let found = v.as_array().and_then(|a| a.iter().find(|h| h["name"] == host.as_str())).cloned();
+            let Some(h) = found else { bail!("no paired host named '{host}' (`ai-remote hosts` lists them)") };
+            let addrs: Vec<&str> = h["addresses"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let text = if addrs.is_empty() {
+                format!("{host}: no stored address")
+            } else {
+                format!("{host} is dialled at {}", addrs.join(", "))
+            };
+            print_result(json_out, &json!({"host": host, "addresses": h["addresses"]}), &text)
+        }
+        Command::Hosts { action: Some(HostsAction::Address { host, address: Some(address) }) } => {
+            let v =
+                agent_request(&profile, json!({"op": "set_host_address", "host": host, "address": address})).await?;
+            let addrs: Vec<&str> = v["addresses"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let text = format!("{} is now dialled at {}", v["host"].as_str().unwrap_or(&host), addrs.join(", "));
             print_result(json_out, &v, &text)
         }
         Command::Agents { disconnect: Some(id) } => {
