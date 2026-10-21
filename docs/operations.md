@@ -858,6 +858,7 @@ relays = []                  # empty: the default public relays (section 12)
 relay_fallback_n0 = true     # with relays set: keep n0's public relays as a fallback
 proxy = ""                   # empty: detect the HTTP proxy; "none": never use one; or a URL
 lan_discovery = "on"         # "on", "resolve" (find peers, do not announce) or "off"
+quiet = false                # true on a managed network such as an office (section 12)
 
 [[rule]]                     # policy rules, first match wins
 tool = "shell"
@@ -880,12 +881,13 @@ comments and layout.
 ## 12. Connecting across networks
 
 Paired devices find and reach each other without port forwarding or a VPN. Every way below is on by
-default, so a connection gets through on as many networks as possible without configuration:
+default, so a connection gets through on as many networks as possible without configuration
+(quiet mode, below, turns off the ones that broadcast or probe the network):
 
 | Way | What it does | Turn off |
 |---|---|---|
-| Direct (P2P) | UDP hole punching, IPv4 and IPv6, with automatic port mapping (UPnP, NAT-PMP, PCP) on the router | — |
-| Local network | Finds the other device on the same network by mDNS, even with no internet | `lan_discovery = "off"` |
+| Direct (P2P) | UDP hole punching, IPv4 and IPv6, with automatic port mapping (UPnP, NAT-PMP, PCP) on the router | port mapping: `quiet = true` |
+| Local network | Finds the other device on the same network by mDNS, even with no internet | `lan_discovery = "off"` or `quiet = true` |
 | Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | — |
 | HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | `proxy = "none"` |
 | Relay fallback | With your own relays set, n0's public relays stay as a fallback | `relay_fallback_n0 = false` |
@@ -906,6 +908,8 @@ relay_fallback_n0 = true
 proxy = ""            # empty or absent: detect; "none": never; or e.g. "http://proxy.corp:3128"
 lan_discovery = "on"  # host default "on", controller default "resolve"
 port = 0              # a fixed UDP port to forward on your router; 0 or absent: random
+quiet = false         # true: no mDNS, no router port mapping, system DNS only
+address_lookup = []   # empty: n0's address lookup service; or your own pkarr servers
 ```
 
 - **Relays.** An empty list means n0's public relays. With your own
@@ -926,6 +930,40 @@ port = 0              # a fixed UDP port to forward on your router; 0 or absent:
 - **Fixed port.** Behind a NAT that defeats hole punching (`doctor` reports `p2p` warn), forward a UDP port
   on the router to the host and set `port` to it: controllers then reach the host directly. If the port is
   taken when the host starts, it uses a random port and says so in the log.
+- **Quiet mode.** `quiet = true` is for a managed network, such as an office, where traffic beyond the
+  connections themselves draws attention. Off by default. It turns off local-network discovery (no mDNS
+  announcements or queries; `lan_discovery` is ignored), router port mapping (no UPnP search multicast, no
+  NAT-PMP or PCP requests to the gateway) and the public DNS fallback (lookups go only through the system's
+  DNS; one that fails stays failed instead of being asked of Cloudflare, Google or Quad9). Set it on the host
+  and on the controller used on that network; `ai-remote doctor` on the host shows the mode (`network` check).
+  Paired devices still connect: they find each other through the address lookup service, punch a direct path
+  where the networks allow it and are relayed otherwise. What it costs: devices on a network with no internet
+  cannot find each other; behind a NAT that only opens through port mapping, the connection stays relayed; and
+  where the network's DNS does not resolve the relay or lookup names, nothing connects (list self-hosted relays
+  and lookup servers it does resolve).
+- **Address lookup.** Every device publishes its current addresses to n0's lookup service (`dns.iroh.link`)
+  every 5 minutes and whenever they change, and looks a peer up there before dialing it. With
+  `address_lookup = ["https://dns.example.org/pkarr"]` your own
+  [iroh-dns-server](https://github.com/n0-computer/iroh) does both instead. Every device that must find the
+  others needs the same servers. Together with self-hosted relays and `relay_fallback_n0 = false`, nothing
+  goes to n0.
+
+### What goes over the network
+
+Read from the code (iroh 1.3), not from a packet capture. The connections themselves are the last row.
+
+| Traffic | To | When | Quiet mode |
+|---|---|---|---|
+| Relay connection | the relays (n0's: `use1-1`, `usw1-1`, `euc1-1`, `aps1-1` `.relay.n0.iroh.link`), HTTPS on TCP 443 | always while running, a ping every 15 s | kept |
+| Network report | the relays: HTTPS on 443, QUIC address discovery on UDP 7842, a captive-portal check over HTTP on 80 | every 20 to 26 s, a full report every 5 minutes, and on network changes | kept |
+| Address publishing and lookup | `dns.iroh.link` (or `address_lookup`), HTTPS on 443, and DNS queries through the system | publishing every 5 minutes and on changes; lookup before a dial | kept |
+| Router port mapping | the gateway: UPnP SSDP multicast to 239.255.255.250:1900, NAT-PMP and PCP on UDP 5351 | every 20 to 26 s while there is no mapping (most office networks have none) | off |
+| Local-network discovery | mDNS multicast to 224.0.0.251:5353, seen by every device on the network; the host announces its device id and addresses (its public one too) | about once a second | off |
+| Public DNS fallback | 1.1.1.1, 8.8.8.8, 9.9.9.9 (UDP 53, HTTPS 443) | only after the system's DNS failed or timed out | only when the system has no DNS configured |
+| Connections | the other device (UDP, hole punched) or a relay | while paired devices are connected; a keepalive every 5 s; the screen stream is the bulk | kept |
+
+Nothing else: no port or address scanning, no update check, no telemetry. The desktop app's interface only
+talks to its own process.
 
 ## 13. Troubleshooting
 

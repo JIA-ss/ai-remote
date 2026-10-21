@@ -258,6 +258,25 @@ pub struct NetworkCfg {
     /// node warns and falls back to a random port instead of failing to start.
     #[serde(default)]
     pub bind_port: Option<u16>,
+    /// `[network].port_mapping` (ai-remote patch) — ask the router to forward a port to this node
+    /// (UPnP, NAT-PMP, PCP). `true` (default) is iroh's behaviour.
+    ///
+    /// While it holds no mapping, iroh retries on every address update (every 20-26 s, plus on
+    /// network changes), and each attempt probes the gateway: NAT-PMP/PCP on UDP 5351 and a UPnP
+    /// SSDP search multicast to 239.255.255.250:1900. On a network without a mapping service (most
+    /// office and public networks) that is all it ever does. `false` sends none of it, at the cost
+    /// of direct paths behind NATs that only open through a mapping. Read at BOOT.
+    pub port_mapping: bool,
+    /// `[network].dns_fallback` (ai-remote patch) — when the public resolvers (Cloudflare, Google,
+    /// Quad9; plain DNS and DNS over HTTPS) are asked instead of the system's DNS:
+    ///
+    /// - `"deferred"` (default, iroh's behaviour): after every system nameserver failed or timed out.
+    /// - `"if_system_empty"`: only when the system has no DNS configuration at all; a failing system
+    ///   nameserver fails the lookup instead of escalating.
+    /// - `"never"`: the system's DNS only.
+    ///
+    /// Read at BOOT; an unknown value is a startup ERROR, like the other `[network]` modes.
+    pub dns_fallback: String,
 }
 
 fn default_local_discovery() -> String {
@@ -277,6 +296,8 @@ impl Default for NetworkCfg {
             local_discovery: default_local_discovery(),
             proxy_url: None,
             bind_port: None,
+            port_mapping: true,
+            dns_fallback: "deferred".into(),
         }
     }
 }
@@ -525,6 +546,21 @@ mod tests {
         assert_eq!(c.limits.rate_limit_per_min, 120);
         assert_eq!(c.limits.max_inflight, 16);
         assert_eq!(c.limits.max_sessions, 4);
+    }
+
+    /// ai-remote patch: absent, port mapping is on and the DNS fallback deferred (iroh's
+    /// behaviour); both read from `[network]`.
+    #[test]
+    fn port_mapping_and_dns_fallback_parse() {
+        let c = Config::from_toml_str("").unwrap();
+        assert!(c.network.port_mapping);
+        assert_eq!(c.network.dns_fallback, "deferred");
+        let c = Config::from_toml_str(
+            "[network]\nport_mapping = false\ndns_fallback = \"never\"\n",
+        )
+        .unwrap();
+        assert!(!c.network.port_mapping);
+        assert_eq!(c.network.dns_fallback, "never");
     }
 
     #[test]

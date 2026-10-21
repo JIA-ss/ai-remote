@@ -12,6 +12,8 @@
 //! proxy = ""             # empty: detect (HTTPS_PROXY, system setting); "none": never; or a URL
 //! lan_discovery = "on"   # find peers on the local network: "on", "resolve" (do not announce), "off"
 //! port = 0               # a fixed UDP port to forward on the router; 0 or absent: random
+//! quiet = false          # true on a managed network: no mDNS, no router port mapping, system DNS only
+//! address_lookup = []    # empty: n0's address lookup service; or self-hosted pkarr server URLs
 //!
 //! [[rule]]               # evaluated in order; the first match wins
 //! tool = "shell"
@@ -105,6 +107,16 @@ pub struct NetworkSection {
     /// taken port falls back to a random one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// Quiet mode, for a managed network such as an office: nothing on the local network (no mDNS
+    /// announcements or queries, whatever `lan_discovery` says), no router port mapping (UPnP,
+    /// NAT-PMP, PCP), and name lookups only through the system's DNS (never the public resolvers).
+    /// Paired devices still connect, directly by hole punching or through a relay. Absent: off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<bool>,
+    /// Self-hosted pkarr servers (iroh-dns-server) where devices publish and look up each other's
+    /// addresses, instead of n0's service; empty: n0's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub address_lookup: Vec<String>,
 }
 
 /// The controller's configuration file (`ai-remote.toml` in the controller role directory): only

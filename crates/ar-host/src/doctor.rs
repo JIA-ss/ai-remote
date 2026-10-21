@@ -88,12 +88,19 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
         platform::macos::accessibility_allowed(),
     ));
     checks.push(dpi_check(platform::dpi_awareness()));
+    let quiet = inputs
+        .profile
+        .host_config_path()
+        .and_then(|p| ar_core::config::HostConfig::load(&p))
+        .map(|c| c.network.quiet.unwrap_or(false))
+        .map_err(|e| format!("{e:#}"));
+    checks.push(network_mode_check(&quiet));
     checks.push(match inputs.mesh {
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
         None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(match inputs.mesh {
-        Some(mesh) => nat_check(mesh.nat()),
+        Some(mesh) => nat_check(mesh.nat(), quiet == Ok(true)),
         None => Check::new("p2p", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(approval_check(platform::prompt_blocker()));
@@ -261,8 +268,28 @@ fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
     }
 }
 
+/// Which network mode the host runs in (`[network] quiet`).
+fn network_mode_check(quiet: &Result<bool, String>) -> Check {
+    match quiet {
+        Ok(true) => Check::new(
+            "network",
+            Grade::Ok,
+            "quiet mode: no local-network discovery (mDNS), no router port mapping (UPnP, NAT-PMP, PCP), \
+             name lookups only through the system's DNS",
+        ),
+        Ok(false) => Check::new(
+            "network",
+            Grade::Ok,
+            "default mode: announces this host on the local network (mDNS) and asks the router for port \
+             mapping (UPnP, NAT-PMP, PCP)",
+        )
+        .fix("on a managed network (an office), set quiet = true under [network] in ai-remote.toml"),
+        Err(e) => Check::new("network", Grade::Warn, format!("cannot read ai-remote.toml: {e}")),
+    }
+}
+
 /// Whether this network lets direct (P2P) connections form; without them traffic is relayed.
-fn nat_check(nat: Option<NatReport>) -> Check {
+fn nat_check(nat: Option<NatReport>, quiet: bool) -> Check {
     let Some(n) = nat else {
         return Check::new("p2p", Grade::Warn, "the network report is not ready yet; try again in a few seconds");
     };
@@ -286,7 +313,13 @@ fn nat_check(nat: Option<NatReport>) -> Check {
             Grade::Warn,
             "this network's NAT gives each destination its own port (symmetric NAT): direct connections often fail and are relayed",
         )
-        .fix("enable UPnP or NAT-PMP on the router, use IPv6, or forward a UDP port; a self-hosted relay avoids n0's rate limit"),
+        .fix(if quiet {
+            "use IPv6 or forward a UDP port (quiet mode keeps router port mapping off); a self-hosted relay avoids \
+             n0's rate limit"
+        } else {
+            "enable UPnP or NAT-PMP on the router, use IPv6, or forward a UDP port; a self-hosted relay avoids n0's \
+             rate limit"
+        }),
     }
 }
 
@@ -651,14 +684,23 @@ mod tests {
     #[test]
     fn p2p_grades() {
         let open = NatReport { udp_v4: true, udp_v6: true, symmetric_nat: Some(false), captive_portal: None };
-        assert_eq!(nat_check(Some(open)).grade, Grade::Ok);
-        assert!(nat_check(Some(open)).summary.contains("IPv6"));
-        let blocked = nat_check(Some(NatReport { udp_v4: false, udp_v6: false, ..open }));
+        assert_eq!(nat_check(Some(open), false).grade, Grade::Ok);
+        assert!(nat_check(Some(open), false).summary.contains("IPv6"));
+        let blocked = nat_check(Some(NatReport { udp_v4: false, udp_v6: false, ..open }), false);
         assert_eq!(blocked.grade, Grade::Warn);
         assert!(blocked.summary.contains("UDP"));
-        let symmetric = nat_check(Some(NatReport { udp_v6: false, symmetric_nat: Some(true), ..open }));
-        assert!(symmetric.summary.contains("symmetric"));
-        assert_eq!(nat_check(None).grade, Grade::Warn);
+        let symmetric = NatReport { udp_v6: false, symmetric_nat: Some(true), ..open };
+        assert!(nat_check(Some(symmetric), false).summary.contains("symmetric"));
+        assert!(nat_check(Some(symmetric), false).fix.unwrap().contains("UPnP"));
+        assert!(!nat_check(Some(symmetric), true).fix.unwrap().contains("enable UPnP"), "quiet mode keeps it off");
+        assert_eq!(nat_check(None, false).grade, Grade::Warn);
+    }
+
+    #[test]
+    fn network_mode_grades() {
+        assert!(network_mode_check(&Ok(true)).summary.starts_with("quiet mode"));
+        assert!(network_mode_check(&Ok(false)).fix.unwrap().contains("quiet = true"));
+        assert_eq!(network_mode_check(&Err("bad toml".into())).grade, Grade::Warn);
     }
 
     #[test]

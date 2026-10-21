@@ -62,7 +62,8 @@ pub struct MeshOptions {
 }
 
 /// How a node reaches its peers. Every way is on by default, so that a connection gets through
-/// on as many networks as possible without anyone configuring anything.
+/// on as many networks as possible without anyone configuring anything; quiet mode turns off the
+/// ways that broadcast or probe beyond the connection itself.
 #[derive(Debug, Clone)]
 pub struct NetworkOptions {
     /// Self-hosted relay URLs; empty means the default public relays.
@@ -76,17 +77,33 @@ pub struct NetworkOptions {
     pub lan: LanDiscovery,
     /// A fixed UDP port for IPv4 (to forward on a router); `None` for a random one.
     pub port: Option<u16>,
+    /// Quiet mode (a managed network): no router port mapping and no public DNS resolvers. `lan`
+    /// is already `Off` when this is set.
+    pub quiet: bool,
+    /// Self-hosted pkarr servers for publishing and looking up addresses; empty means n0's.
+    pub address_lookup: Vec<String>,
 }
 
 impl NetworkOptions {
     /// From a `[network]` section; `lan_default` is the role's local-discovery default.
+    /// Quiet mode wins over `lan_discovery`, which is still parsed so a misspelling is reported.
     pub fn from_config(net: &ar_core::config::NetworkSection, lan_default: LanDiscovery) -> Result<Self> {
+        let quiet = net.quiet.unwrap_or(false);
+        let lan = LanDiscovery::parse(net.lan_discovery.as_deref(), lan_default)?;
+        if quiet && net.lan_discovery.is_some() && lan != LanDiscovery::Off {
+            tracing::warn!(
+                lan_discovery = lan.as_str(),
+                "[network] quiet = true turns local-network discovery off; lan_discovery is ignored"
+            );
+        }
         Ok(Self {
             relays: net.relays.clone(),
             relay_fallback_n0: net.relay_fallback_n0.unwrap_or(true),
             proxy: proxy::ProxySetting::parse(net.proxy.as_deref()),
-            lan: LanDiscovery::parse(net.lan_discovery.as_deref(), lan_default)?,
+            lan: if quiet { LanDiscovery::Off } else { lan },
             port: net.port.filter(|&p| p != 0),
+            quiet,
+            address_lookup: net.address_lookup.clone(),
         })
     }
 }
@@ -696,6 +713,26 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
         Some(port) => network.insert("bind_port".into(), i64::from(port).into()),
         None => network.remove("bind_port"),
     };
+    if net.quiet {
+        tracing::info!("quiet network mode: no local-network discovery, no router port mapping, system DNS only");
+        network.insert("port_mapping".into(), false.into());
+        // The public resolvers only when the system has no DNS configuration at all; a failing
+        // system nameserver fails the lookup instead of going around the network's DNS.
+        network.insert("dns_fallback".into(), "if_system_empty".into());
+    } else {
+        network.remove("port_mapping");
+        network.remove("dns_fallback");
+    }
+    if net.address_lookup.is_empty() {
+        network.remove("discovery_mode");
+        network.remove("discovery_urls");
+    } else {
+        network.insert("discovery_mode".into(), "custom".into());
+        network.insert(
+            "discovery_urls".into(),
+            toml::Value::Array(net.address_lookup.iter().map(|u| toml::Value::from(u.as_str())).collect()),
+        );
+    }
     std::fs::write(&path, toml::to_string(&doc)?).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
@@ -733,6 +770,8 @@ mod tests {
                     proxy,
                     lan,
                     port: (lan == LanDiscovery::Resolve).then_some(41641),
+                    quiet: false,
+                    address_lookup: Vec::new(),
                 },
             })
             .unwrap();
@@ -759,6 +798,49 @@ mod tests {
         assert_eq!(urls(&with_n0), 4, "an n0 relay already listed is not added twice");
         assert!(with_n0.get("proxy_url").is_none(), "turning the proxy off removes the old one");
         assert!(with_n0.get("bind_port").is_none(), "dropping the port removes the old one");
+    }
+
+    #[test]
+    fn quiet_mode_and_self_hosted_address_lookup_reach_the_node_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |quiet: bool, address_lookup: &[&str]| {
+            let section = ar_core::config::NetworkSection {
+                lan_discovery: Some("on".into()),
+                quiet: Some(quiet),
+                address_lookup: address_lookup.iter().map(|u| u.to_string()).collect(),
+                ..Default::default()
+            };
+            write_node_config(&MeshOptions {
+                root: dir.path().into(),
+                device_key: [7; 32],
+                nickname: "pc".into(),
+                network: NetworkOptions::from_config(&section, LanDiscovery::On).unwrap(),
+            })
+            .unwrap();
+            let doc: toml::Table =
+                std::fs::read_to_string(dir.path().join("config/config.toml")).unwrap().parse().unwrap();
+            doc["network"].as_table().unwrap().clone()
+        };
+
+        let quiet = write(true, &["https://dns.example.org/pkarr"]);
+        assert_eq!(quiet["local_discovery"].as_str(), Some("off"), "quiet wins over lan_discovery = \"on\"");
+        assert_eq!(quiet["port_mapping"].as_bool(), Some(false));
+        assert_eq!(quiet["dns_fallback"].as_str(), Some("if_system_empty"));
+        assert_eq!(quiet["discovery_mode"].as_str(), Some("custom"));
+        assert_eq!(quiet["discovery_urls"].as_array().unwrap().len(), 1);
+
+        let normal = write(false, &[]);
+        assert_eq!(normal["local_discovery"].as_str(), Some("on"));
+        for key in ["port_mapping", "dns_fallback", "discovery_mode", "discovery_urls"] {
+            assert!(normal.get(key).is_none(), "leaving quiet mode removes {key}");
+        }
+
+        let typo = ar_core::config::NetworkSection {
+            lan_discovery: Some("of".into()),
+            quiet: Some(true),
+            ..Default::default()
+        };
+        assert!(NetworkOptions::from_config(&typo, LanDiscovery::On).is_err(), "a misspelling is still reported");
     }
 
     #[test]
