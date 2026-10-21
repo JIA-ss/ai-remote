@@ -619,8 +619,12 @@ conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and comman
 user's login shell once (`$SHELL -ilc`, aliases and functions of the same name removed; its `PATH` is
 also used to run the agent, so Node.js shims work under launchd), then in installers' usual places.
 `--version` gives the version; `claude auth status` / `codex login status` the sign-in. Answers are
-cached for a minute (`refresh: true` looks again). A host running as SYSTEM (Windows service mode) or
-root runs nothing and reports `can_start: false`: agents must run as the user.
+cached for a minute (`refresh: true` looks again). A host running as SYSTEM (Windows service mode)
+executes nothing of the user's itself: it starts a runner in the installing user's session, with that
+user's own token, which does the detection and runs the agents; the agents keep running when the host
+is restarted (Windows 11 restarts it when the screen locks) and their sessions go on. The installing
+user must be signed in (a disconnected session counts). A host running as root (the macOS login
+window) runs nothing and reports `can_start: false`.
 
 **Custom agents** go in `<profile>/host/chat.toml` (not `ai-remote.toml`):
 

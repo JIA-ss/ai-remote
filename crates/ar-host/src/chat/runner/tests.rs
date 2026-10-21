@@ -2,8 +2,6 @@
 //! in the runner, then comes back and carries on with the same process (Unix: the stand-in agent
 //! is a shell script; the transport is the same local socket code as the Windows pipe).
 
-use std::sync::atomic::AtomicUsize;
-
 use super::*;
 
 #[tokio::test]
@@ -35,7 +33,7 @@ fn keys_are_kept_for_the_next_host() {
 
 #[cfg(unix)]
 mod restart {
-    use std::os::unix::fs::PermissionsExt;
+    use std::{os::unix::fs::PermissionsExt, sync::atomic::AtomicUsize};
 
     use ar_net::Peer;
     use tokio::sync::broadcast;

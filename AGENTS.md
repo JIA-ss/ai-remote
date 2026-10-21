@@ -45,7 +45,7 @@
   - pause 会停掉正在跑的轮次；take_over **不会**（智能体不用鼠标键盘，接管的人往往就是正在对话的人）；
   - 审计只记 `chat_session` / `chat_turn` 的元数据，不记正文；
   - `doctor` 新增 `chat` 检查项。
-- **SYSTEM 或 root 身份的被控端**（Windows 服务模式、macOS 登录窗口）：`can_start: false`，不执行任何探测。原因是智能体必须以用户身份运行；用 SYSTEM 身份去执行用户目录里的程序，还等于本地提权。
+- **SYSTEM 身份的被控端**（Windows 服务模式）：自己不执行任何东西，交给用户会话里的 chat-runner（见下一小节）。**root 身份**（macOS 登录窗口）仍是 `can_start: false`。原因相同：智能体必须以用户身份运行；用 SYSTEM / root 身份去执行用户目录里的程序等于本地提权。
 - **主控端**：
   - agent 加 op `chat`，中继逻辑照抄 Screen；
   - 命令行：`ai-remote chat list|sessions|start|run|attach|send|interrupt|end|enable|disable|status`；
@@ -82,10 +82,40 @@
 ### 下一步
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
-- [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
+- [x] 服务模式 chat-runner：代码与单测完成（分支 `feat/host-chat-service`），**真机服务模式未验证**，步骤见下一小节。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
 - [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
+
+### 服务模式：用户会话里的 chat-runner（2026-10-21，分支 `feat/host-chat-service`，基于 `feat/host-chat`）
+
+问题：服务模式的被控端是 SYSTEM，智能体必须以登录用户身份运行，而 SYSTEM 执行用户目录里的程序等于本地提权；另外 Win11 锁屏时服务会杀掉旧会话里的 hostw、在新会话里重拉，进程内的智能体会跟着死。
+
+**切分点在适配器层**：被控端（SYSTEM）保留会话、转录与编号、排队、审计和所有限制；runner（用户）只做"执行"——探测（`--version`、登录态、`~` 展开、工作目录检查）和 `adapters::launch` 跑智能体。`ChatManager` 多了 `Backend::{Local, Runner}`，driver 不变，只是 `LiveHandle` 的命令走管道、`Out` 从管道回来。
+
+- **拉起**（`chat/runner_win.rs`）：`WTSEnumerateSessionsW` 找安装者（`--owner-sid`）的会话，Active 优先、Disconnected 也算（Win11 锁屏后用户会话就是 Disc）；`WTSQueryUserToken` 拿该登录的令牌（UAC 管理员拿到的是过滤令牌，智能体不提权）；`CreateEnvironmentBlock` 后追加密钥变量；`CreateProcessAsUserW` 拉 `ai-remote-hostw --home <配置目录> --chat-runner`，`CREATE_BREAKAWAY_FROM_JOB`（服务给 hostw 的 job 允许 breakaway；不允许时退回普通启动并告警，代价只是 hostw 重启时丢智能体），不继承任何句柄。懒启动：第一次要用（runtimes / start）才拉。
+- **认证**（`chat/runner.rs`）：管道 `\\.\pipe\ai-remote-chat-runner-<id>` 用 `Listener::bind_shared(SYSTEM + 安装者 SID)`，但 ACL 只是第一道。双方各出 nonce，用 32 字节密钥做 blake3 keyed MAC 双向证明（`handshake_host` / `handshake_runner`）：抢注管道名的进程拿不到 runner 的信任、也让不了用户的智能体跑；没密钥的客户端连上也被拒。密钥由被控端生成、存 `host/chat-runner.key`（重启后的 hostw 要用它认回仍在跑的 runner），经 runner 的环境块传入，runner 启动第一件事就把它从自己环境里删掉；`proc.rs` 的清洗前缀也加了 `AI_REMOTE_CHAT_RUNNER`，智能体看不到。没有做"继承句柄"：要用 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 才能只继承一个句柄，而环境块只有该用户和管理员能读，同一用户本来就不是边界。
+- **重启续接**：runner 不在 hostw 的 job 里，hostw 被杀它还活着，每 250 ms 重连。它给每个智能体的输出编号（`n`）并缓存到被确认为止（上限 16 MiB，超了就不读智能体输出，让智能体在管道上等）。被控端每 0.5 s 或轮次结束时让 driver 处理 `Out::Mark(n)`：**先**写进 `meta.json` 的 `runner_seq`，**再**发 ack，runner 才丢弃。重启后的被控端在 `load` 里把带 `runner_live` 的会话挂起不启动任何东西（`adopting`），等 runner 3 s；`lives` 列出还在跑的，逐个 `adopt(after = runner_seq)`，runner 补发之后的输出，会话继续（新的 seq 接着旧的编、不跳号），发一条 `reattached` 通知；进行中的轮次从 `meta.turn`（只存 id、发送者、哈希、字数、开始时间，不存正文）恢复。runner 里没人认领的智能体被停掉；runner 不在了，会话按原来的"被控端重启"处理（停掉遗留进程、轮次失败、parked）。
+- **交接时丢的消息**：被控端发出提示词后立刻被杀，runner 可能没收到。adopt 应答带 `busy`（提示词进去了、轮次没结束）和 `ending`（补发里有轮次结束）；两者都否 → 轮次判失败（"消息没送到，请重发"），不会挂 30 分钟。这是单测第一版跑出来的真实竞态。
+- **runner 何时退出**：被控端正常停止（`stop-host`）时 `ChatManager::close` 让它停掉智能体后退出；没有被控端连着超过 2 分钟（无智能体）/ 15 分钟（有智能体）自己退出。`sc stop` 杀掉 hostw 不算正常停止，智能体最多再跑 15 分钟。用户注销时 runner 随会话结束。
+- 日志：`host/chat-runner.log`（runner 以用户身份写，和 SYSTEM 的 host.log 分开）。
+
+**实测 / 未测**
+
+- Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
+- Windows（win-dev）：WIN_RESULT
+- **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
+
+**真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
+
+1. 构建并安装：`cargo build --release -p ai-remote`，管理员终端里 `ai-remote host install --service`（先 `--dry-run` 看计划）。`ai-remote host status` 为 running。
+2. 控制端 `ai-remote chat list --host <host>`：应列出用户装的 codex / claude 等且 `can_start: true`、版本和登录态与用户终端里一致（说明是用户身份探测的）。被控端机器上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"`：应有两个进程，一个用户名 `NT AUTHORITY\SYSTEM`（被控端），一个是登录用户（runner，命令行带 `--chat-runner`）。`host/chat-runner.log` 有 `connected to the host`。
+3. `ai-remote chat run --host <host> codex <某个用户目录> "列出当前目录"`（或桌面端「智能体」标签）：轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，且没有弹控制台窗口。
+4. **锁屏续接**：发一个耗时的任务（例如"sleep 60 后回复 done"），轮次运行中按 Win+L。服务日志应出现 console session 切换和新会话里重拉 host；runner 进程 pid 不变；控制端重新 `chat attach` 后看到 `reattached` 通知，60 s 后收到 done，轮次 completed，没有"host restarted during this turn"。用 win-dev-unlock 解锁后再发一条，仍是同一个智能体进程（`chat sessions` 里 pid 不变）。
+5. **交接丢消息**：难以手动复现，单测已覆盖；真机上只看有没有挂住的轮次。
+6. `ai-remote stop-host`：服务停止，runner 和智能体进程都退出（`chat-runner.log` 有 `told the agent runner to exit`）。`sc start` 后再 `chat list`，会拉起新的 runner。
+7. 安全检查：用另一个本地普通用户（或低完整性进程）连 `\\.\pipe\ai-remote-chat-runner-<id>` 应被 ACL 拒；同一用户下随便连上去（不带密钥）应在 `host.log` 里看到 `refused a connection to the agent runner endpoint`。
+8. 用完 `ai-remote host uninstall`（管理员终端）。
 
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
 
