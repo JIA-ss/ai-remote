@@ -553,7 +553,8 @@ export function SessionPage({
   }, [immersive, bar]);
   const showBars = chrome;
 
-  // The picture: fills the stage, keeps the remote's aspect, never larger than 1:1 device pixels.
+  // The picture: contained in the stage (the letterbox on one axis only), keeps the remote's aspect,
+  // its edges on whole device pixels so nothing is resampled at the border.
   const aspect = native ? native.w / native.h : 16 / 10;
   const dpr = window.devicePixelRatio || 1;
   let sw = stage.w;
@@ -561,10 +562,6 @@ export function SessionPage({
   if (sh > stage.h) {
     sh = stage.h;
     sw = sh * aspect;
-  }
-  if (native && sw > native.w / dpr) {
-    sw = native.w / dpr;
-    sh = native.h / dpr;
   }
   sw = Math.round(sw * dpr) / dpr;
   sh = Math.round(sh * dpr) / dpr;
@@ -733,14 +730,6 @@ export function SessionPage({
               </motion.div>
             )}
           </AnimatePresence>
-          {!pending && !immersive && hasFrame && (
-            <div className="nt-note">
-              <Icon name={driving ? "keyboard" : bar === "paused" ? "pause" : "eye"} size={13} />
-              <span>
-                {driving ? t("st_driving", { host }) : bar === "paused" ? t("st_paused_note", { agent }) : bar === "idle" ? t("st_nobody", { host }) : t("st_watching")}
-              </span>
-            </div>
-          )}
           {bar === "connecting" && !actionError && (
             <div className="nt-stagecard">
               <div className="hd2">{t("conn_title", { host })}</div>

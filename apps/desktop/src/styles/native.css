@@ -319,6 +319,7 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-stage { position: relative; flex: 1; min-width: 0; background: var(--stage); overflow: hidden; isolation: isolate; cursor: default; }
 .nt-stage.hidecursor { cursor: none; }
 .nt-picture { position: absolute; overflow: hidden; }
+.nt-picture .rd-holder { image-rendering: auto; }
 .nt-picture.desat .rd-holder { filter: grayscale(1) brightness(.62) contrast(.9); }
 .rd-holder { position: absolute; inset: 0; }
 .remote-pointer { position: absolute; left: 0; top: 0; z-index: 5; display: none; pointer-events: none; transform-origin: 0 0; }
@@ -377,8 +378,6 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-stagecard .bd { margin-top: 4px; font-size: 13px; line-height: 20px; color: #A6A6AD; }
 .nt-stagecard .acts { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
 .nt-stagecard .btn { background: rgb(255 255 255 / .1); color: #F2F2F3; }
-.nt-note { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 6; display: inline-flex; align-items: center; gap: 8px; max-width: calc(100% - 32px); padding: 0 12px; height: 28px; border-radius: var(--r-pill); font-size: 12px; color: #A6A6AD; background: rgb(0 0 0 / .45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
-.nt-note .fi, .nt-note svg { color: #8E8E93; flex: none; }
 /* the log rail */
 .nt-rail { width: 320px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--canvas); border-left: 1px solid var(--stroke-1); padding: 12px 16px 16px; }
 @media (min-width: 1400px) { .nt-rail { width: 352px; } }
