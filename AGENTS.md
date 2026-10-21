@@ -628,7 +628,8 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 - [x] **服务模式真机实跑**（2026-10-20/21，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
       SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面与真实锁屏上的截图 / 推流 / doctor / `ctrl+alt+del`（SendSAS）/
-      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换，全部通过；重启登录界面、stop-host、uninstall 未跑。原条目：
+      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换、重启后服务自启、注销后的登录界面，全部通过；
+      stop-host 连带停服务、uninstall 恢复策略未单独跑。原条目：
       `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
 - [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
@@ -678,7 +679,14 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
   `the console session changed; stopping the host in the old one from=1 to="none"` → 1.2 s 后
   `started the host in the console session session=6`，被控端自动跟过去；`info` 报 session 6 / Winlogon / secure，
   `shot` 截到真实锁屏（PIN 框、用户列表），`mouse move`、`keyboard escape` ok，`view` 3 s H.264 28.7 fps。
-  **没在锁屏上输过密码**（不做）；解锁靠用户自己 RDP（见 skill win-dev-unlock）。
+  **没在锁屏上输过密码**（不做）；解锁走 skill win-dev-unlock（agent 在 Mac 的 Windows App 里点一次 RDP，
+  计划任务切回控制台）。
+- **重启**（`shutdown /r`）：服务开机自启（日志 `ai-remote service started` → 同秒 `started the host in the console
+  session session=1`），但这台开发机配了自动登录，重启后直接进桌面，**观察不到重启后的登录界面**。
+- **注销**（`shutdown /l`，等价于没有自动登录的重启）：控制台切到会话 2，被控端跟过去：`info` 报
+  `session_id: 2, input_desktop: Winlogon, secure_desktop: true`，`doctor` 的 session/console ok、desktop/approval warn，
+  `shot` 截到真实登录界面（时钟壁纸）。之后用 RDP 登录一次，控制台回到用户会话。
+- 结论：AGENTS 里锁屏专项 Windows 侧的"未测"清单，除 stop-host / uninstall 的收尾路径外都已真机过了一遍。
 - 当时写下的排查方向（已走完）：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
   （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
   核对被控端进程的 integrity level 与 shell 子进程是否相同。
