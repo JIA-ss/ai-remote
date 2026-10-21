@@ -31,6 +31,17 @@ import SwiftUI
     private let client: PhoneClient
     private var subscription: UInt64?
     private var generation = 0
+    #if DEBUG
+    /// Simulator UI acceptance (`-ui-chat-fixture`): no host; what would go to it is folded in locally.
+    var fixture = false
+    private var fixtureSeq = 1000
+    func fixtureEvent(_ fields: [String: JSONValue]) {
+        fixtureSeq += 1
+        var event = fields
+        event["seq"] = .number(Double(fixtureSeq)); event["ts"] = .number(Date().timeIntervalSince1970 * 1000)
+        log.apply(.object(event))
+    }
+    #endif
 
     public init(client: PhoneClient, host: String) {
         self.client = client
@@ -40,6 +51,9 @@ import SwiftUI
     public var canWrite: Bool { role == "rw" && connected && log.state != "ended" }
 
     public func loadSessions() async {
+        #if DEBUG
+        if fixture { return }
+        #endif
         loading = true; defer { loading = false }
         do {
             let reply = try await client.call(host: host, tool: "chat_sessions", args: [:])
@@ -49,6 +63,9 @@ import SwiftUI
     }
 
     public func loadRuntimes() async {
+        #if DEBUG
+        if fixture { return }
+        #endif
         do {
             let reply = try await client.call(host: host, tool: "chat_runtimes", args: [:])
             let report = reply["structuredContent"]
@@ -68,6 +85,9 @@ import SwiftUI
         let cwd = newCwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt = newPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newRuntime.isEmpty, !cwd.isEmpty, !starting else { return }
+        #if DEBUG
+        if fixture { self.error = "UI 测试：没有连接被控端，无法启动。"; return }
+        #endif
         starting = true; defer { starting = false }
         var args: [String: JSONValue] = ["runtime": .string(newRuntime), "cwd": .string(cwd), "intent": .string("从 iPhone 启动")]
         if !prompt.isEmpty { args["prompt"] = .string(prompt) }
@@ -153,6 +173,18 @@ import SwiftUI
     /// Sends the draft as the next message; while the agent works it waits in the host's queue.
     public func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        #if DEBUG
+        if fixture, !text.isEmpty, canWrite {
+            let n = Double((log.turns.last?.n ?? 0))
+            fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": .object(["device": .string("ui-fixture")])])
+            fixtureEvent(["t": .string("turn_start"), "turn": .number(n + 1)])
+            fixtureEvent(["t": .string("state"), "turn": .number(n + 1), "state": .string("running")])
+            fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("sleep 600"),
+                          "kind": .string("execute"), "status": .string("in_progress")])
+            draft = ""
+            return
+        }
+        #endif
         guard !text.isEmpty, canWrite, let id = subscription, !sending else { return }
         sending = true; defer { sending = false }
         do {
@@ -165,6 +197,13 @@ import SwiftUI
     /// A watch-only conversation (an older host) still stops through the `chat_interrupt` tool.
     public func interrupt() async {
         guard let session = current else { return }
+        #if DEBUG
+        if fixture, let n = log.turns.last?.n {
+            fixtureEvent(["t": .string("turn_end"), "turn": .number(Double(n)), "status": .string("interrupted"), "duration_ms": .number(1200)])
+            fixtureEvent(["t": .string("state"), "turn": .number(Double(n)), "state": .string("idle")])
+            return
+        }
+        #endif
         do {
             if canWrite, let id = subscription { try await client.chatSend(id, ["interrupt": .object([:])]) }
             else { _ = try await client.call(host: host, tool: "chat_interrupt", args: ["session": .string(session.id)]) }

@@ -10,6 +10,8 @@ import UIKit
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-ui-viewport-fixture") {
                 PhoneViewportFixtureView()
+            } else if ProcessInfo.processInfo.arguments.contains("-ui-chat-fixture") {
+                PhoneChatFixtureView()
             } else { liveView }
             #else
             liveView
