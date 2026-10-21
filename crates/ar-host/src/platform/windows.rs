@@ -265,9 +265,13 @@ pub fn follow_input_desktop() {
         let input = match OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) {
             Ok(input) => input,
             Err(error) => {
-                // A user-session host while the secure desktop is up: expected, and the caller's
-                // injection fails with a clear message anyway.
-                tracing::debug!(%error, "cannot open the input desktop");
+                // A user-session host while the secure desktop is up: expected there, and the
+                // caller's injection fails with a clear message anyway; worth a line as SYSTEM.
+                if runs_as_system() {
+                    tracing::warn!(%error, "cannot open the input desktop");
+                } else {
+                    tracing::debug!(%error, "cannot open the input desktop");
+                }
                 return;
             }
         };
@@ -294,7 +298,11 @@ pub fn follow_input_desktop() {
                 let _ = CloseDesktop(previous);
             }
         });
-        tracing::debug!(desktop = name.as_deref().unwrap_or("?"), "input thread switched desktop");
+        tracing::info!(
+            from = current.as_deref().unwrap_or("?"),
+            to = name.as_deref().unwrap_or("?"),
+            "input thread switched desktop"
+        );
     }
 }
 
