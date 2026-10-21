@@ -505,4 +505,12 @@ export const zh: Record<keyof typeof en, string> = {
   hud_lowered: "已降到 {mbps} Mbps",
   show_log: "显示记录",
   hide_log: "隐藏记录",
+  // 浮动工具条：一个圆点加一句短状态（2026-10-21）。
+  drv_idle: "无人操作",
+  drv_agent: "{agent} 操作中",
+  drv_you: "你在操作",
+  drv_waiting: "等待你批准",
+  drv_paused: "已暂停",
+  drv_offline: "离线",
+  drv_connecting: "连接中",
 };

@@ -516,4 +516,12 @@ export const en = {
   hud_lowered: "lowered to {mbps} Mbps",
   show_log: "Show the log",
   hide_log: "Hide the log",
+  // The driver bar: one dot and a short status (2026-10-21).
+  drv_idle: "Nobody operating",
+  drv_agent: "{agent} operating",
+  drv_you: "You are operating",
+  drv_waiting: "Waiting for you",
+  drv_paused: "Paused",
+  drv_offline: "Offline",
+  drv_connecting: "Connecting",
 };
