@@ -1,0 +1,19 @@
+<!doctype html><title>ai-remote latency probe</title>
+<body style="margin:0;background:#000;overflow:hidden"><canvas id=c width=1100 height=72></canvas><script>
+// Every refresh: a magenta marker, 32 bits of this machine's wall clock (ms, low 32 bits) and an
+// 8-bit checksum (sum of its bytes), white = 1, black = 0, 24 px blocks.
+const B = 24, c = document.getElementById('c').getContext('2d');
+function frame() {
+  const ms = Date.now() >>> 0;
+  const sum = ((ms >>> 24) + ((ms >>> 16) & 255) + ((ms >>> 8) & 255) + (ms & 255)) & 255;
+  c.fillStyle = '#000'; c.fillRect(0, 0, 1100, 72);
+  c.fillStyle = '#ff00ff'; c.fillRect(0, 0, B, B);
+  for (let i = 0; i < 40; i++) {
+    const bit = i < 32 ? (ms >>> (31 - i)) & 1 : (sum >>> (39 - i)) & 1;
+    c.fillStyle = bit ? '#fff' : '#000';
+    c.fillRect((i + 1) * B, 0, B, B);
+  }
+  requestAnimationFrame(frame);
+}
+frame();
+</script></body>

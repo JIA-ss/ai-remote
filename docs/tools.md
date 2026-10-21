@@ -539,7 +539,9 @@ it fails when nothing matches (`process_list` shows what runs). For a job starte
 
 Admin level: file names and contents are as sensitive as what `shell` reaches. Reading metadata runs
 without asking; creating, deleting and moving files ask the owner by default. Every path must be
-absolute (the host's working directory is not something a caller can know).
+absolute (the host's working directory is not something a caller can know); `~` and `~/...` mean the home
+directory of the user signed in at the host (also when the host runs as the Windows service), and
+`~/Desktop` is the desktop that user sees (on Windows possibly moved by OneDrive).
 
 **`files_list`**: `path` (a folder), optional `pattern` (`*` and `?`, case-insensitive) and `offset`.
 Returns `{path, total, offset, next_offset, entries: [{name, kind, size, modified}]}`: `kind` is

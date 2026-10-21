@@ -40,6 +40,9 @@ pub const ALPN_SCREEN: &[u8] = b"app/ai-remote/screen/1";
 /// ALPN of file transfers: the bytes of a file move approved with a `files_push` / `files_pull` call.
 pub const ALPN_FILES: &[u8] = b"app/ai-remote/file/1";
 
+/// ALPN of live input: a person's live mouse, keyboard and clipboard while they drive (see `ar-host`'s input channel).
+pub const ALPN_INPUT: &[u8] = b"app/ai-remote/input/1";
+
 const SERVICE_PREFIX: &str = "ai-remote.";
 
 fn service_name(level: Level) -> String {

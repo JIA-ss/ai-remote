@@ -124,6 +124,18 @@ pub fn runs_as_root() -> bool {
     }
 }
 
+/// The home and desktop folders of the user whose desktop this host serves. As the Windows service
+/// (SYSTEM in the user's session) those of the user signed in to that session, not SYSTEM's own
+/// profile; otherwise this process's user's. `None` when there is no such user.
+pub fn user_folders() -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    #[cfg(windows)]
+    if runs_as_system() {
+        return windows::session_user_folders();
+    }
+    let dirs = directories::UserDirs::new()?;
+    Some((dirs.home_dir().to_path_buf(), dirs.desktop_dir().map(std::path::Path::to_path_buf)))
+}
+
 /// Whether this process runs as the LocalSystem account: on Windows the host the service starts in
 /// the user's session, which may open the secure desktop. Always false elsewhere.
 pub fn runs_as_system() -> bool {

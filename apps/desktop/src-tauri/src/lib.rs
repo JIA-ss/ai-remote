@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 use tauri::{State, ipc::Channel};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
+mod transfer;
+
 struct AppState {
     profile: Profile,
     /// The `ai-remote` executable that runs the agent when none is running.
@@ -29,7 +31,21 @@ struct AppState {
     next_feed: AtomicU32,
     /// Live views: the task copying frames, and the writer that asks the host for keyframes.
     views: Mutex<HashMap<u32, View>>,
+    /// Live input streams (while you drive): the task copying lines, and the writer to the host.
+    inputs: Mutex<HashMap<u32, InputStream>>,
 }
+
+/// A live input stream: lines for the host go through an unbounded queue in the order the page
+/// sent them; `queued` counts what has not been written yet.
+struct InputStream {
+    task: tokio::task::JoinHandle<()>,
+    control: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    queued: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Queued writes past which batches of nothing but pointer moves are dropped (the next move says
+/// where the pointer is anyway); presses, releases and keys are never dropped.
+const INPUT_BACKLOG: usize = 64;
 
 struct View {
     task: tokio::task::JoinHandle<()>,
@@ -343,6 +359,11 @@ async fn watch_screen(
     let (read, mut write) = tokio::io::split(stream);
     let (control, mut lines) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
     let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    // Measurement only: AI_REMOTE_TRACE_HOPS=<dir> logs when each video frame was read from the agent
+    // and handed to the page (tools/hops-report.py).
+    let mut trace = std::env::var_os("AI_REMOTE_TRACE_HOPS")
+        .and_then(|dir| std::fs::File::create(std::path::Path::new(&dir).join("native.tsv")).ok())
+        .map(std::io::BufWriter::new);
     let task = tokio::spawn(async move {
         let mut read = std::io::Cursor::new(buffered).chain(read);
         let frames = async {
@@ -368,8 +389,16 @@ async fn watch_screen(
                 let mut frame = Vec::with_capacity(18 + len);
                 frame.extend_from_slice(&header);
                 frame.resize(18 + len, 0);
-                if read.read_exact(&mut frame[18..]).await.is_err() || on_frame.send(Frame(frame)).is_err() {
+                if read.read_exact(&mut frame[18..]).await.is_err() {
                     break;
+                }
+                let (ts, read_at) = (u64::from_be_bytes(header[6..14].try_into().unwrap()), wall_us());
+                if on_frame.send(Frame(frame)).is_err() {
+                    break;
+                }
+                if let Some(t) = trace.as_mut().filter(|_| header[0] == 1) {
+                    use std::io::Write;
+                    let _ = writeln!(t, "{ts}\t{read_at}\t{}", wall_us());
                 }
                 #[cfg(debug_assertions)]
                 if first {
@@ -397,6 +426,11 @@ async fn watch_screen(
     });
     state.views.lock().unwrap().insert(id, View { task, control });
     Ok((id, Json(reply)))
+}
+
+/// Microseconds since the Unix epoch (for the hop trace).
+fn wall_us() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros())
 }
 
 /// Asks the host for a keyframe on live view `id` (after a decoder error).
@@ -441,6 +475,185 @@ async fn stop_screen(state: State<'_, AppState>, id: u32) -> Result<(), String> 
         view.task.abort();
     }
     Ok(())
+}
+
+/// Opens a person's live input stream to `host` (the host's `input/1` channel). Every line the host
+/// writes (clipboard changes, refused events, pauses) is sent on `on_line`; returns an id for
+/// [`send_input`] and [`close_input`], and the host's reply (`os`, `clipboard`).
+#[tauri::command]
+#[specta::specta]
+async fn open_input(
+    state: State<'_, AppState>,
+    host: Option<String>,
+    request: Json,
+    on_line: Channel<String>,
+) -> Result<(u32, Json), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut conn = state.agent().await.map_err(text)?;
+    let reply = conn.request(&json!({"op": "input", "host": host, "request": request.0})).await.map_err(text)?;
+    let (stream, buffered) = conn.into_raw();
+    let (read, mut write) = tokio::io::split(stream);
+    let (control, mut lines) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let queued = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let written = queued.clone();
+    let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    let task = tokio::spawn(async move {
+        let mut read = BufReader::new(std::io::Cursor::new(buffered).chain(read));
+        let down = async {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match read.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if on_line.send(line.trim_end_matches(['\r', '\n']).to_string()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        };
+        let up = async {
+            while let Some(data) = lines.recv().await {
+                written.fetch_sub(1, Ordering::Relaxed);
+                if write.write_all(&data).await.is_err() || write.flush().await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = down => {}
+            _ = up => {}
+        }
+        // The page learns the end from the empty line it never otherwise receives.
+        let _ = on_line.send(String::new());
+    });
+    state.inputs.lock().unwrap().insert(id, InputStream { task, control, queued });
+    Ok((id, Json(reply)))
+}
+
+/// Whether `data` (newline-separated JSON lines) holds only pointer moves.
+fn only_moves(data: &str) -> bool {
+    data.lines().filter(|l| !l.is_empty()).all(|l| l.starts_with("{\"m\":"))
+}
+
+/// Writes `data` (one or more newline-terminated JSON lines, see the host's input protocol) on
+/// live input `id`. Synchronous on purpose: such commands run one after another in the order the
+/// page sent them, so a key's release can never overtake its press (async commands run
+/// concurrently). Returns false when a batch of moves was dropped behind a slow host.
+#[tauri::command]
+#[specta::specta]
+fn send_input(state: State<'_, AppState>, id: u32, data: String) -> Result<bool, String> {
+    let inputs = state.inputs.lock().unwrap();
+    let Some(input) = inputs.get(&id) else { return Err("no such live input".into()) };
+    if input.queued.load(Ordering::Relaxed) >= INPUT_BACKLOG && only_moves(&data) {
+        return Ok(false);
+    }
+    input.queued.fetch_add(1, Ordering::Relaxed);
+    if input.control.send(data.into_bytes()).is_err() {
+        input.queued.fetch_sub(1, Ordering::Relaxed);
+        return Err("live input ended".into());
+    }
+    Ok(true)
+}
+
+/// Ends live input `id`; the host releases every key and button it holds.
+#[tauri::command]
+#[specta::specta]
+async fn close_input(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    if let Some(input) = state.inputs.lock().unwrap().remove(&id) {
+        input.task.abort();
+    }
+    Ok(())
+}
+
+/// The text on this computer's clipboard (`None` when it holds none).
+#[tauri::command]
+#[specta::specta]
+async fn clipboard_text() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        match clipboard.get_text() {
+            Ok(text) => Ok(Some(text)),
+            Err(arboard::Error::ContentNotAvailable) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Replaces this computer's clipboard with `text` (what the host's clipboard holds).
+#[tauri::command]
+#[specta::specta]
+async fn set_clipboard_text(text: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        clipboard.set_text(text).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Files on this computer's clipboard (copied in the file manager), as paths.
+#[tauri::command]
+#[specta::specta]
+async fn clipboard_files() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        Ok(clipboard
+            .get()
+            .file_list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Sends the file at `local` to `host`, into folder `remote_dir` (`~/Desktop` by default) under its
+/// own name. Progress (`[done, total]` bytes) goes on `on_progress`.
+#[tauri::command]
+#[specta::specta]
+async fn push_file(
+    state: State<'_, AppState>,
+    host: String,
+    local: String,
+    remote_dir: Option<String>,
+    on_progress: Channel<(f64, f64)>,
+) -> Result<Json, String> {
+    let report = |done: u64, total: u64| {
+        let _ = on_progress.send((done as f64, total as f64));
+    };
+    let dir = remote_dir.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| "~/Desktop".into());
+    transfer::push(&state.profile, &state.cli, &host, std::path::Path::new(&local), &dir, &report)
+        .await
+        .map(Json)
+        .map_err(text)
+}
+
+/// Fetches `remote` from `host` into this computer's Downloads folder (or `local_dir`).
+#[tauri::command]
+#[specta::specta]
+async fn pull_file(
+    state: State<'_, AppState>,
+    host: String,
+    remote: String,
+    local_dir: Option<String>,
+    on_progress: Channel<(f64, f64)>,
+) -> Result<Json, String> {
+    let report = |done: u64, total: u64| {
+        let _ = on_progress.send((done as f64, total as f64));
+    };
+    let dir = match local_dir.filter(|d| !d.trim().is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(|d| d.to_path_buf()))
+            .ok_or_else(|| "this computer has no Downloads folder".to_string())?,
+    };
+    transfer::pull(&state.profile, &state.cli, &host, &remote, &dir, &report).await.map(Json).map_err(text)
 }
 
 /// Writes a message from the page (an error, a warning) to the app's log, so problems inside the
@@ -490,6 +703,14 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         ping_screen,
         set_screen_bitrate,
         stop_screen,
+        open_input,
+        send_input,
+        close_input,
+        clipboard_text,
+        set_clipboard_text,
+        clipboard_files,
+        push_file,
+        pull_file,
         log_from_page,
     ])
 }
@@ -540,6 +761,7 @@ pub fn run() {
             feeds: Mutex::new(HashMap::new()),
             next_feed: AtomicU32::new(1),
             views: Mutex::new(HashMap::new()),
+            inputs: Mutex::new(HashMap::new()),
         })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
@@ -574,6 +796,9 @@ fn smoke(app: &tauri::App) {
         // with a throwaway `WEBVIEW2_USER_DATA_FOLDER` so the choice does not stick).
         // Measurement runs read the page's per-second live-video metrics from the log.
         let _ = w.eval("localStorage.setItem('ai-remote.video-trace', '1')");
+        if std::env::var_os("AI_REMOTE_TRACE_HOPS").is_some() {
+            let _ = w.eval("localStorage.setItem('ai-remote.hops', '1')");
+        }
         if let Ok(quality) = std::env::var("AI_REMOTE_SMOKE_QUALITY") {
             let quality = quality.replace('\'', "");
             let _ = w.eval(format!("localStorage.setItem('ai-remote.stream-quality', '{quality}')"));
@@ -708,6 +933,13 @@ fn capture(_: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
 mod tests {
     /// Regenerates `src/bindings.ts` (also done at every debug start) and fails if a command's
     /// types cannot be exported.
+    #[test]
+    fn only_batches_of_moves_may_be_dropped() {
+        assert!(super::only_moves("{\"m\":[1,2]}\n{\"m\":[3,4]}\n"));
+        assert!(!super::only_moves("{\"m\":[1,2]}\n{\"b\":\"left\",\"down\":false}\n"));
+        assert!(!super::only_moves("{\"k\":\"a\",\"down\":false}\n"));
+    }
+
     #[test]
     fn export_typescript_bindings() {
         super::builder()
