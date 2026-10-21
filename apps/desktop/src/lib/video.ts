@@ -4,6 +4,7 @@
 import { commands } from "../bindings";
 import type { HostClock } from "./clock";
 import { codecOfFlags, codecString, type VideoCodec } from "./codec";
+import { drawTime, hop } from "./hops";
 
 function logVideo(level: "error" | "info", text: string) {
   const message = `Live video: ${text}`;
@@ -138,7 +139,10 @@ export function createDecoder(
     if (!frame) return;
     try {
       if (!closed) {
+        const drawStart = performance.now();
         ctx?.drawImage(frame, 0, 0);
+        drawTime(performance.now() - drawStart);
+        hop("drawn", frame.timestamp);
         presentedFrames++;
         // The frame's timestamp is its capture time on the host's stream clock.
         const captured = clock?.toLocalMs(frame.timestamp);
@@ -249,6 +253,7 @@ export function createDecoder(
         }
         decodedFrames++;
         totalDecoded++;
+        hop("decoded", frame.timestamp);
         present(frame);
       },
       error: (e) => {

@@ -359,6 +359,11 @@ async fn watch_screen(
     let (read, mut write) = tokio::io::split(stream);
     let (control, mut lines) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
     let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    // Measurement only: AI_REMOTE_TRACE_HOPS=<dir> logs when each video frame was read from the agent
+    // and handed to the page (tools/hops-report.py).
+    let mut trace = std::env::var_os("AI_REMOTE_TRACE_HOPS")
+        .and_then(|dir| std::fs::File::create(std::path::Path::new(&dir).join("native.tsv")).ok())
+        .map(std::io::BufWriter::new);
     let task = tokio::spawn(async move {
         let mut read = std::io::Cursor::new(buffered).chain(read);
         let frames = async {
@@ -384,8 +389,16 @@ async fn watch_screen(
                 let mut frame = Vec::with_capacity(18 + len);
                 frame.extend_from_slice(&header);
                 frame.resize(18 + len, 0);
-                if read.read_exact(&mut frame[18..]).await.is_err() || on_frame.send(Frame(frame)).is_err() {
+                if read.read_exact(&mut frame[18..]).await.is_err() {
                     break;
+                }
+                let (ts, read_at) = (u64::from_be_bytes(header[6..14].try_into().unwrap()), wall_us());
+                if on_frame.send(Frame(frame)).is_err() {
+                    break;
+                }
+                if let Some(t) = trace.as_mut().filter(|_| header[0] == 1) {
+                    use std::io::Write;
+                    let _ = writeln!(t, "{ts}\t{read_at}\t{}", wall_us());
                 }
                 #[cfg(debug_assertions)]
                 if first {
@@ -413,6 +426,11 @@ async fn watch_screen(
     });
     state.views.lock().unwrap().insert(id, View { task, control });
     Ok((id, Json(reply)))
+}
+
+/// Microseconds since the Unix epoch (for the hop trace).
+fn wall_us() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros())
 }
 
 /// Asks the host for a keyframe on live view `id` (after a decoder error).
@@ -778,6 +796,9 @@ fn smoke(app: &tauri::App) {
         // with a throwaway `WEBVIEW2_USER_DATA_FOLDER` so the choice does not stick).
         // Measurement runs read the page's per-second live-video metrics from the log.
         let _ = w.eval("localStorage.setItem('ai-remote.video-trace', '1')");
+        if std::env::var_os("AI_REMOTE_TRACE_HOPS").is_some() {
+            let _ = w.eval("localStorage.setItem('ai-remote.hops', '1')");
+        }
         if let Ok(quality) = std::env::var("AI_REMOTE_SMOKE_QUALITY") {
             let quality = quality.replace('\'', "");
             let _ = w.eval(format!("localStorage.setItem('ai-remote.stream-quality', '{quality}')"));

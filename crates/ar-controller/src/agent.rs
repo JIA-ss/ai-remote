@@ -845,9 +845,10 @@ impl ScreenView {
             let _ = tokio::io::copy(&mut local_read, &mut send).await;
         };
         let down = async {
-            match test_link_bps() {
-                Some(bps) => copy_paced(&mut recv, &mut local_write, bps).await,
-                None => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
+            match (test_link_bps(), trace_hops()) {
+                (Some(bps), _) => copy_paced(&mut recv, &mut local_write, bps).await,
+                (None, Some(trace)) => copy_traced(&mut recv, &mut local_write, trace).await,
+                (None, None) => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
             }
         };
         tokio::select! {
@@ -855,6 +856,45 @@ impl ScreenView {
             _ = up => {}
         }
         conn.close(0u32.into(), b"done");
+    }
+}
+
+/// Measurement only: `AI_REMOTE_TRACE_HOPS=<dir>` makes the agent log, for each live-view frame,
+/// when its last byte arrived from the host and when it was written to the local client
+/// (`<dir>/agent.tsv`: capture timestamp, then both wall-clock times in µs).
+fn trace_hops() -> Option<std::io::BufWriter<std::fs::File>> {
+    let dir = std::env::var_os("AI_REMOTE_TRACE_HOPS")?;
+    std::fs::File::create(std::path::Path::new(&dir).join("agent.tsv")).ok().map(std::io::BufWriter::new)
+}
+
+/// Copies whole live-view messages (18-byte header + body), logging video frames' times.
+async fn copy_traced<R, W>(
+    read: &mut R,
+    write: &mut W,
+    mut trace: std::io::BufWriter<std::fs::File>,
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use std::io::Write;
+    use tokio::io::AsyncWriteExt;
+    let wall = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
+    let mut message = Vec::new();
+    loop {
+        let mut header = [0u8; 18];
+        read.read_exact(&mut header).await?;
+        let len = u32::from_be_bytes([header[14], header[15], header[16], header[17]]) as usize;
+        message.clear();
+        message.extend_from_slice(&header);
+        message.resize(18 + len, 0);
+        read.read_exact(&mut message[18..]).await?;
+        let arrived = wall();
+        write.write_all(&message).await?;
+        if header[0] == 1 {
+            let ts = u64::from_be_bytes(header[6..14].try_into().unwrap());
+            let _ = writeln!(trace, "{ts}\t{arrived}\t{}", wall());
+        }
     }
 }
 

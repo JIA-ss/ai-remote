@@ -1,0 +1,149 @@
+<!doctype html><title>g2g probe</title><body style="margin:0;background:#111;color:#ddd;font:12px monospace">
+<div id=s></div><canvas id=c width=2600 height=400 style="width:600px"></canvas><video id=v muted autoplay playsinline style="width:320px"></video>
+<script>
+// Glass-to-glass probe: reads the remote page's wall-clock barcode out of each shown frame.
+const P = new URLSearchParams(location.search), mode = P.get('mode'), offset = +P.get('offset'), secs = +(P.get('secs') || 20);
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const st = document.getElementById('s');
+const samples = []; let lastRead = 0; const due = t => { if (t - lastRead < 100) return false; lastRead = t; return true; };
+let shown = 0, unread = 0, started = performance.now(), loc = null;
+const wall = (perfT) => performance.timeOrigin + perfT;
+// Finds the magenta marker once, then reads 32 bits to its right; returns the remote ms or null.
+function read(src, sw, sh) {
+  const w = Math.min(2600, sw), h = Math.min(400, sh);
+  ctx.drawImage(src, 0, 0, w, h, 0, 0, w, h);
+  if (!loc) {
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const mag = (x, y) => { const i = (y * w + x) * 4; return d[i] > 180 && d[i + 1] < 90 && d[i + 2] > 180; };
+    // The marker: the first run of at least 8 magenta pixels; its length is the block size.
+    outer: for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!mag(x, y)) continue;
+      let r = 0; while (x + r < w && mag(x + r, y)) r++;
+      if (r < 8) { x += r; continue; }
+      // Edges blur: the block size is the longest run over the marker's rows.
+      let b = r, x0 = x;
+      for (let yy = y; yy < Math.min(h, y + 3 * r); yy++) {
+        let s = x0; while (s > 0 && mag(s - 1, yy)) s--;
+        let e = s; while (e < w && mag(e, yy)) e++;
+        if (e - s > b) { b = e - s; x0 = s; }
+      }
+      loc = { x: x0, y, b };
+      break outer;
+    }
+    if (!loc) return null;
+  }
+  const { x, y } = loc;
+  // The barcode's blocks are 42 physical pixels on the 5120-wide host screen; scaled frames shrink
+  // them by a fraction a measured (whole-pixel) run cannot express.
+  const b = 42 * sw / 5120;
+  const row = ctx.getImageData(x, Math.round(y + b / 2), Math.ceil(b * 42), 1).data;
+  const bit = i => (row[Math.round((i + 1.5) * b) * 4] > 128 ? 1 : 0);
+  let v = 0, sum = 0;
+  for (let i = 0; i < 32; i++) v = v * 2 + bit(i);
+  for (let i = 32; i < 40; i++) sum = sum * 2 + bit(i);
+  v = v >>> 0;
+  const check = ((v >>> 24) + ((v >>> 16) & 255) + ((v >>> 8) & 255) + (v & 255)) & 255;
+  if (check !== sum) { loc = null; return null; }
+  return v;
+}
+function note(remoteMs, shownWall, extra) {
+  if (remoteMs === null) { unread++; return; }
+  // Remote paint time on this machine's clock; the barcode holds the low 32 bits of the remote ms.
+  const remoteHigh = Math.floor((shownWall + offset) / 4294967296) * 4294967296;
+  let remote = remoteHigh + remoteMs;
+  if (remote - (shownWall + offset) > 2147483648) remote -= 4294967296;
+  const painted = remote - offset;
+  const lat = shownWall - painted;
+  if (lat < -50 || lat > 2000) { unread++; return; }
+  // Paint -> last packet arrived here (both on this machine's clock).
+  if (typeof extra.arrive === 'number') extra.arrive = extra.arrive - painted;
+  samples.push({ lat, ...extra });
+}
+function finish() {
+  const lat = samples.map(s => s.lat).sort((a, b) => a - b);
+  const q = p => lat.length ? +lat[Math.min(lat.length - 1, Math.floor(p * lat.length))].toFixed(1) : null;
+  const avg = k => { const v = samples.map(s => s[k]).filter(x => typeof x === 'number'); return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : null; };
+  const r = { mode, label: P.get('label'), n: lat.length, unread, shownFps: +(shown / ((performance.now() - started) / 1000)).toFixed(1), p10: q(.1), p50: q(.5), p90: q(.9), p99: q(.99), min: q(0),
+    arrive: avg('arrive'), decode: avg('decode'), present: avg('present'), size: P.get('size') };
+  fetch('/log', { method: 'POST', body: JSON.stringify(r) });
+  st.textContent = JSON.stringify(r);
+}
+setTimeout(() => { started = performance.now(); shown = 0; samples.length = 0; unread = 0; setTimeout(finish, secs * 1000); }, 3000);
+
+if (mode === 'zremote') {
+  const v = document.getElementById('v');
+  (async () => {
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    const tr = pc.addTransceiver('video', { direction: 'recvonly' });
+    try { tr.receiver.jitterBufferTarget = 0; tr.receiver.playoutDelayHint = 0; } catch (e) {}
+    pc.ontrack = e => {
+      if (P.get('at') !== 'decode') { v.srcObject = e.streams[0] || new MediaStream([e.track]); return; }
+      const reader = new MediaStreamTrackProcessor({ track: e.track }).readable.getReader();
+      (async () => { for (;;) { const { value: f, done } = await reader.read(); if (done) break;
+        const t = performance.now(); shown++;
+        if (due(t)) note(read(f, f.displayWidth, f.displayHeight), wall(t), {});
+        f.close(); } })();
+    };
+    const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+    await new Promise(r => { if (pc.iceGatheringState === 'complete') r(); pc.onicegatheringstatechange = () => pc.iceGatheringState === 'complete' && r(); setTimeout(r, 1500); });
+    const res = await fetch(P.get('whep'), { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+    await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+  })();
+  const cb = (now, m) => {
+    shown++;
+    const remote = read(v, v.videoWidth, v.videoHeight);
+    // receiveTime: last packet of the frame arrived; processingDuration: receive -> decoded.
+    note(remote, wall(now), { arrive: m.receiveTime ? wall(m.receiveTime) : undefined, present: m.receiveTime ? now - m.receiveTime : undefined, decode: m.processingDuration ? m.processingDuration * 1000 : undefined });
+    v.requestVideoFrameCallback(cb);
+  };
+  v.requestVideoFrameCallback(cb);
+} else {
+  // Ours: the host's frames (18-byte header + payload) through the controller agent, decoded with
+  // WebCodecs, the newest drawn at each animation frame (as apps/desktop/src/lib/video.ts does).
+  const codec = P.get('codecstr');
+  let pending = null, last = null;
+  const arrivals = new Map();
+  const atDecode = P.get('at') === 'decode';
+  const dec = new VideoDecoder({ output: f => {
+    const t = performance.now();
+    if (atDecode) {
+      shown++;
+      const arrivedAt = arrivals.get(f.timestamp); arrivals.delete(f.timestamp);
+      if (due(t)) note(read(f, f.displayWidth, f.displayHeight), wall(t), { arrive: arrivedAt ? wall(arrivedAt) : undefined, decode: arrivedAt ? t - arrivedAt : undefined });
+      f.close(); return;
+    }
+    pending?.close(); pending = f; f._decodedAt = t; }, error: e => st.textContent = 'decode error ' + e });
+  let configured = false;
+  (async () => {
+    const res = await fetch('/ours?' + P.get('req'));
+    const reader = res.body.getReader();
+    let buf = new Uint8Array(0);
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      const b = new Uint8Array(buf.length + value.length); b.set(buf); b.set(value, buf.length); buf = b;
+      while (buf.length >= 18) {
+        const dv = new DataView(buf.buffer, buf.byteOffset);
+        const len = dv.getUint32(14); if (buf.length < 18 + len) break;
+        const kind = buf[0], flags = buf[1], ts = Number(dv.getBigUint64(6));
+        if (kind === 1) {
+          const key = (flags & 1) === 1;
+          if (!configured && key) { dec.configure({ codec, codedWidth: dv.getUint16(2), codedHeight: dv.getUint16(4), optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' }); configured = true; }
+          if (configured) { arrivals.set(ts, performance.now()); dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: buf.slice(18, 18 + len) })); }
+        }
+        buf = buf.slice(18 + len);
+      }
+    }
+  })();
+  const raf = (now) => {
+    if (pending) {
+      const f = pending; pending = null; shown++;
+      const remote = read(f, f.displayWidth, f.displayHeight);
+      const arrivedAt = arrivals.get(f.timestamp); arrivals.delete(f.timestamp);
+      note(remote, wall(now), { arrive: arrivedAt ? wall(arrivedAt) : undefined, decode: arrivedAt ? f._decodedAt - arrivedAt : undefined, present: now - f._decodedAt });
+      f.close();
+    }
+    requestAnimationFrame(raf);
+  };
+  requestAnimationFrame(raf);
+}
+</script></body>

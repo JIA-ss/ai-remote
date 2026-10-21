@@ -9,7 +9,9 @@
   VideoToolbox 编码，不在正常硬件路径复制整张 BGRA 画面。要求并查询确认硬件加速，失败回退 OpenH264。
 - Windows：Graphics Capture 在自建 D3D11 设备上采集，GPU 视频处理器一步完成缩放与 BGRA→NV12，纹理直接交给
   Media Foundation 硬件编码器（NVENC/AMF/Quick Sync）出 H.264/HEVC/AV1，全程不经 CPU；失败依次回退 CPU 采集与
-  OpenH264。观看端在请求里列出能硬解的编码，帧头 flags 第 1~2 位标明编码。实测与实现细节见仓库根目录 `AGENTS.md`。
+  OpenH264。观看端在请求里列出能硬解的编码，帧头 flags 第 1~2 位标明编码。编码器用最快档
+  （`CODECAPI_AVEncCommonQualityVsSpeed` = 0，相当于 NVENC 的 p1；`AI_REMOTE_ENCODER_QVS` 可覆盖），5K 端到端中位
+  比默认档低约 3 ms。端到端延迟的测法在 `tools/latency-g2g/`。实测与实现细节见仓库根目录 `AGENTS.md`。
 - H.264 AnnexB 与18字节包头保持兼容。编码输出最多等待一帧；传输写入继续响应停止／关键帧控制，
   2秒写入超时终止当前流，重连可选择较低画质。静止画面也能重新发 IDR 恢复。
 - 桌面解码队列以两帧为恢复阈值，拥塞时丢弃过期解码链并请求关键帧；迟到回调不能重画旧画面。
