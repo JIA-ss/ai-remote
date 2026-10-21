@@ -696,8 +696,8 @@ click = {{ approve = \"ask\" }}
 
     #[test]
     fn parses_host_addresses_as_people_type_them() {
-        let got = parse_host_addresses("10.1.77.158, 10.1.77.158:50000 [fe80::1]:9 ::1").unwrap();
-        let want = ["10.1.77.158:47800", "10.1.77.158:50000", "[fe80::1]:9", "[::1]:47800"];
+        let got = parse_host_addresses("192.168.1.20, 192.168.1.20:50000 [fe80::1]:9 ::1").unwrap();
+        let want = ["192.168.1.20:47800", "192.168.1.20:50000", "[fe80::1]:9", "[::1]:47800"];
         assert_eq!(got.iter().map(ToString::to_string).collect::<Vec<_>>(), want);
         assert!(parse_host_addresses("win-dev").is_err(), "names are not resolved");
         assert!(parse_host_addresses(" , ").is_err());

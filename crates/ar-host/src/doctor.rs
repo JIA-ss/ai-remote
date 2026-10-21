@@ -756,10 +756,10 @@ mod tests {
                 direct_addrs: addrs.iter().map(|a| a.to_string()).collect(),
             }))
         };
-        let ok = lan_check(net(&["10.1.77.158:47800", "[fe80::1]:47800"]), Some(47800));
+        let ok = lan_check(net(&["192.168.1.20:47800", "[fe80::1]:47800"]), Some(47800));
         assert_eq!(ok.grade, Grade::Ok);
-        assert!(ok.summary.contains("10.1.77.158:47800"), "{}", ok.summary);
-        let taken = lan_check(net(&["10.1.77.158:51234"]), Some(47800));
+        assert!(ok.summary.contains("192.168.1.20:47800"), "{}", ok.summary);
+        let taken = lan_check(net(&["192.168.1.20:51234"]), Some(47800));
         assert_eq!(taken.grade, Grade::Warn);
         assert!(taken.fix.unwrap().contains("47800"));
         assert_eq!(lan_check(Ok(None), Some(47800)).grade, Grade::Warn);

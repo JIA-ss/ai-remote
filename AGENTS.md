@@ -61,14 +61,14 @@
 第一次要手动设一次地址（或重新配对）。
 
 实测（2026-10-21，公司网络，release 被控端在 Windows 开发机、debug 控制端在 macOS，都是隔离的 `--home`、`mode = "lan"`）：
-- 配对 < 1 s，控制端存的地址是 `10.1.77.158:47800`；`system_info` 往返 0.05 s，`hosts` 报 `direct (P2P)`。
+- 配对 < 1 s，控制端存的地址是 `192.168.1.20:47800`；`system_info` 往返 0.05 s，`hosts` 报 `direct (P2P)`。
 - 被控端重启到 47801：控制端代理一直开着时**自己找回来了**（被控端按它存的控制端地址连过来，iroh 记下了新路径），存的
   提示还是 47800。两边都换（控制端代理重启、被控端换 47802）后：旧地址 20 s 拨号超时；`hosts address lan-test
-  10.1.77.158:47802` 之后 0.04 s 连上。
+  192.168.1.20:47802` 之后 0.04 s 连上。
 - Windows ETW（`Microsoft-Windows-Kernel-Network`，按 PID 记 UDP 发送和 TCP 建连）120 s：被控端 245 个 UDP 全发往控制端
   的 QUIC 端口，TCP 建连 0；同时段其他进程的 163 次 TCP 建连、Steam SSDP、Bonjour mDNS 都抓到了。
 - macOS `tcpdump -i pktap,all -k`（全部 UDP + TCP SYN）120 s：控制端只和被控端互发 UDP（收 263、发 245），另向被控端
-  WSL / Hyper-V 虚拟网卡的 `172.25.192.1`、`172.28.128.1` 各发 61 个（iroh 会试对方公布的每个地址；都是私有地址，
+  WSL / Hyper-V 虚拟网卡的两个 `172.x` 地址各发 61 个（iroh 会试对方公布的每个地址；都是私有地址，
   不出公网，但会经网关）；TCP 0、5353 / 1900 / 5351 0、公网地址 0。
 - 坑：Windows OpenSSH 断开会杀掉会话里起的进程，测试被控端要用 `Invoke-CimMethod Win32_Process Create` 起；
   PowerShell 里 `$Home` 是只读内置变量。控制端代理闲置 30 分钟会自己退出，换 pid，按进程统计时要以抓包时的 pid 为准。
