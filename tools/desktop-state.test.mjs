@@ -193,7 +193,7 @@ function videoFixture() {
     }
   }
   const codec = module("../apps/desktop/src/lib/codec.ts", {}, timers);
-  const exports = module("../apps/desktop/src/lib/video.ts", { "../bindings": { commands: {} }, "./codec": codec }, timers, "", {
+  const exports = module("../apps/desktop/src/lib/video.ts", { "../bindings": { commands: {} }, "./codec": codec, "./hops": { hop() {}, drawTime() {} } }, timers, "", {
     performance: { now: () => now }, VideoDecoder: MockDecoder, EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
   });
   const canvas = { width: 0, height: 0, getContext: () => ({ drawImage() { drawn++; } }) };

@@ -5,6 +5,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
+import { hop } from "./hops";
 import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, PathKind, PendingApproval } from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
@@ -340,7 +341,10 @@ const tauriBackend: Backend = {
       } else if (bytes[0] === 5) {
         const shape = parsePointerShape(bytes);
         if (shape) opts.onPointerShape?.(shape);
-      } else onFrame(bytes.buffer);
+      } else {
+        if (bytes[0] === 1 && bytes.length >= 18) hop("page", Number(new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(6)));
+        onFrame(bytes.buffer);
+      }
     };
     const request = {
       monitor: opts.monitor ?? null,
