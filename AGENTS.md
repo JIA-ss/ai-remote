@@ -805,7 +805,10 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 ### 下一步
 
-- [ ] 真机走一遍锁屏 / 注销 / 重启（见上面"未验证"）；按结果决定是否默认 `AI_REMOTE_KEEP_ROOT`。
+- [~] 真机锁屏 **已验证**（2026-10-21，这台 Mac，用户级被控端 + 本机控制端）：Ctrl+Cmd+Q 锁屏后 `info` 报
+      `input_desktop: "lock screen", secure_desktop: true`，`doctor` 的 desktop/approval 按设计 warn，`shot` 截到真实锁屏
+      （时钟、头像、密码框），`mouse move` ok，`view` 3 s H.264 27 fps（1920x810）。注销 / 重启到登录界面（系统级
+      LaunchAgent + 降权）**仍未验证**；按结果决定是否默认 `AI_REMOTE_KEEP_ROOT`。
 - [ ] 桌面端在 Mac 上实测 HEVC（WKWebView 的 WebCodecs），以及移动鼠标时客户端光标的收益。
 - [ ] "native 240" 档的 98.8 fps 瓶颈。
 - [ ] iOS CI 过后在 iPhone 上看 HEVC 和光标叠加。
