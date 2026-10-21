@@ -347,6 +347,40 @@ pub fn virtualdesk_normalize(x: i32, y: i32, desk: (i32, i32, i32, i32)) -> Opti
 /// normalised move missed (undocumented rounding). Fails rather than leave the pointer elsewhere (a
 /// point between monitors, a cursor confined by an app), so a following click never lands on the
 /// wrong spot.
+/// What injection ran under, for a failure report: the thread's desktop, the input desktop (or
+/// why it cannot be opened), this process's integrity level and the foreground window's. The
+/// secure desktop refuses `SendInput` for reasons that are invisible otherwise.
+pub fn input_context() -> String {
+    // SAFETY: plain queries; the opened desktop handle is closed here.
+    unsafe {
+        let thread = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
+        let input = match OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) {
+            Ok(h) => {
+                let name = desktop_name(h);
+                let _ = CloseDesktop(h);
+                name.unwrap_or_else(|| "?".into())
+            }
+            Err(e) => format!("cannot open: {e}"),
+        };
+        let own = integrity_level(None).map(|l| format!("{l:#x} {}", integrity_name(l))).unwrap_or_else(|| "?".into());
+        let foreground = GetForegroundWindow();
+        let fg = if foreground.is_invalid() {
+            "none".to_string()
+        } else {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(foreground, Some(&mut pid));
+            integrity_level(Some(pid))
+                .map(|l| format!("pid {pid} {l:#x} {}", integrity_name(l)))
+                .unwrap_or_else(|| format!("pid {pid} ?"))
+        };
+        format!(
+            "thread desktop {}, input desktop {input}, process integrity {own}, foreground window {fg}, session {:?}",
+            thread.as_deref().unwrap_or("?"),
+            session_state().session_id
+        )
+    }
+}
+
 pub fn move_pointer(x: i32, y: i32) -> Result<()> {
     // A desktop beyond 16-bit addressing skips straight to SetCursorPos.
     if let Some((dx, dy)) = virtualdesk_normalize(x, y, virtual_screen()) {
@@ -367,7 +401,9 @@ pub fn move_pointer(x: i32, y: i32) -> Result<()> {
         // SAFETY: one fully initialised INPUT; the size argument matches the struct.
         let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
         if sent != 1 {
-            return Err(anyhow!("moving the pointer failed: {}", std::io::Error::last_os_error()));
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(%error, context = %input_context(), "SendInput refused the pointer move");
+            return Err(anyhow!("moving the pointer failed: {error}"));
         }
         // Injected moves are processed asynchronously; give it a moment before correcting it.
         for _ in 0..10 {
