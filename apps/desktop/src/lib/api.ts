@@ -17,11 +17,19 @@ import type {
   LocalController,
   LocalHost,
   PairTicket,
+  NetworkSettings,
   PathKind,
   PendingApproval,
 } from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
+
+/** One change on Settings > Network; whatever is left out stays as it is. */
+export interface NetworkChange {
+  mode?: NetworkSettings["mode"];
+  lanDiscovery?: boolean;
+  portMapping?: boolean;
+}
 
 export interface ToolContent {
   type: "text" | "image" | string;
@@ -114,6 +122,12 @@ export interface Backend {
   localControllers(): Promise<LocalController[] | null>;
   /** Turns bypass on or off for a controller paired with this computer. */
   setLocalBypass(peer: string, on: boolean): Promise<void>;
+  /** This computer's router port mapping (UPnP), whether quiet mode locks it, whether a host runs here. */
+  networkSettings(): Promise<NetworkSettings>;
+  /** Changes how this computer connects (as host and controller); the controller applies it at once, a running host at its next start. */
+  updateNetwork(change: NetworkChange): Promise<NetworkSettings>;
+  /** Where to dial a paired host (`ip`, `ip:port`, several separated by commas); returns the addresses kept. */
+  setHostAddress(host: string, address: string): Promise<string[]>;
   /** This computer as a host: the running host, the profile directory and, with `doctor`, its checks. */
   localHost(doctor: boolean): Promise<LocalHost>;
   /** A one-time pairing ticket from the host here. Shown once; never logged. */
@@ -249,6 +263,7 @@ const tauriBackend: Backend = {
       relay: relayHost(h.relay),
       relayN0: h.relay_n0 === true,
       p2pObstacle: (h.p2p_obstacle as Host["p2pObstacle"]) ?? null,
+      addresses: Array.isArray(h.addresses) ? (h.addresses as string[]) : [],
     }));
   },
   async fixFirewall() {
@@ -304,6 +319,17 @@ const tauriBackend: Backend = {
   },
   async setLocalBypass(peer, on) {
     unwrap(await commands.setLocalHostBypass(peer, on));
+  },
+  async networkSettings() {
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async updateNetwork(change) {
+    const v = await commands.updateNetwork(change.mode ?? null, change.lanDiscovery ?? null, change.portMapping ?? null);
+    return unwrap(v) as NetworkSettings;
+  },
+  async setHostAddress(host, address) {
+    const v = unwrap(await commands.setHostAddress(host, address)) as { addresses: string[] };
+    return v.addresses;
   },
   async localHost(doctor) {
     return unwrap(await commands.localHost(doctor)) as LocalHost;

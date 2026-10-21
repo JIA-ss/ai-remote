@@ -354,7 +354,10 @@ async fn read_line(recv: iroh::endpoint::RecvStream) -> Result<String> {
 /// A throwaway endpoint configured like the node's: the same relays, proxy and local discovery.
 async fn ephemeral_endpoint(secret: SecretKey, net: &NetworkOptions, serve: bool) -> Result<Endpoint> {
     use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
-    let relay = if net.relays.is_empty() {
+    // LAN mode: no relay and no address lookup, so only local discovery can find the code.
+    let relay = if net.lan_direct {
+        iroh::RelayMode::Disabled
+    } else if net.relays.is_empty() {
         iroh::RelayMode::Default
     } else {
         let mut urls = net.relays.clone();
@@ -367,12 +370,35 @@ async fn ephemeral_endpoint(secret: SecretKey, net: &NetworkOptions, serve: bool
             .collect::<Result<Vec<_>>>()?;
         iroh::RelayMode::custom(urls)
     };
-    let mut b = Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(relay)
-        .address_lookup(PkarrResolver::n0_dns())
-        .address_lookup(DnsAddressLookup::n0_dns());
+    // The same network behaviour as the node itself (`write_node_config`): the public resolvers only
+    // when the system has no DNS configuration, no router port mapping unless it is turned on, and
+    // the self-hosted address lookup servers when there are any.
+    let dns = iroh::dns::DnsResolver::builder()
+        .with_system_defaults()
+        .with_fallback_mode(iroh::dns::FallbackMode::IfSystemEmpty)
+        .build();
+    let mut b = Endpoint::builder(iroh::endpoint::presets::Minimal).relay_mode(relay).dns_resolver(dns);
+    if !net.port_mapping {
+        b = b.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
+    }
+    if net.lan_direct {
+        // Nothing to publish to or look up in: local discovery below is the only way.
+    } else if net.address_lookup.is_empty() {
+        b = b.address_lookup(PkarrResolver::n0_dns()).address_lookup(DnsAddressLookup::n0_dns());
+        if serve {
+            b = b.address_lookup(PkarrPublisher::n0_dns());
+        }
+    } else {
+        for u in &net.address_lookup {
+            let url: iroh::RelayUrl = u.parse().map_err(|e| anyhow!("address lookup {u:?}: {e}"))?;
+            b = b.address_lookup(PkarrResolver::builder(url.clone().into()));
+            if serve {
+                b = b.address_lookup(PkarrPublisher::builder(url.into()));
+            }
+        }
+    }
     if serve {
-        b = b.address_lookup(PkarrPublisher::n0_dns()).alpns(vec![ALPN_PAIR_CODE.to_vec()]);
+        b = b.alpns(vec![ALPN_PAIR_CODE.to_vec()]);
     }
     if let Some((url, _)) = net.proxy.resolve() {
         b = b.proxy_url(url.parse().map_err(|e| anyhow!("proxy {url:?}: {e}"))?);
@@ -513,6 +539,10 @@ mod tests {
             proxy: crate::proxy::ProxySetting::Off,
             lan: LanDiscovery::On,
             port: None,
+            port_mapping: false,
+            quiet: false,
+            address_lookup: vec![],
+            lan_direct: false,
         };
         let keys = derive(&code).await.unwrap();
         let host = keys.endpoint.public();

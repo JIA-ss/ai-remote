@@ -15,6 +15,13 @@ notice. The feature is iroh's unstable API: recheck it on every iroh bump.
 Third patch: `[network].bind_port` (`node/src/config.rs`, `build_endpoint` in `node/src/daemon/boot.rs`)
 binds the IPv4 socket on a fixed port for router port forwarding, falling back to a random port when it
 is taken. Test: `cargo test -p mcpmesh-node --lib bind_port`.
+Fourth patch: `[network].port_mapping` and `[network].dns_fallback` (`node/src/config.rs`, `apply_port_mapping`
+and `apply_dns_fallback` in `node/src/daemon/boot.rs`) let ai-remote's quiet mode turn off router port mapping
+(UPnP, NAT-PMP, PCP) and keep DNS lookups on the system's resolvers. Both default to iroh's behaviour. Test:
+`cargo test -p mcpmesh-node --lib -- port_mapping dns_fallback`.
+Fifth patch: `Node::peer_addr` / `Node::set_peer_addr` (`node/src/node.rs`) read and replace a paired peer's
+stored dial hint, for ai-remote's LAN mode (`relay_mode = "disabled"`), where the hint is the only way to
+reach a host whose address changed. Covered end to end by ai-remote's `crates/ar-net/tests/lan_direct.rs`.
 
 Only the five library crates and their original tests are included. CLI/release tooling is
 excluded and the nested workspace member list is shortened accordingly. Sources are unchanged.

@@ -41,8 +41,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Peer,
-    ipc,
+    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, NetworkOptions, Peer, ipc,
 };
 pub use tokio_util::sync::CancellationToken;
 
@@ -272,7 +271,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         root: profile.mesh_dir(Role::Host)?,
         device_key,
         nickname: name.clone(),
-        network: NetworkOptions::from_config(&config.network, LanDiscovery::On)?,
+        network: NetworkOptions::from_config(&config.network, Role::Host)?,
     })
     .await?;
     mesh.ensure_level_services().await?;

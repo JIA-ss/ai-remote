@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,114 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
+
+用户要求：所有网络相关的设置都能在界面里操作、普通用户知道是什么意思，局域网模式和局域网发现的开关要友好，e2e 跑通再准备上线。
+
+- 设置 > 网络：**连接方式**是两张单选卡（自动〔推荐〕/ 仅限局域网，用被控端级别那种 `.radio` 行），**可选功能**两个
+  `.switch` 开关（在局域网里自动发现设备 = `lan_discovery`；让路由器开放端口（UPnP）= `port_mapping`，仅限局域网时隐藏）；
+  仅限局域网时显示**这台电脑的地址**（只显示别的设备能用的：去掉回环、`fe80::`、`169.254.`，IPv4 在前，带复制按钮）和
+  **要连接的电脑**（每台一行，修改 → 输入框，先在前端校验是 IP 再提交）。`quiet = true` 时两个开关变灰并写明原因。
+  文案都按"能做什么、代价是什么"写，避免 mDNS / NAT 这类术语打头。
+- 后端改成一个 `update_network(mode?, lan_discovery?, port_mapping?)`，同时写被控端和控制端两份配置，打开开关前
+  `ar_core::config::ensure_not_quiet` 检查锁；命令行 `ai-remote network [mode auto|lan | discovery on|off | upnp on|off]` 走同一套。
+- 修了一个竞态：改设置后重启控制端代理，紧接着的请求会撞上还没退出完的旧代理（"daemon closed the connection without
+  answering"）。`ar_controller::restart_agent` 发 `shutdown` 后等到控制通道不再应答（最多 10 s）才返回，app 和命令行共用。
+- 测试：`tools/network-ui.test.mjs`（地址过滤与输入校验）；`tools/network-ui-smoke.py`（camofox REST 驱动演示页，17 项，
+  截图在 `target/network-ui`）；`tools/network-e2e.py`（一台机器上隔离的被控端和控制端，真实 QUIC，16 项：默认安静、两端切
+  仅限局域网、没有局域网发现时不给配对码只给票据、配对、调用、doctor `lan`、被控端零 TCP 连接、换端口后 20 s 拨号超时、`hosts address` 后 0.05 s 恢复、quiet 锁拒绝）。
+  macOS 和 Windows 开发机（debug、隔离目录）各跑一遍都 15 项全过（合入配对码前；合入后 Mac 16 项全过）。Windows 上要注意：子进程输出按 UTF-8 读（默认会按 GBK 解码失败）；
+  从 SSH 会话起的被控端没有桌面，远程 `doctor` 截屏类检查 fail、整体退出码 1，脚本只看 `lan` / `network` 两项。
+  仓库里原来的 `tools/desktop-ui-smoke.py` 依赖的 camofox 命令行（另一个分支的包）本机没有，所以新脚本直接用 REST。
+- 坑：macOS 临时目录太长，控制端代理的 Unix 套接字路径会超长（`SUN_LEN`），e2e 的临时目录放 `/tmp`。
+- 合 main 带进来的配对码（#17）自己建一个临时 iroh endpoint，不经过 mcpmesh：在 #18 里让它按同样的设置走（不做端口映射、
+  DNS 回退只在系统没有 DNS 时用、有自建地址查询服务器就用它）；在 #19 里仅限局域网时关掉中继和地址查询，只能靠局域网发现找到。
+  所以仅限局域网又没开局域网发现时不给配对码（`Mesh::pair_code_findable`），被控端在 `code_reason = "lan_discovery_off"` 里
+  说明，配对窗口提示用票据或去 设置 > 网络 打开；控制端输配对码立即报同样的原因，不干等拨号超时。
+
+## 仅局域网（内网直连）模式（2026-10-21，分支 `feat/lan-direct`，基于 PR #18）
+
+用户要在公司里只走内网：不连中继、不连地址查询服务，网络上只剩两台设备之间的连接。
+
+做法（读代码确认 mcpmesh 已具备底子）：mcpmesh 的 `relay_mode = "disabled"`（原来只给本机测试用的"hermetic"模式）没有中继、
+没有地址查询，中继表为空时 iroh 连 net_report 和端口映射都不做；拨号用每个配对设备存的 `last_addr`（配对时从票据记下，
+之后每条活着的连接都会刷新，见 `daemon/dial_hint.rs`），`Node::connect_protocol` 每次拨号都带上它，ai-remote 的所有通道都走这条路。
+
+- `[network] mode = "lan"`（`auto` 默认）：写成 `relay_mode = "disabled"`，忽略 `relays` / `address_lookup`；被控端没写 `port`
+  时固定 UDP 47800（`ar_core::config::LAN_HOST_PORT`），控制端端口仍随机（同一台机器上被控端和控制端不抢端口）。
+  `NetworkOptions::from_config` 因此又带上了角色参数。
+- 第五个 vendored 补丁：`Node::peer_addr` / `set_peer_addr`（只收可拨的 IP 地址，绝不新建配对条目）。往上是
+  `Mesh::peer_addrs` / `set_peer_addrs`、控制端请求 `set_host_address`、`hosts` 列表带 `addresses`、
+  CLI `ai-remote hosts address <host> [<地址>]`（不写端口补 47800，地址解析在 `ar_core::config::parse_host_addresses`）。
+- 被控端 `status` 带 `lan_direct` 和本机地址；`doctor` 在仅局域网模式下用 `lan` 检查代替 `relay`（列出控制端该用的地址，
+  固定端口被占、改用随机端口时报 warn），`p2p` 跳过（没有中继就没有网络探测）。
+- 桌面端 设置 > 网络：连接方式（自动 / 仅局域网，写被控端和控制端两份配置并重启控制端代理）；仅局域网时显示本机被控端地址、
+  每台已配对电脑的地址和手动修改框；UPnP 一项在仅局域网时隐藏（没有中继时 iroh 根本不做端口映射）。
+- 测试：`crates/ar-net/tests/lan_direct.rs` 起两个仅局域网节点：配对、拨号回显；被控端换端口后，新起的控制端拿旧地址连不上，
+  `set_peer_addrs` 设成新地址后又能连上（本机 14 s）。注意 iroh 会在内存里记住活连接的路径，所以"连不上"要用新起的节点验证。
+
+限制：离开这个网络就连不上；被控端换 IP 要在每个控制端上改一次地址；已经配对的设备记的是切换前的随机端口，切到仅局域网后
+第一次要手动设一次地址（或重新配对）。
+
+实测（2026-10-21，公司网络，release 被控端在 Windows 开发机、debug 控制端在 macOS，都是隔离的 `--home`、`mode = "lan"`）：
+- 配对 < 1 s，控制端存的地址是 `192.168.1.20:47800`；`system_info` 往返 0.05 s，`hosts` 报 `direct (P2P)`。
+- 被控端重启到 47801：控制端代理一直开着时**自己找回来了**（被控端按它存的控制端地址连过来，iroh 记下了新路径），存的
+  提示还是 47800。两边都换（控制端代理重启、被控端换 47802）后：旧地址 20 s 拨号超时；`hosts address lan-test
+  192.168.1.20:47802` 之后 0.04 s 连上。
+- Windows ETW（`Microsoft-Windows-Kernel-Network`，按 PID 记 UDP 发送和 TCP 建连）120 s：被控端 245 个 UDP 全发往控制端
+  的 QUIC 端口，TCP 建连 0；同时段其他进程的 163 次 TCP 建连、Steam SSDP、Bonjour mDNS 都抓到了。
+- macOS `tcpdump -i pktap,all -k`（全部 UDP + TCP SYN）120 s：控制端只和被控端互发 UDP（收 263、发 245），另向被控端
+  WSL / Hyper-V 虚拟网卡的两个 `172.x` 地址各发 61 个（iroh 会试对方公布的每个地址；都是私有地址，
+  不出公网，但会经网关）；TCP 0、5353 / 1900 / 5351 0、公网地址 0。
+- 坑：Windows OpenSSH 断开会杀掉会话里起的进程，测试被控端要用 `Invoke-CimMethod Win32_Process Create` 起；
+  PowerShell 里 `$Home` 是只读内置变量。控制端代理闲置 30 分钟会自己退出，换 pid，按进程统计时要以抓包时的 pid 为准。
+- **两台真实机器已切到仅限局域网（2026-10-21，用户要求"直接切"）**，`quiet = true` 保留：Windows 开发机的服务改用本分支 release 版（`host install --service` 重装：停服务、改 binPath、给新程序加防火墙放行；这个版本没有 `host start`，用 `sc start` 起）；Mac 用 #14 + #18 + #19 打的包替换 `/Applications/ai-remote.app`（先删旧包再 `ditto`，然后 `launchctl kickstart -k`）。两边先用新 CLI
+  `ai-remote network mode lan` 写配置，旧配对存的是随机端口，所以各自 `hosts address` 填一次对方的 `<ip>:47800`。结果：Mac → Windows `direct`、`info` 0.05 s；Windows → Mac `direct`、0.16 s；两边 `doctor` 的 `network`（安静、已锁定）和 `lan` 都是 ok。Mac 换包后屏幕录制 / 辅助功能授权失效（ad-hoc 签名变了），要机主在 app 的"本设备"页重新允许。
+
+## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
+
+起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /
+swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo 抓包，频率都是**推导**）：
+
+- ai-remote 自己的代码不扫端口、不扫地址、不检查更新、不上报遥测；桌面端 CSP 只允许本地 IPC。
+- 后台流量全来自传输层 iroh：中继长连接（本机实测连着 `aps1-1.relay.n0.iroh.link`，TCP 443）、每 20–26 s 的 net_report
+  探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
+  每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
+
+做了什么（先按"默认不变、手动开启安静"做，同一天用户改主意：**默认就安静**，UPnP 放到界面设置里开）：
+
+- vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
+  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），mcpmesh 自己的默认都是 iroh 原行为；
+  ai-remote 每次都显式写这两项。
+- ai-remote 的默认（被控端、控制端一样）：`lan_discovery` 关（以前被控端 `on`、控制端 `resolve`）、`port_mapping` 关、
+  `dns_fallback = "if_system_empty"`。`NetworkOptions::from_config` 去掉了按角色给默认值的参数。
+- `[network] port_mapping = true` 打开端口映射；桌面端 设置 > 网络 的下拉框写的就是它（`ar_core::config::set_port_mapping`，
+  用 toml_edit 保留注释，被控端和控制端两份配置一起写），写完给控制端代理发 `shutdown` 让它立即按新配置重启；本机被控端
+  只在下次启动时生效（主干上还没有重启入口，PR #14 合并后可以接它的 `local_host_restart`）。
+- `[network] quiet = true` 变成"锁"：不管 `lan_discovery`、`port_mapping` 和界面怎么设都关（界面下拉框置灰并说明原因）。
+- `address_lookup = [...]`：自建 pkarr 服务器，和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
+- `doctor` 的 `network` 检查报告实际打开了哪些；对称 NAT 时 `p2p` 的建议按状态给（没开就提示去 设置 > 网络 打开，安静锁住时
+  不让人开）。
+- 文档：`operations*.md` 第 11、12 节和 doctor 表格改成"默认关、按需开"，加了"网络上都有哪些流量"的表。
+
+默认（安静）下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
+后面一直走中继（家里两端都是对称 NAT 时，到 设置 > 网络 打开端口映射）；公司 DNS 解析不了 `*.iroh.link` 时连不上。
+
+注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` / `port_mapping` 会启动失败**。给机器写这两项之前先换新版本。
+
+实测（2026-10-21，公司网络，本机 macOS 被控端+控制端、Windows 开发机被控端都开 `quiet = true`）：
+- 连接：本机控制端连 Windows 被控端，`hosts` 报 `direct (P2P)`，只读工具（`ps`）立即返回。
+- Windows：ETW `Microsoft-Windows-Kernel-Network`（按 PID 记录每次 UDP 发送）抓 120 s。被控端进程只发往对端控制端的
+  QUIC 端口、4 台 n0 中继的 UDP 7842、以及对端的一个公网候选地址；发往 5353 / 1900 / 5351 的 0 个。同一时段别的进程
+  （Steam 的 SSDP 12 次、Bonjour 的 mDNS 1 次）都被抓到了，说明方法本身能抓到这类包。
+- macOS：`tcpdump -i pktap,all -k`（按进程标注）抓两次。控制端 7 分钟、被控端 148 s：只发往对端 QUIC 端口和 4 台中继的
+  UDP 7842，发往 5353 / 1900 / 5351 的 0 个，也没有发往公共 DNS 的。同一时段系统的 mDNSResponder 有 mDNS 包被抓到。
+  对照：同一天默认模式下，被控端是占着 `UDP *:5353` 的；安静模式下两端都不再绑定 5353。
+- 没有在这台机器上抓默认模式的 SSDP 作对照（避免在公司网里制造流量），"默认模式每 20–26 s 一次 SSDP"仍是读代码得出的。
+- 坑：macOS 上 pktap 的 tcpdump 收到 SIGTERM 不退出，脚本里要用 `kill -9`。
+
+未测：公司 DNS 拦截 `iroh.link` 的情况。
 
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
@@ -797,6 +905,10 @@ AR_SIZES=5120x2160 AR_CODECS=hevc,av1 AR_KBPS=120000 cargo test -p ar-host --rel
 cargo test -p ar-host --release --lib hardware_encoders_open_and_close_repeatedly -- --ignored --nocapture
 # 用 WebCodecs 解上面的码流（默认 Edge，可传 Chrome 路径）
 node tools/webcodecs-decode-check.mjs
+# 网络设置：隔离 host/controller，两端切仅限局域网、换端口、手动设地址、quiet 锁（先 cargo build -p ai-remote）
+python tools/network-e2e.py
+# 网络设置页（演示数据，camofox REST，截图在 target/network-ui）
+python tools/network-ui-smoke.py
 # 端到端：隔离 host/controller + 真实 QUIC；--desktop 再测桌面端（先 cd apps/desktop && npx tauri build --debug --no-bundle）
 python tools/stream-e2e.py --animate --desktop target/debug/ai-remote-desktop.exe
 python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-desktop.exe   # 高码率、可重复

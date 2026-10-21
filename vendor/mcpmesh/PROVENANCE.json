@@ -202,7 +202,7 @@
     },
     {
       "path": "node/src/config.rs",
-      "sha256": "09ad83f03c392358f71d16c5e8a211d16b53c1915735d340dc6f2fe3893433a8"
+      "sha256": "b1a11d097d48988888ab76b4de2468904ba30ac16d886ffbb72d839711a58255"
     },
     {
       "path": "node/src/control.rs",
@@ -214,7 +214,7 @@
     },
     {
       "path": "node/src/daemon/boot.rs",
-      "sha256": "e9b6efe17379f4c7abfdad44d9ba808c9ad753d53039a45210de32de35f03b82"
+      "sha256": "3fb933e08e1cac63597c3f964c4d04afca106828421e5c816dcf5584d0ffb33a"
     },
     {
       "path": "node/src/daemon/config_write.rs",
@@ -306,7 +306,7 @@
     },
     {
       "path": "node/src/node.rs",
-      "sha256": "4bde7df1e8719bbc4ff9ec74e633884ebf3f19219fcd1d8974922733378ae476"
+      "sha256": "7d69f5ffd6f360ff52c756e4cb8ad2241a790ccfaa23635b0de1bf2ac65baa24"
     },
     {
       "path": "node/src/pairing/mod.rs",
@@ -446,6 +446,19 @@
         "local-api/src/transport/unix.rs"
       ],
       "summary": "bind_local_shared(path, sids): the Windows named-pipe DACL admits extra accounts (plain S-1-... SIDs only) besides the owner, for a host the service runs as SYSTEM that the user's CLI must still reach; a no-op alias of bind_local on unix. With a unit test."
+    },
+    {
+      "files": [
+        "node/src/config.rs",
+        "node/src/daemon/boot.rs"
+      ],
+      "summary": "[network].port_mapping (false: iroh's portmapper disabled, no UPnP/NAT-PMP/PCP probes) and [network].dns_fallback (\"deferred\" | \"if_system_empty\" | \"never\": when the public resolvers are asked), both defaulting to iroh's behaviour, with unit tests"
+    },
+    {
+      "files": [
+        "node/src/node.rs"
+      ],
+      "summary": "Node::peer_addr and Node::set_peer_addr: read and replace a paired peer's stored dial hint (dialable IP addresses only, never creates an allowlist row), for a mesh with no relay and no address lookup where the hint is the only way to reach a peer whose address changed"
     }
   ]
 }

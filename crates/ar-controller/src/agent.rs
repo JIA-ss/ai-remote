@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, config::ControllerConfig, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route,
-    ipc, iroh::endpoint::Connection, refusal::Refusal,
+    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, NetworkOptions, Route, ipc,
+    iroh::endpoint::Connection, refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -103,6 +103,12 @@ pub enum AgentRequest {
     /// Set (or with `None`, clear) the host calls go to when they name none.
     SetDefault {
         host: Option<String>,
+    },
+    /// Replace the addresses a host is dialled at (`ip`, `ip:port`, several separated by commas):
+    /// in LAN mode (`[network] mode = "lan"`) the only way to reach a host whose address changed.
+    SetHostAddress {
+        host: String,
+        address: String,
     },
     Shutdown,
 }
@@ -324,7 +330,7 @@ async fn start_state(profile: &Profile) -> Result<Arc<Agent>> {
         nickname: machine_name(),
         network: NetworkOptions::from_config(
             &ControllerConfig::load(&profile.controller_config_path()?)?.network,
-            LanDiscovery::Resolve,
+            Role::Controller,
         )?,
     })
     .await?;
@@ -638,6 +644,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             "version": VERSION,
             "hosts": agent.host_names().await?,
             "agents": agent.sessions.list(),
+            "lan_direct": agent.mesh.lan_direct(),
         }),
         AgentRequest::DisconnectAgent { id } => json!({"disconnected": agent.sessions.stop(id)}),
         AgentRequest::Pair { ticket, name } => {
@@ -672,6 +679,7 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
                     "relay": route.as_ref().and_then(|r| r.relay.clone()),
                     "relay_n0": route.as_ref().is_some_and(Route::via_n0),
                     "p2p_obstacle": agent.p2p_obstacle(route.as_ref()).await,
+                    "addresses": agent.mesh.peer_addrs(&name).await.unwrap_or_default().iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "default": known.default.as_deref() == Some(name.as_str()),
                 }));
             }
@@ -686,6 +694,14 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             known.default = name.clone();
             known.save(&agent.hosts_path)?;
             json!({"default": name})
+        }
+        AgentRequest::SetHostAddress { host, address } => {
+            let peer = agent.mesh.find_peer(&host).await?;
+            let addrs = ar_core::config::parse_host_addresses(&address)?;
+            let kept = agent.mesh.set_peer_addrs(&peer.name, &addrs).await?;
+            // A kept connection still goes to the old address; the next call dials the new one.
+            agent.invalidate(&peer.name).await;
+            json!({"host": peer.name, "addresses": kept.iter().map(ToString::to_string).collect::<Vec<_>>()})
         }
         AgentRequest::Unpair { host } => {
             let peer = agent.mesh.find_peer(&host).await?;
