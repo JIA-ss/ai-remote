@@ -155,8 +155,13 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   + 打开新对话表单（默认选中可用的智能体，未登录 / 未安装有标注，未安装的不能选），启动被拒时弹出原话。
   `apps/ios/Tests/PhoneChatUITests.swift` 自动走一遍发送、停止、回车发送、列表和表单，本机通过（21 s）；同一次 `xcodebuild test`
   第一次拉起 runner 时崩了一次（设备在 24A94425 运行时、SDK 是 24A94232），所以整体报 TEST FAILED，但用例本身 passed。
-- 没测：连真实被控端的会话列表、发送、停止、新对话（要等安静模式部署好才能起被控端；macOS 冒烟已覆盖这条链路的 Swift 代码），
-  真机。
+- 模拟器连真实被控端（2026-10-21，同一台 Mac；本分支 cherry-pick 了安静模式 3017e90）：隔离被控端和命令行控制端的
+  `host/`、`controller/` 下都写了 `[network] quiet = true`（`doctor` 的 network 检查确认安静模式），模拟器里 App 的配置目录
+  （`simctl get_app_container … data` 下的 `Library/Application Support/ai-remote`）首次启动前也放了同样两份。在实时面板里：
+  粘贴票据配对 → 会话页"智能体" → 列出命令行启动的会话并回放 → 发消息得到回答 → 命令行发的慢任务实时出现在手机上、
+  手机点停止得到"已停止 · 4.4 秒" → 新对话表单列出被控端真实检测结果（Claude Code、Codex 可用，其余未安装），选替身智能体
+  启动后直接打开会话，命令行往这个会话发的消息实时显示。测试完被控端、控制端、模拟器 App 都已停掉。
+- 没测：真机；连真实被控端时从手机输入大写英文（拼音键盘会把字母变成候选，这是键盘行为，改用命令行发的慢任务测的停止）。
 
 ### 踩过的坑
 
@@ -165,9 +170,16 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 2. 同一台机器上两个控制端（命令行和"手机"）昵称都取主机名，第二个配对会被拒（nickname already taken）；冒烟脚本给
    手机进程设 `HOSTNAME=smoke-iphone`。
 
+3. 主机端的设计：没带第一条消息启动的会话是 parked（收到第一条消息才拉起智能体进程）。手机上原来显示"已休眠"容易误解，
+   现在没有轮次的 parked 会话显示"等待第一条消息"。
+4. 模拟器的 iOS 运行时要和 Xcode 的 SDK build 一致（本机 SDK 24A94232，`-downloadPlatform` 先下的是 24A94425，能列出但
+   起不了设备）；`xcodebuild -downloadPlatform iOS -buildVersion 24A94232` 下对应版本后才能 boot。
+
 ### 下一步
 
-- [ ] 安静模式部署后，在模拟器里连本机被控端走一遍（配对、列会话、发送、停止、新对话，以及等待机主同意时的界面）。
+- [ ] 手机控制端的设备名：iOS 上 `machine_name()` 取不到主机名，被控端把手机记成 `unknown`（对话里用户行下面显示
+      "unknown"）。应由 App 传入设备名（`UIDevice.current.name` 或用户设置）给内嵌控制端。
+- [ ] 等待机主同意（`chat_start` 走 ask）时的界面没在真实被控端上看过（测试被控端规则放行了 `chat_*`）。
 - [ ] 问题（`question`）目前只显示，没有回答按钮（`{"answer":...}` 已有通道，`PhoneClient.chatSend` 可直接发）。
 
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）

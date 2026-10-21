@@ -73,7 +73,7 @@ public struct PhoneChatView: View {
                     Text(s.name).font(.headline).lineLimit(1)
                     Text(s.folder).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text("\(phoneChatStateName(s.state)) · \(s.turns) 轮 · 由 \(s.byDevice.isEmpty ? "未知设备" : s.byDevice) 启动")
+                Text("\(phoneChatStateName(s.state, turns: s.turns)) · \(s.turns) 轮 · 由 \(s.byDevice.isEmpty ? "未知设备" : s.byDevice) 启动")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -242,7 +242,7 @@ public struct PhoneChatView: View {
         VStack(spacing: 8) {
             HStack(spacing: 6) {
                 Circle().fill(chat.connected ? stateColor(chat.log.state) : Color.orange).frame(width: 6, height: 6)
-                Text(chat.connected ? phoneChatStateName(chat.log.state) : "未连接").font(.caption.weight(.medium))
+                Text(chat.connected ? phoneChatStateName(chat.log.state, turns: chat.log.turns.count) : "未连接").font(.caption.weight(.medium))
                 if !chat.log.queued.isEmpty { Text("· 排队 \(chat.log.queued.count) 条").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
             }

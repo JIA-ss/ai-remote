@@ -232,9 +232,11 @@ public struct PhoneChatLog: Equatable, Sendable {
     }
 }
 
-/// Phone wording for agent states.
-public func phoneChatStateName(_ state: String) -> String {
-    switch state {
+/// Phone wording for agent states. A session started without a first message is parked until one
+/// arrives (the host starts the agent then), so a parked session with no turns is waiting, not asleep.
+public func phoneChatStateName(_ state: String, turns: Int = 1) -> String {
+    if state == "parked" && turns == 0 { return "等待第一条消息" }
+    return switch state {
     case "starting": "正在启动"
     case "idle": "空闲"
     case "running": "工作中"
