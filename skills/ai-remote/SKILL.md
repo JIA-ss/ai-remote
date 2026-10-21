@@ -152,6 +152,27 @@ ai-remote pull "C:\work\out.log" ./out.log               # host to local; --forc
   pack folders first. To read a file's content without a transfer, `shell` with `Get-Content` or
   `cat` is fine within the output limits.
 
+## 7b. Coding agents on a host
+
+A host may have Claude Code, Codex or ACP agents (Gemini CLI, OpenCode, Qwen Code, ...) installed. A
+person can start one there and talk to it beside the live view (desktop app, Chat tab), and the
+command line can too. MCP clients do not get `chat_start`: driving another agent is for people and
+scripts. What you may use:
+
+- `chat_runtimes`, `chat_sessions` to see what is installed and running (admin level);
+- `chat_interrupt` / `chat_end` to stop a session when the person asks you to.
+
+A started agent runs as the signed-in user without asking before it acts, so it can change anything you
+can; do not start one without being asked. On the command line:
+
+```sh
+ai-remote chat list                                         # installed agents, versions, sign-in
+ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; prints the answer
+ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
+ai-remote chat send <session> "now run the tests" --wait
+ai-remote chat end <session>
+```
+
 ## 8. Working next to a person
 
 - The owner can **take over** at any time: your calls are cancelled or refused with a message that
@@ -188,6 +209,8 @@ ai-remote mkdir "C:\work\tmp"
 ai-remote rm "C:\work\tmp" -r
 ai-remote push ./a.bin "C:\work\a.bin" --mkdir
 ai-remote pull "C:\work\out.log" ./out.log
+ai-remote chat list                               # coding agents installed on the host
+ai-remote chat run claude "task" --cwd <dir>      # hand an agent one task (asks the owner first)
 ai-remote call screenshot '{"max_long_edge": 800}'   # any tool, raw JSON
 ```
 

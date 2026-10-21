@@ -521,6 +521,96 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 兑换票据时，被控端会再检查一次该设备仍是 admin 级别；Agent 的票据还要求 Agent 仍持有控制权，接管或暂停会中途停下传输。
 每次传输都在审计日志里写一条 `transfer` 记录（`tool`、`path`、`outcome`、`bytes`、`duration_ms`、`error`）。
 
+### 5.15 编程智能体
+
+被控端上装好的编程智能体都可以从控制端启动，并在它工作时与它对话。支持 Claude Code、Codex，以及说 Agent Client Protocol 的智能体：Gemini CLI、OpenCode、Qwen Code、Copilot CLI、Cursor Agent、Kimi、Goose。
+
+智能体在被控端以当前登录用户的身份运行，**动手前不询问**：
+
+- Claude Code：`--permission-mode bypassPermissions`；
+- Codex：`approvalPolicy: never` 加 `sandbox: danger-full-access`；
+- ACP 智能体：切到它的自动模式，权限请求由被控端回答"允许一次"。
+
+所以这个用户能做的事，它都能做，包括修改本被控端自己的设置。因此这里的工具都要求管理员级别，启动默认先征求机主同意。
+
+| 工具 | 默认 | 作用 |
+|---|---|---|
+| `chat_runtimes` | 允许 | 找到的智能体：`id`、`name`、`version`、`path`、`verdict`（`ok`、`missing`、`below_minimum`、`not_executable`）、`login`（`logged_in` / `logged_out` 及方式，不含账号）、`caps`；另有 `host.can_start`、`host.enabled` |
+| `chat_sessions` | 允许 | 会话列表，最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数；不含对话内容 |
+| `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
+| `chat_attach` | 允许 | 参数 `session`。返回观看票据：发起设备可读写，其他设备只读 |
+| `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
+| `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
+
+`chat_start` 和 `chat_attach` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+
+**查找智能体**：每个命令名按以下顺序查找：
+
+1. 被控端自己的 `PATH`；
+2. （Unix）用户的登录 shell，只运行一次 `$SHELL -ilc`，先去掉同名的别名和函数。这个 shell 的 `PATH` 也会用来启动智能体，所以 launchd 下由 Node.js shim 安装的 CLI 也能运行；
+3. 安装器常用的位置。
+
+版本取自 `--version`，登录态取自 `claude auth status` / `codex login status`。结果缓存一分钟，传 `refresh: true` 会重新查找。被控端以 SYSTEM（Windows 服务模式）或 root 身份运行时什么都不执行，返回 `can_start: false`，因为智能体必须以用户身份运行。
+
+**自定义智能体**写在 `<配置目录>/host/chat.toml`，不写进 `ai-remote.toml`：
+
+```toml
+enabled = true                 # 在被控端用 ai-remote chat enable|disable 切换
+
+[[agent]]
+id = "claude-work"             # 只能用字母、数字、- 和 _
+base = "claude"                # 使用哪个内置智能体的协议
+name = "Claude（工作账号）"
+command = "~/.local/bin/claude"  # 可选：命令名或路径；默认用 base 的命令
+args = []                       # 加在被控端自己的参数之前
+env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
+```
+
+**会话**：
+
+- 一个会话在多轮之间保持同一个智能体进程，每条消息就是这个进程上的一轮。
+- 一轮还在进行时发来的消息进入队列（最多 8 条），按顺序发出；带消息的 `interrupt` 会先停止当前一轮，再优先发这条。
+- 以下情况会停掉进程：会话结束；20 分钟没有新的一轮；打断在宽限期内没有生效（Claude 10 s、Codex 3 s、ACP 5 s）；被控端停止。之后会话进入 **parked**，下一条消息会启动新进程，并续接智能体自己的对话（`--resume`、`thread/resume`、`session/load`）。
+- 同时最多运行 4 个智能体进程。
+
+**事件**：
+
+- 每个会话的事件各自编号，先写入 `<配置目录>/host/chat/<id>/events.jsonl` 再发出，所以断线重连的查看者可以从它看到的最后一条之后接着要。
+- 每条一行 JSON：`{"seq":N,"ts":<ms>,"turn":K,"t":"<类型>",...}`。`t` 的取值：
+  - `user`、`turn_start`；
+  - `message` / `thought`：字段 `id`、`text`、`delta`，`delta` 为真时接在同一 `id` 的消息后面；
+  - `tool_call`：字段 `call_id`、`title`、`kind`（read、edit、delete、move、search、execute、think、fetch、other）、`status`、`input`、`locations`、`content`；
+  - `tool_update`：字段 `call_id`、`status`、`content`（文本或 `{type:"diff",path,old,new}`）、`truncated`；
+  - `plan`；
+  - `question`：字段 `qid`、`prompt`、`options`；
+  - `usage`；
+  - `turn_end`：字段 `status`（completed、failed、interrupted）、`final_text`、`duration_ms`、`reason`；
+  - `state`：字段 `state`、`queued`；
+  - `notice`。
+- 工具的输入和输出各截断到 8 KiB，diff 每一侧截断到 64 KiB。
+
+**对话通道**：
+
+- 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`），之后收到 `N` 之后的事件和所有新事件。
+- 命令每条一行：
+  - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`：同一个 `id` 发两次只执行一次；
+  - `{"interrupt":{}}`；
+  - `{"answer":{"qid":"..","text":".."}}`；
+  - `{"dequeue":{"id":".."}}`；
+  - `{"end":{}}`；
+  - `{"bye":{}}`：停止观看；
+  - `{"ping":N}`。
+- 每条命令都会重新检查设备是否仍有管理员级别；只读观看者的命令一律被拒绝。
+
+**限制与检查**：
+
+- 在被控端关闭智能体（`ai-remote chat disable`，或桌面端"设置 → 本设备"）会结束所有会话并拒绝新的启动，被 bypass 的设备也一样。
+- 设备失去管理员级别（被降级、吊销、forget 或 bypass 到期）后，几秒内会失去它发起的会话。
+- 暂停会停止正在进行的一轮，并把新消息挡到恢复为止；接管不会，因为智能体不用鼠标键盘。
+- 审计日志记录 `chat_session`（start、attach、detach、end）和 `chat_turn`（谁发的、消息的 SHA-256 和长度、结果、耗时、各类工具次数），从不记录对话内容。
+- 有智能体在运行时，`doctor` 会给出警告。
+- 被控端重启后，会停掉上一个被控端留下的智能体进程（Windows 上 Job Object 已经停掉了），并把这些会话置为 parked。
+
 ## 6. 结果预算
 
 一个不设上限的结果，就可能冲掉 Agent 的整个上下文，或者被模型 API 拒收。闸门对每个结果（内置工具和挂载工具的）

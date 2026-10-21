@@ -592,6 +592,84 @@ agent's ticket, that the agent still has the controls; a takeover or pause stops
 Each transfer writes a `transfer` line to the audit log (`tool`, `path`, `outcome`, `bytes`,
 `duration_ms`, `error`).
 
+### 5.15 Coding agents
+
+Coding agents installed on the host (Claude Code, Codex, and agents that speak the Agent Client
+Protocol: Gemini CLI, OpenCode, Qwen Code, Copilot CLI, Cursor Agent, Kimi, Goose) can be started from
+a controller and talked to while they work. The agent runs on the host as the signed-in user and
+**does not ask before it acts** (Claude Code `--permission-mode bypassPermissions`, Codex
+`approvalPolicy: never` with `sandbox: danger-full-access`, ACP agents' auto mode plus "allow once"
+answers from the host): anything that user may do, it may do, including changing this host's own
+settings. Hence every tool here needs admin level, and starting asks the owner by default.
+
+| Tool | Default | What it does |
+|---|---|---|
+| `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`; `host.can_start`, `host.enabled` |
+| `chat_sessions` | allow | the sessions, newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns; never the conversation |
+| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`. Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
+| `chat_attach` | allow | `session`. A ticket to watch (read-write for the device that started it, read-only for others) |
+| `chat_interrupt` | allow | stops the running turn; the session takes the next message |
+| `chat_end` | allow | ends the session and its agent process; the transcript stays |
+
+`chat_start` and `chat_attach` are not listed to MCP clients (like `files_push` / `files_pull`): the
+conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and command line speak
+(`ai-remote chat`, see [operations.md](operations.md)).
+
+**Finding agents.** Each command name is looked up on the host's own `PATH`, then (Unix) through the
+user's login shell once (`$SHELL -ilc`, aliases and functions of the same name removed; its `PATH` is
+also used to run the agent, so Node.js shims work under launchd), then in installers' usual places.
+`--version` gives the version; `claude auth status` / `codex login status` the sign-in. Answers are
+cached for a minute (`refresh: true` looks again). A host running as SYSTEM (Windows service mode) or
+root runs nothing and reports `can_start: false`: agents must run as the user.
+
+**Custom agents** go in `<profile>/host/chat.toml` (not `ai-remote.toml`):
+
+```toml
+enabled = true                 # ai-remote chat enable|disable on the host
+
+[[agent]]
+id = "claude-work"             # letters, digits, - and _
+base = "claude"                # the built-in agent whose protocol it speaks
+name = "Claude (work account)"
+command = "~/.local/bin/claude"  # optional: a name or a path; default the base's command
+args = []                       # put before the host's own arguments
+env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
+```
+
+**A session** keeps one agent process between turns (each message is a turn on the same process).
+Messages sent while a turn runs wait in a queue (at most 8) and go out in order; `interrupt` with
+a message stops the turn and sends it first. The process stops when the session ends, after 20 minutes
+without a turn, when an interrupt does not land within its grace (Claude 10 s, Codex 3 s, ACP 5 s), or
+when the host stops; the session is then **parked**, and the next message starts a new process that
+resumes the agent's own conversation (`--resume`, `thread/resume`, `session/load`). At most 4 agent
+processes run at a time.
+
+**Events** are numbered per session and written to `<profile>/host/chat/<id>/events.jsonl` before
+they go out, so a viewer that reconnects asks for what came after the last one it saw. One JSON line
+each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user`, `turn_start`,
+`message` / `thought` (`id`, `text`, `delta`: continues message `id`), `tool_call` (`call_id`,
+`title`, `kind`: read, edit, delete, move, search, execute, think, fetch, other; `status`; `input`;
+`locations`; `content`), `tool_update` (`call_id`, `status`, `content`: text or
+`{type:"diff",path,old,new}`, `truncated`), `plan`, `question` (`qid`, `prompt`, `options`), `usage`,
+`turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
+(`state`, `queued`), `notice`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
+
+**On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
+line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`), then the events after `N`
+and every new one. Commands, one line each: `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`
+(an `id` sent twice runs once), `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`,
+`{"dequeue":{"id":".."}}`, `{"end":{}}`, `{"bye":{}}` (stop watching), `{"ping":N}`. Each command
+checks again that the device has admin level; a read-only viewer's commands are refused.
+
+**Limits and checks.** Switching agents off on the host (`ai-remote chat disable`, Settings → This
+device in the desktop app) ends every session and refuses new ones, bypassed devices included. A
+device that loses admin level (lowered, revoked, forgotten, its bypass ended) loses its sessions within
+seconds. A pause stops running turns and holds new ones until resumed; a takeover does not (agents do
+not use the mouse or keyboard). The audit log records `chat_session` (start, attach, detach, end) and
+`chat_turn` (who, the SHA-256 and length of the message, outcome, duration, how many tools of each
+kind ran), never the conversation; `doctor` warns while agents run. A host restart stops what its
+predecessor's agents left running (on Windows the Job Object already did) and parks their sessions.
+
 ## 6. Result budgets
 
 One unbounded result can wipe out an agent's context or be refused by the model API. The gate

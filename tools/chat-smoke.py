@@ -173,6 +173,51 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli(*args, timeout=300)
             check(f"real {kind}: answers a task", r.returncode == 0 and "PONG" in r.stdout,
                   f"{time.time() - t0:.1f} s, code {r.returncode}: {r.stdout[-200:]} {r.stderr[-300:]}")
+            # A tool call that runs long, an interrupt, and the context kept for the next turn.
+            args = ["chat", "run", f"real-{kind}", "Remember the word KIWI. Reply with OK.", "--cwd", work, "--keep"]
+            if options.model:
+                args += ["--model", options.model]
+            r = cli(*args, timeout=300)
+            out = cli("--json", "chat", "sessions")
+            rs = next((x for x in json.loads(out.stdout)["sessions"] if x["runtime"] == f"real-{kind}" and x["state"] != "ended"), None)
+            if rs is None:
+                check(f"real {kind}: keeps a session", False, r.stderr[-300:])
+                continue
+            rsid = rs["id"]
+            # Follow the session live and interrupt as soon as the tool runs: agents may move a long
+            # command to the background and end the turn on their own after a few seconds.
+            watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
+                                      "--since", str(rs["seq"])], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True, env=env)
+            cli("chat", "send", rsid, "Use your shell tool to run exactly this command in the foreground and wait for it: "
+                "sleep 45 && echo finished. Then report its output.")
+            saw_tool, ends, t0 = False, [], time.time()
+            for line in watch.stdout:
+                if not line.startswith("{"):
+                    continue
+                e = json.loads(line)
+                if e.get("t") == "tool_call" and e.get("kind") == "execute" and not saw_tool:
+                    saw_tool = True
+                    t0 = time.time()
+                    cli("chat", "interrupt", rsid)
+                if e.get("t") == "turn_end":
+                    ends.append(e["status"])
+                    break
+                if time.time() - t0 > 180:
+                    break
+            stopped_in = time.time() - t0
+            watch.stdin.close()
+            try:
+                watch.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                watch.kill()
+            check(f"real {kind}: runs a shell tool", saw_tool)
+            check(f"real {kind}: an interrupt stops the running turn", ends == ["interrupted"], f"{ends}, {stopped_in:.1f} s")
+            t0 = time.time()
+            r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
+            check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
+                  f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+            cli("chat", "end", rsid)
 
         peers = json.loads(cli("--json", "peers", home=host_home).stdout)
         peer = (peers.get("peers") if isinstance(peers, dict) else peers)[0]["name"]

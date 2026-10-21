@@ -392,6 +392,10 @@ exactly as they do to an agent's calls. `--json` prints machine-readable output.
 | `ai-remote mkdir <dir>` / `rm <path> [-r]` | `files_mkdir` / `files_delete` | admin, asks |
 | `ai-remote push <local> <remote> [--force] [--mkdir]` | `files_push` + the file channel | admin, asks |
 | `ai-remote pull <remote> [<local>] [--force]` | `files_pull` + the file channel | admin, asks |
+| `ai-remote chat list [--refresh]` | `chat_runtimes` | admin |
+| `ai-remote chat start <agent> --cwd <dir> [--prompt ..] [--model ..] [--hardened]` | `chat_start` + the chat channel | admin, asks |
+| `ai-remote chat run <agent> "<task>" --cwd <dir> [--keep]` | `chat_start` + the chat channel; prints the answer | admin, asks |
+| `ai-remote chat sessions` / `attach <id>` / `send <id> "<text>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`, `chat_attach`, `chat_interrupt`, `chat_end` | admin |
 
 **Which host.** `--host <name>`, else the environment variable `AI_REMOTE_HOST`, else this device's
 default host, else the only paired host. `ai-remote hosts default <name>` sets the default (kept in

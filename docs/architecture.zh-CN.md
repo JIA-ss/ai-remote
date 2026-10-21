@@ -133,6 +133,11 @@ flowchart LR
   大小和 SHA-256 都对上才原子替换；下载在字节后附一行 SHA-256 供控制端核对。双方都按事先知道的大小读写，
   不依赖对方关闭半条流。兑换时再查一次级别（须为 admin）和轮次（接管、暂停会中途停下传输）；每次传输都写一条
   审计记录（`transfer`）。MCP 客户端的工具列表里没有这两个签票工具（它们拿到票据也用不了）。
+- **ALPN `app/ai-remote/chat/1`。** 与被控端上运行的编程智能体对话。支持的智能体有 Claude Code、Codex 和 ACP 类，见 [tools.zh-CN.md](tools.zh-CN.md) 5.15 节。
+  - `chat_start` / `chat_attach` 过闸门，返回一次性票据。
+  - 控制端写一行 `{"open":{"ticket":..,"since":N}}`，读被控端的应答。之后先收到会话里 `N` 之后的已编号事件（取自被控端保存的会话记录），再收到所有新事件。
+  - 与此同时，控制端每行写一条 JSON 命令：`input`、`interrupt`、`answer`、`end`、`bye`。
+  - 智能体各自的协议（stream-json、app-server JSON-RPC、ACP）只在被控端内部使用，这条通道对所有智能体统一用一套事件词汇。
 
 ## 6. 闸门
 

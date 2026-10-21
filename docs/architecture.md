@@ -163,6 +163,13 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   closing its half. Redeeming re-checks the level (admin) and the turn (a takeover or pause stops a
   transfer midway); each transfer is audited (`transfer`). MCP clients do not see the two ticket tools,
   since they could not use the ticket.
+- **ALPN `app/ai-remote/chat/1`.** A conversation with a coding agent running on the host (Claude
+  Code, Codex, ACP agents; see [tools.md](tools.md#515-coding-agents)). `chat_start` / `chat_attach`
+  go through the gate and return a one-time ticket; the controller writes `{"open":{"ticket":..,"since":N}}`
+  and reads the host's reply, then the session's numbered events after `N` (from the transcript the
+  host keeps) and every new one, while it writes commands (`input`, `interrupt`, `answer`, `end`,
+  `bye`) one JSON line each. The agent's own protocol (stream-json, app-server JSON-RPC, ACP) stays on
+  the host; this channel carries one event vocabulary for all of them.
 
 ## 6. The gate
 

@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/chat-state.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,70 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 被控端编程智能体与对话侧栏（2026-10-21，分支 `feat/host-chat`）
+
+用户需求：在主控端列出被控端装了哪些编程智能体 CLI（Claude Code、Codex、OpenCode 等，要同时支持多种），一键以 bypass 方式在被控端启动，在推流画面旁边用对话窗口实时交互。用户文档：`docs/tools*.md` 5.15、`docs/architecture*.md` 的 `chat/1`、`docs/operations*.md` 4.1 表格、`skills/ai-remote/SKILL.md` 7b。
+
+### 调研结论
+
+- 参考了 multica 和 Orca 两个项目：
+  - multica：Go daemon，每个 CLI 一个原生适配器，带一张检测表；
+  - Orca（stablyai/orca）：多端，"会话日志 + 序号游标"续传，原生协议与 PTY 并存。
+- 两者都**只借思路，没有抄代码**：multica 的许可证是 Apache-2.0 加了限制嵌入商用的附加条款，与 AGPL 不兼容；Orca 是 MIT，按思路借用。
+- 选型是"原生适配器 + ACP 词汇的统一事件流"。没有选"全走 ACP"：Claude 和 Codex 的 ACP 桥都需要 Node ≥22 和额外的 npm 包，而且版本与用户本机装的 CLI 对不上。也没有选"PTY 透传"：它给不出"对话窗口"，审计也只能记到字节。
+
+### 设计
+
+- **被控端** `crates/ar-host/src/chat/`：
+  - `runtimes.rs`：数据化的描述表，加上 `chat.toml` 里的自定义条目（例如另一个 `CLAUDE_CONFIG_DIR`）；
+  - `detect.rs`：查找顺序为自身 PATH → 登录 shell（一次 `$SHELL -ilc`，先 unalias，并带回 `$PATH`）→ 安装器常用目录；之后跑 `--version` 取版本，并查登录态；
+  - `proc.rs`：进程树，Unix 用 ProcessSession，Windows 用 Job Object 加 `CREATE_NO_WINDOW`；prompt 只走 stdin；单行上限 32 MiB；
+  - `adapters/{claude,codex,acp}.rs`：三种协议的适配器；
+  - `mod.rs`：ChatManager。每个会话一个 driver 任务，负责排队、打断、parked 后续接、空闲回收、重启时回收孤儿进程，以及按 id 去重重复消息。
+- **事件**：先在被控端编号、写盘，再发出。重连时带 `since`，被控端补发之后的事件；观看者跟不上实时流时，改从磁盘补。
+- **工具与通道**：工具有 `chat_runtimes`、`chat_sessions`、`chat_start`（默认询问）、`chat_attach`、`chat_interrupt`、`chat_end`。对话走 ALPN `app/ai-remote/chat/1`，用法和 files 一样"工具签票 + 专用通道"。`chat_start` / `chat_attach` 加进了 `CHANNEL_TOOLS`，所以 MCP 客户端看不到。
+- **闸门之外**：
+  - 本机总开关 `ai-remote chat enable|disable`：只能在本机设置，对 bypass 设备也生效；
+  - 设备失去 admin 后 2 s 内结束它发起的会话（`chat_channel::enforce`）；
+  - pause 会停掉正在跑的轮次；take_over **不会**（智能体不用鼠标键盘，接管的人往往就是正在对话的人）；
+  - 审计只记 `chat_session` / `chat_turn` 的元数据，不记正文；
+  - `doctor` 新增 `chat` 检查项。
+- **SYSTEM 或 root 身份的被控端**（Windows 服务模式、macOS 登录窗口）：`can_start: false`，不执行任何探测。原因是智能体必须以用户身份运行；用 SYSTEM 身份去执行用户目录里的程序，还等于本地提权。
+- **主控端**：
+  - agent 加 op `chat`，中继逻辑照抄 Screen；
+  - 命令行：`ai-remote chat list|sessions|start|run|attach|send|interrupt|end|enable|disable|status`；
+  - Tauri 命令：`open_chat` / `chat_send` / `close_chat` / `local_host_chat` / `set_local_host_chat`；
+  - 桌面端：电脑页新增「智能体」标签；会话页右栏新增「对话」标签，打开时右栏加宽到 `clamp(380px,34vw,560px)`；设置 → 本设备里加开关。前端状态在 `lib/chat.ts`（纯函数 `reduceChat`，按帧批量合并），界面在 `ui/AgentChat.tsx`。
+
+### 实测（本机 macOS，2026-10-21）
+
+- **协议 spike**（手动驱动，`/tmp` 下执行）：
+  - Claude 同一进程连续写多条 user 帧，每帧各出 `system/init` 和 `result`；`control_request interrupt` 立即收到应答。
+  - Codex 0.163 在同一 thread 上两轮都记得上文；`turn/interrupt` 4 ms 生效；换新进程后 `thread/resume` 上下文仍在。
+- **`tools/chat-smoke.py`**：本机隔离的被控端和控制端，走真实 QUIC，用假 Claude 跑完全部 21 项。
+  - `--real codex=…/codex(0.163) --model gpt-6.1-sol`：一次任务 5.5~9.4 s；能跑 shell 工具；打断 0.1 s 生效；下一轮记得上文（3 次运行）。
+  - `--real opencode=…(1.19.3) --model opencode/deepseek-v4.1-flash-free`（ACP）：4.0~7.9 s；工具、打断 0.3 s、续上文都通过（2 次运行）。
+- **单元测试**：`cargo test -p ar-host --lib chat` 共 26 项，三个适配器用真实行格式的样例覆盖；`node --test tools/chat-state.test.mjs` 共 9 项。
+- **桌面端**：在演示模式下，用浏览器跑通了"电脑页启动 → 会话页对话标签 → 流式步骤 → 停止"，以及 diff / 失败工具 / 思考的渲染。没有在真实 Tauri 应用里对真实被控端试过。
+
+### 踩过的坑
+
+1. 本机 `claude auth status` 显示 `loggedIn: true`，但 OAuth 已过期，`-p` 每轮都报 401，而且不会自动刷新。所以"已登录"只能当提示，真正的失败要靠 `result` 的 `is_error` 和 `api_error_status` 报出来。
+2. codex 0.137 的默认模型（本机 config 里是 `gpt-5.5`）已经不被 ChatGPT 账号接受，每轮都在 `turn/completed` 之前报 400。适配器把 `error` 通知里的 message 作为本轮失败原因；表单里有模型字段。
+3. serde_json 的 Map 会按字母排序 key，事件信封如果先转成 Map 再序列化，`seq` 就不在开头，`line_seq` 解析不到。改成手工拼字符串。
+4. Codex 会把长命令转到后台，然后自己结束这一轮。测试打断时必须实时跟随事件、一看到工具调用就打断，靠轮询来不及。
+5. React dev 模式会执行两次 effect，一次性票据在第一次挂载时就用掉了。前端在票据失败后改用 `chat_attach` 重新取票。
+6. 文案键 `ag_*` 已经被"已连接的 MCP 客户端"那部分用掉了，新功能改用 `hc_*`。
+7. macOS 的临时目录路径太长，超过 Unix socket 路径上限（SUN_LEN），冒烟脚本改放到 `/tmp` 下。
+
+### 下一步
+
+- [ ] Windows：本机 clippy 和测试在 win-dev 上跑；用户态计划任务模式下的真机对话（`.cmd` shim、Job Object、子进程不弹窗）尚未验证。
+- [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
+- [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
+- [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
+- [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
 

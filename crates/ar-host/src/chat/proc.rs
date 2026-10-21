@@ -207,3 +207,46 @@ mod tests {
         assert!(!alive, "the agent's child process must be stopped with it");
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// The agent's input reaches it, and stopping it takes down what it started (a Job Object).
+    #[tokio::test]
+    async fn lines_round_trip_and_shutdown_kills_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = "$c = Start-Process -PassThru -WindowStyle Hidden ping -ArgumentList '-n','600','127.0.0.1'; \
+                      Write-Output \"child $($c.Id)\"; while ($l = [Console]::In.ReadLine()) { Write-Output \"got $l\" }";
+        let (p, mut lines) = AgentProc::spawn(
+            Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script.into()],
+            dir.path(),
+            &Default::default(),
+        )
+        .unwrap();
+        let first = loop {
+            let l = lines.recv().await.unwrap().unwrap();
+            if l.starts_with("child ") {
+                break l;
+            }
+        };
+        let child: u32 = first.strip_prefix("child ").unwrap().trim().parse().unwrap();
+        p.write_line("hello".into()).await.unwrap();
+        let got = loop {
+            let l = lines.recv().await.unwrap().unwrap();
+            if l.starts_with("got ") {
+                break l;
+            }
+        };
+        assert_eq!(got, "got hello");
+        p.shutdown(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        assert!(
+            sys.process(sysinfo::Pid::from_u32(child)).is_none(),
+            "the agent's child process must be stopped with it"
+        );
+    }
+}
