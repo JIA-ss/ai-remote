@@ -226,17 +226,13 @@ fn desktop_name(desk: HDESK) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..len]))
 }
 
-/// Desktop access for opening the input desktop and attaching a thread to it: the same set the
-/// capture side uses (`stream::capture::dda`).
-const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(
-    DESKTOP_CREATEMENU.0
-        | DESKTOP_CREATEWINDOW.0
-        | DESKTOP_ENUMERATE.0
-        | DESKTOP_HOOKCONTROL.0
-        | DESKTOP_WRITEOBJECTS.0
-        | DESKTOP_READOBJECTS.0
-        | DESKTOP_SWITCHDESKTOP.0,
-);
+/// Desktop access for opening the input desktop and attaching a thread to it: everything, as
+/// RustDesk does. `SendInput` from a thread attached with a handle that lacks
+/// `DESKTOP_JOURNALPLAYBACK` is refused with access denied on the secure desktop (measured on a
+/// Windows 11 host running as SYSTEM: the capture-side set below made every injected event fail
+/// there, re-attaching the same thread with GENERIC_ALL made them pass). A user's own desktop
+/// grants the user everything too.
+const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(windows::Win32::Foundation::GENERIC_ALL.0);
 
 thread_local! {
     /// The input desktop this thread is attached to, kept alive while the thread stays on it and
