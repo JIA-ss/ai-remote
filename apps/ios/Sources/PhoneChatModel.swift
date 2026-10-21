@@ -6,8 +6,8 @@ import Foundation
 // step. Pure, so it runs and is tested on macOS (tools/test-phone-chat-model.sh).
 //
 // The layout follows Orca's native chat (stablyai/orca, MIT): a turn is a list of rows — the user's
-// message, the agent's prose, a folded "run" of tool calls summarized in one sentence, edits as diff
-// cards, reasoning folded behind "思考了 4 秒".
+// message, the agent's prose, a folded "run" of tool calls summarized in one sentence (edits included:
+// they open to diff cards), reasoning folded behind "思考了 4 秒". Ported up to desktop d196dc3.
 
 /// A session as `chat_sessions` reports it.
 public struct PhoneChatSession: Identifiable, Sendable, Equatable {
@@ -407,7 +407,7 @@ public func phoneIsSubagent(_ x: PhoneChatTool) -> Bool {
     x.kind == "think" && (startsWithWord(x.title, "Task") || startsWithWord(x.title, "Agent"))
 }
 
-/// An edit with a diff to show; shown as a diff card rather than folded in a run.
+/// An edit with a diff to show: a diff card inside its run.
 public func phoneIsEdit(_ x: PhoneChatTool) -> Bool {
     x.kind == "edit" || x.content.contains { if case .diff = $0 { true } else { false } }
 }
@@ -423,7 +423,6 @@ public enum PhoneChatRow: Equatable, Sendable, Identifiable {
     case thought(key: String, PhoneThought, live: Bool)
     /// Tool calls in a row (with the reasoning between them), summarized in one sentence.
     case run(key: String, members: [PhoneRunMember], tools: [PhoneChatTool], live: Bool)
-    case edit(key: String, PhoneChatTool)
     case agent(key: String, PhoneChatTool)
     case plan(key: String, [PhonePlanEntry])
     case question(key: String, PhoneQuestion)
@@ -431,7 +430,7 @@ public enum PhoneChatRow: Equatable, Sendable, Identifiable {
 
     public var id: String {
         switch self {
-        case .user(let k, _, _, _, _), .text(let k, _, _), .thought(let k, _, _), .run(let k, _, _, _), .edit(let k, _),
+        case .user(let k, _, _, _, _), .text(let k, _, _), .thought(let k, _, _), .run(let k, _, _, _),
              .agent(let k, _), .plan(let k, _), .question(let k, _), .notice(let k, _, _, _): k
         }
     }
@@ -441,7 +440,6 @@ public enum PhoneChatRow: Equatable, Sendable, Identifiable {
         case .text: "text"
         case .thought: "thought"
         case .run: "run"
-        case .edit: "edit"
         case .agent: "agent"
         case .plan: "plan"
         case .question: "question"
@@ -451,7 +449,7 @@ public enum PhoneChatRow: Equatable, Sendable, Identifiable {
 }
 
 private func joinsRun(_ b: PhoneChatBlock) -> Bool {
-    if case .tool(let x) = b { return !phoneIsEdit(x) && !phoneIsSubagent(x) }
+    if case .tool(let x) = b { return !phoneIsSubagent(x) }
     return false
 }
 
@@ -495,7 +493,7 @@ public func phoneTurnRows(_ turn: PhoneChatTurn) -> [PhoneChatRow] {
         case .text(let id, let text):
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { rows.append(.text(key: "m\(turn.n):\(id)", text: text, streaming: false)) }
         case .tool(let tool):
-            rows.append(phoneIsSubagent(tool) ? .agent(key: "a\(turn.n):\(tool.callID)", tool) : .edit(key: "e\(turn.n):\(tool.callID)", tool))
+            rows.append(.agent(key: "a\(turn.n):\(tool.callID)", tool))
         case .plan(let entries): rows.append(.plan(key: "p\(turn.n)", entries))
         case .question(let q): rows.append(.question(key: "q\(turn.n):\(q.qid)", q))
         case .notice(let level, let code, let text): rows.append(.notice(key: "n\(turn.n):\(i)", level: level, code: code, text: text))
@@ -532,12 +530,22 @@ public func phoneRunSummary(_ tools: [PhoneChatTool]) -> [PhoneRunPart] {
         case "read": "read"
         case "search": "search"
         case "fetch": "web"
-        case "edit", "delete", "move": "change"
-        default: "tool"
+        case "delete", "move": "change"
+        default: phoneIsEdit(x) ? "change" : "tool"
         }
         if let i = out.firstIndex(where: { $0.cat == cat }) { out[i].n += 1 } else { out.append(PhoneRunPart(cat: cat, n: 1)) }
     }
     return out
+}
+
+/// Lines added and removed by the edits of a run, for its header (nil when it edited nothing).
+public func phoneRunDiffStat(_ tools: [PhoneChatTool]) -> (add: Int, del: Int)? {
+    var add = 0, del = 0, any = false
+    for x in tools {
+        guard let st = phoneDiffStat(x.content) else { continue }
+        any = true; add += st.add; del += st.del
+    }
+    return any ? (add, del) : nil
 }
 
 /// How a run ended: calls that failed, calls cut short by Stop, and whether all of them finished.
@@ -553,17 +561,19 @@ public func phoneRunOutcome(_ tools: [PhoneChatTool]) -> PhoneRunOutcome {
 }
 
 /// The run's sentence, as the desktop's `hc_run_*` / `hc_live_*` strings say it: past tense when done
-/// ("运行了 2 条命令，读了 1 个文件"), present with one leading "正在" while live.
+/// ("运行了 2 条命令，读了 1 个文件 和 编辑了 1 个文件"), present with one leading "正在" while live; the last
+/// item joins with "和" (`hc_list_and`).
 public func phoneRunSentence(_ tools: [PhoneChatTool], live: Bool) -> String {
     let past = ["command": ("运行了", "条命令"), "read": ("读了", "个文件"), "search": ("搜索了", "次"), "web": ("抓取了", "个网页"),
-                "change": ("改动了", "个文件"), "tool": ("用了", "个工具")]
+                "change": ("编辑了", "个文件"), "tool": ("用了", "个工具")]
     let present = ["command": ("运行", "条命令"), "read": ("读", "个文件"), "search": ("搜索", "次"), "web": ("抓取", "个网页"),
-                   "change": ("改动", "个文件"), "tool": ("使用", "个工具")]
+                   "change": ("编辑", "个文件"), "tool": ("使用", "个工具")]
     let parts = phoneRunSummary(tools).map { p -> String in
         let (verb, unit) = (live ? present : past)[p.cat] ?? ("", "")
         return "\(verb) \(p.n) \(unit)"
     }
-    return (live ? "正在" : "") + parts.joined(separator: "，")
+    let list = parts.count > 1 ? parts.dropLast().joined(separator: "，") + " 和 " + parts[parts.count - 1] : parts.first ?? ""
+    return (live ? "正在" : "") + list
 }
 
 /// A tool's title split into the verb the agent used and what it acted on ("Bash", "npm test").
@@ -647,7 +657,7 @@ private func editScript(_ a: [String], _ b: [String]) -> [PhoneDiffRow] {
     return out
 }
 
-/// The rows of a diff card: changes with a few lines around them, the rest folded into gaps.
+/// The rows of a diff card: changes with a few lines around them; stretches between them fold into gaps.
 public func phoneDiffRows(_ oldText: String?, _ newText: String) -> [PhoneDiffRow] {
     let a = (oldText ?? "").isEmpty ? [] : (oldText ?? "").components(separatedBy: "\n")
     let b = newText.isEmpty ? [] : newText.components(separatedBy: "\n")
@@ -659,16 +669,17 @@ public func phoneDiffRows(_ oldText: String?, _ newText: String) -> [PhoneDiffRo
     }
     var out: [PhoneDiffRow] = []
     var skipped = 0
+    // Only the stretch between two changes is marked; lines left out before the first or after the
+    // last change are simply not shown (as in Orca's diff card).
     for (i, l) in script.enumerated() {
         if keep[i] {
-            if skipped > 0 { out.append(.gap(skipped)) }
+            if skipped > 0, !out.isEmpty { out.append(.gap(skipped)) }
             skipped = 0
             out.append(l)
         } else {
             skipped += 1
         }
     }
-    if skipped > 0, !out.isEmpty { out.append(.gap(skipped)) }
     return out
 }
 

@@ -13,20 +13,24 @@ final class PhoneChatUITests: XCTestCase {
 
         // Rows: the user's message, the run summarized in one sentence, the diff card, the plan, the question.
         XCTAssertTrue(app.staticTexts["看一下 README 里构建步骤还对不对"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["读了 2 个文件，运行了 1 条命令"].exists, "the run's sentence")
-        XCTAssertTrue(app.staticTexts["1 个失败"].exists, "the run counts its failed call")
+        XCTAssertTrue(app.staticTexts["读了 2 个文件，运行了 1 条命令 和 编辑了 1 个文件"].exists, "the run's sentence, edits included")
+        XCTAssertTrue(app.staticTexts["· 1 个失败"].exists, "the run counts its failed call")
         XCTAssertTrue(app.staticTexts["完成 2/3"].exists, "the plan's progress")
         XCTAssertTrue(app.descendants(matching: .any)["chat-context"].exists, "the context ring")
         attach(app, "rows")
 
-        let diff = app.buttons["chat-diff"]
-        XCTAssertTrue(diff.exists)
-        diff.tap()
-        XCTAssertTrue(app.staticTexts["Run rustup target add aarch64-apple-ios aarch64-apple-ios-sim."].waitForExistence(timeout: 5), "the diff opens")
-        diff.tap()
-
         app.buttons["chat-option-1"].tap()
         XCTAssertTrue(app.staticTexts["已回答：要"].waitForExistence(timeout: 5), "a numbered option answers the question")
+
+        // The edit sits in the run: open the run, then its diff card.
+        app.buttons["chat-run"].tap()
+        let diff = app.buttons["chat-diff"]
+        XCTAssertTrue(diff.waitForExistence(timeout: 5))
+        diff.tap()
+        XCTAssertTrue(app.staticTexts["Run rustup target add aarch64-apple-ios aarch64-apple-ios-sim."].waitForExistence(timeout: 5), "the diff opens")
+        attach(app, "diff")
+        diff.tap()
+        app.buttons["chat-run"].tap()
 
         // Sending starts a turn; while it runs, sending adds to it (steer).
         let input = app.textViews["chat-input"]

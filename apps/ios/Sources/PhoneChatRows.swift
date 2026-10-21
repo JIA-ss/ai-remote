@@ -24,7 +24,6 @@ struct PhoneChatRowView: View {
         case .text(_, let text, _): PhoneMarkdownText(text: text)
         case .thought(_, let thought, let live): PhoneThoughtRow(thought: thought, live: live)
         case .run(_, let members, let tools, let live): PhoneRunRow(members: members, tools: tools, live: live)
-        case .edit(_, let tool): PhoneEditRow(tool: tool)
         case .agent(_, let tool): PhoneAgentRow(tool: tool)
         case .plan(_, let entries): PhonePlanRow(entries: entries)
         case .question(_, let q): PhoneQuestionCard(question: q, readonly: readonly, answer: answer)
@@ -176,7 +175,8 @@ struct PhoneToolLine: View {
         VStack(alignment: .leading, spacing: 6) {
             Button { if detail { open.toggle() } } label: {
                 FoldHeader(icon: kindIcon(tool.kind), open: open, opens: detail) {
-                    Text(label.verb).font(.footnote.weight(.medium))
+                    // A command is its own label ("npm test"), as in Orca; other tools say what they did.
+                    if tool.kind != "execute" || label.target.isEmpty { Text(label.verb).font(.footnote.weight(.medium)) }
                     if !label.target.isEmpty {
                         Text(label.target).font(tool.kind == "execute" ? .footnote.monospaced() : .footnote)
                             .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -249,7 +249,7 @@ struct PhoneRunRow: View {
 
     var body: some View {
         if tools.count == 1, members.count == 1, let only = tools.first {
-            PhoneToolLine(tool: only)
+            if phoneIsEdit(only) { PhoneEditRow(tool: only) } else { PhoneToolLine(tool: only) }
         } else {
             let cats = phoneRunSummary(tools)
             let outcome = phoneRunOutcome(tools)
@@ -260,8 +260,12 @@ struct PhoneRunRow: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(phoneRunSentence(tools, live: live)).font(.footnote.weight(.medium))
-                                if outcome.failed > 0 { Text("\(outcome.failed) 个失败").font(.caption2).foregroundStyle(.red) }
-                                if outcome.stopped > 0 { Text("\(outcome.stopped) 个被停止").font(.caption2).foregroundStyle(.orange) }
+                                if let stat = phoneRunDiffStat(tools) {
+                                    Text("+\(stat.add)").font(.caption.monospacedDigit()).foregroundStyle(.green)
+                                    Text("−\(stat.del)").font(.caption.monospacedDigit()).foregroundStyle(.red)
+                                }
+                                if outcome.failed > 0 { Text("· \(outcome.failed) 个失败").font(.caption2).foregroundStyle(.secondary) }
+                                if outcome.stopped > 0 { Text("· \(outcome.stopped) 个被停止").font(.caption2).foregroundStyle(.secondary) }
                                 if !live, outcome.done, outcome.failed == 0, outcome.stopped == 0 {
                                     Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(.green)
                                 }
@@ -281,7 +285,8 @@ struct PhoneRunRow: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(members.enumerated()), id: \.offset) { _, member in
                             switch member {
-                            case .tool(let tool): PhoneToolLine(tool: tool)
+                            case .tool(let tool):
+                                if phoneIsEdit(tool) { PhoneEditRow(tool: tool) } else { PhoneToolLine(tool: tool) }
                             case .thought(let thought): PhoneThoughtRow(thought: thought, live: false, inRun: true)
                             }
                         }
@@ -329,7 +334,7 @@ struct PhoneDiffCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Button { if !rows.isEmpty { open.toggle() } } label: {
                 FoldHeader(icon: created ? "doc.badge.plus" : deleted ? "doc.badge.minus" : "pencil", open: open, opens: !rows.isEmpty) {
-                    Text(created ? "新建" : deleted ? "删除" : "修改").font(.footnote.weight(.medium))
+                    Text(created ? "新建" : deleted ? "删除" : "编辑了").font(.footnote.weight(.medium))
                     Text(phoneBaseName(path)).font(.footnote.monospaced()).lineLimit(1).truncationMode(.middle)
                     if let stat {
                         Text("+\(stat.add)").font(.caption.monospacedDigit()).foregroundStyle(.green)
@@ -342,14 +347,17 @@ struct PhoneDiffCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chat-diff")
+            .overlay(alignment: .trailing) {
+                Button { phoneCopy(Self.patch(path, rows)) } label: { Image(systemName: "doc.on.doc").font(.caption) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).padding(.trailing, 34)
+                    .accessibilityLabel("复制 diff")
+            }
             if open {
                 Divider()
-                ScrollView(.horizontal, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, r in diffLine(r) }
-                    }
-                    .padding(.vertical, 6)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, r in diffLine(r) }
                 }
+                .padding(.vertical, 6)
             }
         }
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
@@ -366,12 +374,26 @@ struct PhoneDiffCard: View {
         }
     }
     private func line(_ sign: String, _ text: String, _ bg: Color, _ fg: Color) -> some View {
-        HStack(spacing: 6) {
+        // Long lines wrap rather than scroll sideways.
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(sign).foregroundStyle(.secondary)
-            Text(text.isEmpty ? " " : text).foregroundStyle(fg)
+            Text(text.isEmpty ? " " : text).foregroundStyle(fg).fixedSize(horizontal: false, vertical: true)
         }
-        .font(.caption.monospaced()).fixedSize().padding(.horizontal, 10).padding(.vertical, 1)
+        .font(.caption.monospaced()).padding(.horizontal, 10).padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading).background(bg)
+    }
+
+    /// The diff as unified patch text, for the copy button.
+    static func patch(_ path: String, _ rows: [PhoneDiffRow]) -> String {
+        let body = rows.map { r -> String in
+            switch r {
+            case .gap: "@@"
+            case .context(let t): " " + t
+            case .add(let t): "+" + t
+            case .del(let t): "-" + t
+            }
+        }
+        return (["--- \(path)", "+++ \(path)"] + body).joined(separator: "\n")
     }
 }
 

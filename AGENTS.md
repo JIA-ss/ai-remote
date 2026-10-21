@@ -151,7 +151,10 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
     排队消息卡片（编辑=dequeue+重新排队、移出、现在插进这一轮）、运行中输入默认插话（`caps.steer` 为 true 时，模式 chip 可切到排队）、
     长按发送按钮"停止本轮并立即发送"（`mode: interrupt`）。Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），
     ``` 围起来的代码块单独等宽显示。
-  - 没搬：↑/↓ 浏览发送历史、最近文件夹记忆（桌面端键盘 / localStorage 功能）、代码高亮、diff 复制按钮。
+  - 同步到桌面 d196dc3（Orca 实机对照后）：编辑并进运行组（行里没有 edit 了，组展开后编辑是 diff 卡片，组标题后加总的
+    +N −M，`phoneRunDiffStat`）；一句话最后一项用" 和 "连接、编辑类文案"编辑了 N 个文件"；diff 开头 / 结尾不再放 gap；命令行只显示
+    命令本身；失败数灰色"· N 个失败"；diff 行自动换行、复制按钮常显。
+  - 没搬：↑/↓ 浏览发送历史、最近文件夹记忆（桌面端键盘 / localStorage 功能）、代码高亮；运行组箭头"悬停才显示"（手机没有悬停）。
 
 ### 验证
 

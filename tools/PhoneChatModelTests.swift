@@ -62,13 +62,20 @@ test("a turn folds into its user message, streamed text, tools and its end") {
     check(tools(turn)[0].content == [.text("error[E0425]")], "tool output")
 }
 
-test("a turn projects into rows: tools in a run, edits as diff cards, the reply last") {
+test("a turn projects into rows: tools and edits in one run, the reply last") {
     let rows = phoneTurnRows(fold(conversation()).turns[0])
-    // The thought after the build is followed by an edit, which is not part of a run: its own row.
-    check(rows.map(\.kind) == ["user", "text", "run", "thought", "edit", "text"], "kinds \(rows.map(\.kind))")
-    if case .run(_, _, let t, let live) = rows[2] { check(t.map(\.callID) == ["k1"] && !live, "run") } else { check(false, "run row") }
-    if case .edit(_, let t) = rows[4] { check(t.callID == "k2", "edit") } else { check(false, "edit row") }
-    if case .text(_, let text, _) = rows[5] { check(text == "Fixed: `b` was wrong.", "reply") } else { check(false, "reply row") }
+    // As in Orca, an edit is part of the run ("ran 1 command and edited 1 file") and opens to its diff
+    // card; the thought between the build and the edit stays inside the run.
+    check(rows.map(\.kind) == ["user", "text", "run", "text"], "kinds \(rows.map(\.kind))")
+    guard case .run(_, let members, let t, let live) = rows[2] else { return check(false, "run row") }
+    check(members.map { if case .tool = $0 { "tool" } else { "thought" } } == ["tool", "thought", "tool"], "members")
+    check(phoneRunSummary(t) == [PhoneRunPart(cat: "command", n: 1), PhoneRunPart(cat: "change", n: 1)], "summary")
+    let stat = phoneRunDiffStat(t)
+    check(stat?.add == 1 && stat?.del == 1, "run diff stat")
+    check(phoneRunDiffStat([t[0]]) == nil, "no edit, no stat")
+    check(!live, "not live")
+    check(phoneRunSentence(t, live: false) == "运行了 1 条命令 和 编辑了 1 个文件", phoneRunSentence(t, live: false))
+    if case .text(_, let text, _) = rows[3] { check(text == "Fixed: `b` was wrong.", "reply") } else { check(false, "reply row") }
 }
 
 test("replayed events after a reconnect are not applied twice") {
@@ -136,8 +143,8 @@ test("tool calls in a row form one run; reasoning between them stays inside; a r
     check(live, "live")
     check(phoneRunSummary(t) == [PhoneRunPart(cat: "read", n: 1), PhoneRunPart(cat: "command", n: 2)], "summary")
     check(phoneRunOutcome(t) == PhoneRunOutcome(failed: 0, stopped: 0, done: false), "outcome")
-    check(phoneRunSentence(t, live: true) == "正在读 1 个文件，运行 2 条命令", phoneRunSentence(t, live: true))
-    check(phoneRunSentence(t, live: false) == "读了 1 个文件，运行了 2 条命令", phoneRunSentence(t, live: false))
+    check(phoneRunSentence(t, live: true) == "正在读 1 个文件 和 运行 2 条命令", phoneRunSentence(t, live: true))
+    check(phoneRunSentence(t, live: false) == "读了 1 个文件 和 运行了 2 条命令", phoneRunSentence(t, live: false))
 }
 
 test("a sub-agent (the Task tool) gets a row of its own") {
@@ -248,6 +255,10 @@ test("diffs show changes with context, fold unchanged stretches, and count lines
     // Two separate changes, each with three lines around it, and the stretch between folded.
     check(kinds == ["del", "add", "gap", "del", "add"], "\(kinds)")
     check(rows.contains(.gap(8)), "gap of 8")
+    // Lines before the first and after the last change are left out without a marker.
+    let mid = phoneDiffRows(old, old.replacingOccurrences(of: "line 10", with: "line ten"))
+    check(mid.first.map { if case .gap = $0 { false } else { true } } == true && mid.last.map { if case .gap = $0 { false } else { true } } == true, "no edge gaps")
+    check(mid.count == 8, "\(mid.count) rows")
     let stat = phoneDiffStat([.diff(path: "x", old: old, new: neu)])
     check(stat?.add == 2 && stat?.del == 2, "stat")
     // A new file is all added; a change in the middle is a real line diff, not "everything replaced".
