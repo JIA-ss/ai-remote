@@ -373,11 +373,61 @@ pub fn input_context() -> String {
                 .map(|l| format!("pid {pid} {l:#x} {}", integrity_name(l)))
                 .unwrap_or_else(|| format!("pid {pid} ?"))
         };
+        // The probe the diagnostic script ran successfully as a child of this host, here in this
+        // process: on this thread, and on a fresh one.
+        let here = input_probe();
+        let fresh = std::thread::spawn(input_probe).join().unwrap_or_else(|_| "panicked".into());
         format!(
-            "thread desktop {}, input desktop {input}, process integrity {own}, foreground window {fg}, session {:?}",
+            "thread desktop {}, input desktop {input}, process integrity {own}, foreground window {fg}, session {:?}; \
+             probe on this thread [{here}]; probe on a fresh thread [{fresh}]",
             thread.as_deref().unwrap_or("?"),
             session_state().session_id
         )
+    }
+}
+
+/// Open the input desktop with GENERIC_ALL, attach, place the pointer where it is, send a relative
+/// zero move: each step's outcome.
+fn input_probe() -> String {
+    use windows::Win32::Foundation::GENERIC_ALL;
+    // SAFETY: plain queries and one injected no-op move; the desktop handle is left attached to
+    // this short-lived thread or closed when the attach failed.
+    unsafe {
+        let mut out = Vec::new();
+        match OpenInputDesktop(Default::default(), false, DESKTOP_ACCESS_FLAGS(GENERIC_ALL.0)) {
+            Ok(h) => {
+                out.push(format!("open ok ({})", desktop_name(h).unwrap_or_default()));
+                match SetThreadDesktop(h) {
+                    Ok(()) => out.push("attach ok".into()),
+                    Err(e) => {
+                        out.push(format!("attach failed: {e}"));
+                        let _ = CloseDesktop(h);
+                    }
+                }
+            }
+            Err(e) => out.push(format!("open failed: {e}")),
+        }
+        let at = cursor_pos();
+        out.push(match at {
+            Some((x, y)) => match SetCursorPos(x, y) {
+                Ok(()) => "SetCursorPos ok".into(),
+                Err(e) => format!("SetCursorPos failed: {e}"),
+            },
+            None => "GetCursorPos failed".into(),
+        });
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT { dx: 0, dy: 0, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE, time: 0, dwExtraInfo: 0 },
+            },
+        };
+        let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        out.push(if sent == 1 {
+            "SendInput ok".into()
+        } else {
+            format!("SendInput failed: {}", std::io::Error::last_os_error())
+        });
+        out.join(", ")
     }
 }
 
