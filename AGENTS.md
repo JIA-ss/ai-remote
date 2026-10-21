@@ -42,7 +42,18 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` 会启动失败**。给机器写 `quiet = true` 之前先换新版本。
 
-未测：真机上抓包确认 mDNS / SSDP 确实不再发出（需要 sudo 或 Wireshark）；公司 DNS 拦截 `iroh.link` 的情况。
+实测（2026-10-21，公司网络，本机 macOS 被控端+控制端、Windows 开发机被控端都开 `quiet = true`）：
+- 连接：本机控制端连 Windows 被控端，`hosts` 报 `direct (P2P)`，只读工具（`ps`）立即返回。
+- Windows：ETW `Microsoft-Windows-Kernel-Network`（按 PID 记录每次 UDP 发送）抓 120 s。被控端进程只发往对端控制端的
+  QUIC 端口、4 台 n0 中继的 UDP 7842、以及对端的一个公网候选地址；发往 5353 / 1900 / 5351 的 0 个。同一时段别的进程
+  （Steam 的 SSDP 12 次、Bonjour 的 mDNS 1 次）都被抓到了，说明方法本身能抓到这类包。
+- macOS：`tcpdump -i pktap,all -k`（按进程标注）抓两次。控制端 7 分钟、被控端 148 s：只发往对端 QUIC 端口和 4 台中继的
+  UDP 7842，发往 5353 / 1900 / 5351 的 0 个，也没有发往公共 DNS 的。同一时段系统的 mDNSResponder 有 mDNS 包被抓到。
+  对照：同一天默认模式下，被控端是占着 `UDP *:5353` 的；安静模式下两端都不再绑定 5353。
+- 没有在这台机器上抓默认模式的 SSDP 作对照（避免在公司网里制造流量），"默认模式每 20–26 s 一次 SSDP"仍是读代码得出的。
+- 坑：macOS 上 pktap 的 tcpdump 收到 SIGTERM 不退出，脚本里要用 `kill -9`。
+
+未测：公司 DNS 拦截 `iroh.link` 的情况。
 
 ## 接管时的实时输入、剪贴板与文件（2026-10-21，分支 `claude/live-input`）
 
