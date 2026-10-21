@@ -628,8 +628,8 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 - [x] **服务模式真机实跑**（2026-10-20/21，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
       SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面与真实锁屏上的截图 / 推流 / doctor / `ctrl+alt+del`（SendSAS）/
-      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换、重启后服务自启、注销后的登录界面，全部通过；
-      stop-host 连带停服务、uninstall 恢复策略未单独跑。原条目：
+      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换、重启后服务自启、注销后的登录界面、`stop-host`
+      连带停服务再 `sc start` 拉起、`host uninstall` 恢复（服务删除、SAS 策略回 0、防火墙规则清空），全部通过。原条目：
       `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
 - [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
@@ -686,7 +686,11 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 - **注销**（`shutdown /l`，等价于没有自动登录的重启）：控制台切到会话 2，被控端跟过去：`info` 报
   `session_id: 2, input_desktop: Winlogon, secure_desktop: true`，`doctor` 的 session/console ok、desktop/approval warn，
   `shot` 截到真实登录界面（时钟壁纸）。之后用 RDP 登录一次，控制台回到用户会话。
-- 结论：AGENTS 里锁屏专项 Windows 侧的"未测"清单，除 stop-host / uninstall 的收尾路径外都已真机过了一遍。
+- `stop-host`：服务一起 STOPPED、hostw 进程 0；`sc start` 后 `host status` 又是 running。`host uninstall`：服务删除、
+  `SoftwareSASGeneration` 回 0、`ai-remote host` 防火墙规则 0 条、无 hostw 进程；开发机恢复到安装前。
+- 结论：AGENTS 里锁屏专项 Windows 侧的"未测"清单已全部真机过了一遍；全量 `cargo clippy -D warnings` 和
+  `cargo test --workspace`（236 passed）在 Windows 上也过。还没做的只剩 Mac 的注销 / 登录界面（会杀掉开发会话，
+  且系统级 LaunchAgent 要 sudo）。
 - 当时写下的排查方向（已走完）：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
   （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
   核对被控端进程的 integrity level 与 shell 子进程是否相同。
