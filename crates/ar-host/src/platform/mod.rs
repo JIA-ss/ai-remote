@@ -110,6 +110,20 @@ pub fn desktop_blocker() -> Option<String> {
     if s.desktop_usable { None } else { s.problem.or_else(|| Some("the desktop is not usable".into())) }
 }
 
+/// Whether this process runs as root (macOS: `sudo ai-remote host install --service`). Always false
+/// elsewhere.
+pub fn runs_as_root() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a plain query.
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// Whether this process runs as the LocalSystem account: on Windows the host the service starts in
 /// the user's session, which may open the secure desktop. Always false elsewhere.
 pub fn runs_as_system() -> bool {
