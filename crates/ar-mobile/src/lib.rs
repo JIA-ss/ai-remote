@@ -84,7 +84,14 @@ impl MobileController {
         self.ready()?;
         // Swift cancellation does not currently cancel UniFFI futures. Bound hand-back in Rust
         // so a phone background transition cannot wait indefinitely for an unreachable host.
-        let seconds = if request["request"]["turn"]["action"] == "hand_back" { 3 } else { 30 };
+        // chat_start waits for the host's owner to allow it (approval_timeout_secs, 60 s by default).
+        let seconds = if request["request"]["turn"]["action"] == "hand_back" {
+            3
+        } else if request["tool"] == "chat_start" {
+            330
+        } else {
+            30
+        };
         let result = tokio::time::timeout(std::time::Duration::from_secs(seconds), self.backend.request(request))
             .await
             .map_err(|_| failure("request timed out; check the host and connection before retrying"))?

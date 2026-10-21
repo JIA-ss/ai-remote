@@ -27,10 +27,17 @@ public struct PhoneChatView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("完成", action: close) }
+                if chat.current == nil {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("新对话", systemImage: "plus") { chat.showNew = true }
+                            .accessibilityIdentifier("chat-new")
+                    }
+                }
             }
+            .sheet(isPresented: $chat.showNew) { newChat }
         }
         .task { if chat.current == nil { await chat.loadSessions() } }
-        .alert("出错了", isPresented: Binding(get: { chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
+        .alert("出错了", isPresented: Binding(get: { chat.error != nil && !chat.showNew }, set: { if !$0 { chat.error = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(chat.error ?? "") }
     }
@@ -43,7 +50,7 @@ public struct PhoneChatView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.text.bubble.right").font(.largeTitle).foregroundStyle(.secondary)
                     Text("还没有智能体会话").font(.headline)
-                    Text("在这台电脑的桌面端或命令行（ai-remote chat run）启动 Claude Code、Codex 等智能体后，会话会出现在这里。")
+                    Text("点右上角的 + 在这台电脑上启动 Claude Code、Codex 等智能体；桌面端或命令行启动的会话也会出现在这里。")
                         .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 24).listRowBackground(Color.clear)
@@ -82,6 +89,71 @@ public struct PhoneChatView: View {
         case "idle": .green
         default: .gray
         }
+    }
+
+    // MARK: New chat
+
+    private var newChat: some View {
+        NavigationStack {
+            Form {
+                if let blocked = chat.startBlocked {
+                    Section { Label(blocked, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                }
+                Section("智能体") {
+                    if chat.runtimes.isEmpty { ProgressView() }
+                    Picker("智能体", selection: $chat.newRuntime) {
+                        ForEach(chat.runtimes) { runtime in
+                            Text(runtime.name + (runtime.note.map { "（\($0)）" } ?? "")).tag(runtime.id)
+                                .selectionDisabled(!runtime.usable)
+                        }
+                    }
+                    #if os(iOS)
+                    .pickerStyle(.inline)
+                    #endif
+                    .labelsHidden()
+                    .accessibilityIdentifier("chat-new-runtime")
+                }
+                Section {
+                    TextField("文件夹", text: $chat.newCwd)
+                        .font(.body.monospaced()).autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .accessibilityIdentifier("chat-new-cwd")
+                } header: { Text("在电脑上的哪个文件夹工作") } footer: { Text("电脑上的绝对路径，~ 是用户主目录。") }
+                Section {
+                    TextField("第一条消息（可不填）", text: $chat.newPrompt, axis: .vertical).lineLimit(1...6)
+                        .accessibilityIdentifier("chat-new-prompt")
+                } footer: {
+                    Text("智能体以电脑上登录用户的身份运行，执行命令和改文件前不会再问。电脑的主人可能要先在电脑上同意。")
+                }
+            }
+            .navigationTitle("新对话")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { chat.showNew = false }.disabled(chat.starting) }
+                ToolbarItem(placement: .confirmationAction) {
+                    if chat.starting { ProgressView() } else {
+                        Button("启动") { Task { await chat.start() } }
+                            .disabled(!chat.canStart || chat.newRuntime.isEmpty || chat.newCwd.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .accessibilityIdentifier("chat-new-start")
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if chat.starting {
+                    Label("正在启动；如果电脑要求确认，请在电脑上允许。", systemImage: "hourglass")
+                        .font(.footnote).foregroundStyle(.secondary).padding()
+                }
+            }
+            .alert("没能启动", isPresented: Binding(get: { chat.showNew && chat.error != nil }, set: { if !$0 { chat.error = nil } })) {
+                Button("好", role: .cancel) {}
+            } message: { Text(chat.error ?? "") }
+        }
+        .interactiveDismissDisabled(chat.starting)
+        .task { await chat.loadRuntimes() }
     }
 
     // MARK: Conversation
@@ -182,8 +254,16 @@ public struct PhoneChatView: View {
                     Button("重新连接") { Task { await chat.resume() } }.buttonStyle(.bordered)
                 }
             } else if chat.role == "ro" {
-                Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台 iPhone 只能查看。")
-                    .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                // Older hosts give write tickets only to the device that started the session.
+                HStack {
+                    Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台 iPhone 只能查看。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    if chat.log.busy && chat.connected {
+                        Button("停止", role: .destructive) { Task { await chat.interrupt() } }.buttonStyle(.bordered)
+                            .accessibilityIdentifier("chat-stop")
+                    }
+                }
             } else if chat.log.state == "ended" {
                 Text("这个会话已结束。").font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             } else if chat.canWrite {

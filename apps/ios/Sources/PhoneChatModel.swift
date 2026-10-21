@@ -32,6 +32,34 @@ public struct PhoneChatSession: Identifiable, Sendable, Equatable {
     }
 }
 
+/// An agent installed on the host, as `chat_runtimes` reports it.
+public struct PhoneChatRuntime: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let version: String?
+    public let verdict: String
+    /// `logged_in`, `logged_out` or nil when the host could not tell.
+    public let login: String?
+    public init(_ v: JSONValue) {
+        id = v["id"].string ?? ""
+        name = v["name"].string ?? id
+        version = v["version"].string
+        verdict = v["verdict"].string ?? ""
+        login = v["login"]["state"].string
+    }
+    public var usable: Bool { verdict == "ok" }
+    /// Why it cannot be started, or what to know before starting it.
+    public var note: String? {
+        switch verdict {
+        case "ok": login == "logged_out" ? "未登录，启动后可能无法工作" : nil
+        case "missing": "电脑上没有安装"
+        case "below_minimum": "版本过旧"
+        case "not_executable": "无法运行"
+        default: verdict
+        }
+    }
+}
+
 public struct PhoneChatTool: Equatable, Sendable {
     public let callID: String
     public var title: String

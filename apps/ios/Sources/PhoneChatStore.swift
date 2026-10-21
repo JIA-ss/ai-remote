@@ -18,6 +18,16 @@ import SwiftUI
     public var disconnected: String?
     public var draft = ""
     public var sending = false
+    /// Starting a new session: the host's agents, and whether it may start any (and why not).
+    public var runtimes: [PhoneChatRuntime] = []
+    public var canStart = true
+    public var startBlocked: String?
+    public var showNew = false
+    public var newRuntime = ""
+    public var newCwd = "~"
+    public var newPrompt = ""
+    /// A `chat_start` is waiting (for the agent, or for the owner to allow it on the computer).
+    public var starting = false
     private let client: PhoneClient
     private var subscription: UInt64?
     private var generation = 0
@@ -38,6 +48,42 @@ import SwiftUI
         } catch { self.error = error.localizedDescription }
     }
 
+    public func loadRuntimes() async {
+        do {
+            let reply = try await client.call(host: host, tool: "chat_runtimes", args: [:])
+            let report = reply["structuredContent"]
+            runtimes = report["runtimes"].array.map(PhoneChatRuntime.init)
+            let enabled = report["host"]["enabled"] != .bool(false)
+            canStart = report["host"]["can_start"] != .bool(false) && enabled
+            startBlocked = canStart ? nil : (report["host"]["reason"].string ?? (enabled ? "这台电脑不能启动智能体" : "这台电脑关闭了编程智能体"))
+            if !runtimes.contains(where: { $0.id == newRuntime && $0.usable }) {
+                newRuntime = runtimes.first(where: \.usable)?.id ?? ""
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// Starts an agent in a folder on the host and opens its conversation. The call waits while the
+    /// owner decides on the computer; a refusal comes back as the host's own words.
+    public func start() async {
+        let cwd = newCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = newPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newRuntime.isEmpty, !cwd.isEmpty, !starting else { return }
+        starting = true; defer { starting = false }
+        var args: [String: JSONValue] = ["runtime": .string(newRuntime), "cwd": .string(cwd), "intent": .string("从 iPhone 启动")]
+        if !prompt.isEmpty { args["prompt"] = .string(prompt) }
+        do {
+            let reply = try await client.call(host: host, tool: "chat_start", args: args)
+            let started = reply["structuredContent"]
+            await close()
+            current = PhoneChatSession(started)
+            log = PhoneChatLog()
+            showNew = false; newPrompt = ""
+            // The ticket in the reply is good once; if it cannot be used, attach asks for a new one.
+            if let ticket = started["ticket"].string, await open(ticket: ticket, since: 0) { return }
+            await attach(since: 0)
+        } catch { self.error = error.localizedDescription }
+    }
+
     public func open(_ session: PhoneChatSession) async {
         await close()
         current = session
@@ -53,13 +99,23 @@ import SwiftUI
 
     private func attach(since: UInt64) async {
         guard let session = current else { return }
+        disconnected = nil
+        do {
+            let attached = try await client.call(host: host, tool: "chat_attach", args: ["session": .string(session.id)])
+            guard current?.id == session.id, let ticket = attached["structuredContent"]["ticket"].string else { return }
+            _ = await open(ticket: ticket, since: since, report: true)
+        } catch {
+            self.error = error.localizedDescription; disconnected = error.localizedDescription
+        }
+    }
+
+    /// Opens the chat channel with a ticket; false (and, with `report`, an error shown) when it fails.
+    private func open(ticket: String, since: UInt64, report: Bool = false) async -> Bool {
+        guard let session = current else { return false }
         generation += 1
         let token = generation
         disconnected = nil
         do {
-            let attached = try await client.call(host: host, tool: "chat_attach", args: ["session": .string(session.id)])
-            let ticket = attached["structuredContent"]["ticket"].string ?? ""
-            guard token == generation, !ticket.isEmpty else { return }
             // Events arrive off the main thread; one ordered stream keeps the deltas in order.
             let (lines, sink) = AsyncStream<String>.makeStream()
             let listener = StreamListener(event: { line in sink.yield(line) }, ended: { reason in
@@ -67,7 +123,7 @@ import SwiftUI
                 sink.finish()
             })
             let view = try await client.chat(host: host, ticket: ticket, since: since, listener: listener)
-            guard token == generation else { await client.stop(view.subscription); return }
+            guard token == generation else { await client.stop(view.subscription); return true }
             subscription = view.subscription
             let hello = try JSONValue.parse(view.replyJson)
             role = hello["role"].string
@@ -81,8 +137,10 @@ import SwiftUI
                     else { self.log.apply(line: line) }
                 }
             }
+            return true
         } catch {
-            if token == generation { self.error = error.localizedDescription; disconnected = error.localizedDescription }
+            if report && token == generation { self.error = error.localizedDescription; disconnected = error.localizedDescription }
+            return false
         }
     }
 
@@ -104,10 +162,13 @@ import SwiftUI
     }
 
     /// Stops the running turn; the session stays and takes the next message.
+    /// A watch-only conversation (an older host) still stops through the `chat_interrupt` tool.
     public func interrupt() async {
-        guard canWrite, let id = subscription else { return }
-        do { try await client.chatSend(id, ["interrupt": .object([:])]) }
-        catch { self.error = error.localizedDescription }
+        guard let session = current else { return }
+        do {
+            if canWrite, let id = subscription { try await client.chatSend(id, ["interrupt": .object([:])]) }
+            else { _ = try await client.call(host: host, tool: "chat_interrupt", args: ["session": .string(session.id)]) }
+        } catch { self.error = error.localizedDescription }
     }
 
     /// Stops watching (the agent keeps its session on the host).

@@ -32,20 +32,27 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             let paired = try await client.request(["op": .string("pair"), "ticket": .string(ticket)])
             check("the phone pairs", paired["sas"].string != nil, paired.text)
             let host = try await client.request(["op": .string("hosts")]).array.first?["name"].string ?? ""
-            // The phone has no form to start agents; a session it started is the one it may write to.
-            let started = try await client.call(host: host, tool: "chat_start", args: [
-                "runtime": .string("fake"), "cwd": .string(cwd), "prompt": .string("from the phone")])
-            let mine = started["structuredContent"]["session"].string ?? ""
-            check("chat_start from the phone", !mine.isEmpty)
-
             let chat = PhoneChatStore(client: client, host: host)
-            await chat.loadSessions()
+            await chat.loadRuntimes()
+            check("chat_runtimes lists the stand-in agent as usable", chat.runtimes.contains { $0.id == "fake" && $0.usable }
+                  && chat.canStart, chat.runtimes.map { "\($0.id):\($0.verdict)" }.joined(separator: ","))
+            check("the form preselects a usable agent", chat.runtimes.first { $0.id == chat.newRuntime }?.usable == true, chat.newRuntime)
+            chat.newRuntime = "fake"; chat.newCwd = cwd + "/does-not-exist"
+            await chat.start()
+            check("a refused start shows the host's words and opens nothing", chat.error != nil && chat.current == nil, chat.error ?? "nil")
+            chat.error = nil
+            chat.newCwd = cwd; chat.newPrompt = "from the phone"; chat.showNew = true
+            await chat.start()
+            let mine = chat.current?.id ?? ""
+            check("the new-chat form starts a session and opens it", !mine.isEmpty && !chat.showNew && chat.error == nil, chat.error ?? "")
+            check("it opens with the start ticket, read-write", await wait("connected") { chat.connected } && chat.role == "rw")
+            await chat.leave()
             check("chat_sessions lists both sessions", Set(chat.sessions.map(\.id)) == [mine, foreign],
                   chat.sessions.map(\.id).joined(separator: ","))
 
-            // Another device's session: everything is shown, nothing can be sent.
+            // Another device's session: every admin device may talk to it.
             await chat.open(chat.sessions.first { $0.id == foreign }!)
-            check("a foreign session opens read-only", await wait("connected") { chat.connected } && chat.role == "ro" && !chat.canWrite,
+            check("a session started elsewhere opens read-write", await wait("connected") { chat.connected } && chat.canWrite,
                   "role \(chat.role ?? "nil")")
             check("its replayed turn has the user line and the answer", await wait("replay") {
                 chat.log.turns.first?.userText == "from the desktop" && chat.log.turns.first?.status == "completed"

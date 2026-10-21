@@ -93,28 +93,34 @@
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
 
-范围按交代：会话列表、打开会话按轮显示、输入框和停止按钮；**不做**启动表单，**不做** diff / 工具输出渲染。
+范围：会话列表、打开会话按轮显示、输入框和停止按钮、最小"新对话"表单（选智能体 + 文件夹 + 可选第一条消息）；
+**不做** diff / 工具输出渲染。
 
 - `ar-mobile`：`watch_chat(host, ticket, since, listener)` 走 `EmbeddedController::open_stream({"op":"chat"})`，
   回复（hello 行）放在 `MobileView.reply_json`，之后每个事件一行经 `MobileStream::event`；`chat_send(subscription, json)`
-  把一个 JSON 对象重新编码成一行（保证单行），经有界队列按顺序写出，订阅已关时报错而不是静默丢弃。
+  把一个 JSON 对象重新编码成一行（保证单行），经有界队列按顺序写出，订阅已关时报错而不是静默丢弃。`request` 对
+  `chat_start` 放宽到 330 s（要等机主在电脑上同意，`approval_timeout_secs` 默认 60），其他调用仍是 30 s。
 - Swift：`PhoneChatModel.swift`（纯折叠，对应桌面端 `reduceChat`：用户行、正文 delta 合并、工具行只留状态和标题、
-  思考折叠并显示秒数、`turn_end` 的结束原因、`seq` 去重）、`PhoneChatStore.swift`（`chat_sessions` → `chat_attach` 取票据
-  → 开通道；事件经 `AsyncStream` 串行进 MainActor，不用一事件一个 Task，否则 delta 可能乱序；断开后 `resume()` 用
-  `since = log.seq` 续上）、`PhoneChatView.swift`（会话页工具栏"智能体"按钮弹出 sheet）。
+  思考折叠并显示秒数、`turn_end` 的结束原因、`seq` 去重；另有 `PhoneChatRuntime`）、`PhoneChatStore.swift`
+  （`chat_sessions` → `chat_attach` 取票据 → 开通道；事件经 `AsyncStream` 串行进 MainActor，不用一事件一个 Task，否则
+  delta 可能乱序；断开后 `resume()` 用 `since = log.seq` 续上；`start()` 调 `chat_start`，用返回的票据直接开通道，
+  票据用不了再 `chat_attach`；被拒时把被控端原话显示出来）、`PhoneChatView.swift`（会话页工具栏"智能体"按钮弹出 sheet，
+  列表右上角 + 打开新对话表单，启动中显示"如果电脑要求确认，请在电脑上允许"）。
 - 输入法：iOS 上输入框是 `UITextView`，`markedTextRange != nil`（组字中）时发送按钮禁用、回车交给输入法；
   不在组字时回车即发送。
-- **只读是协议决定的**：`chat_attach` 只给启动会话的那台设备（principal 是逐设备的 `eid`）发读写票据。iPhone 没有启动
-  表单，所以桌面端 / 命令行启动的会话在手机上只能看，底部写明"由 X 启动，这台 iPhone 只能查看"。是否给 iOS 加最小
-  启动入口已问 `feat/host-chat` 会话，未定。
+- 读写权限：`feat/host-chat` 的 7da0505 起，任何管理员设备 `chat_attach` 都拿读写票据。旧被控端只给启动会话的设备
+  读写，手机端保留"由 X 启动，这台 iPhone 只能查看"的分支，停止按钮在只读时改走 `chat_interrupt` 工具。
 
 ### 验证
 
-- `python3 tools/phone-chat-smoke.py`（只在 Mac，Command Line Tools 即可）：`ios.sh mac-core` 把 `apps/ios/Sources` 全部
-  编成 macOS 动态库，`tools/PhoneChatSmoke.swift` 用和 App 相同的 `PhoneClient` / `PhoneChatStore` 连隔离被控端
-  （`chat-smoke.py` 里的替身智能体）：配对、列会话、命令行启动的会话只读并回放、自己 `chat_start` 的会话可写、
-  delta 合并、发送、忙时排队、停止得到 interrupted、排队消息接着跑、断开后续传不重复。2026-10-21 本机 18 项全过。
-- 没测：UIKit 部分（输入框、组字判断、sheet 布局）只在 iOS CI 编译，**没有在模拟器或真机上点过**——本机没有 Xcode。
+- `python3 tools/phone-chat-smoke.py`（只在 Mac）：`ios.sh mac-core` 把 `apps/ios/Sources` 全部编成 macOS 动态库，
+  `tools/PhoneChatSmoke.swift` 用和 App 相同的 `PhoneClient` / `PhoneChatStore` 连隔离被控端（`chat-smoke.py` 里的替身
+  智能体）：配对、`chat_runtimes` 与表单默认选中、不存在的文件夹被拒并显示原话、表单启动并直接开通道、列会话、
+  命令行启动的会话也可写并回放、delta 合并、发送、忙时排队、停止得到 interrupted、排队消息接着跑、断开后续传不重复。
+  2026-10-21 本机 22 项全过（第一版无表单时 18 项）。
+- iOS CI（`ios.yml`，workflow_dispatch 到 `feat/ios-chat`）：第一版通过（模拟器编译、Release 归档、UI 测试）。
+- 没测：UIKit 部分（输入框、组字判断、sheet 布局）**没有在模拟器或真机上点过**。本机后来装了 Xcode，但许可协议没同意
+  （`sudo xcodebuild -license`），模拟器工具和 xcodebuild 都用不了；git / swiftc 暂时靠 `DEVELOPER_DIR=/Library/Developer/CommandLineTools`。
 
 ### 踩过的坑
 
@@ -125,8 +131,7 @@
 
 ### 下一步
 
-- [ ] 在模拟器里连本机被控端走一遍（要有 Xcode 的 Mac），确认中文输入法组字时回车不发送。
-- [ ] 是否加最小"新对话"入口（只选智能体 + 文件夹），等决定。
+- [ ] 在模拟器里连本机被控端走一遍，确认中文输入法组字时回车不发送、表单等待机主同意时的界面。
 - [ ] 问题（`question`）目前只显示，没有回答按钮（`{"answer":...}` 已有通道，`PhoneClient.chatSend` 可直接发）。
 
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
