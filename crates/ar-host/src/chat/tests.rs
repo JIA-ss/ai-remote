@@ -211,3 +211,18 @@ async fn a_restarted_host_stops_what_the_previous_one_left_running() {
     let reaped = audit.try_recv().unwrap();
     assert_eq!(reaped["action"], "orphan_reaped");
 }
+
+#[tokio::test]
+async fn a_broken_settings_file_switches_agents_off() {
+    let f = fixture();
+    std::fs::write(f.root.join("chat.toml"), "enabled = false\n[[agent]]\nid = \"claude\"\nbase = \"claude\"\n")
+        .unwrap();
+    let (m, _audit) = manager(&f);
+    assert!(!m.enabled());
+    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).err().expect("refused");
+    assert!(e.to_string().contains("chat.toml"), "{e}");
+    assert!(m.runtimes(false).await["host"]["config_error"].as_str().is_some_and(|s| s.contains("built-in")));
+    // Not overwritten by a switch.
+    assert!(m.set_enabled(true).is_err());
+    assert!(std::fs::read_to_string(f.root.join("chat.toml")).unwrap().contains("enabled = false"));
+}

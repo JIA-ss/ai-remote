@@ -130,6 +130,7 @@ export function StartForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!report.host.can_start) return <div className="nt-chat-note warn">{report.host.reason}</div>;
+  if (report.host.config_error) return <div className="nt-chat-note err">{t("hc_config_error", { host, error: report.host.config_error })}</div>;
   if (report.host.enabled === false) return <div className="nt-chat-note warn">{t("hc_disabled", { host })}</div>;
   if (!ready.length) return <div className="nt-chat-note">{t("hc_none", { host })}</div>;
   const start = async () => {

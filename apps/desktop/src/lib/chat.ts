@@ -23,7 +23,7 @@ export interface Runtime {
 }
 
 export interface RuntimesReport {
-  host: { can_start: boolean; reason: string | null; enabled?: boolean; max_live?: number };
+  host: { can_start: boolean; reason: string | null; enabled?: boolean; max_live?: number; config_error?: string | null };
   runtimes: Runtime[];
 }
 

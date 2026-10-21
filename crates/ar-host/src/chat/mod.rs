@@ -180,6 +180,8 @@ struct Inner {
     dir: PathBuf,
     config_path: PathBuf,
     config: Mutex<ChatConfig>,
+    /// Why `chat.toml` could not be read, if it could not (agents are off then).
+    config_error: Option<String>,
     detector: detect::Detector,
     chats: Mutex<BTreeMap<String, Arc<Chat>>>,
     tickets: Mutex<HashMap<String, Ticket>>,
@@ -211,15 +213,20 @@ impl ChatManager {
     /// Opens the sessions under `dir`, stopping agent processes a previous host left running.
     /// Returns the manager and the audit lines it produces (to be written to the audit log).
     pub fn new(dir: PathBuf, config_path: PathBuf) -> (Self, mpsc::UnboundedReceiver<Value>) {
-        let config = ChatConfig::load(&config_path).unwrap_or_else(|e| {
-            tracing::warn!("{e:#}; coding agents use the default settings");
-            ChatConfig::default()
-        });
+        // A file that does not parse may have said `enabled = false`: switched off until fixed.
+        let (config, config_error) = match ChatConfig::load(&config_path) {
+            Ok(c) => (c, None),
+            Err(e) => {
+                tracing::warn!("{e:#}; coding agents are switched off until the file is fixed");
+                (ChatConfig { enabled: false, agents: Vec::new() }, Some(format!("{e:#}")))
+            }
+        };
         let (audit, audit_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             dir,
             config_path,
             config: Mutex::new(config),
+            config_error,
             detector: detect::Detector::default(),
             chats: Mutex::new(BTreeMap::new()),
             tickets: Mutex::new(HashMap::new()),
@@ -237,6 +244,12 @@ impl ChatManager {
 
     /// Switches agents on or off here. Off ends every session.
     pub fn set_enabled(&self, on: bool) -> Result<()> {
+        if let Some(e) = &self.0.config_error {
+            bail!(
+                "{} cannot be read, so it is not overwritten: {e}. Fix or remove it, then restart the host.",
+                self.0.config_path.display()
+            );
+        }
         let mut cfg = self.0.config.lock().unwrap().clone();
         cfg.enabled = on;
         cfg.save(&self.0.config_path)?;
@@ -260,6 +273,7 @@ impl ChatManager {
         let mut v = self.0.detector.report(&custom, refresh).await;
         v["host"]["enabled"] = json!(self.enabled());
         v["host"]["max_live"] = json!(MAX_LIVE);
+        v["host"]["config_error"] = json!(self.0.config_error);
         v
     }
 
@@ -296,6 +310,9 @@ impl ChatManager {
         hardened: bool,
         prompt: Option<String>,
     ) -> Result<Arc<Chat>> {
+        if let Some(e) = &self.0.config_error {
+            bail!("coding agents are switched off on this host until its chat.toml is fixed: {e}");
+        }
         if !self.enabled() {
             bail!("coding agents are switched off on this host (someone at it can run: ai-remote chat enable)");
         }

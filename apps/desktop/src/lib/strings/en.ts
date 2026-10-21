@@ -607,4 +607,5 @@ export const en = {
   hc_set_d_off: "Off: no device can start an agent here, trusted ones included.",
   hc_set_on: "Allowed",
   hc_set_off: "Off",
+  hc_config_error: "Coding agents are off on {host} because its chat.toml cannot be read: {error}",
 };

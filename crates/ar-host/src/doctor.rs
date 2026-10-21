@@ -305,11 +305,15 @@ fn approval_check(blocker: Option<String>) -> Check {
 
 /// Coding agents (see [`crate::chat`]): whether admin devices may start them here, and how many run.
 fn chat_check(profile: &Profile) -> Check {
-    let enabled = profile
-        .chat_config_path()
-        .ok()
-        .and_then(|p| crate::chat::runtimes::ChatConfig::load(&p).ok())
-        .is_none_or(|c| c.enabled);
+    let loaded = profile.chat_config_path().map(|p| crate::chat::runtimes::ChatConfig::load(&p));
+    let enabled = match loaded {
+        Ok(Ok(c)) => c.enabled,
+        Ok(Err(e)) => {
+            return Check::new("chat", Grade::Warn, format!("coding agents are off: {e:#}"))
+                .fix("fix or remove chat.toml, then restart the host");
+        }
+        Err(_) => true,
+    };
     if !enabled {
         return Check::new("chat", Grade::Ok, "coding agents are switched off here");
     }

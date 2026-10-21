@@ -596,4 +596,5 @@ export const zh: Record<keyof typeof en, string> = {
   hc_set_d_off: "已关闭：任何设备都不能在这里启动智能体，包括被完全信任的设备。",
   hc_set_on: "允许",
   hc_set_off: "关闭",
+  hc_config_error: "{host} 的 chat.toml 读不了，编程智能体已关闭：{error}",
 };

@@ -215,7 +215,9 @@ fn print_runtimes(v: &Value) {
         println!("agents cannot start on this host: {}", v["host"]["reason"].as_str().unwrap_or("?"));
         return;
     }
-    if v["host"]["enabled"] == false {
+    if let Some(e) = v["host"]["config_error"].as_str() {
+        println!("agents are off on this host because its chat.toml cannot be read: {e}");
+    } else if v["host"]["enabled"] == false {
         println!("agents are switched off on this host (someone there can run: ai-remote chat enable)");
     }
     for r in v["runtimes"].as_array().into_iter().flatten() {
