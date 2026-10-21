@@ -543,7 +543,9 @@ export function SessionPage({
   const running = [...c.feed.steps].reverse().find((s) => s.state === "running" && !s.byPerson);
 
   // Full screen: ours (⌃⌘F, the button) and the window's (the green button) end in the same state.
+  const ownChangeAt = useRef(0);
   const enter = (on: boolean) => {
+    ownChangeAt.current = performance.now();
     setImmersive(on);
     setChrome(true);
     void setFullscreen(on).catch((e) => setActionError(e instanceof Error ? e.message : String(e)));
@@ -551,6 +553,8 @@ export function SessionPage({
   useEffect(() => {
     void isFullscreen().then((on) => on && setImmersive(true));
     return watchFullscreen((on) => {
+      // Our own change resizes the window too; the window's answer can lag behind the transition.
+      if (performance.now() - ownChangeAt.current < 1500) return;
       setImmersive(on);
       setChrome(true);
     });
