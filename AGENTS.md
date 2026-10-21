@@ -661,7 +661,11 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
   `cannot switch` 的 warn。对照实验：用被控端的 `shell` 工具（同一个 SYSTEM 令牌、同一 Console 会话）跑一段
   P/Invoke 脚本，在新线程里 OpenInputDesktop(GENERIC_ALL 或本项目的标志) → SetThreadDesktop → SetCursorPos →
   SendInput **全部成功**，桌面名 Winlogon；以用户身份跑则 OpenInputDesktop 就是 err 5。所以系统层没问题，
-  差异在被控端进程内部，未定位。下一步排查方向：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
+  差异在被控端进程内部，未定位。2026-10-21 补一条（f850318 把切桌面日志提到 info）：被控端日志里确实有
+  `input thread switched desktop from="Default" to="Winlogon"`，紧接着 SendInput 仍报 os error 5——
+  **线程已经在 Winlogon 上，注入照样被拒**。那么差异不在线程所在桌面，而在进程本身（对照脚本是被控端的子进程，
+  却能成功）：候选是被控端进程的 integrity level / 令牌属性（服务用 DuplicateTokenEx + TokenSessionId 造的令牌
+  和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。本轮到此为止，没再往下。下一步排查方向：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
   （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
   核对被控端进程的 integrity level 与 shell 子进程是否相同。
 - 没跑：重启到登录界面、`stop-host` 连带停服务、`host uninstall` 恢复策略。开发机上服务**仍装着**
