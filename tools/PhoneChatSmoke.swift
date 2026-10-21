@@ -80,10 +80,23 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             check("a slow turn shows a running tool", await wait("running tool") {
                 chat.log.busy && chat.log.turns.last?.blocks.contains { if case .tool(let t) = $0 { t.status != "completed" } else { false } } == true
             }, "state \(chat.log.state)")
+            // Queue explicitly (the composer's chip), whatever the agent can do.
+            chat.steerWhileRunning = false
             chat.draft = "queued while busy"
             await chat.send()
-            check("a message sent while busy waits in the queue", await wait("queue") { chat.log.queued == ["queued while busy"] },
+            check("a message sent while busy waits in the queue", await wait("queue") { chat.log.queued.map(\.text) == ["queued while busy"] },
                   "\(chat.log.queued)")
+            chat.draft = "take me back"
+            await chat.send()
+            _ = await wait("second queued") { chat.log.queued.count == 2 }
+            if let q = chat.log.queued.last { await chat.editQueued(q.id, text: "edited in the queue") }
+            check("editing a queued message re-queues the new text", await wait("edit") {
+                chat.log.queued.map(\.text) == ["queued while busy", "edited in the queue"]
+            }, "\(chat.log.queued.map(\.text))")
+            if let q = chat.log.queued.last { await chat.dequeue(q.id) }
+            check("a queued message can be taken back", await wait("dequeue") { chat.log.queued.map(\.text) == ["queued while busy"] },
+                  "\(chat.log.queued.map(\.text))")
+            chat.steerWhileRunning = true
             await chat.interrupt()
             check("stop ends the turn as interrupted", await wait("interrupted") {
                 chat.log.turns.contains { $0.userText == "SLOW job" && $0.status == "interrupted" }

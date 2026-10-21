@@ -13,6 +13,11 @@ import SwiftUI
     /// `rw` for the device that started the session, `ro` (watch only) for every other device.
     public var role: String?
     public var runtimeName = ""
+    /// What the agent can do (`caps` of the channel's hello); nil before the channel opens.
+    public var caps: PhoneChatCaps?
+    /// While a turn runs, a message is added to it (steer) when the agent can take that; this switch
+    /// (the composer's chip) sends it after the turn instead.
+    public var steerWhileRunning = true
     public var connected = false
     /// Why the conversation's connection ended, when it did; the log stays and can be resumed.
     public var disconnected: String?
@@ -147,6 +152,7 @@ import SwiftUI
             subscription = view.subscription
             let hello = try JSONValue.parse(view.replyJson)
             role = hello["role"].string
+            caps = PhoneChatCaps(hello["caps"])
             runtimeName = hello["runtime"]["name"].string ?? session.name
             if let state = hello["state"].string { log.state = state }
             connected = true
@@ -170,45 +176,115 @@ import SwiftUI
         if reason != "stopped" { disconnected = reason == "host disconnected" ? "被控端断开了对话" : reason }
     }
 
-    /// Sends the draft as the next message; while the agent works it waits in the host's queue.
-    public func send() async {
+    /// How sending is handled now: nil while nothing runs; `steer` (added to the running turn) or
+    /// `queue` (sent after it) while the agent works.
+    public var sendMode: String? {
+        let mode = phoneSendMode(running: log.busy, caps: caps)
+        return mode == "steer" && !steerWhileRunning ? "queue" : mode
+    }
+
+    /// Sends the draft: a new turn, or while the agent works, added to its turn or queued after it
+    /// (`interrupt`: stop the turn and send this first).
+    public func send(interrupt: Bool = false) async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        #if DEBUG
-        if fixture, !text.isEmpty, canWrite {
-            let n = Double((log.turns.last?.n ?? 0))
-            fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": .object(["device": .string("ui-fixture")])])
-            fixtureEvent(["t": .string("turn_start"), "turn": .number(n + 1)])
-            fixtureEvent(["t": .string("state"), "turn": .number(n + 1), "state": .string("running")])
-            fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("sleep 600"),
-                          "kind": .string("execute"), "status": .string("in_progress")])
-            draft = ""
-            return
-        }
-        #endif
-        guard !text.isEmpty, canWrite, let id = subscription, !sending else { return }
+        guard !text.isEmpty, canWrite, !sending else { return }
         sending = true; defer { sending = false }
-        do {
-            try await client.chatSend(id, ["input": .object(["id": .string(UUID().uuidString), "text": .string(text), "mode": .string("queue")])])
-            if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
-        } catch { self.error = error.localizedDescription }
+        let mode = interrupt && log.busy ? "interrupt" : sendMode
+        if await command(phoneInputCommand(id: UUID().uuidString, text: text, mode: mode)),
+           draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+            draft = ""
+        }
     }
 
     /// Stops the running turn; the session stays and takes the next message.
     /// A watch-only conversation (an older host) still stops through the `chat_interrupt` tool.
     public func interrupt() async {
         guard let session = current else { return }
-        #if DEBUG
-        if fixture, let n = log.turns.last?.n {
-            fixtureEvent(["t": .string("turn_end"), "turn": .number(Double(n)), "status": .string("interrupted"), "duration_ms": .number(1200)])
-            fixtureEvent(["t": .string("state"), "turn": .number(Double(n)), "state": .string("idle")])
-            return
-        }
-        #endif
-        do {
-            if canWrite, let id = subscription { try await client.chatSend(id, ["interrupt": .object([:])]) }
-            else { _ = try await client.call(host: host, tool: "chat_interrupt", args: ["session": .string(session.id)]) }
-        } catch { self.error = error.localizedDescription }
+        if canWrite || fixtureMode { _ = await command(["interrupt": .object([:])]); return }
+        do { _ = try await client.call(host: host, tool: "chat_interrupt", args: ["session": .string(session.id)]) }
+        catch { self.error = error.localizedDescription }
     }
+
+    /// Takes a queued message back.
+    public func dequeue(_ id: String) async {
+        _ = await command(["dequeue": .object(["id": .string(id)])])
+    }
+
+    /// Changes a queued message: taken back and queued again with the new text (at the end).
+    public func editQueued(_ id: String, text: String) async {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        for c in phoneEditQueued(queuedID: id, newID: UUID().uuidString, text: value) { guard await command(c) else { return } }
+    }
+
+    /// Sends a queued message into the running turn now instead of after it.
+    public func steerQueued(_ queued: PhoneQueued) async {
+        guard await command(["dequeue": .object(["id": .string(queued.id)])]) else { return }
+        _ = await command(phoneInputCommand(id: UUID().uuidString, text: queued.text, mode: "steer"))
+    }
+
+    /// Answers the agent's question.
+    public func answer(_ qid: String, text: String) async {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        if await command(["answer": .object(["qid": .string(qid), "text": .string(value)])]) { log.markAnswered(qid, answer: value) }
+    }
+
+    /// After "你停止了这一轮": asks the agent to pick up where it stopped.
+    public func continueStopped() async {
+        _ = await command(phoneInputCommand(id: UUID().uuidString, text: phoneContinuePrompt))
+    }
+
+    private var fixtureMode: Bool {
+        #if DEBUG
+        fixture
+        #else
+        false
+        #endif
+    }
+
+    /// One command on the open chat; false (with the error shown) when it did not go out.
+    private func command(_ command: [String: JSONValue]) async -> Bool {
+        #if DEBUG
+        if fixture { fixtureCommand(command); return true }
+        #endif
+        guard let id = subscription else { self.error = "对话已断开"; return false }
+        do { try await client.chatSend(id, command); return true }
+        catch { self.error = error.localizedDescription; return false }
+    }
+
+    #if DEBUG
+    /// What a host would answer to a command, folded in locally for the UI fixture: a new message
+    /// starts a turn running a slow tool, steer joins the running turn, queue waits, stop ends the turn.
+    private func fixtureCommand(_ command: [String: JSONValue]) {
+        let n = Double(log.turns.last?.n ?? 0)
+        let me: JSONValue = .object(["device": .string("ui-fixture")])
+        if let input = command["input"] {
+            let text = input["text"].string ?? ""
+            switch input["mode"].string {
+            case "steer" where log.busy:
+                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me, "steer": .bool(true)])
+            case nil where log.busy:
+                let queued = log.queued.map { JSONValue.object(["id": .string($0.id), "text": .string($0.text)]) }
+                fixtureEvent(["t": .string("state"), "turn": .number(n), "state": .string("running"),
+                              "queued": .array(queued + [.object(["id": input["id"], "text": .string(text)])])])
+            default:
+                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me])
+                fixtureEvent(["t": .string("turn_start"), "turn": .number(n + 1)])
+                fixtureEvent(["t": .string("state"), "turn": .number(n + 1), "state": .string("running")])
+                fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("Bash sleep 600"),
+                              "kind": .string("execute"), "status": .string("in_progress")])
+            }
+        } else if command["interrupt"] != nil {
+            fixtureEvent(["t": .string("turn_end"), "turn": .number(n), "status": .string("interrupted"), "duration_ms": .number(1200)])
+            let queued = log.queued.map { JSONValue.object(["id": .string($0.id), "text": .string($0.text)]) }
+            fixtureEvent(["t": .string("state"), "turn": .number(n), "state": .string("idle"), "queued": .array(queued)])
+        } else if let dequeue = command["dequeue"] {
+            let queued = log.queued.filter { $0.id != dequeue["id"].string }.map { JSONValue.object(["id": .string($0.id), "text": .string($0.text)]) }
+            fixtureEvent(["t": .string("state"), "turn": .number(n), "state": .string(log.state), "queued": .array(queued)])
+        }
+    }
+    #endif
 
     /// Stops watching (the agent keeps its session on the host).
     public func close() async {

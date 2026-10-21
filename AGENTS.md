@@ -139,6 +139,20 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - 读写权限：`feat/host-chat` 的 7da0505 起，任何管理员设备 `chat_attach` 都拿读写票据。旧被控端只给启动会话的设备
   读写，手机端保留"由 X 启动，这台 iPhone 只能查看"的分支，停止按钮在只读时改走 `chat_interrupt` 工具。
 
+- **2026-10-21 晚 跟进桌面端新版对话界面**（桌面分支 `claude/desktop-chat-ui-f97e8c` 5a7cb26，照 Orca native chat 重做）：
+  - 转换层照搬成 Swift（`PhoneChatModel.swift`）：`reduceChat`（steer 用户消息放进正在跑的轮、`usage.context_window/context_used`、
+    被停止的工具记 `stopped`）、`phoneTurnRows`（user / text / run / edit / agent / thought / plan / question / notice）、
+    `phoneRunSummary` / `phoneRunOutcome` / `phoneRunSentence`（文案同桌面 `hc_run_*` / `hc_live_*`）、`phoneDiffRows`（LCS 逐行 diff、
+    3 行上下文、折叠 gap）、`stoppedTurn`、`phoneSendMode` / `phoneInputCommand`（queue 时不带 mode）/ `phoneEditQueued`。
+    改桌面 `lib/chat.ts` 时同步改这里；`tools/PhoneChatModelTests.swift` 用的是桌面 `tools/chat-state.test.mjs` 的同一批用例。
+  - 界面（`PhoneChatRows.swift` 对应桌面 `ui/chat/Rows.tsx`，`PhoneChatView.swift` 是对话流和输入区）：工具运行组一句话摘要
+    （可展开到每条工具，命令 + 输出末 14 行）、diff 卡片（+N −M，展开逐行着色、gap 行）、思考折叠（"思考了 4.2 秒"）、计划卡、
+    提问卡（编号选项 + 自由回答，回答后显示"已回答：x"）、插话气泡带"插话"标记、"你停止了这一轮 [继续]"、上下文用量环、
+    排队消息卡片（编辑=dequeue+重新排队、移出、现在插进这一轮）、运行中输入默认插话（`caps.steer` 为 true 时，模式 chip 可切到排队）、
+    长按发送按钮"停止本轮并立即发送"（`mode: interrupt`）。Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），
+    ``` 围起来的代码块单独等宽显示。
+  - 没搬：↑/↓ 浏览发送历史、最近文件夹记忆（桌面端键盘 / localStorage 功能）、代码高亮、diff 复制按钮。
+
 ### 验证
 
 - `python3 tools/phone-chat-smoke.py`（只在 Mac）：`ios.sh mac-core` 把 `apps/ios/Sources` 全部编成 macOS 动态库，
@@ -163,6 +177,12 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   手机点停止得到"已停止 · 4.4 秒" → 新对话表单列出被控端真实检测结果（Claude Code、Codex 可用，其余未安装），选替身智能体
   启动后直接打开会话，命令行往这个会话发的消息实时显示。测试完被控端、控制端、模拟器 App 都已停掉。
 - 没测：真机；连真实被控端时从手机输入大写英文（拼音键盘会把字母变成候选，这是键盘行为，改用命令行发的慢任务测的停止）。
+
+- 2026-10-21 晚（新版界面）：`tools/test-phone-chat-model.sh`（Swift 6、warnings as errors，macOS 上跑）17 项全过；
+  `python3 tools/phone-chat-smoke.py`（安静模式）24 项全过，新增排队消息编辑、移出；iOS 模拟器 `PhoneChatUITests`（演示数据）
+  走行展示、diff 展开、编号选项回答、发送、插话标记、chip 切排队、排队卡片移出、停止后"继续"、会话列表、新对话表单。
+  **没测**：真实被控端上的插话（本分支的被控端还没有 `caps.steer`，插话路径只在演示数据和单测里走过）、真实的计划 / 提问 / diff
+  事件（替身智能体不发这些）、上下文用量环的真实数据。
 
 ### 踩过的坑
 

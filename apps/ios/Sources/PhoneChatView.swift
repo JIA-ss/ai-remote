@@ -159,15 +159,30 @@ public struct PhoneChatView: View {
     // MARK: Conversation
 
     private func conversation(_ session: PhoneChatSession) -> some View {
-        ScrollViewReader { proxy in
+        let stopped = chat.log.stoppedTurn?.n
+        let readonly = !chat.canWrite
+        return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     Text(session.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
                         .textSelection(.enabled)
-                    ForEach(chat.log.notices.indices, id: \.self) { i in
-                        Label(chat.log.notices[i], systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(chat.log.notices.enumerated()), id: \.offset) { _, notice in
+                        PhoneNoticeRow(level: notice.level, text: phoneNoticeText(code: notice.code, text: notice.text))
                     }
-                    ForEach(chat.log.turns) { turn in turnView(turn) }
+                    ForEach(chat.log.turns) { turn in
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(phoneTurnRows(turn)) { row in
+                                PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
+                            }
+                            PhoneTurnFoot(turn: turn, stopped: turn.n == stopped, readonly: readonly) { Task { await chat.continueStopped() } }
+                            if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
+                                PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
+                            }
+                        }
+                    }
+                    if chat.log.busy, chat.log.turns.last?.status != "running" {
+                        PhoneWorkingRow(label: workingLabel, since: nil)
+                    }
                     Color.clear.frame(height: 1).id("chat-bottom")
                 }
                 .padding(16)
@@ -178,61 +193,20 @@ public struct PhoneChatView: View {
         }
     }
 
-    @ViewBuilder private func turnView(_ turn: PhoneChatTurn) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let text = turn.userText {
-                HStack {
-                    Spacer(minLength: 40)
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text(text).textSelection(.enabled)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
-                        if !turn.userBy.isEmpty { Text(turn.userBy).font(.caption2).foregroundStyle(.secondary) }
-                    }
-                }
+    /// What the agent is doing now, in words.
+    private var workingLabel: String {
+        switch chat.log.phase.what {
+        case "starting": return "启动中…"
+        case "stopping": return "正在停止…"
+        case "asking": return "等你回答"
+        case "writing": return "正在回复"
+        case "tool":
+            if case .tool(let x)? = chat.log.turns.last?.blocks.last {
+                let label = phoneToolLabel(x)
+                return "正在\(label.verb) \(label.target)".trimmingCharacters(in: .whitespaces)
             }
-            ForEach(turn.blocks) { block in blockView(block) }
-            if let ending = turn.ending {
-                Text(ending).font(.caption).foregroundStyle(turn.status == "completed" ? Color.secondary : Color.orange)
-                    .accessibilityIdentifier("chat-turn-end-\(turn.n)")
-            } else if turn.n == chat.log.turns.last?.n && chat.log.busy {
-                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("工作中…").font(.caption).foregroundStyle(.secondary) }
-            }
-        }
-    }
-
-    @ViewBuilder private func blockView(_ block: PhoneChatBlock) -> some View {
-        switch block {
-        case .text(_, let text):
-            Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-        case .thought(_, let text, let started, let ended):
-            DisclosureGroup {
-                Text(text).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Label(ended > started ? String(format: "思考 · %.0f 秒", max(1, (ended - started) / 1000)) : "思考",
-                      systemImage: "brain").font(.footnote).foregroundStyle(.secondary)
-            }
-        case .tool(let tool):
-            HStack(spacing: 8) {
-                toolStatus(tool.status).frame(width: 16)
-                Text(tool.title.isEmpty ? tool.kind : tool.title).font(.footnote.monospaced()).lineLimit(1).truncationMode(.middle)
-            }
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
-        case .question(_, let prompt):
-            Label("智能体在问：\(prompt)", systemImage: "questionmark.bubble").font(.footnote)
-        case .notice(let level, let text):
-            Label(text, systemImage: level == "error" ? "exclamationmark.triangle" : "info.circle")
-                .font(.caption).foregroundStyle(level == "info" ? Color.secondary : Color.orange)
-        }
-    }
-
-    @ViewBuilder private func toolStatus(_ status: String) -> some View {
-        switch status {
-        case "completed": Image(systemName: "checkmark.circle").foregroundStyle(.green).accessibilityLabel("完成")
-        case "failed": Image(systemName: "xmark.circle").foregroundStyle(.red).accessibilityLabel("失败")
-        default: ProgressView().controlSize(.mini).accessibilityLabel("运行中")
+            return "工作中"
+        default: return "思考中"
         }
     }
 
@@ -240,12 +214,21 @@ public struct PhoneChatView: View {
 
     @ViewBuilder private func footer(_ session: PhoneChatSession) -> some View {
         VStack(spacing: 8) {
+            if !chat.log.queued.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(chat.log.queued) { q in queuedCard(q) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat-queue")
+            }
             HStack(spacing: 6) {
                 Circle().fill(chat.connected ? stateColor(chat.log.state) : Color.orange).frame(width: 6, height: 6)
                 Text(chat.connected ? phoneChatStateName(chat.log.state, turns: chat.log.turns.count) : "未连接").font(.caption.weight(.medium))
-                if !chat.log.queued.isEmpty { Text("· 排队 \(chat.log.queued.count) 条").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
+                if let usage = chat.log.context { PhoneContextRing(usage: usage) }
             }
+            // A container keeps its own id; on a plain stack it would overwrite the ring's.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat-state")
             if let reason = chat.disconnected {
                 HStack {
@@ -272,31 +255,105 @@ public struct PhoneChatView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(.bar)
+        .alert("编辑排队的消息", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            TextField("消息", text: $editText)
+            Button("取消", role: .cancel) { editing = nil }
+            Button("保存") {
+                if let q = editing, editText.trimmingCharacters(in: .whitespacesAndNewlines) != q.text {
+                    Task { await chat.editQueued(q.id, text: editText) }
+                }
+                editing = nil
+            }
+        } message: { Text("改好后它会重新排到队尾。") }
     }
 
     @PhoneViewState private var composing = false
+    @PhoneViewState private var editing: PhoneQueued?
+    @PhoneViewState private var editText = ""
+
+    /// A message waiting for the running turn to end: edit it, take it back, or add it to the turn now.
+    private func queuedCard(_ q: PhoneQueued) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "text.append").font(.footnote).foregroundStyle(.secondary)
+            Text(q.text).font(.footnote).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            if chat.canWrite {
+                if chat.caps?.steer == true, chat.log.busy {
+                    Button { Task { await chat.steerQueued(q) } } label: { Image(systemName: "arrow.turn.down.right") }
+                        .accessibilityLabel("现在插进这一轮").accessibilityIdentifier("chat-queued-steer")
+                }
+                Button { editText = q.text; editing = q } label: { Image(systemName: "pencil") }
+                    .accessibilityLabel("编辑").accessibilityIdentifier("chat-queued-edit")
+                Button { Task { await chat.dequeue(q.id) } } label: { Image(systemName: "trash") }
+                    .accessibilityLabel("移出队列").accessibilityIdentifier("chat-queued-remove")
+            }
+        }
+        .buttonStyle(.borderless)
+        .padding(10)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var placeholder: String {
+        switch chat.sendMode {
+        case "steer": "在它干活时插一句"
+        case "queue": "排一条消息，本轮结束后发送"
+        default: "发消息给 \(chat.runtimeName.isEmpty ? "智能体" : chat.runtimeName)"
+        }
+    }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        let empty = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
             PhoneChatField(text: $chat.draft, composing: $composing) { Task { await chat.send() } }
                 .frame(minHeight: 36)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
                 .accessibilityIdentifier("chat-input")
-            if chat.log.busy {
-                Button { Task { await chat.interrupt() } } label: {
-                    Image(systemName: "stop.circle.fill").font(.title)
+                .overlay(alignment: .leading) {
+                    if chat.draft.isEmpty {
+                        Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
                 }
-                .tint(.red).disabled(chat.log.state == "interrupting")
-                .accessibilityLabel("停止").accessibilityIdentifier("chat-stop")
+            HStack(spacing: 10) {
+                if chat.log.busy {
+                    if chat.caps?.steer == true {
+                        Button { chat.steerWhileRunning.toggle() } label: {
+                            Label(chat.sendMode == "steer" ? "插话" : "排队",
+                                  systemImage: chat.sendMode == "steer" ? "arrow.turn.down.right" : "text.append")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .accessibilityHint(chat.sendMode == "steer" ? "发送会插进智能体正在做的这一轮。点一下改成本轮结束后再发。" : "发送会排队，本轮结束后智能体才收到。")
+                        .accessibilityIdentifier("chat-mode")
+                    } else {
+                        Label("排队", systemImage: "text.append").font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("chat-mode")
+                    }
+                }
+                Spacer()
+                if chat.log.busy {
+                    Button { Task { await chat.interrupt() } } label: {
+                        Image(systemName: "stop.circle.fill").font(.title2)
+                    }
+                    .tint(.red).disabled(chat.log.state == "interrupting")
+                    .accessibilityLabel("停止").accessibilityIdentifier("chat-stop")
+                }
+                if !chat.log.busy || !empty {
+                    Button { Task { await chat.send() } } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    }
+                    // While the input method is composing, the text is not final: nothing is sent.
+                    .disabled(composing || chat.sending || empty)
+                    .contextMenu {
+                        if chat.log.busy {
+                            Button("停止本轮并立即发送", systemImage: "bolt") { Task { await chat.send(interrupt: true) } }
+                        }
+                    }
+                    .accessibilityLabel(chat.sendMode == "steer" ? "插话" : chat.sendMode == "queue" ? "排队发送" : "发送")
+                    .accessibilityIdentifier("chat-send")
+                }
             }
-            Button { Task { await chat.send() } } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title)
-            }
-            // While the input method is composing, the text is not final: nothing is sent.
-            .disabled(composing || chat.sending || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityLabel(chat.log.busy ? "排队发送" : "发送").accessibilityIdentifier("chat-send")
         }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
