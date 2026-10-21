@@ -38,7 +38,9 @@ import {
   baseName,
   diffRows,
   diffStat,
+  isEdit,
   patchText,
+  runDiffStat,
   runOutcome,
   runSummary,
   tailLines,
@@ -196,7 +198,8 @@ export function ToolLine({ x, now }: { x: ToolItem; now: number }) {
     <div className={cx("nt-tl", x.stopped ? "stopped" : x.status, open && "open")}>
       <button type="button" className="rh" onClick={() => detail && setOpen((v) => !v)} aria-expanded={detail ? open : undefined} disabled={!detail}>
         <Ic size={14} className="ic" aria-hidden />
-        <span className="verb">{verb}</span>
+        {/* A command is its own label ("npm test"), as in Orca; other tools say what they did. */}
+        {(x.tool !== "execute" || !target) && <span className="verb">{verb}</span>}
         {target && (
           <span className={cx("obj", x.tool === "execute" && "mono")} title={target}>
             {target}
@@ -235,32 +238,40 @@ function ThoughtLine({ b }: { b: ThoughtBlock }) {
 export function runSentence(tools: ToolItem[], live: boolean): string {
   const parts = runSummary(tools).map((p) => plural(`hc_${live ? "live" : "run"}_${p.cat}`, p.n));
   // Said once at the start where the language puts it there ("正在读 1 个文件，运行 2 条命令").
-  const joined = (live ? t("hc_live_lead") : "") + parts.join(t("hc_list_sep"));
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(t("hc_list_sep"))}${t("hc_list_and")}${parts[parts.length - 1]}` : parts[0] ?? "";
+  const joined = (live ? t("hc_live_lead") : "") + list;
   return joined.charAt(0).toUpperCase() + joined.slice(1);
 }
 
 /** Tool calls in a row, summarized in one sentence that opens to the individual calls. */
 export const ToolRun = memo(function ToolRun({ row, now }: { row: Extract<Row, { kind: "run" }>; now: number }) {
   const [open, setOpen] = useState(false);
-  if (row.tools.length === 1 && row.members.length === 1) return <ToolLine x={row.tools[0]} now={now} />;
+  if (row.tools.length === 1 && row.members.length === 1) return isEdit(row.tools[0]) ? <EditRow tool={row.tools[0]} now={now} /> : <ToolLine x={row.tools[0]} now={now} />;
   const cats = runSummary(row.tools);
   const Ic = cats.length === 1 ? CAT_ICON[cats[0].cat] : Wrench;
   const { failed, stopped, done } = runOutcome(row.tools);
+  const stat = runDiffStat(row.tools);
   const latest = row.live ? [...row.tools].reverse().find(runRunning) ?? row.tools[row.tools.length - 1] : null;
   return (
     <div className={cx("nt-run", open && "open", row.live && "is-live")}>
       <button type="button" className="rh" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <Ic size={14} className="ic" aria-hidden />
         <span className="sent">{runSentence(row.tools, row.live)}</span>
-        {failed > 0 && <span className="bad">{t("hc_failed_n", { n: failed })}</span>}
-        {stopped > 0 && <span className="cut-n">{t("hc_stopped_n", { n: stopped })}</span>}
+        {stat && (
+          <span className="stat tnum">
+            <span className="add">+{stat.add}</span>
+            <span className="del">−{stat.del}</span>
+          </span>
+        )}
+        {failed > 0 && <span className="cnt">· {t("hc_failed_n", { n: failed })}</span>}
+        {stopped > 0 && <span className="cnt">· {t("hc_stopped_n", { n: stopped })}</span>}
         {!row.live && done && failed === 0 && stopped === 0 && <Check size={12} className="ok" aria-hidden />}
         {latest && <span className="latest">{toolLabel(latest).target || latest.title}</span>}
         <Chevron open={open} />
       </button>
       {open && (
         <div className="members">
-          {row.members.map((m) => (m.kind === "tool" ? <ToolLine key={m.callId} x={m} now={now} /> : <ThoughtLine key={m.id} b={m} />))}
+          {row.members.map((m) => (m.kind !== "tool" ? <ThoughtLine key={m.id} b={m} /> : isEdit(m) ? <EditRow key={m.callId} tool={m} now={now} /> : <ToolLine key={m.callId} x={m} now={now} />))}
         </div>
       )}
     </div>
@@ -317,7 +328,7 @@ function DiffFile({ d, status }: { d: Extract<ToolContent, { type: "diff" }>; st
           {(status === "in_progress" || status === "pending") && <Spinner />}
           {rows.length > 0 && <Chevron open={open} />}
         </button>
-        <CopyButton text={patchText(d.path, rows)} label={t("hc_copy_diff")} className="hover" />
+        <CopyButton text={patchText(d.path, rows)} label={t("hc_copy_diff")} />
       </div>
       {open && <DiffBody rows={rows} />}
     </div>
@@ -545,8 +556,6 @@ export function RowView({ row, now, readonly, onAnswer }: { row: Row; now: numbe
       return <ThoughtRow block={row.block} live={row.live} now={now} />;
     case "run":
       return <ToolRun row={row} now={now} />;
-    case "edit":
-      return <EditRow tool={row.tool} now={now} />;
     case "agent":
       return <AgentRow tool={row.tool} now={now} />;
     case "plan":

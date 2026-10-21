@@ -3,8 +3,9 @@
 // (tools/chat-state.test.mjs). The transport is in api.ts (`openChat`).
 //
 // The panel's layout follows Orca's native chat (stablyai/orca, MIT): a turn is a list of rows —
-// the user's message, the agent's prose, a folded "run" of tool calls summarized in one sentence,
-// edits as diff cards, reasoning folded behind "Thought for 4 s". `turnRows` is that projection.
+// the user's message, the agent's prose, a folded "run" of tool calls summarized in one sentence
+// (edits included: they open to diff cards), reasoning folded behind "Thought for 4 s". `turnRows`
+// is that projection.
 
 export type ChatState = "starting" | "idle" | "running" | "interrupting" | "parked" | "ended";
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
@@ -312,7 +313,7 @@ export function isSubagent(x: ToolItem): boolean {
   return x.tool === "think" && /^(Task|Agent)\b/.test(x.title);
 }
 
-/** An edit with a diff to show; shown as a diff card rather than folded in a run. */
+/** An edit with a diff to show: a diff card inside its run. */
 export function isEdit(x: ToolItem): boolean {
   return x.tool === "edit" || x.content.some((c) => c.type === "diff");
 }
@@ -323,13 +324,12 @@ export type Row =
   | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** Tool calls in a row (with the reasoning between them), summarized in one sentence. */
   | { kind: "run"; key: string; members: Array<ToolItem | ThoughtBlock>; tools: ToolItem[]; live: boolean }
-  | { kind: "edit"; key: string; tool: ToolItem }
   | { kind: "agent"; key: string; tool: ToolItem }
   | { kind: "plan"; key: string; entries: PlanEntry[] }
   | { kind: "question"; key: string; block: QuestionBlock }
   | { kind: "notice"; key: string; level: string; code: string; text: string };
 
-const joinsRun = (x: Block) => x.kind === "tool" && !isEdit(x) && !isSubagent(x);
+const joinsRun = (x: Block) => x.kind === "tool" && !isSubagent(x);
 
 /** The rows of a turn. A running turn's last run and last text are live. */
 export function turnRows(turn: Turn): Row[] {
@@ -368,7 +368,7 @@ export function turnRows(turn: Turn): Row[] {
         if (x.text.trim()) rows.push({ kind: "text", key: `m${turn.n}:${x.id}`, text: x.text, streaming: false });
         break;
       case "tool":
-        rows.push(isSubagent(x) ? { kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x } : { kind: "edit", key: `e${turn.n}:${x.callId}`, tool: x });
+        rows.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x });
         break;
       case "plan":
         rows.push({ kind: "plan", key: `p${turn.n}`, entries: x.entries });
@@ -405,13 +405,28 @@ export function runSummary(tools: ToolItem[]): Array<{ cat: RunCategory; n: numb
         : x.tool === "read" ? "read"
           : x.tool === "search" ? "search"
             : x.tool === "fetch" ? "web"
-              : x.tool === "edit" || x.tool === "delete" || x.tool === "move" ? "change"
+              : isEdit(x) || x.tool === "delete" || x.tool === "move" ? "change"
                 : "tool";
     const have = out.find((o) => o.cat === cat);
     if (have) have.n++;
     else out.push({ cat, n: 1 });
   }
   return out;
+}
+
+/** Lines added and removed by the edits of a run, for its header (null when it edited nothing). */
+export function runDiffStat(tools: ToolItem[]): { add: number; del: number } | null {
+  let add = 0;
+  let del = 0;
+  let any = false;
+  for (const x of tools) {
+    const st = diffStat(x.content);
+    if (!st) continue;
+    any = true;
+    add += st.add;
+    del += st.del;
+  }
+  return any ? { add, del } : null;
 }
 
 /** How a run ended: calls that failed, calls cut short by Stop, and whether all of them finished. */
@@ -530,7 +545,7 @@ function editScript(a: string[], b: string[]): Array<{ kind: "context" | "add" |
   return out;
 }
 
-/** The rows of a diff card: changes with a few lines around them, the rest folded into gaps. */
+/** The rows of a diff card: changes with a few lines around them; stretches between them fold into gaps. */
 export function diffRows(oldText: string | null, newText: string): DiffRow[] {
   const a = oldText === null || oldText === "" ? [] : oldText.split("\n");
   const b = newText === "" ? [] : newText.split("\n");
@@ -542,16 +557,17 @@ export function diffRows(oldText: string | null, newText: string): DiffRow[] {
   });
   const out: DiffRow[] = [];
   let skipped = 0;
+  // Only the stretch between two changes is marked; lines left out before the first or after the
+  // last change are simply not shown (as in Orca's diff card).
   script.forEach((l, i) => {
     if (keep[i]) {
-      if (skipped) out.push({ kind: "gap", lines: skipped });
+      if (skipped && out.length) out.push({ kind: "gap", lines: skipped });
       skipped = 0;
       out.push(l);
     } else {
       skipped++;
     }
   });
-  if (skipped && out.length) out.push({ kind: "gap", lines: skipped });
   return out;
 }
 

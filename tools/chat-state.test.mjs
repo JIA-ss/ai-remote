@@ -56,16 +56,20 @@ test("a turn folds into its user message, streamed text, tools and its end", () 
   assert.equal(tools[0].content[0].text, "error[E0425]");
 });
 
-test("a turn projects into rows: tools in a run, edits as diff cards, the reply last", () => {
+test("a turn projects into rows: tools and edits in one run, the reply last", () => {
   const c = fold(conversation());
   const rows = chat.turnRows(c.turns[0]);
-  // The thought after the build is followed by an edit, which is not part of a run: its own row.
-  assert.deepEqual(plain(rows.map((r) => r.kind)), ["user", "text", "run", "thought", "edit", "text"]);
-  assert.deepEqual(plain(rows[2].tools.map((x) => x.callId)), ["k1"]);
+  // As in Orca, an edit is part of the run ("ran 1 command and edited 1 file") and opens to its diff
+  // card; the thought between the build and the edit stays inside the run.
+  assert.deepEqual(plain(rows.map((r) => r.kind)), ["user", "text", "run", "text"]);
+  assert.deepEqual(plain(rows[2].members.map((m) => m.kind)), ["tool", "thought", "tool"]);
+  assert.deepEqual(plain(chat.runSummary(rows[2].tools)), [{ cat: "command", n: 1 }, { cat: "change", n: 1 }]);
+  assert.deepEqual(plain(chat.runDiffStat(rows[2].tools)), { add: 1, del: 1 });
+  assert.equal(chat.runDiffStat([rows[2].tools[0]]), null);
   assert.equal(rows[2].live, false);
-  assert.equal(rows[4].tool.callId, "k2");
-  assert.equal(rows[5].text, "Fixed: `b` was wrong.");
+  assert.equal(rows[3].text, "Fixed: `b` was wrong.");
 });
+
 test("replayed events after a reconnect are not applied twice", () => {
   const events = conversation();
   const once = fold(events);
@@ -241,6 +245,11 @@ test("diffs show changes with context, fold unchanged stretches, and count lines
   // Two separate changes, each with three lines around it, and the stretch between folded.
   assert.deepEqual(kinds.filter((k) => k !== "context"), ["del", "add", "gap", "del", "add"]);
   assert.equal(rows.find((r) => r.kind === "gap").lines, 8);
+  // Lines before the first and after the last change are left out without a marker.
+  const mid = chat.diffRows(old, old.replace("line 10", "line ten"));
+  assert.notEqual(mid[0].kind, "gap");
+  assert.notEqual(mid.at(-1).kind, "gap");
+  assert.equal(mid.length, 8);
   assert.deepEqual(plain(chat.diffStat([{ type: "diff", path: "x", old, new: neu }])), { add: 2, del: 2 });
   // A new file is all added; a change in the middle is a real line diff, not "everything replaced".
   assert.deepEqual(plain(chat.diffStat([{ type: "diff", path: "x", old: null, new: "1\n2" }])), { add: 2, del: 0 });
