@@ -19,7 +19,7 @@ import type {
 const minute = 60_000;
 
 const hosts: Host[] = [
-  { name: "office-pc", device: "eid:7f3a…", levelAtPairing: "admin", pairedAt: 1_727_654_400, path: "direct" },
+  { name: "office-pc", device: "eid:7f3a…", levelAtPairing: "admin", pairedAt: 1_727_654_400, path: "direct", addresses: ["192.168.1.31:47800"] },
   { name: "lab-pc", device: "eid:21c9…", levelAtPairing: "control", pairedAt: 1_727_740_800, path: "relay", relay: "aps1-1.relay.n0.iroh.link", relayN0: true, p2pObstacle: "remote" },
   { name: "studio-mac", device: "eid:b04e…", levelAtPairing: "control", pairedAt: 1_728_000_000, path: null },
   { name: "render-box", device: "eid:e88d…", levelAtPairing: "observe", pairedAt: 1_728_086_400, path: null },
@@ -102,7 +102,15 @@ const toPending = (p: RawPending): PendingApproval => ({
 });
 
 /** Controllers paired with this computer, as its host would list them. */
-const network: NetworkSettings = { port_mapping: false, locked: false, host_running: true };
+const network: NetworkSettings = {
+  mode: "auto",
+  port_mapping: false,
+  locked: false,
+  host_running: true,
+  host_lan: false,
+  host_addresses: ["192.168.1.20:47800"],
+  lan_port: 47800,
+};
 
 const localControllers: LocalController[] = [
   { name: "work-laptop", device: "eid:7f3a91c2", level: "admin", revoked: false, bypass: false, since_ms: null, until_ms: null },
@@ -224,6 +232,22 @@ export const demoBackend: Backend = {
     await wait(300);
     network.port_mapping = on;
     return { ...network };
+  },
+  async setNetworkMode(mode) {
+    await wait(300);
+    network.mode = mode;
+    return { ...network };
+  },
+  async setHostAddress(host, address) {
+    await wait(300);
+    const h = hosts.find((x) => x.name === host);
+    const kept = address
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((a) => (a.includes(":") ? a : `${a}:${network.lan_port}`));
+    if (!h || kept.length === 0) throw new Error("no address given");
+    h.addresses = kept;
+    return kept;
   },
   async enrollApprover(host) {
     reachable(host);

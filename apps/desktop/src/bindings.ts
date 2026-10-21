@@ -76,9 +76,10 @@ export const commands = {
 	/**  Turns bypass on or off for a controller paired with this computer (see `local_host_bypass`). */
 	setLocalHostBypass: (peer: string, on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_local_host_bypass", { peer, on })),
 	/**
-	 *  This computer's network settings: whether it asks the router to open a port (UPnP, NAT-PMP,
-	 *  PCP), as a host or as a controller; whether `quiet = true` in either config locks that off; and
-	 *  whether ai-remote host runs here (it reads the setting when it starts).
+	 *  This computer's network settings: how it reaches its peers (`auto`, or `lan`: direct on the
+	 *  local network only); whether it asks the router to open a port (UPnP, NAT-PMP, PCP), as a host
+	 *  or as a controller; whether `quiet = true` in either config locks that off; whether ai-remote
+	 *  host runs here (it reads the settings when it starts) and, in LAN mode, where it is reached.
 	 */
 	networkSettings: () => typedError<Json, string>(__TAURI_INVOKE("network_settings")),
 	/**
@@ -87,6 +88,18 @@ export const commands = {
 	 *  running here applies it when it next starts.
 	 */
 	setPortMapping: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_port_mapping", { on })),
+	/**
+	 *  Switches how this computer reaches its peers: `auto` (address lookup, hole punching, relays) or
+	 *  `lan` (direct on the local network only; a host listens on a fixed port). Written for the host
+	 *  and the controller; the controller agent restarts to apply it now, a running host at its next
+	 *  start. Paired hosts are then dialled at their stored addresses (see `set_host_address`).
+	 */
+	setNetworkMode: (mode: string) => typedError<Json, string>(__TAURI_INVOKE("set_network_mode", { mode })),
+	/**
+	 *  Sets the addresses a paired host is dialled at (`ip`, `ip:port`, several separated by commas);
+	 *  in LAN mode the only way to reach a host whose address changed.
+	 */
+	setHostAddress: (host: string, address: string) => typedError<Json, string>(__TAURI_INVOKE("set_host_address", { host, address })),
 	/**
 	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
 	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).

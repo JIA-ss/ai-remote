@@ -17,6 +17,30 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 仅局域网（内网直连）模式（2026-10-21，分支 `feat/lan-direct`，基于 PR #18）
+
+用户要在公司里只走内网：不连中继、不连地址查询服务，网络上只剩两台设备之间的连接。
+
+做法（读代码确认 mcpmesh 已具备底子）：mcpmesh 的 `relay_mode = "disabled"`（原来只给本机测试用的"hermetic"模式）没有中继、
+没有地址查询，中继表为空时 iroh 连 net_report 和端口映射都不做；拨号用每个配对设备存的 `last_addr`（配对时从票据记下，
+之后每条活着的连接都会刷新，见 `daemon/dial_hint.rs`），`Node::connect_protocol` 每次拨号都带上它，ai-remote 的所有通道都走这条路。
+
+- `[network] mode = "lan"`（`auto` 默认）：写成 `relay_mode = "disabled"`，忽略 `relays` / `address_lookup`；被控端没写 `port`
+  时固定 UDP 47800（`ar_core::config::LAN_HOST_PORT`），控制端端口仍随机（同一台机器上被控端和控制端不抢端口）。
+  `NetworkOptions::from_config` 因此又带上了角色参数。
+- 第五个 vendored 补丁：`Node::peer_addr` / `set_peer_addr`（只收可拨的 IP 地址，绝不新建配对条目）。往上是
+  `Mesh::peer_addrs` / `set_peer_addrs`、控制端请求 `set_host_address`、`hosts` 列表带 `addresses`、
+  CLI `ai-remote hosts address <host> [<地址>]`（不写端口补 47800，地址解析在 `ar_core::config::parse_host_addresses`）。
+- 被控端 `status` 带 `lan_direct` 和本机地址；`doctor` 在仅局域网模式下用 `lan` 检查代替 `relay`（列出控制端该用的地址，
+  固定端口被占、改用随机端口时报 warn），`p2p` 跳过（没有中继就没有网络探测）。
+- 桌面端 设置 > 网络：连接方式（自动 / 仅局域网，写被控端和控制端两份配置并重启控制端代理）；仅局域网时显示本机被控端地址、
+  每台已配对电脑的地址和手动修改框；UPnP 一项在仅局域网时隐藏（没有中继时 iroh 根本不做端口映射）。
+- 测试：`crates/ar-net/tests/lan_direct.rs` 起两个仅局域网节点：配对、拨号回显；被控端换端口后，新起的控制端拿旧地址连不上，
+  `set_peer_addrs` 设成新地址后又能连上（本机 14 s）。注意 iroh 会在内存里记住活连接的路径，所以"连不上"要用新起的节点验证。
+
+限制：离开这个网络就连不上；被控端换 IP 要在每个控制端上改一次地址；已经配对的设备记的是切换前的随机端口，切到仅局域网后
+第一次要手动设一次地址（或重新配对）。
+
 ## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
 
 起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /

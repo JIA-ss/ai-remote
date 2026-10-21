@@ -61,6 +61,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote pair <ticket> [--name N]` | pair with a host |
 | `ai-remote hosts` | paired hosts and the level each granted at pairing; `(default)` marks the default host |
 | `ai-remote hosts default [<host>\|--clear]` | show, set or clear the host commands and agents use when they name none |
+| `ai-remote hosts address <host> [<address>]` | show or set where a host is dialled (`ip`, `ip:port`, several separated by commas); how a LAN-mode host whose address changed is reached again (section 12) |
 | `ai-remote unpair <host> [--local]` | unpair a host: it drops this device too when it can be reached, then this controller forgets it (`--local`: only here) |
 | `ai-remote access [--host H]` | what this device may do on a host: your level, the standing rules that concern you, the paired devices (all of them for an admin) and the tools on offer |
 | `ai-remote lower <level> [--host H]` | lower this device's level on a host; raising it again takes someone at that computer (`ai-remote level`) |
@@ -678,6 +679,7 @@ Overall: warn
 | `network` | `ai-remote.toml` reads; says what the host puts on the network besides its connections (local-network discovery, router port mapping) | **warn**: the file cannot be read | fix the file (section 11) |
 | `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, turn on router port mapping (Settings > Network) where the router allows UPnP or NAT-PMP, use IPv6, or sign in to the network |
 | `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
+| `lan` | (LAN mode, in place of `relay`; `p2p` is skipped) the host listens on its fixed port; lists the addresses controllers reach it at | **warn**: the fixed port was taken, so the host listens on another one and controllers that stored the fixed port cannot reach it | free the port, or set another `[network] port`, and restart the host |
 | `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
 | `bypass` | no controller is bypassed | **warn**: the named controllers, or every paired controller when the default is on, use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`, or `bypass default off`) when you no longer need it |
 | `firewall` | an inbound allow rule covers UDP for the host program, or the firewall is off | **fail**: a block rule applies to the program (traffic falls back to the relay); **warn**: no allow rule (Windows will prompt at the first connection), or a block rule for every program's inbound UDP | `host install` from an elevated terminal; review rules of other programs in `wf.msc` |
@@ -862,6 +864,7 @@ proxy = ""                   # empty: detect the HTTP proxy; "none": never use o
 lan_discovery = "off"        # "on", "resolve" (find peers, do not announce) or "off" (section 12)
 port_mapping = false         # ask the router for a port (UPnP); the app's Settings > Network writes it
 quiet = false                # true: the two lines above stay off whatever they say (section 12)
+mode = "auto"                # "lan": direct on the local network only, no relay (section 12)
 
 [[rule]]                     # policy rules, first match wins
 tool = "shell"
@@ -892,6 +895,7 @@ mapping and local-network discovery are off until you turn them on.
 | Direct (P2P) | UDP hole punching, IPv4 and IPv6 | on |
 | Router port mapping | Asks the router to open a port (UPnP, NAT-PMP, PCP), for routers that hole punching alone does not get through | **off**; turn on in the desktop app (Settings > Network) or `port_mapping = true` |
 | Local network | Finds the other device on the same network by mDNS, even with no internet | **off**; `lan_discovery = "on"` |
+| Local network only | No relay and no address lookup: devices connect directly at stored addresses, and nothing goes on the network but the connections | **off**; Settings > Network in the desktop app, or `mode = "lan"` |
 | Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | on |
 | HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | on; `proxy = "none"` |
 | Relay fallback | With your own relays set, n0's public relays stay as a fallback | on; `relay_fallback_n0 = false` |
@@ -914,6 +918,7 @@ lan_discovery = "off" # "on": announce this device on the local network; "resolv
 port_mapping = false  # ask the router for a port; the desktop app's Settings > Network writes it
 port = 0              # a fixed UDP port to forward on your router; 0 or absent: random
 quiet = false         # true: lan_discovery and port_mapping stay off whatever they say
+mode = "auto"         # "lan": direct on the local network only (no relay, no address lookup)
 address_lookup = []   # empty: n0's address lookup service; or your own pkarr servers
 ```
 
@@ -939,6 +944,16 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   warn (symmetric NAT) and the router allows UPnP, NAT-PMP or PCP. While there is no mapping it probes the
   gateway every 20 to 26 s (a UPnP search multicast and NAT-PMP/PCP requests), which a managed network may
   flag.
+- **Local network only.** `mode = "lan"`, or "Local network only" in the desktop app (Settings >
+  Network, which writes it for this computer's host and controller). No relay, no address lookup, no
+  network report: the only traffic is between the devices. A host listens on UDP port 47800 (or its
+  `port`), and controllers dial each host at the address they stored for it: the host's addresses from the
+  pairing ticket, refreshed from every live connection. When a host's address changes (another IP, or a
+  host that used a random port before switching to LAN mode), set it on the controller: in the app under
+  Settings > Network, or `ai-remote hosts address <host> 192.168.1.20` (no port: 47800). `doctor` on the
+  host lists the addresses to use (`lan` check). Pairing works over the local network as usual. Devices
+  outside this network cannot connect, so set it on both ends only where they share a network (an office,
+  a home), and give the host a fixed IP (a DHCP reservation on the router).
 - **Fixed port.** Behind a NAT that defeats hole punching (`doctor` reports `p2p` warn), forward a UDP port
   on the router to the host and set `port` to it: controllers then reach the host directly. If the port is
   taken when the host starts, it uses a random port and says so in the log.

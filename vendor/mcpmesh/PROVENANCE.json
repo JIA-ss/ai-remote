@@ -306,7 +306,7 @@
     },
     {
       "path": "node/src/node.rs",
-      "sha256": "4bde7df1e8719bbc4ff9ec74e633884ebf3f19219fcd1d8974922733378ae476"
+      "sha256": "7d69f5ffd6f360ff52c756e4cb8ad2241a790ccfaa23635b0de1bf2ac65baa24"
     },
     {
       "path": "node/src/pairing/mod.rs",
@@ -453,6 +453,12 @@
         "node/src/daemon/boot.rs"
       ],
       "summary": "[network].port_mapping (false: iroh's portmapper disabled, no UPnP/NAT-PMP/PCP probes) and [network].dns_fallback (\"deferred\" | \"if_system_empty\" | \"never\": when the public resolvers are asked), both defaulting to iroh's behaviour, with unit tests"
+    },
+    {
+      "files": [
+        "node/src/node.rs"
+      ],
+      "summary": "Node::peer_addr and Node::set_peer_addr: read and replace a paired peer's stored dial hint (dialable IP addresses only, never creates an allowlist row), for a mesh with no relay and no address lookup where the hint is the only way to reach a peer whose address changed"
     }
   ]
 }

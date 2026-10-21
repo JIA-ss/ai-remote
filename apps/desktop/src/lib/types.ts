@@ -18,6 +18,8 @@ export interface Host {
   relayN0?: boolean;
   /** While relayed, what likely kept the connection from going direct. */
   p2pObstacle?: "udp_blocked" | "symmetric_nat" | "captive_portal" | "firewall" | "remote" | null;
+  /** Where this device dials the host (`ip:port`): stored at pairing, refreshed while connected. */
+  addresses?: string[];
 }
 
 /** A tool a host offers, with the level it needs and what the gate does with it for this device. */
@@ -47,12 +49,19 @@ export interface HostAccess {
 /** A controller paired with this computer (as a host), and whether its owner bypasses it. */
 /** This computer's network settings (Settings > Network). */
 export interface NetworkSettings {
+  /** `auto`: address lookup, hole punching, relays. `lan`: direct on the local network only. */
+  mode: "auto" | "lan";
   /** Ask the router to open a port (UPnP, NAT-PMP, PCP); off by default. */
   port_mapping: boolean;
   /** `quiet = true` in ai-remote.toml keeps it off; the setting cannot turn it on. */
   locked: boolean;
   /** ai-remote host runs here; it applies a change when it next starts. */
   host_running: boolean;
+  /** The host running here is in LAN mode, reached at `host_addresses`. */
+  host_lan: boolean;
+  host_addresses: string[];
+  /** The UDP port a LAN-mode host listens on unless its config names another. */
+  lan_port: number;
 }
 
 export interface LocalController {

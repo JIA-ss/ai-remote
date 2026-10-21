@@ -240,7 +240,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         root: profile.mesh_dir(Role::Host)?,
         device_key,
         nickname: name.clone(),
-        network: NetworkOptions::from_config(&config.network)?,
+        network: NetworkOptions::from_config(&config.network, Role::Host)?,
     })
     .await?;
     mesh.ensure_level_services().await?;
