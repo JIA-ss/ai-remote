@@ -8,13 +8,7 @@ const win = () => import("@tauri-apps/api/window").then((m) => m.getCurrentWindo
 
 export async function setFullscreen(on: boolean): Promise<void> {
   if (api.kind !== "tauri") return;
-  const w = await win();
-  await w.setFullscreen(on);
-  // macOS: after the full-screen transition the webview sits on its last frame until it gets an
-  // input event (seen on macOS 26 with Tauri 2.12: no repaint for seconds, opaque or transparent
-  // window alike). Focusing the window again is enough to wake it; twice, in case the first lands
-  // mid-transition.
-  for (const ms of [400, 1400]) setTimeout(() => void w.setFocus().catch(() => {}), ms);
+  await (await win()).setFullscreen(on);
 }
 
 export async function isFullscreen(): Promise<boolean> {

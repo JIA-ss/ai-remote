@@ -109,3 +109,12 @@ design system… Do not edit here"，生成器（`bin/build_tokens.py` / `tokens
 （深色 / 浅色各一张，`?shottheme=` 不适用于真实窗口，改系统外观），截图放 `docs/images/desktop/`。
 会话页用已配对的 `win-dev` 看真实画面。功能回归：`node --test tools/*.test.mjs`、`npx tsc --noEmit -p .`、
 `cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`。
+
+## 6. 实测发现（2026-10-21，macOS 26 / Tauri 2.12.2 / WKWebView）
+
+- **两个带 `backdrop-filter` 的浮层同时做 transform 动画，WebKit 只画一个**：顶部浮条和底部浮条交替可见，HUD 不受影响。
+  浮条改为实色 `rgb(28 28 30 / .96)`，不再模糊。
+- **极致档（5K @ 75 fps）全屏时 UI 重绘滞后 5~10 s**：画布变成 5120×2160 设备像素后每帧 `drawImage` 压满合成器，
+  页面布局 / 浮条要等几秒（或一次输入事件）才画出来；均衡档（1080p）2.5 s 内就稳定。透明 / 不透明窗口一样，`setFocus`
+  唤醒没有用。
+- 窗口截图：`app_screenshot` 对这个窗口时好时坏，可靠的做法是整屏截图再按窗口位置裁。
