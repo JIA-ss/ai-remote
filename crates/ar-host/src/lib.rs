@@ -168,6 +168,10 @@ pub struct HostOptions {
     /// No console: everything meant for the owner goes to the log. A pairing ticket is a bearer
     /// credential, so a background host never mints one by itself.
     pub background: bool,
+    /// Windows service mode: the SID of the account that installed the service. A host running as
+    /// SYSTEM runs coding agents as that user, through a runner in their session (see
+    /// [`chat::runner`]).
+    pub owner_sid: Option<String>,
 }
 
 /// Where messages for the host owner go: the terminal in the foreground, the log otherwise.
@@ -255,7 +259,11 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 
     let mut registry = Registry::builtin();
     mounts::extend(&mut registry, &config, &profile).await;
-    let (chat, mut chat_audit) = chat::ChatManager::new(profile.chat_dir()?, profile.chat_config_path()?);
+    let (chat, mut chat_audit) = chat::ChatManager::with_backend(
+        profile.chat_dir()?,
+        profile.chat_config_path()?,
+        chat_backend(&profile, opts.owner_sid.as_deref()),
+    );
 
     let state = Arc::new(HostState {
         audit: AuditLog::open(&profile.audit_log_path()?)?,
@@ -343,11 +351,31 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
             _ = shutdown.cancelled() => break,
         }
     }
+    // A clean stop ends the agents too; a runner in the user's session would otherwise wait for
+    // a host that does not come back.
+    state.chat.close().await;
     // Close live controller connections and give the close frames a moment to leave.
     state.stopping.cancel();
     tokio::time::sleep(Duration::from_millis(300)).await;
     owner.say("ai-remote host stopped.");
     Ok(())
+}
+
+/// Where coding agents run: in this process, or — for a host running as SYSTEM in Windows service
+/// mode — in a runner in the installing user's session, so SYSTEM never executes the user's
+/// programs. Without the owner's SID (a SYSTEM host started by hand) agents stay unavailable.
+fn chat_backend(profile: &Profile, owner_sid: Option<&str>) -> chat::Backend {
+    #[cfg(windows)]
+    if platform::runs_as_system()
+        && let Some(sid) = owner_sid
+    {
+        match chat::runner_win::start(profile, sid) {
+            Ok(link) => return chat::Backend::Runner(link),
+            Err(e) => tracing::warn!("coding agents are unavailable: cannot set up the agent runner endpoint: {e:#}"),
+        }
+    }
+    let _ = (profile, owner_sid);
+    chat::Backend::Local(chat::detect::Detector::default())
 }
 
 /// Shows the host side of every pairing ceremony: the controller printed a three-word safety code

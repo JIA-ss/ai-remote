@@ -80,7 +80,7 @@ async fn wait_for(rx: &mut broadcast::Receiver<Arc<str>>, pred: impl Fn(&Value) 
 async fn a_session_runs_turns_queues_interrupts_and_ends() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("hello"));
     let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
@@ -142,7 +142,7 @@ async fn a_session_runs_turns_queues_interrupts_and_ends() {
 async fn a_stopped_process_parks_and_the_next_message_resumes() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     chat.send(Cmd::Park { reason: "idle".into() });
@@ -159,12 +159,12 @@ async fn a_stopped_process_parks_and_the_next_message_resumes() {
 async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None).is_err());
-    assert!(m.start(creator(), "fake", "relative", None, false, None).is_err());
-    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None).is_err());
-    assert!(m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None).is_err());
+    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None).await.is_err());
+    assert!(m.start(creator(), "fake", "relative", None, false, None).await.is_err());
+    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None).await.is_err());
+    assert!(m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None).await.is_err());
     m.set_enabled(false).unwrap();
-    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).err().expect("refused");
+    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
     assert!(e.to_string().contains("switched off"), "{e}");
     // Persisted for the next host.
     let (m2, _) = manager(&f);
@@ -175,7 +175,7 @@ async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
 async fn devices_that_lose_admin_lose_their_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into())).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into())).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     m.enforce(|_| true);
@@ -219,7 +219,7 @@ async fn a_broken_settings_file_switches_agents_off() {
         .unwrap();
     let (m, _audit) = manager(&f);
     assert!(!m.enabled());
-    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).err().expect("refused");
+    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
     assert!(e.to_string().contains("chat.toml"), "{e}");
     assert!(m.runtimes(false).await["host"]["config_error"].as_str().is_some_and(|s| s.contains("built-in")));
     // Not overwritten by a switch.

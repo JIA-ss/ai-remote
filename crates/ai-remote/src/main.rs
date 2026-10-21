@@ -471,7 +471,8 @@ async fn run(cli: Cli) -> Result<()> {
     let json_out = cli.json;
     match cli.command {
         Command::Host { action: None, no_pair_code } => {
-            let opts = ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false };
+            let opts =
+                ar_host::HostOptions { pair_code_if_unpaired: !no_pair_code, background: false, owner_sid: None };
             ar_host::run(profile, opts).await
         }
         Command::Host {

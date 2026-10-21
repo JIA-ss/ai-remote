@@ -39,6 +39,7 @@ const SCRUBBED_PREFIXES: &[&str] = &[
     "CLAUDE_CODE_EXECPATH",
     "AI_REMOTE_PS_",
     "AI_REMOTE_CMD_",
+    "AI_REMOTE_CHAT_RUNNER",
 ];
 
 /// Removes variables an agent must not inherit from `cmd`'s environment.

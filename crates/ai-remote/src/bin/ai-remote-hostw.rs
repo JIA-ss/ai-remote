@@ -13,6 +13,9 @@
 //! `--service` (Windows, registered by `ai-remote host install --service`) is the same supervisor
 //! as a service: it runs the host as SYSTEM inside the console session (see `ar_host::service`),
 //! which is what reaches the lock screen and UAC prompts.
+//!
+//! `--chat-runner` is started by such a SYSTEM host in the installing user's session, with the
+//! user's token: it runs that host's coding agents as the user (see `ar_host::chat::runner`).
 
 // No console window on Windows; the attribute does nothing elsewhere.
 #![windows_subsystem = "windows"]
@@ -63,6 +66,10 @@ struct Args {
     #[arg(long, hide = true, value_name = "UID")]
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     owner_uid: Option<u32>,
+    /// Run the coding agents of a host that runs as SYSTEM, as the user this process runs as.
+    /// Started by that host (with its key in the environment), never by hand.
+    #[arg(long, hide = true, conflicts_with_all = ["service", "supervised"])]
+    chat_runner: bool,
 }
 
 /// The log is rotated once it passes this size, between two lines.
@@ -97,6 +104,9 @@ fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|info| {
         tracing::error!("panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
     }));
+    if args.chat_runner {
+        return run_chat_runner(&profile);
+    }
     #[cfg(windows)]
     if args.service {
         return run_service(profile, &log_path, args.owner_sid);
@@ -117,6 +127,53 @@ fn main() -> ExitCode {
     #[cfg(not(windows))]
     let shared_with = Vec::new();
     run_host(profile, &log_path, &shared_with)
+}
+
+/// The coding-agent runner: reads its key from the environment (and removes it there, before any
+/// agent could inherit it), logs to its own file and serves the host until it is told to stop or
+/// no host has come for a while.
+fn run_chat_runner(profile: &Profile) -> ExitCode {
+    let key = std::env::var(ar_host::chat::runner::KEY_ENV).ok();
+    // SAFETY: no other thread runs yet.
+    unsafe { std::env::remove_var(ar_host::chat::runner::KEY_ENV) };
+    let log = match profile.chat_runner_log_path() {
+        Ok(p) => p,
+        Err(e) => {
+            last_resort(&format!("{e:#}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = log_rotating(&log) {
+        last_resort(&format!("{e:#}"));
+        return ExitCode::FAILURE;
+    }
+    let Some(key) = key.and_then(|k| ar_host::chat::runner::parse_key(&k).ok()) else {
+        tracing::error!("the agent runner was started without its key; only the host starts it");
+        return ExitCode::FAILURE;
+    };
+    let endpoint = match profile.chat_runner_endpoint() {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("cannot start the async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    tracing::info!(pid = std::process::id(), endpoint = %endpoint.display(), "agent runner started");
+    use ar_host::chat::runner;
+    match runtime.block_on(runner::run(endpoint, key, runner::IDLE_EMPTY, runner::IDLE_BUSY)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("agent runner stopped: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Runs the host in this process until it is stopped. `shared_with`: accounts besides this
@@ -152,7 +209,9 @@ fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCo
         return ExitCode::FAILURE;
     }
     tracing::info!(log = %log_path.display(), pid = std::process::id(), "starting the background host");
-    let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true };
+    // The owner's SID: agents of a host running as SYSTEM run as that user.
+    let owner_sid = shared_with.first().cloned();
+    let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true, owner_sid };
     match runtime.block_on(ar_host::run_claimed(profile, claim, opts)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
