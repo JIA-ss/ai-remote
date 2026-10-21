@@ -152,6 +152,27 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   and watching is audited (`view_start`, `view_end`). The wire format is documented in
   `crates/ar-host/src/stream/protocol.rs`; see [stream performance](stream-performance.md) for
   requested settings and measurement boundaries.
+- **ALPN `app/ai-remote/input/1`.** A person's mouse, keyboard and clipboard, live, while they drive
+  from the desktop app. The `mouse` / `keyboard` tools stay the agent's path (one validated action per
+  call, through the gate and the audit log); a person moving a pointer needs an event every few
+  milliseconds, which a tool call per event cannot give, so the app streams JSON lines on this ALPN:
+  pointer moves (runs of moves collapse to the newest), button presses and releases, wheel notches,
+  key presses and releases by the `keyboard` tool's names, text an input method composed, and
+  clipboard text; the host sends back changes of its clipboard text and file list, refusals, and
+  whether input is paused. Admission is the gate's for `mouse` and `keyboard` plus the turn: the device
+  must have taken over, have level `control` (or the owner's bypass), and the policy must be `allow`
+  for both (a `deny` refuses the stream; `ask` refuses it too, since asking about every pointer move
+  is no approval, and the app then falls back to one tool call per action, which does ask). Clipboard
+  sync follows `clipboard_read` / `clipboard_write` (each `allow` only) and carries only changes made
+  after the stream opened. The standing is checked again every second, so handing back, a pause, a
+  lower level, an ended bypass or a policy change ends the stream within a second; a controller that
+  goes silent for three seconds (the app sends a heartbeat every second) has everything it held let
+  go. Every press is checked like a tool's (no approval prompt open, a usable desktop, never the host's
+  own windows); refused chords (lock, sign out) are refused here too, and Ctrl+Alt+Del goes through
+  the service where there is one. Everything held is released when the stream ends, however it ends.
+  The audit log records the stream (`input_start`, `input_end` with event counts and the reason,
+  `input_refused`), not the events: what a person types is theirs. A host without this ALPN (older
+  releases) makes the app use the tool calls. The wire format is in `crates/ar-host/src/input_channel.rs`.
 - **ALPN `app/ai-remote/file/1`.** Whole-file transfers (`ai-remote push` / `pull`). The bytes do not
   pass through MCP (whose results stay near 1 MiB): a `files_push` / `files_pull` call goes through the
   gate like any tool (level, policy, approval, audit) and returns a one-time ticket bound to the device
@@ -162,7 +183,12 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   for the controller to check. Both sides read and write the announced size and never rely on the other
   closing its half. Redeeming re-checks the level (admin) and the turn (a takeover or pause stops a
   transfer midway); each transfer is audited (`transfer`). MCP clients do not see the two ticket tools,
-  since they could not use the ticket.
+  since they could not use the ticket. The desktop app uses the same two steps: a file dropped on the
+  session goes to the host's desktop (`~/Desktop`, never replacing a file of that name: a suffix is
+  added; file tools accept `~` for the home of the user signed in at the host, also under the service,
+  and `~/Desktop` is the desktop that user sees), files on the host's clipboard (reported on
+  `input/1`) can be saved to the controller's Downloads folder, and files on the controller's
+  clipboard can be sent to the host's desktop.
 
 ## 6. The gate
 
