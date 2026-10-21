@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, config::ControllerConfig, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route,
-    ipc, iroh::endpoint::Connection, refusal::Refusal,
+    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, NetworkOptions, Route, ipc,
+    iroh::endpoint::Connection, refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -322,10 +322,7 @@ async fn start_state(profile: &Profile) -> Result<Arc<Agent>> {
         root: profile.mesh_dir(Role::Controller)?,
         device_key,
         nickname: machine_name(),
-        network: NetworkOptions::from_config(
-            &ControllerConfig::load(&profile.controller_config_path()?)?.network,
-            LanDiscovery::Resolve,
-        )?,
+        network: NetworkOptions::from_config(&ControllerConfig::load(&profile.controller_config_path()?)?.network)?,
     })
     .await?;
     let agent = Arc::new(Agent {

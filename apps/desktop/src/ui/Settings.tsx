@@ -1,5 +1,6 @@
 // Settings, a window of its own (back returns to the main window): General, Agents, This device,
-// Approvals and About. Only what works today is shown; nothing here is a switch that does nothing.
+// Network, Approvals and About. Only what works today is shown; nothing here is a switch that does
+// nothing.
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
@@ -17,6 +18,7 @@ import type {
   InstallPlan,
   LocalController,
   LocalHost,
+  NetworkSettings,
   TrayIntent,
 } from "../lib/types";
 import { CmdLine } from "./CmdLine";
@@ -27,12 +29,13 @@ import { PairCodeDialog } from "./PairCode";
 import { TitleBar } from "./Shell";
 import { clock, cx } from "./util";
 
-type Section = "general" | "agents" | "device" | "approvals" | "about";
+type Section = "general" | "agents" | "device" | "network" | "approvals" | "about";
 
 const SECTIONS: Array<[Section, IconName | "approval", Key]> = [
   ["general", "settings", "set_general"],
   ["agents", "terminal", "set_agents"],
   ["device", "laptop", "set_device"],
+  ["network", "link", "set_network"],
   ["approvals", "approval", "set_approvals"],
   ["about", "info", "set_about"],
 ];
@@ -91,6 +94,7 @@ export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; 
     general: ["set_general", mac ? "gn_lede_mac" : "gn_lede"],
     agents: ["set_agents", "ag_lede"],
     device: ["set_device", "dv_lede"],
+    network: ["set_network", "nw_lede"],
     approvals: ["set_approvals", "ap_lede"],
     about: ["set_about", "ab_lede"],
   };
@@ -136,6 +140,7 @@ export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; 
               {sec === "general" && <General version={status?.version} />}
               {sec === "agents" && <Agents status={status} name={name} onChange={() => setRound((r) => r + 1)} />}
               {sec === "device" && <Device status={status} intent={intent} />}
+              {sec === "network" && <Network />}
               {sec === "approvals" && <Approvals />}
               {sec === "about" && <About version={status?.version} />}
             </div>
@@ -834,6 +839,57 @@ function HostPanel({
           }}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * This computer's network settings. Router port mapping (UPnP) is off unless turned on here; it is
+ * written to both the host's and the controller's ai-remote.toml, and `quiet = true` there keeps it
+ * off. The controller applies a change at once, a running host when it next starts.
+ */
+function Network() {
+  const [net, setNet] = useState<NetworkSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [hostNext, setHostNext] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.networkSettings().then(setNet, (e) => setError(String(e)));
+  }, []);
+  const change = async (on: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.setPortMapping(on);
+      setNet(next);
+      setHostNext(next.host_running);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="grp">
+        <Row ic={<Icon name="open" />} tt={t("nw_upnp")} ds={t(net?.locked ? "nw_locked" : "nw_upnp_d")}>
+          <span className="dd-wrap">
+            <select
+              className="dd"
+              aria-label={t("nw_upnp")}
+              disabled={!net || net.locked || busy}
+              value={net?.port_mapping ? "on" : "off"}
+              onChange={(e) => void change(e.target.value === "on")}
+            >
+              <option value="off">{t("nw_off")}</option>
+              <option value="on">{t("nw_on")}</option>
+            </select>
+            <Icon name="chevD" size={12} />
+          </span>
+        </Row>
+      </div>
+      {hostNext && <div className="gnote">{t("nw_host_next")}</div>}
+      {error && <div className="gnote c-danger">{error}</div>}
     </>
   );
 }
