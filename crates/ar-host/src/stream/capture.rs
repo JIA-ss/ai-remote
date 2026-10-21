@@ -125,6 +125,8 @@ pub struct Capture {
     dda: Option<dda::DdaCapture>,
     #[cfg(target_os = "macos")]
     native: Option<mac::NativeCapture>,
+    #[cfg(target_os = "macos")]
+    pattern: Option<mac::TestPattern>,
     slot: Arc<Slot>,
     geometry: Option<(i32, i32, u32, u32)>,
     max_long_edge: Arc<AtomicU32>,
@@ -166,7 +168,7 @@ impl Drop for Capture {
         if let Some(native) = self.native.take() {
             drop(native);
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         drop(self.pattern.take());
         #[cfg(windows)]
         drop(self.dda.take());
@@ -214,7 +216,11 @@ pub fn refresh_hz(index: Option<usize>) -> Option<u32> {
         // 0 and 1 mean "the hardware default" rather than a rate.
         monitor.ok()?.refresh_rate().ok().filter(|&hz| hz > 1)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::refresh_hz(index)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = index;
         None
@@ -241,7 +247,7 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
     let edge = Arc::new(AtomicU32::new(max_long_edge));
     #[cfg(windows)]
     {
-        if let Some(size) = win::test_pattern_size() {
+        if let Some(size) = pattern::test_pattern_size() {
             let pattern = win::start_test_pattern(size, max_fps, edge.clone(), slot.clone())?;
             let geometry = Some((0, 0, size.0, size.1));
             return Ok(Capture {
@@ -312,11 +318,30 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
     }
     #[cfg(target_os = "macos")]
     {
-        // ScreenCaptureKit draws the pointer; leaving it out waits for a macOS pointer reader.
-        let _ = draw_pointer;
-        let native = mac::start(index, max_fps, max_long_edge, slot.clone())?;
+        if let Some(size) = pattern::test_pattern_size() {
+            let pattern = mac::start_test_pattern(size, max_fps, slot.clone())?;
+            let geometry = Some((0, 0, size.0, size.1));
+            // The synthetic picture has no pointer in it.
+            return Ok(Capture {
+                native: None,
+                pattern: Some(pattern),
+                slot,
+                geometry,
+                max_long_edge: edge,
+                pointer_drawn: false,
+            });
+        }
+        // ScreenCaptureKit composites the pointer itself unless asked not to.
+        let native = mac::start(index, max_fps, max_long_edge, slot.clone(), draw_pointer)?;
         let geometry = Some(native.geometry());
-        Ok(Capture { native: Some(native), slot, geometry, max_long_edge: edge, pointer_drawn: true })
+        Ok(Capture {
+            native: Some(native),
+            pattern: None,
+            slot,
+            geometry,
+            max_long_edge: edge,
+            pointer_drawn: draw_pointer,
+        })
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -342,6 +367,100 @@ mod dda;
 mod mac;
 #[cfg(windows)]
 pub mod win;
+
+/// The synthetic test picture both platforms can stream instead of the screen (see
+/// [`pattern::test_pattern_size`]).
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) mod pattern {
+    /// Text-like glyph rows, window bars and a photo-like gradient with grain, BGRA.
+    pub fn desktop_like(width: u32, height: u32) -> Vec<u8> {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (w, h) = (width as usize, height as usize);
+        let mut px = vec![255u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                if (y / 540) % 3 == 1 && x > w / 2 {
+                    let n = (rand() & 31) as u8;
+                    px[i] = ((x * 255 / w) as u8).wrapping_add(n);
+                    px[i + 1] = ((y * 255 / h) as u8).wrapping_add(n);
+                    px[i + 2] = (((x + y) * 127 / (w + h)) as u8).wrapping_add(n);
+                } else if y % 540 < 28 {
+                    px[i..i + 3].copy_from_slice(&[0x40, 0x30, 0x28]);
+                } else {
+                    // Glyph cells of 8x14 with a 4-row gap; every sixth cell is blank.
+                    let (cx, cy, gx, gy) = (x / 8, y / 18, x % 8, y % 18);
+                    let cell = (cx as u64).wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (cy as u64).wrapping_mul(0x9e37_79b9);
+                    if gy < 14 && gx < 7 && !cell.is_multiple_of(6) && (cell >> (gx * 7 + gy % 7)) & 1 == 1 {
+                        px[i..i + 3].copy_from_slice(&[0x20, 0x20, 0x20]);
+                    }
+                }
+                px[i + 3] = 255;
+            }
+        }
+        px
+    }
+
+    /// Where a `height`-row view of a `2 * height`-row picture starts after scrolling `rows`: down
+    /// to the end and back up, never jumping. A wrap back to the top would change the whole picture
+    /// at once, like a scene cut, and its large frame every few seconds skewed bitrate measurements.
+    pub fn scroll_top(rows: u32, height: u32) -> u32 {
+        let phase = rows % (2 * height);
+        if phase <= height { phase } else { 2 * height - phase }
+    }
+
+    /// `AI_REMOTE_TEST_PATTERN=<width>x<height>` on the host replaces the screen with a synthetic,
+    /// desktop-like picture of that size that scrolls 7 rows a frame at the requested rate: every
+    /// frame changes everywhere, so the stream runs at its frame rate and bitrate cap. Everything
+    /// after capture (GPU conversion, hardware encoding, transport, the viewer's decoder) is the
+    /// real path. For repeatable end-to-end measurements (`tools/stream-e2e.py --pattern`); no
+    /// screen is read. `<width>x<height>,still` shows the first picture once and then nothing
+    /// changes, as on an idle desktop (`--pattern 1920x1080,still`); `,stop=<seconds>` scrolls that
+    /// long, then stands still.
+    pub fn test_pattern_size() -> Option<(u32, u32)> {
+        let value = std::env::var("AI_REMOTE_TEST_PATTERN").ok()?;
+        let value = value.split(',').next()?;
+        let (w, h) = value.split_once('x')?;
+        let size = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+        (size.0 >= 64 && size.1 >= 64 && size.0 <= 8192 && size.1 <= 8192).then_some(size)
+    }
+
+    /// Frames to show at `fps` before the test pattern stands still, if it ever does.
+    pub fn still_after(fps: u32) -> Option<u32> {
+        std::env::var("AI_REMOTE_TEST_PATTERN").ok().and_then(|v| {
+            v.split(',').skip(1).find_map(|p| match p.trim() {
+                "still" => Some(1),
+                p => p.strip_prefix("stop=")?.parse::<f64>().ok().map(|s| ((s * f64::from(fps)) as u32).max(1)),
+            })
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn scrolling_bounces_instead_of_wrapping() {
+            assert_eq!(scroll_top(0, 10), 0);
+            assert_eq!(scroll_top(10, 10), 10);
+            assert_eq!(scroll_top(15, 10), 5);
+            assert_eq!(scroll_top(20, 10), 0);
+        }
+
+        #[test]
+        fn the_picture_is_opaque_bgra_of_the_requested_size() {
+            let px = desktop_like(64, 70);
+            assert_eq!(px.len(), 64 * 70 * 4);
+            assert!(px.chunks_exact(4).all(|p| p[3] == 255));
+        }
+    }
+}
 
 /// The CPU path through `windows-capture`: BGRA read back into memory for the software encoder.
 #[cfg(windows)]

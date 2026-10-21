@@ -25,6 +25,9 @@ struct PhoneRemoteViewport: UIViewRepresentable {
     let request: PhoneViewportRequest
     let onGesture: (PhonePointerGesture) -> Void
     let onInsets: (UIEdgeInsets) -> Void
+    /// The host's pointer to draw over the picture, with the screen rect its position is in.
+    var pointer: PhonePointer? = nil
+    var screen: ScreenGeometry? = nil
     #if DEBUG
     var diagnosticsEnabled = false
     #endif
@@ -39,6 +42,7 @@ struct PhoneRemoteViewport: UIViewRepresentable {
         view.diagnosticsEnabled = diagnosticsEnabled
         #endif
         view.show(image, request: request)
+        view.showPointer(pointer, screen: screen)
     }
 
     static func dismantleUIView(_ view: NativePhoneViewport, coordinator: ()) {
@@ -46,11 +50,15 @@ struct PhoneRemoteViewport: UIViewRepresentable {
         view.onRemoteGesture = nil
         view.onInsets = nil
         view.imageView.image = nil
+        view.pointerView.image = nil
     }
 }
 
 final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     let imageView = UIImageView()
+    /// The host's pointer, a child of the picture so that it zooms and pans with it.
+    let pointerView = UIImageView()
+    private var lastPointerShape: UInt32?
     var onRemoteGesture: ((PhonePointerGesture) -> Void)?
     var onInsets: ((UIEdgeInsets) -> Void)?
     var allowsRemoteInput = false {
@@ -92,6 +100,10 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
         imageView.contentMode = .scaleToFill
         imageView.isUserInteractionEnabled = false
         addSubview(imageView)
+        pointerView.contentMode = .scaleToFill
+        pointerView.isUserInteractionEnabled = false
+        pointerView.isHidden = true
+        imageView.addSubview(pointerView)
         remoteDrag.minimumNumberOfTouches = 1
         remoteDrag.maximumNumberOfTouches = 1
         remoteDrag.captureInitialImagePoint = { [weak self] touch in
@@ -152,6 +164,46 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
             apply(request.mode)
         }
     }
+
+    /// Places the pointer picture in image pixels: the position is in the screen rect's units
+    /// (host points), the picture in stream pixels. A pointer without a picture is a plain arrow.
+    func showPointer(_ pointer: PhonePointer?, screen: ScreenGeometry?) {
+        guard let pointer, pointer.visible, let screen, imageSize.width > 0, imageSize.height > 0 else {
+            pointerView.isHidden = true
+            return
+        }
+        let sx = imageSize.width / CGFloat(screen.width), sy = imageSize.height / CGFloat(screen.height)
+        let (hotX, hotY, w, h): (CGFloat, CGFloat, CGFloat, CGFloat)
+        if let shape = pointer.shape {
+            if lastPointerShape != shape.id || pointerView.image == nil {
+                pointerView.image = UIImage(cgImage: shape.image)
+                lastPointerShape = shape.id
+            }
+            (hotX, hotY, w, h) = (CGFloat(shape.hotX), CGFloat(shape.hotY), CGFloat(shape.width), CGFloat(shape.height))
+        } else {
+            if lastPointerShape != 0 || pointerView.image == nil {
+                pointerView.image = Self.defaultArrow
+                lastPointerShape = 0
+            }
+            (hotX, hotY, w, h) = (0, 0, Self.defaultArrow.size.width, Self.defaultArrow.size.height)
+        }
+        pointerView.frame = CGRect(x: (CGFloat(pointer.x) - hotX) * sx, y: (CGFloat(pointer.y) - hotY) * sy, width: w * sx, height: h * sy)
+        pointerView.isHidden = false
+    }
+
+    /// A black arrow with a white edge, 12x19 points, for shape 0.
+    private static let defaultArrow: UIImage = {
+        let size = CGSize(width: 12, height: 19)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 0.5, y: 0.5)); path.addLine(to: CGPoint(x: 0.5, y: 16.5))
+            path.addLine(to: CGPoint(x: 4.5, y: 12.5)); path.addLine(to: CGPoint(x: 7, y: 18.5))
+            path.addLine(to: CGPoint(x: 9.5, y: 17.5)); path.addLine(to: CGPoint(x: 7, y: 11.5))
+            path.addLine(to: CGPoint(x: 11.5, y: 11.5)); path.close()
+            UIColor.black.setFill(); path.fill()
+            UIColor.white.setStroke(); path.lineWidth = 1; path.stroke()
+        }
+    }()
 
     override func layoutSubviews() {
         let oldCenter: CGPoint? = zoomScale > 0 && lastAvailableRect != .zero

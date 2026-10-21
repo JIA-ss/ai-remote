@@ -58,7 +58,7 @@ The desktop apps, experimental iOS controller and MCP bridge share the Rust cont
 
 The host checks access level, turn, policy and approval before executing tools. You decide which computers the agent can reach and what it can do on each one.
 
-Desktop stream presets request 1080p30, 1080p60 or 4K30 and show actual decoded resolution/frame rate and received bitrate. macOS 13+ uses native ScreenCaptureKit and VideoToolbox hardware encoding, with software fallback. [Measurements and limits](docs/stream-performance.md) separate encoder benchmarks from live remote performance; presets are requested limits, not guaranteed throughput.
+Desktop stream presets request 1080p30, 1080p60 or 4K30 and show actual decoded resolution/frame rate and received bitrate. macOS 13+ uses native ScreenCaptureKit and VideoToolbox hardware encoding (HEVC or H.264 High, the display's refresh rate, up to 8K for HEVC), with software fallback. [Measurements and limits](docs/stream-performance.md) separate encoder benchmarks from live remote performance; presets are requested limits, not guaranteed throughput.
 
 ## Start from source
 

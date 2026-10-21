@@ -406,7 +406,7 @@ public struct PhoneRootView: View {
                                            request: viewportRequest, onGesture: sendPointer, onInsets: { insets in
             let next = EdgeInsets(top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right)
             if viewportInsets != next { viewportInsets = next }
-        })
+        }, pointer: store.pointer, screen: store.screen)
         #if DEBUG
         viewport.diagnosticsEnabled = fixtureInputObserver != nil
         #endif

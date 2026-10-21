@@ -16,9 +16,8 @@ use windows::Win32::{
         Console::GetConsoleWindow,
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{
-            CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
-            DESKTOP_HOOKCONTROL, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, GetThreadDesktop,
-            GetUserObjectInformationW, HDESK, OpenInputDesktop, SetThreadDesktop, UOI_NAME,
+            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetThreadDesktop, GetUserObjectInformationW, HDESK, OpenInputDesktop,
+            SetThreadDesktop, UOI_NAME,
         },
         Threading::{
             GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, OpenProcessToken,
@@ -226,17 +225,13 @@ fn desktop_name(desk: HDESK) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..len]))
 }
 
-/// Desktop access for opening the input desktop and attaching a thread to it: the same set the
-/// capture side uses (`stream::capture::dda`).
-const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(
-    DESKTOP_CREATEMENU.0
-        | DESKTOP_CREATEWINDOW.0
-        | DESKTOP_ENUMERATE.0
-        | DESKTOP_HOOKCONTROL.0
-        | DESKTOP_WRITEOBJECTS.0
-        | DESKTOP_READOBJECTS.0
-        | DESKTOP_SWITCHDESKTOP.0,
-);
+/// Desktop access for opening the input desktop and attaching a thread to it: everything, as
+/// RustDesk does. `SendInput` from a thread attached with a handle that lacks
+/// `DESKTOP_JOURNALPLAYBACK` is refused with access denied on the secure desktop (measured on a
+/// Windows 11 host running as SYSTEM: the capture-side set below made every injected event fail
+/// there, re-attaching the same thread with GENERIC_ALL made them pass). A user's own desktop
+/// grants the user everything too.
+const INPUT_DESKTOP_ACCESS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(windows::Win32::Foundation::GENERIC_ALL.0);
 
 thread_local! {
     /// The input desktop this thread is attached to, kept alive while the thread stays on it and
@@ -262,12 +257,34 @@ pub fn follow_input_desktop() {
     // thread owns no windows or hooks (this runs before enigo creates anything), which
     // `SetThreadDesktop` requires.
     unsafe {
-        let Ok(input) = OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) else {
-            return;
+        let input = match OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) {
+            Ok(input) => input,
+            Err(error) => {
+                // A user-session host while the secure desktop is up: expected there, and the
+                // caller's injection fails with a clear message anyway; worth a line as SYSTEM.
+                if runs_as_system() {
+                    tracing::warn!(%error, "cannot open the input desktop");
+                } else {
+                    tracing::debug!(%error, "cannot open the input desktop");
+                }
+                return;
+            }
         };
         let name = desktop_name(input);
         let current = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
-        if name == current || SetThreadDesktop(input).is_err() {
+        if name == current {
+            let _ = CloseDesktop(input);
+            return;
+        }
+        if let Err(error) = SetThreadDesktop(input) {
+            // The thread owns a window or a hook (a reused pool thread that ran COM or WGC code):
+            // input would go to the stale desktop. The input tool runs on a fresh thread for this.
+            tracing::warn!(
+                %error,
+                from = current.as_deref().unwrap_or("?"),
+                to = name.as_deref().unwrap_or("?"),
+                "input thread cannot switch to the input desktop"
+            );
             let _ = CloseDesktop(input);
             return;
         }
@@ -276,7 +293,11 @@ pub fn follow_input_desktop() {
                 let _ = CloseDesktop(previous);
             }
         });
-        tracing::debug!(desktop = name.as_deref().unwrap_or("?"), "input thread switched desktop");
+        tracing::info!(
+            from = current.as_deref().unwrap_or("?"),
+            to = name.as_deref().unwrap_or("?"),
+            "input thread switched desktop"
+        );
     }
 }
 
@@ -321,6 +342,90 @@ pub fn virtualdesk_normalize(x: i32, y: i32, desk: (i32, i32, i32, i32)) -> Opti
 /// normalised move missed (undocumented rounding). Fails rather than leave the pointer elsewhere (a
 /// point between monitors, a cursor confined by an app), so a following click never lands on the
 /// wrong spot.
+/// What injection ran under, for a failure report: the thread's desktop, the input desktop (or
+/// why it cannot be opened), this process's integrity level and the foreground window's. The
+/// secure desktop refuses `SendInput` for reasons that are invisible otherwise.
+pub fn input_context() -> String {
+    // SAFETY: plain queries; the opened desktop handle is closed here.
+    unsafe {
+        let thread = GetThreadDesktop(GetCurrentThreadId()).ok().and_then(desktop_name);
+        let input = match OpenInputDesktop(Default::default(), false, INPUT_DESKTOP_ACCESS) {
+            Ok(h) => {
+                let name = desktop_name(h);
+                let _ = CloseDesktop(h);
+                name.unwrap_or_else(|| "?".into())
+            }
+            Err(e) => format!("cannot open: {e}"),
+        };
+        let own = integrity_level(None).map(|l| format!("{l:#x} {}", integrity_name(l))).unwrap_or_else(|| "?".into());
+        let foreground = GetForegroundWindow();
+        let fg = if foreground.is_invalid() {
+            "none".to_string()
+        } else {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(foreground, Some(&mut pid));
+            integrity_level(Some(pid))
+                .map(|l| format!("pid {pid} {l:#x} {}", integrity_name(l)))
+                .unwrap_or_else(|| format!("pid {pid} ?"))
+        };
+        // The probe the diagnostic script ran successfully as a child of this host, here in this
+        // process: on this thread, and on a fresh one.
+        let here = input_probe();
+        let fresh = std::thread::spawn(input_probe).join().unwrap_or_else(|_| "panicked".into());
+        format!(
+            "thread desktop {}, input desktop {input}, process integrity {own}, foreground window {fg}, session {:?}; \
+             probe on this thread [{here}]; probe on a fresh thread [{fresh}]",
+            thread.as_deref().unwrap_or("?"),
+            session_state().session_id
+        )
+    }
+}
+
+/// Open the input desktop with GENERIC_ALL, attach, place the pointer where it is, send a relative
+/// zero move: each step's outcome.
+fn input_probe() -> String {
+    use windows::Win32::Foundation::GENERIC_ALL;
+    // SAFETY: plain queries and one injected no-op move; the desktop handle is left attached to
+    // this short-lived thread or closed when the attach failed.
+    unsafe {
+        let mut out = Vec::new();
+        match OpenInputDesktop(Default::default(), false, DESKTOP_ACCESS_FLAGS(GENERIC_ALL.0)) {
+            Ok(h) => {
+                out.push(format!("open ok ({})", desktop_name(h).unwrap_or_default()));
+                match SetThreadDesktop(h) {
+                    Ok(()) => out.push("attach ok".into()),
+                    Err(e) => {
+                        out.push(format!("attach failed: {e}"));
+                        let _ = CloseDesktop(h);
+                    }
+                }
+            }
+            Err(e) => out.push(format!("open failed: {e}")),
+        }
+        let at = cursor_pos();
+        out.push(match at {
+            Some((x, y)) => match SetCursorPos(x, y) {
+                Ok(()) => "SetCursorPos ok".into(),
+                Err(e) => format!("SetCursorPos failed: {e}"),
+            },
+            None => "GetCursorPos failed".into(),
+        });
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT { dx: 0, dy: 0, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE, time: 0, dwExtraInfo: 0 },
+            },
+        };
+        let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        out.push(if sent == 1 {
+            "SendInput ok".into()
+        } else {
+            format!("SendInput failed: {}", std::io::Error::last_os_error())
+        });
+        out.join(", ")
+    }
+}
+
 pub fn move_pointer(x: i32, y: i32) -> Result<()> {
     // A desktop beyond 16-bit addressing skips straight to SetCursorPos.
     if let Some((dx, dy)) = virtualdesk_normalize(x, y, virtual_screen()) {
@@ -341,7 +446,9 @@ pub fn move_pointer(x: i32, y: i32) -> Result<()> {
         // SAFETY: one fully initialised INPUT; the size argument matches the struct.
         let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
         if sent != 1 {
-            return Err(anyhow!("moving the pointer failed: {}", std::io::Error::last_os_error()));
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(%error, context = %input_context(), "SendInput refused the pointer move");
+            return Err(anyhow!("moving the pointer failed: {error}"));
         }
         // Injected moves are processed asynchronously; give it a moment before correcting it.
         for _ in 0..10 {

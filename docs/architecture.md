@@ -140,7 +140,8 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   the screen changes and the newest frame waits in a one-slot buffer, so a slow network skips frames
   before they are encoded. Windows: Windows Graphics Capture on the host's own D3D11 device, GPU
   scaling and NV12 conversion, Media Foundation hardware encoders (H.264, HEVC, AV1), OpenH264 as the
-  fallback. macOS 13+: ScreenCaptureKit and VideoToolbox H.264. The viewer lists the codecs it decodes
+  fallback. macOS 13+: ScreenCaptureKit and VideoToolbox (HEVC and H.264 High, the low-latency
+  rate controller where the machine has one). The viewer lists the codecs it decodes
   in hardware (WebCodecs on the desktop, VideoToolbox on iPhone) and the host picks the first it can
   encode. Frames are an 18-byte header (kind, flags with keyframe and codec, size, capture timestamp
   on the stream's clock, length) and the encoded picture. The viewer may write control lines on its
@@ -294,8 +295,10 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
   Only one host runs per profile: a second start finds the profile's control pipe taken and quits.
 - **Install.** `ai-remote host install` registers the background host: on Windows a Task Scheduler
   task at the user's logon with highest privileges and an interactive token, plus inbound firewall
-  rules so the first listen does not raise a prompt nobody answers; on macOS a per-user LaunchAgent
-  (the macOS host itself is *(planned)* for M1). `--dry-run` prints every change first. See
+  rules so the first listen does not raise a prompt nobody answers (or, with `--service`, a Windows
+  service that reaches the lock screen and UAC prompts); on macOS a per-user LaunchAgent (or, with
+  `--service`, a system LaunchAgent that serves the login window too). `--dry-run` prints every
+  change first. See
   [operations.md](operations.md#3-running-the-host).
 - **Session state is reported, not guessed.** `system_info` and `doctor` say whether the process is in
   an interactive session, on the console, elevated, and whether the desktop is locked, so an agent can

@@ -780,7 +780,7 @@ async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
         check_active(&cancel, &request, &turn)?;
         #[cfg(target_os = "macos")]
         accessibility_ready()?;
-        let execute = |backend: &mut inject::EnigoBackend| {
+        let execute = move |backend: &mut inject::EnigoBackend| {
             let mut warnings = Vec::new();
             inject::execute(
                 &plan,
@@ -816,6 +816,18 @@ async fn run(ctx: &ToolCtx<'_>, plan: Plan) -> Result<Vec<String>> {
             }
             return result;
         }
+        // A fresh OS thread, never a reused blocking-pool thread: `SetThreadDesktop` (following
+        // the input desktop to the lock screen or a UAC prompt) refuses a thread that owns a window
+        // or a hook, which a pool thread that ran COM or capture code earlier may.
+        #[cfg(windows)]
+        {
+            let worker = std::thread::Builder::new()
+                .name("ai-remote-input".into())
+                .spawn(move || execute(&mut inject::EnigoBackend::new()?))
+                .map_err(|e| anyhow!("cannot start the input thread: {e}"))?;
+            worker.join().map_err(|_| anyhow!("the input thread panicked"))?
+        }
+        #[cfg(not(windows))]
         execute(&mut inject::EnigoBackend::new()?)
     })
     .await

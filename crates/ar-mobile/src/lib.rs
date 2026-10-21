@@ -32,7 +32,9 @@ fn failure(e: impl std::fmt::Display) -> MobileError {
 pub trait MobileStream: Send + Sync {
     /// JSON activity events; callbacks are delivered off the UI thread.
     fn event(&self, json: String);
-    /// One complete screen/1 frame (18-byte header + Annex B H.264).
+    /// One complete screen/1 message with its 18-byte header: a video frame (kind 1; the codec
+    /// is in the flags: H.264 or HEVC Annex B), a pointer position (kind 4) or a pointer picture
+    /// (kind 5), as the host's stream protocol documents them.
     fn frame(&self, bytes: Vec<u8>);
     fn ended(&self, reason: String);
 }
@@ -122,7 +124,11 @@ impl MobileController {
         let (stream, reply) = self
             .backend
             .open_stream(json!({"op":"screen", "host":host, "request": {
-                "monitor":monitor, "max_fps":max_fps.clamp(1,30), "max_long_edge":max_long_edge.clamp(320,1920)
+                "monitor":monitor, "max_fps":max_fps.clamp(1,30), "max_long_edge":max_long_edge.clamp(320,1920),
+                // Every iPhone/iPad decodes HEVC in hardware; H.264 is the fallback the host always has.
+                "codecs":["hevc","h264"],
+                // The pointer comes separately (drawn by the app) where the host can do that.
+                "cursor":"client"
             }}))
             .await
             .map_err(failure)?;
@@ -137,14 +143,17 @@ impl MobileController {
                     let mut header = [0u8; 18];
                     read.read_exact(&mut header).await.map_err(failure)?;
                     let size = u32::from_be_bytes(header[14..18].try_into().unwrap()) as usize;
-                    if header[0] != 1 || size == 0 || size > 8 * 1024 * 1024 {
+                    if !matches!(header[0], 1 | 3 | 4 | 5) || size == 0 || size > 8 * 1024 * 1024 {
                         return Err::<(), MobileError>(failure("invalid screen frame header"));
                     }
                     let mut frame = Vec::with_capacity(18 + size);
                     frame.extend_from_slice(&header);
                     frame.resize(18 + size, 0);
                     read.read_exact(&mut frame[18..]).await.map_err(failure)?;
-                    listener.frame(frame);
+                    // Pong replies (kind 3) answer pings this client never sends.
+                    if header[0] != 3 {
+                        listener.frame(frame);
+                    }
                 }
             };
             let controls = async {

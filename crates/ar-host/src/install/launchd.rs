@@ -1,8 +1,11 @@
 //! The macOS LaunchAgent that starts the background host when the user logs in.
 //!
-//! A per-user LaunchAgent, never a LaunchDaemon: only an agent loads into the user's GUI (Aqua)
-//! session, where screen capture, input and approval dialogs work. Generated with the `plist`
-//! crate and kept platform-independent so it is tested everywhere.
+//! A LaunchAgent, never a LaunchDaemon: only an agent loads into a GUI session, where screen
+//! capture, input and approval dialogs work. The per-user agent (`~/Library/LaunchAgents`) loads
+//! into the user's own (Aqua) session; the system agent `host install --service` writes to
+//! `/Library/LaunchAgents` loads into the login window's session as well (`LimitLoadToSessionType`
+//! `LoginWindow`, the way RustDesk reaches it), so the host is there after a reboot or logout.
+//! Generated with the `plist` crate and kept platform-independent so it is tested everywhere.
 
 use std::path::Path;
 
@@ -22,8 +25,9 @@ struct LaunchAgent {
     keep_alive: KeepAlive,
     /// Not throttled like a background daemon: the host serves interactive control.
     process_type: String,
-    /// Only the GUI login session, never an SSH or background session.
-    limit_load_to_session_type: String,
+    /// Only GUI sessions, never an SSH or background session: the user's own (`Aqua`), and for the
+    /// system agent the login window's too.
+    limit_load_to_session_type: SessionTypes,
     /// Catches anything printed before the host's own file logging starts.
     standard_error_path: String,
 }
@@ -34,6 +38,14 @@ struct LaunchAgent {
 #[serde(rename_all = "PascalCase")]
 struct KeepAlive {
     successful_exit: bool,
+}
+
+/// `LimitLoadToSessionType`: a session type, or several.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum SessionTypes {
+    One(String),
+    Many(Vec<String>),
 }
 
 /// launchd permits either a single identifier string or an array; emit arrays but read both.
@@ -52,25 +64,43 @@ fn read_associated_identifiers<'de, D: serde::Deserializer<'de>>(
     }))
 }
 
-/// The LaunchAgent property list (XML) running `program --home <home>`.
-pub fn launch_agent_plist(label: &str, program: &Path, home: &Path, stderr_log: &Path) -> Result<String> {
+/// The LaunchAgent property list (XML) running `program --home <home>`. `login_window`: the
+/// system agent, which also serves the login window and passes the installing user's uid
+/// (`--owner-uid`, see `ar_host::platform::macos::adopt_owner`).
+pub fn launch_agent_plist(
+    label: &str,
+    program: &Path,
+    home: &Path,
+    stderr_log: &Path,
+    login_window: Option<u32>,
+) -> Result<String> {
     let agent = LaunchAgent {
         label: label.to_string(),
-        program_arguments: vec![
-            program.to_string_lossy().into_owned(),
-            "--home".to_string(),
-            home.to_string_lossy().into_owned(),
-        ],
+        program_arguments: program_arguments(program, home, login_window),
         associated_bundle_identifiers: responsible_bundle_identifier(program)?.map(|id| vec![id]),
         run_at_load: true,
         keep_alive: KeepAlive { successful_exit: false },
         process_type: "Interactive".into(),
-        limit_load_to_session_type: "Aqua".into(),
+        limit_load_to_session_type: match login_window {
+            Some(_) => SessionTypes::Many(vec!["LoginWindow".into(), "Aqua".into()]),
+            None => SessionTypes::One("Aqua".into()),
+        },
         standard_error_path: stderr_log.to_string_lossy().into_owned(),
     };
     let mut out = Vec::new();
     plist::to_writer_xml(&mut out, &agent).context("serialize the LaunchAgent")?;
     String::from_utf8(out).context("LaunchAgent is not UTF-8")
+}
+
+/// What the agent runs (`status` compares an installed agent against this).
+pub fn program_arguments(program: &Path, home: &Path, login_window: Option<u32>) -> Vec<String> {
+    let mut args =
+        vec![program.to_string_lossy().into_owned(), "--home".to_string(), home.to_string_lossy().into_owned()];
+    if let Some(uid) = login_window {
+        args.push("--owner-uid".into());
+        args.push(uid.to_string());
+    }
+    args
 }
 
 /// Reads the real enclosing application's identity; never guesses it from a filename or label.
@@ -155,6 +185,7 @@ mod tests {
             &PathBuf::from("/Applications/ai remote/ai-remote-hostw"),
             &PathBuf::from("/Users/me/Library/Application Support/ai-remote"),
             &PathBuf::from("/Users/me/Library/Application Support/ai-remote/host/host.log"),
+            None,
         )
         .unwrap();
         for needle in [
@@ -171,12 +202,36 @@ mod tests {
     }
 
     #[test]
+    fn the_system_agent_serves_the_login_window_as_the_installing_user() {
+        let program = PathBuf::from("/Applications/ai remote/ai-remote-hostw");
+        let home = PathBuf::from("/Users/me/Library/Application Support/ai-remote");
+        let xml = launch_agent_plist(
+            "io.github.jia-ss.ai-remote.host.0123abcd",
+            &program,
+            &home,
+            &PathBuf::from("/Users/me/Library/Application Support/ai-remote/host/host-stderr.log"),
+            Some(501),
+        )
+        .unwrap();
+        assert!(
+            xml.contains(
+                "<key>LimitLoadToSessionType</key>\n\t<array>\n\t\t<string>LoginWindow</string>\n\t\t<string>Aqua</string>"
+            ),
+            "{xml}"
+        );
+        let args = read_program_arguments(xml.as_bytes()).unwrap();
+        assert_eq!(args, program_arguments(&program, &home, Some(501)));
+        assert!(args.ends_with(&["--owner-uid".to_string(), "501".into()]));
+    }
+
+    #[test]
     fn program_arguments_round_trip() {
         let xml = launch_agent_plist(
             "label",
             &PathBuf::from("/opt/ai-remote-hostw"),
             &PathBuf::from("/Users/me/x & y"),
             &PathBuf::from("/tmp/host.log"),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -199,6 +254,7 @@ mod tests {
             &program,
             directory.path(),
             &directory.path().join("stderr.log"),
+            None,
         )
         .unwrap();
         let agent: LaunchAgent = plist::from_bytes(xml.as_bytes()).unwrap();
@@ -213,9 +269,14 @@ mod tests {
         let program = directory.path().join("ai-remote-hostw");
         std::fs::write(&program, b"standalone fixture").unwrap();
         assert_eq!(responsible_bundle_identifier(&program).unwrap(), None);
-        let xml =
-            launch_agent_plist("a.launchd.label", &program, directory.path(), &directory.path().join("stderr.log"))
-                .unwrap();
+        let xml = launch_agent_plist(
+            "a.launchd.label",
+            &program,
+            directory.path(),
+            &directory.path().join("stderr.log"),
+            None,
+        )
+        .unwrap();
         assert!(!xml.contains("AssociatedBundleIdentifiers"));
         assert_eq!(plist::from_bytes::<LaunchAgent>(xml.as_bytes()).unwrap().associated_bundle_identifiers, None);
     }
@@ -224,8 +285,8 @@ mod tests {
     fn existing_agents_with_a_single_associated_identifier_can_be_read() {
         let directory = tempfile::tempdir().unwrap();
         let program = bundle_fixture(directory.path(), "com.example.Responsible");
-        let xml =
-            launch_agent_plist("label", &program, directory.path(), &directory.path().join("stderr.log")).unwrap();
+        let xml = launch_agent_plist("label", &program, directory.path(), &directory.path().join("stderr.log"), None)
+            .unwrap();
         let mut value = plist::Value::from_reader_xml(xml.as_bytes()).unwrap();
         value
             .as_dictionary_mut()

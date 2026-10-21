@@ -12,8 +12,9 @@ public struct H264DecoderDiagnostics: Sendable {
     public let hardwareDecoder: Bool?
 }
 
-/// Native decoding with two waiting compressed frames and one frame currently being decoded.
-/// Losing dependent H.264 frames discards the chain and requests a fresh keyframe.
+/// Native decoding (H.264 or HEVC, whichever the frame header says; the codec may change at a
+/// keyframe) with two waiting compressed frames and one frame currently being decoded. Losing
+/// dependent frames discards the chain and requests a fresh keyframe.
 public final class H264Decoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "ai-remote.video.decode", qos: .userInteractive)
     private let queueKey = DispatchSpecificKey<Bool>()
@@ -32,7 +33,8 @@ public final class H264Decoder: @unchecked Sendable {
     private var session: VTDecompressionSession?
     private var format: CMVideoFormatDescription?
     private var callbackContext: CallbackContext?
-    private var sps = Data(), pps = Data()
+    private var vps = Data(), sps = Data(), pps = Data()
+    private var codec: ScreenCodec?
     private let output: @Sendable (CVPixelBuffer) -> Void
     private let failed: @Sendable (String) -> Void
     private let requestKeyframe: @Sendable () -> Void
@@ -65,7 +67,7 @@ public final class H264Decoder: @unchecked Sendable {
     public func push(_ bytes: Data) {
         guard !lock.withLock({ closed }) else { return }
         guard let frame = ScreenFrame(bytes) else { recover("无效的视频帧"); return }
-        guard frame.width <= 3840, frame.height <= 3840 else { recover("视频尺寸超出支持范围"); return }
+        guard frame.width <= 4096, frame.height <= 4096 else { recover("视频尺寸超出支持范围"); return }
         var startDrain = false, request = false
         lock.lock()
         if closed { lock.unlock(); return }
@@ -181,7 +183,7 @@ public final class H264Decoder: @unchecked Sendable {
             VTDecompressionSessionWaitForAsynchronousFrames(session)
             VTDecompressionSessionInvalidate(session)
         }
-        session = nil; format = nil; callbackContext = nil
+        session = nil; format = nil; callbackContext = nil; codec = nil
     }
 
     private func receive(epoch callbackEpoch: UInt64, status: OSStatus, image: CVPixelBuffer?) {
@@ -200,21 +202,40 @@ public final class H264Decoder: @unchecked Sendable {
         if status != noErr { throw failure("\(operation)失败（\(status)）", status: status) }
     }
 
-    private func configure(width: Int, height: Int) throws {
+    private func configure(width: Int, height: Int, codec: ScreenCodec) throws {
         reset()
-        try sps.withUnsafeBytes { a in
-            try pps.withUnsafeBytes { b in
-                let pointers = [a.bindMemory(to: UInt8.self).baseAddress!, b.bindMemory(to: UInt8.self).baseAddress!]
-                let sizes = [sps.count, pps.count]
-                try check(CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: kCFAllocatorDefault,
-                    parameterSetCount: 2, parameterSetPointers: pointers, parameterSetSizes: sizes,
-                    nalUnitHeaderLength: 4, formatDescriptionOut: &format), "创建视频格式")
+        self.codec = codec
+        switch codec {
+        case .h264:
+            try sps.withUnsafeBytes { a in
+                try pps.withUnsafeBytes { b in
+                    let pointers = [a.bindMemory(to: UInt8.self).baseAddress!, b.bindMemory(to: UInt8.self).baseAddress!]
+                    let sizes = [sps.count, pps.count]
+                    try check(CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: kCFAllocatorDefault,
+                        parameterSetCount: 2, parameterSetPointers: pointers, parameterSetSizes: sizes,
+                        nalUnitHeaderLength: 4, formatDescriptionOut: &format), "创建视频格式")
+                }
             }
+        case .hevc:
+            try vps.withUnsafeBytes { v in
+                try sps.withUnsafeBytes { a in
+                    try pps.withUnsafeBytes { b in
+                        let pointers = [v.bindMemory(to: UInt8.self).baseAddress!, a.bindMemory(to: UInt8.self).baseAddress!,
+                                        b.bindMemory(to: UInt8.self).baseAddress!]
+                        let sizes = [vps.count, sps.count, pps.count]
+                        try check(CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: kCFAllocatorDefault,
+                            parameterSetCount: 3, parameterSetPointers: pointers, parameterSetSizes: sizes,
+                            nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &format), "创建视频格式")
+                    }
+                }
+            }
+        case .av1:
+            throw failure("此设备不支持 AV1 视频")
         }
         guard let format else { throw failure("缺少视频格式") }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format)
         // Validate SPS dimensions before allocating a decoder's image buffers, not after decode.
-        guard dimensions.width == width, dimensions.height == height else { throw failure("H.264 格式尺寸与帧信息不一致") }
+        guard dimensions.width == width, dimensions.height == height else { throw failure("视频格式尺寸与帧信息不一致") }
         let context = CallbackContext(decoder: self, epoch: lock.withLock { epoch })
         callbackContext = context
         var callback = VTDecompressionOutputCallbackRecord(decompressionOutputCallback: { ref, _, status, _, image, _, _ in
@@ -242,18 +263,27 @@ public final class H264Decoder: @unchecked Sendable {
     private func decode(_ frame: ScreenFrame) throws {
         guard !lock.withLock({ closed }) else { return }
         let nals = frame.nalUnits
-        guard !nals.isEmpty else { throw failure("无效的 H.264 视频内容") }
-        let nextSPS = nals.first(where: { $0.first.map { $0 & 31 == 7 } ?? false })
-        let nextPPS = nals.first(where: { $0.first.map { $0 & 31 == 8 } ?? false })
+        guard !nals.isEmpty else { throw failure("无效的视频内容") }
+        // H.264: the NAL type is the low 5 bits; HEVC: bits 1-6 of the first header byte.
+        let type: (Data) -> UInt8 = { nal in
+            guard let first = nal.first else { return 0xff }
+            return frame.codec == .hevc ? (first >> 1) & 0x3f : first & 31
+        }
+        let (vpsType, spsType, ppsType): (UInt8, UInt8, UInt8) = frame.codec == .hevc ? (32, 33, 34) : (0xff, 7, 8)
+        let picture: (UInt8) -> Bool = frame.codec == .hevc ? { (16...21).contains($0) } : { $0 == 5 }
+        let nextVPS = nals.first(where: { type($0) == vpsType })
+        let nextSPS = nals.first(where: { type($0) == spsType })
+        let nextPPS = nals.first(where: { type($0) == ppsType })
         if frame.keyframe {
-            guard nals.contains(where: { $0.first.map { $0 & 31 == 5 } ?? false }),
-                  let nextSPS, let nextPPS else { throw failure("关键帧缺少 H.264 图像或参数") }
-            if session == nil || nextSPS != sps || nextPPS != pps {
-                sps = nextSPS; pps = nextPPS
-                try configure(width: frame.width, height: frame.height)
+            guard nals.contains(where: { picture(type($0)) }), let nextSPS, let nextPPS,
+                  frame.codec != .hevc || nextVPS != nil else { throw failure("关键帧缺少图像或参数") }
+            let nextVPS = nextVPS ?? Data()
+            if session == nil || codec != frame.codec || nextVPS != vps || nextSPS != sps || nextPPS != pps {
+                vps = nextVPS; sps = nextSPS; pps = nextPPS
+                try configure(width: frame.width, height: frame.height, codec: frame.codec)
             }
         }
-        guard let session, let format else { throw failure("等待可解码的 H.264 关键帧") }
+        guard let session, let format, codec == frame.codec else { throw failure("等待可解码的关键帧") }
         var avcc = Data()
         avcc.reserveCapacity(frame.payload.count + nals.count * 4)
         for nal in nals {

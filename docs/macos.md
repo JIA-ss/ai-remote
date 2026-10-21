@@ -34,11 +34,22 @@ Current limits:
   The app disables unavailable enrollment/allow controls and explains this in English and Chinese.
 - `focus_window` still supports Windows only; on a Mac use the mouse tools or a mounted accessibility
   server. Built-in `ui_tree`, `ui_read` and `ui_action` now provide native AX element observations and semantic actions; see [contracts and acceptance](structured-ui.md). File tools remain planned.
-- Mac live capture uses ScreenCaptureKit on macOS 13+, with up to 60 requested frames/second and
-  GPU-scaled Retina pixels. A single latest-frame slot retains native IOSurface buffers; verified
-  VideoToolbox hardware H.264 encoding is preferred, with OpenH264 fallback. Input uses the selected
-  monitor's point geometry. A requested rate is not a performance guarantee; see the isolated
-  encoder measurements and live-acceptance limits in [stream performance](stream-performance.md).
+- Mac live capture uses ScreenCaptureKit on macOS 13+, at up to the display's refresh rate
+  (CGDisplayMode; 240 requested frames/second at most) and GPU-scaled Retina pixels up to 8K. A
+  single latest-frame slot retains native IOSurface buffers; VideoToolbox hardware encoding is
+  preferred (HEVC first when the viewer decodes it, else H.264 High profile; the low-latency rate
+  controller where the machine has one; keyframes only on request; a live bitrate change without a
+  restart), with OpenH264 fallback. Input uses the selected monitor's point geometry. A viewer that
+  asks for `cursor: client` gets the pointer separately (NSCursor's picture at point size) and
+  ScreenCaptureKit leaves it out of the picture. A requested rate is not a performance guarantee;
+  see the isolated encoder measurements and live-acceptance limits in
+  [stream performance](stream-performance.md). `AI_REMOTE_TEST_PATTERN=1920x1080` streams the same
+  synthetic scrolling desktop as on Windows (`tools/stream-e2e.py --pattern`), no screen needed.
+- The lock screen is served by the ordinary host (a reachable secure desktop: capture and input work,
+  approval prompts are refused); the login window after a reboot or logout needs
+  `sudo … host install --service`, which installs a system LaunchAgent for the `LoginWindow` session.
+  Both are implemented from the window server's session flags and launchd's documented behaviour,
+  *not yet verified on a real locked or logged-out Mac*; see [operations.md](operations.md#macos).
 - Intel Macs and older macOS versions need separate runtime acceptance. No release is signed or
   notarized by this development workflow.
 

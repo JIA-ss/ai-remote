@@ -231,6 +231,8 @@ impl EnigoBackend {
 }
 
 fn send_failed(e: enigo::InputError) -> anyhow::Error {
+    #[cfg(windows)]
+    tracing::warn!(error = %e, context = %crate::platform::input_context(), "SendInput refused the input");
     anyhow!("sending input failed ({e}); the desktop may have locked, or the target window belongs to an elevated app")
 }
 
