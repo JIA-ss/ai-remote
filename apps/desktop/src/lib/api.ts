@@ -6,7 +6,21 @@ import { commands } from "../bindings";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
-import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, NetworkSettings, PathKind, PendingApproval } from "./types";
+import type {
+  AgentStatus,
+  AuditLine,
+  Driver,
+  FeedEvent,
+  Host,
+  HostAccess,
+  Level,
+  LocalController,
+  LocalHost,
+  PairTicket,
+  NetworkSettings,
+  PathKind,
+  PendingApproval,
+} from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
@@ -105,6 +119,32 @@ export interface Backend {
   networkSettings(): Promise<NetworkSettings>;
   /** Turns router port mapping on or off here; the controller applies it at once, a running host at its next start. */
   setPortMapping(on: boolean): Promise<NetworkSettings>;
+  /** This computer as a host: the running host, the profile directory and, with `doctor`, its checks. */
+  localHost(doctor: boolean): Promise<LocalHost>;
+  /** A one-time pairing ticket from the host here. Shown once; never logged. */
+  localPairCode(level: Level): Promise<PairTicket>;
+  /** Stops answering the pair code shown now (its dialog was closed). */
+  localWithdrawCode(): Promise<void>;
+  /** Pauses (every controller's calls are refused) or resumes the agent on this computer. */
+  localPause(on: boolean): Promise<void>;
+  /** Stops the host here; `localStart` starts the installed one again. */
+  localStop(): Promise<void>;
+  localStart(): Promise<void>;
+  /** The host's latest audit lines, newest last. */
+  localRecent(limit: number): Promise<AuditLine[]>;
+  /** Removes a controller's pairing here (its safety code did not match). */
+  localForget(peer: string): Promise<void>;
+  /** Keeps the window out of screen capture while it shows a pairing ticket. */
+  protectWindow(on: boolean): Promise<void>;
+  /** Opens a System Settings pane (`screen_recording`, `accessibility`, `login_items`, `privacy`). */
+  openSystemSettings(pane: string): Promise<void>;
+  /** Shows the profile directory (ai-remote.toml, logs) in the file manager. */
+  revealProfile(): Promise<void>;
+  /** Tells the app's native parts (the tray menu) which language the page shows. */
+  setUiLanguage(lang: string): Promise<void>;
+  /** Whether the app opens at login, in the tray only. */
+  appLoginItem(): Promise<boolean>;
+  setAppLoginItem(on: boolean): Promise<void>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
@@ -276,6 +316,49 @@ const tauriBackend: Backend = {
   async setPortMapping(on) {
     unwrap(await commands.setPortMapping(on));
     return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async localHost(doctor) {
+    return unwrap(await commands.localHost(doctor)) as LocalHost;
+  },
+  async localPairCode(level) {
+    return unwrap(await commands.localHostPairCode(level)) as PairTicket;
+  },
+  async localWithdrawCode() {
+    unwrap(await commands.localHostWithdrawCode());
+  },
+  async localPause(on) {
+    unwrap(await commands.localHostPause(on));
+  },
+  async localStop() {
+    unwrap(await commands.localHostStop());
+  },
+  async localStart() {
+    unwrap(await commands.localHostStart());
+  },
+  async localRecent(limit) {
+    const v = unwrap(await commands.localHostRecent(limit)) as { recent: AuditLine[] };
+    return v.recent ?? [];
+  },
+  async localForget(peer) {
+    unwrap(await commands.localHostForget(peer));
+  },
+  async protectWindow(on) {
+    unwrap(await commands.protectWindow(on));
+  },
+  async openSystemSettings(pane) {
+    unwrap(await commands.openSystemSettings(pane));
+  },
+  async revealProfile() {
+    unwrap(await commands.revealProfile());
+  },
+  async setUiLanguage(lang) {
+    await commands.setUiLanguage(lang);
+  },
+  async appLoginItem() {
+    return unwrap(await commands.appLoginItem());
+  },
+  async setAppLoginItem(on) {
+    unwrap(await commands.setAppLoginItem(on));
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));
