@@ -2,10 +2,14 @@
 """The iPhone app's chat code against a real host, on a Mac: an isolated host with the stand-in agent from
 tools/chat-smoke.py, a session started by another controller (the command line), and the phone's Swift
 chat code (PhoneClient, PhoneChatStore, PhoneChatLog) built for macOS with `tools/ios.sh mac-core`
-around the same embedded controller the app uses. It lists sessions, watches the foreign one read-only,
-then sends, queues and stops on its own.
+around the same embedded controller the app uses. It lists the agents, starts a session from the new-chat
+form (and sees a bad folder refused), lists sessions, opens the command line's one (read-write: any admin
+device may talk), then sends, queues, stops and resumes on its own.
 
   python3 tools/phone-chat-smoke.py [--cli target/debug/ai-remote]
+
+Every home (host, command line, phone) gets `[network] quiet = true` in host/ and controller/, and the run
+stops unless the host reports quiet mode: no mDNS or UPnP on the office network.
 
 macOS only; needs Command Line Tools, not Xcode. The UIKit parts of the view are not exercised here.
 """
@@ -41,8 +45,15 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     host_home, ctl_home, phone, work = base / "host", base / "controller", base / "phone", base / "work"
     work.mkdir()
     (host_home / "host").mkdir(parents=True)
+    # Quiet mode on every role of every home (no mDNS or UPnP on the local network), the phone's too.
+    quiet = "[network]\nquiet = true\n"
     (host_home / "host" / "ai-remote.toml").write_text(
-        '[host]\napproval_prompt = false\n\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+        '[host]\napproval_prompt = false\n\n' + quiet + '\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+    for home in (host_home, ctl_home, phone):
+        for role in ("host", "controller"):
+            (home / role).mkdir(parents=True, exist_ok=True)
+            if not (home / role / "ai-remote.toml").exists():
+                (home / role / "ai-remote.toml").write_text(quiet, encoding="utf-8")
     fake = base / "fake_agent.py"
     fake.write_text(FAKE_AGENT, encoding="utf-8")
     (host_home / "host" / "chat.toml").write_text(
@@ -65,6 +76,8 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     log = open(base / "host.log", "w")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
     try:
+        doctor = cli("doctor", home=host_home).stdout
+        assert "quiet mode" in doctor, "the test host is not in quiet mode:\n" + doctor
         assert cli("pair", pair_code(), "--name", "self").returncode == 0, "the command line did not pair"
         r = cli("chat", "run", "fake", "from the desktop", "--cwd", work, "--keep")
         assert r.returncode == 0, r.stderr
