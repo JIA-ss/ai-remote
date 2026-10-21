@@ -39,6 +39,7 @@ use crate::platform;
 /// How long one probe (`--version`, a sign-in check) may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the login shell may take to answer.
+#[cfg(unix)]
 const SHELL_TIMEOUT: Duration = Duration::from_secs(4);
 /// How long a login-shell answer is reused while `PATH`, `SHELL` and `HOME` stay the same.
 const SHELL_TTL: Duration = Duration::from_secs(30 * 60);
