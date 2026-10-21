@@ -20,11 +20,11 @@ import { createRateController } from "../lib/rate";
 import { createDecoder, type VideoStats } from "../lib/video";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
-import { Glyph, Pointer, SeatMark, type Seat } from "./glyphs";
+import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, TitleBar, type Nav } from "./Shell";
 import { TurnLine, turnSpec } from "./TurnLine";
-import { agentLabel, clock, countdown, cx, relayNote, useNow, useSize } from "./util";
+import { agentLabel, clock, countdown, cx, useNow, useSize } from "./util";
 
 type Bar = "agent" | "waiting" | "you" | "paused" | "idle" | "offline" | "connecting";
 
@@ -36,16 +36,6 @@ function barOf(c: Computer, hasFrame: boolean): Bar {
   if (!hasFrame && api.kind === "tauri") return "connecting";
   return Object.keys(c.feed.sessions).some((id) => !c.feed.sessions[id].person) ? "agent" : "idle";
 }
-
-const SEAT: Record<Bar, Seat> = {
-  agent: "agent",
-  waiting: "waiting",
-  you: "you",
-  paused: "paused",
-  idle: "idle",
-  offline: "idle",
-  connecting: "agent",
-};
 
 /** The remote screen: decoded video in the app, a still picture in the demo. */
 export function Stream({
@@ -321,16 +311,11 @@ function logItems(c: Computer, agent: string, host: string): LogItem[] {
   return items.sort((a, b) => b.ts - a.ts);
 }
 
-/** The floating bar over the picture: who drives, the actions, the route. Dark in both themes. */
+/** The floating bar over the picture: a dot, a short status, the actions. Small and dark in both themes;
+ *  the route and the latency live in the HUD. */
 function DriverBar({
   bar,
   agent,
-  host,
-  device,
-  tool,
-  path,
-  pathTitle,
-  mayWatch,
   busy,
   onAction,
   immersive,
@@ -338,36 +323,28 @@ function DriverBar({
 }: {
   bar: Bar;
   agent: string;
-  host: string;
-  device: string;
-  /** The tool a pending approval is for. */
-  tool: string;
-  path: "direct" | "relay" | null;
-  /** On hover: why the connection is relayed. */
-  pathTitle?: string;
-  mayWatch: boolean;
   busy: boolean;
   onAction: (a: "take_over" | "pause" | "hand_back" | "resume") => void;
   immersive: boolean;
   onLeave: () => void;
 }) {
-  const lines: Record<Bar, [string, string]> = {
-    agent: [t("cap_agent_1", { agent }), t("cap_agent_2", { device })],
-    waiting: [t("cap_wait_1", { agent }), t("cap_wait_2", { tool })],
-    you: [t("cap_you_1"), t(mayWatch ? "cap_you_2w" : "cap_you_2", { agent })],
-    paused: [t("cap_paused_1"), t("cap_paused_2", { agent })],
-    idle: [t("cap_idle_1", { host }), t("cap_idle_2", { device })],
-    offline: [t("cap_off_1", { host }), t("cap_off_2")],
-    connecting: [t("cap_conn_1", { host }), t("cap_conn_2")],
+  const status: Record<Bar, string> = {
+    agent: t("drv_agent", { agent }),
+    waiting: t("drv_waiting"),
+    you: t("drv_you"),
+    paused: t("drv_paused"),
+    idle: t("drv_idle"),
+    offline: t("drv_offline"),
+    connecting: t("drv_connecting"),
   };
   const take = (
-    <button className="nt-tool take" disabled={busy} onClick={() => onAction("take_over")}>
+    <button className="btn sm primary" disabled={busy} onClick={() => onAction("take_over")}>
       {t("take_over")}
     </button>
   );
   const pause = (
-    <button className="nt-tool" disabled={busy} onClick={() => onAction("pause")}>
-      <Glyph name="paused" size={14} />
+    <button className="btn sm" disabled={busy} onClick={() => onAction("pause")}>
+      <Glyph name="paused" size={13} />
       {t("pause_agent")}
     </button>
   );
@@ -381,14 +358,13 @@ function DriverBar({
     waiting: take,
     idle: take,
     you: (
-      <button className="nt-tool ink" disabled={busy} onClick={() => onAction("hand_back")}>
+      <button className="btn sm primary" disabled={busy} onClick={() => onAction("hand_back")} title="Ctrl+Alt+H">
         {t("hand_back")}
-        <span className="kbd">Ctrl+Alt+H</span>
       </button>
     ),
     paused: (
-      <button className="nt-tool ink" disabled={busy} onClick={() => onAction("resume")}>
-        <Icon name="play" size={14} />
+      <button className="btn sm primary" disabled={busy} onClick={() => onAction("resume")}>
+        <Icon name="play" size={13} />
         {t("resume")}
       </button>
     ),
@@ -397,30 +373,13 @@ function DriverBar({
   };
   return (
     <div className="nt-bar bottom">
-      <span className="disc">
-        <SeatMark state={SEAT[bar]} h={16} />
-      </span>
-      <div className="who">
-        <span className={cx("l1", bar === "you" && "you")}>{lines[bar][0]}</span>
-        <span className="l2">{lines[bar][1]}</span>
-      </div>
+      <i className={cx("nt-dot", bar)} />
+      <span className="nt-status">{status[bar]}</span>
       {actions[bar]}
-      {path && (
-        <>
-          <span className="vr" />
-          <span className={cx("nt-route", path === "relay" && "relay")} title={pathTitle}>
-            <Glyph name={path === "relay" ? "relayed" : "direct"} size={14} />
-            {t(path === "relay" ? "relayed" : "direct")}
-          </span>
-        </>
-      )}
       {immersive && (
-        <>
-          <span className="vr" />
-          <button className="nt-iconbtn" onClick={onLeave} aria-label={t("fs_exit")} title={`${t("fs_exit")} · ⌃⌘F`}>
-            <Icon name="x" size={14} />
-          </button>
-        </>
+        <button className="nt-iconbtn" onClick={onLeave} aria-label={t("fs_exit")} title={`${t("fs_exit")} · ⌃⌘F`}>
+          <Icon name="x" size={14} />
+        </button>
       )}
     </div>
   );
@@ -497,10 +456,10 @@ export function SessionPage({
 }) {
   void waiting;
   void onNav;
+  void device;
   const now = useNow(1000);
   const zh = currentLang() === "zh";
   const host = c.host.name;
-  const relay = relayNote(c.host);
   const agent = agentLabel(c.feed.agent);
   const [stageRef, stage] = useSize<HTMLDivElement>();
   const [lineRef, line] = useSize<HTMLDivElement>();
@@ -575,7 +534,6 @@ export function SessionPage({
   // Leaving the page while full screen gives the window back.
   useEffect(() => () => void setFullscreen(false).catch(() => {}), []);
   const touch = (e?: React.MouseEvent) => {
-    if (!immersive) return;
     // While you drive, only the edges bring the bars back (they cover remote pixels).
     if (driving && e) {
       const r = e.currentTarget.getBoundingClientRect();
@@ -587,14 +545,13 @@ export function SessionPage({
     chromeTimer.current = window.setTimeout(() => setChrome(false), 3000);
   };
   useEffect(() => {
-    if (immersive) touch();
-    else if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
+    touch();
     return () => {
       if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [immersive]);
-  const showBars = !immersive || chrome;
+  }, [immersive, bar]);
+  const showBars = chrome;
 
   // The picture: fills the stage, keeps the remote's aspect, never larger than 1:1 device pixels.
   const aspect = native ? native.w / native.h : 16 / 10;
@@ -729,7 +686,7 @@ export function SessionPage({
           </div>
           {actionError && <div className="session-error" role="alert">{actionError}</div>}
           <AnimatePresence initial={false}>
-            {showBars && (
+            {(showBars || !immersive) && (
               <motion.div key="hud" {...hudFade} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 7 }}>
                 <Hud stats={stats} hasFrame={hasFrame} offline={c.online === false} demo={api.kind === "demo"} relay={c.host.path === "relay"} />
               </motion.div>
@@ -772,20 +729,7 @@ export function SessionPage({
             )}
             {showBars && (
               <motion.div key="bar" {...fade} className="nt-anchor bottom">
-                    <DriverBar
-                      bar={bar}
-                      agent={agent}
-                      host={host}
-                      device={device}
-                      tool={pending?.tool ?? ""}
-                      path={c.online === true ? c.host.path === "relay" ? "relay" : c.host.path === "direct" ? "direct" : null : null}
-                      pathTitle={relay?.detail}
-                      mayWatch={c.feed.driver.state === "person" && c.feed.driver.agent_may_watch}
-                      busy={acting}
-                      onAction={act}
-                      immersive={immersive}
-                      onLeave={() => enter(false)}
-                    />
+                    <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} />
               </motion.div>
             )}
           </AnimatePresence>

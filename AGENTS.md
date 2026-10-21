@@ -33,7 +33,8 @@
   macOS 上窗口 `transparent` + `windowEffects: ["sidebar","windowBackground"]`，侧栏透出桌面材质，内容区 CSS 画成不透明；
   主题被钉住（非"跟随系统"）或"减少透明度"时侧栏改画 `--canvas`（`data-theme-choice` / `data-transparency`）。
 - **会话页**（`Session.tsx`，推流 / 解码 / 指针 / 输入逻辑没动）：黑色舞台边到边，画面按比例居中，**不放大超过 1:1 设备像素**
-  （按 `devicePixelRatio` 取整）；底部浮条（谁在操作 + 接管 / 暂停 / 交还 / 继续 + 线路）；右上 HUD（尺寸、fps、Mbps、
+  （按 `devicePixelRatio` 取整）；底部浮条（状态圆点 + 短文案"无人操作 / 智能体操作中 / 你在操作"，接管 / 交还是普通尺寸强调色按钮，
+  不显示设备 id；窗口态和全屏态同一套 3 s 自动隐藏）；右上 HUD（尺寸、fps、Mbps、
   延迟、线路，等宽数字）；时间线移到右侧日志栏顶部；待批准横幅在舞台顶部。`.stream-metrics` 这个 class 保留在 HUD 上，
   smoke 模式和 `tools/stream-e2e.py` 读它。
 - **沉浸全屏**（`lib/fullscreen.ts`）：Tauri `setFullscreen`，权限 `core:window:allow-set-fullscreen / allow-is-fullscreen`。
