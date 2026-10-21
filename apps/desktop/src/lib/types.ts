@@ -45,6 +45,16 @@ export interface HostAccess {
 }
 
 /** A controller paired with this computer (as a host), and whether its owner bypasses it. */
+/** This computer's network settings (Settings > Network). */
+export interface NetworkSettings {
+  /** Ask the router to open a port (UPnP, NAT-PMP, PCP); off by default. */
+  port_mapping: boolean;
+  /** `quiet = true` in ai-remote.toml keeps it off; the setting cannot turn it on. */
+  locked: boolean;
+  /** ai-remote host runs here; it applies a change when it next starts. */
+  host_running: boolean;
+}
+
 export interface LocalController {
   name: string;
   device: string | null;

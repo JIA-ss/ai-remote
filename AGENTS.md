@@ -129,6 +129,50 @@
 - [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
+## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
+
+起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /
+swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo 抓包，频率都是**推导**）：
+
+- ai-remote 自己的代码不扫端口、不扫地址、不检查更新、不上报遥测；桌面端 CSP 只允许本地 IPC。
+- 后台流量全来自传输层 iroh：中继长连接（本机实测连着 `aps1-1.relay.n0.iroh.link`，TCP 443）、每 20–26 s 的 net_report
+  探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
+  每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
+
+做了什么（先按"默认不变、手动开启安静"做，同一天用户改主意：**默认就安静**，UPnP 放到界面设置里开）：
+
+- vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
+  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），mcpmesh 自己的默认都是 iroh 原行为；
+  ai-remote 每次都显式写这两项。
+- ai-remote 的默认（被控端、控制端一样）：`lan_discovery` 关（以前被控端 `on`、控制端 `resolve`）、`port_mapping` 关、
+  `dns_fallback = "if_system_empty"`。`NetworkOptions::from_config` 去掉了按角色给默认值的参数。
+- `[network] port_mapping = true` 打开端口映射；桌面端 设置 > 网络 的下拉框写的就是它（`ar_core::config::set_port_mapping`，
+  用 toml_edit 保留注释，被控端和控制端两份配置一起写），写完给控制端代理发 `shutdown` 让它立即按新配置重启；本机被控端
+  只在下次启动时生效（主干上还没有重启入口，PR #14 合并后可以接它的 `local_host_restart`）。
+- `[network] quiet = true` 变成"锁"：不管 `lan_discovery`、`port_mapping` 和界面怎么设都关（界面下拉框置灰并说明原因）。
+- `address_lookup = [...]`：自建 pkarr 服务器，和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
+- `doctor` 的 `network` 检查报告实际打开了哪些；对称 NAT 时 `p2p` 的建议按状态给（没开就提示去 设置 > 网络 打开，安静锁住时
+  不让人开）。
+- 文档：`operations*.md` 第 11、12 节和 doctor 表格改成"默认关、按需开"，加了"网络上都有哪些流量"的表。
+
+默认（安静）下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
+后面一直走中继（家里两端都是对称 NAT 时，到 设置 > 网络 打开端口映射）；公司 DNS 解析不了 `*.iroh.link` 时连不上。
+
+注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` / `port_mapping` 会启动失败**。给机器写这两项之前先换新版本。
+
+实测（2026-10-21，公司网络，本机 macOS 被控端+控制端、Windows 开发机被控端都开 `quiet = true`）：
+- 连接：本机控制端连 Windows 被控端，`hosts` 报 `direct (P2P)`，只读工具（`ps`）立即返回。
+- Windows：ETW `Microsoft-Windows-Kernel-Network`（按 PID 记录每次 UDP 发送）抓 120 s。被控端进程只发往对端控制端的
+  QUIC 端口、4 台 n0 中继的 UDP 7842、以及对端的一个公网候选地址；发往 5353 / 1900 / 5351 的 0 个。同一时段别的进程
+  （Steam 的 SSDP 12 次、Bonjour 的 mDNS 1 次）都被抓到了，说明方法本身能抓到这类包。
+- macOS：`tcpdump -i pktap,all -k`（按进程标注）抓两次。控制端 7 分钟、被控端 148 s：只发往对端 QUIC 端口和 4 台中继的
+  UDP 7842，发往 5353 / 1900 / 5351 的 0 个，也没有发往公共 DNS 的。同一时段系统的 mDNSResponder 有 mDNS 包被抓到。
+  对照：同一天默认模式下，被控端是占着 `UDP *:5353` 的；安静模式下两端都不再绑定 5353。
+- 没有在这台机器上抓默认模式的 SSDP 作对照（避免在公司网里制造流量），"默认模式每 20–26 s 一次 SSDP"仍是读代码得出的。
+- 坑：macOS 上 pktap 的 tcpdump 收到 SIGTERM 不退出，脚本里要用 `kill -9`。
+
+未测：公司 DNS 拦截 `iroh.link` 的情况。
+
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
 用户的痛点：被控端只有命令行，权限（屏幕录制 / 辅助功能）要靠 doctor 提示再手动去系统设置加；希望"做成软件托盘之类的，

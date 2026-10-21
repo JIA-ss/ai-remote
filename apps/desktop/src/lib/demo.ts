@@ -13,6 +13,7 @@ import type {
   Level,
   LocalController,
   LocalHost,
+  NetworkSettings,
   PendingApproval,
   RawPending,
 } from "./types";
@@ -103,6 +104,8 @@ const toPending = (p: RawPending): PendingApproval => ({
 });
 
 /** Controllers paired with this computer, as its host would list them. */
+const network: NetworkSettings = { port_mapping: false, locked: false, host_running: true };
+
 const localControllers: LocalController[] = [
   { name: "work-laptop", device: "eid:7f3a91c2", level: "admin", revoked: false, bypass: false, since_ms: null, until_ms: null },
   { name: "iphone", device: "eid:2b8e10d4", level: "observe", revoked: false, bypass: false, since_ms: null, until_ms: null },
@@ -281,6 +284,15 @@ export const demoBackend: Backend = {
     await wait(200);
     const c = localControllers.find((x) => x.name === peer);
     if (c) Object.assign(c, { bypass: on, since_ms: on ? Date.now() : null, until_ms: null });
+  },
+  async networkSettings() {
+    await wait(80);
+    return { ...network };
+  },
+  async setPortMapping(on) {
+    await wait(300);
+    network.port_mapping = on;
+    return { ...network };
   },
   async localHost(doctor) {
     await wait(120);

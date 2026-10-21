@@ -18,6 +18,7 @@ import type {
   LocalController,
   LocalHost,
   PairTicket,
+  NetworkSettings,
   PathKind,
   PendingApproval,
 } from "./types";
@@ -115,6 +116,10 @@ export interface Backend {
   localControllers(): Promise<LocalController[] | null>;
   /** Turns bypass on or off for a controller paired with this computer. */
   setLocalBypass(peer: string, on: boolean): Promise<void>;
+  /** This computer's router port mapping (UPnP), whether quiet mode locks it, whether a host runs here. */
+  networkSettings(): Promise<NetworkSettings>;
+  /** Turns router port mapping on or off here; the controller applies it at once, a running host at its next start. */
+  setPortMapping(on: boolean): Promise<NetworkSettings>;
   /** This computer as a host: the running host, the profile directory and, with `doctor`, its checks. */
   localHost(doctor: boolean): Promise<LocalHost>;
   /** A one-time pairing ticket from the host here. Shown once; never logged. */
@@ -330,6 +335,13 @@ const tauriBackend: Backend = {
   },
   async setLocalBypass(peer, on) {
     unwrap(await commands.setLocalHostBypass(peer, on));
+  },
+  async networkSettings() {
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async setPortMapping(on) {
+    unwrap(await commands.setPortMapping(on));
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
   },
   async localHost(doctor) {
     return unwrap(await commands.localHost(doctor)) as LocalHost;

@@ -254,6 +254,8 @@ async fn boot_node(
     // work. (0.44.0 shipped this parse after `build_endpoint` with a comment claiming otherwise;
     // the gate caught the comment.)
     let local_disc = local_discovery(&cfg.network)?;
+    // ai-remote patch: `dns_fallback` is checked here too, before any socket is bound.
+    dns_fallback(&cfg.network)?;
     // #229: the endpoint hooks. UNARMED here, so every gated ALPN fails closed until the store and
     // roster gate exist (step 3, below). Nothing dials between this bind and that arm.
     let hooks = crate::daemon::hooks::MeshHooks::new();
@@ -982,6 +984,8 @@ async fn build_endpoint_on(
     let builder = apply_relay_only(builder, net);
     let builder = apply_transport_config(builder, net)?;
     let builder = apply_proxy(builder, net)?;
+    let builder = apply_port_mapping(builder, net);
+    let builder = apply_dns_fallback(builder, net)?;
     let builder = match net.bind_port.filter(|&p| p != 0) {
         None => builder,
         Some(port) => builder
@@ -1201,6 +1205,56 @@ fn apply_proxy(
         Some(u) => builder.proxy_url(
             u.parse::<url::Url>()
                 .map_err(|e| anyhow::anyhow!("[network] proxy_url {u:?}: {e}"))?,
+        ),
+    })
+}
+
+/// Turn off router port mapping when `[network].port_mapping = false` (ai-remote patch).
+///
+/// iroh maps a port by default, and while it holds no mapping it probes the gateway on every
+/// address update, a UPnP SSDP multicast among the probes. Off, none of that leaves the node.
+fn apply_port_mapping(
+    builder: iroh::endpoint::Builder,
+    net: &crate::config::NetworkCfg,
+) -> iroh::endpoint::Builder {
+    if net.port_mapping {
+        builder
+    } else {
+        builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+    }
+}
+
+/// Parse `[network].dns_fallback` (ai-remote patch). `None` keeps iroh's own resolver (fallback
+/// deferred); an unknown value is a startup ERROR rather than a silent fallback to public DNS.
+pub fn dns_fallback(net: &crate::config::NetworkCfg) -> Result<Option<iroh::dns::FallbackMode>> {
+    match net.dns_fallback.as_str() {
+        "deferred" => Ok(None),
+        "if_system_empty" => Ok(Some(iroh::dns::FallbackMode::IfSystemEmpty)),
+        "never" => Ok(Some(iroh::dns::FallbackMode::Never)),
+        other => Err(anyhow::anyhow!(
+            "[network] unknown dns_fallback {other:?} \
+             (expected \"deferred\" | \"if_system_empty\" | \"never\")"
+        )),
+    }
+}
+
+/// Keep lookups on the system's DNS as `[network].dns_fallback` asks (ai-remote patch).
+///
+/// iroh's default resolver asks Cloudflare, Google and Quad9 once the system nameservers fail or
+/// time out; on a network whose DNS is managed, that is traffic going around it. The replacement
+/// is iroh's own default (system configuration, default TLS for DoT/DoH) with only the fallback
+/// mode changed.
+fn apply_dns_fallback(
+    builder: iroh::endpoint::Builder,
+    net: &crate::config::NetworkCfg,
+) -> Result<iroh::endpoint::Builder> {
+    Ok(match dns_fallback(net)? {
+        None => builder,
+        Some(mode) => builder.dns_resolver(
+            iroh::dns::DnsResolver::builder()
+                .with_system_defaults()
+                .with_fallback_mode(mode)
+                .build(),
         ),
     })
 }
@@ -2558,6 +2612,39 @@ mod tests {
         assert_ne!(v4_port(&ep), Some(taken));
         ep.close().await;
         drop(held);
+    }
+
+    /// ai-remote patch: `dns_fallback` takes its three modes and refuses anything else (a typo
+    /// must not quietly keep the public resolvers), and a node with port mapping off and the
+    /// system's DNS only still binds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn port_mapping_off_and_dns_fallback_modes() {
+        let net = |m: &str| crate::config::NetworkCfg {
+            dns_fallback: m.into(),
+            ..Default::default()
+        };
+        assert_eq!(dns_fallback(&net("deferred")).unwrap(), None);
+        assert_eq!(
+            dns_fallback(&net("if_system_empty")).unwrap(),
+            Some(iroh::dns::FallbackMode::IfSystemEmpty)
+        );
+        assert_eq!(
+            dns_fallback(&net("never")).unwrap(),
+            Some(iroh::dns::FallbackMode::Never)
+        );
+        let e = dns_fallback(&net("off")).expect_err("an unknown mode must fail the boot");
+        assert!(e.to_string().contains("dns_fallback"), "{e}");
+
+        let quiet = crate::config::NetworkCfg {
+            relay_mode: "disabled".into(),
+            port_mapping: false,
+            dns_fallback: "if_system_empty".into(),
+            ..Default::default()
+        };
+        let ep = build_endpoint(iroh::SecretKey::from_bytes(&[32u8; 32]), &quiet, false, None)
+            .await
+            .expect("a node with port mapping off and system DNS only binds");
+        ep.close().await;
     }
 
     /// #56: an absent config changes NOTHING — the endpoint gets iroh's defaults verbatim, so a

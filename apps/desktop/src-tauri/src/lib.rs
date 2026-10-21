@@ -15,7 +15,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use ar_core::{Profile, Role};
+use ar_core::{
+    Profile, Role,
+    config::{ControllerConfig, HostConfig, NetworkSection},
+};
 use ar_net::ipc::Conn;
 use serde_json::{Value, json};
 use tauri::{Manager, State, ipc::Channel};
@@ -300,6 +303,53 @@ async fn close_chat(state: State<'_, AppState>, id: u32) -> Result<(), String> {
         chat.task.abort();
     }
     Ok(())
+}
+
+/// This computer's network settings: whether it asks the router to open a port (UPnP, NAT-PMP,
+/// PCP), as a host or as a controller; whether `quiet = true` in either config locks that off; and
+/// whether ai-remote host runs here (it reads the setting when it starts).
+#[tauri::command]
+#[specta::specta]
+async fn network_settings(state: State<'_, AppState>) -> Result<Json, String> {
+    let host = HostConfig::load(&state.profile.host_config_path().map_err(text)?).map_err(text)?.network;
+    let controller =
+        ControllerConfig::load(&state.profile.controller_config_path().map_err(text)?).map_err(text)?.network;
+    let on = |n: &NetworkSection| n.port_mapping.unwrap_or(false);
+    let quiet = |n: &NetworkSection| n.quiet.unwrap_or(false);
+    Ok(Json(json!({
+        "port_mapping": on(&host) || on(&controller),
+        "locked": quiet(&host) || quiet(&controller),
+        "host_running": host_running(&state.profile).await,
+    })))
+}
+
+/// Turns router port mapping on or off for this computer, as a host and as a controller. The
+/// controller agent is restarted so it applies now (live views and agents reconnect); a host
+/// running here applies it when it next starts.
+#[tauri::command]
+#[specta::specta]
+async fn set_port_mapping(state: State<'_, AppState>, on: bool) -> Result<Json, String> {
+    for path in [state.profile.host_config_path(), state.profile.controller_config_path()] {
+        ar_core::config::set_port_mapping(&path.map_err(text)?, on).map_err(text)?;
+    }
+    let endpoint = state.profile.control_endpoint(Role::Controller).map_err(text)?;
+    let agent_restarted = match Conn::connect(&endpoint).await {
+        Ok(mut conn) => conn.request(&json!({"op": "shutdown"})).await.is_ok(),
+        Err(_) => false,
+    };
+    Ok(Json(json!({
+        "port_mapping": on,
+        "agent_restarted": agent_restarted,
+        "host_running": host_running(&state.profile).await,
+    })))
+}
+
+/// Whether ai-remote host runs here for this profile (its local control channel answers).
+async fn host_running(profile: &Profile) -> bool {
+    match profile.control_endpoint(Role::Host) {
+        Ok(endpoint) => Conn::connect(&endpoint).await.is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// This computer as a host, for the "This device" page: the running host's `status` (`null` when
@@ -952,6 +1002,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lower_level,
         local_host_bypass,
         set_local_host_bypass,
+        network_settings,
+        set_port_mapping,
         local_host,
         local_host_pair_code,
         local_host_withdraw_code,
