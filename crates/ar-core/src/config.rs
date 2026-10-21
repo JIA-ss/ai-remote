@@ -10,9 +10,10 @@
 //! relays = []            # empty: the default public relays
 //! relay_fallback_n0 = true # with relays set: keep n0's public relays as a fallback
 //! proxy = ""             # empty: detect (HTTPS_PROXY, system setting); "none": never; or a URL
-//! lan_discovery = "on"   # find peers on the local network: "on", "resolve" (do not announce), "off"
+//! lan_discovery = "off"  # find peers on the local network: "on", "resolve" (do not announce), "off"
+//! port_mapping = false   # ask the router to open a port (UPnP, NAT-PMP, PCP); the app's Network setting
 //! port = 0               # a fixed UDP port to forward on the router; 0 or absent: random
-//! quiet = false          # true on a managed network: no mDNS, no router port mapping, system DNS only
+//! quiet = false          # true: local discovery and port mapping stay off whatever the lines above say
 //! address_lookup = []    # empty: n0's address lookup service; or self-hosted pkarr server URLs
 //!
 //! [[rule]]               # evaluated in order; the first match wins
@@ -100,17 +101,22 @@ pub struct NetworkSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
     /// Local-network (mDNS) discovery: `"on"`, `"resolve"` (find peers, do not announce) or `"off"`.
-    /// Absent: `"on"` on a host, `"resolve"` on a controller.
+    /// Absent: `"off"`. `"on"` announces this device to every device on the network about once a
+    /// second; it only helps where the devices have no internet at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_discovery: Option<String>,
+    /// Ask the router to open a port to this device (UPnP, NAT-PMP, PCP), for direct connections
+    /// behind NATs that hole punching alone does not get through. Absent: off. While there is no
+    /// mapping the gateway is probed every 20 to 26 s. The desktop app's Network setting writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_mapping: Option<bool>,
     /// A fixed UDP port (IPv4) for someone who forwards it on their router; absent or 0: random. A
     /// taken port falls back to a random one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Quiet mode, for a managed network such as an office: nothing on the local network (no mDNS
-    /// announcements or queries, whatever `lan_discovery` says), no router port mapping (UPnP,
-    /// NAT-PMP, PCP), and name lookups only through the system's DNS (never the public resolvers).
-    /// Paired devices still connect, directly by hole punching or through a relay. Absent: off.
+    /// Quiet mode, for a managed network such as an office: local-network discovery and router port
+    /// mapping stay off whatever `lan_discovery` and `port_mapping` say (the desktop app's Network
+    /// setting cannot turn port mapping on). Both are off by default anyway; this locks them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quiet: Option<bool>,
     /// Self-hosted pkarr servers (iroh-dns-server) where devices publish and look up each other's
@@ -357,6 +363,22 @@ pub fn remove_mount(path: &Path, name: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Sets `[network] port_mapping` in a host's or a controller's `ai-remote.toml`, keeping the rest of
+/// the file (comments and layout included); creates the file when there is none.
+pub fn set_port_mapping(path: &Path, on: bool) -> Result<()> {
+    let text = read_or_empty(path)?;
+    let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("parse {}", path.display()))?;
+    let network = doc.entry("network").or_insert(toml_edit::table());
+    let Some(network) = network.as_table_mut() else {
+        bail!("`network` in {} is not a [network] table; fix the file by hand", path.display());
+    };
+    network.insert("port_mapping", toml_edit::value(on));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    store::write_atomic(path, doc.to_string().as_bytes())
+}
+
 fn read_or_empty(path: &Path) -> Result<String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
@@ -601,5 +623,22 @@ click = {{ approve = \"ask\" }}
         let path = dir.path().join("ai-remote.toml");
         add_mount(&path, &sample_mount("ui")).unwrap();
         assert_eq!(HostConfig::load(&path).unwrap().mounts[0].name, "ui");
+    }
+
+    #[test]
+    fn set_port_mapping_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host").join("ai-remote.toml");
+        set_port_mapping(&path, true).unwrap();
+        assert_eq!(HostConfig::load(&path).unwrap().network.port_mapping, Some(true));
+
+        let text = "# office\n[network]\nquiet = true # locked\n\n[host]\nname = \"pc\"\n";
+        std::fs::write(&path, text).unwrap();
+        set_port_mapping(&path, false).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# office") && after.contains("quiet = true # locked"), "{after}");
+        let cfg = HostConfig::load(&path).unwrap();
+        assert_eq!((cfg.network.port_mapping, cfg.network.quiet), (Some(false), Some(true)));
+        assert_eq!(cfg.host.name.as_deref(), Some("pc"));
     }
 }

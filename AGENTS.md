@@ -27,20 +27,26 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
   每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
 
-做了什么（用户要求：**默认行为不变**，只有手动打开才安静）：
+做了什么（先按"默认不变、手动开启安静"做，同一天用户改主意：**默认就安静**，UPnP 放到界面设置里开）：
 
 - vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
-  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），默认都是 iroh 原行为。
-- `ai-remote.toml` 的 `[network] quiet = true`（被控端、控制端都认）：mDNS 关（压过 `lan_discovery`，拼错仍报错）、
-  `port_mapping = false`、`dns_fallback = "if_system_empty"`。另加 `address_lookup = [...]`：自建 pkarr 服务器，
-  和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
-- `doctor` 新增 `network` 检查报告当前模式；安静模式下 `p2p` 的修复建议不再让人开 UPnP。
-- 文档：`operations*.md` 第 12 节加"安静模式""地址查询"和一张"网络上都有哪些流量"的表。
+  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），mcpmesh 自己的默认都是 iroh 原行为；
+  ai-remote 每次都显式写这两项。
+- ai-remote 的默认（被控端、控制端一样）：`lan_discovery` 关（以前被控端 `on`、控制端 `resolve`）、`port_mapping` 关、
+  `dns_fallback = "if_system_empty"`。`NetworkOptions::from_config` 去掉了按角色给默认值的参数。
+- `[network] port_mapping = true` 打开端口映射；桌面端 设置 > 网络 的下拉框写的就是它（`ar_core::config::set_port_mapping`，
+  用 toml_edit 保留注释，被控端和控制端两份配置一起写），写完给控制端代理发 `shutdown` 让它立即按新配置重启；本机被控端
+  只在下次启动时生效（主干上还没有重启入口，PR #14 合并后可以接它的 `local_host_restart`）。
+- `[network] quiet = true` 变成"锁"：不管 `lan_discovery`、`port_mapping` 和界面怎么设都关（界面下拉框置灰并说明原因）。
+- `address_lookup = [...]`：自建 pkarr 服务器，和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
+- `doctor` 的 `network` 检查报告实际打开了哪些；对称 NAT 时 `p2p` 的建议按状态给（没开就提示去 设置 > 网络 打开，安静锁住时
+  不让人开）。
+- 文档：`operations*.md` 第 11、12 节和 doctor 表格改成"默认关、按需开"，加了"网络上都有哪些流量"的表。
 
-安静模式下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
-后面一直走中继；公司 DNS 解析不了 `*.iroh.link` 时连不上（要自建中继和地址查询服务器）。
+默认（安静）下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
+后面一直走中继（家里两端都是对称 NAT 时，到 设置 > 网络 打开端口映射）；公司 DNS 解析不了 `*.iroh.link` 时连不上。
 
-注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` 会启动失败**。给机器写 `quiet = true` 之前先换新版本。
+注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` / `port_mapping` 会启动失败**。给机器写这两项之前先换新版本。
 
 实测（2026-10-21，公司网络，本机 macOS 被控端+控制端、Windows 开发机被控端都开 `quiet = true`）：
 - 连接：本机控制端连 Windows 被控端，`hosts` 报 `direct (P2P)`，只读工具（`ps`）立即返回。

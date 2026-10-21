@@ -76,6 +76,18 @@ export const commands = {
 	/**  Turns bypass on or off for a controller paired with this computer (see `local_host_bypass`). */
 	setLocalHostBypass: (peer: string, on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_local_host_bypass", { peer, on })),
 	/**
+	 *  This computer's network settings: whether it asks the router to open a port (UPnP, NAT-PMP,
+	 *  PCP), as a host or as a controller; whether `quiet = true` in either config locks that off; and
+	 *  whether ai-remote host runs here (it reads the setting when it starts).
+	 */
+	networkSettings: () => typedError<Json, string>(__TAURI_INVOKE("network_settings")),
+	/**
+	 *  Turns router port mapping on or off for this computer, as a host and as a controller. The
+	 *  controller agent is restarted so it applies now (live views and agents reconnect); a host
+	 *  running here applies it when it next starts.
+	 */
+	setPortMapping: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_port_mapping", { on })),
+	/**
 	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
 	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
 	 */

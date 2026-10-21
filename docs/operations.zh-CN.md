@@ -574,6 +574,7 @@ Checked by the running host:
   warn  elevation  not elevated: windows of elevated programs (installers, admin tools) silently ignore its input and UI actions
                    fix: run the host with highest privileges; `ai-remote host install` registers it that way
   ok    dpi        per-monitor DPI aware (v2): screenshot and click coordinates agree
+  ok    network    quiet: no local-network discovery (mDNS), no router port mapping, name lookups only through the system's DNS
   ok    relay      connected to https://...; 3 direct address(es)
   ok    p2p        UDP gets through, so direct (P2P) connections can form; IPv6 works
   ok    approval   approval prompts can be shown on this desktop
@@ -591,7 +592,8 @@ Overall: warn
 | `desktop` | 输入桌面是 `Default`（未锁定） | **fail**：已锁定或正显示登录界面、UAC 提示，而被控端到不了那里；**warn**：同样状态但被控端是服务，能看能操作（审批弹窗显示不了） | 解锁；无人值守的机器关闭自动锁屏，或装成服务（`host install --service`） |
 | `elevation` | 被控端以管理员权限运行 | **warn**：以管理员身份运行的程序的窗口会忽略它的输入 | 以最高权限运行（由管理员执行 `host install`） |
 | `dpi` | 逐显示器 DPI 感知（v2） | **fail**：在有缩放的显示器上点击位置会偏 | 去掉可执行文件上的高 DPI 兼容性覆盖设置（属性 > 兼容性） |
-| `p2p` | UDP 能出去，NAT 不是对称型 | **warn**：UDP 被阻断（所有连接都走中继）、对称型 NAT（直连常常失败）或需要网页登录的网络 | 放行出站 UDP、在路由器上开 UPnP/NAT-PMP、用 IPv6，或先完成网络登录 |
+| `network` | `ai-remote.toml` 能读取；说明被控端在连接之外还往网络上发什么（局域网发现、路由器端口映射） | **warn**：文件读不了 | 修好这个文件（第 11 节） |
+| `p2p` | UDP 能出去，NAT 不是对称型 | **warn**：UDP 被阻断（所有连接都走中继）、对称型 NAT（直连常常失败）或需要网页登录的网络 | 放行出站 UDP、路由器支持 UPnP 或 NAT-PMP 时打开路由器端口映射（设置 > 网络）、用 IPv6，或先完成网络登录 |
 | `relay` | 已连上主中继（home relay） | **warn**：没有使用中继，或一个都连不上；其他网络里的控制端可能连不进来 | 检查网络连接、出站防火墙或代理（中继走 HTTPS），或检查 `[network] relays` |
 | `approval` | 能弹出审批框 | **warn**：需要审批的操作都会被拒绝 | 解锁桌面，或用 `[[rule]]` 放行可信的工具 |
 | `bypass` | 没有控制端处于 bypass | **warn**：列出的控制端（默认开着时是所有已配对的控制端）可以不经审批使用全部工具（6.1 节） | 不再需要时 `ai-remote bypass off <设备>`（或 `--all`、`bypass default off`） |
@@ -747,8 +749,9 @@ approval_prompt = true       # false：本机不弹对话框，只在设备上�
 relays = []                  # 留空：使用默认的公共中继（第 12 节）
 relay_fallback_n0 = true     # 配了 relays 时，保留 n0 公共中继作兜底
 proxy = ""                   # 留空：自动识别 HTTP 代理；"none"：不用代理；或填代理地址
-lan_discovery = "on"         # "on"、"resolve"（只查找不广播）或 "off"
-quiet = false                # 在公司这类受管理的网络里设为 true（第 12 节）
+lan_discovery = "off"        # "on"、"resolve"（只查找不广播）或 "off"（第 12 节）
+port_mapping = false         # 请路由器开端口（UPnP）；桌面端 设置 > 网络 写的就是它
+quiet = false                # true：上面两项不管怎么写都保持关闭（第 12 节）
 
 [[rule]]                     # 策略规则，第一条命中的生效
 tool = "shell"
@@ -769,18 +772,19 @@ click = "control"
 
 ## 12. 跨网络连接
 
-配对后的设备不需要端口映射或 VPN 就能找到并连上对方。下面这些方式都默认开启，尽量在各种网络里不用配置就能连通
-（下文的安静模式会关掉其中会广播或探测网络的几项）：
+配对后的设备不需要端口映射或 VPN 就能找到并连上对方。下面这些方式默认开启，只有两项例外：路由器端口映射和局域网发现
+会在连接之外往网络上发包，默认关闭，需要时再打开。
 
-| 方式 | 作用 | 关闭 |
+| 方式 | 作用 | 默认 |
 |---|---|---|
-| 直连（P2P） | UDP 打洞，IPv4 和 IPv6，并自动在路由器上做端口映射（UPnP、NAT-PMP、PCP） | 端口映射：`quiet = true` |
-| 局域网 | 用 mDNS 在同一网络里找到对方，不连外网也行 | `lan_discovery = "off"` 或 `quiet = true` |
-| 中继 | 打不通直连时由加密中继经 HTTPS（443 端口）转发；一旦打通直连就自动切过去 | — |
-| HTTP 代理 | 只能经代理出网的网络里，中继连接走代理 | `proxy = "none"` |
-| 中继兜底 | 配了自建中继时，保留 n0 公共中继作兜底 | `relay_fallback_n0 = false` |
-| 防火墙检查 | 控制端发现系统防火墙阻止了自己（点掉“允许访问”弹窗会留下阻止规则）时，桌面端提供“在防火墙中允许”（一次管理员确认） | — |
-| 重试 | 控制端连不上时，1 秒和 3 秒后各重拨一次（刚切换网络时常常能连上） | — |
+| 直连（P2P） | UDP 打洞，IPv4 和 IPv6 | 开 |
+| 路由器端口映射 | 请路由器开放一个端口（UPnP、NAT-PMP、PCP），用于只靠打洞穿不过的路由器 | **关**；在桌面端 设置 > 网络 打开，或写 `port_mapping = true` |
+| 局域网 | 用 mDNS 在同一网络里找到对方，不连外网也行 | **关**；`lan_discovery = "on"` |
+| 中继 | 打不通直连时由加密中继经 HTTPS（443 端口）转发；一旦打通直连就自动切过去 | 开 |
+| HTTP 代理 | 只能经代理出网的网络里，中继连接走代理 | 开；`proxy = "none"` 关闭 |
+| 中继兜底 | 配了自建中继时，保留 n0 公共中继作兜底 | 开；`relay_fallback_n0 = false` 关闭 |
+| 防火墙检查 | 控制端发现系统防火墙阻止了自己（点掉“允许访问”弹窗会留下阻止规则）时，桌面端提供“在防火墙中允许”（一次管理员确认） | 开 |
+| 重试 | 控制端连不上时，1 秒和 3 秒后各重拨一次（刚切换网络时常常能连上） | 开 |
 
 走中继仍是端到端加密，但延迟更高；n0 的免费公共中继还有限速。走中继期间各端都会提示“P2P 直连失败，经 n0 公共中继转发”。
 
@@ -792,9 +796,10 @@ click = "control"
 relays = ["https://relay1.example.org", "https://relay2.example.org"]
 relay_fallback_n0 = true
 proxy = ""            # 留空或不写：自动识别；"none"：不用；或者如 "http://proxy.corp:3128"
-lan_discovery = "on"  # 被控端默认 "on"，控制端默认 "resolve"
+lan_discovery = "off" # "on"：在局域网里广播本机；"resolve"：只查找别人
+port_mapping = false  # 请路由器开端口；桌面端 设置 > 网络 写的就是它
 port = 0              # 固定 UDP 端口，用于在路由器上做端口转发；0 或不写：随机
-quiet = false         # true：不发 mDNS、不做路由器端口映射、只用系统 DNS
+quiet = false         # true：lan_discovery 和 port_mapping 不管怎么写都保持关闭
 address_lookup = []   # 留空：用 n0 的地址查询服务；或填自建的 pkarr 服务器
 ```
 
@@ -805,19 +810,20 @@ address_lookup = []   # 留空：用 n0 的地址查询服务；或填自建的 
   （Windows：当前登录用户的 Internet 设置；macOS：`scutil --proxy`）。不解析代理自动配置（PAC）脚本，这种网络请直接填
   `proxy`。只支持 HTTP(S) 代理，不支持 SOCKS。只有中继连接走代理：直连是 UDP；对方换了地址时的地址查询仍直接访问 n0 的
   DNS 服务。被控端日志里会写明用的是哪个代理。
-- **局域网。** `"on"` 会在局域网里广播本机（设备 ID 和地址，包括公网地址，大约每秒一次），让同网设备能找到它；
-  `"resolve"` 只查找别人、不广播自己。被控端默认 `"on"`，这样同一网络里的控制端不连外网也能连上；在公共网络里使用的
-  笔记本被控端，可以改成 `"resolve"` 或 `"off"`。
+- **局域网。** 默认关闭。`"on"` 会在局域网里广播本机（设备 ID 和地址，包括公网地址，大约每秒一次，同网段所有设备都收得到），
+  让别人完全不连外网也能找到它；`"resolve"` 只查找别人、不广播自己，但仍然大约每秒发一次查询。有外网时，同一网络里的设备
+  不靠它也能直连：发布出去的地址里本来就包含内网地址。
+- **路由器端口映射。** 默认关闭。在桌面端 设置 > 网络 里打开：它会把 `port_mapping = true` 写进这台电脑的被控端和控制端配置；
+  控制端立即生效（正在进行的会话会短暂重连），这台电脑上运行的被控端在下次启动时生效。`doctor` 的 `p2p` 报 warn（对称型 NAT）
+  且路由器支持 UPnP、NAT-PMP 或 PCP 时值得打开。没有映射期间它每 20 到 26 秒探测一次网关（UPnP 搜索组播和 NAT-PMP/PCP 请求），
+  受管理的网络可能会把这当成可疑行为。
 - **固定端口。** 在打洞很难成功的 NAT 后面（`doctor` 的 `p2p` 为 warn），可以在路由器上把一个 UDP 端口转发到被控端，
   并把 `port` 设成它，控制端就能直连。被控端启动时这个端口如果被占用，会改用随机端口并在日志里说明。
-- **安静模式。** `quiet = true` 用在公司这类受管理的网络里：在那里，连接本身以外的流量容易引人注意。默认关闭。
-  打开后关掉三样东西：局域网发现（不发 mDNS 广播也不发 mDNS 查询，忽略 `lan_discovery`）、路由器端口映射（不发 UPnP
-  搜索组播，不向网关发 NAT-PMP / PCP 请求）、公共 DNS 兜底（只走系统 DNS；查询失败就失败，不会转去问 Cloudflare、
-  Google 或 Quad9）。被控端和在这个网络里用的控制端都要设；在被控端执行 `ai-remote doctor` 可以看到当前模式
-  （`network` 检查）。
-  配对过的设备照样能连上：通过地址查询服务找到对方，网络允许时打洞直连，不行就走中继。代价是：没有外网的局域网里
-  设备找不到对方；只能靠端口映射才能打通的 NAT 后面，连接会一直走中继；网络的 DNS 解析不了中继和地址查询服务的域名时
-  完全连不上（这时请配上这个网络能解析的自建中继和地址查询服务器）。
+- **安静模式。** `quiet = true` 把局域网发现和路由器端口映射锁定为关闭，不管 `lan_discovery`、`port_mapping` 或桌面端的设置
+  怎么写。用在公司这类受管理的网络里：在那里，连接本身以外的流量容易引人注意。在被控端执行 `ai-remote doctor` 可以看到
+  打开了哪些（`network` 检查）。无论哪种模式，名称查询都只走系统 DNS：查询失败就失败，不会转去问 Cloudflare、Google 或
+  Quad9（只有系统完全没有配置 DNS 时才用公共 DNS）。配对过的设备照样能连上：通过地址查询服务找到对方，网络允许时打洞直连，
+  不行就走中继。网络的 DNS 解析不了中继和地址查询服务的域名时完全连不上（这时请配上这个网络能解析的自建中继和地址查询服务器）。
 - **地址查询。** 每台设备每 5 分钟、以及地址变化时，把自己当前的地址发布到 n0 的地址查询服务（`dns.iroh.link`），
   拨号前也在那里查对方的地址。设了 `address_lookup = ["https://dns.example.org/pkarr"]` 后，发布和查询都改用你自建的
   [iroh-dns-server](https://github.com/n0-computer/iroh)。需要互相找到的设备必须配同一组服务器。再加上自建中继和
@@ -825,17 +831,18 @@ address_lookup = []   # 留空：用 n0 的地址查询服务；或填自建的 
 
 ### 网络上都有哪些流量
 
-依据是代码（iroh 1.3），不是抓包。最后一行是连接本身。
+依据是代码（iroh 1.3）。2026-10-21 在公司网络里按进程抓包（见 AGENTS.md）：两项都关闭时，ai-remote 发往 5353、1900、5351
+的包为 0。最后一行是连接本身。
 
-| 流量 | 发往 | 什么时候 | 安静模式 |
+| 流量 | 发往 | 什么时候 | 默认 |
 |---|---|---|---|
-| 中继连接 | 中继（n0 的是 `use1-1`、`usw1-1`、`euc1-1`、`aps1-1` `.relay.n0.iroh.link`），TCP 443 上的 HTTPS | 运行期间一直保持，每 15 秒一次 ping | 保留 |
-| 网络探测 | 中继：443 上的 HTTPS、UDP 7842 上的 QUIC 地址发现、80 端口 HTTP 的网络登录页检测 | 每 20 到 26 秒一次，每 5 分钟一次完整探测，网络变化时也探测 | 保留 |
-| 地址发布与查询 | `dns.iroh.link`（或 `address_lookup`）的 HTTPS 443，以及经系统发出的 DNS 查询 | 每 5 分钟和地址变化时发布；拨号前查询 | 保留 |
-| 路由器端口映射 | 网关：UPnP SSDP 组播到 239.255.255.250:1900，NAT-PMP / PCP 到 UDP 5351 | 没有映射时每 20 到 26 秒一次（多数公司网络没有映射服务） | 关闭 |
-| 局域网发现 | mDNS 组播到 224.0.0.251:5353，同网段所有设备都能看到；被控端会通告设备 ID 和地址（包括公网地址） | 大约每秒一次 | 关闭 |
-| 公共 DNS 兜底 | 1.1.1.1、8.8.8.8、9.9.9.9（UDP 53、HTTPS 443） | 只在系统 DNS 失败或超时之后 | 只在系统完全没有配置 DNS 时 |
-| 连接 | 对方设备（UDP 打洞）或中继 | 配对设备连着的时候；每 5 秒一次保活；流量大头是推流画面 | 保留 |
+| 中继连接 | 中继（n0 的是 `use1-1`、`usw1-1`、`euc1-1`、`aps1-1` `.relay.n0.iroh.link`），TCP 443 上的 HTTPS | 运行期间一直保持，每 15 秒一次 ping | 开 |
+| 网络探测 | 中继：443 上的 HTTPS、UDP 7842 上的 QUIC 地址发现、80 端口 HTTP 的网络登录页检测 | 每 20 到 26 秒一次，每 5 分钟一次完整探测，网络变化时也探测 | 开 |
+| 地址发布与查询 | `dns.iroh.link`（或 `address_lookup`）的 HTTPS 443，以及经系统发出的 DNS 查询 | 每 5 分钟和地址变化时发布；拨号前查询 | 开 |
+| 路由器端口映射 | 网关：UPnP SSDP 组播到 239.255.255.250:1900，NAT-PMP / PCP 到 UDP 5351 | 没有映射时每 20 到 26 秒一次（多数公司网络没有映射服务） | 关（设置 > 网络） |
+| 局域网发现 | mDNS 组播到 224.0.0.251:5353，同网段所有设备都能看到；广播时会通告本机设备 ID 和地址（包括公网地址） | 大约每秒一次 | 关（`lan_discovery`） |
+| 公共 DNS 兜底 | 1.1.1.1、8.8.8.8、9.9.9.9（UDP 53、HTTPS 443） | 只在系统完全没有配置 DNS 时 | 仅此时 |
+| 连接 | 对方设备（UDP 打洞）或中继 | 配对设备连着的时候；每 5 秒一次保活；流量大头是推流画面 | 开 |
 
 除此之外没有别的：不扫描端口或地址，不检查更新，不上报遥测。桌面端界面只和自己的进程通信。
 
