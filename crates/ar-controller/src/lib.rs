@@ -16,4 +16,4 @@ mod shim;
 
 pub use agent::{AgentRequest, EmbeddedController, run_agent};
 pub use hosts::KnownHost;
-pub use shim::{connect_agent, connect_agent_with, run_shim};
+pub use shim::{connect_agent, connect_agent_with, restart_agent, run_shim};

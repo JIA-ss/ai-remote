@@ -37,6 +37,21 @@ pub async fn connect_agent_with(profile: &Profile, cli: &Path) -> Result<Conn> {
     }
 }
 
+/// Stops the controller agent, if it runs, and waits until it is gone, so the next request starts a
+/// fresh one that reads the config again (a request sent while the old one is still exiting would
+/// meet a closing connection). Returns whether an agent was running.
+pub async fn restart_agent(profile: &Profile) -> bool {
+    let Ok(endpoint) = profile.control_endpoint(Role::Controller) else { return false };
+    let Ok(mut conn) = Conn::connect(&endpoint).await else { return false };
+    let _ = conn.request(&serde_json::json!({"op": "shutdown"})).await;
+    drop(conn);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && Conn::connect(&endpoint).await.is_ok() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    true
+}
+
 fn spawn_agent(profile: &Profile, cli: &Path) -> Result<()> {
     let log_path = profile.log_path(Role::Controller)?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;

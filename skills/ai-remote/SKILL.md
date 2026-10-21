@@ -170,6 +170,8 @@ computer; `--json` gives machine-readable output.
 
 ```sh
 ai-remote hosts                                   # paired computers, (default) marked
+ai-remote hosts address lab-pc 192.168.1.20       # LAN mode: where to dial a host whose address changed
+ai-remote network                                 # this computer's network settings (the owner's call to change)
 ai-remote info                                    # system_info
 ai-remote doctor --host lab-pc
 ai-remote shot -o screen.png --monitor 0          # screenshot (JPEG when PNG is over budget)

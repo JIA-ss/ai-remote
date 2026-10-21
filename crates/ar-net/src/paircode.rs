@@ -354,7 +354,10 @@ async fn read_line(recv: iroh::endpoint::RecvStream) -> Result<String> {
 /// A throwaway endpoint configured like the node's: the same relays, proxy and local discovery.
 async fn ephemeral_endpoint(secret: SecretKey, net: &NetworkOptions, serve: bool) -> Result<Endpoint> {
     use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
-    let relay = if net.relays.is_empty() {
+    // LAN mode: no relay and no address lookup, so only local discovery can find the code.
+    let relay = if net.lan_direct {
+        iroh::RelayMode::Disabled
+    } else if net.relays.is_empty() {
         iroh::RelayMode::Default
     } else {
         let mut urls = net.relays.clone();
@@ -378,7 +381,9 @@ async fn ephemeral_endpoint(secret: SecretKey, net: &NetworkOptions, serve: bool
     if !net.port_mapping {
         b = b.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
     }
-    if net.address_lookup.is_empty() {
+    if net.lan_direct {
+        // Nothing to publish to or look up in: local discovery below is the only way.
+    } else if net.address_lookup.is_empty() {
         b = b.address_lookup(PkarrResolver::n0_dns()).address_lookup(DnsAddressLookup::n0_dns());
         if serve {
             b = b.address_lookup(PkarrPublisher::n0_dns());
@@ -537,6 +542,7 @@ mod tests {
             port_mapping: false,
             quiet: false,
             address_lookup: vec![],
+            lan_direct: false,
         };
         let keys = derive(&code).await.unwrap();
         let host = keys.endpoint.public();

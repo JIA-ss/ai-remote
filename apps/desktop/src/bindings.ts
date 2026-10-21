@@ -76,17 +76,26 @@ export const commands = {
 	/**  Turns bypass on or off for a controller paired with this computer (see `local_host_bypass`). */
 	setLocalHostBypass: (peer: string, on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_local_host_bypass", { peer, on })),
 	/**
-	 *  This computer's network settings: whether it asks the router to open a port (UPnP, NAT-PMP,
-	 *  PCP), as a host or as a controller; whether `quiet = true` in either config locks that off; and
-	 *  whether ai-remote host runs here (it reads the setting when it starts).
+	 *  This computer's network settings: how it reaches its peers (`auto`, or `lan`: direct on the
+	 *  local network only); whether it asks the router to open a port (UPnP, NAT-PMP, PCP), as a host
+	 *  or as a controller; whether `quiet = true` in either config locks that off; whether ai-remote
+	 *  host runs here (it reads the settings when it starts) and, in LAN mode, where it is reached.
 	 */
 	networkSettings: () => typedError<Json, string>(__TAURI_INVOKE("network_settings")),
 	/**
-	 *  Turns router port mapping on or off for this computer, as a host and as a controller. The
-	 *  controller agent is restarted so it applies now (live views and agents reconnect); a host
-	 *  running here applies it when it next starts.
+	 *  Changes this computer's network settings, for its host and its controller alike; each `None`
+	 *  stays as it is. `mode`: `auto` (address lookup, hole punching, relays) or `lan` (direct on the
+	 *  local network only; a host listens on a fixed port). `lan_discovery`: find and be found on the
+	 *  local network (mDNS). `port_mapping`: ask the router for a port (UPnP, NAT-PMP, PCP). The
+	 *  controller agent restarts so the change applies now (live views and agents reconnect); a host
+	 *  running here applies it when it next starts. Returns the settings as [`network_settings`] does.
 	 */
-	setPortMapping: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_port_mapping", { on })),
+	updateNetwork: (mode: string | null, lanDiscovery: boolean | null, portMapping: boolean | null) => typedError<Json, string>(__TAURI_INVOKE("update_network", { mode, lanDiscovery, portMapping })),
+	/**
+	 *  Sets the addresses a paired host is dialled at (`ip`, `ip:port`, several separated by commas);
+	 *  in LAN mode the only way to reach a host whose address changed.
+	 */
+	setHostAddress: (host: string, address: string) => typedError<Json, string>(__TAURI_INVOKE("set_host_address", { host, address })),
 	/**
 	 *  This computer as a host, for the "This device" page: the running host's `status` (`null` when
 	 *  none runs here) and, with `doctor`, the doctor report: the host's own while it runs (its session,
