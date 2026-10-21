@@ -122,7 +122,8 @@ The local pipes are owner-only named pipes (Windows) or 0600 Unix sockets, one p
   controller can use self-hosted [iroh-relay](https://github.com/n0-computer/iroh) servers via
   `[network] relays = [...]`, with n0's relays kept as a fallback. Local-network (mDNS) discovery, an
   HTTP proxy for the relay connection (detected from the environment or the system) and dial retries
-  are on by default; see [operations.md](operations.md#12-connecting-across-networks). The controller
+  are on by default; `[network] quiet = true` turns off mDNS, router port mapping and the public DNS
+  fallback for managed networks; see [operations.md](operations.md#12-connecting-across-networks). The controller
   reports each connection's route (`path`, `relay`, `relay_n0`) and every client says when P2P failed.
 - **ALPN `app/ai-remote/events/1`.** The activity feed and the approval channel. A controller opens
   a stream per request and writes one JSON line: `{"subscribe":true}` returns the host's recent audit
