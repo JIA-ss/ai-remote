@@ -32,7 +32,17 @@ test("client JSON uses its own schema without changing executable or profile", (
   assert.deepEqual(JSON.parse(mcpInstall("vscode", launch, false).config).servers["ai-remote"], { type: "stdio", ...launch });
 });
 
-test("Codex TOML round trips paths with spaces, Unicode and backslashes", () => {
+// The round trip needs Python 3.11's tomllib; an older python3 (macOS Command Line Tools ship 3.9) skips it.
+const hasTomllib = (() => {
+  try {
+    execFileSync("python3", ["-c", "import tomllib"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test("Codex TOML round trips paths with spaces, Unicode and backslashes", { skip: !hasTomllib && "python3 without tomllib" }, () => {
   for (const config of [launch, { command: "C:\\Program Files\\ai-remote\\ai-remote.exe", args: ["--home", "C:\\Users\\O'Brien\\配置", "mcp"] }]) {
     const text = mcpInstall("codex", config, true).config;
     const parsed = JSON.parse(execFileSync("python3", ["-c", "import sys,json,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"], { input: text, encoding: "utf8", env: { ...process.env, PYTHONUTF8: "1" } }));

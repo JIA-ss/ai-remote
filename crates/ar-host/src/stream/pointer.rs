@@ -1,7 +1,7 @@
 //! The pointer, for viewers that draw it themselves (`"cursor":"client"` in the live-view request):
 //! where it is and what it looks like, read from the system instead of being drawn into the
 //! picture. A moving pointer then costs a few bytes instead of re-encoding the frame under it, and
-//! the viewer can draw it at its own refresh rate. Windows only for now; elsewhere the pointer stays
+//! the viewer can draw it at its own refresh rate. Windows and macOS; elsewhere the pointer stays
 //! in the picture.
 
 /// Where the pointer is, in screen coordinates (the space of the stream's `screen` rect).
@@ -25,8 +25,11 @@ pub struct Shape {
 
 /// Whether this platform can report the pointer separately.
 pub fn supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "macos"))
 }
+
+#[cfg(target_os = "macos")]
+pub use mac::{position, shape};
 
 #[cfg(windows)]
 pub fn position() -> Option<Position> {
@@ -38,7 +41,7 @@ pub fn position() -> Option<Position> {
     Some(Position { x: info.ptScreenPos.x, y: info.ptScreenPos.y, visible, shape: info.hCursor.0 as usize as u64 })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn position() -> Option<Position> {
     None
 }
@@ -114,9 +117,193 @@ pub fn shape(id: u64) -> Option<Shape> {
     (position()?.shape == id).then_some(Shape { hotspot: (icon.xHotspot, icon.yHotspot), ..shape })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn shape(_id: u64) -> Option<Shape> {
     None
+}
+
+/// The pointer on macOS: its place from a CoreGraphics event, its picture from AppKit's current
+/// system cursor, rendered at point size so that it matches the stream's `screen` rect (points,
+/// not Retina pixels) and hashed to tell shapes apart. A still pointer costs one small render a
+/// poll; a cached handle would be cheaper but AppKit hands out no stable identity for cursors.
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+
+    use objc2_app_kit::{NSCursor, NSImage};
+
+    use super::{Position, Shape};
+
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGPoint,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        fn CGEventGetLocation(event: *const c_void) -> CGPoint;
+        fn CGCursorIsVisible() -> bool;
+        fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
+        fn CGColorSpaceRelease(space: *mut c_void);
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            width: usize,
+            height: usize,
+            bits_per_component: usize,
+            bytes_per_row: usize,
+            space: *const c_void,
+            bitmap_info: u32,
+        ) -> *mut c_void;
+        fn CGContextDrawImage(context: *mut c_void, rect: CGRect, image: *const c_void);
+        fn CGContextRelease(context: *mut c_void);
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
+    /// `kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little`: BGRA in memory.
+    const BGRA_PREMULTIPLIED: u32 = 2 | (2 << 12);
+    /// Larger than any cursor; a runaway size is refused rather than rendered.
+    const MAX_SIDE: f64 = 256.0;
+
+    pub fn position() -> Option<Position> {
+        // SAFETY: a plain query; the event object is released once.
+        let at = unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            if event.is_null() {
+                return None;
+            }
+            let at = CGEventGetLocation(event);
+            CFRelease(event);
+            at
+        };
+        if !at.x.is_finite() || !at.y.is_finite() {
+            return None;
+        }
+        // SAFETY: a plain query.
+        let visible = unsafe { CGCursorIsVisible() };
+        let shape = current().map(|(id, _)| id).unwrap_or(0);
+        Some(Position { x: at.x.round() as i32, y: at.y.round() as i32, visible, shape })
+    }
+
+    pub fn shape(id: u64) -> Option<Shape> {
+        current().filter(|(now, _)| *now == id).map(|(_, shape)| shape)
+    }
+
+    /// The current pointer picture with its id (a hash of the picture and hot spot).
+    fn current() -> Option<(u64, Shape)> {
+        // Deprecated in favour of ScreenCaptureKit drawing the pointer into the picture, which is
+        // the very thing this reader avoids; `currentCursor` would be this windowless host's own.
+        #[allow(deprecated)]
+        let cursor = NSCursor::currentSystemCursor().unwrap_or_else(NSCursor::currentCursor);
+        let image = cursor.image();
+        let hot = cursor.hotSpot();
+        let size = image.size();
+        if !(size.width >= 1.0 && size.width <= MAX_SIDE && size.height >= 1.0 && size.height <= MAX_SIDE) {
+            return None;
+        }
+        let (width, height) = (size.width.round() as u32, size.height.round() as u32);
+        let bgra = render(&image, width, height)?;
+        let hotspot = (
+            hot.x.round().clamp(0.0, f64::from(width - 1)) as u32,
+            hot.y.round().clamp(0.0, f64::from(height - 1)) as u32,
+        );
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bgra.iter().copied().chain([hotspot.0 as u8, hotspot.1 as u8]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Some((hash.max(1), Shape { width, height, hotspot, bgra }))
+    }
+
+    /// The image drawn into a `width` x `height` straight-alpha BGRA bitmap, top row first.
+    fn render(image: &NSImage, width: u32, height: u32) -> Option<Vec<u8>> {
+        // SAFETY: a null rect asks for the representation that fits best; no context or hints.
+        let cg = unsafe { image.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }?;
+        let (w, h) = (width as usize, height as usize);
+        let mut premultiplied = vec![0u8; w * h * 4];
+        // SAFETY: the bitmap context draws into `premultiplied`, which outlives it; every object
+        // created here is released on every path.
+        unsafe {
+            let space = CGColorSpaceCreateDeviceRGB();
+            if space.is_null() {
+                return None;
+            }
+            let context =
+                CGBitmapContextCreate(premultiplied.as_mut_ptr().cast(), w, h, 8, w * 4, space, BGRA_PREMULTIPLIED);
+            CGColorSpaceRelease(space);
+            if context.is_null() {
+                return None;
+            }
+            let rect = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGPoint { x: f64::from(width), y: f64::from(height) },
+            };
+            CGContextDrawImage(context, rect, objc2::rc::Retained::as_ptr(&cg).cast());
+            CGContextRelease(context);
+        }
+        // Core Graphics bitmaps are bottom-up; a pointer picture is top row first.
+        let mut bgra = Vec::with_capacity(premultiplied.len());
+        for row in premultiplied.chunks_exact(w * 4).rev() {
+            bgra.extend_from_slice(row);
+        }
+        for p in bgra.chunks_exact_mut(4) {
+            let a = u32::from(p[3]);
+            if a != 0 && a != 255 {
+                for c in &mut p[..3] {
+                    *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
+        }
+        Some(bgra)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_current_pointer_can_be_read() {
+            // A session without a window server (CI) has no pointer to read.
+            let Some(at) = position() else { return };
+            if at.shape == 0 {
+                return;
+            }
+            let shape = shape(at.shape).expect("the shape read a moment ago");
+            assert_eq!(shape.bgra.len(), (shape.width * shape.height * 4) as usize);
+            assert!(shape.hotspot.0 < shape.width && shape.hotspot.1 < shape.height);
+            // The arrow is mostly transparent with some opaque pixels.
+            assert!(shape.bgra.chunks_exact(4).any(|p| p[3] == 255));
+            assert!(shape.bgra.chunks_exact(4).any(|p| p[3] == 0));
+        }
+
+        /// The shape id must not flicker between polls, or a still pointer would be sent at the
+        /// poll rate; a person using the machine may change the cursor a time or two meanwhile.
+        #[test]
+        fn the_shape_id_is_stable_between_polls() {
+            let Some(first) = position() else { return };
+            if first.shape == 0 {
+                return;
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            let start = std::time::Instant::now();
+            for _ in 0..200 {
+                ids.insert(position().unwrap().shape);
+            }
+            eprintln!("200 polls in {:?}: {} distinct shape ids", start.elapsed(), ids.len());
+            assert!(ids.len() <= 3, "{ids:?}");
+        }
+    }
 }
 
 /// A colour pointer: its own alpha when it has one, otherwise opaque where the AND mask is clear.

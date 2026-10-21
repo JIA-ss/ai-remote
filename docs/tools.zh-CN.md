@@ -3,7 +3,7 @@
 中文 | [English](tools.md)
 
 本文是参考手册，涵盖 Agent 通过 `ai-remote mcp` 拿到的工具、如何在被控端挂载其他 MCP server，
-以及决定调用能否执行的策略规则。内容针对 M0 的 Windows 被控端；macOS 上的行为尚在规划中。
+以及决定调用能否执行的策略规则。内容针对 Windows 被控端；macOS 被控端提供同一套工具（有差异处会注明）。
 安装和运行被控端见 [operations.zh-CN.md](operations.zh-CN.md)；设计见 [architecture.zh-CN.md](architecture.zh-CN.md)。
 
 ## 目录

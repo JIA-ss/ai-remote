@@ -423,20 +423,19 @@ python tools/stream-quality.py --no-vmaf
 - [x] 自适应码率（只调码率，不调分辨率/帧率；降分辨率在桌面内容上实测更差，见"NVENC 参数"末条）。下一步：真实网络实测。
 - [x] 调 NVENC 参数：VBV 之前没生效，现在 0.25 s；QualityVsSpeed 保持默认（见"NVENC 参数"）。文字清晰度（4:4:4）解码端普遍不支持，暂不做。
 - [x] 关键帧起始偏糊（VBV 生效的代价）：加大关键帧无效，改为静止画面补清（见"NVENC 参数"）。
-- [x] 光标改为客户端绘制（Windows 被控端 + 桌面端）。待做：macOS 被控端、iOS 观看端、移动鼠标时的收益实测。
+- [x] 光标改为客户端绘制（Windows 被控端 + 桌面端）。2026-10-20 补了 macOS 被控端和 iOS 观看端（见"Mac 被控端补全"一节）。
+      待做：移动鼠标时的收益实测。
 
-**Mac 被控端（需要在 Mac 上做）** — `crates/ar-host/src/stream/encode/mac.rs`、`capture/mac.rs`
-- [ ] `capture::refresh_hz` 在 Mac 上返回 `None`（帧率只受请求限制）；用 CGDisplayMode 的刷新率补上。
-- [ ] `AI_REMOTE_TEST_PATTERN` 只在 Windows 实现；Mac 上可在 `capture/mac.rs` 里用 IOSurface 生成同样的滚动图案。
-- [ ] VideoToolbox HEVC（Apple Silicon 全系硬件支持）：`Codec::HEVC`，参数集用 HEVC 的 VPS/SPS/PPS 转 Annex B；
-      `hardware_available` 里放开 `Codec::Hevc`；`Encoded.codec` 填 Hevc。AV1 苹果没有硬件编码。
-- [ ] 帧率上限：`capture/mac.rs` 里 `max_fps.clamp(1, 60)` 改为 240（ProMotion 120 Hz）；`native_size` 的 3840 上限放开。
-- [ ] H.264 从 Baseline 改 High（同码率画质更好，所有解码端都支持），去掉 `max_keyframe_interval` 的周期 IDR。
-- [ ] 低延迟码控：`kVTVideoEncoderSpecification_EnableLowLatencyRateControl`（之前在 M4 上硬件状态查询失败，需重试）。
-- [ ] 在 Mac 上跑 `tools/webcodecs-decode-check.mjs`（参数传 Chrome 路径）验证 WKWebView/Chrome 的 HEVC/AV1 支持。
+**Mac 被控端** — 2026-10-20 全部做完，见下面"Mac 被控端补全"一节。
+- [x] `capture::refresh_hz`：CGDisplayCopyDisplayMode / CGDisplayModeGetRefreshRate。
+- [x] `AI_REMOTE_TEST_PATTERN`：共享的 `capture::pattern` 模块，Mac 上写进 IOSurface 池。
+- [x] VideoToolbox HEVC，H.264 改 High，去掉周期 IDR，低延迟码控，在线改码率。
+- [x] 帧率上限 240、长边上限 8192（按编码器再限：H.264 4096）。
+- [x] `tools/webcodecs-decode-check.mjs` 在 Mac 上用 Chrome 跑过：HEVC/H.264 都解。
 
 **iPhone 主控端** — `apps/ios/Sources/H264Decoder.swift`、`crates/ar-mobile`
-- [ ] 请求里带 `codecs: ["hevc","h264"]`，解码器按帧头编码位走 HEVC（`CMVideoFormatDescriptionCreateFromHEVCParameterSets`）。
+- [x] 请求里带 `codecs: ["hevc","h264"]` 和 `cursor: "client"`，解码器按帧头编码位走 HEVC，画面上叠加被控端光标
+      （2026-10-20，只过了 macOS 上的 `swiftc -typecheck`，UIKit 部分靠 iOS CI）。
 
 **传输**
 - [ ] QUIC 接收窗口：高码率 + 高 RTT 时单流窗口可能不够（`ar-net` 拨号可传 `QuicTransportConfig`）。先测再改。
@@ -627,11 +626,17 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 ### 下一步
 
-- [ ] **管理员终端实跑服务模式**（见上一节"未测"）：`ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
+- [x] **服务模式真机实跑**（2026-10-20/21，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
+      SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面与真实锁屏上的截图 / 推流 / doctor / `ctrl+alt+del`（SendSAS）/
+      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换、重启后服务自启、注销后的登录界面、`stop-host`
+      连带停服务再 `sc start` 拉起、`host uninstall` 恢复（服务删除、SAS 策略回 0、防火墙规则清空），全部通过。原条目：
+      `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
-- [ ] 本机手动验证 `follow_input_desktop`：解锁后、切了别的桌面后注入是否恢复（见上上节）。
-- [ ] macOS 锁屏 / 登录界面：系统级 LaunchAgent + `LimitLoadToSessionType = [LoginWindow, Aqua]`，`stream/capture/mac.rs`
-      的 `check_access` 放行；要在 Mac 上做。
+- [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
+      （d42a8b4 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
+- [x] macOS 锁屏 / 登录界面：锁屏在 `platform/macos.rs` 里按"可达的安全桌面"处理；登录界面靠
+      `host install --service` 的系统级 LaunchAgent（`LimitLoadToSessionType = [LoginWindow, Aqua]`）。代码 2026-10-20
+      落地，**真机锁屏 / 注销 / 重启验证未做**，见"Mac 被控端补全"一节。
 - [ ] 跑 `dda_desktop_switch_recovery`，把解锁 / 改分辨率 / 全屏游戏进出三种切换的重建耗时、漏帧、黑帧实测填回上面。
 - [ ] DDA 下把光标画进画面（`DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`）。现状辨析：请求 `cursor:"client"`
       的观看端在 DDA 下**已经能看到光标**（光标走带外单独发，`protocol.rs` 的 `PointerFeed`），桌面端 `Session.tsx`
@@ -642,6 +647,56 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       BlendState）把光标画上去，再交给 `Converter::convert`。约 200+ 行 D3D11+HLSL，落在 5 ms 的热路径上，要测对热路径的
       影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
 - [x] 服务化以后在锁屏和 UAC 场景下自动选 DDA：已做（`capture::want_dda`），环境变量保留为强制开关。
+
+### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + bd9cd83）
+
+通过 zremote 的提权会话在开发机上执行，Mac 作控制端（Mac 10.1.120.x，开发机 10.1.77.x，不同网段）。
+
+- `host install --service --dry-run` 与文档 3.2 节一致；真装一次成功：服务 pid 在 session 0，
+  `ai-remote-hostw` 以 `NT AUTHORITY\SYSTEM` 跑在 Console 会话（session 1），`host status` / `doctor` 全绿
+  （relay 警告：公司网无外网）。`CreateProcessAsUserW` 这段第一次跑就对。
+- Mac 配对后 `hosts` 报 `path: direct`（跨网段直连，无中继）；`shot`、`info`、`doctor --host` 正常。
+- `keyboard ctrl+alt+del` 走 SendSAS 生效：`info` 变 `input_desktop: Winlogon, secure_desktop: true`，`doctor` 的
+  `desktop` / `approval` 按设计变 warn，**安全桌面截图正常**（DDA 在 SYSTEM 下采到 SAS 菜单）。
+- **安全桌面上的注入失败**：`mouse move` 报 `拒绝访问 (os error 5)`（SetCursorPos），`keyboard enter/escape` 报
+  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（bd9cd83）后仍失败，host.log 没有
+  `cannot switch` 的 warn。对照实验：用被控端的 `shell` 工具（同一个 SYSTEM 令牌、同一 Console 会话）跑一段
+  P/Invoke 脚本，在新线程里 OpenInputDesktop(GENERIC_ALL 或本项目的标志) → SetThreadDesktop → SetCursorPos →
+  SendInput **全部成功**，桌面名 Winlogon；以用户身份跑则 OpenInputDesktop 就是 err 5。所以系统层没问题，
+  差异在被控端进程内部，未定位。2026-10-21 补一条（f850318 把切桌面日志提到 info）：被控端日志里确实有
+  `input thread switched desktop from="Default" to="Winlogon"`，紧接着 SendInput 仍报 os error 5——
+  **线程已经在 Winlogon 上，注入照样被拒**。那么差异不在线程所在桌面，而在进程本身（对照脚本是被控端的子进程，
+  却能成功）：候选是被控端进程的 integrity level / 令牌属性（服务用 DuplicateTokenEx + TokenSessionId 造的令牌
+  和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。
+  **2026-10-21 定位并修复**：在失败点打印上下文（f21cdc0，`platform::input_context`）——线程桌面 Winlogon、输入桌面
+  Winlogon、本进程和前台窗口都是 System 完整性，全部对称；但在**同一个线程**上紧接着用 `GENERIC_ALL` 重新 OpenInputDesktop
+  + SetThreadDesktop 后，SetCursorPos 和 SendInput 立刻成功。差异只在桌面句柄的访问权限：原来沿用采集侧的标志集
+  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（d42a8b4，RustDesk 同）后，
+  SAS 菜单和真实锁屏上 `mouse move`、`keyboard escape` 都成功，Esc 真的关掉了 SAS 菜单（`info` 回到 Default）。
+  用户会话的 Default 桌面上原标志集够用，所以之前从没暴露。`input_context` 的探针留着：只在注入被拒时跑，会发一个
+  相对 (0,0) 的空移动。
+- 真实锁屏（SAS 菜单里选"锁定"）：Windows 11 把控制台切到了**新会话 6**（原用户会话 1 变 Disc），服务日志
+  `the console session changed; stopping the host in the old one from=1 to="none"` → 1.2 s 后
+  `started the host in the console session session=6`，被控端自动跟过去；`info` 报 session 6 / Winlogon / secure，
+  `shot` 截到真实锁屏（PIN 框、用户列表），`mouse move`、`keyboard escape` ok，`view` 3 s H.264 28.7 fps。
+  **没在锁屏上输过密码**（不做）；解锁走 skill win-dev-unlock（agent 在 Mac 的 Windows App 里点一次 RDP，
+  计划任务切回控制台）。
+- **重启**（`shutdown /r`）：服务开机自启（日志 `ai-remote service started` → 同秒 `started the host in the console
+  session session=1`），但这台开发机配了自动登录，重启后直接进桌面，**观察不到重启后的登录界面**。
+- **注销**（`shutdown /l`，等价于没有自动登录的重启）：控制台切到会话 2，被控端跟过去：`info` 报
+  `session_id: 2, input_desktop: Winlogon, secure_desktop: true`，`doctor` 的 session/console ok、desktop/approval warn，
+  `shot` 截到真实登录界面（时钟壁纸）。之后用 RDP 登录一次，控制台回到用户会话。
+- `stop-host`：服务一起 STOPPED、hostw 进程 0；`sc start` 后 `host status` 又是 running。`host uninstall`：服务删除、
+  `SoftwareSASGeneration` 回 0、`ai-remote host` 防火墙规则 0 条、无 hostw 进程；开发机恢复到安装前。
+- 结论：AGENTS 里锁屏专项 Windows 侧的"未测"清单已全部真机过了一遍；全量 `cargo clippy -D warnings` 和
+  `cargo test --workspace`（236 passed）在 Windows 上也过。还没做的只剩 Mac 的注销 / 登录界面（会杀掉开发会话，
+  且系统级 LaunchAgent 要 sudo）。
+- 当时写下的排查方向（已走完）：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
+  （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
+  核对被控端进程的 integrity level 与 shell 子进程是否相同。
+- 没跑：重启到登录界面、`stop-host` 连带停服务、`host uninstall` 恢复策略。开发机上服务**仍装着**
+  （`ai-remote-host-cc166525`，SAS 策略已改为 1），不再需要时在管理员终端 `ai-remote host uninstall`。
+- 跨机器连通性（原列在"连通性"一节）：跨网段直连已验证；mDNS 跨不了网段，本次没法测同网段发现；强制中继未测。
 
 ## 连通性：尽量无感连上，走中继时明确提示（2026-10-12 起，分支 `feat/connectivity`）
 
@@ -686,3 +741,101 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 - [x] 固定 UDP 端口 `[network] port`（vendored mcpmesh 第三处补丁 `bind_port`）：IPv4 绑定到该端口，端口被占用时
       回退随机端口并告警（测试 `bind_port_is_used_when_free_and_skipped_when_taken`）。
 - [ ] 用局域网里的另一台机器做跨机器验证：mDNS（断外网）、强制中继（`unstable-relay-only` 构建）看提示。
+
+## Mac 被控端补全：锁屏 / 登录界面、HEVC、刷新率、光标、iOS（2026-10-20，在 Mac 上做）
+
+这一轮把 AGENTS 里所有标着"要在 Mac 上做"的项一次做完；在一台 Apple Silicon（arm64）、macOS 26.5 的 Mac 上开发，
+本机没有 Xcode（只有 Command Line Tools），iOS 侧只能做到 `swiftc -typecheck` 平台无关文件，UIKit 部分靠 CI。
+
+### 锁屏 / 登录界面（`platform/macos.rs`、`install/launchd.rs`、`install/macos.rs`、`ai-remote-hostw --owner-uid`）
+
+- **锁屏**：`CGSessionCopyCurrentDictionary` 的 `CGSSessionScreenIsLocked` 为真时，以前直接 `desktop_usable=false`。
+  现在和 Windows 的安全桌面一样：`desktop_usable=true, secure_desktop=true, input_desktop="lock screen"`——
+  锁屏画面是同一个 Aqua 会话里 loginwindow 画的，用户自己的进程采得到、CGEvent 也打得进去（RustDesk 就这么输密码），
+  只是没人在场回答审批（`prompt_blocker` 照旧拒绝）。`doctor` 的 `desktop` 变 warn。采集侧 `check_access` 没改：它看的
+  就是 `desktop_usable`。
+- **登录界面**（重启后 / 注销后）：`kCGSessionLoginDoneKey` 为假，这是另一个会话，用户级 LaunchAgent 进不去。
+  做法照 RustDesk 的 `agent.plist`：`host install --service` 在 macOS 上写 `/Library/LaunchAgents/<label>.plist`，
+  `LimitLoadToSessionType = [LoginWindow, Aqua]`，并删掉用户级那份（两份都在会在 Aqua 会话里起两个被控端）。
+  写 `/Library/LaunchAgents` 要 root，所以计划带 `blocker`："run this with sudo"；`sudo` 会改 `HOME`，所以账号从
+  **配置目录的属主**（`metadata().uid()`）读，不用 `current_user_id()`（它在 sudo 下是 0；这个函数现在只剩 Windows 用）。
+- **登录界面里的身份**：launchd 在 LoginWindow 会话里以 root 起 agent，在 Aqua 会话里以用户起（同一个 plist）。
+  以 root 跑会把审计日志、配对文件写成 root 所有，之后用户会话里的被控端就写不了；TCC 的"屏幕录制"授权也是按
+  (用户, 可执行文件) 记的。所以 plist 多传 `--owner-uid <uid>`，被控端起来时若 `geteuid()==0` 就
+  `initgroups → setgid → setuid`（并验证 `setuid(0)` 失败、改 `HOME`/`USER`），变成安装它的用户；非 root 时只打标记
+  `login_window_agent=true`，让 `session_state` 在未登录时也报可用。`AI_REMOTE_KEEP_ROOT=1` 保留 RustDesk 的 root 方案
+  作为逃生口。
+- **未验证（没法在这台正在用的机器上做）**：锁屏时 ScreenCaptureKit 是否真的出画面、CGEvent 能否解锁；
+  `sudo … host install --service` 后注销 / 重启到登录界面，降到用户的进程在 LoginWindow 会话里能否采集、能否输入
+  （TCC 对这种进程怎么判，没有把握——所以才留了 `AI_REMOTE_KEEP_ROOT`）。**要人在 Mac 上走一遍**：锁屏 → 控制端看画面
+  输密码；`sudo ai-remote --home "$HOME/Library/Application Support/ai-remote" host install --service` → 注销 → 控制端
+  看登录界面、输密码登录 → 回到桌面后 `host status` 看 agent 还在；再重启一次。失败先看 `host/host.log` 和
+  `host/host-stderr.log`。
+- 单测：`platform::macos::tests`（四种会话状态的判定）、`install::launchd::tests`（系统 agent 的 plist 带数组
+  `LimitLoadToSessionType` 和 `--owner-uid`）。
+
+### 推流（`stream/capture/mac.rs`、`stream/encode/mac.rs`、`stream/encode.rs`）
+
+- **刷新率**：`refresh_hz` 走 `CGDisplayCopyDisplayMode` + `CGDisplayModeGetRefreshRate`（0 表示不知道 → `None`）。
+  帧率上限 60 → 240，长边上限 3840 → 8192（`encode::plan` 再按编码器限：H.264 4096）。
+- **HEVC + H.264 High + 低延迟码控**：`HardwareEncoder::new(..., codec)`，HEVC 用 `HEVCMainAutoLevel`、H.264 用
+  `H264HighAutoLevel`；先带 `EnableLowLatencyRateControl` 建会话，失败再建普通的。**坑**：低延迟会话不支持查询
+  `UsingHardwareAcceleratedVideoEncoder`（`VTSessionCopyProperty` 返回 -12900），之前"M4 上硬件状态查询失败"就是这个——
+  `RequireHardwareAcceleratedVideoEncoder` 本身已保证硬件，所以低延迟会话跳过这个查询。周期 IDR 去掉
+  （`MaxKeyFrameInterval` 设成 2^30；VideoToolbox 要正数）。`prepare_hardware` 现在和 Windows 一样按观看端的偏好顺序
+  逐个试编码器，每个按自己的长边上限算尺寸。`avcc_to_annex_b` 带 `codec`：HEVC 关键帧前面要 VPS(32)/SPS(33)/PPS(34)。
+- **在线改码率**：`session.set_properties({AverageBitRate})`，不再重建编码器；失败才重建。
+- **测试图案**：`desktop_like` / `scroll_top` / `test_pattern_size` / `still_after` 抽到 `capture::pattern`（两平台共用，
+  Windows 的 `win.rs` 改为引用；Windows 侧没编译，靠 CI）。Mac 的 `start_test_pattern` 把滚动画面写进 4 张 IOSurface
+  轮换（一张在编码、一张在槽里、两张在写），编码器走和真实采集一样的 `encode_pixel_buffer` 路径。
+- **实测（本机，arm64，release，`AI_REMOTE_TEST_PATTERN=1920x1080`，每档 6 s，各 1 次）**：
+  `tools/stream-e2e.py`（本机 python 3.9 缺 `ignore_cleanup_errors`，用垫片跑；临时目录要 `TMPDIR=/tmp`，不然 Unix
+  socket 路径超长）：
+
+  | 配置 | 编码 | fps | Mbit/s | 首帧 | 帧距 p50/p95 ms | 延迟 p50/p95 ms |
+  |---|---|---|---|---|---|---|
+  | 1080p30 h264 | h264 | 27.3 | 5.3 | 388 | 34.6 / 42.1 | 23.4 / 38.3 |
+  | 1080p60 (balanced) | hevc | 58.0 | 10.7 | 48 | 17.2 / 19.8 | 14.7 / 23.5 |
+  | 4K60 h264（图案只有 1080p） | h264 | 58.3 | 23.1 | 58 | 17.2 / 19.7 | 12.8 / 21.6 |
+  | native 240 (ultra) | hevc | 98.8 | 30.9 | 45 | 10.0 / 11.1 | 13.1 / 15.5 |
+
+  "native 240" 只到 98.8 fps 的瓶颈没定位（图案线程每帧 memcpy 8 MB、编码器、或刷新率上限，未分开测）。
+  硬件单测 `hardware_native_annex_b_roundtrip`、`hardware_hevc_keyframes_carry_parameter_sets`（`--ignored`）过，
+  后者顺手把 60 帧 1280x720 的 HEVC/H.264 码流写到 `target/stream-bench/`；
+  `node tools/webcodecs-decode-check.mjs "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`：
+  `hev1.1.6.L186.B0` 60/60 帧解出（约 3700 fps，硬解），`avc1.640020`（High）60/60 帧解出（约 47 fps，像是软解或冷启动，
+  未深究）。桌面端 WKWebView 的 HEVC 没单独测，WebKit 的 WebCodecs 支持面和 Chrome 不同。
+
+### 光标（`stream/pointer.rs`）
+
+- macOS 实现：位置用 `CGEventCreate(NULL)` + `CGEventGetLocation`（全局坐标，主屏左上为原点，和 xcap 的显示器坐标同一空间），
+  可见性 `CGCursorIsVisible`，图像用 `NSCursor.currentSystemCursor`（已废弃但能用；替代品是让 ScreenCaptureKit 把光标画进
+  画面，正是这里要避免的）→ `NSImage.CGImageForProposedRect` → 画进 BGRA 位图上下文 → 去预乘、翻转行序。
+  **按点而不是像素渲染**（Retina 上光标图 2x，但协议里 `screen` 矩形是点，观看端按同一单位画），hotspot 也是点。
+  AppKit 不给光标稳定的标识，所以 shape id 是渲染结果 + hotspot 的 FNV 哈希，每次 poll 都渲染一次（本机 200 次 42 ms，
+  即 0.2 ms/次，id 稳定不抖）。请求 `cursor:"client"` 时 `SCStreamConfiguration.showsCursor=false`。
+- 依赖：`objc2`、`objc2-app-kit`（NSCursor/NSImage）、`objc2-foundation`、`libc`（setuid 等），都已在 lock 里。
+
+### iOS 观看端（`apps/ios/Sources`、`crates/ar-mobile`）
+
+- `ar-mobile::watch_screen` 请求 `codecs:["hevc","h264"]`、`cursor:"client"`，并把 kind 1/4/5 消息都交给 listener
+  （kind 3 pong 丢掉；以前只认 kind 1，其他直接断流）。
+- `PhoneModel.swift`：`ScreenHeader`（18 字节头）、`ScreenCodec`、`PointerPosition`（kind 4）、`PointerShape`
+  （kind 5 → CGImage，`byteOrder32Little | alphaFirst` 即内存里 BGRA 直通 alpha）；`ScreenFrame` 带 `codec`。
+- `H264Decoder.swift`（类名没改）：按帧头编码位走 H.264 或 HEVC（VPS/SPS/PPS →
+  `CMVideoFormatDescriptionCreateFromHEVCParameterSets`），编码切换时重建会话。
+- `PhoneStore` 按 kind 分发；`NativePhoneViewport` 里光标是 `imageView` 的子视图（跟着缩放平移），位置从 `screen`
+  矩形单位换算到图像像素；没图的 shape 0 画一个默认箭头。
+- 只过了 `swiftc -typecheck -target arm64-apple-macos14 PhoneModel.swift H264Decoder.swift`；Store / Viewport / RootView
+  依赖 UIKit 和 uniffi 生成的 `AIRemoteCore`，本机没法编，**靠 iOS CI**，真机没跑。
+
+### 下一步
+
+- [~] 真机锁屏 **已验证**（2026-10-21，这台 Mac，用户级被控端 + 本机控制端）：Ctrl+Cmd+Q 锁屏后 `info` 报
+      `input_desktop: "lock screen", secure_desktop: true`，`doctor` 的 desktop/approval 按设计 warn，`shot` 截到真实锁屏
+      （时钟、头像、密码框），`mouse move` ok，`view` 3 s H.264 27 fps（1920x810）。注销 / 重启到登录界面（系统级
+      LaunchAgent + 降权）**仍未验证**；按结果决定是否默认 `AI_REMOTE_KEEP_ROOT`。
+- [ ] 桌面端在 Mac 上实测 HEVC（WKWebView 的 WebCodecs），以及移动鼠标时客户端光标的收益。
+- [ ] "native 240" 档的 98.8 fps 瓶颈。
+- [ ] iOS CI 过后在 iPhone 上看 HEVC 和光标叠加。
+

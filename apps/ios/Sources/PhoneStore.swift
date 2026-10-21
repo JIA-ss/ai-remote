@@ -17,6 +17,10 @@ import AIRemoteCore
     public var connected = false
     public var image: CGImage?
     public var screen: ScreenGeometry?
+    /// The host's pointer, drawn by this app over the picture (the host leaves it out of the picture
+    /// when it can). `nil`: in the picture, or not known yet.
+    public var pointer: PhonePointer?
+    private var pointerShapes: [UInt32: PointerShape] = [:]
     public var level: String?
     /// The host's owner trusts this device with everything: every tool, no approvals, whatever `level`.
     public var bypass = false
@@ -111,7 +115,22 @@ import AIRemoteCore
                 Task { @MainActor in await self?.requestVideoKeyframe(token: token) }
             })
             let renderer = decoder!
-            let video = StreamListener(frame: { renderer.push($0) }, ended: { [weak self] reason in
+            let video = StreamListener(frame: { [weak self] data in
+                switch ScreenHeader(data)?.kind {
+                case 1: renderer.push(data)
+                case 4:
+                    guard let position = PointerPosition(data) else { return }
+                    Task { @MainActor in self?.pointerMoved(position, token: token) }
+                case 5:
+                    guard let shape = PointerShape(data) else { return }
+                    Task { @MainActor in
+                        guard let self, token == self.generation else { return }
+                        self.pointerShapes[shape.id] = shape
+                        if let pointer = self.pointer, pointer.shapeID == shape.id { self.pointer = PhonePointer(pointer.position, shape) }
+                    }
+                default: break
+                }
+            }, ended: { [weak self] reason in
                 Task { @MainActor in await self?.videoEnded(reason: reason, token: token) }
             })
             let view = try await client.video(host: host.name, listener: video)
@@ -138,12 +157,16 @@ import AIRemoteCore
             }
         }
     }
+    private func pointerMoved(_ position: PointerPosition, token: Int) {
+        guard token == generation else { return }
+        pointer = PhonePointer(position, pointerShapes[position.shape])
+    }
     private func videoEnded(reason: String, token: Int) async {
         guard token == generation, reason != "stopped" else { return }
         generation += 1
         routeWatch?.cancel(); routeWatch = nil; route = nil
         let oldSubscriptions = [videoID, eventID].compactMap { $0 }
-        videoID = nil; eventID = nil; screen = nil; keyframePending = false
+        videoID = nil; eventID = nil; screen = nil; keyframePending = false; pointer = nil; pointerShapes = [:]
         imageRelay?.close(); decoder?.close()
         connected = false; error = reason
         // These are leases on the originating core, not IDs that can be reused after reopening.
@@ -227,7 +250,7 @@ import AIRemoteCore
                 _ = await group.next(); group.cancelAll()
             }
         }
-        selected = nil; image = nil; screen = nil; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""; level = nil; bypass = false; driver = "agent"
+        selected = nil; image = nil; screen = nil; pointer = nil; pointerShapes = [:]; connected = false; pending = []; activity = []; ownName = ""; driverDevice = ""; level = nil; bypass = false; driver = "agent"
     }
     public func suspend() async {
         active = false; lifecycleGeneration += 1
@@ -237,6 +260,18 @@ import AIRemoteCore
         await task.value
         suspending = nil
     }
+}
+
+/// The host's pointer as the viewport draws it: where (screen rect units) and what.
+public struct PhonePointer: Sendable {
+    public let position: PointerPosition
+    /// The picture, with its hot spot; `nil`: draw a default arrow.
+    public let shape: PointerShape?
+    public var visible: Bool { position.visible }
+    public var x: Double { position.x }
+    public var y: Double { position.y }
+    public var shapeID: UInt32 { position.shape }
+    init(_ position: PointerPosition, _ shape: PointerShape?) { self.position = position; self.shape = shape }
 }
 
 /// One queued MainActor update and one newest picture, even if rendering the UI falls behind.

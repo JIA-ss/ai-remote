@@ -48,6 +48,11 @@ core-foundation = "0.10"
 screencapturekit = { version = "=11.0.0", default-features = false }
 videotoolbox = { version = "=0.21.0", default-features = false, features = ["compression"] }
 apple-cf = { version = "=0.11.0", default-features = false, features = ["cv", "cm", "iosurface"] }
+# The pointer picture for viewers that draw it (NSCursor) and the user to drop to at the login window.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSCursor", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "objc2-core-graphics"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows_firewall.workspace = true

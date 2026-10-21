@@ -3,8 +3,9 @@
 [中文](tools.zh-CN.md) | English
 
 This is the reference for the tools an agent gets through `ai-remote mcp`, for mounting other MCP
-servers on a host, and for the policy rules that decide what runs. It describes the M0 Windows host;
-behaviour on macOS is *(planned)*. For installing and running hosts see
+servers on a host, and for the policy rules that decide what runs. It describes the Windows host;
+the macOS host offers the same tools (differences are noted where they exist). For installing and
+running hosts see
 [operations.md](operations.md); for the design see [architecture.md](architecture.md).
 
 ## Contents

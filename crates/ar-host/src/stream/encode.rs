@@ -83,7 +83,7 @@ pub fn hardware_available(codec: Codec) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        codec == Codec::H264
+        mac::available(codec)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -233,7 +233,11 @@ impl FrameEncoder {
             #[cfg(any(target_os = "macos", windows))]
             Backend::PendingHardware => "pending".into(),
             #[cfg(target_os = "macos")]
-            Backend::Hardware(_) => "videotoolbox-hardware".into(),
+            Backend::Hardware(encoder) => format!(
+                "videotoolbox ({}, hardware{})",
+                encoder.codec().name(),
+                if encoder.low_latency() { ", low latency" } else { "" }
+            ),
             #[cfg(windows)]
             Backend::Hardware(encoder) => format!("{} ({}, hardware)", encoder.name(), encoder.codec().name()),
             Backend::Software(_) => "openh264-software".into(),
@@ -249,9 +253,9 @@ impl FrameEncoder {
         self.bitrate_bps
     }
 
-    /// Changes the bitrate of the running stream (the viewer adapting to its network). Windows
-    /// hardware encoders and OpenH264 take it on the next frame. On macOS the encoder is set up again
-    /// with a keyframe, until VideoToolbox's live AverageBitRate property is wired (see AGENTS.md).
+    /// Changes the bitrate of the running stream (the viewer adapting to its network). Hardware
+    /// encoders and OpenH264 take it on the next frame; should VideoToolbox refuse the live change,
+    /// the encoder is set up again with a keyframe.
     pub fn set_bitrate(&mut self, bitrate_bps: u32) {
         if bitrate_bps == self.bitrate_bps || bitrate_bps == 0 {
             return;
@@ -259,10 +263,17 @@ impl FrameEncoder {
         self.bitrate_bps = bitrate_bps;
         self.guard = RateGuard::default();
         #[cfg(target_os = "macos")]
-        let rebuild = matches!(self.backend, Backend::Hardware(_));
+        let mut rebuild = false;
         match &mut self.backend {
             #[cfg(windows)]
             Backend::Hardware(encoder) => encoder.set_bitrate(bitrate_bps),
+            #[cfg(target_os = "macos")]
+            Backend::Hardware(encoder) => {
+                if let Err(error) = encoder.set_bitrate(bitrate_bps) {
+                    tracing::warn!("VideoToolbox refused the new bitrate; restarting the encoder: {error:#}");
+                    rebuild = true;
+                }
+            }
             Backend::Software(encoder) => encoder.set_bitrate(bitrate_bps),
             _ => {}
         }
@@ -280,28 +291,44 @@ impl FrameEncoder {
         Ok(())
     }
 
+    /// Sets up (or re-sets up, after a size change) the VideoToolbox encoder for a native frame:
+    /// the first codec in preference order the machine encodes in hardware, each at the largest
+    /// size its codec allows (VideoToolbox scales the frame on the GPU).
     #[cfg(target_os = "macos")]
     fn prepare_hardware(&mut self, width: u32, height: u32) -> Result<()> {
-        let size = stream_size(width, height, self.max_long_edge);
+        let size_for =
+            |codec: Codec, max_long_edge: u32| stream_size(width, height, max_long_edge.min(codec.max_long_edge()));
         let initialize = match &self.backend {
             Backend::PendingHardware => true,
-            Backend::Hardware(encoder) => encoder.size() != size,
+            Backend::Hardware(encoder) => encoder.size() != size_for(encoder.codec(), self.max_long_edge),
             Backend::Software(_) => false,
         };
-        if initialize {
-            match mac::HardwareEncoder::new(size.0, size.1, self.max_fps, self.bitrate_bps) {
+        if !initialize {
+            return Ok(());
+        }
+        for &codec in &self.codecs {
+            if !hardware_available(codec) {
+                continue;
+            }
+            let size = size_for(codec, self.max_long_edge);
+            match mac::HardwareEncoder::new(size.0, size.1, self.max_fps, self.bitrate_bps, codec) {
                 Ok(encoder) => {
+                    tracing::info!(
+                        width = size.0,
+                        height = size.1,
+                        codec = codec.name(),
+                        low_latency = encoder.low_latency(),
+                        "using VideoToolbox hardware encoding"
+                    );
                     self.backend = Backend::Hardware(Box::new(encoder));
                     self.force_next = true;
-                    tracing::info!(width = size.0, height = size.1, "using VideoToolbox hardware H.264");
+                    return Ok(());
                 }
-                Err(error) => {
-                    tracing::warn!("VideoToolbox hardware H.264 unavailable; using OpenH264: {error:#}");
-                    self.use_software()?;
-                }
+                Err(error) => tracing::warn!(codec = codec.name(), "VideoToolbox encoder unavailable: {error:#}"),
             }
         }
-        Ok(())
+        tracing::warn!("no VideoToolbox hardware encoder; using OpenH264");
+        self.use_software()
     }
 
     /// Sets up (or re-sets up, after a size change) the hardware encoder for a GPU frame: the
@@ -577,17 +604,34 @@ fn validate_bgra(bgra: &[u8], width: u32, height: u32, stride: u32) -> Result<()
 
 /// Convert only structurally valid AVCC access units, using the format's actual NAL length size.
 #[cfg(any(target_os = "macos", test))]
-fn avcc_to_annex_b(data: &[u8], length_size: usize, parameter_sets: &[Vec<u8>], keyframe: bool) -> Result<Vec<u8>> {
+/// AVCC/HVCC (length-prefixed NAL units) to Annex B, with the parameter sets (H.264: SPS and PPS;
+/// HEVC: VPS, SPS and PPS) in front of a keyframe.
+fn avcc_to_annex_b(
+    data: &[u8],
+    length_size: usize,
+    parameter_sets: &[Vec<u8>],
+    keyframe: bool,
+    codec: Codec,
+) -> Result<Vec<u8>> {
     anyhow::ensure!(matches!(length_size, 1 | 2 | 4), "invalid AVCC NAL length size");
     let mut out = Vec::with_capacity(data.len() + 128);
     if keyframe {
-        anyhow::ensure!(
-            parameter_sets.iter().any(|s| s.first().is_some_and(|b| b & 0x1f == 7))
-                && parameter_sets.iter().any(|s| s.first().is_some_and(|b| b & 0x1f == 8)),
-            "H.264 keyframe is missing SPS/PPS"
-        );
+        let has = |nal_type: u8| {
+            parameter_sets.iter().any(|s| {
+                s.first().is_some_and(|b| match codec {
+                    Codec::H264 => b & 0x1f == nal_type,
+                    Codec::Hevc | Codec::Av1 => (b >> 1) & 0x3f == nal_type,
+                })
+            })
+        };
+        let complete = match codec {
+            Codec::H264 => has(7) && has(8),
+            Codec::Hevc => has(32) && has(33) && has(34),
+            Codec::Av1 => false,
+        };
+        anyhow::ensure!(complete, "{} keyframe is missing its parameter sets", codec.name());
         for set in parameter_sets {
-            anyhow::ensure!(!set.is_empty(), "empty H.264 parameter set");
+            anyhow::ensure!(!set.is_empty(), "empty parameter set");
             out.extend_from_slice(&[0, 0, 0, 1]);
             out.extend_from_slice(set);
         }
@@ -783,16 +827,16 @@ mod tests {
         let sets = vec![vec![0x67, 1], vec![0x68, 2]];
         let data = [0, 0, 0, 2, 0x65, 3, 0, 0, 0, 1, 0x06];
         assert_eq!(
-            avcc_to_annex_b(&data, 4, &sets, true).unwrap(),
+            avcc_to_annex_b(&data, 4, &sets, true, Codec::H264).unwrap(),
             [0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3, 0, 0, 0, 1, 0x06]
         );
-        assert!(avcc_to_annex_b(&data[..data.len() - 1], 4, &sets, true).is_err());
-        assert!(avcc_to_annex_b(&[0, 0, 0], 4, &sets, false).is_err());
-        assert!(avcc_to_annex_b(&[0], 1, &sets, false).is_err());
-        assert!(avcc_to_annex_b(&data, 3, &sets, false).is_err());
-        assert!(avcc_to_annex_b(&data, 4, &[], true).is_err());
-        assert_eq!(avcc_to_annex_b(&[1, 0x41], 1, &[], false).unwrap(), [0, 0, 0, 1, 0x41]);
-        assert_eq!(avcc_to_annex_b(&[0, 1, 0x41], 2, &[], false).unwrap(), [0, 0, 0, 1, 0x41]);
+        assert!(avcc_to_annex_b(&data[..data.len() - 1], 4, &sets, true, Codec::H264).is_err());
+        assert!(avcc_to_annex_b(&[0, 0, 0], 4, &sets, false, Codec::H264).is_err());
+        assert!(avcc_to_annex_b(&[0], 1, &sets, false, Codec::H264).is_err());
+        assert!(avcc_to_annex_b(&data, 3, &sets, false, Codec::H264).is_err());
+        assert!(avcc_to_annex_b(&data, 4, &[], true, Codec::H264).is_err());
+        assert_eq!(avcc_to_annex_b(&[1, 0x41], 1, &[], false, Codec::H264).unwrap(), [0, 0, 0, 1, 0x41]);
+        assert_eq!(avcc_to_annex_b(&[0, 1, 0x41], 2, &[], false, Codec::H264).unwrap(), [0, 0, 0, 1, 0x41]);
     }
 
     #[test]
