@@ -232,13 +232,22 @@ async fn local_host(state: State<'_, AppState>, doctor: bool) -> Result<Json, St
     })))
 }
 
-/// A one-time pairing ticket from the host here, at `level`. It is a credential: the page shows it
-/// once in its own window and this app never logs it.
+/// A one-time pairing ticket from the host here, at `level`, and the pair code (with its QR code) that
+/// hands it out. Both are credentials: the page shows them once in its own window and this app never
+/// logs them.
 #[tauri::command]
 #[specta::specta]
 async fn local_host_pair_code(state: State<'_, AppState>, level: String) -> Result<Json, String> {
     let level: ar_core::Level = serde_json::from_value(Value::String(level)).map_err(|e| e.to_string())?;
     host_local::require(&state.profile, json!({"op": "pair_code", "level": level})).await.map(Json).map_err(text)
+}
+
+/// Stops answering the pair code shown by `local_host_pair_code` (its dialog was closed). The
+/// ticket behind it stays valid until it expires, but nothing hands it out any more.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_withdraw_code(state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::require(&state.profile, json!({"op": "withdraw_code"})).await.map(Json).map_err(text)
 }
 
 /// Pauses the agent on this computer (every controller's calls are refused until resumed) or
@@ -974,6 +983,7 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         set_local_host_bypass,
         local_host,
         local_host_pair_code,
+        local_host_withdraw_code,
         local_host_pause,
         local_host_stop,
         local_host_start,

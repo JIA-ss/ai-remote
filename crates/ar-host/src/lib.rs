@@ -20,6 +20,7 @@ mod gate;
 mod input_channel;
 pub mod install;
 pub mod mounts;
+pub mod pair_qr;
 pub mod platform;
 mod policy;
 mod presence;
@@ -311,11 +312,38 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     if peers.is_empty() && opts.pair_code_if_unpaired && !opts.background {
         let invite = mesh.invite(Level::Control, None).await?;
         owner.say("");
-        owner.say("No controller is paired yet. On the controlling machine, run:");
-        owner.say("");
-        owner.say(&format!("  ai-remote pair {}", invite.line));
-        owner.say("");
-        owner.say(&format!("It grants level \"control\" and is valid once, until {}.", fmt_epoch(invite.expires_at)));
+        match mesh.offer_code(&invite).await {
+            Ok(offer) => {
+                owner.say("No controller is paired yet. Scan this with the ai-remote app on a phone,");
+                owner.say("or type the pair code in the desktop app (or `ai-remote pair <code>`):");
+                owner.say("");
+                if let Some(qr) = pair_qr::terminal(&offer.link) {
+                    for line in qr.lines() {
+                        owner.say(&format!("  {line}"));
+                    }
+                }
+                owner.say("");
+                owner.say(&format!("  pair code: {}", offer.grouped));
+                owner.say("");
+                owner.say(&format!(
+                    "It grants level \"control\", works once and expires {}. Without a network between the two \
+                     machines, use the ticket instead: ai-remote pair {}",
+                    fmt_epoch(offer.expires_at),
+                    invite.line
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "no pair code; showing the ticket only");
+                owner.say("No controller is paired yet. On the controlling machine, run:");
+                owner.say("");
+                owner.say(&format!("  ai-remote pair {}", invite.line));
+                owner.say("");
+                owner.say(&format!(
+                    "It grants level \"control\" and is valid once, until {}.",
+                    fmt_epoch(invite.expires_at)
+                ));
+            }
+        }
         owner.say("Check that both machines show the same three-word safety code.");
     }
 
@@ -387,7 +415,8 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner, host: Arc<HostState>) {
     });
 }
 
-fn fmt_epoch(epoch: u64) -> String {
+/// `epoch` (seconds) as a local date and time for people.
+pub fn fmt_epoch(epoch: u64) -> String {
     let remaining = epoch.saturating_sub(ar_core::unix_now());
     format!("{} minutes from now", remaining / 60)
 }

@@ -149,6 +149,65 @@
 - 真机试的时候发现测试配置里 studio-laptop 被人在界面上设成了"全部放开"、本应用的"登录时打开"也被打开过（14:28，都需要点确认 / 选择，
   不是自动发生的）；登录项指向的是 worktree 里的 debug 包，已删除。
 - "最近活动"是审计原文的句子化，不是会话页那种步骤卡；完整视图在"活动"页。
+
+## 配对码：手机扫码、电脑输 8 位数字（2026-10-21，分支 `feat/short-pair-code`，叠在 PR #14 `feat/host-tray` 上）
+
+用户原话："授权码能否搞的简单点？然后做的好看点，手机支持扫码，电脑才输入授权码这种"。以前要把约 1000 字符的
+`mcpmesh-invite:` 票据从一端复制到另一端。设计调研（Magic Wormhole / AirDrop / RustDesk / Tailscale·iroh ticket 对比）
+和安全分析写在 `docs/architecture*.md` 第 4 节"短码怎么换到票据"。
+
+### 设计
+
+- **配对码不是凭证本身，只是找到被控端并换出票据。** 票据照旧签发、照旧由 mcpmesh 兑换（同一个配对仪式、同样的三词安全码），
+  旧的 `ai-remote pair <票据>` 完全不变。
+- 8 位随机数字，显示为 `4821 0937`；输入时空格 / 横线 / 点 / 全角数字都认，`ai-remote://pair?code=` 链接也认（二维码内容）。
+- **会合 endpoint**（`crates/ar-net/src/paircode.rs`）：两端 Argon2id（64 MiB、3 轮、固定盐）把码拉伸成 64 字节——前 32 字节是
+  被控端临时 iroh endpoint 的私钥，后 32 字节是认证密钥。被控端在码有效期内跑这个 endpoint（中继 / 代理 / mDNS 跟节点同配置，
+  mDNS 服务名 `ai-remote-pair`），只服务 ALPN `app/ai-remote/pair-code/1`；控制端从码算出 endpoint id，用一次性 endpoint 拨过去，
+  发 `blake3::keyed_hash(auth, 两端 id)` 证明知道码，被控端回票据。
+- **为什么另起 endpoint、不用节点自己的**：mcpmesh 的闸门只放行已配对设备，未配对的控制端到不了节点上的任何应用 ALPN；
+  而且不能把节点身份发布在一个只有 27 位熵派生的 key 下。不需要改 vendor/mcpmesh。
+- 限制：10 分钟（票据先过期则更短）、一次性、5 次证明失败即作废（`Offer::answer` 状态机）；用掉 / 作废 / 过期后 endpoint 立即关闭。
+  同一时间每个被控端只有一个码，新码替换旧码。
+- 被控端控制通道：`PairCode` 应答新增 `code {code, grouped, link, expires_at}` 和 `qr {size, path}`（`ar-host/src/pair_qr.rs`
+  用 `qrcode` crate 画 SVG path / 终端方块字符）；起不来码时返回 `code_error`，票据照常给。新请求 `WithdrawCode`（配对窗口关闭时撤码）。
+- 控制端：agent 的 `pair` op 先 `PairCode::parse`，是码就 `Mesh::pair_code`（取票据再兑换），否则当票据。CLI / 桌面 / iOS 都走这一个入口，
+  CLI 的 `pair` 接受多个词（`ai-remote pair 4821 0937`）。
+
+### 界面
+
+- 桌面被控端：`apps/desktop/src/ui/PairCode.tsx` 的 `PairCodeDialog` 替换了 PR #14 在 `Settings.tsx` 里的同名对话框（入口不变：
+  "本设备 → 显示配对码"、托盘"Show Pairing Code"）。打开即出码；左边白底二维码（任何主题下都深色码点在浅底上，扫码器要这样），
+  右边大号数字、倒计时进度条、"换一个"、级别下拉（改级别即换码）；完整票据收在"两台设备之间不通网络？使用完整票据"里。
+  有设备配对后切到三词核对页（一致 / 不一致并移除）。关闭未配对的窗口会撤码。演示后端 12 s 后模拟一台 iPhone 配上，方便看核对页。
+- 桌面控制端：`Pages.tsx` 的 `PairPage` 第一步改成一个大号数字输入框（自动分组，粘贴票据自动切到票据模式），"改用票据"链接。
+- iOS：`PhonePairing.swift`（扫码 + 输入 + 票据入口）、`PhonePairCode.swift`（与平台无关的码解析，`swiftc` 在 macOS 上能跑）。
+  扫码用 AVFoundation（`NSCameraUsageDescription`），拒绝权限时给"打开设置"；`CFBundleURLTypes` 注册 `ai-remote` scheme，
+  系统相机扫到二维码直接打开 app 并配对（`PhoneStore.openPairLink`）；`NSBonjourServices` 加 `_ai-remote-pair._udp`。
+
+### 实测
+
+- `cargo test -p ar-net --lib paircode`：码解析、生成、派生、猜测上限、过期、一次性，加一个两个 hermetic endpoint 走回环的完整交换。
+- Argon2id 64 MiB×3：Apple M5 Max release 78 ms / 次（`kdf_cost`，20 次，`--ignored` 手动跑）；先用的 19 MiB×2 是 12.7 ms，
+  离线穷举只要约 2000 核，所以调高了。dev 构建里 argon2 / blake2 设了 opt-level 3，否则测试很慢。
+- 本机两个临时 `--home` 之间：`ai-remote pair 2545 3956` 2.7 s 配上；同一码再用报"没有设备响应"（会合 endpoint 已关，约 20 s 超时）。
+- **跨机器（2026-10-21，Mac 控制端 ↔ win-dev 被控端，debug 构建，两边都是临时 `--home`；两台在不同网段 10.1.120.x / 10.1.77.x，
+  所以走的不是 mDNS，是 DNS/pkarr + 中继/直连）**：7 次尝试——5 次成功，耗时 2.9 / 3.2 / 3.9 / 5.8（含自动改名重试）/ 3.5 s，
+  两边显示的三词一致；1 次是故意用已被新码替换的旧码，10.4 s 后报"没有设备响应"（符合预期）；**2 次未解释的失败**：被控端刚启动后
+  约 26 s 和 54 s 时用它启动时打印的码，各 10 s 报"没有设备响应"，约 3 分钟后同一个码用测试直连 1.08 s 就通了。当时 win-dev 上另一个会话
+  在做 release 编译（CPU 很忙），怀疑是会合 endpoint 的 pkarr 发布被拖慢，没有证实；之后重启被控端、10 s 内用启动码配对（第 3 次）是成功的。
+- **昵称冲突**：第一次重复配对时 mcpmesh 报 `nickname ... is already taken`（被控端还留着这台 Mac 上一次的配对）。票据流程里
+  用户可以改名再兑换，配对码流程里码已经交出票据、不能再用，所以 `Mesh::pair` 现在遇到 `ERR_NICKNAME_TAKEN`（mcpmesh 保证此时票据
+  未消费）就临时把自己的昵称改成 `<名字>-<设备 id 前 4 位>` 重兑一次（真机第 5 次就是这样配上的，被控端列表里是 `...-35db`）。
+- iOS：只过了 macOS 上对全部 `Sources/*.swift` 的 `swiftc -typecheck`（用本机生成的 UniFFI 绑定）；`#if os(iOS)` 的扫码和 UI 测试靠 iOS CI。
+
+### 下一步
+
+- [ ] 被控端刚启动时的两次失败没查清（见实测）。可以给控制端加一次 3 s 后的重拨，或在被控端确认 pkarr 发布完成后再显示码。
+- [ ] 输错码要等约 10 s（拨号报错）到 20 s（超时）才报"找不到"。可以缩短拨号超时，或在码里加校验位（会损失约 3.3 位熵，安全分析要跟着改）。
+- [ ] 被控端在没有网络、只能用票据时，配对窗口只显示"无法生成配对码"；可以考虑把二维码换成票据本身（约 100+ 模块，要实测能否扫）。
+- [ ] Windows 托盘入口与 iOS 扫码没有真机试过（本机无 Xcode）。
+
 ## 接管时的实时输入、剪贴板与文件（2026-10-21，分支 `claude/live-input`）
 
 用户反馈："帧率不够高，控制卡卡的，鼠标点击拖动不太行；剪贴板复制、文件复制也要适配。"

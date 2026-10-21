@@ -19,6 +19,8 @@ import UIKit
     private var liveView: some View {
         PhoneRootView(store: store)
             .task { await store.resume() }
+            // The host's QR code is an `ai-remote://pair?code=...` link: the system camera opens it here.
+            .onOpenURL { url in Task { await store.openPairLink(url) } }
             .onChange(of: phase) { _, value in
                 if value == .active { Task { await store.resume() } }
                 else if value == .background { finishBackgroundSession() }

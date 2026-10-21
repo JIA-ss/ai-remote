@@ -172,8 +172,10 @@ of agent control while a person drives, activity, native decoded video, hand bac
 
 ## Phone acceptance checklist
 
-1. Start a real Mac/Windows host and generate `ai-remote pair-code --level control`.
-2. Paste the ticket into the phone; compare the same three-word safety code on both devices.
+1. Start a real Mac/Windows host and show a pair code (`ai-remote pair-code --level control`, or the
+   desktop app's This device → Show pair code).
+2. Scan its QR code in the phone's pairing sheet (or type the eight digits; the full ticket is behind
+   "改用完整票据"); compare the same three-word safety code on both devices.
 3. Open the computer and require a fresh decoded frame, not a connecting placeholder.
 4. Take over; click/type only in a disposable test window. Verify the actual target received it.
 5. Check the agent is blocked while you drive, then hand back and verify it resumes.

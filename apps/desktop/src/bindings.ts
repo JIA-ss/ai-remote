@@ -84,10 +84,16 @@ export const commands = {
 	 */
 	localHost: (doctor: boolean) => typedError<Json, string>(__TAURI_INVOKE("local_host", { doctor })),
 	/**
-	 *  A one-time pairing ticket from the host here, at `level`. It is a credential: the page shows it
-	 *  once in its own window and this app never logs it.
+	 *  A one-time pairing ticket from the host here, at `level`, and the pair code (with its QR code) that
+	 *  hands it out. Both are credentials: the page shows them once in its own window and this app never
+	 *  logs them.
 	 */
 	localHostPairCode: (level: string) => typedError<Json, string>(__TAURI_INVOKE("local_host_pair_code", { level })),
+	/**
+	 *  Stops answering the pair code shown by `local_host_pair_code` (its dialog was closed). The
+	 *  ticket behind it stays valid until it expires, but nothing hands it out any more.
+	 */
+	localHostWithdrawCode: () => typedError<Json, string>(__TAURI_INVOKE("local_host_withdraw_code")),
 	/**
 	 *  Pauses the agent on this computer (every controller's calls are refused until resumed) or
 	 *  resumes it. From here, at this computer; controllers have their own way (`set_turn`).

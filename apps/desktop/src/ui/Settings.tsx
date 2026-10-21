@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { currentLang, followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
+import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
 import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
@@ -15,16 +15,15 @@ import type {
   Grade,
   InstallInfo,
   InstallPlan,
-  Level,
   LocalController,
   LocalHost,
-  PairTicket,
   TrayIntent,
 } from "../lib/types";
 import { CmdLine } from "./CmdLine";
 import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
+import { PairCodeDialog } from "./PairCode";
 import { TitleBar } from "./Shell";
 import { clock, cx } from "./util";
 
@@ -61,8 +60,6 @@ function errorText(e: unknown): string {
 }
 
 /** "Oct 22, 14:30": a 24-hour ticket's end, with the day. */
-const dayTime = (ms: number) =>
-  new Date(ms).toLocaleString(currentLang() === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 /** One settings row: icon, title and description, and its control at the end. */
 function Row({ ic, tt, ds, children }: { ic: React.ReactNode; tt: React.ReactNode; ds?: React.ReactNode; children?: React.ReactNode }) {
@@ -994,148 +991,6 @@ function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose:
           </button>
           <button className="btn" disabled={state === "running"} onClick={onClose}>
             {t("cancel")}
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-/**
- * The pairing code, shown only here and only when asked for: it is a credential. Generated on
- * demand at the chosen level; the host never writes it to its log. While it shows, the window is
- * kept out of screen capture (where the system supports it), so a connected controller's
- * screenshots and live view do not carry it. Once a device redeems it, the host's safety code
- * shows here to compare, with a way to remove that device if the words differ.
- */
-function PairCodeDialog({ name, connected, onClose }: { name: string; connected: string[]; onClose: () => void }) {
-  const [level, setLevel] = useState<Level>("control");
-  const [ticket, setTicket] = useState<PairTicket | null>(null);
-  const [since, setSince] = useState(0);
-  const [paired, setPaired] = useState<AuditLine | null>(null);
-  const [removed, setRemoved] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const close = () => {
-    void api.protectWindow(false).catch(() => {});
-    onClose();
-  };
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === "Escape" && close();
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  });
-  useEffect(() => () => void api.protectWindow(false).catch(() => {}), []);
-  // Wait for the device that redeems the ticket, then show the safety code to compare.
-  useEffect(() => {
-    if (!ticket || paired) return;
-    const timer = setInterval(() => {
-      api.localRecent(40).then((lines) => {
-        const p = lines.filter((l) => l.kind === "paired" && l.ts >= since).at(-1);
-        if (p) setPaired(p);
-      }, () => {});
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [ticket, paired, since]);
-  const make = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.protectWindow(true).catch(() => {});
-      setSince(Date.now() - 1000);
-      setTicket(await api.localPairCode(level));
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <>
-      <div className="smoke" style={{ position: "fixed" }} onClick={close} />
-      <div className="cdlg" role="dialog" aria-modal="true" aria-label={t("pc_title", { name })} style={{ position: "fixed" }}>
-        <div className="b">
-          <div className="ttl">{t("pc_title", { name })}</div>
-          <div className="bd">
-            {connected.length > 0 && !paired && (
-              <div className="cap" style={{ marginBottom: 12, color: "var(--relay)" }}>
-                {t("pc_connected", { n: connected.length, names: connected.join(t("list_sep")) })}
-              </div>
-            )}
-            {paired ? (
-              <>
-                <div style={{ color: "var(--text-1)" }}>{t("pc_paired", { peer: paired.peer ?? "?", level: String(paired.level ?? "") })}</div>
-                <div className="mono" style={{ fontSize: 16, margin: "12px 0", color: "var(--text-1)" }}>{paired.sas}</div>
-                <div>{removed ? t("pc_removed", { peer: paired.peer ?? "?" }) : t("pc_compare")}</div>
-              </>
-            ) : (
-              <>
-                <label style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span>{t("pc_level")}</span>
-                  <span className="dd-wrap">
-                    <select className="dd" value={level} disabled={!!ticket} onChange={(e) => setLevel(e.target.value as Level)}>
-                      <option value="observe">{t("lvl_observe")}</option>
-                      <option value="control">{t("lvl_control")}</option>
-                      <option value="admin">{t("lvl_admin")}</option>
-                    </select>
-                    <Icon name="chevD" size={12} />
-                  </span>
-                </label>
-                {ticket && (
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ marginBottom: 8 }}>{t("pc_body")}</div>
-                    <div className="mono" style={{ fontSize: 12, wordBreak: "break-all", userSelect: "all", padding: "10px 12px", borderRadius: "var(--r-control)", background: "var(--well)", color: "var(--text-1)" }}>
-                      {ticket.line}
-                    </div>
-                    <div className="cap c3" style={{ marginTop: 8 }}>{t("pc_expires", { time: dayTime(ticket.expires_at * 1000) })}</div>
-                    <div className="cap c3" style={{ marginTop: 2 }}>{t("pc_private")}</div>
-                    <div className="cap c3" style={{ marginTop: 2 }}>{t("pc_waiting")}</div>
-                  </div>
-                )}
-              </>
-            )}
-            {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
-          </div>
-        </div>
-        <div className="f">
-          {paired ? (
-            <button
-              className="btn danger"
-              disabled={busy || removed}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await api.localForget(paired.peer ?? "");
-                  setRemoved(true);
-                } catch (e) {
-                  setError(errorText(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              {t("pc_mismatch")}
-            </button>
-          ) : ticket ? (
-            <button
-              className="btn primary"
-              onClick={() => {
-                void navigator.clipboard?.writeText(ticket.line);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              <Icon name={copied ? "check" : "copy"} size={14} />
-              {t("copy")}
-            </button>
-          ) : (
-            <button className="btn primary" autoFocus disabled={busy} onClick={() => void make()}>
-              {t("pc_make")}
-            </button>
-          )}
-          <button className="btn" onClick={close}>
-            {t("pc_close")}
           </button>
         </div>
       </div>
