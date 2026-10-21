@@ -17,6 +17,33 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
+
+起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /
+swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo 抓包，频率都是**推导**）：
+
+- ai-remote 自己的代码不扫端口、不扫地址、不检查更新、不上报遥测；桌面端 CSP 只允许本地 IPC。
+- 后台流量全来自传输层 iroh：中继长连接（本机实测连着 `aps1-1.relay.n0.iroh.link`，TCP 443）、每 20–26 s 的 net_report
+  探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
+  每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
+
+做了什么（用户要求：**默认行为不变**，只有手动打开才安静）：
+
+- vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
+  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），默认都是 iroh 原行为。
+- `ai-remote.toml` 的 `[network] quiet = true`（被控端、控制端都认）：mDNS 关（压过 `lan_discovery`，拼错仍报错）、
+  `port_mapping = false`、`dns_fallback = "if_system_empty"`。另加 `address_lookup = [...]`：自建 pkarr 服务器，
+  和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
+- `doctor` 新增 `network` 检查报告当前模式；安静模式下 `p2p` 的修复建议不再让人开 UPnP。
+- 文档：`operations*.md` 第 12 节加"安静模式""地址查询"和一张"网络上都有哪些流量"的表。
+
+安静模式下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
+后面一直走中继；公司 DNS 解析不了 `*.iroh.link` 时连不上（要自建中继和地址查询服务器）。
+
+注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` 会启动失败**。给机器写 `quiet = true` 之前先换新版本。
+
+未测：真机上抓包确认 mDNS / SSDP 确实不再发出（需要 sudo 或 Wireshark）；公司 DNS 拦截 `iroh.link` 的情况。
+
 ## 被控端编程智能体与对话侧栏（2026-10-21，分支 `feat/host-chat`）
 
 用户需求：在主控端列出被控端装了哪些编程智能体 CLI（Claude Code、Codex、OpenCode 等，要同时支持多种），一键以 bypass 方式在被控端启动，在推流画面旁边用对话窗口实时交互。用户文档：`docs/tools*.md` 5.15、`docs/architecture*.md` 的 `chat/1`、`docs/operations*.md` 4.1 表格、`skills/ai-remote/SKILL.md` 7b。
