@@ -505,4 +505,23 @@ export const en = {
   pv_relay_d: "Connections go directly between your devices when they can. A relay only passes encrypted traffic it cannot read.",
   pv_log: "Every call is written down",
   pv_log_d: "Each computer keeps its own log of what agents and people did there. Secret values are recorded only by size.",
+  // The session's title strip, floating bars and HUD (desktop redesign, 2026-10-21).
+  fs_enter: "Enter full screen",
+  fs_exit: "Exit full screen",
+  fs_hint: "Full screen: ⌃⌘F. Esc leaves it while you are only watching.",
+  hud_latency: "latency",
+  hud_fps: "fps",
+  hud_mbps: "Mbps",
+  hud_waiting: "waiting for video",
+  hud_lowered: "lowered to {mbps} Mbps",
+  show_log: "Show the log",
+  hide_log: "Hide the log",
+  // The driver bar: one dot and a short status (2026-10-21).
+  drv_idle: "Nobody operating",
+  drv_agent: "{agent} operating",
+  drv_you: "You are operating",
+  drv_waiting: "Waiting for you",
+  drv_paused: "Paused",
+  drv_offline: "Offline",
+  drv_connecting: "Connecting",
 };

@@ -20,6 +20,8 @@ function syncAppearance() {
   const choice = themeChoice();
   root.dataset.theme = pinned === "light" || pinned === "dark" ? pinned : choice === "system" ? darkQuery().matches ? "dark" : "light" : choice;
   root.dataset.transparency = reducedTransparency() ? "reduced" : "full";
+  // The window material (macOS) follows the system look; a pinned theme paints the sidebar itself.
+  root.dataset.themeChoice = pinned ? "pinned" : choice;
 }
 
 export function setThemeChoice(choice: ThemeChoice) {

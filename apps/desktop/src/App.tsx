@@ -83,6 +83,8 @@ export default function App() {
   const active: Nav = view.kind === "main" ? (view.nav ?? "devices") : "devices";
   const computer = active && typeof active === "object" ? snap.computers.find((c) => c.host.name === active.computer) : undefined;
 
+  const pageTitle =
+    active === "devices" ? t("devices") : active === "approvals" ? t("approvals") : active === "activity" ? t("activity") : active === "pair" ? t("pair") : computer ? computer.host.name : t("devices");
   let page: React.ReactNode;
   if (!snap.ready) page = <div className="cpage body c2">{t("starting")}</div>;
   else if (snap.error) page = <div className="cpage body c-danger">{snap.error}</div>;
@@ -125,9 +127,9 @@ export default function App() {
   // First run: the welcome spread fills the window, without the pane.
   if (!welcomed && snap.ready && !snap.error && snap.computers.length === 0 && (view.kind !== "main" || view.nav === null)) {
     return (
-      <div className="win" style={{ width: "100vw", height: "100vh" }}>
+      <div className="win nt-alone" style={{ width: "100vw", height: "100vh" }}>
         <TitleBar />
-        <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+        <div className="nt-content">
           <WelcomePage
             onPair={() => {
               welcome();
@@ -141,7 +143,6 @@ export default function App() {
 
   return (
     <div className="win" style={{ width: "100vw", height: "100vh" }}>
-      <TitleBar />
       <div className="body-row">
         <Sidebar
           computers={snap.computers}
@@ -152,7 +153,10 @@ export default function App() {
           onQuery={setDeviceQuery}
           onNav={(n) => setView({ kind: "main", nav: n })}
         />
-        <main className="page">{page}</main>
+        <main className="page">
+          <TitleBar title={pageTitle} />
+          <div className="nt-content">{page}</div>
+        </main>
       </div>
     </div>
   );
