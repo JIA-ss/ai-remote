@@ -61,6 +61,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote pair <ticket> [--name N]` | pair with a host |
 | `ai-remote hosts` | paired hosts and the level each granted at pairing; `(default)` marks the default host |
 | `ai-remote hosts default [<host>\|--clear]` | show, set or clear the host commands and agents use when they name none |
+| `ai-remote network [mode auto\|lan \| discovery on\|off \| upnp on\|off]` | show or change this computer's network settings for its host and controller alike (the desktop app's Settings > Network; section 12) |
 | `ai-remote hosts address <host> [<address>]` | show or set where a host is dialled (`ip`, `ip:port`, several separated by commas); how a LAN-mode host whose address changed is reached again (section 12) |
 | `ai-remote unpair <host> [--local]` | unpair a host: it drops this device too when it can be reached, then this controller forgets it (`--local`: only here) |
 | `ai-remote access [--host H]` | what this device may do on a host: your level, the standing rules that concern you, the paired devices (all of them for an admin) and the tools on offer |
@@ -927,6 +928,14 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   unless `relay_fallback_n0 = false`. A pairing ticket records the relay the host used when it was
   minted, so mint new tickets after changing relays. `ai-remote doctor` on the host shows whether it is
   connected to a relay (`relay` check).
+- **In the app.** Settings > Network shows the choice between **Automatic** (recommended: works from
+  anywhere) and **Local network only**, and two switches, both off: **Find devices on your local
+  network** (`lan_discovery`) and **Ask the router to open a port (UPnP)** (`port_mapping`, hidden with
+  Local network only, where it has no use). With Local network only it also shows this computer's address
+  (with a copy button) and the address of every computer this device connects to (with a way to change
+  it). A change is written to this computer's host and controller configs; the controller applies it at
+  once (live sessions reconnect), a host running here when it next starts. `ai-remote network` does the
+  same from a terminal.
 - **Proxy.** Detected in this order: the `proxy` setting, the `HTTPS_PROXY` / `ALL_PROXY` /
   `HTTP_PROXY` environment variables, the system setting (Windows: Internet Settings of the signed-in
   user; macOS: `scutil --proxy`). Proxy auto-config (PAC) scripts are not evaluated; set `proxy`
@@ -937,7 +946,8 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   addresses, including its public address, about once a second, to every device there) so others can find
   it with no internet at all; `"resolve"` finds others without announcing, but still sends a query about
   once a second. With internet, devices on the same network connect directly without it: the addresses they
-  publish include the local ones.
+  publish include the local ones. With Local network only, turning it on means computers whose IP changed
+  are found again without setting their address by hand. The app's switch writes `"on"` or `"off"`.
 - **Router port mapping.** Off by default. Turn it on in the desktop app (Settings > Network): it writes
   `port_mapping = true` to this computer's host and controller configs; the controller applies it at once
   (live sessions reconnect), a host running here when it next starts. It helps when `doctor` reports `p2p`
@@ -965,7 +975,8 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   are used only when the system has no DNS configured). Paired devices still connect: they find each other
   through the address lookup service, punch a direct path where the networks allow it and are relayed
   otherwise. Where the network's DNS does not resolve the relay or lookup names, nothing connects (list
-  self-hosted relays and lookup servers it does resolve).
+  self-hosted relays and lookup servers it does resolve). With the lock on, the app shows both switches
+  off and disabled, and `ai-remote network discovery on` / `upnp on` refuse with the reason.
 - **Address lookup.** Every device publishes its current addresses to n0's lookup service (`dns.iroh.link`)
   every 5 minutes and whenever they change, and looks a peer up there before dialing it. With
   `address_lookup = ["https://dns.example.org/pkarr"]` your own

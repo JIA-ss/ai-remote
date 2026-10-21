@@ -429,3 +429,6 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
   .spread .rcol { display: none; }
   .nt-rail { display: none; }
 }
+/* Settings > Network: the "Recommended" mark on a choice, and a switch that is locked off. */
+.tt .rec { margin-left: 8px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: var(--w-strong); background: var(--fill-1); color: var(--text-2); vertical-align: 1px; }
+.switch:disabled { opacity: .45; cursor: default; }

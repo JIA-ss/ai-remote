@@ -400,6 +400,32 @@ pub fn set_port_mapping(path: &Path, on: bool) -> Result<()> {
     set_network_value(path, "port_mapping", on)
 }
 
+/// Refuses to turn local-network discovery or port mapping on when one of `paths` (a host's and a
+/// controller's `ai-remote.toml`) says `quiet = true`: that lock is the point of quiet mode, so a
+/// setting must not quietly write around it.
+pub fn ensure_not_quiet(paths: &[&Path]) -> Result<()> {
+    for path in paths {
+        let text = read_or_empty(path)?;
+        let doc: toml::Table = text.parse().with_context(|| format!("parse {}", path.display()))?;
+        if doc.get("network").and_then(|n| n.get("quiet")).and_then(toml::Value::as_bool) == Some(true) {
+            bail!(
+                "quiet = true in {} keeps local-network discovery and port mapping off; remove that line to turn them on",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Sets `[network] lan_discovery` (`"on"`, `"resolve"` or `"off"`) the same way as
+/// [`set_port_mapping`].
+pub fn set_lan_discovery(path: &Path, value: &str) -> Result<()> {
+    if !matches!(value, "on" | "resolve" | "off") {
+        bail!("local-network discovery {value:?}: expected \"on\", \"resolve\" or \"off\"");
+    }
+    set_network_value(path, "lan_discovery", value)
+}
+
 /// Sets `[network] mode` (`"auto"` or `"lan"`) the same way as [`set_port_mapping`].
 pub fn set_network_mode(path: &Path, mode: &str) -> Result<()> {
     if !matches!(mode, "auto" | "lan") {
@@ -697,5 +723,9 @@ click = {{ approve = \"ask\" }}
         let cfg = HostConfig::load(&path).unwrap();
         assert_eq!((cfg.network.mode.as_deref(), cfg.network.port_mapping), (Some("lan"), Some(false)));
         assert!(set_network_mode(&path, "offline").is_err(), "only auto or lan");
+        assert!(ensure_not_quiet(&[&path]).is_err(), "this file says quiet = true");
+        set_lan_discovery(&path, "on").unwrap();
+        assert_eq!(HostConfig::load(&path).unwrap().network.lan_discovery.as_deref(), Some("on"));
+        assert!(set_lan_discovery(&path, "yes").is_err());
     }
 }

@@ -211,9 +211,11 @@ async fn network_settings(state: State<'_, AppState>) -> Result<Json, String> {
     let on = |n: &NetworkSection| n.port_mapping.unwrap_or(false);
     let quiet = |n: &NetworkSection| n.quiet.unwrap_or(false);
     let lan = |n: &NetworkSection| n.mode.as_deref() == Some("lan");
+    let discovery = |n: &NetworkSection| matches!(n.lan_discovery.as_deref(), Some("on" | "resolve"));
     let host_status = local_host_status(&state.profile).await;
     Ok(Json(json!({
         "mode": if lan(&host) || lan(&controller) { "lan" } else { "auto" },
+        "lan_discovery": discovery(&host) || discovery(&controller),
         "port_mapping": on(&host) || on(&controller),
         "locked": quiet(&host) || quiet(&controller),
         "host_running": host_status.is_some(),
@@ -221,20 +223,6 @@ async fn network_settings(state: State<'_, AppState>) -> Result<Json, String> {
         "host_addresses": host_status.map(|s| s["addresses"].clone()).unwrap_or_else(|| json!([])),
         "lan_port": ar_core::config::LAN_HOST_PORT,
     })))
-}
-
-/// Switches how this computer reaches its peers: `auto` (address lookup, hole punching, relays) or
-/// `lan` (direct on the local network only; a host listens on a fixed port). Written for the host
-/// and the controller; the controller agent restarts to apply it now, a running host at its next
-/// start. Paired hosts are then dialled at their stored addresses (see `set_host_address`).
-#[tauri::command]
-#[specta::specta]
-async fn set_network_mode(state: State<'_, AppState>, mode: String) -> Result<Json, String> {
-    for path in [state.profile.host_config_path(), state.profile.controller_config_path()] {
-        ar_core::config::set_network_mode(&path.map_err(text)?, &mode).map_err(text)?;
-    }
-    restart_agent(&state.profile).await;
-    network_settings(state).await
 }
 
 /// Sets the addresses a paired host is dialled at (`ip`, `ip:port`, several separated by commas);
@@ -252,38 +240,38 @@ async fn local_host_status(profile: &Profile) -> Option<Value> {
     conn.request(&json!({"op": "status"})).await.ok()
 }
 
-/// Stops the controller agent, if it runs, so the next request starts it with the new config.
-async fn restart_agent(profile: &Profile) -> bool {
-    let Ok(endpoint) = profile.control_endpoint(Role::Controller) else { return false };
-    match Conn::connect(&endpoint).await {
-        Ok(mut conn) => conn.request(&json!({"op": "shutdown"})).await.is_ok(),
-        Err(_) => false,
-    }
-}
-
-/// Turns router port mapping on or off for this computer, as a host and as a controller. The
-/// controller agent is restarted so it applies now (live views and agents reconnect); a host
-/// running here applies it when it next starts.
+/// Changes this computer's network settings, for its host and its controller alike; each `None`
+/// stays as it is. `mode`: `auto` (address lookup, hole punching, relays) or `lan` (direct on the
+/// local network only; a host listens on a fixed port). `lan_discovery`: find and be found on the
+/// local network (mDNS). `port_mapping`: ask the router for a port (UPnP, NAT-PMP, PCP). The
+/// controller agent restarts so the change applies now (live views and agents reconnect); a host
+/// running here applies it when it next starts. Returns the settings as [`network_settings`] does.
 #[tauri::command]
 #[specta::specta]
-async fn set_port_mapping(state: State<'_, AppState>, on: bool) -> Result<Json, String> {
-    for path in [state.profile.host_config_path(), state.profile.controller_config_path()] {
-        ar_core::config::set_port_mapping(&path.map_err(text)?, on).map_err(text)?;
+async fn update_network(
+    state: State<'_, AppState>,
+    mode: Option<String>,
+    lan_discovery: Option<bool>,
+    port_mapping: Option<bool>,
+) -> Result<Json, String> {
+    let paths =
+        [state.profile.host_config_path().map_err(text)?, state.profile.controller_config_path().map_err(text)?];
+    if lan_discovery == Some(true) || port_mapping == Some(true) {
+        ar_core::config::ensure_not_quiet(&[&paths[0], &paths[1]]).map_err(text)?;
     }
-    let agent_restarted = restart_agent(&state.profile).await;
-    Ok(Json(json!({
-        "port_mapping": on,
-        "agent_restarted": agent_restarted,
-        "host_running": host_running(&state.profile).await,
-    })))
-}
-
-/// Whether ai-remote host runs here for this profile (its local control channel answers).
-async fn host_running(profile: &Profile) -> bool {
-    match profile.control_endpoint(Role::Host) {
-        Ok(endpoint) => Conn::connect(&endpoint).await.is_ok(),
-        Err(_) => false,
+    for path in &paths {
+        if let Some(mode) = &mode {
+            ar_core::config::set_network_mode(path, mode).map_err(text)?;
+        }
+        if let Some(on) = lan_discovery {
+            ar_core::config::set_lan_discovery(path, if on { "on" } else { "off" }).map_err(text)?;
+        }
+        if let Some(on) = port_mapping {
+            ar_core::config::set_port_mapping(path, on).map_err(text)?;
+        }
     }
+    ar_controller::restart_agent(&state.profile).await;
+    network_settings(state).await
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -790,8 +778,7 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         local_host_bypass,
         set_local_host_bypass,
         network_settings,
-        set_port_mapping,
-        set_network_mode,
+        update_network,
         set_host_address,
         watch_screen,
         request_keyframe,
