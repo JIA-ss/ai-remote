@@ -77,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
     try:
         doctor = cli("doctor", home=host_home).stdout
-        assert "quiet mode" in doctor, "the test host is not in quiet mode:\n" + doctor
+        assert "network           quiet" in doctor or "quiet mode" in doctor, "the test host is not in quiet mode:\n" + doctor
         assert cli("pair", pair_code(), "--name", "self").returncode == 0, "the command line did not pair"
         r = cli("chat", "run", "fake", "from the desktop", "--cwd", work, "--keep")
         assert r.returncode == 0, r.stderr
