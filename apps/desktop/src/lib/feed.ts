@@ -15,7 +15,7 @@ export interface FeedState {
   /** Who drives the host now. */
   driver: Driver;
   /** Changes of driver and messages to the agent, for the timeline. */
-  turns: Array<{ ts: number; driver?: Driver; by: string; note?: string; message?: string }>;
+  turns: Array<{ ts: number; driver?: Driver; by: string; note?: string; message?: string; owner?: boolean }>;
   /** This device's level on the host as the host last said (`undefined`: not said yet). */
   level?: Level | null;
   /** The host's owner trusts this device with everything: every tool, no approvals, no deny rules. */
@@ -88,10 +88,11 @@ export function reduceFeed(state: FeedState, e: FeedEvent): FeedState {
         agent: e.client !== "person" && e.agent ? e.agent : state.agent,
       };
     case "driver": {
-      const { kind: _k, ts, by, note, ...driver } = e;
+      const { kind: _k, ts, by, note, origin, ...driver } = e;
       void _k;
       const next = driver as Driver;
-      return { ...state, driver: next, turns: [...state.turns, { ts, by, note, driver: next }].slice(-MAX_STEPS) };
+      const owner = origin === "owner";
+      return { ...state, driver: next, turns: [...state.turns, { ts, by, note, driver: next, owner }].slice(-MAX_STEPS) };
     }
     case "task":
       return { ...state, task: { text: e.task, ts: e.ts, peer: e.peer } };

@@ -17,6 +17,95 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
+
+用户的痛点：被控端只有命令行，权限（屏幕录制 / 辅助功能）要靠 doctor 提示再手动去系统设置加；希望"做成软件托盘之类的，
+可以随时打开相关设置"。
+
+### 决定
+
+- **形态选 A：托盘放在 Tauri 桌面端，不给 `ai-remote-hostw` 加原生托盘。** 理由写在 `docs/architecture.md` 第 8 节
+  "The tray"：被控端以 LaunchAgent / 计划任务 / SYSTEM 服务运行，画不了托盘（或画到错误的桌面）；桌面端在登录用户的会话里，
+  经被控端已有的本机控制管道（`control.sock` / 命名管道）读状态、发命令，不需要被控端的代码和权限。管道做不到的走
+  `ai-remote` 命令：新加的 `ai-remote host start`，以及没有被控端运行时的 `doctor`。
+- **控制协议只加字段、不改旧字段。** `HostRequest::Status` 的回复新增 `connected`（任一通道有连接的控制端名）、
+  `controllers`（每个控制端开着哪些通道：tools / events / screen / files）、`calls`（正在执行的工具调用：谁、什么工具、
+  是不是人在操作）、`last_call`（最后一次结束的调用和结束时间）、`driver`、`prompt_blocker`。新增 `Pause { on }`
+  （本机暂停 / 恢复，审计里 `by: "host"`）和 `Recent { limit }`（审计尾部，复用 `AuditLog::subscribe` 的 300 行 backlog）。
+- **"谁在这里"用独立的在场登记（`crates/ar-host/src/presence.rs`），不复用 `LiveConns`。** `LiveConns` 只登记 MCP 工具连接，
+  吊销 / 遗忘时按它带原因断连；事件流、推流、文件三条通道不在里面，所以桌面端只开着观看页时托盘会以为"没人连着"
+  （真机试出来的）。在场登记在四条协议接入时各登记一次、连接结束时由 guard 注销，工具调用在 `gate.rs` 第 5 步执行期间
+  登记。它只用于上报，不参与任何判定，所以不改吊销语义。
+- **托盘图标**：Tauri 自带的 `tray-icon` 特性（`tauri = { features = ["tray-icon"] }`，依赖本来就在 Cargo.lock 里，没有新 crate）。
+  图标运行时用 `image` 手绘：品牌图形两块多边形（`glyphs.tsx` 的 PA/PY）4× 超采样后盒式滤波；macOS 44 px、Windows 32 px。
+  右下角角标：空心环 = 有控制端连着（任一通道）；实心点 = 有人在操作（工具调用正在执行或 8 s 内刚结束，或有人接管）；
+  两竖条 = 已暂停；无角标 = 空闲；整体变淡 = 被控端没运行。**macOS 用模板图**（只看 alpha，系统按菜单栏明暗着色，和其他菜单栏
+  图标一致；第一版用了 `#8E8E93` 灰色非模板图，真机截图上明显比其他图标暗），状态只靠形状区分；Windows 角标上色（蓝 = 智能体、
+  琥珀 = 人、橙 = 暂停）。注意 `TrayIcon::set_icon` 在 macOS 会把模板标记清掉，要用 `set_icon_with_as_template`。
+- **"刚结束的调用也算在操作"**：智能体的调用大多不到 1 s，托盘 3 s 轮询一次几乎抓不到正在执行的那一刻，所以被控端报
+  `last_call.ended_ms`，托盘把 8 s 内结束的调用也当作"正在操作"（`host_local::BUSY_AFTER_MS`）。
+- **轮询而不是推送。** 托盘每 3 s 连一次控制管道取 `status`（本机 socket / 管道），菜单操作后 0.4 s 补一次；状态没变就不重画。
+  "本设备"页的状态每 5 s 轮询一次，但 doctor（要读自启和防火墙状态，Windows 上慢；没被控端时还要起一个 CLI 进程）只在进页面
+  和操作之后跑（`local_host(doctor)` 参数）。
+- **关窗进托盘**只在两种情况下：本机有被控端在运行，或用户打开了"登录时打开"。只做控制端的电脑关窗口仍然退出。macOS 窗口收进托盘时
+  隐藏 Dock 图标（`set_dock_visibility(false)`），点托盘菜单或 Dock（`RunEvent::Reopen`）再出来。
+- **登录时打开（`login_item.rs`）默认关**，用户在"本设备 → 登录时启动"里手动开：macOS 写 `~/Library/LaunchAgents/io.github.jia-ss.ai-remote.app.plist`
+  （`--hidden`，`LimitLoadToSessionType = Aqua`，不 `launchctl load`，下次登录生效），Windows 写
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ai-remote` 值（用 `reg.exe`）。没用 `tauri-plugin-autostart`：
+  它最新版是给 Tauri 3 的 alpha，macOS 默认走 AppleScript 登录项会弹"自动化"授权。`--hidden` 启动时页面不调 `show()`。
+- **托盘菜单语言跟页面一致**：页面启动时 `set_ui_language` 上报，之前按 `LANG` 猜。文案在 `tray.rs` 的 `status_line()` / `texts()`。
+  中文里拉丁名字后面加空格（"laptop 已连接"），汉字后面不加（`gap()`）。
+- **页面侧**："本设备"页新增 `HostPanel`：状态行（pid / 版本 / 启动方式、已连接控制端及其通道、当前操作者、正在执行的调用、
+  审批弹窗是否受阻）+ 暂停 / 恢复、停止 / 启动；配对码弹窗（级别可选，点"生成"才铸票据，票据只在弹窗里显示，可复制，不写日志）；
+  "权限与会话"组直接用 doctor 检查项，macOS 权限缺失时"打开系统设置"走
+  `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` / `?Privacy_Accessibility`（只打开面板）；
+  "登录时启动"组（被控端自启检查、未安装时的 install 命令、macOS 登录项面板按钮、本应用的"登录时打开"开关）；"审批规则"组
+  （在访达 / 资源管理器里显示配置目录）；"最近活动"组（审计尾 20 行，`id="recent"` 给托盘菜单定位）。托盘到页面的跳转走 Tauri
+  事件 `tray-navigate`（`App.tsx` 监听，payload 是 `TrayIntent`），不刷新页面。
+- **机主暂停（`Turns::owner_pause` / `owner_resume`）比控制端的暂停更强**：智能体和接管者的调用都拒绝，控制端不能 resume / take_over
+  （`OWNER_PAUSED` 的说明），控制端的 pause 不会覆盖它；恢复时回到暂停前的操作者（接管者暂停期间交还，则回到智能体）；本机恢复幂等。
+  `Driver::Paused` 多了 `owner` 字段，审计行带 `"origin": "owner"`；控制端时间线、电脑页、会话页的恢复按钮都按它区分。画面仍可观看。
+  审查前的第一版用的是控制端同款暂停，界面却写"所有控制端都被拒绝"，两边对不上。
+- **配对码**：点"生成"才铸票据；显示期间 `set_content_protected(true)`（macOS `NSWindowSharingNone`、Windows `WDA_EXCLUDEFROMCAPTURE`，
+  系统支持时对截屏 / 推流隐藏窗口，未在真机验证采集端是否真的排除）；有控制端连着时先提醒；复制只复制票据本身（配对页也接受带
+  `ai-remote pair ` 前缀的粘贴）；被控端在配对时写一条 `paired` 审计（含三词安全码，它不是秘密），弹窗轮询 `recent` 显示对方名字和安全码，
+  不一致可一键移除（`local_host_forget` → `HostRequest::Forget`）。
+- **状态三态**：控制管道 NotFound / ConnectionRefused 才算"未运行"，其他错误（如服务模式管道拒绝访问）显示"在运行，但读不到状态"，
+  关窗也保留托盘。旧版被控端的 status 没有新字段，前端全部按可选处理（第一版会直接白屏：这台 Mac 的 LaunchAgent 被控端就是旧版）。
+- **Windows 服务模式**：status 带 `system`；`ai-remote host start` 遇到需要管理员的启动（`sc start`）且当前未提权时直接说明怎么办；
+  托盘 / 页面停止服务前先确认（停了只有管理员能再启动）。没有给服务加 `sc sdset` 放开启动权限。
+- `ai-remote doctor` 有 fail 时退出码为 1，`cli_json` 只要 stdout 是 JSON 对象就照用（否则没有被控端时整组权限都不显示）。
+- 页面拿不到托盘命令：`capabilities/default.json` 显式 deny 了 `core:tray:*`（开 `tray-icon` 特性后 `core:default` 会带上它们）。
+- "审批规则"定位到 `host/ai-remote.toml`（`open -R` / `explorer /select,`），不是配置目录根。
+
+### 验证（2026-10-21，本机 macOS 26，debug）
+
+- `cargo fmt --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、四个 `tools/*.test.mjs`（47 过）、`tsc --noEmit` 全过；
+  `cargo test --workspace --locked` 全过，其中 `stream::pointer::mac::tests::the_current_pointer_can_be_read` 在一次整跑里失败、单独重跑通过
+  （它前后读两次光标形状，中间光标变了就会失败；本分支没动这个文件）。新增单测：`presence::tests`、`turns::tests::the_owners_pause_…`、
+  `control::tests::tray_requests`、`tray::tests`（角标、图标像素、中英文案）、`host_local::tests`（status 解析、刚结束的调用、未知状态）、
+  `login_item::tests`。
+- 真机（`/tmp` 下独立配置目录起新版被控端，同一配置目录的控制端与它配对；没碰 `~/Library/Application Support/ai-remote` 和 LaunchAgent 被控端）：
+  托盘图标是模板图、和其他菜单栏图标同色；有控制端连着显示空心环，循环调用 `system_info` 时显示实心点、菜单写"studio-laptop 的智能体正在操作（system_info）"；
+  托盘"暂停"后图标变两竖条、菜单变"恢复被控端"，控制端 `ai-remote resume` 被拒（"the owner paused this computer…"），智能体调用被拒并说明原因；
+  托盘"打开设置"跳到"本设备"页。截图：`docs/images/desktop/tray-menu-{operating,paused}.jpg`（computer-use 截屏，裁到只剩本应用图标和菜单）、
+  `tray-settings-{dark,light}.jpg`（浏览器预览 + demo 后端，无头 Chrome 截图：真机截图里会出现本机主机名，不进公开仓库）。
+  "本设备"页在真机上也看过（权限、自启、规则、最近活动都正常显示），只是没有放进仓库。
+- 多 agent 审查（7 个维度、每条两个角度复核；复核阶段一半因额度中断，剩下的由我逐条判断）找出的问题都已处理，主要是上面几条。
+- Windows：只靠推送后的 windows-2025 CI 编译 / clippy / 测试，真机没跑托盘。
+
+### 未做 / 下一步
+
+- 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。
+- Windows 真机没跑过托盘（只靠 CI 编译）；服务模式下控制管道允许安装者账户这一点已有真机结论，托盘走同一条管道。
+- 桌面端没有单实例保护：登录项启动了一份，再从访达 / 开始菜单双击可能起第二份（两个托盘图标）。`tauri-plugin-single-instance` 可以解决。
+- 服务模式下桌面端不能一键启动服务（需管理员）；要做的话在 `--service` 安装计划里加 `sc sdset` 给安装者 SID 开 SERVICE_START，并写进 `--dry-run`。
+- 配对码窗口的防截屏在 macOS 15+ 的 ScreenCaptureKit 上是否仍被尊重、Windows DDA 是否排除，都没在真机验证。
+- `docs/operations.zh-CN.md` 第 3 节开头仍写"从不做成系统服务"（本分支之前就有，未改）。
+- 真机试的时候发现测试配置里 studio-laptop 被人在界面上设成了"全部放开"、本应用的"登录时打开"也被打开过（14:28，都需要点确认 / 选择，
+  不是自动发生的）；登录项指向的是 worktree 里的 debug 包，已删除。
+- "最近活动"是审计原文的句子化，不是会话页那种步骤卡；完整视图在"活动"页。
+
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
 
 用户对 debug 包的评价是"太丑了，审美停在上个世纪，而且没有全屏显示"，要求做成一流 macOS 原生工具的样子（无边框、

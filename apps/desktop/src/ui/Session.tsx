@@ -291,6 +291,10 @@ function logItems(c: Computer, agent: string, host: string): LogItem[] {
     let cls = "you u-agent d-agent n-you";
     if (turn.message) {
       text = t("s_note");
+    } else if (turn.owner) {
+      // The owner, at that computer, paused or resumed: not something this device did.
+      text = d?.state === "paused" ? t("s_owner_paused", { host: c.host.name }) : t("s_owner_resumed", { host: c.host.name });
+      cls = "you u-agent d-sys n-you";
     } else if (d?.state === "person") {
       text = t("s_took_over", { device: turn.by });
       cls = "you u-agent d-you n-you";
@@ -320,6 +324,7 @@ function DriverBar({
   onAction,
   immersive,
   onLeave,
+  ownerPaused = false,
 }: {
   bar: Bar;
   agent: string;
@@ -327,6 +332,8 @@ function DriverBar({
   onAction: (a: "take_over" | "pause" | "hand_back" | "resume") => void;
   immersive: boolean;
   onLeave: () => void;
+  /** The owner paused it at that computer: only they can resume. */
+  ownerPaused?: boolean;
 }) {
   const status: Record<Bar, string> = {
     agent: t("drv_agent", { agent }),
@@ -363,7 +370,7 @@ function DriverBar({
       </button>
     ),
     paused: (
-      <button className="btn sm primary" disabled={busy} onClick={() => onAction("resume")}>
+      <button className="btn sm primary" disabled={busy || ownerPaused} title={ownerPaused ? t("owner_paused_hint") : undefined} onClick={() => onAction("resume")}>
         <Icon name="play" size={13} />
         {t("resume")}
       </button>
@@ -726,7 +733,7 @@ export function SessionPage({
             )}
             {showBars && (
               <motion.div key="bar" {...fade} className="nt-anchor bottom">
-                    <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} />
+                    <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} ownerPaused={c.feed.driver.state === "paused" && !!c.feed.driver.owner} />
               </motion.div>
             )}
           </AnimatePresence>

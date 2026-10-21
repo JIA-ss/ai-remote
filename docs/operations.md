@@ -42,6 +42,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote host install` | start the host automatically at logon, in the background (`--service`: as a Windows service that reaches the lock screen) |
 | `ai-remote host uninstall` | remove the autostart entry, stop the host, remove the firewall rules |
 | `ai-remote host status` | autostart entry, firewall rules, whether the host runs |
+| `ai-remote host start` | start the installed background host now (after `stop-host`); the desktop app's tray uses it. A Windows service needs an administrator terminal |
 | `ai-remote doctor` | graded checks: can this machine really be operated? |
 | `ai-remote pair-code [--level L] [--name N]` | print a one-time pairing ticket |
 | `ai-remote peers` | paired controllers with their levels and device ids; revoked ones are marked `REVOKED` |
@@ -333,8 +334,9 @@ print goes to `<profile>/host/host.log`, and it never mints a pairing ticket by 
 - **Logs.** `host.log` is rotated when it passes 8 MiB; two earlier files are kept (`host.log.1`,
   `host.log.2`). Errors before the log can be opened go to `ai-remote-hostw-error.log` in the
   temporary directory. On macOS, launchd also writes the process's stderr to `host/host-stderr.log`.
-- **Starting it again** after `stop-host`: log off and on, run `ai-remote host install` again (it
-  starts the task when no host runs), or start the task yourself:
+- **Starting it again** after `stop-host`: `ai-remote host start` (or the desktop app's tray), log off
+  and on, run `ai-remote host install` again (it starts the task when no host runs), or start the task
+  yourself:
   `schtasks /Run /TN "ai-remote\host-<8 hex digits>"` (`ai-remote host status` shows the name).
 - **No console windows.** The background host has no console, so everything it starts (shell
   commands, jobs, mounted servers, system tools) is started without a console window; nothing pops
@@ -781,6 +783,14 @@ ai-remote tell "Use the D: drive for the export"
   every session records whether it is an agent's or a person's (`client` on `session_start`).
 - Turns coordinate people and agents; they are not a security boundary (an agent on the same device
   could make calls marked as a person's). Levels, policy and approvals are what limit an agent.
+
+**Pausing at the host itself.** The owner can also pause from the desktop app on the host (the tray
+menu or Settings > This device). That pause is stronger than a controller's: the agent's calls *and* a
+person's who took over are refused, and no paired device can resume or take over until the owner
+resumes at that computer (`ai-remote resume` from a controller is refused with that reason); live
+views keep running. On resume, whoever drove before gets the controls back. The audit log records it
+as a `driver` line with `"origin": "owner"`, and controllers' timelines show "someone at <host>
+paused it".
 
 ## 10. Audit log
 

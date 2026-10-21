@@ -11,6 +11,7 @@ import type {
   HostTool,
   Level,
   LocalController,
+  LocalHost,
   PendingApproval,
   RawPending,
 } from "./types";
@@ -140,6 +141,42 @@ function resolve(host: string, id: string, verdict: "approved" | "denied", note?
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+let demoLoginItem = false;
+
+const demoHostStatus: NonNullable<LocalHost["host"]> = {
+  name: "home-laptop",
+  device: "eid:4f2a9c1e77b0d3a8e51c0b6f2d9a7e43",
+  version: "0.1.0",
+  peers: 2,
+  connected: ["laptop"],
+  controllers: [{ name: "laptop", device: "eid:7c1d…", channels: ["events", "screen", "tools"] }],
+  calls: [{ peer: "laptop", tool: "screenshot", person: false, since_ms: Date.now() - 400 }],
+  last_call: null,
+  driver: { state: "agent" },
+  prompt_blocker: null,
+  pid: 4242,
+  background: true,
+};
+
+/** This computer as a host in the demo: running, one controller connected, one permission missing. */
+const demoLocalHost: LocalHost = {
+  host: { ...demoHostStatus },
+  doctor: {
+    overall: "fail",
+    checked_in: "host",
+    checks: [
+      { id: "screen_recording", grade: "ok", summary: "macOS Screen Recording permission granted to this process" },
+      { id: "accessibility", grade: "fail", summary: "macOS Accessibility permission missing: cannot control mouse and keyboard", fix: "enable the host executable in System Settings > Privacy & Security > Accessibility, restart the host, then run doctor again" },
+      { id: "desktop", grade: "ok", summary: "desktop unlocked" },
+      { id: "approval", grade: "ok", summary: "approval prompts can be shown on this desktop" },
+      { id: "bypass", grade: "ok", summary: "no controller bypasses levels, policy and approval" },
+      { id: "autostart", grade: "ok", summary: "LaunchAgent io.github.jia-ss.ai-remote.host is installed and running" },
+      { id: "relay", grade: "ok", summary: "home relay reachable" },
+    ],
+  },
+  profile: "/Users/me/Library/Application Support/ai-remote",
+};
+
 const demoAgents: ConnectedAgent[] = [
   { id: 1, client: "claude-code", since_ms: Date.now() - 40 * minute, last_ms: Date.now() - 2 * minute, calls: 13 },
 ];
@@ -212,6 +249,51 @@ export const demoBackend: Backend = {
     await wait(200);
     const c = localControllers.find((x) => x.name === peer);
     if (c) Object.assign(c, { bypass: on, since_ms: on ? Date.now() : null, until_ms: null });
+  },
+  async localHost(doctor) {
+    await wait(120);
+    return { ...demoLocalHost, host: demoLocalHost.host && { ...demoLocalHost.host }, doctor: doctor ? demoLocalHost.doctor : null };
+  },
+  async localPairCode(level) {
+    await wait(300);
+    return { line: "ai-remote-ticket-demo-" + level + "-" + Math.random().toString(36).slice(2, 10), expires_at: Math.floor(Date.now() / 1000) + 86_400, level };
+  },
+  async localPause(on) {
+    await wait(150);
+    if (demoLocalHost.host) demoLocalHost.host.driver = on ? { state: "paused", by: "host", since_ms: Date.now() } : { state: "agent" };
+  },
+  async localStop() {
+    await wait(300);
+    demoLocalHost.host = null;
+  },
+  async localStart() {
+    await wait(800);
+    demoLocalHost.host = { ...demoHostStatus };
+  },
+  async localRecent() {
+    await wait(100);
+    const now = Date.now();
+    return [
+      { ts: now - 9 * minute, kind: "session_start", peer: "laptop", client: "claude-code" },
+      { ts: now - 8 * minute, kind: "decision", peer: "laptop", tool: "screenshot", decision: "allow" },
+      { ts: now - 8 * minute + 400, kind: "outcome", peer: "laptop", tool: "screenshot", outcome: "ok" },
+      { ts: now - 6 * minute, kind: "decision", peer: "laptop", tool: "shell", decision: "approved", by: "host", intent: "list the project folder" },
+      { ts: now - 6 * minute + 900, kind: "outcome", peer: "laptop", tool: "shell", outcome: "ok" },
+      { ts: now - 2 * minute, kind: "driver", state: "person", device: "laptop", by: "laptop" },
+    ];
+  },
+  async localForget() {
+    await wait(200);
+  },
+  async protectWindow() {},
+  async openSystemSettings() {},
+  async revealProfile() {},
+  async setUiLanguage() {},
+  async appLoginItem() {
+    return demoLoginItem;
+  },
+  async setAppLoginItem(on) {
+    demoLoginItem = on;
   },
   async enrollApprover(host) {
     reachable(host);

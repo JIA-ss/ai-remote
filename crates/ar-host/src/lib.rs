@@ -21,6 +21,7 @@ pub mod install;
 pub mod mounts;
 pub mod platform;
 mod policy;
+mod presence;
 mod protocol;
 pub mod result_budget;
 mod server;
@@ -69,6 +70,8 @@ pub struct HostState {
     /// Cancelled when the host stops.
     stopping: CancellationToken,
     live: protocol::LiveConns,
+    /// Open controller connections on every channel and running tool calls, for `status`.
+    presence: presence::Presence,
 }
 
 impl HostState {
@@ -117,6 +120,11 @@ impl HostState {
     /// Controller connections being served.
     pub(crate) fn live(&self) -> &protocol::LiveConns {
         &self.live
+    }
+
+    /// Who is connected and which tool calls run, as reported to the owner (never used to decide).
+    pub(crate) fn presence(&self) -> &presence::Presence {
+        &self.presence
     }
 
     pub(crate) fn audit(&self) -> &AuditLog {
@@ -266,13 +274,14 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         background: opts.background,
         stopping: CancellationToken::new(),
         live: protocol::LiveConns::default(),
+        presence: presence::Presence::default(),
     });
     mesh.accept(ALPN_MCP, Arc::new(protocol::McpProtocol::new(state.clone())))?;
     mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
     mesh.accept(ALPN_SCREEN, Arc::new(stream::protocol::ScreenProtocol::new(state.clone())))?;
     mesh.accept(ALPN_FILES, Arc::new(files_channel::FilesProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
-    announce_pairings(&mesh, owner).await;
+    announce_pairings(&mesh, owner, state.clone()).await;
 
     let peers = mesh.peers().await.context("read paired devices")?;
     owner.say(&format!("ai-remote host \"{}\" is running (device {}).", state.name, mesh.short_id()));
@@ -332,7 +341,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 /// Shows the host side of every pairing ceremony: the controller printed a three-word safety code
 /// when it redeemed the ticket, and the host owner must see the same words here. Different words
 /// mean someone else redeemed the ticket.
-async fn announce_pairings(mesh: &Mesh, owner: Owner) {
+async fn announce_pairings(mesh: &Mesh, owner: Owner, host: Arc<HostState>) {
     let mut watch = match mesh.watch_pairings().await {
         Ok(w) => w,
         Err(e) => {
@@ -346,6 +355,15 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
                 Ok(Some(p)) => {
                     let level = p.level.map(|l| l.to_string()).unwrap_or_else(|| "none".into());
                     tracing::info!(peer = %p.peer, %level, sas = %p.sas, principal = ?p.principal, "controller paired");
+                    // The safety code is not a secret: the owner's view at this computer (the
+                    // desktop app's pairing dialog, recent activity) compares it from here.
+                    host.audit().event(serde_json::json!({
+                        "kind": "paired",
+                        "peer": p.peer,
+                        "principal": p.principal,
+                        "level": level,
+                        "sas": p.sas,
+                    }));
                     if !owner.background {
                         println!();
                         println!("Paired with controller \"{}\" (level: {level}).", p.peer);
