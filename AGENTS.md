@@ -116,6 +116,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
   - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
   - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）
+- [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
@@ -182,6 +183,150 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [ ] 等待机主同意（`chat_start` 走 ask）时的界面没在真实被控端上看过（测试被控端规则放行了 `chat_*`）。
 - [ ] 问题（`question`）目前只显示，没有回答按钮（`{"answer":...}` 已有通道，`PhoneClient.chatSend` 可直接发）。
 
+## 接管时的实时输入、剪贴板与文件（2026-10-21，分支 `claude/live-input`）
+
+用户反馈："帧率不够高，控制卡卡的，鼠标点击拖动不太行；剪贴板复制、文件复制也要适配。"
+
+### 根因
+
+- **操作卡、拖动不行**：`RemoteInput.tsx` 原来只在松开鼠标时发一次 `mouse` 工具调用（click 或"起点→终点"的 drag），
+  移动过程中什么都不发；每次调用经 controller agent → QUIC → 闸门 → 输入互斥锁 → 30 ms 悬停暂停，还排在 32 项队列里。
+  远端指针在松开前根本不动，拖选、拖窗口、滑块都做不了，连点快了就 `input busy`。
+- **帧率**：推流本身是满的（实测见下）。"不够高"来自两点：默认"均衡"档只请求 60 fps / 1920 长边，而这台 Mac 的屏幕是
+  100 Hz、被控端是 5K；以及上面的输入延迟。查过 WKWebView 是否把页面刷新锁在 60：WebKit 有 feature flag
+  `PreferPageRenderingUpdatesNear60FPSEnabled`（默认开，可经 `-[WKPreferences _setEnabled:forFeature:]` 关），但在这台
+  100 Hz 外接屏上开 / 关 rAF 都是 83.7 fps（可见窗口，各 3 s），**不是瓶颈，没改**。
+
+### 做了什么
+
+- **被控端 ALPN `app/ai-remote/input/1`**（`crates/ar-host/src/input_channel.rs`，协议见文件头注释）：JSON 行流，
+  移动 / 按键 / 滚轮 / 键名 / 文本 / 剪贴板 / 全部松开；回传剪贴板变化、拒绝、暂停。
+  - 准入：必须是**已接管的那台设备**（`turns` 的 `Driver::Person{device == peer.name}`），control 级或 bypass，
+    `mouse`、`keyboard` 策略都是 allow（deny / ask 拒绝整条流，应用退回逐条工具调用）。剪贴板读写分别看
+    `clipboard_read` / `clipboard_write`（allow 才同步）。**每秒复查一次**（交还、暂停、别人接管、降级、bypass 到期 /
+    关闭、策略变化 → 1 s 内结束，`input_end.reason` 写原因）。被拒写 `input_refused`；同时最多 4 条流。
+  - 注入：一条线程（macOS 多击计时靠它），批内连续移动只留最后一次（`pending` 按收到的条数扣，含被合并的）；
+    每次按下前做工具同款检查；`keys::forbidden` 照拒；Ctrl+Alt+Del 有服务时先松开为它按住的键再走 SAS；
+    已按住的键再按 = 自动重复；被控端布局打不出的字符（é 等）在无快捷修饰键时按文本输入；松开前先跟随输入桌面，
+    发送成功后才从按住列表删除（失败留到收尾重试）；暂停（审批弹窗 / 桌面不可用）时松开全部、移动静默丢弃；
+    **3 s 没有任何行就松开全部**（应用每秒发 `{"hb":1}`）；超过上限的行跳过并报错，不断流（上限 = 6×1 MiB + 64，
+    JSON 转义最坏 6 倍）。
+  - 剪贴板：轮询 400 ms，**第一次只记基线不发送**（两边都是，接管不会互相覆盖）；Windows 先看
+    `GetClipboardSequenceNumber` 变了才打开剪贴板（每 400 ms OpenClipboard 会让用户自己的复制粘贴偶尔失败）；
+    锁屏 / 安全桌面上不读不写；控制端的写入排成一个队列串行执行，写入中轮询不读（否则读到旧内容当成新变化回发）；
+    回显标记在剪贴板变成别的内容后清掉；文件列表变空也发 `clip_files: []`。
+- **controller agent** 新 op `input`（`agent.rs` 的 `open_input` / `LiveInput::relay`，每次写都 flush）。
+- **Tauri**：`open_input / send_input / close_input`；**`send_input` 是同步命令 + 无界队列**（异步命令并发执行，两批
+  4 ms 间隔的输入可能乱序；有界 `try_send` 会丢掉松开键 → 卡键），积压超过 64 批时只丢纯移动批次。
+  `clipboard_text / set_clipboard_text / clipboard_files`（arboard）、`push_file / pull_file`（`src-tauri/src/transfer.rs`，
+  与命令行同一套票据）：推送不覆盖远端同名文件（`files_stat` 探测后加 `-1` 后缀，`overwrite:false`），拉取的文件名
+  去掉盘符 / 非法字符后才落到"下载"。
+- **前端**：`lib/live-input.ts`（4 ms 批、移动合并、滚轮像素→格数〔WebView2 100 px/格，Mac 50〕、心跳、键名映射：
+  ⌘↔Ctrl 跨平台互换，按住 Ctrl/⌥/⌘ 时字母数字按 `code` 键位命名，AltGr 本身不发）；`RemoteInput.tsx`：按
+  `PointerEvent.buttons` 同步多键（第二个键按下只来 pointermove），e.repeat 发重复按下，Mac CapsLock 每次事件是一次
+  轻按，⌃⌘F 不转发，Meta 抬起只放非修饰键，流断开自动重开 3 次再退回逐条调用，切回应用立即读一次本机剪贴板，
+  剪贴板按 UTF-8 字节限 1 MiB；`Session.tsx`：拖放 / 剪贴板文件传输排队，错误和通知条同时显示；`lib/drop.ts`。
+- **文件工具 `~`**（`files.rs` 的 `expand_home` + `platform::user_folders`）：`~` 是被控端**登录用户**的主目录，
+  以 SYSTEM 跑的服务模式下经 `WTSQueryUserToken` + `SHGetKnownFolderPath` 取会话用户的；`~/Desktop` 是该用户实际
+  看到的桌面（Known Folder，OneDrive / 重定向也对）；分隔符按平台拼。
+- **呈现**：`video.ts` 每次显示刷新只画最新解码帧（`requestAnimationFrame`，20 ms 定时器兜底，二者互相取消；解码器
+  切换时丢弃未画的旧帧）。HUD 的 fps 改为呈现帧率，悬停看解码帧率。
+- **默认画质"自动"**（`stream-quality.ts` 的 `resolveQuality`）：fps = 启动时用 rAF 测的本机刷新率（吸附到常见值，
+  60~240，没测到按 120），长边 = 本机屏幕设备像素宽度夹在 1920~3840，40 Mbps（自适应码率往下调）。存过档位的用户不变。
+
+### 审查（工作流，5 个维度各一个审查者，每条结论 2 个独立反驳者）
+
+50 条，34 条两票都确认。全部确认项已修（上面列的大多来自它），未修的："?" 票未一致的里，两条流拼出被拒组合键 /
+与工具路径不共用 `INPUT` 锁（同一设备才能开流，且需接管，风险低）、开流前的输入走工具调用可能与之后的实时事件乱序
+（只在开流那 100~300 ms）、积压时丢弃的是最新移动。
+
+### 实测（2026-10-21）
+
+- 本机 Mac：`python3 tools/live-input-smoke.py` **22 项全过**（未接管被拒并审计、接管、策略 deny 拒、开流不同步剪贴板、
+  `clip` 写入且不回显、被控端复制后 1 s 内收到、锁屏组合键 / 坏按钮 / 超限滚轮被拒、交还后流结束并带原因、
+  `input_end` 计数）。会真的动一下本机指针并按一下 shift。
+- **真机 Windows**（这台 Mac → win-dev，5120×2160@100Hz，直连 RTT 4.2 ms；新版本在临时 worktree 里出 release 包，
+  以隔离配置跑一个用户态被控端；PowerShell WinForms 记录窗口记事件，`GetAsyncKeyState` 查卡键）：
+  - 点击、Shift+H、文本、中文（Unicode 包）、Backspace 自动重复连删、Ctrl+A、右键、双击、滚轮（3 格 = −360、2 格 = +240）
+    全对；**拖动：按住期间 19 个移动事件、松开在终点**。
+  - 被控端开着中文输入法时，逐键发送的字母会进远端输入法（`ProcessKey`），和在那台机器上用实体键盘一样；本机有输入法
+    时合成结果按文本发，不受远端输入法影响。第一轮拖动"丢失"就是远端输入法候选框挡住了按下点，关掉输入法后正常。
+  - 卡键：Ctrl+Shift 按住时关流 → 都松开；按住 Ctrl 后静默 → 1.5 s 时仍按住、5 s 时已松开（流还开着）。
+  - 剪贴板：Win→Mac 文本（含中文）、Win 剪贴板文件列表、Mac→Win 文本都到；开流时不同步。
+  - 文件：命令行 push 到 `~/Desktop/` 再 pull 回来 SHA-256 一致。**服务模式（SYSTEM）下 `~` = `C:\Users\sunjiashuai`、
+    `~/Desktop` = `C:\Users\Administrator\Desktop`**（这台机器把该用户的桌面重定向到了那里，和用户会话里
+    `GetFolderPath('Desktop')` 一致）——临时把已装服务的 binPath 指向新包测的，测完已还原（`host status` 正常）。
+  - Windows 上 release 构建、`cargo clippy -p ar-host -p ai-remote-desktop --all-targets -D warnings`、相关单测都过。
+- 推流：win-dev → Mac 桌面包（离屏 smoke）均衡 解码 60 / 呈现 53~60 fps、延迟 21~27 ms；极致 5120×2160 解码 83~88 /
+  呈现 51~62 fps、延迟 28~33 ms，0 丢帧（单次 6~12 s；离屏时 rAF 受限，呈现数偏低）。CLI 极致 89 fps、采集→到达
+  p50 16 ms。
+- **没测的**：桌面应用里用真鼠标拖动 / 拖放文件 / 点"保存到下载"的手感（computer-use 无法把测试窗口拉进用户正在用的
+  全屏 Space，没测）；Windows 控制端（WebView2）的滚轮步长和 Ctrl→⌘ 映射；macOS 被控端的 `~/Desktop`（降权后同用户，
+  理论上同 `directories`）；自动画质在 Windows 控制端的刷新率测量。
+
+### 端到端延迟：和 zremote 对比、编码器最快档、控制端各跳（2026-10-21）
+
+用户问"技术上做到极致了吗，zremote 的硬件编解码推流好像很快"。方法（`tools/latency-g2g/`，可复现）：被控端开一个
+Edge 页面，每次刷新把本机毫秒时钟画成 40 个黑白块（32 位 + 8 位校验）；Mac 上的 Chrome 页面从**解码出来的帧**里读条码，
+和本机时钟比（两机时钟差用 UDP 1000 次往返取最短那次，误差 ≤ 半个往返，实测 ±1.5 ms）。"ours" 模式经控制端 agent
+拉我们的流（脚本中转，不经桌面端）、WebCodecs 解码；"zremote" 模式按 zremote 看板同样的设置走 WHEP（jitterBufferTarget
+= 0）。量到"解码完成"为止，因为测量窗口不在用户正在看的 Space 里时浏览器不给 rAF，量"画到屏幕"会被节流污染。
+**绝对值包含被控端 Edge 页面自己的渲染 + DWM 合成 + 采集等待（两边都有，约 30~40 ms，推算）**，所以只能横向比。
+
+| 配置（win-dev 5120×2160@100Hz → Mac，直连，每组 20 s、约 180 个样本） | 组数 | 中位 | p90 | p99 |
+|---|---|---|---|---|
+| zremote：ffmpeg WGC + NVENC HEVC p1/ull、原生 60 fps 16 Mbps、mediamtx WebRTC | 4 | 62~72 ms | 73~91 | 82~344 |
+| 我们同配置（HEVC 原生 60 fps 16 Mbps），被控端是装成服务的旧包（SYSTEM → DDA 采集） | 4 | 55~61 ms | 67~71 | 86~116 |
+| 我们默认"自动"（3840 / 100 fps / 40 Mbps），同上旧包 | 2 | 46~48 ms | 61~63 | 73~85 |
+
+编码器最快档 A/B（同一个新包、用户态被控端〔WGC 采集〕，只改 `AI_REMOTE_ENCODER_QVS`，交替跑）：
+
+| 配置 | QualityVsSpeed 0（新默认） | 33（旧默认） |
+|---|---|---|
+| HEVC 原生 60 fps 16 Mbps，中位 | 40.2 / 40.1 / 39.6 ms | 43.2 / 43.4 ms |
+| 自动（3840 / 100 fps），中位 | 40.0 / 37.5 / 33.3 ms | 37.5 / 44.6 ms（后一组受干扰，帧率掉到 80） |
+
+5K 稳定低约 3 ms（解码也从 3.5 降到 2.5 ms：码流更小）；4K 档差异在噪声内、没有变差。所以默认改 0。
+注意：同配置下这组（用户态、WGC）比上表的服务包（SYSTEM、DDA）低 15 ms 左右，**DDA 采集可能比 WGC 慢**，没单独 A/B（下一步）。
+
+控制端各跳（真实桌面端 debug 包，`AI_REMOTE_TRACE_HOPS=<dir>` + `tools/hops-report.py`；页面侧时间在 WKWebView 里只有
+1 ms 分辨率、和原生时钟差零点几毫秒，所以个别跳出现小负数）：
+
+| 跳 | p50 | p90 | p99 |
+|---|---|---|---|
+| agent：QUIC 读完 → 写进 socket | 0.23~0.47 ms | 0.3~0.6 | 0.5~1.5 |
+| socket → Tauri 原生侧 → 交给页面 | ≈0.05 ms | 0.05 | 0.1 |
+| 原生 → 页面收到（IPC） | ≈0 | ≈0.5 | 0.9~1.8 |
+| 页面收到 → 解码完成（WebCodecs HEVC 3840×1620） | 3~4 ms | 4~5 | 5~8 |
+| 解码完成 → `drawImage` | 5 ms | 10 | 13~16（窗口不可见时靠 20 ms 定时器） |
+| 单次 `drawImage` 耗时 | 0.01~0.03 ms | | |
+
+结论：**跨进程整条链（agent → 页面）中位 < 1 ms、p99 ≈ 2 ms，不值得合并进程**；画布绘制本身几乎免费。显示路径
+（换 `<video>` / 原生图层）这次**不换**：数据里看不到瓶颈，画布只多"等下一次 rAF"（100 Hz 下平均约 5 ms），换了也要等刷新。
+"可见窗口里画布是否比原生图层多一帧合成"没测到（测量时用户在全屏应用里，窗口拿不到 rAF：`raf: 0, hidden: true`）。
+
+### 踩过的坑
+
+1. 被控端开着中文输入法时，测试里的逐键输入会被远端输入法吃掉、候选框还会挡住鼠标——测按键映射要先关掉目标控件的
+   输入法（WinForms `ImeMode = Disable`）。
+2. Tauri 异步命令并发执行，不保证调用顺序；要有序就用同步命令。
+3. 在 PowerShell 里给 `sc.exe config binPath=` 传带双引号的值，内层引号会被吃掉；用 `cmd` 的 `\"` 转义才能原样还原。
+4. 滚轮格数一开始在 flush 时才入队，会排到同批按键之后——改为累积满一格就按顺序入队。
+5. `RemoteInput.tsx` 的 React 合成事件没有 `isComposing`，用 `nativeEvent?.isComposing`；测试夹具（`desktop-state`、
+   `manual-input`、`stream-ui`）是依赖白名单，新依赖要补桩。
+6. macOS 打 tar 会带 `._*` 元数据文件，传给 Windows 前设 `COPYFILE_DISABLE=1`。
+7. macOS 上 Python 3.9 的 `TemporaryDirectory` 没有 `ignore_cleanup_errors`，跑 `stream-e2e.py` 要垫一层，并设
+   `TMPDIR=/tmp`（Unix socket 路径长度）。
+
+### 下一步
+
+- [ ] 有人在 Mac 普通桌面 Space 下用桌面应用接管 win-dev，手动拖窗口 / 拖选文字 / 拖放文件 / 点剪贴板文件按钮各一次。
+- [ ] Windows 控制端（WebView2）实测：滚轮一格是否正好一格、Ctrl→⌘、自动画质测到的刷新率。
+- [ ] 剪贴板图片（arboard 支持 `get_image`）、多文件 / 文件夹传输。
+- [ ] iOS 观看端接实时输入（现在只有桌面端）。
+- [ ] DDA 与 WGC 采集的端到端 A/B（服务模式用 DDA，上面两组相差约 15 ms，原因未定）。
+- [ ] 在普通桌面 Space 下用 `AI_REMOTE_SMOKE_VISIBLE=1` 跑一次可见窗口的"解码→上屏"，决定显示路径要不要改原生图层。
+
 ## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
 
 用户对 debug 包的评价是"太丑了，审美停在上个世纪，而且没有全屏显示"，要求做成一流 macOS 原生工具的样子（无边框、
@@ -230,8 +375,8 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 ### 下一步
 
-- [ ] 极致档全屏下 UI 重绘滞后 5~10 s：画布 5K@75fps 的 `drawImage` 压满合成器。可选方案：全屏时把画布交给
-      `OffscreenCanvas` + worker，或在 UI 层级变化时临时降帧（`setBitrate` 之外还没有降帧的控制行）。
+- [~] 极致档全屏下 UI 重绘滞后 5~10 s：画布 5K@75fps 的 `drawImage` 压满合成器。2026-10-21 改为每次显示刷新只画最新
+      一帧（见"接管时的实时输入"一节），应有缓解，未肉眼验证；仍不够的话再考虑 `OffscreenCanvas` + worker。
 - [ ] Windows 端没验证（本机只有 Mac）：`tauri-plugin-frame` 的标题栏高度仍是 48，`[data-os="windows"]` 下的字体和
       标题条布局要在 Windows 上看一眼。
 - [ ] 设备卡片的悬停态、侧栏行的键盘焦点环还是生成层的样式，没有专门过。
@@ -582,7 +727,8 @@ python tools/stream-quality.py --no-vmaf
   1.6~2.3 倍均值（改前 1.9~6.7 倍）。代价是关键帧压在缓冲内、刚出来时偏糊，由下面的"静止画面补清"解决。
 - 500 ms：稳态反而低 1.0~2.7 dB；125 ms：NVENC 像是不认（关键帧又变成 0.4~3.1 MB，部分组码率超 8~9%）。保持 250 ms。
 - QualityVsSpeed（0 最快，默认 33，66/100 更好）：4K HEVC 编码 2.4 / 4.3 / 11 / 22 ms，4K H.264 4.5 / 9.7 / 13.7 ms；
-  稳态 PSNR 0 档比默认低 0.06~1.0 dB，66 档高 ≤0.2 dB。收益不大，保持默认（4K H.264 想上 100 fps 时可考虑 0 档）。
+  稳态 PSNR 0 档比默认低 0.06~1.0 dB，66 档高 ≤0.2 dB。当时保持默认；**2026-10-21 起默认改为 0 档**（端到端实测见
+  "接管时的实时输入"一节的"端到端延迟"，5K 中位低 3 ms），`AI_REMOTE_ENCODER_QVS=<0..100>` 可覆盖。
 - 端到端（`--pattern 5120x2160`，命令行端，单次）：各档帧率不变（59.3~59.6 / 99.0~99.1 fps），采集→到达 p50 4.5~16 ms。
   回归 `streams_keep_to_the_requested_bitrate`、`bitrate_changes_take_effect_mid_stream`、
   `hardware_encoders_open_and_close_repeatedly` 都通过。

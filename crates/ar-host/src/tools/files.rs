@@ -138,12 +138,39 @@ fn random_id() -> String {
 }
 
 /// `path` as an absolute path, or an error an agent can act on.
+/// `rest` (what followed `~`) under the home directory of the user whose desktop this host serves
+/// (the signed-in user's, also for the Windows service), one component at a time so the platform's
+/// separator is used. `~/Desktop` is the desktop that user sees, which on Windows may live
+/// elsewhere (OneDrive moves it).
+fn expand_home(rest: &str) -> Result<PathBuf> {
+    let mut parts = rest.split(['/', '\\']).filter(|p| !p.is_empty()).peekable();
+    let desktop = parts.peek().is_some_and(|first| first.eq_ignore_ascii_case("desktop"));
+    let Some((home, desktop_dir)) = crate::platform::user_folders() else {
+        bail!("the host has no signed-in user whose home '~' could mean");
+    };
+    let mut path = match desktop_dir {
+        Some(d) if desktop => {
+            parts.next();
+            d
+        }
+        _ => home,
+    };
+    for part in parts {
+        path.push(part);
+    }
+    Ok(path)
+}
+
 fn absolute(path: &str) -> Result<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         bail!("give a path");
     }
-    let p = PathBuf::from(trimmed);
+    // `~` and `~/...` mean the host user's home (the only folder a caller can name without asking).
+    let p = match trimmed.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => expand_home(rest)?,
+        _ => PathBuf::from(trimmed),
+    };
     if !p.is_absolute() {
         bail!(
             "'{trimmed}' is not an absolute path. File tools take absolute paths (the host's working directory \
@@ -660,6 +687,12 @@ mod tests {
         assert!(absolute("  ").is_err());
         let abs = std::env::temp_dir();
         assert_eq!(absolute(&abs.display().to_string()).unwrap(), abs);
+        let home = directories::BaseDirs::new().expect("a home directory").home_dir().to_path_buf();
+        assert_eq!(absolute("~").unwrap(), home);
+        assert_eq!(absolute("~/docs\\a.txt").unwrap(), home.join("docs").join("a.txt"));
+        let desktop = directories::UserDirs::new().and_then(|d| d.desktop_dir().map(|p| p.to_path_buf()));
+        assert_eq!(absolute("~/Desktop/a.txt").unwrap(), desktop.unwrap_or_else(|| home.join("Desktop")).join("a.txt"));
+        assert!(absolute("~user/x").is_err());
     }
 
     #[test]

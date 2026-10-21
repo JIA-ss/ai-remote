@@ -23,9 +23,12 @@ ar-core.workspace = true
 ar-controller.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true
+# The clipboard of this computer, synced with the host's while you drive.
+arboard.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
 specta-typescript = "0.0.12"
 tauri = { version = "2", features = [] }
@@ -33,6 +36,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-frame = "1.1"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tokio.workspace = true
+# This computer's Downloads folder, where files from the host's clipboard land.
+directories.workspace = true
 
 # Debug smoke runs capture the app's own window (PrintWindow) to check what it draws.
 [target.'cfg(windows)'.dependencies]
