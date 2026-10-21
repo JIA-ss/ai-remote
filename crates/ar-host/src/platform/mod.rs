@@ -5,6 +5,8 @@
 pub mod macos;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::input_context;
 
 use serde::Serialize;
 
