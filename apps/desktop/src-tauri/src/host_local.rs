@@ -177,8 +177,11 @@ pub async fn start_if_expected(profile: &Profile, cli: &Path) -> bool {
     if owner_stopped(profile) || !matches!(probe(profile).await, Probe::Stopped) {
         return false;
     }
-    let installed = cli_json(cli, &["host", "status"]).await.ok().is_some_and(|v| v["autostart"]["installed"] == true);
-    installed && cli_json(cli, &["host", "start"]).await.is_ok()
+    // Not when launchd has it disabled: that is the Login Items switch, the owner's to turn back on
+    // (the page offers it); starting would quietly undo their choice.
+    let status = cli_json(cli, &["host", "status"]).await.ok();
+    let ready = status.is_some_and(|v| v["autostart"]["installed"] == true && v["autostart"]["disabled"] != true);
+    ready && cli_json(cli, &["host", "start"]).await.is_ok()
 }
 
 /// Runs `ai-remote --json <args>` without a console window and parses its output. Used where the
@@ -246,6 +249,28 @@ fn pane_url(pane: &str) -> Option<&'static str> {
 pub fn open_settings_pane(pane: &str) -> Result<()> {
     let url = pane_url(pane).ok_or_else(|| anyhow!("no settings pane for {pane} on this system"))?;
     std::process::Command::new("open").arg(url).spawn().context("open System Settings")?;
+    Ok(())
+}
+
+/// Clears macOS's earlier answers for this app (`tccutil reset`, for its own bundle id only), so the
+/// next request shows the system's dialog again. Needed after an ad-hoc signed build: the old entry
+/// still shows as on in System Settings but no longer matches the app, and macOS does not ask again.
+pub fn reset_permission(bundle_id: &str, permission: &str) -> Result<()> {
+    let service = match permission {
+        "screen_recording" => "ScreenCapture",
+        "accessibility" => "Accessibility",
+        other => return Err(anyhow!("unknown permission {other:?}")),
+    };
+    if !cfg!(target_os = "macos") {
+        return Err(anyhow!("no such permission on this system"));
+    }
+    let out = std::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", service, bundle_id])
+        .output()
+        .context("run tccutil")?;
+    if !out.status.success() {
+        return Err(anyhow!("tccutil reset {service}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
     Ok(())
 }
 

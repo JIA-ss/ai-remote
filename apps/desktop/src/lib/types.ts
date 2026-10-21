@@ -109,6 +109,8 @@ export interface InstallInfo {
   installed: boolean;
   /** The service form: the macOS system LaunchAgent (login window too) or the Windows service. */
   service?: boolean;
+  /** macOS: turned off under Login Items ("Allow in the Background"); it does not start until allowed. */
+  disabled?: boolean;
   /** Whether it runs this app's host with this profile (`false`: another copy, e.g. a build folder). */
   current?: boolean | null;
   launches?: string | null;

@@ -357,7 +357,17 @@ async fn host_setup(
 /// the host itself over its owner-only channel, so the grant is the host's (inside this app).
 #[tauri::command]
 #[specta::specta]
-async fn request_permission(state: State<'_, AppState>, permission: String) -> Result<Json, String> {
+async fn request_permission(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    permission: String,
+) -> Result<Json, String> {
+    // A fresh start: earlier answers for this app (often for an earlier build, which no longer
+    // match) would keep macOS from asking. Only this app's own entries; the person then answers the
+    // system's dialog.
+    if let Err(e) = host_local::reset_permission(&app.config().identifier, &permission) {
+        eprintln!("[permissions] {e:#}");
+    }
     host_local::require(&state.profile, json!({"op": "request_permission", "permission": permission}))
         .await
         .map(Json)

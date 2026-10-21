@@ -445,6 +445,14 @@ fn grade_autostart(s: &InstallStatus) -> Check {
         )
         .fix("run `ai-remote host install` (from an elevated terminal on Windows)");
     }
+    if s.disabled {
+        return Check::new(
+            "autostart",
+            Grade::Warn,
+            format!("{} {} is turned off in Login Items: the host does not start at login", s.kind, s.name),
+        )
+        .fix("press Start in the desktop app (Settings > This device), or turn ai-remote on under System Settings > General > Login Items");
+    }
     match s.current {
         Some(true) => {
             Check::new("autostart", Grade::Ok, format!("{} {} starts the background host at login", s.kind, s.name))

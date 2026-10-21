@@ -696,6 +696,13 @@ function HostPanel({
             </button>
           </Row>
         )}
+        {install?.installed && install.disabled && (
+          <Row ic={<GradeDot grade="warn" />} tt={t("as_off_h")} ds={t("as_off_d")}>
+            <button className="btn primary" disabled={busy} onClick={() => void act(() => api.localStart())}>
+              {t("as_off_btn")}
+            </button>
+          </Row>
+        )}
         {install?.installed && install.current === false && (
           <Row ic={<GradeDot grade="warn" />} tt={t("en_other_h")} ds={t("en_other_d", { what: install.launches ?? install.name })}>
             <button className="btn primary" onClick={() => setEnable(!!install.service)}>

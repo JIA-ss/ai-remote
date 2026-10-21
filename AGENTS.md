@@ -122,6 +122,10 @@
   要选中它点"−"删掉再授权。页面现在会比较"运行中的被控端"和"新进程"的结果，前者有后者没有时标成"授权已失效"；授权超时的提示也写了删旧条目。根本解决要用固定身份
   签名（Developer ID，或至少一个固定的自签名代码签名证书，`APPLE_SIGNING_IDENTITY`），未做。
 - **把真实被控端从 `~/.local/opt` 换到 `/Applications`（2026-10-21）**：坑 3：`bootout` 返回时 launchd 还没放掉旧任务，紧接着 `bootstrap` 同名标签报 `5: Input/output error`，安装计划已加"等待卸载完成（最多 10 s）"一步；坑 4：载入成功但 launchd 没启动它，要 `kickstart`，app 开启后现在会兜底启动；坑 5：直接 `ditto` 覆盖 `/Applications` 里正在用的包，下次启动报 `OS_REASON_CODESIGNING`，要先删掉旧包再拷。真实被控端现已运行在 `/Applications/ai-remote.app`（服务形态，`current: true`），两项授权仍待机主在系统设置里删掉旧条目后重新允许。
+- **一键处理授权残留与被关闭的服务（2026-10-21）**："授权…"现在先用 `tccutil reset <服务> <本应用 bundle id>` 清掉本应用的旧条目（只动自己的），
+  再由被控端请求，所以重编后不必去系统设置手动删条目。`host start`（页面"启动"、托盘、新加的"重新允许并启动"）在 macOS 上先 `launchctl enable`、
+  未载入时 `bootstrap`、再 `kickstart`：真机上见过服务被标成 `disabled`（登录项开关）和被整个卸载两种情况。`host status` 多了 `disabled`，doctor 的自启检查会提示；
+  app 启动时的自动拉起在 `disabled` 时不动作，开关是机主的。注意：从终端跑 `ai-remote doctor` 且没有被控端在跑时，权限检查的是终端自己的授权，不代表被控端。
 - 实测（本机，/tmp/ar-tray-fresh 全新配置）：包内 CLI 普通安装 → plist 指向包内 hostw、带 `AssociatedBundleIdentifiers`、被控端启动；`permissions`
   探测返回 `probed: true`；关闭（普通权限）移除 plist、被控端停止。管理员通路：用同样格式的 osascript 跑无害的 `/usr/bin/id`，系统管理员密码框弹出
   （截图里是黑的：SecurityAgent 窗口不让截），有人在机器前输入密码后返回 `uid=0(root)`。**没做**：从零点按钮装 `--service` 并在系统授权框里允许

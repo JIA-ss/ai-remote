@@ -184,9 +184,35 @@ pub fn uninstall_plan(profile: &Profile) -> Result<Plan> {
     })
 }
 
+/// Starts the installed agent: allows it again when launchd has it disabled (System Settings >
+/// Login Items > "Allow in the Background" off), loads it when it is not loaded in the session
+/// (macOS's "Quit & Reopen" after a privacy grant was seen to unload it), then starts it. Run by the
+/// owner, from the desktop app's Start button or `ai-remote host start`.
 pub fn start_action(profile: &Profile) -> Result<Action> {
-    let target = format!("{}/{}", gui_domain(owner_uid(profile)?), label(profile));
-    Ok(Action::run(LAUNCHCTL.into(), &["kickstart".into(), target], "start the LaunchAgent now"))
+    let owner = owner_uid(profile)?;
+    let domain = gui_domain(owner);
+    let target = format!("{domain}/{}", label(profile));
+    let system = system_plist_path(profile);
+    let plist = if system.exists() { system } else { user_plist_path(profile, owner)? };
+    let q = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
+    let script = format!(
+        "{l} enable {t} 2>/dev/null; {l} print {t} >/dev/null 2>&1 || {l} bootstrap {d} {p}; {l} kickstart {t}",
+        l = LAUNCHCTL,
+        t = q(&target),
+        d = q(&domain),
+        p = q(&plist.to_string_lossy()),
+    );
+    Ok(Action::run("/bin/sh".into(), &["-c".into(), script], "allow, load and start the LaunchAgent"))
+}
+
+/// Whether launchd has the agent disabled for the owner's session (the Login Items switch).
+fn disabled(owner: u32, label: &str) -> bool {
+    std::process::Command::new(LAUNCHCTL)
+        .args(["print-disabled", &gui_domain(owner)])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .is_some_and(|out| out.lines().any(|l| l.contains(&format!("\"{label}\"")) && l.contains("disabled")))
 }
 
 pub fn status(profile: &Profile) -> Result<InstallStatus> {
@@ -197,6 +223,7 @@ pub fn status(profile: &Profile) -> Result<InstallStatus> {
         if system_path.exists() { (system_path, true) } else { (user_plist_path(profile, owner)?, false) };
     let kind = if service { "LaunchAgent (system, login window too)" } else { "LaunchAgent" };
     let mut st = InstallStatus { kind: kind.into(), name: path.display().to_string(), service, ..Default::default() };
+    st.disabled = disabled(owner, &label(profile));
     match std::fs::read(&path) {
         Ok(bytes) => {
             st.installed = true;
