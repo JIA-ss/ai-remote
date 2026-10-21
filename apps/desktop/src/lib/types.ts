@@ -100,6 +100,27 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+/** The autostart entry of this profile's host (`ai-remote host status`). */
+export interface InstallInfo {
+  kind: string;
+  name: string;
+  installed: boolean;
+  /** The service form: the macOS system LaunchAgent (login window too) or the Windows service. */
+  service?: boolean;
+  /** Whether it runs this app's host with this profile (`false`: another copy, e.g. a build folder). */
+  current?: boolean | null;
+  launches?: string | null;
+}
+
+/** What `host install` would do, shown before the system asks for an administrator. */
+export interface InstallPlan {
+  summary: string;
+  notes: string[];
+  steps: Array<{ text: string; admin: boolean }>;
+  needs_elevation: boolean;
+  blocker: string | null;
+}
+
 /** This computer as a host: the running host (`null` when none), the checks and the profile directory. */
 export interface LocalHost {
   host: LocalHostStatus | null;
@@ -107,6 +128,8 @@ export interface LocalHost {
   unknown?: string | null;
   /** Only when asked for (`localHost(true)`). */
   doctor: DoctorReport | null;
+  /** Only when asked for (`localHost(true)`). */
+  install?: InstallInfo | null;
   profile: string;
 }
 

@@ -8,7 +8,19 @@ import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
-import type { AgentStatus, AuditLine, DoctorCheck, Grade, Level, LocalController, LocalHost, PairTicket, TrayIntent } from "../lib/types";
+import type {
+  AgentStatus,
+  AuditLine,
+  DoctorCheck,
+  Grade,
+  InstallInfo,
+  InstallPlan,
+  Level,
+  LocalController,
+  LocalHost,
+  PairTicket,
+  TrayIntent,
+} from "../lib/types";
 import { CmdLine } from "./CmdLine";
 import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
@@ -392,6 +404,14 @@ function HostPanel({
   const [round, setRound] = useState(0);
   const [loginItem, setLoginItem] = useState<boolean | null>(null);
   const [askStop, setAskStop] = useState(false);
+  const [install, setInstall] = useState<InstallInfo | null | undefined>(undefined);
+  /** The enable dialog: with the login window / lock screen (`true`) or after login only. */
+  // `?shotdialog=enable`: opens the enable dialog (screenshots of the page outside the app).
+  const [enable, setEnable] = useState<boolean | null>(() => (new URLSearchParams(location.search).get("shotdialog") === "enable" ? true : null));
+  const [askDisable, setAskDisable] = useState(false);
+  /** The permission being granted, and what the page says meanwhile. */
+  const [granting, setGranting] = useState<string | null>(null);
+  const [grantNote, setGrantNote] = useState<Key | null>(null);
   useEffect(() => {
     api.appLoginItem().then(setLoginItem, () => setLoginItem(null));
   }, []);
@@ -403,6 +423,7 @@ function HostPanel({
         if (!live) return;
         setLh(v);
         setDoctor(v.doctor);
+        setInstall(v.install ?? null);
       },
       () => live && setLh(null),
     );
@@ -413,7 +434,11 @@ function HostPanel({
         setLh(v);
         // Started or stopped from elsewhere (the tray, a terminal): the checks change with it.
         const running = !!v.host;
-        if (wasRunning !== null && running !== wasRunning) api.localHost(true).then((w) => live && setDoctor(w.doctor), () => {});
+        if (wasRunning !== null && running !== wasRunning) api.localHost(true).then((w) => {
+          if (!live) return;
+          setDoctor(w.doctor);
+          setInstall(w.install ?? null);
+        }, () => {});
         wasRunning = running;
       }, () => {});
     }, 5000);
@@ -439,6 +464,7 @@ function HostPanel({
     if (!intent || !once("host", intent)) return;
     if (intent.action === "pair_code") setPairOpen(true);
     if (intent.action === "confirm_stop") setAskStop(true);
+    if (intent.action === "enable") setEnable(true);
     if (intent.error) setError(intent.error);
     if (intent.anchor) setAnchor(intent.anchor);
   }, [intent]);
@@ -450,6 +476,7 @@ function HostPanel({
     if (v) {
       setLh(v);
       setDoctor(v.doctor);
+      setInstall(v.install ?? null);
     }
     setRound((r) => r + 1);
     onChanged();
@@ -465,6 +492,42 @@ function HostPanel({
     } finally {
       setBusy(false);
     }
+  };
+  /**
+   * One click per permission: the host asks macOS itself (its own grant, inside this app), the
+   * person allows it in the system's dialog or pane, the page notices from a fresh copy of the host
+   * and restarts the host when it needs that (Screen Recording), then shows the checks again.
+   */
+  const grant = async (permission: string) => {
+    setGranting(permission);
+    setGrantNote("grant_waiting");
+    setError(null);
+    try {
+      await api.requestPermission(permission);
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const p = await api.hostPermissions().catch(() => null);
+        if (!p?.fresh?.[permission]) continue;
+        if (!p.running?.[permission]) {
+          setGrantNote("grant_restarting");
+          await api.localRestart();
+          for (let j = 0; j < 30; j++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const v = await api.localHost(false).catch(() => null);
+            if (v?.host) break;
+          }
+        }
+        await refresh();
+        setGrantNote(null);
+        setGranting(null);
+        return;
+      }
+      setGrantNote("grant_timeout");
+    } catch (e) {
+      setError(String(e));
+      setGrantNote(null);
+    }
+    setGranting(null);
   };
   // Scroll to what the tray asked for once the sections above it have their content.
   useEffect(() => {
@@ -532,10 +595,16 @@ function HostPanel({
                 </button>
               </>
             ) : (
-              <button className="btn primary" disabled={busy} onClick={() => void act(() => api.localStart())}>
-                <Icon name="play" size={14} />
-                {t("lh_start")}
-              </button>
+              install && !install.installed ? (
+                <button className="btn primary" onClick={() => setEnable(true)}>
+                  {t("en_btn")}
+                </button>
+              ) : (
+                <button className="btn primary" disabled={busy} onClick={() => void act(() => api.localStart())}>
+                  <Icon name="play" size={14} />
+                  {t("lh_start")}
+                </button>
+              )
             )}
           </Row>
         )}
@@ -558,7 +627,13 @@ function HostPanel({
           <div className="grp-sub">{t(doctor.checked_in === "host" ? "perm_h_host" : "perm_h_cli")}</div>
           <div className="grp">
             {permissions.map((c) => (
-              <CheckRow key={c.id} check={c} />
+              <CheckRow
+                key={c.id}
+                check={c}
+                onGrant={host && mac && (c.id === "screen_recording" || c.id === "accessibility") ? () => void grant(c.id) : undefined}
+                granting={granting === c.id ? grantNote : null}
+                busy={granting !== null}
+              />
             ))}
           </div>
         </>
@@ -568,17 +643,41 @@ function HostPanel({
         {t("as_h")}
       </div>
       <div className="grp">
-        {autostart ? <CheckRow check={autostart} /> : <Row ic={<GradeDot grade="skip" />} tt={t("as_h")} ds="—" />}
-        {(autostart ? autostart.grade !== "ok" : !host) && (
-          <div className="gr noic" style={{ display: "block", padding: 16 }}>
-            <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
-              {t("as_install_d")}
-            </div>
-            <CmdLine cmd="ai-remote host install" />
-            <div className="ds" style={{ marginTop: 10 }}>
-              {t("dv_host_note")}
-            </div>
-          </div>
+        {install && !install.installed ? null : autostart ? (
+          <CheckRow check={autostart} />
+        ) : (
+          <Row ic={<GradeDot grade="skip" />} tt={t("as_h")} ds="—" />
+        )}
+        {install && !install.installed && (
+          <Row ic={<Icon name="monitor" />} tt={t("en_h")} ds={t(mac ? "en_d_mac" : "en_d_win")}>
+            <button className="btn" onClick={() => setEnable(false)}>
+              {t("en_user_btn")}
+            </button>
+            <button className="btn primary" onClick={() => setEnable(true)}>
+              {t("en_btn")}
+            </button>
+          </Row>
+        )}
+        {install?.installed && install.current === false && (
+          <Row ic={<GradeDot grade="warn" />} tt={t("en_other_h")} ds={t("en_other_d", { what: install.launches ?? install.name })}>
+            <button className="btn primary" onClick={() => setEnable(!!install.service)}>
+              {t("en_other_btn")}
+            </button>
+          </Row>
+        )}
+        {install?.installed && mac && !install.service && (
+          <Row ic={<Icon name="lock" />} tt={t("en_lw_h")} ds={t("en_lw_d")}>
+            <button className="btn" onClick={() => setEnable(true)}>
+              {t("en_lw_btn")}
+            </button>
+          </Row>
+        )}
+        {install?.installed && (
+          <Row ic={<Icon name="x" />} tt={t("dis_h")} ds={t(install.service ? "dis_d_service" : "dis_d")}>
+            <button className="btn" onClick={() => setAskDisable(true)}>
+              {t("dis_btn")}
+            </button>
+          </Row>
         )}
         <Row ic={<Mark h={12} />} tt={t(mac ? "li_mac" : "li_win")} ds={t("li_d")}>
           <span className="dd-wrap">
@@ -640,6 +739,44 @@ function HostPanel({
           ))}
         </div>
       )}
+      {enable !== null && (
+        <EnableDialog
+          service={enable}
+          onClose={() => setEnable(null)}
+          onDone={async () => {
+            setEnable(null);
+            // launchd / the service starts the host; wait for it to answer, then show everything again.
+            for (let i = 0; i < 30; i++) {
+              const v = await api.localHost(false).catch(() => null);
+              if (v?.host) break;
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+            await refresh();
+          }}
+        />
+      )}
+      {askDisable && (
+        <Confirm
+          title={t("dis_q")}
+          body={t(install?.service ? "dis_body_service" : "dis_body")}
+          verb={t("dis_btn")}
+          danger
+          onNo={() => setAskDisable(false)}
+          onYes={async () => {
+            try {
+              await api.hostSetup(false, false, t("dis_prompt"));
+            } catch (e) {
+              if (String(e).includes("cancelled")) {
+                setAskDisable(false);
+                return;
+              }
+              throw e;
+            }
+            setAskDisable(false);
+            await refresh();
+          }}
+        />
+      )}
       {pairOpen && <PairCodeDialog name={name} connected={connected} onClose={() => setPairOpen(false)} />}
       {askStop && (
         <Confirm
@@ -695,7 +832,19 @@ function auditText(l: AuditLine): string {
   }
 }
 
-function CheckRow({ check }: { check: DoctorCheck }) {
+function CheckRow({
+  check,
+  onGrant,
+  granting = null,
+  busy = false,
+}: {
+  check: DoctorCheck;
+  /** One click: the host asks macOS for this permission (macOS, host running). */
+  onGrant?: () => void;
+  /** What the page says while this permission is being granted. */
+  granting?: Key | null;
+  busy?: boolean;
+}) {
   // macOS lists LaunchAgents under Login Items; Windows' autostart is a task or a service, which no
   // Settings page shows, so there is no button for it there.
   const pane = mac ? (check.id === "autostart" ? "login_items" : SETTINGS_PANE[check.id]) : undefined;
@@ -708,11 +857,18 @@ function CheckRow({ check }: { check: DoctorCheck }) {
         <>
           <div>{checkSummary(check)}</div>
           {check.grade !== "ok" && checkSummary(check) !== check.summary && <div style={{ marginTop: 2 }}>{check.summary}</div>}
-          {check.grade !== "ok" && check.fix && <div style={{ marginTop: 2 }}>{t("perm_fix", { fix: check.fix })}</div>}
+          {/* The page has buttons for what the host's fix would have you type. */}
+          {check.grade !== "ok" && check.fix && check.id !== "autostart" && !onGrant && <div style={{ marginTop: 2 }}>{t("perm_fix", { fix: check.fix })}</div>}
+          {granting && <div style={{ marginTop: 4, color: "var(--agent)" }}>{t(granting)}</div>}
           {error && <div className="c-danger">{error}</div>}
         </>
       }
     >
+      {onGrant && check.grade !== "ok" && (
+        <button className="btn primary" disabled={busy} onClick={onGrant}>
+          {t("grant_btn")}
+        </button>
+      )}
       {pane && (check.grade !== "ok" || check.id === "autostart") && (
         <button className="btn" onClick={() => void api.openSystemSettings(pane).catch((e) => setError(String(e)))}>
           <Icon name="open" size={14} />
@@ -720,6 +876,83 @@ function CheckRow({ check }: { check: DoctorCheck }) {
         </button>
       )}
     </Row>
+  );
+}
+
+/**
+ * Enabling remote control here from the app: what will change (the dry-run plan), then the system's
+ * own administrator prompt (macOS password, Windows UAC) runs the bundled `ai-remote host install`,
+ * so the autostart entry runs the host inside this app. No terminal.
+ */
+function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose: () => void; onDone: () => Promise<void> }) {
+  const [plan, setPlan] = useState<InstallPlan | null>(null);
+  const [state, setState] = useState<"plan" | "running" | "error">("plan");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.hostInstallPlan(service).then(setPlan, (e) => {
+      setError(String(e));
+      setState("error");
+    });
+  }, [service]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && state !== "running" && onClose();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  });
+  const admin = service || !mac;
+  const go = async () => {
+    setState("running");
+    setError(null);
+    try {
+      await api.hostSetup(true, service, t(service ? "en_prompt_lw" : "en_prompt"));
+      await onDone();
+    } catch (e) {
+      const text = String(e);
+      setError(text.includes("cancelled") ? t("en_cancelled") : text);
+      setState("error");
+    }
+  };
+  // The plan's own blocker ("needs root") is what the administrator prompt answers.
+  const steps = plan?.steps ?? [];
+  return (
+    <>
+      <div className="smoke" style={{ position: "fixed" }} onClick={() => state !== "running" && onClose()} />
+      <div className="cdlg" role="dialog" aria-modal="true" aria-label={t("en_title")} style={{ position: "fixed", width: 560 }}>
+        <div className="b">
+          <div className="ttl">{t(service ? "en_title_lw" : "en_title")}</div>
+          <div className="bd">
+            <div>{t(service ? (mac ? "en_what_lw_mac" : "en_what_lw_win") : mac ? "en_what_mac" : "en_what_win")}</div>
+            {plan ? (
+              <div style={{ marginTop: 14, maxHeight: 240, overflowY: "auto", padding: "10px 12px", borderRadius: "var(--r-control)", background: "var(--well)" }}>
+                <div className="cap" style={{ color: "var(--text-1)", marginBottom: 6 }}>{t("en_changes")}</div>
+                {steps.map((s, i) => (
+                  <div key={i} className="cap mono" style={{ fontSize: 11, color: "var(--text-2)", marginBottom: 4, wordBreak: "break-all" }}>
+                    {i + 1}. {s.text.split("\n")[0]}
+                  </div>
+                ))}
+                {plan.notes.map((n, i) => (
+                  <div key={`n${i}`} className="cap" style={{ color: "var(--text-3)", marginTop: 6 }}>
+                    · {n}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              state !== "error" && <div className="cap c3" style={{ marginTop: 14 }}>…</div>
+            )}
+            {state === "running" && <div className="cap" style={{ marginTop: 12, color: "var(--agent)" }}>{t(admin ? "en_running_admin" : "en_running")}</div>}
+            {error && <div className="cap c-danger" style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{error}</div>}
+          </div>
+        </div>
+        <div className="f">
+          <button className="btn primary" autoFocus disabled={!plan || state === "running"} onClick={() => void go()}>
+            {t(admin ? (mac ? "en_go_mac" : "en_go_win") : "en_go")}
+          </button>
+          <button className="btn" disabled={state === "running"} onClick={onClose}>
+            {t("cancel")}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

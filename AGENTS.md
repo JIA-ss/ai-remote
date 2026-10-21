@@ -94,7 +94,34 @@
 - 多 agent 审查（7 个维度、每条两个角度复核；复核阶段一半因额度中断，剩下的由我逐条判断）找出的问题都已处理，主要是上面几条。
 - Windows：只靠推送后的 windows-2025 CI 编译 / clippy / 测试，真机没跑托盘。
 
+### 应用内一键开启与授权（2026-10-21 第二轮，用户硬要求：不再让用户敲终端命令）
+
+- **开启 / 关闭**（"本设备"页、托盘"启动被控端"在未安装时也引到这里）：先用包内 CLI 跑 `host install [--service] --dry-run`
+  （新加 `--json` 输出 summary / notes / steps / blocker）在弹窗里列出要做的改动，再执行。要管理员的走系统自己的授权框
+  （`apps/desktop/src-tauri/src/elevate.rs`）：macOS `osascript -e 'do shell script "…" with prompt "…" with administrator privileges'`
+  （管理员密码框，命令以 root 跑；PR #13 已让 root 下的 `--service` 安装不再等被控端），Windows 用 PowerShell
+  `Start-Process cmd.exe -Verb RunAs -Wait`（UAC），输出重定向到临时文件读回。macOS 普通安装不用管理员，直接以用户身份跑；Windows 普通安装
+  （最高权限计划任务 + 防火墙）和服务都提权。关闭时按 `host status` 的新字段 `service` 决定要不要提权。没选 SMAppService / Authorization
+  Services：前者注册的是 app 自己的 helper，管不了登录窗口会话的系统 LaunchAgent；后者在 Rust 里要绑定已废弃的 `AuthorizationExecuteWithPrivileges`。
+- **被控端在 app 包里**：macOS 包本来就带 `Contents/MacOS/ai-remote(-hostw)`（`tauri.macos.bundle.conf.json` 的 externalBin），安装计划用的是运行中
+  CLI 旁边的 hostw，所以 app 调包内 CLI 时 plist 指向包内路径，`AssociatedBundleIdentifiers` 是 app 的 bundle id（实测：/tmp 测试配置装出来的 plist
+  就是这样）。自启项指向别处（比如某个 build 目录或 `~/.local/opt`）时页面提示"改用这个应用"，一键重装。Windows 包还没把 CLI 打进去（见未做）。
+- **提权前先以用户身份跑一次 dry-run**：全新配置目录如果第一次由 root 创建，host 目录会是 root 的，被控端写不了审计日志。
+- **一键授权**（macOS）：权限行的"授权…"走控制管道新操作 `request_permission`，由**被控端自己**调 `CGRequestScreenCaptureAccess` /
+  `AXIsProcessTrustedWithOptions(prompt)`（`crates/ar-host/src/platform/tcc.rs`），所以授权记在被控端（app 包里的 hostw）身上；远程调用到不了这条管道，
+  "远程工具不触发 TCC"仍然成立。之后页面每 2 s 调 `permissions`：被控端起一个带 `AI_REMOTE_TCC_PROBE=1` 的自身子进程重新读授权（运行中的进程在
+  屏幕录制授权后要重启才看得到），新进程有了而运行中的没有，就自动重启被控端（停止 + `host start`），再刷新检查。等 3 分钟没结果就提示去系统设置；
+  旁边一直有"打开系统设置"深链兜底（系统只弹一次请求，拒绝过后就不再弹）。
+- 实测（本机，/tmp/ar-tray-fresh 全新配置）：包内 CLI 普通安装 → plist 指向包内 hostw、带 `AssociatedBundleIdentifiers`、被控端启动；`permissions`
+  探测返回 `probed: true`；关闭（普通权限）移除 plist、被控端停止。管理员通路：用同样格式的 osascript 跑无害的 `/usr/bin/id`，系统管理员密码框弹出
+  （截图里是黑的：SecurityAgent 窗口不让截），有人在机器前输入密码后返回 `uid=0(root)`。**没做**：从零点按钮装 `--service` 并在系统授权框里允许
+  两项权限、doctor 全绿——要机器主人亲自输密码、点授权，留给用户。截图 `docs/images/desktop/host-setup-{fresh,dialog,grant}.jpg`（demo 数据）。
+
 ### 未做 / 下一步
+
+- Windows 安装包没把 `ai-remote.exe` / `ai-remote-hostw.exe` 打进去（`tauri.windows.conf.json` 没有 externalBin，也没有 Windows 打包脚本），
+  应用内开启在 Windows 上依赖 CLI 放在 app 旁边或 PATH 里。Windows 的 UAC 通路只有字符串构造的单测，真机没跑过。
+- 从零开始（未安装）点按钮装服务形态 + 两项授权 + doctor 全绿，要用户本人在这台 Mac 上走一遍（输管理员密码、点系统授权框）。
 
 - 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。
 - Windows 真机没跑过托盘（只靠 CI 编译）；服务模式下控制管道允许安装者账户这一点已有真机结论，托盘走同一条管道。

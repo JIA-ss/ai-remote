@@ -172,6 +172,24 @@ pub async fn cli_json(cli: &Path, args: &[&str]) -> Result<Value> {
     serde_json::from_slice(&output.stdout).with_context(|| format!("ai-remote {} printed no JSON", args.join(" ")))
 }
 
+/// Runs `ai-remote <args>` as this user without a console window; its output (stdout and stderr).
+pub async fn cli_text(cli: &Path, args: &[String]) -> Result<String> {
+    let mut cmd = tokio::process::Command::new(cli);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = tokio::time::timeout(Duration::from_secs(90), cmd.output())
+        .await
+        .map_err(|_| anyhow!("ai-remote {} did not finish within 90 s", args.join(" ")))?
+        .with_context(|| format!("run {}", cli.display()))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("failed");
+        return Err(anyhow!("{}", last.trim_start_matches("Error: ")));
+    }
+    Ok(text)
+}
+
 /// The System Settings pane the "This device" page may open (macOS only: Windows has no page for
 /// the host's permissions or its task / service). Only these; the app never changes a setting.
 fn pane_url(pane: &str) -> Option<&'static str> {

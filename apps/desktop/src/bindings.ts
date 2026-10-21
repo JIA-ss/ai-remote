@@ -110,6 +110,33 @@ export const commands = {
 	 */
 	protectWindow: (on: boolean) => typedError<null, string>(__TAURI_INVOKE("protect_window", { on })),
 	/**
+	 *  What `host install` would do (`service`: with the login window / lock screen), as the page shows
+	 *  it before asking for an administrator.
+	 */
+	hostInstallPlan: (service: boolean) => typedError<Json, string>(__TAURI_INVOKE("host_install_plan", { service })),
+	/**
+	 *  Installs (`install: true`) or removes the background host with this app's bundled command, so
+	 *  the autostart entry runs the host inside this app. Whatever needs an administrator (the service
+	 *  form, and everything on Windows) runs after the system's own prompt, which shows `prompt`
+	 *  (macOS). Returns the command's output; `"cancelled"` when the prompt was dismissed.
+	 */
+	hostSetup: (install: boolean, service: boolean, prompt: string) => typedError<Json, string>(__TAURI_INVOKE("host_setup", { install, service, prompt })),
+	/**
+	 *  Shows macOS's request for Screen Recording or Accessibility for the host running here: asked by
+	 *  the host itself over its owner-only channel, so the grant is the host's (inside this app).
+	 */
+	requestPermission: (permission: string) => typedError<Json, string>(__TAURI_INVOKE("request_permission", { permission })),
+	/**
+	 *  What macOS grants the host here: `fresh` (a new copy of it) and `running` (the host itself;
+	 *  Screen Recording reaches it only after a restart).
+	 */
+	hostPermissions: () => typedError<Json, string>(__TAURI_INVOKE("host_permissions")),
+	/**
+	 *  Restarts the background host (after a permission was granted): stops it, waits until it is gone,
+	 *  starts the installed one again.
+	 */
+	localHostRestart: () => typedError<Json, string>(__TAURI_INVOKE("local_host_restart")),
+	/**
 	 *  Opens one System Settings pane (`screen_recording`, `accessibility`, `login_items`, ...); the
 	 *  person changes the setting there, never this app.
 	 */

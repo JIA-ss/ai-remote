@@ -265,6 +265,12 @@ launch_app = { level = "control", approve = "ask" }
   （按需生成、只显示一次、不写日志）、暂停 / 恢复、停止 / 启动被控端、退出。本机有被控端在运行、或设置了“登录时打开”
   （默认关闭；macOS 是用户级 LaunchAgent，Windows 是 HKCU 下的 `Run` 值，都只带图标启动）时，关闭窗口只是收进托盘。
 
+  *在桌面端里装好被控端。* 页面用按钮开启和关闭远程控制：先列出包内 `ai-remote host install [--service]` 的 dry-run 计划，再执行；
+  需要管理员的步骤走系统自己的授权框（macOS 用 `do shell script … with administrator privileges` 弹管理员密码框，Windows 用
+  `Start-Process -Verb RunAs` 弹 UAC）。包内 CLI 安装的是它旁边的 hostw，所以自启项运行的是 app 包里的被控端（macOS 的 LaunchAgent 带上
+  app 的 bundle id 作为 `AssociatedBundleIdentifiers`）。屏幕录制和辅助功能各有一个“授权”按钮：由被控端自己向 macOS 请求（走它仅属主可访问的
+  控制管道上的 `request_permission`，远程调用触发不了），页面用被控端的新副本确认授权，需要时自动重启被控端；打开系统设置面板的链接作为兜底。
+
   *为什么放在桌面端而不是 `ai-remote-hostw` 里：* 用户级 LaunchAgent 和登录计划任务其实画得出托盘，但服务模式画不了：
   Windows `--service` 以 SYSTEM 身份运行（图标不在任何用户的通知区，或者在错误的桌面上），macOS 系统级 LaunchAgent 还会在
   登录界面运行；`ai-remote-hostw` 也没有 UI 事件循环。所以各种运行方式共用一个托盘，放在桌面端、

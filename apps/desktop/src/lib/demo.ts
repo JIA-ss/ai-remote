@@ -252,7 +252,21 @@ export const demoBackend: Backend = {
   },
   async localHost(doctor) {
     await wait(120);
-    return { ...demoLocalHost, host: demoLocalHost.host && { ...demoLocalHost.host }, doctor: doctor ? demoLocalHost.doctor : null };
+    // `?shotstate=fresh`: a computer where remote control was never enabled (screenshots).
+    if (new URLSearchParams(location.search).get("shotstate") === "fresh") {
+      return {
+        host: null,
+        doctor: doctor ? { overall: "warn", checked_in: "cli", checks: [{ id: "autostart", grade: "warn", summary: "no LaunchAgent starts the host at login" }] } : null,
+        install: doctor ? { kind: "LaunchAgent", name: "", installed: false, service: false } : null,
+        profile: demoLocalHost.profile,
+      };
+    }
+    return {
+      ...demoLocalHost,
+      host: demoLocalHost.host && { ...demoLocalHost.host },
+      doctor: doctor ? demoLocalHost.doctor : null,
+      install: doctor ? { kind: "LaunchAgent (system, login window too)", name: "/Library/LaunchAgents/io.github.jia-ss.ai-remote.host.1234abcd.plist", installed: true, service: true, current: true } : null,
+    };
   },
   async localPairCode(level) {
     await wait(300);
@@ -286,6 +300,27 @@ export const demoBackend: Backend = {
     await wait(200);
   },
   async protectWindow() {},
+  async hostInstallPlan(service) {
+    await wait(200);
+    return {
+      summary: service ? "Install autostart for the ai-remote host (with the login window)" : "Install autostart for the ai-remote host",
+      notes: ["The LaunchAgent is associated with the enclosing app io.github.jia-ss.ai-remote."],
+      steps: [{ text: "write /Library/LaunchAgents/io.github.jia-ss.ai-remote.host.1234abcd.plist", admin: false }, { text: "load the LaunchAgent into the current login session", admin: false }],
+      needs_elevation: service,
+      blocker: null,
+    };
+  },
+  async hostSetup() {
+    await wait(1200);
+    return "installed";
+  },
+  async requestPermission() {},
+  async hostPermissions() {
+    return { fresh: { screen_recording: true, accessibility: true }, running: { screen_recording: true, accessibility: true } };
+  },
+  async localRestart() {
+    await wait(500);
+  },
   async openSystemSettings() {},
   async revealProfile() {},
   async setUiLanguage() {},

@@ -186,7 +186,7 @@ pub fn status(profile: &Profile) -> Result<InstallStatus> {
     let (path, service) =
         if system_path.exists() { (system_path, true) } else { (user_plist_path(profile, owner)?, false) };
     let kind = if service { "LaunchAgent (system, login window too)" } else { "LaunchAgent" };
-    let mut st = InstallStatus { kind: kind.into(), name: path.display().to_string(), ..Default::default() };
+    let mut st = InstallStatus { kind: kind.into(), name: path.display().to_string(), service, ..Default::default() };
     match std::fs::read(&path) {
         Ok(bytes) => {
             st.installed = true;

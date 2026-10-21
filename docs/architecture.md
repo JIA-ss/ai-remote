@@ -316,6 +316,17 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
   host runs here or the app is set to open at login (off by default; a per-user LaunchAgent on
   macOS, a `Run` value under HKCU on Windows, both starting the app with only its icon).
 
+  *Setting the host up from the app.* The page enables and disables remote control with buttons:
+  it shows the dry-run plan of the bundled `ai-remote host install [--service]`, then runs it, and
+  what needs an administrator runs after the system's own prompt (macOS: the administrator password
+  dialog via `do shell script … with administrator privileges`; Windows: UAC via `Start-Process
+  -Verb RunAs`). Because the bundled CLI installs the hostw next to it, the autostart entry runs the
+  host inside the app bundle (on macOS the LaunchAgent carries the app's bundle id as
+  `AssociatedBundleIdentifiers`). Screen Recording and Accessibility each have a "Grant" button:
+  the host itself asks macOS (`request_permission` on its owner-only control channel, so no remote
+  call can raise a prompt), the page watches a fresh copy of the host for the grant and restarts
+  the host when it needs that; a link to the System Settings pane stays as the fallback.
+
   *Why in the app and not in `ai-remote-hostw`:* a per-user LaunchAgent or a logon task could draw
   a tray icon, but the service modes cannot: Windows `--service` runs the host as SYSTEM (an icon
   would sit on no user's notification area or on the wrong desktop), and the macOS system

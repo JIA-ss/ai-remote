@@ -14,6 +14,7 @@ import type {
   HostAccess,
   Level,
   LocalController,
+  InstallPlan,
   LocalHost,
   PairTicket,
   PathKind,
@@ -95,6 +96,16 @@ export interface Backend {
   localForget(peer: string): Promise<void>;
   /** Keeps the window out of screen capture while it shows a pairing ticket. */
   protectWindow(on: boolean): Promise<void>;
+  /** What enabling remote control here would change (`service`: login window and lock screen too). */
+  hostInstallPlan(service: boolean): Promise<InstallPlan>;
+  /** Installs or removes the host; asks the system for an administrator when needed. Rejects with "cancelled". */
+  hostSetup(install: boolean, service: boolean, prompt: string): Promise<string>;
+  /** Shows macOS's own Screen Recording / Accessibility request for the host here. */
+  requestPermission(permission: string): Promise<void>;
+  /** What macOS grants the host: a fresh copy of it, and the running host. */
+  hostPermissions(): Promise<{ fresh: Record<string, boolean> | null; running: Record<string, boolean> | null }>;
+  /** Stops and starts the installed host again (after a grant). */
+  localRestart(): Promise<void>;
   /** Opens a System Settings pane (`screen_recording`, `accessibility`, `login_items`, `privacy`). */
   openSystemSettings(pane: string): Promise<void>;
   /** Shows the profile directory (ai-remote.toml, logs) in the file manager. */
@@ -293,6 +304,22 @@ const tauriBackend: Backend = {
   },
   async protectWindow(on) {
     unwrap(await commands.protectWindow(on));
+  },
+  async hostInstallPlan(service) {
+    return unwrap(await commands.hostInstallPlan(service)) as InstallPlan;
+  },
+  async hostSetup(install, service, prompt) {
+    const v = unwrap(await commands.hostSetup(install, service, prompt)) as { output: string };
+    return v.output;
+  },
+  async requestPermission(permission) {
+    unwrap(await commands.requestPermission(permission));
+  },
+  async hostPermissions() {
+    return unwrap(await commands.hostPermissions()) as { fresh: Record<string, boolean> | null; running: Record<string, boolean> | null };
+  },
+  async localRestart() {
+    unwrap(await commands.localHostRestart());
   },
   async openSystemSettings(pane) {
     unwrap(await commands.openSystemSettings(pane));

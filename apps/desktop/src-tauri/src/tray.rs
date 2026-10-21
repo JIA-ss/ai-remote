@@ -342,6 +342,17 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, profile: &Profile, cli: &std::path::P
                     show_main(&app, json!({"view": "settings", "sec": "device", "action": "confirm_stop"}));
                     return;
                 }
+                // Nothing installed yet: the page walks through enabling remote control.
+                if id == STOP && !last.as_ref().is_some_and(|s| s.running) {
+                    let installed = host_local::cli_json(&cli, &["host", "status"])
+                        .await
+                        .ok()
+                        .is_some_and(|v| v["autostart"]["installed"] == true);
+                    if !installed {
+                        show_main(&app, json!({"view": "settings", "sec": "device", "action": "enable"}));
+                        return;
+                    }
+                }
                 let result = if id == PAUSE {
                     let paused = last.as_ref().is_some_and(|s| s.driver == DriverState::Paused);
                     host_local::require(&profile, json!({"op": "pause", "on": !paused})).await.map(|_| ())

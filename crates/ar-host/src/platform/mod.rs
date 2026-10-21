@@ -3,6 +3,8 @@
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+pub mod tcc;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

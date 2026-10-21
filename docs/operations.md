@@ -146,6 +146,12 @@ controller connection with a "host stopping" reason. Only one host runs per prof
 
 ### 3.2 In the background: install and autostart
 
+**From the desktop app** (no terminal): Settings > This device > *Enable remote control*. The app shows
+what will change, then the system asks for an administrator (macOS password, Windows UAC) and the
+bundled `ai-remote` installs the host that ships inside the app. *Disable* removes it the same way, and
+on macOS each missing permission has a *Grant* button that shows the system's own request. The
+commands below are the same steps from a terminal.
+
 ```sh
 ai-remote host install --dry-run   # print every change, change nothing
 ai-remote host install

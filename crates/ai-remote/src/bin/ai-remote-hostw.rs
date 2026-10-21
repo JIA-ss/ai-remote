@@ -71,6 +71,12 @@ const LOG_ROTATE_BYTES: usize = 8 * 1024 * 1024;
 const LOG_KEEP: usize = 2;
 
 fn main() -> ExitCode {
+    // The host asks a fresh copy of itself what macOS grants it (see `ar_host::platform::tcc`).
+    #[cfg(target_os = "macos")]
+    if std::env::var_os(ar_host::platform::tcc::PROBE_ENV).is_some() {
+        println!("{}", serde_json::to_string(&ar_host::platform::tcc::grants()).unwrap_or_default());
+        return ExitCode::SUCCESS;
+    }
     // Nobody sees stderr here: every early failure goes to a file.
     let args = match Args::try_parse() {
         Ok(a) => a,

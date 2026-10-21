@@ -67,6 +67,15 @@ pub enum HostRequest {
     Pause {
         on: bool,
     },
+    /// Shows macOS's own request for `permission` (`screen_recording` or `accessibility`) for this
+    /// host, at this computer: the desktop app's "Grant" button. Never reachable from a controller
+    /// (this channel is the owner's only), so no remote call ever raises a privacy prompt.
+    RequestPermission {
+        permission: String,
+    },
+    /// What macOS grants this host, read by a fresh copy of it (a running host keeps an old Screen
+    /// Recording answer until it restarts) and by the host itself.
+    Permissions,
     /// The latest audit lines (newest last, at most `limit`), for a "recent activity" view at this
     /// computer. Decision lines carry `args_preview` (the arguments as shown to the owner, about 400
     /// characters at most, secrets by size only), like the audit log itself.
@@ -90,6 +99,35 @@ pub enum HostRequest {
         on: bool,
     },
     Shutdown,
+}
+
+#[cfg(target_os = "macos")]
+async fn request_permission(permission: &str) -> Result<Value> {
+    use crate::platform::tcc;
+    let granted = match permission {
+        "screen_recording" => tokio::task::spawn_blocking(tcc::request_screen_recording).await?,
+        "accessibility" => tokio::task::spawn_blocking(tcc::request_accessibility).await?,
+        other => return Err(anyhow!("unknown permission {other:?} (screen_recording or accessibility)")),
+    };
+    tracing::info!(permission, granted, "the owner asked macOS for a permission from this computer");
+    Ok(json!({"permission": permission, "granted": granted}))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn request_permission(permission: &str) -> Result<Value> {
+    Err(anyhow!("{permission}: this system has no such permission to grant"))
+}
+
+#[cfg(target_os = "macos")]
+async fn permissions() -> Result<Value> {
+    use crate::platform::tcc;
+    let (fresh, probed) = tokio::task::spawn_blocking(tcc::fresh_grants).await?;
+    Ok(json!({"fresh": fresh, "probed": probed, "running": tcc::grants()}))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn permissions() -> Result<Value> {
+    Ok(json!({"fresh": null, "probed": false, "running": null}))
 }
 
 pub async fn serve(host: Arc<HostState>, mut conn: Conn, shutdown: CancellationToken) {
@@ -206,6 +244,8 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             }
             json!({"driver": driver})
         }
+        HostRequest::RequestPermission { permission } => request_permission(&permission).await?,
+        HostRequest::Permissions => permissions().await?,
         HostRequest::Recent { limit } => {
             let (lines, _) = host.audit().subscribe();
             let limit = limit.unwrap_or(50).min(lines.len());
@@ -425,5 +465,10 @@ mod tests {
             serde_json::from_value(json!({"op": "recent", "limit": 5})).unwrap(),
             HostRequest::Recent { limit: Some(5) }
         ));
+        assert!(matches!(
+            serde_json::from_value(json!({"op": "request_permission", "permission": "accessibility"})).unwrap(),
+            HostRequest::RequestPermission { .. }
+        ));
+        assert!(matches!(serde_json::from_value(json!({"op": "permissions"})).unwrap(), HostRequest::Permissions));
     }
 }
