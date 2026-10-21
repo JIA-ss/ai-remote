@@ -143,6 +143,33 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// Marks that the owner stopped the host from this app (button or tray), so the app does not start
+/// it again by itself; cleared when they start or enable it. A host that ends for another reason
+/// (macOS's "Quit & Reopen" after a Screen Recording grant ends every process of the app, the host
+/// inside it included, and launchd only restarts it after a crash) is started again by the app.
+pub fn set_owner_stopped(profile: &Profile, stopped: bool) {
+    let path = profile.root().join("desktop-host-stopped");
+    if stopped {
+        let _ = std::fs::write(&path, b"stopped by the owner from the desktop app\n");
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+pub fn owner_stopped(profile: &Profile) -> bool {
+    profile.root().join("desktop-host-stopped").exists()
+}
+
+/// Starts the installed host when it is not running and the owner did not stop it from here.
+/// Whether it started one.
+pub async fn start_if_expected(profile: &Profile, cli: &Path) -> bool {
+    if owner_stopped(profile) || !matches!(probe(profile).await, Probe::Stopped) {
+        return false;
+    }
+    let installed = cli_json(cli, &["host", "status"]).await.ok().is_some_and(|v| v["autostart"]["installed"] == true);
+    installed && cli_json(cli, &["host", "start"]).await.is_ok()
+}
+
 /// Runs `ai-remote --json <args>` without a console window and parses its output. Used where the
 /// host's own installation knowledge is needed: `host start`, and `doctor` while no host runs.
 pub async fn cli_json(cli: &Path, args: &[&str]) -> Result<Value> {

@@ -241,6 +241,7 @@ async fn local_host_pause(app: tauri::AppHandle, state: State<'_, AppState>, on:
 #[tauri::command]
 #[specta::specta]
 async fn local_host_stop(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::set_owner_stopped(&state.profile, true);
     let r = host_local::require(&state.profile, json!({"op": "shutdown"})).await.map(Json).map_err(text);
     refresh_tray(&app);
     r
@@ -250,6 +251,7 @@ async fn local_host_stop(app: tauri::AppHandle, state: State<'_, AppState>) -> R
 #[tauri::command]
 #[specta::specta]
 async fn local_host_start(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::set_owner_stopped(&state.profile, false);
     let r = host_local::cli_json(&state.cli, &["host", "start"]).await.map(Json).map_err(text);
     refresh_tray(&app);
     r
@@ -320,6 +322,7 @@ async fn host_setup(
         args.push("--service".into());
     }
     let elevated = cfg!(windows) || service;
+    host_local::set_owner_stopped(&state.profile, !install);
     if elevated && install {
         // The profile's folders must exist as this user's before root touches the profile (a root-
         // owned host folder would lock the host out of its own audit log).

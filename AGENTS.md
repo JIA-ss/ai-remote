@@ -112,6 +112,15 @@
   "远程工具不触发 TCC"仍然成立。之后页面每 2 s 调 `permissions`：被控端起一个带 `AI_REMOTE_TCC_PROBE=1` 的自身子进程重新读授权（运行中的进程在
   屏幕录制授权后要重启才看得到），新进程有了而运行中的没有，就自动重启被控端（停止 + `host start`），再刷新检查。等 3 分钟没结果就提示去系统设置；
   旁边一直有"打开系统设置"深链兜底（系统只弹一次请求，拒绝过后就不再弹）。
+- **真机从零走一遍（2026-10-21，release 包装到 `/Applications/ai-remote.app`，/tmp/ar-setup-test 全新配置）**：
+  "开启远程控制…" → 计划弹窗（指向 `/Applications/ai-remote.app/Contents/MacOS/ai-remote-hostw`）→ "开启（需要输入密码）" → 系统管理员密码框 →
+  `/Library/LaunchAgents/…eaa66997.plist` 写入，`host status` 为 `service: true, current: true`，被控端由 launchd 拉起。屏幕录制点"授权…"后用户在系统设置里打开，
+  授权生效（新进程探测为 true）。**坑 1**：在系统设置里打开屏幕录制后，macOS 提示"退出并重新打开"，会结束这个 app 的所有进程——包括包里的 hostw；hostw 干净退出，
+  launchd 只在崩溃后重启，于是被控端一直停着。已修：桌面端启动时若被控端已安装、没运行、且不是机主在应用里停的（`<profile>/desktop-host-stopped` 标记），就自动
+  `host start`。**坑 2**：TCC 把授权记在 **app 包**（hostw 带 `AssociatedBundleIdentifiers`）上，ad-hoc 签名的身份是主程序的 cdhash，所以**每次重编桌面端，
+  已有授权就失效**（实测：只换 `ai-remote-desktop`、hostw 的 CDHash 不变，新进程探测的屏幕录制从 true 变 false）；系统设置里仍显示旧条目为"开"，但对新版本无效，
+  要选中它点"−"删掉再授权。页面现在会比较"运行中的被控端"和"新进程"的结果，前者有后者没有时标成"授权已失效"；授权超时的提示也写了删旧条目。根本解决要用固定身份
+  签名（Developer ID，或至少一个固定的自签名代码签名证书，`APPLE_SIGNING_IDENTITY`），未做。
 - 实测（本机，/tmp/ar-tray-fresh 全新配置）：包内 CLI 普通安装 → plist 指向包内 hostw、带 `AssociatedBundleIdentifiers`、被控端启动；`permissions`
   探测返回 `probed: true`；关闭（普通权限）移除 plist、被控端停止。管理员通路：用同样格式的 osascript 跑无害的 `/usr/bin/id`，系统管理员密码框弹出
   （截图里是黑的：SecurityAgent 窗口不让截），有人在机器前输入密码后返回 `uid=0(root)`。**没做**：从零点按钮装 `--service` 并在系统授权框里允许
@@ -119,8 +128,11 @@
 
 ### 未做 / 下一步
 
-- Windows 安装包没把 `ai-remote.exe` / `ai-remote-hostw.exe` 打进去（`tauri.windows.conf.json` 没有 externalBin，也没有 Windows 打包脚本），
-  应用内开启在 Windows 上依赖 CLI 放在 app 旁边或 PATH 里。Windows 的 UAC 通路只有字符串构造的单测，真机没跑过。
+- Windows 打包：`tools/windows.ps1 build` 用 `tauri.windows.bundle.conf.json` 把 `ai-remote.exe` / `ai-remote-hostw.exe` 作为 sidecar 打进安装包
+  （dry-run 在 win-dev 的 Windows PowerShell 5 和 pwsh 上都试过，CI 上有 `tools/test_windows_packaging.py`）；真正出一次安装包、在干净的 Windows 上点"开启"没做。
+  UAC 通路：第一版 `Start-Process cmd /c` 遇到带空格的路径被拆成 `C:\Program`（win-dev 实测），改成提权 PowerShell + `-EncodedCommand` 后，带空格路径的输出和退出码
+  都对（win-dev 上 agent 已提权，所以没弹 UAC 框本身）。
+- macOS 授权在每次重编后失效（见上面坑 2），需要固定身份签名。
 - 从零开始（未安装）点按钮装服务形态 + 两项授权 + doctor 全绿，要用户本人在这台 Mac 上走一遍（输管理员密码、点系统授权框）。
 
 - 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。

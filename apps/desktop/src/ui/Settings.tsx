@@ -412,6 +412,8 @@ function HostPanel({
   /** The permission being granted, and what the page says meanwhile. */
   const [granting, setGranting] = useState<string | null>(null);
   const [grantNote, setGrantNote] = useState<Key | null>(null);
+  /** What a fresh copy of the host is granted (macOS): a grant the running host still holds may be gone. */
+  const [freshGrants, setFreshGrants] = useState<Record<string, boolean> | null>(null);
   useEffect(() => {
     api.appLoginItem().then(setLoginItem, () => setLoginItem(null));
   }, []);
@@ -564,7 +566,23 @@ function HostPanel({
     if (busy && d.state !== "paused") facts.push(t(busy.person ? "lh_busy_person" : "lh_busy_agent", { peer: busy.peer, tool: busy.tool }));
     if (host.prompt_blocker) facts.push(t("lh_prompt_blocked", { why: host.prompt_blocker }));
   }
-  const checks = (doctor?.checks ?? []).filter((c) => c.grade !== "skip");
+  useEffect(() => {
+    if (!mac || !lh?.host || !doctor) return;
+    let live = true;
+    api.hostPermissions().then((p) => live && setFreshGrants(p.fresh), () => {});
+    return () => {
+      live = false;
+    };
+  }, [doctor, lh?.host?.pid]);
+  const checks = (doctor?.checks ?? [])
+    .filter((c) => c.grade !== "skip")
+    // The running host still holds a grant that a fresh copy no longer gets (the app was rebuilt or
+    // the entry changed): it is lost at the next restart.
+    .map((c) =>
+      c.grade === "ok" && (c.id === "screen_recording" || c.id === "accessibility") && freshGrants?.[c.id] === false
+        ? { ...c, grade: "warn" as Grade, summary: t("grant_stale") }
+        : c,
+    );
   const permissions = checks.filter((c) => PERMISSION_CHECKS.includes(c.id));
   const autostart = checks.find((c) => c.id === "autostart");
   return (
