@@ -1,6 +1,7 @@
 //! Host tools. Built-in tools and tools of mounted MCP servers implement the same [`Tool`] trait,
 //! so the gate (level check, policy, approval, audit, result budget) treats them identically.
 
+pub mod chat;
 pub mod clipboard;
 pub mod command;
 pub mod files;
@@ -146,6 +147,7 @@ impl Registry {
             .chain(jobs::tools())
             .chain(process::tools())
             .chain(files::tools())
+            .chain(chat::tools())
         {
             r.add(t);
         }

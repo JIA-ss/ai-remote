@@ -41,7 +41,7 @@ this machine and a host, run `ai-remote push` / `ai-remote pull` in a terminal."
 
 /// Host tools an MCP client cannot complete: they hand out a ticket for the files channel, which
 /// only `ai-remote push` / `pull` speak. Kept out of an agent's tool list.
-const CHANNEL_TOOLS: [&str; 2] = ["files_push", "files_pull"];
+const CHANNEL_TOOLS: [&str; 4] = ["files_push", "files_pull", "chat_start", "chat_attach"];
 
 #[derive(Clone)]
 pub(crate) struct Aggregator {
@@ -446,11 +446,19 @@ impl ServerHandler for Aggregator {
                     Err(e) => error_result(format!("{e:#}")),
                 }
             }
-            tool if CHANNEL_TOOLS.contains(&tool) => error_result(format!(
-                "'{tool}' is not available to MCP clients: the bytes move on a channel only the ai-remote command \
-                 line speaks. Run `ai-remote push <local> <remote>` or `ai-remote pull <remote> [local]` in a \
-                 terminal on this machine (add --host <name>)."
-            )),
+            tool if CHANNEL_TOOLS.contains(&tool) => error_result(if tool.starts_with("chat_") {
+                format!(
+                    "'{tool}' is not available to MCP clients: a coding-agent conversation runs on a channel only \
+                     the ai-remote apps and command line speak. Run `ai-remote chat run <agent> \"<task>\" --cwd \
+                     <folder>` in a terminal on this machine (add --host <name>), or use the desktop app."
+                )
+            } else {
+                format!(
+                    "'{tool}' is not available to MCP clients: the bytes move on a channel only the ai-remote \
+                     command line speaks. Run `ai-remote push <local> <remote>` or `ai-remote pull <remote> [local]` \
+                     in a terminal on this machine (add --host <name>)."
+                )
+            }),
             tool => {
                 let requested = args.remove("host").and_then(|v| v.as_str().map(str::to_string));
                 match self.resolve_host(requested).await {

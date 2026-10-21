@@ -262,31 +262,31 @@ pub struct PullArgs {
 }
 
 /// Exits after flushing what was printed (`std::process::exit` skips the buffers).
-fn exit(code: i32) -> ! {
+pub(crate) fn exit(code: i32) -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     std::process::exit(code)
 }
 
-fn print_json(v: &Value) {
+pub(crate) fn print_json(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
 /// A tool result as the agent relays it (`content`, `isError`, `structuredContent`).
-struct Reply(Value);
+pub(crate) struct Reply(Value);
 
 impl Reply {
-    fn is_error(&self) -> bool {
+    pub(crate) fn is_error(&self) -> bool {
         self.0["isError"].as_bool().unwrap_or(false)
     }
 
-    fn texts(&self) -> Vec<&str> {
+    pub(crate) fn texts(&self) -> Vec<&str> {
         let blocks = self.0["content"].as_array().map(Vec::as_slice).unwrap_or_default();
         blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect()
     }
 
     /// The JSON value: structured content, else the first text block parsed.
-    fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> Value {
         if let Some(v) = self.0.get("structuredContent").filter(|v| !v.is_null()) {
             return v.clone();
         }
@@ -305,7 +305,7 @@ impl Reply {
     }
 
     /// The value, or the host's refusal on stderr and exit code 2.
-    fn ok(self) -> Value {
+    pub(crate) fn ok(self) -> Value {
         if self.is_error() {
             eprintln!("{}", in_cli_terms(&self.texts().join("\n")));
             exit(2);
@@ -321,7 +321,7 @@ fn in_cli_terms(text: &str) -> String {
         .replace("pass recursive: true", "pass -r")
 }
 
-async fn call(profile: &Profile, target: &Target, tool: &str, args: Value) -> Result<Reply> {
+pub(crate) async fn call(profile: &Profile, target: &Target, tool: &str, args: Value) -> Result<Reply> {
     let mut conn = ar_controller::connect_agent(profile).await?;
     let v =
         conn.request(&json!({"op": "call", "host": target.host, "tool": tool, "args": args, "person": false})).await?;
@@ -953,7 +953,7 @@ impl Progress {
 
 /// An error from redeeming a transfer ticket: the host's refusal (an expired or used ticket, a level
 /// lowered meanwhile, a takeover) exits 2 like any refusal; anything else (unreachable) is returned.
-fn refused_transfer(e: anyhow::Error) -> anyhow::Error {
+pub(crate) fn refused_transfer(e: anyhow::Error) -> anyhow::Error {
     let text = format!("{e:#}");
     if text.starts_with("host '") {
         eprintln!("{text}");

@@ -98,6 +98,7 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
     });
     checks.push(approval_check(platform::prompt_blocker()));
     checks.push(bypass_check(inputs.profile));
+    checks.push(chat_check(inputs.profile));
 
     let profile = inputs.profile.clone();
     let in_host = inputs.mesh.is_some();
@@ -300,6 +301,47 @@ fn approval_check(blocker: Option<String>) -> Check {
         )
         .fix("unlock the desktop, or allow trusted tools with [[rule]] entries in ai-remote.toml"),
     }
+}
+
+/// Coding agents (see [`crate::chat`]): whether admin devices may start them here, and how many run.
+fn chat_check(profile: &Profile) -> Check {
+    let enabled = profile
+        .chat_config_path()
+        .ok()
+        .and_then(|p| crate::chat::runtimes::ChatConfig::load(&p).ok())
+        .is_none_or(|c| c.enabled);
+    if !enabled {
+        return Check::new("chat", Grade::Ok, "coding agents are switched off here");
+    }
+    let running = profile
+        .chat_dir()
+        .ok()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path().join("meta.json")).ok())
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|m| m["pid"].is_u64())
+        .count();
+    if running > 0 {
+        return Check::new(
+            "chat",
+            Grade::Warn,
+            format!(
+                "{running} coding agent{} run{} here as this user without asking before they act",
+                if running == 1 { "" } else { "s" },
+                if running == 1 { "s" } else { "" }
+            ),
+        )
+        .fix("end them from the controller, or switch agents off here: ai-remote chat disable");
+    }
+    Check::new(
+        "chat",
+        Grade::Ok,
+        "devices with level admin may start coding agents here (asking you first unless bypassed)",
+    )
+    .fix("to forbid it: ai-remote chat disable")
 }
 
 /// Controllers the owner trusts with everything: not a fault, but nobody should forget it is on.

@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use ar_core::{Profile, Role, VERSION, config::ControllerConfig, identity, machine_name, unix_now};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route, ipc,
-    iroh::endpoint::Connection, refusal::Refusal,
+    ALPN_CHAT, ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Route,
+    ipc, iroh::endpoint::Connection, refusal::Refusal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -89,6 +89,13 @@ pub enum AgentRequest {
     /// or `files_pull` call) goes to the host's files channel; after the host's JSON reply, the bytes
     /// pass both ways unchanged (see the host's files protocol).
     Files {
+        host: Option<String>,
+        request: Value,
+    },
+    /// Upgrade this connection to a coding-agent chat: `request` (`{"ticket":"..","since":N}`, from
+    /// a `chat_start` or `chat_attach` call) opens the host's chat channel; after the host's JSON
+    /// reply, lines pass both ways unchanged (see the host's chat protocol).
+    Chat {
         host: Option<String>,
         request: Value,
     },
@@ -395,6 +402,11 @@ impl EmbeddedController {
                         let cancelled = stop.clone();
                         (reply, tokio::spawn(async move { tokio::select! { _ = view.relay(server, vec![]) => {}, _ = cancelled.cancelled() => {} } }))
                     }
+                    AgentRequest::Chat { host, request } => {
+                        let (chat, reply) = open_chat(&agent, host, &request).await?;
+                        let cancelled = stop.clone();
+                        (reply, tokio::spawn(async move { tokio::select! { _ = chat.relay(server, vec![]) => {}, _ = cancelled.cancelled() => {} } }))
+                    }
                     _ => bail!("not a streaming request"),
                 })
             } => result?,
@@ -577,6 +589,23 @@ async fn serve_client(agent: &Arc<Agent>, mut conn: ipc::Conn, shutdown: &Cancel
                 }
             }
         }
+        if let AgentRequest::Chat { host, request } = req {
+            match open_chat(agent, host, &request).await {
+                Ok((chat, reply)) => {
+                    conn.reply(Ok(reply)).await?;
+                    let (stream, buffered) = conn.into_raw();
+                    tokio::select! {
+                        _ = chat.relay(stream, buffered) => {},
+                        _ = shutdown.cancelled() => {},
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    conn.reply(Err(e)).await?;
+                    continue;
+                }
+            }
+        }
         if let AgentRequest::Files { host, request } = req {
             match open_files(agent, host, &request).await {
                 Ok((transfer, reply)) => {
@@ -684,7 +713,11 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
             serde_json::to_value(result)?
         }
         AgentRequest::Channel { host, request } => channel_request(agent, host, &request).await?,
-        AgentRequest::Mcp | AgentRequest::Events { .. } | AgentRequest::Screen { .. } | AgentRequest::Files { .. } => {
+        AgentRequest::Mcp
+        | AgentRequest::Events { .. }
+        | AgentRequest::Screen { .. }
+        | AgentRequest::Files { .. }
+        | AgentRequest::Chat { .. } => {
             bail!("unreachable")
         }
         AgentRequest::Shutdown => {
@@ -820,6 +853,74 @@ impl ScreenView {
                 Some(bps) => copy_paced(&mut recv, &mut local_write, bps).await,
                 None => tokio::io::copy(&mut recv, &mut local_write).await.map(|_| ()),
             }
+        };
+        tokio::select! {
+            _ = down => {}
+            _ = up => {}
+        }
+        conn.close(0u32.into(), b"done");
+    }
+}
+
+/// A coding-agent conversation with a host, after its first reply.
+struct ChatStream {
+    conn: Connection,
+    send: ar_net::iroh::endpoint::SendStream,
+    recv: ar_net::iroh::endpoint::RecvStream,
+}
+
+/// Redeems a chat ticket on `host`'s chat channel and returns the conversation with the host's
+/// first reply (`{"ok":true,"session":"..",...}`).
+async fn open_chat(agent: &Arc<Agent>, host: Option<String>, request: &Value) -> Result<(ChatStream, Value)> {
+    let ticket = request["ticket"].as_str().filter(|t| !t.is_empty());
+    let Some(ticket) = ticket else { bail!("a chat needs the ticket from chat_start or chat_attach") };
+    let since = request["since"].as_u64().unwrap_or(0);
+    let host = match host {
+        Some(h) => agent.mesh.find_peer(&h).await?.name,
+        None => Aggregator::new(agent.clone()).implicit_host().await?,
+    };
+    let conn = agent
+        .mesh
+        .dial(&host, ALPN_CHAT)
+        .await
+        .map_err(|e| anyhow!("cannot reach host '{host}' (is `ai-remote host` running there?): {e:#}"))?;
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    let line = format!("{}\n", json!({ "open": {"ticket": ticket, "since": since} }));
+    send.write_all(line.as_bytes()).await.map_err(|e| anyhow!("host '{host}': {e}"))?;
+    // Byte by byte, so none of the events that follow the reply are consumed here.
+    let mut reply = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        match tokio::time::timeout(Duration::from_secs(30), recv.read_exact(&mut byte)).await {
+            Ok(Ok(_)) if byte[0] == b'\n' => break,
+            Ok(Ok(_)) if reply.len() < 64 * 1024 => reply.push(byte[0]),
+            Ok(Ok(_)) => bail!("host '{host}' sent an oversized reply"),
+            Ok(Err(e)) => bail!("host '{host}' closed the chat: {e} (a host without coding agents? update it)"),
+            Err(_) => bail!("host '{host}' did not answer"),
+        }
+    }
+    let mut reply: Value = serde_json::from_slice(&reply).map_err(|e| anyhow!("host '{host}': bad reply: {e}"))?;
+    if reply["ok"] != true {
+        bail!("host '{host}': {}", reply["error"].as_str().unwrap_or("refused"));
+    }
+    reply["host"] = host.into();
+    Ok((ChatStream { conn, send, recv }, reply))
+}
+
+impl ChatStream {
+    /// Passes lines both ways until either side ends.
+    async fn relay<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(self, local: T, buffered: Vec<u8>) {
+        let ChatStream { conn, mut send, mut recv } = self;
+        let (mut local_read, mut local_write) = tokio::io::split(local);
+        let up = async {
+            if !buffered.is_empty() && send.write_all(&buffered).await.is_err() {
+                return;
+            }
+            let _ = tokio::io::copy(&mut local_read, &mut send).await;
+        };
+        let down = async {
+            let _ = tokio::io::copy(&mut recv, &mut local_write).await;
+            let _ = tokio::io::AsyncWriteExt::flush(&mut local_write).await;
         };
         tokio::select! {
             _ = down => {}

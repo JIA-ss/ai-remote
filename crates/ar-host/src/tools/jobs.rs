@@ -739,11 +739,11 @@ fn spawn_job(make: impl Fn() -> Result<tokio::process::Command>) -> Result<Box<d
 
 /// One process in a snapshot of the process table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Proc {
-    pub(super) pid: u32,
-    pub(super) parent: Option<u32>,
+pub(crate) struct Proc {
+    pub(crate) pid: u32,
+    pub(crate) parent: Option<u32>,
     /// Start time in seconds since the epoch.
-    pub(super) start: u64,
+    pub(crate) start: u64,
     /// Unix session id. `None` on Windows, whose "session" is the logon session.
     session: Option<u32>,
     /// An OS helper that lives and dies with the processes it serves (Windows' console host): never
@@ -753,21 +753,21 @@ pub(super) struct Proc {
 
 /// A job's main process as recorded: the pid with the start time identifies it.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Root {
-    pub(super) pid: u32,
-    pub(super) start: u64,
+pub(crate) struct Root {
+    pub(crate) pid: u32,
+    pub(crate) start: u64,
     /// Seconds since the epoch until which it is known to have run.
-    pub(super) alive_until: Option<u64>,
+    pub(crate) alive_until: Option<u64>,
 }
 
 /// A snapshot of the process table, for finding a job's processes without its Job Object.
-pub(super) struct ProcTable {
+pub(crate) struct ProcTable {
     sys: System,
-    pub(super) procs: Vec<Proc>,
+    pub(crate) procs: Vec<Proc>,
 }
 
 impl ProcTable {
-    pub(super) fn read() -> Self {
+    pub(crate) fn read() -> Self {
         let mut sys = System::new();
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
         let procs = sys
@@ -784,17 +784,17 @@ impl ProcTable {
         Self { sys, procs }
     }
 
-    pub(super) fn members(&self, root: &Root) -> Vec<Proc> {
+    pub(crate) fn members(&self, root: &Root) -> Vec<Proc> {
         job_members(&self.procs, root)
     }
 
     /// The name of the process `pid` in this snapshot.
-    pub(super) fn name(&self, pid: u32) -> Option<String> {
+    pub(crate) fn name(&self, pid: u32) -> Option<String> {
         self.sys.process(Pid::from_u32(pid)).map(|p| p.name().to_string_lossy().into_owned())
     }
 
     /// Kills one process of this snapshot, unless its pid was reused since (see [`kill_process`]).
-    pub(super) fn kill(&self, p: &Proc) -> bool {
+    pub(crate) fn kill(&self, p: &Proc) -> bool {
         kill_process(&self.sys, p.pid, p.start)
     }
 
@@ -816,7 +816,7 @@ fn unix_session(_: &sysinfo::Process) -> Option<u32> {
 
 /// Polls the process table until the job whose main process is `root` has no live process left, or
 /// `timeout` passes. Returns whether it emptied.
-pub(super) fn wait_tree_empty(root: &Root, timeout: Duration) -> bool {
+pub(crate) fn wait_tree_empty(root: &Root, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if ProcTable::read().members(root).is_empty() {
@@ -917,7 +917,7 @@ fn kill_process(sys: &System, pid: u32, start: u64) -> bool {
     sys.process(Pid::from_u32(pid)).is_some_and(|p| same_start(p.start_time(), start) && p.kill())
 }
 
-fn process_start_time(pid: u32) -> Option<u64> {
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
     let mut sys = System::new();
     let pid = Pid::from_u32(pid);
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing());
