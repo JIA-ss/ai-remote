@@ -7,20 +7,39 @@ use std::{os::unix::fs::PermissionsExt, time::Duration};
 
 use super::*;
 
-/// Answers each message with "echo"; a message containing SLOW runs until interrupted.
+/// Answers each message with "echo"; a message containing SLOW runs until interrupted, or until a
+/// message joins it (a steer, answered "steered"); one containing LATE takes two seconds without
+/// reading, so a message sent meanwhile runs as the next turn. Every message it takes is echoed
+/// back (`--replay-user-messages`).
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+REPLAY='{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"(replay)"}]}}'
 SLOW=""
 while IFS= read -r line; do
   case "$line" in
     *control_request*)
       [ -n "$SLOW" ] && kill "$SLOW" 2>/dev/null
       SLOW=""
-      echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+      echo '{"type":"result","subtype":"error_during_execution","is_error":true}'
+      continue ;;
+  esac
+  echo "$REPLAY"
+  if [ -n "$SLOW" ]; then
+    kill "$SLOW" 2>/dev/null
+    SLOW=""
+    echo '{"type":"assistant","message":{"id":"st","model":"m","usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":5},"content":[{"type":"text","text":"steered"}]}}'
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"steered","modelUsage":{"m[1m]":{"contextWindow":1000}}}'
+    continue
+  fi
+  case "$line" in
     *SLOW*)
       sleep 600 & SLOW=$!
       echo '{"type":"assistant","message":{"id":"s","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 600"}}]}}' ;;
+    *LATE*)
+      echo '{"type":"assistant","message":{"id":"l","content":[{"type":"text","text":"late"}]}}'
+      sleep 2
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"late"}' ;;
     *)
       echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"echo"}]}}'
       echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}' ;;
@@ -40,7 +59,11 @@ fn fixture() -> Fixture {
     let fake = root.join("fake-claude");
     std::fs::write(&fake, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let cfg = format!("[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{}\"\n", fake.display());
+    let cfg = format!(
+        "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{0}\"\n\n\
+         [[agent]]\nid = \"fake-nosteer\"\nbase = \"claude\"\ncommand = \"{0}\"\nsteer = false\n",
+        fake.display()
+    );
     std::fs::write(root.join("chat.toml"), cfg).unwrap();
     std::fs::create_dir_all(root.join("chat")).unwrap();
     let work = root.join("work");
@@ -56,12 +79,16 @@ fn creator() -> Peer {
     Peer { name: "laptop".into(), principal: Some("eid:laptop".into()), user_id: None, level: None, revoked: false }
 }
 
+fn message(text: &str) -> Input {
+    Input { id: format!("u-{text}"), text: text.into(), by: By { device: "laptop".into(), principal: None } }
+}
+
 fn input(text: &str) -> Cmd {
-    Cmd::Input(Input {
-        id: format!("u-{text}"),
-        text: text.into(),
-        by: By { device: "laptop".into(), principal: None },
-    })
+    Cmd::Input(message(text))
+}
+
+fn steer(text: &str) -> Cmd {
+    Cmd::Steer(message(text))
 }
 
 /// Waits for an event matching `pred` on `rx`, returning it.
@@ -225,4 +252,96 @@ async fn a_broken_settings_file_switches_agents_off() {
     // Not overwritten by a switch.
     assert!(m.set_enabled(true).is_err());
     assert!(std::fs::read_to_string(f.root.join("chat.toml")).unwrap().contains("enabled = false"));
+}
+
+#[tokio::test]
+async fn a_steer_joins_the_running_turn() {
+    let f = fixture();
+    let (m, mut audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("SLOW"));
+    let start = wait_for(&mut rx, |v| v["t"] == "turn_start").await;
+    wait_for(&mut rx, |v| v["t"] == "tool_call").await;
+    chat.send(steer("change of plan"));
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert_eq!((user["text"].as_str(), user["steer"].as_bool()), (Some("change of plan"), Some(true)));
+    assert_eq!(user["turn"], start["turn"], "numbered with the running turn");
+    let usage = wait_for(&mut rx, |v| v["t"] == "usage").await;
+    assert_eq!((usage["context_used"].as_u64(), usage["context_window"].as_u64()), (Some(105), Some(1000)));
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!((end["status"].as_str(), end["final_text"].as_str()), (Some("completed"), Some("steered")));
+    assert_eq!(end["turn"], start["turn"]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat.meta().turns, 1, "no turn of its own");
+    let turns: Vec<Value> = std::iter::from_fn(|| audit.try_recv().ok()).filter(|v| v["kind"] == "chat_turn").collect();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0]["steers"], 1);
+}
+
+#[tokio::test]
+async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("LATE"));
+    wait_for(&mut rx, |v| v["t"] == "message").await;
+    chat.send(steer("one more thing"));
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "steer_queued");
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "late");
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert_eq!((user["text"].as_str(), user.get("steer")), (Some("one more thing"), None));
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "ok");
+    // Sent once: had it been written again, the agent would have run a third turn.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(chat.meta().turns, 2);
+    assert_eq!(chat.state(), State::Idle);
+}
+
+#[tokio::test]
+async fn a_steer_with_no_turn_running_starts_one() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(steer("hello"));
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "steer_queued");
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert!(user.get("steer").is_none());
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "ok");
+}
+
+#[tokio::test]
+async fn an_agent_that_cannot_steer_queues_the_message() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let caps = &m.runtimes(true).await["runtimes"];
+    let row = |id: &str| caps.as_array().unwrap().iter().find(|r| r["id"] == id).cloned().unwrap();
+    assert_eq!(
+        (row("fake")["caps"]["steer"].as_bool(), row("fake-nosteer")["caps"]["steer"].as_bool()),
+        (Some(true), Some(false))
+    );
+    assert_eq!(row("opencode")["caps"]["steer"], false);
+    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("SLOW"));
+    wait_for(&mut rx, |v| v["t"] == "tool_call").await;
+    chat.send(steer("later please"));
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "steer_queued");
+    let st = wait_for(&mut rx, |v| v["t"] == "state" && v["queued"].as_array().is_some_and(|q| !q.is_empty())).await;
+    assert_eq!(st["queued"][0]["text"], "later please");
+    chat.send(Cmd::Interrupt { then: None });
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["status"], "interrupted");
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert_eq!(user["text"], "later please");
+    assert!(user.get("steer").is_none());
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
 }

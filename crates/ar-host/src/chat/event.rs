@@ -75,11 +75,14 @@ pub struct By {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Ev {
-    /// A message for the agent, as accepted.
+    /// A message for the agent, as accepted. With `steer` it joined the running turn (its
+    /// envelope carries that turn's number) instead of starting one.
     User {
         input_id: String,
         by: By,
         text: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        steer: bool,
     },
     TurnStart {},
     /// Text from the agent. With `delta` it continues the message `id`.
@@ -132,6 +135,12 @@ pub enum Ev {
         output_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
+        /// The model's context window, in tokens.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
+        /// Tokens the conversation takes of it now (the last request's input and output).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_used: Option<u64>,
     },
     TurnEnd {
         status: TurnStatus,
@@ -166,6 +175,20 @@ pub enum Out {
     Ev(Ev),
     /// The agent's own conversation id, for resuming in a new process.
     Session(String),
+    /// A message sent with [`super::adapters::LiveCmd::Steer`] joined the current turn.
+    Steered {
+        id: String,
+    },
+    /// The current turn ended before the agent read that message; the agent runs it as its next
+    /// turn on its own (nothing is to be sent again).
+    SteerLate {
+        id: String,
+    },
+    /// The agent did not take that message; it goes to the queue.
+    SteerRejected {
+        id: String,
+        reason: String,
+    },
     /// The current turn ended.
     TurnEnd {
         status: TurnStatus,

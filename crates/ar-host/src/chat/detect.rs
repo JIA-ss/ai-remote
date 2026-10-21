@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use super::runtimes::{CustomAgent, Protocol, RUNTIMES, Runtime, builtin};
+use super::runtimes::{Caps, CustomAgent, Protocol, RUNTIMES, Runtime, builtin};
 use crate::platform;
 
 /// How long one probe (`--version`, a sign-in check) may take.
@@ -71,6 +71,8 @@ pub struct Resolved {
     pub id: String,
     pub name: String,
     pub runtime: &'static Runtime,
+    /// What it can do: the runtime's caps, narrowed by a custom entry.
+    pub caps: Caps,
     pub program: PathBuf,
     /// Arguments before the ones the adapter adds (a custom entry's).
     pub prefix: Vec<String>,
@@ -117,7 +119,8 @@ impl Detector {
         }
         let probes = entries.into_iter().map(|(id, name, runtime, custom)| {
             let found = self.locate(runtime, custom);
-            async move { describe(id, name, runtime, custom.is_some(), found).await }
+            let caps = custom.map(|c| c.caps(runtime)).unwrap_or(runtime.caps);
+            async move { describe(id, name, runtime, caps, custom.is_some(), found).await }
         });
         let runtimes = futures::future::join_all(probes).await;
         let report = json!({"host": {"can_start": true, "reason": null}, "runtimes": runtimes});
@@ -170,6 +173,7 @@ impl Detector {
             id: runtime.id.to_string(),
             name: runtime.name.to_string(),
             runtime,
+            caps: custom.map(|c| c.caps(runtime)).unwrap_or(runtime.caps),
             program,
             prefix: custom.map(|c| c.args.clone()).unwrap_or_default(),
             env,
@@ -381,6 +385,7 @@ async fn describe(
     id: String,
     name: String,
     runtime: &'static Runtime,
+    caps: Caps,
     custom: bool,
     found: Result<Resolved, String>,
 ) -> Value {
@@ -390,7 +395,7 @@ async fn describe(
         "protocol": runtime.protocol,
         "base": runtime.id,
         "custom": custom,
-        "caps": runtime.caps,
+        "caps": caps,
     });
     let mut row = base.as_object().cloned().unwrap_or_default();
     let r = match found {
@@ -548,11 +553,12 @@ mod tests {
             command: Some(p.display().to_string()),
             args: vec![],
             env: [("WHO".to_string(), "work".to_string())].into(),
+            steer: None,
         };
         let d = Detector::default();
         let r = d.resolve("claude-work", std::slice::from_ref(&custom)).unwrap();
         assert_eq!((r.program.as_path(), r.resolved_by, r.runtime.id), (p.as_path(), "configured", "claude"));
-        let row = describe(r.id.clone(), r.name.clone(), r.runtime, true, Ok(r)).await;
+        let row = describe(r.id.clone(), r.name.clone(), r.runtime, r.caps, true, Ok(r)).await;
         assert_eq!(row["version"], "9.9.9");
         assert_eq!(row["verdict"], "ok");
         assert_eq!(row["login"]["state"], "logged_in");
