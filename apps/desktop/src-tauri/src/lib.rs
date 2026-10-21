@@ -738,9 +738,12 @@ pub fn run() {
         .expect("error while building the ai-remote app")
         .run(|app, event| {
             // macOS: a click on the Dock icon brings the hidden window back.
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
                 tray::show_main(app, json!({}));
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         });
 }
 

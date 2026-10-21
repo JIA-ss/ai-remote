@@ -6,8 +6,6 @@
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (listed in Settings > Apps > Startup and
 //! Task Manager). Nothing is loaded now: it takes effect at the next login.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, anyhow};
 
 /// The argument that starts the app in the tray, without its window.
@@ -17,9 +15,9 @@ pub const HIDDEN_ARG: &str = "--hidden";
 const LABEL: &str = "io.github.jia-ss.ai-remote.app";
 
 #[cfg(target_os = "macos")]
-fn plist_path() -> Result<PathBuf> {
+fn plist_path() -> Result<std::path::PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-    Ok(PathBuf::from(home).join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    Ok(std::path::PathBuf::from(home).join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
 }
 
 #[cfg(target_os = "macos")]
