@@ -9,8 +9,14 @@ import AIRemoteCore
     /// The selected host as last reported while connected: its route (direct or relayed) can change.
     public var route: PhoneHost?
     public var error: String?
+    /// The pair code being typed (grouped `4821 0937`).
     public var pairingCode = ""
+    /// The full ticket, for hosts this phone cannot reach over the network.
+    public var pairingTicket = ""
+    public var useTicket = false
     public var safetyCode: String?
+    /// The host the last pairing was with.
+    public var pairedHost: String?
     public var loading = false
     public var pairSheet = false
     public var showActivity = false
@@ -74,16 +80,37 @@ import AIRemoteCore
         let result = try await client.request(["op": .string("hosts")])
         hosts = result.array.map(PhoneHost.init)
     }
+    /// Pairs with the host showing `pairingCode` (its eight digits, typed or scanned) or, when
+    /// `useTicket` is set, with the full ticket in `pairingTicket`.
     public func pair() async {
-        let ticket = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ticket.isEmpty else { return }
+        let what: String
+        if useTicket {
+            what = pairingTicket.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "ai-remote pair ", with: "")
+        } else {
+            guard let digits = PairCodeText.digits(pairingCode) else { return }
+            what = digits
+        }
+        guard !what.isEmpty else { return }
         loading = true; defer { loading = false }
+        safetyCode = nil; pairedHost = nil
         do {
-            let result = try await client.request(["op": .string("pair"), "ticket": .string(ticket)])
+            // A link can open the app before `resume` has started the controller.
+            try await client.start()
+            let result = try await client.request(["op": .string("pair"), "ticket": .string(what)])
             safetyCode = result["sas"].string
-            pairingCode = ""
+            pairedHost = result["peer"].string
+            pairingCode = ""; pairingTicket = ""
             try await refresh()
         } catch { self.error = error.localizedDescription }
+    }
+    /// Opens the pairing sheet on a code from a link (`ai-remote://pair?code=...`, the host's QR
+    /// code read by the system camera) and pairs right away.
+    public func openPairLink(_ url: URL) async {
+        guard let digits = PairCodeText.digits(url.absoluteString) else { return }
+        useTicket = false
+        pairingCode = PairCodeText.grouped(digits)
+        pairSheet = true
+        await pair()
     }
     public func connect(_ host: PhoneHost) async {
         await leaveSession()

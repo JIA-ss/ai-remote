@@ -11,6 +11,7 @@
 //! pairing records the redeemer's principal in that service's allow list.
 
 pub mod ipc;
+pub mod paircode;
 pub mod proxy;
 pub mod refusal;
 
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 pub use mcpmesh_local_api::PeerPath;
 pub use mcpmesh_node::iroh;
+pub use paircode::{CodeOffer, PairCode};
 
 /// ALPN of an MCP session: the controller is the MCP client, the host the MCP server.
 pub const ALPN_MCP: &[u8] = b"app/ai-remote/mcp/1";
@@ -65,9 +67,13 @@ pub struct MeshOptions {
     pub network: NetworkOptions,
 }
 
-/// How a node reaches its peers. Every way is on by default, so that a connection gets through
-/// on as many networks as possible without anyone configuring anything; quiet mode turns off the
-/// ways that broadcast or probe beyond the connection itself.
+/// Why there is no pair code in LAN mode with local discovery off.
+pub const PAIR_CODE_NEEDS_DISCOVERY: &str = "no pair code on the local network only with local discovery off: pair with the \
+     ticket, or turn local discovery on (Settings > Network, or `ai-remote network discovery on`)";
+
+/// How a node reaches its peers: address lookup, hole punching and relays by default. Announcing
+/// itself on the local network and asking the router for a port are opt-in, because both put
+/// traffic on the network beyond the connection itself.
 #[derive(Debug, Clone)]
 pub struct NetworkOptions {
     /// Self-hosted relay URLs; empty means the default public relays.
@@ -81,23 +87,35 @@ pub struct NetworkOptions {
     pub lan: LanDiscovery,
     /// A fixed UDP port for IPv4 (to forward on a router); `None` for a random one.
     pub port: Option<u16>,
-    /// Quiet mode (a managed network): no router port mapping and no public DNS resolvers. `lan`
-    /// is already `Off` when this is set.
+    /// Ask the router to open a port (UPnP, NAT-PMP, PCP).
+    pub port_mapping: bool,
+    /// LAN mode: no relay and no address lookup; peers are dialled at their stored addresses.
+    pub lan_direct: bool,
+    /// Quiet mode locked `lan` and `port_mapping` off.
     pub quiet: bool,
     /// Self-hosted pkarr servers for publishing and looking up addresses; empty means n0's.
     pub address_lookup: Vec<String>,
 }
 
 impl NetworkOptions {
-    /// From a `[network]` section; `lan_default` is the role's local-discovery default.
-    /// Quiet mode wins over `lan_discovery`, which is still parsed so a misspelling is reported.
-    pub fn from_config(net: &ar_core::config::NetworkSection, lan_default: LanDiscovery) -> Result<Self> {
+    /// From a `[network]` section, for a node in `role`. Local discovery and port mapping are off
+    /// unless asked for; quiet mode keeps them off whatever was asked (`lan_discovery` is still
+    /// parsed, so a misspelling is reported). In LAN mode a host listens on a fixed port.
+    pub fn from_config(net: &ar_core::config::NetworkSection, role: ar_core::Role) -> Result<Self> {
+        let lan_direct = match net.mode.as_deref().map(str::trim) {
+            None | Some("") | Some("auto") => false,
+            Some("lan") => true,
+            Some(other) => bail!("[network] mode = {other:?}: expected \"auto\" or \"lan\""),
+        };
+        let fixed = (lan_direct && role == ar_core::Role::Host).then_some(ar_core::config::LAN_HOST_PORT);
         let quiet = net.quiet.unwrap_or(false);
-        let lan = LanDiscovery::parse(net.lan_discovery.as_deref(), lan_default)?;
-        if quiet && net.lan_discovery.is_some() && lan != LanDiscovery::Off {
+        let lan = LanDiscovery::parse(net.lan_discovery.as_deref(), LanDiscovery::Off)?;
+        let port_mapping = net.port_mapping.unwrap_or(false);
+        if quiet && (lan != LanDiscovery::Off || port_mapping) {
             tracing::warn!(
                 lan_discovery = lan.as_str(),
-                "[network] quiet = true turns local-network discovery off; lan_discovery is ignored"
+                port_mapping,
+                "[network] quiet = true keeps local-network discovery and port mapping off"
             );
         }
         Ok(Self {
@@ -105,7 +123,9 @@ impl NetworkOptions {
             relay_fallback_n0: net.relay_fallback_n0.unwrap_or(true),
             proxy: proxy::ProxySetting::parse(net.proxy.as_deref()),
             lan: if quiet { LanDiscovery::Off } else { lan },
-            port: net.port.filter(|&p| p != 0),
+            port: net.port.filter(|&p| p != 0).or(fixed),
+            port_mapping: port_mapping && !quiet,
+            lan_direct,
             quiet,
             address_lookup: net.address_lookup.clone(),
         })
@@ -145,7 +165,7 @@ impl LanDiscovery {
 }
 
 /// n0's public relays, as relay URLs.
-fn n0_relay_urls() -> Vec<String> {
+pub(crate) fn n0_relay_urls() -> Vec<String> {
     use iroh::defaults::prod::{AP_RELAY_HOSTNAME, EU_RELAY_HOSTNAME, NA_EAST_RELAY_HOSTNAME, NA_WEST_RELAY_HOSTNAME};
     [NA_EAST_RELAY_HOSTNAME, NA_WEST_RELAY_HOSTNAME, EU_RELAY_HOSTNAME, AP_RELAY_HOSTNAME]
         .iter()
@@ -311,6 +331,11 @@ fn relay_host(relay: &str) -> String {
 #[derive(Clone)]
 pub struct Mesh {
     node: Arc<Node>,
+    /// The name this device claims for itself when it pairs.
+    nickname: String,
+    net: NetworkOptions,
+    /// The pair code this node shows now, if any (one at a time).
+    offer: Arc<tokio::sync::Mutex<Option<paircode::RunningOffer>>>,
 }
 
 impl Mesh {
@@ -322,7 +347,12 @@ impl Mesh {
             .start()
             .await
             .map_err(|e| anyhow!("start transport node: {e}"))?;
-        let mesh = Self { node: Arc::new(node) };
+        let mesh = Self {
+            node: Arc::new(node),
+            nickname: sanitize_name(&opts.nickname),
+            net: opts.network,
+            offer: Default::default(),
+        };
         Ok(mesh)
     }
 
@@ -377,13 +407,75 @@ impl Mesh {
     /// Redeems an invite from a host. `name` is this device's local name for the host.
     pub async fn pair(&self, line: &str, name: Option<&str>) -> Result<Paired> {
         let mut c = self.control().await?;
-        let r = c.pair_as(line.trim(), name.map(sanitize_name)).await.map_err(|e| anyhow!("pair: {e}"))?;
+        let line = line.trim();
+        let r = match c.pair_as(line, name.map(sanitize_name)).await {
+            // The host already has a device by this one's name: an earlier install of this device
+            // (a new key, the same machine name) or another machine called the same. That refusal
+            // leaves the ticket unspent, which matters most for a pair code (it has handed its
+            // ticket over and cannot be used again), so claim a name carrying this device's id
+            // and redeem the same ticket once more.
+            Err(ClientError::Api(e)) if e["code"].as_i64() == Some(mcpmesh_local_api::ERR_NICKNAME_TAKEN) => {
+                let id = self.node.endpoint_id().to_string();
+                // Names are ASCII and at most 40 long: keep room for the suffix.
+                let base = &self.nickname[..self.nickname.len().min(35)];
+                let other = sanitize_name(&format!("{base}-{}", &id[..4]));
+                tracing::info!(taken = %self.nickname, instead = %other, "pairing again under another name");
+                c.set_nickname(&other).await.map_err(|e| anyhow!("rename for pairing: {e}"))?;
+                let r = c.pair_as(line, name.map(sanitize_name)).await;
+                let _ = c.set_nickname(&self.nickname).await;
+                r
+            }
+            r => r,
+        }
+        .map_err(|e| anyhow!("pair: {e}"))?;
         let level = r
             .services
             .iter()
             .filter_map(|s| s.strip_prefix(SERVICE_PREFIX).and_then(|l| l.parse::<Level>().ok()))
             .max();
         Ok(Paired { peer: r.peer_nickname, sas: r.sas_code, level })
+    }
+
+    /// Shows `invite` behind a fresh pair code until the code is used, fails too often, or
+    /// [`CODE_TTL`](paircode::CODE_TTL) (or the ticket's own expiry) passes. Replaces the code shown
+    /// before, which stops working at once.
+    pub async fn offer_code(&self, invite: &Invite) -> Result<CodeOffer> {
+        anyhow::ensure!(self.pair_code_findable(), "{PAIR_CODE_NEEDS_DISCOVERY}");
+        let code = PairCode::generate();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let left = invite.expires_at.saturating_sub(now).min(paircode::CODE_TTL.as_secs());
+        let mut slot = self.offer.lock().await;
+        if let Some(old) = slot.take() {
+            old.stop().await;
+        }
+        let running = paircode::start_offer(
+            &code,
+            invite.line.clone(),
+            std::time::Instant::now() + Duration::from_secs(left),
+            &self.net,
+        )
+        .await?;
+        *slot = Some(running);
+        Ok(CodeOffer { code: code.digits().into(), grouped: code.grouped(), link: code.link(), expires_at: now + left })
+    }
+
+    /// Stops answering the pair code shown now, if any. Returns whether one was still live.
+    pub async fn withdraw_code(&self) -> bool {
+        match self.offer.lock().await.take() {
+            Some(old) => {
+                let live = !old.finished();
+                old.stop().await;
+                live
+            }
+            None => false,
+        }
+    }
+
+    /// Pairs with the host showing `code`: fetches its ticket, then redeems it like [`pair`](Self::pair).
+    pub async fn pair_code(&self, code: &PairCode, name: Option<&str>) -> Result<Paired> {
+        anyhow::ensure!(self.pair_code_findable(), "{PAIR_CODE_NEEDS_DISCOVERY}");
+        let line = paircode::fetch_ticket(code, &self.net).await?;
+        self.pair(&line, name).await
     }
 
     /// All paired peers with the level this node grants each.
@@ -519,6 +611,33 @@ impl Mesh {
     /// Serves `alpn` with `handler`. Only paired, non-revoked peers ever reach the handler.
     pub fn accept(&self, alpn: &[u8], handler: Arc<dyn iroh::protocol::DynProtocolHandler>) -> Result<()> {
         self.node.accept_protocol(alpn, handler)
+    }
+
+    /// LAN mode: no relay and no address lookup (`[network] mode = "lan"`).
+    pub fn lan_direct(&self) -> bool {
+        self.net.lan_direct
+    }
+
+    /// Whether a pair code can be found at all: in LAN mode only local discovery finds one (the
+    /// pairing ticket, which carries the host's addresses, works either way).
+    pub fn pair_code_findable(&self) -> bool {
+        !(self.net.lan_direct && self.net.lan == LanDiscovery::Off)
+    }
+
+    /// The IP addresses this node dials `peer` at first (stored at pairing, refreshed from live
+    /// connections); empty when none is stored.
+    pub async fn peer_addrs(&self, peer: &str) -> Result<Vec<std::net::SocketAddr>> {
+        Ok(self.node.peer_addr(peer).await?.map(|a| a.ip_addrs().copied().collect()).unwrap_or_default())
+    }
+
+    /// Replaces the addresses this node dials `peer` at (LAN mode's way to reach a host whose
+    /// address changed). Returns the addresses kept.
+    pub async fn set_peer_addrs(
+        &self,
+        peer: &str,
+        addrs: &[std::net::SocketAddr],
+    ) -> Result<Vec<std::net::SocketAddr>> {
+        Ok(self.node.set_peer_addr(peer, addrs).await?.ip_addrs().copied().collect())
     }
 
     /// Dials a paired peer (by local name or principal) on `alpn`.
@@ -687,7 +806,12 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
     identity.insert("nickname".into(), sanitize_name(&opts.nickname).into());
     let network = table_entry(&mut doc, "network");
     let net = &opts.network;
-    if net.relays.is_empty() {
+    if net.lan_direct {
+        // No relay and no address lookup: peers are dialled at the addresses stored for them.
+        tracing::info!("LAN mode: no relay, no address lookup; peers are dialled at their stored addresses");
+        network.insert("relay_mode".into(), "disabled".into());
+        network.remove("relay_urls");
+    } else if net.relays.is_empty() {
         network.remove("relay_mode");
         network.remove("relay_urls");
     } else {
@@ -718,16 +842,13 @@ fn write_node_config(opts: &MeshOptions) -> Result<()> {
         None => network.remove("bind_port"),
     };
     if net.quiet {
-        tracing::info!("quiet network mode: no local-network discovery, no router port mapping, system DNS only");
-        network.insert("port_mapping".into(), false.into());
-        // The public resolvers only when the system has no DNS configuration at all; a failing
-        // system nameserver fails the lookup instead of going around the network's DNS.
-        network.insert("dns_fallback".into(), "if_system_empty".into());
-    } else {
-        network.remove("port_mapping");
-        network.remove("dns_fallback");
+        tracing::info!("quiet network mode: local-network discovery and router port mapping stay off");
     }
-    if net.address_lookup.is_empty() {
+    network.insert("port_mapping".into(), net.port_mapping.into());
+    // The public resolvers only when the system has no DNS configuration at all; a failing system
+    // nameserver fails the lookup instead of going around the network's DNS.
+    network.insert("dns_fallback".into(), "if_system_empty".into());
+    if net.address_lookup.is_empty() || net.lan_direct {
         network.remove("discovery_mode");
         network.remove("discovery_urls");
     } else {
@@ -774,6 +895,8 @@ mod tests {
                     proxy,
                     lan,
                     port: (lan == LanDiscovery::Resolve).then_some(41641),
+                    port_mapping: false,
+                    lan_direct: false,
                     quiet: false,
                     address_lookup: Vec::new(),
                 },
@@ -805,46 +928,87 @@ mod tests {
     }
 
     #[test]
-    fn quiet_mode_and_self_hosted_address_lookup_reach_the_node_config() {
+    fn quiet_by_default_with_opt_ins_and_a_quiet_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let write = |quiet: bool, address_lookup: &[&str]| {
-            let section = ar_core::config::NetworkSection {
-                lan_discovery: Some("on".into()),
-                quiet: Some(quiet),
-                address_lookup: address_lookup.iter().map(|u| u.to_string()).collect(),
-                ..Default::default()
-            };
+        let write = |section: ar_core::config::NetworkSection| {
             write_node_config(&MeshOptions {
                 root: dir.path().into(),
                 device_key: [7; 32],
                 nickname: "pc".into(),
-                network: NetworkOptions::from_config(&section, LanDiscovery::On).unwrap(),
+                network: NetworkOptions::from_config(&section, ar_core::Role::Controller).unwrap(),
             })
             .unwrap();
             let doc: toml::Table =
                 std::fs::read_to_string(dir.path().join("config/config.toml")).unwrap().parse().unwrap();
             doc["network"].as_table().unwrap().clone()
         };
+        let quiet_parts = |net: &toml::Table| {
+            (net["local_discovery"].as_str().unwrap().to_string(), net["port_mapping"].as_bool().unwrap())
+        };
 
-        let quiet = write(true, &["https://dns.example.org/pkarr"]);
-        assert_eq!(quiet["local_discovery"].as_str(), Some("off"), "quiet wins over lan_discovery = \"on\"");
-        assert_eq!(quiet["port_mapping"].as_bool(), Some(false));
-        assert_eq!(quiet["dns_fallback"].as_str(), Some("if_system_empty"));
-        assert_eq!(quiet["discovery_mode"].as_str(), Some("custom"));
-        assert_eq!(quiet["discovery_urls"].as_array().unwrap().len(), 1);
+        let default = write(Default::default());
+        assert_eq!(quiet_parts(&default), ("off".into(), false), "nothing extra unless asked for");
+        assert_eq!(default["dns_fallback"].as_str(), Some("if_system_empty"));
+        assert!(default.get("discovery_mode").is_none() && default.get("discovery_urls").is_none());
 
-        let normal = write(false, &[]);
-        assert_eq!(normal["local_discovery"].as_str(), Some("on"));
-        for key in ["port_mapping", "dns_fallback", "discovery_mode", "discovery_urls"] {
-            assert!(normal.get(key).is_none(), "leaving quiet mode removes {key}");
-        }
+        let asked = ar_core::config::NetworkSection {
+            lan_discovery: Some("on".into()),
+            port_mapping: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(quiet_parts(&write(asked.clone())), ("on".into(), true));
+
+        let locked = ar_core::config::NetworkSection {
+            quiet: Some(true),
+            address_lookup: vec!["https://dns.example.org/pkarr".into()],
+            ..asked
+        };
+        let net = write(locked);
+        assert_eq!(quiet_parts(&net), ("off".into(), false), "quiet wins over both opt-ins");
+        assert_eq!(net["discovery_mode"].as_str(), Some("custom"));
+        assert_eq!(net["discovery_urls"].as_array().unwrap().len(), 1);
 
         let typo = ar_core::config::NetworkSection {
             lan_discovery: Some("of".into()),
             quiet: Some(true),
             ..Default::default()
         };
-        assert!(NetworkOptions::from_config(&typo, LanDiscovery::On).is_err(), "a misspelling is still reported");
+        assert!(
+            NetworkOptions::from_config(&typo, ar_core::Role::Controller).is_err(),
+            "a misspelling is still reported"
+        );
+    }
+
+    #[test]
+    fn lan_mode_turns_the_relay_and_lookup_off_and_fixes_the_host_port() {
+        let section = |mode: &str| ar_core::config::NetworkSection {
+            mode: Some(mode.into()),
+            address_lookup: vec!["https://dns.example.org/pkarr".into()],
+            relays: vec!["https://relay.example.org".into()],
+            ..Default::default()
+        };
+        let host = NetworkOptions::from_config(&section("lan"), ar_core::Role::Host).unwrap();
+        assert!(host.lan_direct);
+        assert_eq!(host.port, Some(ar_core::config::LAN_HOST_PORT));
+        let controller = NetworkOptions::from_config(&section("lan"), ar_core::Role::Controller).unwrap();
+        assert_eq!(controller.port, None, "a controller dials out; its port may change");
+        let own_port = ar_core::config::NetworkSection { port: Some(50000), ..section("lan") };
+        assert_eq!(NetworkOptions::from_config(&own_port, ar_core::Role::Host).unwrap().port, Some(50000));
+        assert!(NetworkOptions::from_config(&section("offline"), ar_core::Role::Host).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        write_node_config(&MeshOptions {
+            root: dir.path().into(),
+            device_key: [7; 32],
+            nickname: "pc".into(),
+            network: host,
+        })
+        .unwrap();
+        let doc: toml::Table = std::fs::read_to_string(dir.path().join("config/config.toml")).unwrap().parse().unwrap();
+        let net = doc["network"].as_table().unwrap();
+        assert_eq!(net["relay_mode"].as_str(), Some("disabled"), "no relay and, with it, no address lookup");
+        assert!(net.get("relay_urls").is_none() && net.get("discovery_mode").is_none());
+        assert_eq!(net["bind_port"].as_integer(), Some(i64::from(ar_core::config::LAN_HOST_PORT)));
     }
 
     #[test]

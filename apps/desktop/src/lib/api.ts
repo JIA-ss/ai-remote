@@ -7,9 +7,30 @@ import type { ChatEvent, ChatHello } from "./chat";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
-import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalController, PathKind, PendingApproval } from "./types";
+import type {
+  AgentStatus,
+  AuditLine,
+  Driver,
+  FeedEvent,
+  Host,
+  HostAccess,
+  Level,
+  LocalController,
+  LocalHost,
+  PairTicket,
+  NetworkSettings,
+  PathKind,
+  PendingApproval,
+} from "./types";
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
+
+/** One change on Settings > Network; whatever is left out stays as it is. */
+export interface NetworkChange {
+  mode?: NetworkSettings["mode"];
+  lanDiscovery?: boolean;
+  portMapping?: boolean;
+}
 
 export interface ToolContent {
   type: "text" | "image" | string;
@@ -102,6 +123,38 @@ export interface Backend {
   localControllers(): Promise<LocalController[] | null>;
   /** Turns bypass on or off for a controller paired with this computer. */
   setLocalBypass(peer: string, on: boolean): Promise<void>;
+  /** This computer's router port mapping (UPnP), whether quiet mode locks it, whether a host runs here. */
+  networkSettings(): Promise<NetworkSettings>;
+  /** Changes how this computer connects (as host and controller); the controller applies it at once, a running host at its next start. */
+  updateNetwork(change: NetworkChange): Promise<NetworkSettings>;
+  /** Where to dial a paired host (`ip`, `ip:port`, several separated by commas); returns the addresses kept. */
+  setHostAddress(host: string, address: string): Promise<string[]>;
+  /** This computer as a host: the running host, the profile directory and, with `doctor`, its checks. */
+  localHost(doctor: boolean): Promise<LocalHost>;
+  /** A one-time pairing ticket from the host here. Shown once; never logged. */
+  localPairCode(level: Level): Promise<PairTicket>;
+  /** Stops answering the pair code shown now (its dialog was closed). */
+  localWithdrawCode(): Promise<void>;
+  /** Pauses (every controller's calls are refused) or resumes the agent on this computer. */
+  localPause(on: boolean): Promise<void>;
+  /** Stops the host here; `localStart` starts the installed one again. */
+  localStop(): Promise<void>;
+  localStart(): Promise<void>;
+  /** The host's latest audit lines, newest last. */
+  localRecent(limit: number): Promise<AuditLine[]>;
+  /** Removes a controller's pairing here (its safety code did not match). */
+  localForget(peer: string): Promise<void>;
+  /** Keeps the window out of screen capture while it shows a pairing ticket. */
+  protectWindow(on: boolean): Promise<void>;
+  /** Opens a System Settings pane (`screen_recording`, `accessibility`, `login_items`, `privacy`). */
+  openSystemSettings(pane: string): Promise<void>;
+  /** Shows the profile directory (ai-remote.toml, logs) in the file manager. */
+  revealProfile(): Promise<void>;
+  /** Tells the app's native parts (the tray menu) which language the page shows. */
+  setUiLanguage(lang: string): Promise<void>;
+  /** Whether the app opens at login, in the tray only. */
+  appLoginItem(): Promise<boolean>;
+  setAppLoginItem(on: boolean): Promise<void>;
   /**
    * This computer as a host: whether paired devices may start coding agents here. `null` when
    * ai-remote host does not run here.
@@ -236,6 +289,7 @@ const tauriBackend: Backend = {
       relay: relayHost(h.relay),
       relayN0: h.relay_n0 === true,
       p2pObstacle: (h.p2p_obstacle as Host["p2pObstacle"]) ?? null,
+      addresses: Array.isArray(h.addresses) ? (h.addresses as string[]) : [],
     }));
   },
   async fixFirewall() {
@@ -291,6 +345,60 @@ const tauriBackend: Backend = {
   },
   async setLocalBypass(peer, on) {
     unwrap(await commands.setLocalHostBypass(peer, on));
+  },
+  async networkSettings() {
+    return unwrap(await commands.networkSettings()) as NetworkSettings;
+  },
+  async updateNetwork(change) {
+    const v = await commands.updateNetwork(change.mode ?? null, change.lanDiscovery ?? null, change.portMapping ?? null);
+    return unwrap(v) as NetworkSettings;
+  },
+  async setHostAddress(host, address) {
+    const v = unwrap(await commands.setHostAddress(host, address)) as { addresses: string[] };
+    return v.addresses;
+  },
+  async localHost(doctor) {
+    return unwrap(await commands.localHost(doctor)) as LocalHost;
+  },
+  async localPairCode(level) {
+    return unwrap(await commands.localHostPairCode(level)) as PairTicket;
+  },
+  async localWithdrawCode() {
+    unwrap(await commands.localHostWithdrawCode());
+  },
+  async localPause(on) {
+    unwrap(await commands.localHostPause(on));
+  },
+  async localStop() {
+    unwrap(await commands.localHostStop());
+  },
+  async localStart() {
+    unwrap(await commands.localHostStart());
+  },
+  async localRecent(limit) {
+    const v = unwrap(await commands.localHostRecent(limit)) as { recent: AuditLine[] };
+    return v.recent ?? [];
+  },
+  async localForget(peer) {
+    unwrap(await commands.localHostForget(peer));
+  },
+  async protectWindow(on) {
+    unwrap(await commands.protectWindow(on));
+  },
+  async openSystemSettings(pane) {
+    unwrap(await commands.openSystemSettings(pane));
+  },
+  async revealProfile() {
+    unwrap(await commands.revealProfile());
+  },
+  async setUiLanguage(lang) {
+    await commands.setUiLanguage(lang);
+  },
+  async appLoginItem() {
+    return unwrap(await commands.appLoginItem());
+  },
+  async setAppLoginItem(on) {
+    unwrap(await commands.setAppLoginItem(on));
   },
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));

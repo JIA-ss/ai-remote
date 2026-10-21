@@ -161,6 +161,10 @@ pub async fn run(
                 Some(LiveCmd::Answer { .. }) => {
                     report(&out, Out::Ev(Ev::Notice { level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
                 }
+                Some(LiveCmd::Steer { id, .. }) => {
+                    // ACP has no way to add to a running prompt turn.
+                    report(&out, Out::SteerRejected { id, reason: "the protocol has no way to add to a running turn".into() }).await;
+                }
                 Some(LiveCmd::Shutdown { done }) => {
                     proc.shutdown(std::time::Duration::from_secs(3)).await;
                     let _ = done.send(());

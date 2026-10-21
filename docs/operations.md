@@ -42,8 +42,9 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote host install` | start the host automatically at logon, in the background (`--service`: as a Windows service that reaches the lock screen) |
 | `ai-remote host uninstall` | remove the autostart entry, stop the host, remove the firewall rules |
 | `ai-remote host status` | autostart entry, firewall rules, whether the host runs |
+| `ai-remote host start` | start the installed background host now (after `stop-host`); the desktop app's tray uses it. A Windows service needs an administrator terminal |
 | `ai-remote doctor` | graded checks: can this machine really be operated? |
-| `ai-remote pair-code [--level L] [--name N]` | print a one-time pairing ticket |
+| `ai-remote pair-code [--level L] [--name N]` | show a one-time pair code (QR code and eight digits) and the ticket behind it |
 | `ai-remote peers` | paired controllers with their levels and device ids; revoked ones are marked `REVOKED` |
 | `ai-remote level <peer> <observe\|control\|admin\|none>` | change a controller's level |
 | `ai-remote revoke <peer>` / `unrevoke <peer>` | refuse a controller, or lift that |
@@ -58,9 +59,11 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 
 | Command | What it does |
 |---|---|
-| `ai-remote pair <ticket> [--name N]` | pair with a host |
+| `ai-remote pair <code\|ticket> [--name N]` | pair with a host by its pair code (`4821 0937`) or its ticket |
 | `ai-remote hosts` | paired hosts and the level each granted at pairing; `(default)` marks the default host |
 | `ai-remote hosts default [<host>\|--clear]` | show, set or clear the host commands and agents use when they name none |
+| `ai-remote network [mode auto\|lan \| discovery on\|off \| upnp on\|off]` | show or change this computer's network settings for its host and controller alike (the desktop app's Settings > Network; section 12) |
+| `ai-remote hosts address <host> [<address>]` | show or set where a host is dialled (`ip`, `ip:port`, several separated by commas); how a LAN-mode host whose address changed is reached again (section 12) |
 | `ai-remote unpair <host> [--local]` | unpair a host: it drops this device too when it can be reached, then this controller forgets it (`--local`: only here) |
 | `ai-remote access [--host H]` | what this device may do on a host: your level, the standing rules that concern you, the paired devices (all of them for an admin) and the tools on offer |
 | `ai-remote lower <level> [--host H]` | lower this device's level on a host; raising it again takes someone at that computer (`ai-remote level`) |
@@ -135,7 +138,7 @@ ai-remote host
 ```
 
 It prints its name, device id, profile, number of paired controllers and the audit log path. If no
-controller is paired yet, it also prints a pairing ticket (level `control`); `--no-pair-code` skips
+controller is paired yet, it also shows a pair code with its QR code and ticket (level `control`); `--no-pair-code` skips
 that. If approval prompts cannot be shown right now (a locked desktop), it warns that actions which
 need approval will be refused.
 
@@ -333,8 +336,9 @@ print goes to `<profile>/host/host.log`, and it never mints a pairing ticket by 
 - **Logs.** `host.log` is rotated when it passes 8 MiB; two earlier files are kept (`host.log.1`,
   `host.log.2`). Errors before the log can be opened go to `ai-remote-hostw-error.log` in the
   temporary directory. On macOS, launchd also writes the process's stderr to `host/host-stderr.log`.
-- **Starting it again** after `stop-host`: log off and on, run `ai-remote host install` again (it
-  starts the task when no host runs), or start the task yourself:
+- **Starting it again** after `stop-host`: `ai-remote host start` (or the desktop app's tray), log off
+  and on, run `ai-remote host install` again (it starts the task when no host runs), or start the task
+  yourself:
   `schtasks /Run /TN "ai-remote\host-<8 hex digits>"` (`ai-remote host status` shows the name).
 - **No console windows.** The background host has no console, so everything it starts (shell
   commands, jobs, mounted servers, system tools) is started without a console window; nothing pops
@@ -448,25 +452,32 @@ ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
 ## 5. Pairing step by step
 
 1. **Make sure the host runs** (`ai-remote host status` or `ai-remote status` on the host).
-2. **Mint a ticket on the host:**
+2. **Show a pair code on the host** (desktop app: This device → Show pair code; tray: Show Pairing
+   Code), or in a terminal:
 
    ```sh
    ai-remote pair-code --level control --name laptop
    ```
 
    `--level` is `observe`, `control` (default) or `admin`: start with the lowest level that does the
-   job. `--name` is the host's own name for the controller that redeems the ticket (default: the name
-   the controller suggests, its machine name). The ticket is valid once and expires after 24 hours.
-3. **Hand the ticket over** on a channel you trust. It is a credential: whoever redeems it first gets
-   the level.
-4. **Redeem it on the controller:**
+   job. `--name` is the host's own name for the controller that pairs (default: the name the
+   controller suggests, its machine name). It shows a QR code, an eight-digit pair code and the
+   ticket behind them. The code works once, for 10 minutes, and only while the host runs; showing a
+   new code withdraws the old one. Five connections that fail to prove the code burn it.
+3. **Give the code to the other device** in person, or on a channel you trust. It is a credential
+   while it lasts: whoever uses it first gets the level.
+4. **Pair on the controller:** scan the QR code with the iPhone app, type the digits on the desktop
+   app's Pair a computer page, or:
 
    ```sh
-   ai-remote pair <ticket> --name office-pc
+   ai-remote pair 4821 0937 --name office-pc
    ```
 
    `--name` is your local name for the host (default: the name the host suggests). It prints the
-   host's name, a three-word safety code and the granted level.
+   host's name, a three-word safety code and the granted level. The controller finds the host behind
+   the code through the same discovery the connection uses (n0's DNS/pkarr service, mDNS on the
+   local network, the relays). If the two machines cannot reach each other that way (no internet and
+   no shared network), use the ticket instead: `ai-remote pair <ticket>`, valid once for 24 hours.
 5. **Compare the safety code** with what the host shows:
    - a host in a terminal prints `Paired with controller "laptop" (level: control).` and
      `Safety code: ...`;
@@ -661,6 +672,7 @@ Checked by the running host:
   warn  elevation  not elevated: windows of elevated programs (installers, admin tools) silently ignore its input and UI actions
                    fix: run the host with highest privileges; `ai-remote host install` registers it that way
   ok    dpi        per-monitor DPI aware (v2): screenshot and click coordinates agree
+  ok    network    quiet: no local-network discovery (mDNS), no router port mapping, name lookups only through the system's DNS
   ok    relay      connected to https://...; 3 direct address(es)
   ok    p2p        UDP gets through, so direct (P2P) connections can form; IPv6 works
   ok    approval   approval prompts can be shown on this desktop
@@ -678,8 +690,10 @@ Overall: warn
 | `desktop` | the input desktop is `Default` (unlocked) | **fail**: locked, or a sign-in or UAC prompt is showing, and the host cannot reach it; **warn**: the same, but the host runs as a service and can see and operate it (approval prompts cannot be shown) | unlock; on unattended machines turn off automatic locking, or install as a service (`host install --service`) |
 | `elevation` | the host runs elevated | **warn**: windows of elevated programs ignore its input | run with highest privileges (`host install` as an administrator) |
 | `dpi` | per-monitor DPI aware (v2) | **fail**: clicks on scaled displays land in the wrong place | remove any high-DPI compatibility override on the executable (Properties > Compatibility) |
-| `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, enable UPnP/NAT-PMP on the router, use IPv6, or sign in to the network |
+| `network` | `ai-remote.toml` reads; says what the host puts on the network besides its connections (local-network discovery, router port mapping) | **warn**: the file cannot be read | fix the file (section 11) |
+| `p2p` | UDP gets out, the NAT is not symmetric | **warn**: UDP blocked (every connection is relayed), a symmetric NAT (direct connections often fail), or a captive portal | allow outbound UDP, turn on router port mapping (Settings > Network) where the router allows UPnP or NAT-PMP, use IPv6, or sign in to the network |
 | `relay` | connected to a home relay | **warn**: no relay in use, or none reachable; controllers on other networks may not get through | check internet access, outbound firewall or proxy (relays use HTTPS), or `[network] relays` |
+| `lan` | (LAN mode, in place of `relay`; `p2p` is skipped) the host listens on its fixed port; lists the addresses controllers reach it at | **warn**: the fixed port was taken, so the host listens on another one and controllers that stored the fixed port cannot reach it | free the port, or set another `[network] port`, and restart the host |
 | `approval` | prompts can be shown | **warn**: actions that need approval are refused | unlock the desktop, or allow trusted tools with `[[rule]]` entries |
 | `bypass` | no controller is bypassed | **warn**: the named controllers, or every paired controller when the default is on, use every tool without approval (section 6.1) | `ai-remote bypass off <peer>` (or `--all`, or `bypass default off`) when you no longer need it |
 | `firewall` | an inbound allow rule covers UDP for the host program, or the firewall is off | **fail**: a block rule applies to the program (traffic falls back to the relay); **warn**: no allow rule (Windows will prompt at the first connection), or a block rule for every program's inbound UDP | `host install` from an elevated terminal; review rules of other programs in `wf.msc` |
@@ -810,6 +824,14 @@ ai-remote tell "Use the D: drive for the export"
 - Turns coordinate people and agents; they are not a security boundary (an agent on the same device
   could make calls marked as a person's). Levels, policy and approvals are what limit an agent.
 
+**Pausing at the host itself.** The owner can also pause from the desktop app on the host (the tray
+menu or Settings > This device). That pause is stronger than a controller's: the agent's calls *and* a
+person's who took over are refused, and no paired device can resume or take over until the owner
+resumes at that computer (`ai-remote resume` from a controller is refused with that reason); live
+views keep running. On resume, whoever drove before gets the controls back. The audit log records it
+as a `driver` line with `"origin": "owner"`, and controllers' timelines show "someone at <host>
+paused it".
+
 ## 10. Audit log
 
 Every tool call on the host is appended to `<profile>/host/audit.jsonl`, one JSON object per line.
@@ -861,8 +883,10 @@ approval_prompt = true       # false: no dialog here, approve only from devices 
 relays = []                  # empty: the default public relays (section 12)
 relay_fallback_n0 = true     # with relays set: keep n0's public relays as a fallback
 proxy = ""                   # empty: detect the HTTP proxy; "none": never use one; or a URL
-lan_discovery = "on"         # "on", "resolve" (find peers, do not announce) or "off"
-quiet = false                # true on a managed network such as an office (section 12)
+lan_discovery = "off"        # "on", "resolve" (find peers, do not announce) or "off" (section 12)
+port_mapping = false         # ask the router for a port (UPnP); the app's Settings > Network writes it
+quiet = false                # true: the two lines above stay off whatever they say (section 12)
+mode = "auto"                # "lan": direct on the local network only, no relay (section 12)
 
 [[rule]]                     # policy rules, first match wins
 tool = "shell"
@@ -884,19 +908,21 @@ comments and layout.
 
 ## 12. Connecting across networks
 
-Paired devices find and reach each other without port forwarding or a VPN. Every way below is on by
-default, so a connection gets through on as many networks as possible without configuration
-(quiet mode, below, turns off the ones that broadcast or probe the network):
+Paired devices find and reach each other without port forwarding or a VPN. The ways below are on by
+default, except the two that put traffic on the network beyond the connections themselves: router port
+mapping and local-network discovery are off until you turn them on.
 
-| Way | What it does | Turn off |
+| Way | What it does | Default |
 |---|---|---|
-| Direct (P2P) | UDP hole punching, IPv4 and IPv6, with automatic port mapping (UPnP, NAT-PMP, PCP) on the router | port mapping: `quiet = true` |
-| Local network | Finds the other device on the same network by mDNS, even with no internet | `lan_discovery = "off"` or `quiet = true` |
-| Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | — |
-| HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | `proxy = "none"` |
-| Relay fallback | With your own relays set, n0's public relays stay as a fallback | `relay_fallback_n0 = false` |
-| Firewall check | The controller notices when the system firewall blocks it (a dismissed "allow access?" prompt leaves block rules) and the desktop app offers "Allow in firewall" (one administrator prompt) | — |
-| Retry | The controller dials an unreachable host again after 1 s and 3 s (a network that is just switching often gets through) | — |
+| Direct (P2P) | UDP hole punching, IPv4 and IPv6 | on |
+| Router port mapping | Asks the router to open a port (UPnP, NAT-PMP, PCP), for routers that hole punching alone does not get through | **off**; turn on in the desktop app (Settings > Network) or `port_mapping = true` |
+| Local network | Finds the other device on the same network by mDNS, even with no internet | **off**; `lan_discovery = "on"` |
+| Local network only | No relay and no address lookup: devices connect directly at stored addresses, and nothing goes on the network but the connections | **off**; Settings > Network in the desktop app, or `mode = "lan"` |
+| Relay | When no direct path works, an encrypted relay forwards the traffic over HTTPS (port 443); the connection moves to a direct path as soon as one opens | on |
+| HTTP proxy | On networks that only allow traffic out through a proxy, the relay connection goes through it | on; `proxy = "none"` |
+| Relay fallback | With your own relays set, n0's public relays stay as a fallback | on; `relay_fallback_n0 = false` |
+| Firewall check | The controller notices when the system firewall blocks it (a dismissed "allow access?" prompt leaves block rules) and the desktop app offers "Allow in firewall" (one administrator prompt) | on |
+| Retry | The controller dials an unreachable host again after 1 s and 3 s (a network that is just switching often gets through) | on |
 
 Relayed traffic stays encrypted end to end, but adds latency; n0's free public relays are also
 rate-limited. Every client says so while it lasts ("P2P failed, relayed by n0's public relay").
@@ -910,9 +936,11 @@ when the process starts.
 relays = ["https://relay1.example.org", "https://relay2.example.org"]
 relay_fallback_n0 = true
 proxy = ""            # empty or absent: detect; "none": never; or e.g. "http://proxy.corp:3128"
-lan_discovery = "on"  # host default "on", controller default "resolve"
+lan_discovery = "off" # "on": announce this device on the local network; "resolve": find others only
+port_mapping = false  # ask the router for a port; the desktop app's Settings > Network writes it
 port = 0              # a fixed UDP port to forward on your router; 0 or absent: random
-quiet = false         # true: no mDNS, no router port mapping, system DNS only
+quiet = false         # true: lan_discovery and port_mapping stay off whatever they say
+mode = "auto"         # "lan": direct on the local network only (no relay, no address lookup)
 address_lookup = []   # empty: n0's address lookup service; or your own pkarr servers
 ```
 
@@ -921,30 +949,58 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   unless `relay_fallback_n0 = false`. A pairing ticket records the relay the host used when it was
   minted, so mint new tickets after changing relays. `ai-remote doctor` on the host shows whether it is
   connected to a relay (`relay` check).
+- **In the app.** Settings > Network shows the choice between **Automatic** (recommended: works from
+  anywhere) and **Local network only**, and two switches, both off: **Find devices on your local
+  network** (`lan_discovery`) and **Ask the router to open a port (UPnP)** (`port_mapping`, hidden with
+  Local network only, where it has no use). With Local network only it also shows this computer's address
+  (with a copy button) and the address of every computer this device connects to (with a way to change
+  it). A change is written to this computer's host and controller configs; the controller applies it at
+  once (live sessions reconnect), a host running here when it next starts. `ai-remote network` does the
+  same from a terminal.
 - **Proxy.** Detected in this order: the `proxy` setting, the `HTTPS_PROXY` / `ALL_PROXY` /
   `HTTP_PROXY` environment variables, the system setting (Windows: Internet Settings of the signed-in
   user; macOS: `scutil --proxy`). Proxy auto-config (PAC) scripts are not evaluated; set `proxy`
   explicitly there. Only HTTP(S) proxies work (not SOCKS). Only the relay connection uses the proxy:
   direct paths are UDP, and the address lookup of a peer whose address changed still goes to n0's DNS
   service directly. The host log names the proxy in use.
-- **Local network.** `"on"` announces this device on the local network (its device id and addresses,
-  including its public address, about once a second) so others there can find it; `"resolve"` finds
-  others without announcing. The host defaults to `"on"` so a controller on the same network can reach
-  it without internet; set `"resolve"` or `"off"` on a laptop host used on public networks.
+- **Local network.** Off by default. `"on"` announces this device on the local network (its device id and
+  addresses, including its public address, about once a second, to every device there) so others can find
+  it with no internet at all; `"resolve"` finds others without announcing, but still sends a query about
+  once a second. With internet, devices on the same network connect directly without it: the addresses they
+  publish include the local ones. With Local network only, turning it on means computers whose IP changed
+  are found again without setting their address by hand. The app's switch writes `"on"` or `"off"`.
+- **Router port mapping.** Off by default. Turn it on in the desktop app (Settings > Network): it writes
+  `port_mapping = true` to this computer's host and controller configs; the controller applies it at once
+  (live sessions reconnect), a host running here when it next starts. It helps when `doctor` reports `p2p`
+  warn (symmetric NAT) and the router allows UPnP, NAT-PMP or PCP. While there is no mapping it probes the
+  gateway every 20 to 26 s (a UPnP search multicast and NAT-PMP/PCP requests), which a managed network may
+  flag.
+- **Local network only.** `mode = "lan"`, or "Local network only" in the desktop app (Settings >
+  Network, which writes it for this computer's host and controller). No relay, no address lookup, no
+  network report: the only traffic is between the devices. A host listens on UDP port 47800 (or its
+  `port`), and controllers dial each host at the address they stored for it: the host's addresses from the
+  pairing ticket, refreshed from every live connection. When a host's address changes (another IP, or a
+  host that used a random port before switching to LAN mode), set it on the controller: in the app under
+  Settings > Network, or `ai-remote hosts address <host> 192.168.1.20` (no port: 47800). `doctor` on the
+  host lists the addresses to use (`lan` check). Pairing with the ticket works as usual; a pair code can
+  only be found through local discovery, so with that off the host shows the ticket alone and says why. Devices
+  outside this network cannot connect, so set it on both ends only where they share a network (an office,
+  a home), and give the host a fixed IP (a DHCP reservation on the router).
 - **Fixed port.** Behind a NAT that defeats hole punching (`doctor` reports `p2p` warn), forward a UDP port
   on the router to the host and set `port` to it: controllers then reach the host directly. If the port is
   taken when the host starts, it uses a random port and says so in the log.
-- **Quiet mode.** `quiet = true` is for a managed network, such as an office, where traffic beyond the
-  connections themselves draws attention. Off by default. It turns off local-network discovery (no mDNS
-  announcements or queries; `lan_discovery` is ignored), router port mapping (no UPnP search multicast, no
-  NAT-PMP or PCP requests to the gateway) and the public DNS fallback (lookups go only through the system's
-  DNS; one that fails stays failed instead of being asked of Cloudflare, Google or Quad9). Set it on the host
-  and on the controller used on that network; `ai-remote doctor` on the host shows the mode (`network` check).
-  Paired devices still connect: they find each other through the address lookup service, punch a direct path
-  where the networks allow it and are relayed otherwise. What it costs: devices on a network with no internet
-  cannot find each other; behind a NAT that only opens through port mapping, the connection stays relayed; and
-  where the network's DNS does not resolve the relay or lookup names, nothing connects (list self-hosted relays
-  and lookup servers it does resolve).
+- **Quiet mode.** `quiet = true` locks local-network discovery and router port mapping off, whatever
+  `lan_discovery`, `port_mapping` or the desktop app's setting say: for a computer on a managed network,
+  such as an office, where traffic beyond the connections themselves draws attention. `ai-remote doctor` on
+  the host shows what is on (`network` check). Name lookups go only through the system's DNS in every mode:
+  one that fails stays failed instead of being asked of Cloudflare, Google or Quad9 (the public resolvers
+  are used only when the system has no DNS configured). Paired devices still connect: they find each other
+  through the address lookup service, punch a direct path where the networks allow it and are relayed
+  otherwise. Where the network's DNS does not resolve the relay or lookup names, nothing connects (list
+  self-hosted relays and lookup servers it does resolve). With the lock on, the app shows both switches
+  off and disabled, and `ai-remote network discovery on` / `upnp on` refuse with the reason. A pair code
+  on screen runs on a short-lived endpoint of its own that follows the same settings (relays, lookup
+  servers, port mapping, local network).
 - **Address lookup.** Every device publishes its current addresses to n0's lookup service (`dns.iroh.link`)
   every 5 minutes and whenever they change, and looks a peer up there before dialing it. With
   `address_lookup = ["https://dns.example.org/pkarr"]` your own
@@ -954,17 +1010,18 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
 
 ### What goes over the network
 
-Read from the code (iroh 1.3), not from a packet capture. The connections themselves are the last row.
+Read from the code (iroh 1.3). Per-process captures on a real office network (2026-10-21, AGENTS.md) found no
+ai-remote packet to 5353, 1900 or 5351 with both opt-ins off. The connections themselves are the last row.
 
-| Traffic | To | When | Quiet mode |
+| Traffic | To | When | By default |
 |---|---|---|---|
-| Relay connection | the relays (n0's: `use1-1`, `usw1-1`, `euc1-1`, `aps1-1` `.relay.n0.iroh.link`), HTTPS on TCP 443 | always while running, a ping every 15 s | kept |
-| Network report | the relays: HTTPS on 443, QUIC address discovery on UDP 7842, a captive-portal check over HTTP on 80 | every 20 to 26 s, a full report every 5 minutes, and on network changes | kept |
-| Address publishing and lookup | `dns.iroh.link` (or `address_lookup`), HTTPS on 443, and DNS queries through the system | publishing every 5 minutes and on changes; lookup before a dial | kept |
-| Router port mapping | the gateway: UPnP SSDP multicast to 239.255.255.250:1900, NAT-PMP and PCP on UDP 5351 | every 20 to 26 s while there is no mapping (most office networks have none) | off |
-| Local-network discovery | mDNS multicast to 224.0.0.251:5353, seen by every device on the network; the host announces its device id and addresses (its public one too) | about once a second | off |
-| Public DNS fallback | 1.1.1.1, 8.8.8.8, 9.9.9.9 (UDP 53, HTTPS 443) | only after the system's DNS failed or timed out | only when the system has no DNS configured |
-| Connections | the other device (UDP, hole punched) or a relay | while paired devices are connected; a keepalive every 5 s; the screen stream is the bulk | kept |
+| Relay connection | the relays (n0's: `use1-1`, `usw1-1`, `euc1-1`, `aps1-1` `.relay.n0.iroh.link`), HTTPS on TCP 443 | always while running, a ping every 15 s | on |
+| Network report | the relays: HTTPS on 443, QUIC address discovery on UDP 7842, a captive-portal check over HTTP on 80 | every 20 to 26 s, a full report every 5 minutes, and on network changes | on |
+| Address publishing and lookup | `dns.iroh.link` (or `address_lookup`), HTTPS on 443, and DNS queries through the system | publishing every 5 minutes and on changes; lookup before a dial | on |
+| Router port mapping | the gateway: UPnP SSDP multicast to 239.255.255.250:1900, NAT-PMP and PCP on UDP 5351 | every 20 to 26 s while there is no mapping (most office networks have none) | off (Settings > Network) |
+| Local-network discovery | mDNS multicast to 224.0.0.251:5353, seen by every device on the network; announcing sends this device's id and addresses (its public one too) | about once a second | off (`lan_discovery`) |
+| Public DNS fallback | 1.1.1.1, 8.8.8.8, 9.9.9.9 (UDP 53, HTTPS 443) | when the system has no DNS configured | only then |
+| Connections | the other device (UDP, hole punched) or a relay | while paired devices are connected; a keepalive every 5 s; the screen stream is the bulk | on |
 
 Nothing else: no port or address scanning, no update check, no telemetry. The desktop app's interface only
 talks to its own process.

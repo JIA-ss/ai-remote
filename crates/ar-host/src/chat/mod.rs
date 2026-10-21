@@ -12,7 +12,9 @@
 //!   *parked* and the next message starts a new process that resumes the agent's own conversation.
 //! - **Events** ([`event`]) are numbered by the session and written to `<chat_dir>/<id>/events.jsonl`
 //!   before they go out, so a viewer that comes back asks for what it missed. Messages typed while
-//!   a turn runs wait in a queue and go out in order.
+//!   a turn runs wait in a queue and go out in order, unless they are sent to *steer*: then they
+//!   join the running turn where the agent can take them (its caps say `steer`), and wait in the
+//!   queue like any other otherwise.
 //! - **What limits it**: at most [`MAX_LIVE`] agent processes at a time; the device that started a
 //!   session must keep level admin (checked every few seconds, see [`ChatManager::enforce`]); a
 //!   pause stops every running turn and holds new ones; the audit log records each session and
@@ -31,7 +33,7 @@ pub mod proc;
 pub mod runtimes;
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -48,7 +50,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use self::{
     adapters::{Launch, LiveCmd, LiveHandle},
-    event::{By, Ev, Out, Queued, TurnStatus},
+    event::{By, Ev, Out, Queued, ToolContent, TurnStatus},
     runtimes::{ChatConfig, Protocol},
 };
 
@@ -135,6 +137,9 @@ pub struct Input {
 #[derive(Debug)]
 pub enum Cmd {
     Input(Input),
+    /// Add this message to the running turn; with no turn running, or an agent that cannot take
+    /// one, it is queued like [`Cmd::Input`] (with a `steer_queued` notice saying why).
+    Steer(Input),
     /// Stop the current turn, then (with `then`) send this message first.
     Interrupt {
         then: Option<Input>,
@@ -663,6 +668,9 @@ async fn drive(chat: Arc<Chat>, manager: Weak<Inner>, mut rx: mpsc::UnboundedRec
         turn: None,
         idle_since: Instant::now(),
         seen: VecDeque::new(),
+        steer: false,
+        steering: Vec::new(),
+        delivered: HashSet::new(),
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -692,6 +700,8 @@ struct Turn {
     /// A message to send first once this turn has stopped.
     then: Option<Input>,
     tools: BTreeMap<&'static str, u32>,
+    /// Messages that joined this turn.
+    steers: u32,
 }
 
 struct Driver {
@@ -705,6 +715,13 @@ struct Driver {
     /// Ids of recent messages: a controller that lost its connection may send one again, and it
     /// must not run twice.
     seen: VecDeque<String>,
+    /// The running agent takes messages during a turn.
+    steer: bool,
+    /// Messages sent to steer the running turn that the agent has not answered yet.
+    steering: Vec<Input>,
+    /// Queued messages the agent already has: it runs them as a turn of its own (a steer that came
+    /// too late for the turn it was meant for), so they are not sent again.
+    delivered: HashSet<String>,
 }
 
 /// Message ids remembered for [`Driver::seen`].
@@ -734,17 +751,30 @@ impl Driver {
                 if self.repeated(&input.id) {
                     return false;
                 }
-                if self.queue.len() >= MAX_QUEUE {
-                    self.chat.emit(Ev::Notice {
-                        level: "warn",
-                        code: "queue_full",
-                        text: format!("{MAX_QUEUE} messages are already waiting; this one was dropped"),
-                    });
+                self.enqueue(input).await;
+            }
+            Cmd::Steer(input) => {
+                if self.repeated(&input.id) {
                     return false;
                 }
-                self.queue.push_back(input);
-                self.chat.emit_state(&self.queue);
-                self.next_turn().await;
+                let running = self.turn.as_ref().is_some_and(|t| t.interrupt_deadline.is_none());
+                if running
+                    && self.steer
+                    && let Some(l) = &self.live
+                    && l.tx.send(LiveCmd::Steer { id: input.id.clone(), text: input.text.clone() }).await.is_ok()
+                {
+                    self.steering.push(input);
+                    return false;
+                }
+                let text = if !running {
+                    "no turn is running, so the message starts one".to_string()
+                } else if !self.steer {
+                    format!("{} cannot take a message during a turn; it waits for the next one", self.chat.meta().name)
+                } else {
+                    "the agent is not reachable now; the message waits for the next turn".to_string()
+                };
+                self.chat.emit(Ev::Notice { level: "info", code: "steer_queued", text });
+                self.enqueue(input).await;
             }
             Cmd::Interrupt { then } => {
                 let then = then.filter(|i| !self.repeated(&i.id));
@@ -803,6 +833,89 @@ impl Driver {
         false
     }
 
+    /// Queues a message and starts it if nothing runs.
+    async fn enqueue(&mut self, input: Input) {
+        if self.queue.len() >= MAX_QUEUE {
+            self.chat.emit(Ev::Notice {
+                level: "warn",
+                code: "queue_full",
+                text: format!("{MAX_QUEUE} messages are already waiting; this one was dropped"),
+            });
+            return;
+        }
+        self.queue.push_back(input);
+        self.chat.emit_state(&self.queue);
+        self.next_turn().await;
+    }
+
+    /// Puts `input` in the queue ahead of every message the agent does not have yet (behind the
+    /// ones it has, which run first).
+    fn queue_early(&mut self, input: Input) {
+        let at = self.queue.iter().take_while(|i| self.delivered.contains(&i.id)).count();
+        self.queue.insert(at, input);
+    }
+
+    /// The agent answered a steer.
+    async fn steer_answer(&mut self, out: Out) {
+        let id = match &out {
+            Out::Steered { id } | Out::SteerLate { id } | Out::SteerRejected { id, .. } => id.clone(),
+            _ => return,
+        };
+        let input = match self.steering.iter().position(|i| i.id == id) {
+            Some(at) => self.steering.remove(at),
+            None => match self.queue.iter().position(|i| i.id == id && self.delivered.contains(&i.id)) {
+                // A message the agent had for a turn of its own joined the running one instead.
+                Some(at) if matches!(out, Out::Steered { .. }) => {
+                    self.delivered.remove(&id);
+                    self.queue.remove(at).expect("present")
+                }
+                _ => return,
+            },
+        };
+        match out {
+            Out::Steered { .. } => {
+                self.chat.emit(Ev::User { input_id: input.id, by: input.by, text: input.text, steer: true });
+                if let Some(t) = self.turn.as_mut() {
+                    t.steers += 1;
+                }
+                self.chat.set_meta(|m| m.last_activity = now_ms());
+                self.chat.emit_state(&self.queue);
+            }
+            Out::SteerLate { .. } => {
+                self.chat.emit(Ev::Notice {
+                    level: "info",
+                    code: "steer_queued",
+                    text: "the agent finished this turn before it read the message; the message runs as the next turn"
+                        .into(),
+                });
+                self.delivered.insert(input.id.clone());
+                self.queue_early(input);
+                self.chat.emit_state(&self.queue);
+            }
+            Out::SteerRejected { reason, .. } => {
+                self.chat.emit(Ev::Notice {
+                    level: "info",
+                    code: "steer_queued",
+                    text: format!(
+                        "the agent did not take the message during the turn ({reason}); it waits for the next one"
+                    ),
+                });
+                self.queue_early(input);
+                self.chat.emit_state(&self.queue);
+                self.next_turn().await;
+            }
+            _ => {}
+        }
+    }
+
+    /// The agent process is gone: what it had not answered or run yet is sent again to the next one.
+    fn requeue_unanswered(&mut self) {
+        self.delivered.clear();
+        for input in std::mem::take(&mut self.steering).into_iter().rev() {
+            self.queue.push_front(input);
+        }
+    }
+
     /// Starts the next waiting message when nothing runs.
     async fn next_turn(&mut self) {
         if self.turn.is_some() || self.queue.is_empty() {
@@ -839,11 +952,19 @@ impl Driver {
         }
         let input = self.queue.pop_front().expect("not empty");
         let Some(live) = &self.live else { return };
-        if live.tx.send(LiveCmd::Prompt { text: input.text.clone() }).await.is_err() {
+        // A message the agent already has starts its turn by itself.
+        if !self.delivered.remove(&input.id)
+            && live.tx.send(LiveCmd::Prompt { text: input.text.clone() }).await.is_err()
+        {
             self.queue.push_front(input);
             return;
         }
-        self.chat.emit(Ev::User { input_id: input.id.clone(), by: input.by.clone(), text: input.text.clone() });
+        self.chat.emit(Ev::User {
+            input_id: input.id.clone(),
+            by: input.by.clone(),
+            text: input.text.clone(),
+            steer: false,
+        });
         self.chat.emit(Ev::TurnStart {});
         self.chat.set_meta(|m| {
             m.turns += 1;
@@ -856,6 +977,7 @@ impl Driver {
             interrupt_deadline: None,
             then: None,
             tools: BTreeMap::new(),
+            steers: 0,
         });
         self.chat.set_state(State::Running, &self.queue);
     }
@@ -881,6 +1003,7 @@ impl Driver {
                 text: format!("{} restarted and resumes the conversation", meta.name),
             });
         }
+        self.steer = resolved.caps.steer;
         self.live = Some(handle);
         self.out = Some(out);
         self.chat.set_state(State::Starting, &self.queue);
@@ -910,7 +1033,9 @@ impl Driver {
                     let k = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(kind_name)).unwrap_or("other");
                     *t.tools.entry(k).or_default() += 1;
                 }
-                let held = if matches!(ev, Ev::Message { delta: true, .. } | Ev::Thought { delta: true, .. }) {
+                let held = if matches!(ev, Ev::Message { delta: true, .. } | Ev::Thought { delta: true, .. })
+                    || output_chunk(&ev).is_some()
+                {
                     let (merged, held) = self.coalesce(ev);
                     self.chat.emit(merged);
                     held
@@ -930,6 +1055,9 @@ impl Driver {
                     self.chat.set_state(s, &self.queue);
                 }
             }
+            out @ (Out::Steered { .. } | Out::SteerLate { .. } | Out::SteerRejected { .. }) => {
+                self.steer_answer(out).await
+            }
             Out::TurnEnd { status, final_text, reason } => self.end_turn(status, final_text, reason).await,
             Out::Exited(why) => self.process_gone(why).await,
         }
@@ -939,6 +1067,33 @@ impl Driver {
     /// Joins deltas of the same message that are already waiting, so a fast agent does not turn
     /// into one event per token. Returns the joined event and the first message that did not fit.
     fn coalesce(&mut self, first: Ev) -> (Ev, Option<Out>) {
+        if let Some((call, _)) = output_chunk(&first) {
+            let call = call.to_string();
+            let Ev::ToolUpdate { content, .. } = first else { unreachable!() };
+            let Some(ToolContent::Text { text: mut joined }) = content.into_iter().next() else { unreachable!() };
+            let mut held = None;
+            if let Some(rx) = self.out.as_mut() {
+                while joined.len() < 16 * 1024 {
+                    match rx.try_recv() {
+                        Ok(Out::Ev(ev)) if output_chunk(&ev).is_some_and(|(c, _)| c == call) => {
+                            joined.push_str(output_chunk(&ev).expect("a chunk").1)
+                        }
+                        Ok(other) => {
+                            held = Some(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            let ev = Ev::ToolUpdate {
+                call_id: call,
+                status: None,
+                content: vec![ToolContent::Text { text: joined }],
+                truncated: false,
+            };
+            return (ev, held);
+        }
         let (is_thought, id, mut text) = match first {
             Ev::Message { id, text, .. } => (false, id, text),
             Ev::Thought { id, text, .. } => (true, id, text),
@@ -982,7 +1137,7 @@ impl Driver {
                 "kind": "chat_turn", "chat": self.chat.id, "runtime": self.chat.meta().runtime,
                 "turn": self.chat.log.lock().unwrap().turn, "by": turn.input.by.device, "principal": turn.input.by.principal,
                 "input_sha256": hash, "input_chars": turn.input.text.chars().count(), "outcome": status,
-                "duration_ms": duration_ms, "tools": turn.tools, "reason": reason,
+                "duration_ms": duration_ms, "tools": turn.tools, "steers": turn.steers, "reason": reason,
             }));
         }
         self.idle_since = Instant::now();
@@ -998,6 +1153,7 @@ impl Driver {
     async fn process_gone(&mut self, why: String) {
         self.live = None;
         self.out = None;
+        self.requeue_unanswered();
         self.chat.set_meta(|m| {
             m.pid = None;
             m.pid_start = None;
@@ -1016,6 +1172,7 @@ impl Driver {
     async fn stop_process(&mut self, reason: &str) {
         let Some(live) = self.live.take() else { return };
         self.out = None;
+        self.requeue_unanswered();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         if live.tx.send(LiveCmd::Shutdown { done: done_tx }).await.is_ok() {
             let _ = tokio::time::timeout(Duration::from_secs(15), done_rx).await;
@@ -1056,6 +1213,17 @@ impl Driver {
         } else if self.live.is_some() && self.idle_since.elapsed() >= IDLE_PROCESS {
             self.stop_process("idle").await;
         }
+    }
+}
+
+/// A piece of a running tool's output (a tool update with only text): its call and the text.
+fn output_chunk(ev: &Ev) -> Option<(&str, &str)> {
+    match ev {
+        Ev::ToolUpdate { call_id, status: None, content, truncated: false } => match content.as_slice() {
+            [ToolContent::Text { text }] => Some((call_id, text)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

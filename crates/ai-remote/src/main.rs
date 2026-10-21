@@ -49,12 +49,13 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
-    /// [host] Print a one-time pairing ticket for a new controller.
+    /// [host] Show a one-time pair code (and its QR code) for a new controller, with the ticket
+    /// for machines that cannot reach each other over the network.
     PairCode {
         /// Level to grant: observe, control or admin.
         #[arg(long, default_value = "control")]
         level: Level,
-        /// This host's name for the controller that redeems it.
+        /// This host's name for the controller that pairs with it.
         #[arg(long)]
         name: Option<String>,
     },
@@ -84,14 +85,24 @@ enum Command {
         #[command(subcommand)]
         command: Option<ApproversCommand>,
     },
+    /// This computer's network settings, as host and controller alike (the desktop app's Settings >
+    /// Network): show them, or change how devices connect (`mode auto|lan`), local-network discovery
+    /// (`discovery on|off`) or router port mapping (`upnp on|off`).
+    Network {
+        #[command(subcommand)]
+        action: Option<NetworkAction>,
+    },
     /// [host] Manage mounted MCP servers (edits the host config; restart the host to apply).
     Mount {
         #[command(subcommand)]
         command: MountCommand,
     },
-    /// [controller] Pair with a host using its ticket.
+    /// [controller] Pair with a host using its pair code (`4821 0937`) or its ticket.
     Pair {
-        ticket: String,
+        /// The eight-digit pair code the host shows (spaces and dashes are fine), the link in its
+        /// QR code, or the whole `mcpmesh-invite:` ticket.
+        #[arg(num_args = 1.., value_name = "CODE|TICKET")]
+        ticket: Vec<String>,
         /// Your local name for the host.
         #[arg(long)]
         name: Option<String>,
@@ -321,6 +332,25 @@ enum OnOff {
     Off,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum NetworkMode {
+    /// Address lookup, hole punching and encrypted relays: connects from anywhere.
+    Auto,
+    /// Direct on the local network only: no relay, no address lookup; a host listens on UDP 47800.
+    Lan,
+}
+
+#[derive(Subcommand)]
+enum NetworkAction {
+    /// How devices connect: `auto` (from anywhere) or `lan` (the local network only).
+    Mode { mode: NetworkMode },
+    /// Find devices on the local network and be found by them (mDNS, announces this computer about
+    /// once a second); off by default.
+    Discovery { state: OnOff },
+    /// Ask the router to open a port (UPnP, NAT-PMP, PCP); off by default.
+    Upnp { state: OnOff },
+}
+
 #[derive(Subcommand)]
 enum HostsAction {
     /// Show, set (`default <host>`) or clear (`default --clear`) the host commands and agents use when
@@ -330,6 +360,10 @@ enum HostsAction {
         #[arg(long, conflicts_with = "host")]
         clear: bool,
     },
+    /// Show or set the addresses a host is dialled at: `ip`, `ip:port`, several separated by commas
+    /// (no port: 47800, a LAN-mode host's default). In LAN mode (`[network] mode = "lan"`) this is
+    /// how a host whose address changed is reached again.
+    Address { host: String, address: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -428,6 +462,9 @@ enum HostAction {
         #[arg(long, conflicts_with = "firewall_only")]
         service: bool,
     },
+    /// Start the installed background host now (the autostart entry's own start command), for
+    /// example after `stop-host`. The desktop app's tray uses this too.
+    Start,
     /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
     /// another profile's autostart still uses them.
     Uninstall {
@@ -485,6 +522,7 @@ async fn run(cli: Cli) -> Result<()> {
             hostops::host_uninstall(&profile, dry_run, firewall_only).await
         }
         Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Host { action: Some(HostAction::Start), .. } => hostops::host_start(&profile, json_out).await,
         Command::Doctor { host: None } => hostops::doctor(&profile, json_out).await,
         Command::Doctor { host: Some(host) } => remote::doctor(&profile, host, json_out).await,
         Command::PairCode { level, name } => {
@@ -493,8 +531,34 @@ async fn run(cli: Cli) -> Result<()> {
                 return print_json(&v);
             }
             let line = v["line"].as_str().unwrap_or_default();
-            println!("On the controlling machine, run:\n\n  ai-remote pair {line}\n");
-            println!("Grants level \"{level}\". Valid once. Check that both machines show the same safety code.");
+            match v["code"]["grouped"].as_str() {
+                Some(code) => {
+                    if let Some(qr) = v["code"]["link"].as_str().and_then(ar_host::pair_qr::terminal) {
+                        for l in qr.lines() {
+                            println!("  {l}");
+                        }
+                        println!();
+                    }
+                    println!("Scan it with the ai-remote app on a phone, or type the pair code on the other computer:");
+                    println!("\n  {code}        (ai-remote pair {})\n", v["code"]["code"].as_str().unwrap_or_default());
+                    let until = v["code"]["expires_at"].as_u64().map(ar_host::fmt_epoch).unwrap_or_default();
+                    println!("Grants level \"{level}\". Works once; it expires {until}.");
+                    println!(
+                        "Without a network between the machines, use the ticket instead:\n\n  ai-remote pair {line}\n"
+                    );
+                }
+                None => {
+                    match (v["code_error"].as_str(), v["code_reason"].is_string()) {
+                        // The error already says what to do instead.
+                        (Some(e), true) => eprintln!("note: {e}"),
+                        (Some(e), false) => eprintln!("note: no pair code ({e}); use the ticket"),
+                        (None, _) => {}
+                    }
+                    println!("On the controlling machine, run:\n\n  ai-remote pair {line}\n");
+                    println!("Grants level \"{level}\". Valid once.");
+                }
+            }
+            println!("Check that both machines show the same three-word safety code.");
             Ok(())
         }
         Command::Peers => {
@@ -619,6 +683,8 @@ async fn run(cli: Cli) -> Result<()> {
             print_result(json_out, &json!({"host": host, "id": waiting.id, "denied": true}), "denied")
         }
         Command::Pair { ticket, name } => {
+            // `ai-remote pair 4821 0937` arrives as two words.
+            let ticket = ticket.join(" ");
             let v = agent_request(&profile, json!({"op": "pair", "ticket": ticket, "name": name})).await?;
             if json_out {
                 return print_json(&v);
@@ -630,6 +696,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Network { action } => network(&profile, action, json_out).await,
         Command::Hosts { action: None } => {
             let v = agent_request(&profile, json!({"op": "hosts"})).await?;
             if json_out {
@@ -678,6 +745,25 @@ async fn run(cli: Cli) -> Result<()> {
                 Some(name) => format!("default host is now {name}"),
                 None => "default host cleared".to_string(),
             };
+            print_result(json_out, &v, &text)
+        }
+        Command::Hosts { action: Some(HostsAction::Address { host, address: None }) } => {
+            let v = agent_request(&profile, json!({"op": "hosts"})).await?;
+            let found = v.as_array().and_then(|a| a.iter().find(|h| h["name"] == host.as_str())).cloned();
+            let Some(h) = found else { bail!("no paired host named '{host}' (`ai-remote hosts` lists them)") };
+            let addrs: Vec<&str> = h["addresses"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let text = if addrs.is_empty() {
+                format!("{host}: no stored address")
+            } else {
+                format!("{host} is dialled at {}", addrs.join(", "))
+            };
+            print_result(json_out, &json!({"host": host, "addresses": h["addresses"]}), &text)
+        }
+        Command::Hosts { action: Some(HostsAction::Address { host, address: Some(address) }) } => {
+            let v =
+                agent_request(&profile, json!({"op": "set_host_address", "host": host, "address": address})).await?;
+            let addrs: Vec<&str> = v["addresses"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let text = format!("{} is now dialled at {}", v["host"].as_str().unwrap_or(&host), addrs.join(", "));
             print_result(json_out, &v, &text)
         }
         Command::Agents { disconnect: Some(id) } => {
@@ -1597,6 +1683,64 @@ fn route_text(h: &Value) -> String {
         (Some(_), _) => "route unknown".into(),
         (None, _) => "not connected".into(),
     }
+}
+
+/// `ai-remote network`: shows or changes this computer's network settings in both the host's and
+/// the controller's `ai-remote.toml` (what the desktop app's Settings > Network does). A change
+/// restarts the controller agent so it applies now; a running host applies it at its next start.
+async fn network(profile: &Profile, action: Option<NetworkAction>, json_out: bool) -> Result<()> {
+    let paths = [profile.host_config_path()?, profile.controller_config_path()?];
+    let changed = action.is_some();
+    if matches!(action, Some(NetworkAction::Discovery { state: OnOff::On } | NetworkAction::Upnp { state: OnOff::On }))
+    {
+        config::ensure_not_quiet(&[&paths[0], &paths[1]])?;
+    }
+    if let Some(action) = action {
+        for path in &paths {
+            match action {
+                NetworkAction::Mode { mode } => {
+                    config::set_network_mode(path, if mode == NetworkMode::Lan { "lan" } else { "auto" })?
+                }
+                NetworkAction::Discovery { state } => {
+                    config::set_lan_discovery(path, if state == OnOff::On { "on" } else { "off" })?
+                }
+                NetworkAction::Upnp { state } => config::set_port_mapping(path, state == OnOff::On)?,
+            }
+        }
+    }
+    let host = ar_net::NetworkOptions::from_config(&HostConfig::load(&paths[0])?.network, Role::Host)?;
+    let controller =
+        ar_net::NetworkOptions::from_config(&config::ControllerConfig::load(&paths[1])?.network, Role::Controller)?;
+    let agent_restarted = changed && ar_controller::restart_agent(profile).await;
+    let v = json!({
+        "mode": if host.lan_direct || controller.lan_direct { "lan" } else { "auto" },
+        "lan_discovery": host.lan != ar_net::LanDiscovery::Off || controller.lan != ar_net::LanDiscovery::Off,
+        "port_mapping": host.port_mapping || controller.port_mapping,
+        "locked": host.quiet || controller.quiet,
+        "host_port": host.port,
+        "agent_restarted": agent_restarted,
+    });
+    let on = |b: bool| if b { "on" } else { "off" };
+    let mut text = format!(
+        "connect: {}\nlocal-network discovery: {}\nrouter port mapping (UPnP): {}",
+        if v["mode"] == "lan" {
+            "local network only (no relay, no address lookup)"
+        } else {
+            "automatic (address lookup, hole punching, encrypted relays)"
+        },
+        on(v["lan_discovery"] == true),
+        on(v["port_mapping"] == true),
+    );
+    if host.quiet || controller.quiet {
+        text.push_str("\nquiet = true in ai-remote.toml keeps local-network discovery and port mapping off");
+    }
+    if let (true, Some(port)) = (host.lan_direct, host.port) {
+        text.push_str(&format!("\nas a host this computer listens on UDP port {port}"));
+    }
+    if changed {
+        text.push_str("\nsaved; the controller uses it now, a host running here when it next starts");
+    }
+    print_result(json_out, &v, &text)
 }
 
 fn print_result(json_out: bool, v: &Value, human: &str) -> Result<()> {

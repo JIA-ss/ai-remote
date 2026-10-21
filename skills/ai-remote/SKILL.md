@@ -170,6 +170,7 @@ ai-remote chat list                                         # installed agents, 
 ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; prints the answer
 ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
 ai-remote chat send <session> "now run the tests" --wait
+ai-remote chat send <session> "stop after the first file" --steer   # into the running turn (Claude, Codex)
 ai-remote chat end <session>
 ```
 
@@ -191,6 +192,8 @@ computer; `--json` gives machine-readable output.
 
 ```sh
 ai-remote hosts                                   # paired computers, (default) marked
+ai-remote hosts address lab-pc 192.168.1.20       # LAN mode: where to dial a host whose address changed
+ai-remote network                                 # this computer's network settings (the owner's call to change)
 ai-remote info                                    # system_info
 ai-remote doctor --host lab-pc
 ai-remote shot -o screen.png --monitor 0          # screenshot (JPEG when PNG is over budget)

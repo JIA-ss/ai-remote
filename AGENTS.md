@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/chat-state.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,33 +16,6 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
-
-## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
-
-起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /
-swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo 抓包，频率都是**推导**）：
-
-- ai-remote 自己的代码不扫端口、不扫地址、不检查更新、不上报遥测；桌面端 CSP 只允许本地 IPC。
-- 后台流量全来自传输层 iroh：中继长连接（本机实测连着 `aps1-1.relay.n0.iroh.link`，TCP 443）、每 20–26 s 的 net_report
-  探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
-  每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
-
-做了什么（用户要求：**默认行为不变**，只有手动打开才安静）：
-
-- vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
-  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），默认都是 iroh 原行为。
-- `ai-remote.toml` 的 `[network] quiet = true`（被控端、控制端都认）：mDNS 关（压过 `lan_discovery`，拼错仍报错）、
-  `port_mapping = false`、`dns_fallback = "if_system_empty"`。另加 `address_lookup = [...]`：自建 pkarr 服务器，
-  和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
-- `doctor` 新增 `network` 检查报告当前模式；安静模式下 `p2p` 的修复建议不再让人开 UPnP。
-- 文档：`operations*.md` 第 12 节加"安静模式""地址查询"和一张"网络上都有哪些流量"的表。
-
-安静模式下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
-后面一直走中继；公司 DNS 解析不了 `*.iroh.link` 时连不上（要自建中继和地址查询服务器）。
-
-注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` 会启动失败**。给机器写 `quiet = true` 之前先换新版本。
-
-未测：真机上抓包确认 mDNS / SSDP 确实不再发出（需要 sudo 或 Wireshark）；公司 DNS 拦截 `iroh.link` 的情况。
 
 ## 被控端编程智能体与对话侧栏（2026-10-21，分支 `feat/host-chat`）
 
@@ -106,18 +79,281 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 8. `chat.toml` 写坏时，原先退回默认值，也就是"允许"：文件里原本写着 `enabled = false` 也会被放开。现在改成：写坏时智能体一律关闭；原因显示在 `chat_runtimes` 的 `host.config_error`、doctor、桌面端和命令行；`chat enable|disable` 不会覆盖写坏的文件。我自己测试时就踩到了：拿内置 id `opencode` 作自定义 id，整个文件因此被拒。
 9. 真实 Tauri 应用只编出了内嵌前端的调试版（`npx tauri build --debug --no-bundle`），也用隔离配置启动了（`AI_REMOTE_HOME` 加 `AI_REMOTE_CLI`），但没能点击实测：正式版、本分支调试版和其他会话的调试版 bundle id 相同，电脑操控会认错窗口。对话通道这一层已经由命令行和冒烟测试覆盖；webview 里 Channel 的这一段还没有实测。
 
+### 运行中插话（steer）与事件补齐（2026-10-21，分支 `claude/host-steer-27deef`，叠在 `feat/host-chat` 上）
+
+用户要对话界面接近 Claude / Codex 原生体验，其中一项是回答过程中随时插话。本节只改被控端、命令行和冒烟脚本；界面由另一个会话按下面的协议接。
+
+**协议**（和界面会话约定好的名字，不改）：
+
+- `caps.steer`：claude、codex 为 true，ACP 智能体为 false；`chat.toml` 自定义条目可写 `steer = false`（只能关）。
+- chat/1 `input.mode = "steer"`：轮次运行中且支持时送进当前轮，**智能体收下后**才发 `{"t":"user",...,"steer":true}`，信封 `turn` 是当前轮；不支持、没有在跑的轮次、正在打断时排队（空闲直接开新一轮），并发 `notice` `steer_queued` 说明原因。
+- `usage` 新增可选 `context_window`、`context_used`。`chat_turn` 审计多了 `steers`（条数）。
+- 命令行 `ai-remote chat send <会话> <文本> --steer`；打印时插话显示为 `> (steer) …`。
+
+**实现**：驱动层（`chat/mod.rs`）新增 `Cmd::Steer`、`LiveCmd::Steer`，适配器用三种回答告知结果：`Out::Steered`（并进当前轮）、`Out::SteerLate`（当前轮已结束、智能体自己会把它当下一轮跑，被控端**不再重发**，放在队首并标记 delivered）、`Out::SteerRejected`（退回队列）。进程退出时，未回答的插话和 delivered 的消息都退回队列，由下一个进程重发。
+
+- **Codex**：`turn/steer`，参数 `threadId`、`expectedTurnId`（必须是当前轮）、`input`、`clientUserMessageId`，返回 `{turnId}`；轮次结束后再发返回 `-32600 no active turn to steer` → 退回队列。`turn/start` 还没回 id 时先缓存，拿到 id 再发。方法名和参数来自本机 `codex app-server generate-json-schema`（0.163）。
+- **Claude Code**：加 `--replay-user-messages`，每条用户消息被收下时回显一行 `{"type":"user","isReplay":true,...}`。回显在本轮 `result` 之前 → 并进当前轮；到 `result` 时还没回显 → `SteerLate`，之后 Claude 会先出新的 `system init`，再把它当一轮跑（自带 `result`）。
+- **ACP**：协议里没有往进行中的 `session/prompt` 追加内容的办法，`steer: false`。
+- **Codex 事件补齐**：`item/commandExecution/outputDelta` 流式输出（`tool_update` 不带 `status`、一段文本；驱动层把连续片段合并，每条命令最多 8 KiB，结束时不再重复整段输出、只补 `(exit code N)`）；文件改动的 unified diff 按 hunk 拆成多个 `diff` 内容（old/new 是该 hunk 的上下文 + 删除 / 上下文 + 新增，界面的增删行数能算对）；`item/fileChange/patchUpdated`、`item/mcpToolCall/progress`；`plan` 条目（计划模式的方案）作为一条消息；`thread/compacted` → `notice` `compacted`；`imageView` / `imageGeneration` / `collabAgentToolCall` 三种工具调用；网页搜索结束时写明搜了什么 / 打开了哪页。待办（`turn/plan/updated`）和 MCP 工具调用原来就有。
+- **上下文用量**：Codex 取 `tokenUsage.modelContextWindow` 和 `last.totalTokens`（每次 `thread/tokenUsage/updated`）；Claude 取 `result.modelUsage[模型].contextWindow` 和本轮最后一条 assistant 消息的 input + cache_read + cache_creation + output（每轮一次）。
+
+**Claude 实验**（win-dev，Windows 11，Claude Code 2.1.293，已登录；实验脚本是临时 Python、没入库：起 `claude.cmd`，参数与适配器相同，逐行记录输出时刻；任务"从 1 数到 20，每个数单独跑一次 `sleep 1; echo N`，最后只回答最后打印的数"）：
+
+| 场景 | 样本 | 写入时刻 | 结果 |
+|---|---|---|---|
+| 第 2 个工具结果后写"改成数到 5" | 3 次（其中 1 次带 replay） | 第 2 个结果之后 | 3 次都只有 1 个 `result`，答 `5`，共 5 次工具调用；带 replay 那次回显在写入后 2.9 s、第 3 个工具结果之后出现（模型正在请求下一步时写入，下一次请求才读到） |
+| 数到 3，最终文字开始流出时写"再说一个 BANANA" | 2 次（其中 1 次带 replay） | 最后一次请求进行中 | 2 次都是 2 个 `result`：先 `3`，然后新 `system init`，再 `3 BANANA`；带 replay 那次回显出现在第一个 `result` 之后 |
+
+结论：能插话（`steer: true`），但"插进当前轮"只在模型之后还要再请求时成立；没有这层回显就分不清两种情况，所以必须加 `--replay-user-messages`。
+
+**单测**：`chat::tests` 新增 4 项（插进当前轮、太晚时作为下一轮且不重发、空闲时直接开轮、`steer = false` 时排队），替身 Claude（sh 脚本）会回显、SLOW 轮次里收到新消息就并进去、LATE 轮次 2 s 内不读输入；适配器单测新增 Claude 回显判定、Codex steer（立即 / 等 turn id / 被拒）、输出增量 + 按 hunk 的 diff + 上下文用量。`cargo test -p ar-host --lib chat` 34 项全过。
+
+**e2e 实测**（测试分支 = 本分支 + `test/host-chat-quiet2`（安静模式），隔离被控端与控制端都写 `[network] quiet = true`；`tools/chat-smoke.py --quiet`；debug 构建）：
+
+- Mac（macOS，Codex 0.163，`--model gpt-6.1-sol`）：3 次全过（每次 33 项：替身 27 项 + 真实 Codex 6 项）。真实插话：插话发出后 0.02 s 收到 `steer:true`（3/3），每次只跑 5 条命令、最终答 `5`，整轮 24~29 s；普通任务 4.4~5.7 s，打断 0.0 s 内生效，下一轮记得上文 1.9~2.2 s。
+- win-dev（Windows 11，Claude Code 2.1.293，`claude.cmd`）：3 次全过（每次 33 项：替身 27 项 + 真实 Claude 6 项；被控端在终端前台运行，不是计划任务里的 hostw）。真实插话：发出后 3.35 / 4.03 / 4.14 s 收到 `steer:true`（要等正在跑的 `sleep 1` 和下一次模型请求），每次只跑 5 条命令、最终答 `5`，整轮 21~31 s；普通任务 5.8~10.2 s，打断 0.1 s 生效，下一轮记得上文 1.6~4.6 s。
+
+**未测**：ACP 智能体真机插话（设计上不支持，只走单测）；Codex 插话正好撞上轮次结束（`no active turn to steer` 退回队列）只有单测和一次手动调用；Claude 插话后紧接着打断（排队中的那条会被 Claude 当下一轮跑）未测；桌面端界面（另一会话）。
+
 ### 下一步
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
 - [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
-- [x] iOS 对话视图：见下一节。
-- [ ] Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
+- [x] Codex / Claude 的运行中插话（见上一小节）。
+- [ ] iOS 只读会话视图；可选的 `kind:"pty"` 原始终端。
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
   - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
   - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）
 - [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
+
+## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
+
+用户要求：所有网络相关的设置都能在界面里操作、普通用户知道是什么意思，局域网模式和局域网发现的开关要友好，e2e 跑通再准备上线。
+
+- 设置 > 网络：**连接方式**是两张单选卡（自动〔推荐〕/ 仅限局域网，用被控端级别那种 `.radio` 行），**可选功能**两个
+  `.switch` 开关（在局域网里自动发现设备 = `lan_discovery`；让路由器开放端口（UPnP）= `port_mapping`，仅限局域网时隐藏）；
+  仅限局域网时显示**这台电脑的地址**（只显示别的设备能用的：去掉回环、`fe80::`、`169.254.`，IPv4 在前，带复制按钮）和
+  **要连接的电脑**（每台一行，修改 → 输入框，先在前端校验是 IP 再提交）。`quiet = true` 时两个开关变灰并写明原因。
+  文案都按"能做什么、代价是什么"写，避免 mDNS / NAT 这类术语打头。
+- 后端改成一个 `update_network(mode?, lan_discovery?, port_mapping?)`，同时写被控端和控制端两份配置，打开开关前
+  `ar_core::config::ensure_not_quiet` 检查锁；命令行 `ai-remote network [mode auto|lan | discovery on|off | upnp on|off]` 走同一套。
+- 修了一个竞态：改设置后重启控制端代理，紧接着的请求会撞上还没退出完的旧代理（"daemon closed the connection without
+  answering"）。`ar_controller::restart_agent` 发 `shutdown` 后等到控制通道不再应答（最多 10 s）才返回，app 和命令行共用。
+- 测试：`tools/network-ui.test.mjs`（地址过滤与输入校验）；`tools/network-ui-smoke.py`（camofox REST 驱动演示页，17 项，
+  截图在 `target/network-ui`）；`tools/network-e2e.py`（一台机器上隔离的被控端和控制端，真实 QUIC，16 项：默认安静、两端切
+  仅限局域网、没有局域网发现时不给配对码只给票据、配对、调用、doctor `lan`、被控端零 TCP 连接、换端口后 20 s 拨号超时、`hosts address` 后 0.05 s 恢复、quiet 锁拒绝）。
+  macOS 和 Windows 开发机（debug、隔离目录）各跑一遍都 15 项全过（合入配对码前；合入后 Mac 16 项全过）。Windows 上要注意：子进程输出按 UTF-8 读（默认会按 GBK 解码失败）；
+  从 SSH 会话起的被控端没有桌面，远程 `doctor` 截屏类检查 fail、整体退出码 1，脚本只看 `lan` / `network` 两项。
+  仓库里原来的 `tools/desktop-ui-smoke.py` 依赖的 camofox 命令行（另一个分支的包）本机没有，所以新脚本直接用 REST。
+- 坑：macOS 临时目录太长，控制端代理的 Unix 套接字路径会超长（`SUN_LEN`），e2e 的临时目录放 `/tmp`。
+- 合 main 带进来的配对码（#17）自己建一个临时 iroh endpoint，不经过 mcpmesh：在 #18 里让它按同样的设置走（不做端口映射、
+  DNS 回退只在系统没有 DNS 时用、有自建地址查询服务器就用它）；在 #19 里仅限局域网时关掉中继和地址查询，只能靠局域网发现找到。
+  所以仅限局域网又没开局域网发现时不给配对码（`Mesh::pair_code_findable`），被控端在 `code_reason = "lan_discovery_off"` 里
+  说明，配对窗口提示用票据或去 设置 > 网络 打开；控制端输配对码立即报同样的原因，不干等拨号超时。
+
+## 仅局域网（内网直连）模式（2026-10-21，分支 `feat/lan-direct`，基于 PR #18）
+
+用户要在公司里只走内网：不连中继、不连地址查询服务，网络上只剩两台设备之间的连接。
+
+做法（读代码确认 mcpmesh 已具备底子）：mcpmesh 的 `relay_mode = "disabled"`（原来只给本机测试用的"hermetic"模式）没有中继、
+没有地址查询，中继表为空时 iroh 连 net_report 和端口映射都不做；拨号用每个配对设备存的 `last_addr`（配对时从票据记下，
+之后每条活着的连接都会刷新，见 `daemon/dial_hint.rs`），`Node::connect_protocol` 每次拨号都带上它，ai-remote 的所有通道都走这条路。
+
+- `[network] mode = "lan"`（`auto` 默认）：写成 `relay_mode = "disabled"`，忽略 `relays` / `address_lookup`；被控端没写 `port`
+  时固定 UDP 47800（`ar_core::config::LAN_HOST_PORT`），控制端端口仍随机（同一台机器上被控端和控制端不抢端口）。
+  `NetworkOptions::from_config` 因此又带上了角色参数。
+- 第五个 vendored 补丁：`Node::peer_addr` / `set_peer_addr`（只收可拨的 IP 地址，绝不新建配对条目）。往上是
+  `Mesh::peer_addrs` / `set_peer_addrs`、控制端请求 `set_host_address`、`hosts` 列表带 `addresses`、
+  CLI `ai-remote hosts address <host> [<地址>]`（不写端口补 47800，地址解析在 `ar_core::config::parse_host_addresses`）。
+- 被控端 `status` 带 `lan_direct` 和本机地址；`doctor` 在仅局域网模式下用 `lan` 检查代替 `relay`（列出控制端该用的地址，
+  固定端口被占、改用随机端口时报 warn），`p2p` 跳过（没有中继就没有网络探测）。
+- 桌面端 设置 > 网络：连接方式（自动 / 仅局域网，写被控端和控制端两份配置并重启控制端代理）；仅局域网时显示本机被控端地址、
+  每台已配对电脑的地址和手动修改框；UPnP 一项在仅局域网时隐藏（没有中继时 iroh 根本不做端口映射）。
+- 测试：`crates/ar-net/tests/lan_direct.rs` 起两个仅局域网节点：配对、拨号回显；被控端换端口后，新起的控制端拿旧地址连不上，
+  `set_peer_addrs` 设成新地址后又能连上（本机 14 s）。注意 iroh 会在内存里记住活连接的路径，所以"连不上"要用新起的节点验证。
+
+限制：离开这个网络就连不上；被控端换 IP 要在每个控制端上改一次地址；已经配对的设备记的是切换前的随机端口，切到仅局域网后
+第一次要手动设一次地址（或重新配对）。
+
+实测（2026-10-21，公司网络，release 被控端在 Windows 开发机、debug 控制端在 macOS，都是隔离的 `--home`、`mode = "lan"`）：
+- 配对 < 1 s，控制端存的地址是 `192.168.1.20:47800`；`system_info` 往返 0.05 s，`hosts` 报 `direct (P2P)`。
+- 被控端重启到 47801：控制端代理一直开着时**自己找回来了**（被控端按它存的控制端地址连过来，iroh 记下了新路径），存的
+  提示还是 47800。两边都换（控制端代理重启、被控端换 47802）后：旧地址 20 s 拨号超时；`hosts address lan-test
+  192.168.1.20:47802` 之后 0.04 s 连上。
+- Windows ETW（`Microsoft-Windows-Kernel-Network`，按 PID 记 UDP 发送和 TCP 建连）120 s：被控端 245 个 UDP 全发往控制端
+  的 QUIC 端口，TCP 建连 0；同时段其他进程的 163 次 TCP 建连、Steam SSDP、Bonjour mDNS 都抓到了。
+- macOS `tcpdump -i pktap,all -k`（全部 UDP + TCP SYN）120 s：控制端只和被控端互发 UDP（收 263、发 245），另向被控端
+  WSL / Hyper-V 虚拟网卡的两个 `172.x` 地址各发 61 个（iroh 会试对方公布的每个地址；都是私有地址，
+  不出公网，但会经网关）；TCP 0、5353 / 1900 / 5351 0、公网地址 0。
+- 坑：Windows OpenSSH 断开会杀掉会话里起的进程，测试被控端要用 `Invoke-CimMethod Win32_Process Create` 起；
+  PowerShell 里 `$Home` 是只读内置变量。控制端代理闲置 30 分钟会自己退出，换 pid，按进程统计时要以抓包时的 pid 为准。
+- **两台真实机器已切到仅限局域网（2026-10-21，用户要求"直接切"）**，`quiet = true` 保留：Windows 开发机的服务改用本分支 release 版（`host install --service` 重装：停服务、改 binPath、给新程序加防火墙放行；这个版本没有 `host start`，用 `sc start` 起）；Mac 用 #14 + #18 + #19 打的包替换 `/Applications/ai-remote.app`（先删旧包再 `ditto`，然后 `launchctl kickstart -k`）。两边先用新 CLI
+  `ai-remote network mode lan` 写配置，旧配对存的是随机端口，所以各自 `hosts address` 填一次对方的 `<ip>:47800`。结果：Mac → Windows `direct`、`info` 0.05 s；Windows → Mac `direct`、0.16 s；两边 `doctor` 的 `network`（安静、已锁定）和 `lan` 都是 ok。Mac 换包后屏幕录制 / 辅助功能授权失效（ad-hoc 签名变了），要机主在 app 的"本设备"页重新允许。
+
+## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
+
+起因：用户担心在公司网络里被 IT 标记，问被控端是不是一直在扫端口、发请求。结论（读代码，iroh 1.3.0 / portmapper 0.19.3 /
+swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo 抓包，频率都是**推导**）：
+
+- ai-remote 自己的代码不扫端口、不扫地址、不检查更新、不上报遥测；桌面端 CSP 只允许本地 IPC。
+- 后台流量全来自传输层 iroh：中继长连接（本机实测连着 `aps1-1.relay.n0.iroh.link`，TCP 443）、每 20–26 s 的 net_report
+  探测、每 5 分钟的 pkarr 发布；**被控端默认 mDNS 约每秒一次组播并通告公网 IP**；**iroh 默认开着端口映射**，没有映射时
+  每 20–26 s 发一次 UPnP SSDP 组播和 NAT-PMP/PCP；系统 DNS 失败后会转问 1.1.1.1 / 8.8.8.8 / 9.9.9.9。
+
+做了什么（先按"默认不变、手动开启安静"做，同一天用户改主意：**默认就安静**，UPnP 放到界面设置里开）：
+
+- vendored mcpmesh 第四个补丁：`[network].port_mapping`（false 时 `PortmapperConfig::Disabled`）和
+  `[network].dns_fallback`（`deferred` 默认 / `if_system_empty` / `never`，非法值启动报错），mcpmesh 自己的默认都是 iroh 原行为；
+  ai-remote 每次都显式写这两项。
+- ai-remote 的默认（被控端、控制端一样）：`lan_discovery` 关（以前被控端 `on`、控制端 `resolve`）、`port_mapping` 关、
+  `dns_fallback = "if_system_empty"`。`NetworkOptions::from_config` 去掉了按角色给默认值的参数。
+- `[network] port_mapping = true` 打开端口映射；桌面端 设置 > 网络 的下拉框写的就是它（`ar_core::config::set_port_mapping`，
+  用 toml_edit 保留注释，被控端和控制端两份配置一起写），写完给控制端代理发 `shutdown` 让它立即按新配置重启；本机被控端
+  只在下次启动时生效（主干上还没有重启入口，PR #14 合并后可以接它的 `local_host_restart`）。
+- `[network] quiet = true` 变成"锁"：不管 `lan_discovery`、`port_mapping` 和界面怎么设都关（界面下拉框置灰并说明原因）。
+- `address_lookup = [...]`：自建 pkarr 服务器，和自建中继、`relay_fallback_n0 = false` 一起可以做到完全不碰 n0。
+- `doctor` 的 `network` 检查报告实际打开了哪些；对称 NAT 时 `p2p` 的建议按状态给（没开就提示去 设置 > 网络 打开，安静锁住时
+  不让人开）。
+- 文档：`operations*.md` 第 11、12 节和 doctor 表格改成"默认关、按需开"，加了"网络上都有哪些流量"的表。
+
+默认（安静）下配对过的设备照样能连（地址查询 + 打洞 + 中继）。代价：无外网局域网找不到对方；只能靠端口映射打通的 NAT
+后面一直走中继（家里两端都是对称 NAT 时，到 设置 > 网络 打开端口映射）；公司 DNS 解析不了 `*.iroh.link` 时连不上。
+
+注意：`NetworkSection` 是 `deny_unknown_fields`，**旧版本读到 `quiet` / `port_mapping` 会启动失败**。给机器写这两项之前先换新版本。
+
+实测（2026-10-21，公司网络，本机 macOS 被控端+控制端、Windows 开发机被控端都开 `quiet = true`）：
+- 连接：本机控制端连 Windows 被控端，`hosts` 报 `direct (P2P)`，只读工具（`ps`）立即返回。
+- Windows：ETW `Microsoft-Windows-Kernel-Network`（按 PID 记录每次 UDP 发送）抓 120 s。被控端进程只发往对端控制端的
+  QUIC 端口、4 台 n0 中继的 UDP 7842、以及对端的一个公网候选地址；发往 5353 / 1900 / 5351 的 0 个。同一时段别的进程
+  （Steam 的 SSDP 12 次、Bonjour 的 mDNS 1 次）都被抓到了，说明方法本身能抓到这类包。
+- macOS：`tcpdump -i pktap,all -k`（按进程标注）抓两次。控制端 7 分钟、被控端 148 s：只发往对端 QUIC 端口和 4 台中继的
+  UDP 7842，发往 5353 / 1900 / 5351 的 0 个，也没有发往公共 DNS 的。同一时段系统的 mDNSResponder 有 mDNS 包被抓到。
+  对照：同一天默认模式下，被控端是占着 `UDP *:5353` 的；安静模式下两端都不再绑定 5353。
+- 没有在这台机器上抓默认模式的 SSDP 作对照（避免在公司网里制造流量），"默认模式每 20–26 s 一次 SSDP"仍是读代码得出的。
+- 坑：macOS 上 pktap 的 tcpdump 收到 SIGTERM 不退出，脚本里要用 `kill -9`。
+
+未测：公司 DNS 拦截 `iroh.link` 的情况。
+
+## 对话侧栏照 Orca 重做（2026-10-21，分支 `claude/desktop-chat-ui-f97e8c`，基于 `feat/host-chat`）
+
+用户看了旧对话界面，要求直接照 Orca（stablyai/orca，MIT）的 native chat 搬，做到接近 Claude / Codex 原生 App。只改了桌面端和前端测试，被控端没动（另一个会话在做插话）。来源与许可证见仓库根的 `THIRD_PARTY_NOTICES.md`；每个搬来的组件文件头注明对应的 Orca 组件。
+
+### 怎么搬的
+
+- Orca 的 native-chat 是 108 个组件、5 万多行，依赖它自己的 store、i18n、tiptap、Tailwind + shadcn，整块搬不动。做法：**布局、间距、配色比例、折叠方式和文案语气照抄，组件按我们的事件重写**。
+- 转换层在 `lib/chat.ts` 的 `turnRows`：一轮投影成若干"行"。
+  - 连续的工具调用折成一个"运行组"（run），用一句话概括："运行了 2 条命令，读了 1 个文件"；进行中改成"正在读 1 个文件，运行 2 条命令"。
+  - 夹在两个工具之间的思考算在组里；其他位置的思考单独一行（"思考了 4 s"）。
+  - 编辑也算在运行组里（"编辑了 1 个文件 和 运行了 1 条命令 +3 −2"），展开后是 diff 卡片。最初做成了独立的 diff 卡片行，实机对照 Orca 后改成这样，见下面"Orca 实机对照"。
+  - Claude 的 Task 工具（`kind: think` 且标题以 Task/Agent 开头）是子智能体行；计划、提问、通知、插话各自一行。
+  - 只有一个工具的运行组直接画成那一行工具（Orca 也是"一条命令就显示命令本身"）。
+- 组件在 `ui/chat/`：`Markdown.tsx`（Markdown、代码块、复制按钮、高亮）、`Rows.tsx`（各类行）、`Composer.tsx`（输入框、排队卡片、上下文用量环）、`Transcript.tsx`（消息列表、跳到最新）。`AgentChat.tsx` 只剩启动表单、会话选择和连接。
+- 样式仍只在 `styles/native.css`（第 6b 节），没有引入 Tailwind。颜色按 Orca 的比例用我们的令牌混出来：正文 88% 前景、代码底 3.5%、行内代码 6%、用户气泡 6%、发丝线 8%。
+
+### 依赖：一个都没加
+
+- **Markdown**：自己写的 `lib/markdown.ts`（约 360 行，GFM 子集：标题、段落、围栏代码、引用、嵌套列表、任务列表、表格、分隔线、行内代码、粗斜体、删除线、链接）。
+  - 没用 marked / react-markdown：前者产出 HTML，要再加 sanitize；后者连同 remark/rehype 要拉进几十个包。
+  - 自己写的版本只产出一棵文本树，React 只渲染文本节点，原始 HTML 永远是文字。这和旧界面"从不渲染 HTML"的承诺一致。
+  - 链接只认 http(s) / mailto，点击复制地址，不在应用里跳转（跳了页面就离开对话栏了）。
+- **语法高亮**：自己写的 `lib/highlight.ts`（约 210 行），覆盖智能体最常输出的十几种语言（JS/TS、Python、Rust、Go、C 系、Shell、PowerShell、JSON、TOML、YAML、SQL、CSS、HTML、diff）。
+  - 没用 shiki：它 4.x 带 WASM 引擎和语法包，体积是 MB 级。
+  - 只是分词着色，猜错只是颜色不对；超过 6 万字符不着色。
+- **diff**：`diffRows` 用 LCS 做真正的逐行 diff，变动前后各留 3 行上下文，两段改动之间折成"⋯ N 行未改动"（开头和结尾不标）。旧版只掐头去尾，中间两处小改会显示成整段删、整段加。单元格超过 400 万时退回旧做法。
+
+### 和插话会话的协议约定（对方照这个实现）
+
+- `caps.steer: bool`；`input.mode` 可取 `"queue" | "interrupt" | "steer"`。
+  - 前端排队时不带 `mode` 字段，旧被控端照常读得懂。
+- `user` 事件可带 `steer: true`，显示在正在跑的那一轮里，带"插话"标记。
+  - 前端以"当前正在跑的轮"为准，不看事件里的 `turn`；被控端按当前轮编号或按下一轮编号都能正确显示。
+- `notice` 码 `steer_queued`：前端用自己的文案"这个智能体不支持在运行中插话，已排队…"，不用被控端给的文字。
+- `usage` 可带 `context_window`、`context_used`。两个数都有时，输入框右下角显示上下文用量环，超过 90% 变红。
+
+### 交互
+
+- **运行中输入**：
+  - 智能体支持插话时，默认插话；输入框下方的芯片可以切成"排队"。不支持时芯片固定显示"排队"。
+  - ⌥Enter 停止本轮并立即发送。Esc（输入框为空时）等于停止。
+- **排队消息**显示成输入框上方的卡片，有三个操作：
+  - 编辑：协议没有"替换"，实现为先撤回再重新排队，所以编辑过的消息会排到队尾；
+  - 撤回：用现有的 `dequeue`；
+  - 现在插进这一轮：只在支持插话时出现，实现为撤回后用 steer 发送。
+- **其他输入**：↑/↓ 在光标位于开头或结尾时翻看本次运行里发过的消息；输入法组字时的 Enter 不会发送；发送后列表跟到底部。
+- **提问卡片**：选项带编号，按数字键直接回答（焦点不在输入框时）；也可以输入别的回答。回答后卡片收成一行"已回答：…"。
+- **被停止的轮**：显示"你停止了这一轮。[继续]"。"继续"发送"从刚才停下的地方继续，先确认上一步有没有做完"（Orca 的 Continue 也是先让智能体核对）。被停止打断的工具记为"已停止"，不算失败。
+- **长对话**：
+  - 只挂载最近 30 轮，顶上有"显示更早的 N 轮"；
+  - 倒数第 3 轮及更早的轮用 `content-visibility: auto`，在屏幕外时跳过布局和绘制；
+  - 每轮按对象 memo，流式输出时只重渲染正在跑的那一轮；
+  - 读者往上翻时不再自动跟随，出现"跳到最新"按钮。
+- **单复数**：所有计数文案都拆成 `_one` / `_many` 两个键（中文两个一样），修掉了 "1 steps"。测试会检查每个计数键两种语言都有、英文单数不出现 `{n}`。
+
+### 实测
+
+- **门槛检查**：`tsc --noEmit` 通过；`node --test tools/*.test.mjs` 80 通过、0 失败、2 跳过。
+  - 新增 `tools/chat-render.test.mjs` 共 7 项，覆盖 Markdown、高亮和单复数。
+  - `tools/chat-state.test.mjs` 从 9 项扩到 18 项，覆盖行投影、运行组、子智能体、插话（两种 turn 编号）、steer/queue/interrupt、排队编辑、历史、上下文用量、停止后继续、diff 统计、单复数。
+  - 没改 src-tauri，所以没跑 clippy。
+- **纯逻辑性能**（node，本机 M 系列 Mac，单次）：
+  - 200 轮、4.54 万个事件（每轮 12 个工具 + 200 个流式片段）折叠一共 25 ms，平均每个事件 0.56 µs；
+  - 200 轮全部投影成行用了 2.6 ms；
+  - 2.7 KB 的 Markdown 解析一次 0.11 ms；
+  - 浏览器里的渲染耗时没量。
+- **演示模式截图**（camofox，`npx vite` + 演示后端，视口 2319 宽，侧栏 560 px）在 `/tmp/chat-ui-v2/`，没进仓库：
+  - 空闲、展开的工具和 diff、插话加提问、流式输出、排队编辑、停止后继续、深色英文、长消息折叠，共 9 张。
+  - 第一轮截图过程中发现并修掉了：
+    - 全局 `.tgt` / `.hd` / `.live` / `.wrap` 类名污染了新组件，新组件改用 `obj` / `rh` / `is-live` / `wrapped`；
+    - 提问卡片在提前 return 之前少调了一个 hook，回答后整页崩溃；
+    - shell 高亮把 `export.py` 的 `export` 当成关键字。
+- **和 Orca 对照**：见下一小节。
+
+### Orca 实机对照（2026-10-21）
+
+- **怎么跑的**：
+  - 从官方 GitHub release 下了 Orca 1.4.237（`Orca-1.4.237-arm64-mac.zip`，Developer ID 签名、已公证），放在 `/tmp/orca-app`，用 `--user-data-dir=/tmp/orca-profile --remote-debugging-port=9333` 启动；
+  - 打开设置 → 实验性 → Chat UI；截图、点击都走 CDP（脚本在 `/tmp/orca-cdp/`），不占用屏幕。
+- **没能现场跑任务**：本机 Codex 0.137 用 ChatGPT 账号时 gpt-5.5 / 5.4 / 5.3-codex / 6.1-sol 全部被拒（400），Claude 的 OAuth token 过期，本机也没装 OpenCode。
+  - 改用 Orca 的"智能体会话历史 → 在新聊天中恢复"，把本机一个已结束的 Claude Code 会话在 native chat 里打开。只渲染历史，没有发送任何消息。
+- **截图**：`/tmp/chat-ui-v2/orca-*.png`（Orca）和 `10-after-orca-run-with-diff.png`（改后的我们），没进仓库。
+- **对照后改了的**：
+  - 编辑并进运行组：Orca 写成"编辑 2 文件 和 运行 1 个命令 ✓"，展开后每个文件一行"编辑了 X.swift +7 −6"，再展开是 diff。我们原来把每次编辑做成独立的卡片行，一轮里改的文件多了就很长。现在组标题后另加总的 +N −M。
+  - 句子最后一项用"和 / and"连接。
+  - 命令只显示命令本身，不再写 "Bash"。
+  - 失败数从红字改成灰色的"· 1 个失败"；运行组标题的箭头只在悬停时出现。
+  - diff 行自动换行（原来是横向滚动），复制按钮常显，开头和结尾不再标"N 行未改动"。
+  - "跳到最新"改为"跳到最新消息"，和 Orca 的中文一致。
+- **对照后确认一致的**：
+  - 正文和运行组的层次：运行组用灰字、紧贴在上一段正文下面，展开后左边一条竖线、每行图标 + 目标 + 右侧箭头；
+  - 行内代码的描边底色；
+  - "跳到最新消息"浮在输入框上方居中；
+  - 输入框是一个圆角大框，按钮在文字下方一行。
+- **仍不同的**：
+  - Orca 正文 14 px、内容列最宽约 46 rem 居中；我们在 560 px 侧栏里用 13 px。
+  - Orca 的 diff 有行号槽：Claude 的 Edit 带了真实行号。我们的事件只有改动前后的文本片段，没有行号，所以不显示行号槽（Orca 在不知道行号时也这样做）。
+  - Orca 文件名可以点开文件；我们只能复制。
+
+### 和 Orca 的差距（没做的）
+
+- 发送状态：没有"发送中… / 未发送 + 重试"。协议没有发送确认，要被控端在 `user` 事件里回带 `input_id`，前端去匹配。
+- 消息操作：没有"回退到这里"（Rewind）；没有 ⌘F 查找；没有选中回复里的文字引用到输入框。
+- 输入增强：没有 `@` 文件、`/` 命令与技能选择、附件和图片粘贴。
+- 富内容：没有 Mermaid 和内联图表。
+- 文件路径：点了不能打开，只能复制。
+- 上下文用量环：只有悬停提示，没有 Orca 那种按类别的明细弹窗。
+- 窗口化：Orca 按行测量高度做真正的虚拟列表；这里是"只挂最近 30 轮 + content-visibility"，几千轮的极端长对话没测过。
+- 子智能体：只认 Claude 的 Task 工具。被控端目前只发子智能体的总结（`adapters/claude.rs` 第 145 行），没有子智能体内部的步骤。
+- 后台任务行、停靠在输入框上方的任务列表：没做；计划只在原位显示。
+- 演示里的 `steer_queued` 提示：前端对不支持插话的智能体直接按排队发送，所以正常操作下看不到这条提示。它只在客户端发了 `mode: "steer"`、而被控端判定不支持时出现；渲染逻辑有单测覆盖，但截图里没有它。
+
+### 下一步
+
+- [ ] 和插话会话的分支合流后，跑真实 Claude / Codex 的端到端，确认 `steer: true` 的 `user` 事件用的是哪个 `turn` 编号，以及 `steer_queued` 何时会发。
+- [ ] 在真实 Tauri 应用（WKWebView / WebView2）里看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
+- [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
 
@@ -205,6 +441,153 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
       "unknown"）。应由 App 传入设备名（`UIDevice.current.name` 或用户设置）给内嵌控制端。
 - [ ] 等待机主同意（`chat_start` 走 ask）时的界面没在真实被控端上看过（测试被控端规则放行了 `chat_*`）。
 - [ ] 问题（`question`）目前只显示，没有回答按钮（`{"answer":...}` 已有通道，`PhoneClient.chatSend` 可直接发）。
+
+## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
+
+用户的痛点：被控端只有命令行，权限（屏幕录制 / 辅助功能）要靠 doctor 提示再手动去系统设置加；希望"做成软件托盘之类的，
+可以随时打开相关设置"。
+
+### 决定
+
+- **形态选 A：托盘放在 Tauri 桌面端，不给 `ai-remote-hostw` 加原生托盘。** 理由写在 `docs/architecture.md` 第 8 节
+  "The tray"：被控端以 LaunchAgent / 计划任务 / SYSTEM 服务运行，画不了托盘（或画到错误的桌面）；桌面端在登录用户的会话里，
+  经被控端已有的本机控制管道（`control.sock` / 命名管道）读状态、发命令，不需要被控端的代码和权限。管道做不到的走
+  `ai-remote` 命令：新加的 `ai-remote host start`，以及没有被控端运行时的 `doctor`。
+- **控制协议只加字段、不改旧字段。** `HostRequest::Status` 的回复新增 `connected`（任一通道有连接的控制端名）、
+  `controllers`（每个控制端开着哪些通道：tools / events / screen / files）、`calls`（正在执行的工具调用：谁、什么工具、
+  是不是人在操作）、`last_call`（最后一次结束的调用和结束时间）、`driver`、`prompt_blocker`。新增 `Pause { on }`
+  （本机暂停 / 恢复，审计里 `by: "host"`）和 `Recent { limit }`（审计尾部，复用 `AuditLog::subscribe` 的 300 行 backlog）。
+- **"谁在这里"用独立的在场登记（`crates/ar-host/src/presence.rs`），不复用 `LiveConns`。** `LiveConns` 只登记 MCP 工具连接，
+  吊销 / 遗忘时按它带原因断连；事件流、推流、文件三条通道不在里面，所以桌面端只开着观看页时托盘会以为"没人连着"
+  （真机试出来的）。在场登记在四条协议接入时各登记一次、连接结束时由 guard 注销，工具调用在 `gate.rs` 第 5 步执行期间
+  登记。它只用于上报，不参与任何判定，所以不改吊销语义。
+- **托盘图标**：Tauri 自带的 `tray-icon` 特性（`tauri = { features = ["tray-icon"] }`，依赖本来就在 Cargo.lock 里，没有新 crate）。
+  图标运行时用 `image` 手绘：品牌图形两块多边形（`glyphs.tsx` 的 PA/PY）4× 超采样后盒式滤波；macOS 44 px、Windows 32 px。
+  右下角角标：空心环 = 有控制端连着（任一通道）；实心点 = 有人在操作（工具调用正在执行或 8 s 内刚结束，或有人接管）；
+  两竖条 = 已暂停；无角标 = 空闲；整体变淡 = 被控端没运行。**macOS 用模板图**（只看 alpha，系统按菜单栏明暗着色，和其他菜单栏
+  图标一致；第一版用了 `#8E8E93` 灰色非模板图，真机截图上明显比其他图标暗），状态只靠形状区分；Windows 角标上色（蓝 = 智能体、
+  琥珀 = 人、橙 = 暂停）。注意 `TrayIcon::set_icon` 在 macOS 会把模板标记清掉，要用 `set_icon_with_as_template`。
+- **"刚结束的调用也算在操作"**：智能体的调用大多不到 1 s，托盘 3 s 轮询一次几乎抓不到正在执行的那一刻，所以被控端报
+  `last_call.ended_ms`，托盘把 8 s 内结束的调用也当作"正在操作"（`host_local::BUSY_AFTER_MS`）。
+- **轮询而不是推送。** 托盘每 3 s 连一次控制管道取 `status`（本机 socket / 管道），菜单操作后 0.4 s 补一次；状态没变就不重画。
+  "本设备"页的状态每 5 s 轮询一次，但 doctor（要读自启和防火墙状态，Windows 上慢；没被控端时还要起一个 CLI 进程）只在进页面
+  和操作之后跑（`local_host(doctor)` 参数）。
+- **关窗进托盘**只在两种情况下：本机有被控端在运行，或用户打开了"登录时打开"。只做控制端的电脑关窗口仍然退出。macOS 窗口收进托盘时
+  隐藏 Dock 图标（`set_dock_visibility(false)`），点托盘菜单或 Dock（`RunEvent::Reopen`）再出来。
+- **登录时打开（`login_item.rs`）默认关**，用户在"本设备 → 登录时启动"里手动开：macOS 写 `~/Library/LaunchAgents/io.github.jia-ss.ai-remote.app.plist`
+  （`--hidden`，`LimitLoadToSessionType = Aqua`，不 `launchctl load`，下次登录生效），Windows 写
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ai-remote` 值（用 `reg.exe`）。没用 `tauri-plugin-autostart`：
+  它最新版是给 Tauri 3 的 alpha，macOS 默认走 AppleScript 登录项会弹"自动化"授权。`--hidden` 启动时页面不调 `show()`。
+- **托盘菜单语言跟页面一致**：页面启动时 `set_ui_language` 上报，之前按 `LANG` 猜。文案在 `tray.rs` 的 `status_line()` / `texts()`。
+  中文里拉丁名字后面加空格（"laptop 已连接"），汉字后面不加（`gap()`）。
+- **页面侧**："本设备"页新增 `HostPanel`：状态行（pid / 版本 / 启动方式、已连接控制端及其通道、当前操作者、正在执行的调用、
+  审批弹窗是否受阻）+ 暂停 / 恢复、停止 / 启动；配对码弹窗（级别可选，点"生成"才铸票据，票据只在弹窗里显示，可复制，不写日志）；
+  "权限与会话"组直接用 doctor 检查项，macOS 权限缺失时"打开系统设置"走
+  `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` / `?Privacy_Accessibility`（只打开面板）；
+  "登录时启动"组（被控端自启检查、未安装时的 install 命令、macOS 登录项面板按钮、本应用的"登录时打开"开关）；"审批规则"组
+  （在访达 / 资源管理器里显示配置目录）；"最近活动"组（审计尾 20 行，`id="recent"` 给托盘菜单定位）。托盘到页面的跳转走 Tauri
+  事件 `tray-navigate`（`App.tsx` 监听，payload 是 `TrayIntent`），不刷新页面。
+- **机主暂停（`Turns::owner_pause` / `owner_resume`）比控制端的暂停更强**：智能体和接管者的调用都拒绝，控制端不能 resume / take_over
+  （`OWNER_PAUSED` 的说明），控制端的 pause 不会覆盖它；恢复时回到暂停前的操作者（接管者暂停期间交还，则回到智能体）；本机恢复幂等。
+  `Driver::Paused` 多了 `owner` 字段，审计行带 `"origin": "owner"`；控制端时间线、电脑页、会话页的恢复按钮都按它区分。画面仍可观看。
+  审查前的第一版用的是控制端同款暂停，界面却写"所有控制端都被拒绝"，两边对不上。
+- **配对码**：点"生成"才铸票据；显示期间 `set_content_protected(true)`（macOS `NSWindowSharingNone`、Windows `WDA_EXCLUDEFROMCAPTURE`，
+  系统支持时对截屏 / 推流隐藏窗口，未在真机验证采集端是否真的排除）；有控制端连着时先提醒；复制只复制票据本身（配对页也接受带
+  `ai-remote pair ` 前缀的粘贴）；被控端在配对时写一条 `paired` 审计（含三词安全码，它不是秘密），弹窗轮询 `recent` 显示对方名字和安全码，
+  不一致可一键移除（`local_host_forget` → `HostRequest::Forget`）。
+- **状态三态**：控制管道 NotFound / ConnectionRefused 才算"未运行"，其他错误（如服务模式管道拒绝访问）显示"在运行，但读不到状态"，
+  关窗也保留托盘。旧版被控端的 status 没有新字段，前端全部按可选处理（第一版会直接白屏：这台 Mac 的 LaunchAgent 被控端就是旧版）。
+- **Windows 服务模式**：status 带 `system`；`ai-remote host start` 遇到需要管理员的启动（`sc start`）且当前未提权时直接说明怎么办；
+  托盘 / 页面停止服务前先确认（停了只有管理员能再启动）。没有给服务加 `sc sdset` 放开启动权限。
+- `ai-remote doctor` 有 fail 时退出码为 1，`cli_json` 只要 stdout 是 JSON 对象就照用（否则没有被控端时整组权限都不显示）。
+- 页面拿不到托盘命令：`capabilities/default.json` 显式 deny 了 `core:tray:*`（开 `tray-icon` 特性后 `core:default` 会带上它们）。
+- "审批规则"定位到 `host/ai-remote.toml`（`open -R` / `explorer /select,`），不是配置目录根。
+
+### 验证（2026-10-21，本机 macOS 26，debug）
+
+- `cargo fmt --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、四个 `tools/*.test.mjs`（47 过）、`tsc --noEmit` 全过；
+  `cargo test --workspace --locked` 全过，其中 `stream::pointer::mac::tests::the_current_pointer_can_be_read` 在一次整跑里失败、单独重跑通过
+  （它前后读两次光标形状，中间光标变了就会失败；本分支没动这个文件）。新增单测：`presence::tests`、`turns::tests::the_owners_pause_…`、
+  `control::tests::tray_requests`、`tray::tests`（角标、图标像素、中英文案）、`host_local::tests`（status 解析、刚结束的调用、未知状态）、
+  `login_item::tests`。
+- 真机（`/tmp` 下独立配置目录起新版被控端，同一配置目录的控制端与它配对；没碰 `~/Library/Application Support/ai-remote` 和 LaunchAgent 被控端）：
+  托盘图标是模板图、和其他菜单栏图标同色；有控制端连着显示空心环，循环调用 `system_info` 时显示实心点、菜单写"studio-laptop 的智能体正在操作（system_info）"；
+  托盘"暂停"后图标变两竖条、菜单变"恢复被控端"，控制端 `ai-remote resume` 被拒（"the owner paused this computer…"），智能体调用被拒并说明原因；
+  托盘"打开设置"跳到"本设备"页。截图：`docs/images/desktop/tray-menu-{operating,paused}.jpg`（computer-use 截屏，裁到只剩本应用图标和菜单）、
+  `tray-settings-{dark,light}.jpg`（浏览器预览 + demo 后端，无头 Chrome 截图：真机截图里会出现本机主机名，不进公开仓库）。
+  "本设备"页在真机上也看过（权限、自启、规则、最近活动都正常显示），只是没有放进仓库。
+- 多 agent 审查（7 个维度、每条两个角度复核；复核阶段一半因额度中断，剩下的由我逐条判断）找出的问题都已处理，主要是上面几条。
+- Windows：只靠推送后的 windows-2025 CI 编译 / clippy / 测试，真机没跑托盘。
+
+### 未做 / 下一步
+
+- 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。
+- Windows 真机没跑过托盘（只靠 CI 编译）；服务模式下控制管道允许安装者账户这一点已有真机结论，托盘走同一条管道。
+- 桌面端没有单实例保护：登录项启动了一份，再从访达 / 开始菜单双击可能起第二份（两个托盘图标）。`tauri-plugin-single-instance` 可以解决。
+- 服务模式下桌面端不能一键启动服务（需管理员）；要做的话在 `--service` 安装计划里加 `sc sdset` 给安装者 SID 开 SERVICE_START，并写进 `--dry-run`。
+- 配对码窗口的防截屏在 macOS 15+ 的 ScreenCaptureKit 上是否仍被尊重、Windows DDA 是否排除，都没在真机验证。
+- `docs/operations.zh-CN.md` 第 3 节开头仍写"从不做成系统服务"（本分支之前就有，未改）。
+- 真机试的时候发现测试配置里 studio-laptop 被人在界面上设成了"全部放开"、本应用的"登录时打开"也被打开过（14:28，都需要点确认 / 选择，
+  不是自动发生的）；登录项指向的是 worktree 里的 debug 包，已删除。
+- "最近活动"是审计原文的句子化，不是会话页那种步骤卡；完整视图在"活动"页。
+
+## 配对码：手机扫码、电脑输 8 位数字（2026-10-21，分支 `feat/short-pair-code`，叠在 PR #14 `feat/host-tray` 上）
+
+用户原话："授权码能否搞的简单点？然后做的好看点，手机支持扫码，电脑才输入授权码这种"。以前要把约 1000 字符的
+`mcpmesh-invite:` 票据从一端复制到另一端。设计调研（Magic Wormhole / AirDrop / RustDesk / Tailscale·iroh ticket 对比）
+和安全分析写在 `docs/architecture*.md` 第 4 节"短码怎么换到票据"。
+
+### 设计
+
+- **配对码不是凭证本身，只是找到被控端并换出票据。** 票据照旧签发、照旧由 mcpmesh 兑换（同一个配对仪式、同样的三词安全码），
+  旧的 `ai-remote pair <票据>` 完全不变。
+- 8 位随机数字，显示为 `4821 0937`；输入时空格 / 横线 / 点 / 全角数字都认，`ai-remote://pair?code=` 链接也认（二维码内容）。
+- **会合 endpoint**（`crates/ar-net/src/paircode.rs`）：两端 Argon2id（64 MiB、3 轮、固定盐）把码拉伸成 64 字节——前 32 字节是
+  被控端临时 iroh endpoint 的私钥，后 32 字节是认证密钥。被控端在码有效期内跑这个 endpoint（中继 / 代理 / mDNS 跟节点同配置，
+  mDNS 服务名 `ai-remote-pair`），只服务 ALPN `app/ai-remote/pair-code/1`；控制端从码算出 endpoint id，用一次性 endpoint 拨过去，
+  发 `blake3::keyed_hash(auth, 两端 id)` 证明知道码，被控端回票据。
+- **为什么另起 endpoint、不用节点自己的**：mcpmesh 的闸门只放行已配对设备，未配对的控制端到不了节点上的任何应用 ALPN；
+  而且不能把节点身份发布在一个只有 27 位熵派生的 key 下。不需要改 vendor/mcpmesh。
+- 限制：10 分钟（票据先过期则更短）、一次性、5 次证明失败即作废（`Offer::answer` 状态机）；用掉 / 作废 / 过期后 endpoint 立即关闭。
+  同一时间每个被控端只有一个码，新码替换旧码。
+- 被控端控制通道：`PairCode` 应答新增 `code {code, grouped, link, expires_at}` 和 `qr {size, path}`（`ar-host/src/pair_qr.rs`
+  用 `qrcode` crate 画 SVG path / 终端方块字符）；起不来码时返回 `code_error`，票据照常给。新请求 `WithdrawCode`（配对窗口关闭时撤码）。
+- 控制端：agent 的 `pair` op 先 `PairCode::parse`，是码就 `Mesh::pair_code`（取票据再兑换），否则当票据。CLI / 桌面 / iOS 都走这一个入口，
+  CLI 的 `pair` 接受多个词（`ai-remote pair 4821 0937`）。
+
+### 界面
+
+- 桌面被控端：`apps/desktop/src/ui/PairCode.tsx` 的 `PairCodeDialog` 替换了 PR #14 在 `Settings.tsx` 里的同名对话框（入口不变：
+  "本设备 → 显示配对码"、托盘"Show Pairing Code"）。打开即出码；左边白底二维码（任何主题下都深色码点在浅底上，扫码器要这样），
+  右边大号数字、倒计时进度条、"换一个"、级别下拉（改级别即换码）；完整票据收在"两台设备之间不通网络？使用完整票据"里。
+  有设备配对后切到三词核对页（一致 / 不一致并移除）。关闭未配对的窗口会撤码。演示后端 12 s 后模拟一台 iPhone 配上，方便看核对页。
+- 桌面控制端：`Pages.tsx` 的 `PairPage` 第一步改成一个大号数字输入框（自动分组，粘贴票据自动切到票据模式），"改用票据"链接。
+- iOS：`PhonePairing.swift`（扫码 + 输入 + 票据入口）、`PhonePairCode.swift`（与平台无关的码解析，`swiftc` 在 macOS 上能跑）。
+  扫码用 AVFoundation（`NSCameraUsageDescription`），拒绝权限时给"打开设置"；`CFBundleURLTypes` 注册 `ai-remote` scheme，
+  系统相机扫到二维码直接打开 app 并配对（`PhoneStore.openPairLink`）；`NSBonjourServices` 加 `_ai-remote-pair._udp`。
+
+### 实测
+
+- `cargo test -p ar-net --lib paircode`：码解析、生成、派生、猜测上限、过期、一次性，加一个两个 hermetic endpoint 走回环的完整交换。
+- Argon2id 64 MiB×3：Apple M5 Max release 78 ms / 次（`kdf_cost`，20 次，`--ignored` 手动跑）；先用的 19 MiB×2 是 12.7 ms，
+  离线穷举只要约 2000 核，所以调高了。dev 构建里 argon2 / blake2 设了 opt-level 3，否则测试很慢。
+- 本机两个临时 `--home` 之间：`ai-remote pair 2545 3956` 2.7 s 配上；同一码再用报"没有设备响应"（会合 endpoint 已关，约 20 s 超时）。
+- **跨机器（2026-10-21，Mac 控制端 ↔ win-dev 被控端，debug 构建，两边都是临时 `--home`；两台在不同网段 10.1.120.x / 10.1.77.x，
+  所以走的不是 mDNS，是 DNS/pkarr + 中继/直连）**：7 次尝试——5 次成功，耗时 2.9 / 3.2 / 3.9 / 5.8（含自动改名重试）/ 3.5 s，
+  两边显示的三词一致；1 次是故意用已被新码替换的旧码，10.4 s 后报"没有设备响应"（符合预期）；**2 次未解释的失败**：被控端刚启动后
+  约 26 s 和 54 s 时用它启动时打印的码，各 10 s 报"没有设备响应"，约 3 分钟后同一个码用测试直连 1.08 s 就通了。当时 win-dev 上另一个会话
+  在做 release 编译（CPU 很忙），怀疑是会合 endpoint 的 pkarr 发布被拖慢，没有证实；之后重启被控端、10 s 内用启动码配对（第 3 次）是成功的。
+- **昵称冲突**：第一次重复配对时 mcpmesh 报 `nickname ... is already taken`（被控端还留着这台 Mac 上一次的配对）。票据流程里
+  用户可以改名再兑换，配对码流程里码已经交出票据、不能再用，所以 `Mesh::pair` 现在遇到 `ERR_NICKNAME_TAKEN`（mcpmesh 保证此时票据
+  未消费）就临时把自己的昵称改成 `<名字>-<设备 id 前 4 位>` 重兑一次（真机第 5 次就是这样配上的，被控端列表里是 `...-35db`）。
+- iOS：只过了 macOS 上对全部 `Sources/*.swift` 的 `swiftc -typecheck`（用本机生成的 UniFFI 绑定）；`#if os(iOS)` 的扫码和 UI 测试靠 iOS CI。
+
+### 下一步
+
+- [ ] 被控端刚启动时的两次失败没查清（见实测）。可以给控制端加一次 3 s 后的重拨，或在被控端确认 pkarr 发布完成后再显示码。
+- [ ] 输错码要等约 10 s（拨号报错）到 20 s（超时）才报"找不到"。可以缩短拨号超时，或在码里加校验位（会损失约 3.3 位熵，安全分析要跟着改）。
+- [ ] 被控端在没有网络、只能用票据时，配对窗口只显示"无法生成配对码"；可以考虑把二维码换成票据本身（约 100+ 模块，要实测能否扫）。
+- [ ] Windows 托盘入口与 iOS 扫码没有真机试过（本机无 Xcode）。
 
 ## 接管时的实时输入、剪贴板与文件（2026-10-21，分支 `claude/live-input`）
 
@@ -839,6 +1222,10 @@ AR_SIZES=5120x2160 AR_CODECS=hevc,av1 AR_KBPS=120000 cargo test -p ar-host --rel
 cargo test -p ar-host --release --lib hardware_encoders_open_and_close_repeatedly -- --ignored --nocapture
 # 用 WebCodecs 解上面的码流（默认 Edge，可传 Chrome 路径）
 node tools/webcodecs-decode-check.mjs
+# 网络设置：隔离 host/controller，两端切仅限局域网、换端口、手动设地址、quiet 锁（先 cargo build -p ai-remote）
+python tools/network-e2e.py
+# 网络设置页（演示数据，camofox REST，截图在 target/network-ui）
+python tools/network-ui-smoke.py
 # 端到端：隔离 host/controller + 真实 QUIC；--desktop 再测桌面端（先 cd apps/desktop && npx tauri build --debug --no-bundle）
 python tools/stream-e2e.py --animate --desktop target/debug/ai-remote-desktop.exe
 python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-desktop.exe   # 高码率、可重复

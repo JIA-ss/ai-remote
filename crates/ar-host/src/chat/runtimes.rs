@@ -29,7 +29,7 @@ pub enum Protocol {
 }
 
 /// What an agent's adapter can do; shown to controllers so they offer only what works.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Caps {
     /// Stops the current turn without ending the process.
     pub interrupt: bool,
@@ -41,6 +41,8 @@ pub struct Caps {
     pub thinking: bool,
     /// Asks the user questions mid-turn.
     pub questions: bool,
+    /// Takes a message while a turn runs into that turn (otherwise it waits for the next one).
+    pub steer: bool,
 }
 
 /// A built-in agent.
@@ -62,7 +64,8 @@ pub struct Runtime {
     pub caps: Caps,
 }
 
-const ACP_CAPS: Caps = Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false };
+const ACP_CAPS: Caps =
+    Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: false };
 
 /// Every agent this host knows, in display order.
 pub const RUNTIMES: &[Runtime] = &[
@@ -75,7 +78,7 @@ pub const RUNTIMES: &[Runtime] = &[
         login: Some(&["auth", "status"]),
         min_version: Some("2.0.0"),
         auto_mode: None,
-        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false },
+        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: true },
     },
     Runtime {
         id: "codex",
@@ -86,7 +89,7 @@ pub const RUNTIMES: &[Runtime] = &[
         login: Some(&["login", "status"]),
         min_version: Some("0.100.0"),
         auto_mode: None,
-        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: true },
+        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: true, steer: true },
     },
     Runtime {
         id: "gemini",
@@ -214,6 +217,17 @@ pub struct CustomAgent {
     /// Environment variables for the agent (`~` at the start of a value is the home directory).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// `false`: messages sent while a turn runs wait for the next turn, even where the base agent
+    /// could take them into the running one (an older version that cannot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<bool>,
+}
+
+impl CustomAgent {
+    /// The base agent's caps as this entry narrows them.
+    pub fn caps(&self, base: &Runtime) -> Caps {
+        Caps { steer: base.caps.steer && self.steer != Some(false), ..base.caps }
+    }
 }
 
 impl ChatConfig {

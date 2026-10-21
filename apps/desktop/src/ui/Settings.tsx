@@ -1,26 +1,32 @@
 // Settings, a window of its own (back returns to the main window): General, Agents, This device,
-// Approvals and About. Only what works today is shown; nothing here is a switch that does nothing.
+// Network, Approvals and About. Only what works today is shown; nothing here is a switch that does
+// nothing.
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
+import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
-import type { AgentStatus, LocalController } from "../lib/types";
+import type { AgentStatus, AuditLine, DoctorCheck, Grade, Host, LocalController, LocalHost, NetworkSettings, TrayIntent } from "../lib/types";
+import type { NetworkChange } from "../lib/api";
+import { shareableAddresses, validAddressInput } from "../lib/network";
 import { CmdLine } from "./CmdLine";
 import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
+import { PairCodeDialog } from "./PairCode";
 import { TitleBar } from "./Shell";
 import { clock, cx } from "./util";
 
-type Section = "general" | "agents" | "device" | "approvals" | "about";
+type Section = "general" | "agents" | "device" | "network" | "approvals" | "about";
 
 const SECTIONS: Array<[Section, IconName | "approval", Key]> = [
   ["general", "settings", "set_general"],
   ["agents", "terminal", "set_agents"],
   ["device", "laptop", "set_device"],
+  ["network", "link", "set_network"],
   ["approvals", "approval", "set_approvals"],
   ["about", "info", "set_about"],
 ];
@@ -31,6 +37,17 @@ function initialSection(): Section {
 }
 
 const mac = detectOs() === "mac";
+
+/** Tray intents are one-shot: each part of one is acted on once, not again when the page remounts. */
+const handled = new Set<string>();
+function once(part: string, intent: TrayIntent): boolean {
+  const key = `${part}/${intent.n}`;
+  if (handled.has(key)) return false;
+  handled.add(key);
+  return true;
+}
+
+/** "Oct 22, 14:30": a 24-hour ticket's end, with the day. */
 
 /** One settings row: icon, title and description, and its control at the end. */
 function Row({ ic, tt, ds, children }: { ic: React.ReactNode; tt: React.ReactNode; ds?: React.ReactNode; children?: React.ReactNode }) {
@@ -46,8 +63,12 @@ function Row({ ic, tt, ds, children }: { ic: React.ReactNode; tt: React.ReactNod
   );
 }
 
-export function SettingsWindow({ onBack }: { onBack: () => void }) {
+export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; intent?: TrayIntent | null }) {
   const [sec, setSec] = useState<Section>(initialSection);
+  // The tray menu picks a section ("Open Settings" lands on This device).
+  useEffect(() => {
+    if (intent && once("sec", intent) && SECTIONS.some(([x]) => x === intent.sec)) setSec(intent.sec as Section);
+  }, [intent]);
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [round, setRound] = useState(0);
   useEffect(() => {
@@ -58,6 +79,7 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
     general: ["set_general", mac ? "gn_lede_mac" : "gn_lede"],
     agents: ["set_agents", "ag_lede"],
     device: ["set_device", "dv_lede"],
+    network: ["set_network", "nw_lede"],
     approvals: ["set_approvals", "ap_lede"],
     about: ["set_about", "ab_lede"],
   };
@@ -102,7 +124,8 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
             <div style={{ marginTop: 28 }}>
               {sec === "general" && <General version={status?.version} />}
               {sec === "agents" && <Agents status={status} name={name} onChange={() => setRound((r) => r + 1)} />}
-              {sec === "device" && <Device status={status} />}
+              {sec === "device" && <Device status={status} intent={intent} />}
+              {sec === "network" && <Network />}
               {sec === "approvals" && <Approvals />}
               {sec === "about" && <About version={status?.version} />}
             </div>
@@ -277,7 +300,7 @@ const shortKey = (id: string) => {
   return `eid:${hex.slice(0, 16).replace(/(.{4})(?=.)/g, "$1 ")}`;
 };
 
-function Device({ status }: { status: AgentStatus | null }) {
+function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIntent | null }) {
   const [copied, setCopied] = useState(false);
   const id = status?.device ?? "";
   // This computer as a host: its paired controllers when ai-remote host runs here, `null` when not.
@@ -315,28 +338,10 @@ function Device({ status }: { status: AgentStatus | null }) {
           </button>
         </Row>
       </div>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("dv_host")}
-      </div>
-      {controllers ? (
-        <div className="grp">
-          <Row ic={<Icon name="check" />} tt={t("dv_host_running")} ds={t("dv_host_running_d")} />
-        </div>
-      ) : (
-        <div className="grp">
-          <div className="gr noic" style={{ display: "block", padding: 16 }}>
-            <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
-              {t("dv_host_d")}
-            </div>
-            <CmdLine cmd="ai-remote host install" />
-            <div className="ds" style={{ marginTop: 10 }}>
-              {t("dv_host_note")}
-            </div>
-          </div>
-        </div>
-      )}
-      {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
-      {controllers && <LocalAgents />}
+      <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()}>
+        {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
+        {controllers && <LocalAgents />}
+      </HostPanel>
     </>
   );
 }
@@ -383,6 +388,655 @@ function LocalAgents() {
       </div>
       {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
     </>
+  );
+}
+
+const GRADE_COLOR: Record<Grade, string> = { ok: "var(--success)", warn: "var(--relay)", fail: "var(--danger)", skip: "var(--idle)" };
+
+/** A small round grade mark, where a row's icon goes. */
+function GradeDot({ grade }: { grade: Grade }) {
+  return <i role="img" aria-label={t(`grade_${grade}` as Key)} style={{ display: "inline-block", width: 10, height: 10, borderRadius: 5, background: GRADE_COLOR[grade] }} />;
+}
+
+/** Checks shown as permissions and session facts; the rest (network, disk, bypass) has its own places. */
+const PERMISSION_CHECKS = ["screen_recording", "accessibility", "session", "console", "desktop", "elevation", "approval", "firewall"];
+/** Checks with a System Settings pane to open (macOS privacy panes). */
+const SETTINGS_PANE: Record<string, string> = { screen_recording: "screen_recording", accessibility: "accessibility" };
+
+/** A check's finding in the page's language where the catalog has it, else the host's own words. */
+const checkSummary = (c: DoctorCheck) => {
+  const key = `ckd_${c.id}_${c.grade === "ok" ? "ok" : "bad"}` as Key;
+  return key in en ? t(key) : c.summary;
+};
+
+const checkName = (id: string) => {
+  const key = `ck_${id}` as Key;
+  return key in en ? t(key) : id;
+};
+
+/**
+ * This computer as a host: whether it runs, who is connected and who drives, with the owner's
+ * controls (pause, stop / start, a pairing code); its permissions as the running host sees them;
+ * the autostart entry; where the approval rules live; and the last audit lines. The same facts
+ * the tray icon and menu show, in full.
+ */
+function HostPanel({
+  name,
+  intent,
+  onChanged,
+  children,
+}: {
+  name: string;
+  intent: TrayIntent | null;
+  onChanged: () => void;
+  /** Shown right after the host's state: the paired controllers. */
+  children?: React.ReactNode;
+}) {
+  const [lh, setLh] = useState<LocalHost | null | undefined>(undefined);
+  // The checks are slow to gather (autostart, firewall): asked for on opening and after a change,
+  // while the status alone is polled.
+  const [doctor, setDoctor] = useState<LocalHost["doctor"]>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pairOpen, setPairOpen] = useState(false);
+  const [recent, setRecent] = useState<AuditLine[] | null>(null);
+  const [round, setRound] = useState(0);
+  const [loginItem, setLoginItem] = useState<boolean | null>(null);
+  const [askStop, setAskStop] = useState(false);
+  useEffect(() => {
+    api.appLoginItem().then(setLoginItem, () => setLoginItem(null));
+  }, []);
+  const running = !!lh?.host;
+  useEffect(() => {
+    let live = true;
+    api.localHost(true).then(
+      (v) => {
+        if (!live) return;
+        setLh(v);
+        setDoctor(v.doctor);
+      },
+      () => live && setLh(null),
+    );
+    let wasRunning: boolean | null = null;
+    const timer = setInterval(() => {
+      api.localHost(false).then((v) => {
+        if (!live) return;
+        setLh(v);
+        // Started or stopped from elsewhere (the tray, a terminal): the checks change with it.
+        const running = !!v.host;
+        if (wasRunning !== null && running !== wasRunning) api.localHost(true).then((w) => live && setDoctor(w.doctor), () => {});
+        wasRunning = running;
+      }, () => {});
+    }, 5000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [round]);
+  useEffect(() => {
+    if (!running) {
+      setRecent(null);
+      return;
+    }
+    let live = true;
+    api.localRecent(20).then((v) => live && setRecent(v), () => live && setRecent([]));
+    return () => {
+      live = false;
+    };
+  }, [running, round]);
+  // What the tray menu asked for.
+  const [anchor, setAnchor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!intent || !once("host", intent)) return;
+    if (intent.action === "pair_code") setPairOpen(true);
+    if (intent.action === "confirm_stop") setAskStop(true);
+    if (intent.error) setError(intent.error);
+    if (intent.anchor) setAnchor(intent.anchor);
+  }, [intent]);
+  /** Runs an action, then keeps the buttons busy until the page shows its result. */
+  const refresh = async () => {
+    // The host needs a moment to change (a stop takes a second or two).
+    await new Promise((r) => setTimeout(r, 700));
+    const v = await api.localHost(true).catch(() => null);
+    if (v) {
+      setLh(v);
+      setDoctor(v.doctor);
+    }
+    setRound((r) => r + 1);
+    onChanged();
+  };
+  const act = async (f: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await f();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Scroll to what the tray asked for once the sections above it have their content.
+  useEffect(() => {
+    if (!anchor || lh === undefined || (lh?.host && recent === null)) return;
+    const timer = setTimeout(() => {
+      document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setAnchor(null);
+    }, doctor ? 50 : 1500);
+    return () => clearTimeout(timer);
+  }, [anchor, lh, doctor, recent]);
+  const host = lh?.host ?? null;
+  const paused = host?.driver?.state === "paused";
+  const connected = host?.connected ?? [];
+  const facts: string[] = [];
+  if (host) {
+    facts.push(t("lh_running_d", { pid: host.pid, version: host.version, where: t(host.background ? "lh_where_bg" : "lh_where_term") }));
+    const who = host.controllers?.length
+      ? host.controllers
+          .map((c) => t("lh_conn_item", { name: c.name, channels: c.channels.map((ch) => t(`ch_${ch}` as Key)).join(t("list_sep")) }))
+          .join(t("item_sep"))
+      : connected.join(t("list_sep"));
+    facts.push(connected.length ? t("lh_connected", { n: connected.length, names: who }) : t("lh_connected_none"));
+    const d = host.driver ?? { state: "agent" as const };
+    facts.push(
+      d.state === "person"
+        ? t("lh_driver_person", { device: d.device })
+        : d.state === "paused"
+          ? d.owner
+            ? t("lh_driver_paused")
+            : t("lh_driver_paused_by", { by: d.by })
+          : t("lh_driver_agent"),
+    );
+    const busy = host.calls?.at(-1);
+    if (busy && d.state !== "paused") facts.push(t(busy.person ? "lh_busy_person" : "lh_busy_agent", { peer: busy.peer, tool: busy.tool }));
+    if (host.prompt_blocker) facts.push(t("lh_prompt_blocked", { why: host.prompt_blocker }));
+  }
+  const checks = (doctor?.checks ?? []).filter((c) => c.grade !== "skip");
+  const permissions = checks.filter((c) => PERMISSION_CHECKS.includes(c.id));
+  const autostart = checks.find((c) => c.id === "autostart");
+  return (
+    <>
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("lh_h")}
+      </div>
+      <div className="grp">
+        {lh === undefined ? (
+          <Row ic={<Icon name="laptop" />} tt="…" />
+        ) : !host && lh?.unknown ? (
+          <Row ic={<GradeDot grade="warn" />} tt={t("lh_unknown")} ds={t("lh_unknown_d", { why: lh.unknown })} />
+        ) : (
+          <Row
+            ic={<GradeDot grade={host ? (paused ? "warn" : "ok") : "skip"} />}
+            tt={host ? t("lh_running") : t("lh_not_running")}
+            ds={host ? facts.map((f, i) => <div key={i}>{f}</div>) : t("lh_not_running_d")}
+          >
+            {host ? (
+              <>
+                <button className="btn" disabled={busy} onClick={() => void act(() => api.localPause(!paused))}>
+                  <Icon name={paused ? "play" : "pause"} size={14} />
+                  {t(paused ? "lh_resume" : "lh_pause")}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => (host.system ? setAskStop(true) : void act(() => api.localStop()))}>
+                  <Icon name="stop" size={14} />
+                  {t("lh_stop")}
+                </button>
+              </>
+            ) : (
+              <button className="btn primary" disabled={busy} onClick={() => void act(() => api.localStart())}>
+                <Icon name="play" size={14} />
+                {t("lh_start")}
+              </button>
+            )}
+          </Row>
+        )}
+        {host && (
+          <Row ic={<Icon name="qr" />} tt={t("lh_pair")} ds={t("lh_pair_d")}>
+            <button className="btn" onClick={() => setPairOpen(true)}>
+              {t("lh_pair_btn")}
+            </button>
+          </Row>
+        )}
+      </div>
+      {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{t("lh_error", { error })}</div>}
+      {children}
+
+      {doctor && permissions.length > 0 && (
+        <>
+          <div className="grp-h" style={{ marginTop: 28 }}>
+            {t("perm_h")}
+          </div>
+          <div className="grp-sub">{t(doctor.checked_in === "host" ? "perm_h_host" : "perm_h_cli")}</div>
+          <div className="grp">
+            {permissions.map((c) => (
+              <CheckRow key={c.id} check={c} />
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("as_h")}
+      </div>
+      <div className="grp">
+        {autostart ? <CheckRow check={autostart} /> : <Row ic={<GradeDot grade="skip" />} tt={t("as_h")} ds="—" />}
+        {(autostart ? autostart.grade !== "ok" : !host) && (
+          <div className="gr noic" style={{ display: "block", padding: 16 }}>
+            <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
+              {t("as_install_d")}
+            </div>
+            <CmdLine cmd="ai-remote host install" />
+            <div className="ds" style={{ marginTop: 10 }}>
+              {t("dv_host_note")}
+            </div>
+          </div>
+        )}
+        <Row ic={<Mark h={12} />} tt={t(mac ? "li_mac" : "li_win")} ds={t("li_d")}>
+          <span className="dd-wrap">
+            <select
+              className="dd"
+              aria-label={t(mac ? "li_mac" : "li_win")}
+              value={loginItem ? "on" : "off"}
+              disabled={loginItem === null}
+              onChange={(e) => {
+                const on = e.target.value === "on";
+                setError(null);
+                api.setAppLoginItem(on).then(() => setLoginItem(on), (err) => setError(String(err)));
+              }}
+            >
+              <option value="off">{t("li_off")}</option>
+              <option value="on">{t("li_on")}</option>
+            </select>
+            <Icon name="chevD" size={12} />
+          </span>
+        </Row>
+      </div>
+
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("rules_h")}
+      </div>
+      <div className="grp">
+        <Row ic={<Icon name="shield" />} tt={t("rules_h")} ds={t("rules_d")}>
+          <button className="btn" onClick={() => void api.revealProfile().catch((e) => setError(String(e)))}>
+            <Icon name="open" size={14} />
+            {t(mac ? "rules_open_mac" : "rules_open_win")}
+          </button>
+        </Row>
+      </div>
+
+      <div className="grp-h" id="recent" style={{ marginTop: 28 }}>
+        {t("recent_h")}
+        {host && (
+          <button className="btn icon end" aria-label={t("recent_refresh")} onClick={() => setRound((r) => r + 1)}>
+            <Icon name="refresh" size={14} />
+          </button>
+        )}
+      </div>
+      <div className="grp-sub">{t("recent_d")}</div>
+      {!host ? (
+        <div className="gnote" style={{ marginTop: 0 }}>{t("recent_no_host")}</div>
+      ) : !recent || recent.length === 0 ? (
+        <div className="gnote" style={{ marginTop: 0 }}>{recent ? t("recent_none") : "…"}</div>
+      ) : (
+        <div className="grp">
+          {[...recent].reverse().map((l, i) => (
+            <div key={`${l.ts}-${i}`} className="gr noic" style={{ minHeight: 36, padding: "8px 16px" }}>
+              <div className="ds" style={{ display: "flex", gap: 12, alignItems: "baseline", minWidth: 0 }}>
+                <span className="mono" style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>
+                  {clock(l.ts)}
+                </span>
+                <span className="ell" style={{ color: "var(--text-1)" }}>{auditText(l)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {pairOpen && <PairCodeDialog name={name} connected={connected} onClose={() => setPairOpen(false)} />}
+      {askStop && (
+        <Confirm
+          title={t("lh_stop_q")}
+          body={t(host?.system ? "lh_stop_body_service" : "lh_stop_body")}
+          verb={t("lh_stop")}
+          danger
+          onNo={() => setAskStop(false)}
+          onYes={async () => {
+            await api.localStop();
+            setAskStop(false);
+            await refresh();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Settings > Network, for this computer as a host and as a controller alike: how devices connect
+ * (automatic, or the local network only), and two opt-ins that put traffic on the network beyond the
+ * connections (local-network discovery, router port mapping), which `quiet = true` in ai-remote.toml
+ * keeps off. The controller applies a change at once, a host running here when it next starts. With
+ * the local network only, this computer's address and each paired computer's are shown, the latter
+ * editable for a computer whose IP changed.
+ */
+function Network() {
+  const [net, setNet] = useState<NetworkSettings | null>(null);
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<Key | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.networkSettings().then(setNet, (e) => setError(String(e)));
+    api.hosts().then(setHosts, () => setHosts([]));
+  }, []);
+  const change = async (c: NetworkChange) => {
+    if (busy || !net) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.updateNetwork(c);
+      setNet(next);
+      setSaved(next.host_running ? "nw_saved_host" : "nw_saved");
+    } catch (e) {
+      setError(String(e));
+      setSaved(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const lan = net?.mode === "lan";
+  const port = net?.lan_port ?? 47800;
+  const here = shareableAddresses(net?.host_addresses ?? []);
+  const modes: Array<[NetworkSettings["mode"], Key, Key]> = [
+    ["auto", "nw_auto", "nw_auto_d"],
+    ["lan", "nw_lan", "nw_lan_d"],
+  ];
+  return (
+    <>
+      <div className="grp-h">{t("nw_mode")}</div>
+      <div className="grp" role="radiogroup" aria-label={t("nw_mode")}>
+        {modes.map(([m, tt, ds]) => {
+          const on = net?.mode === m;
+          const pick = () => {
+            if (!on) void change({ mode: m });
+          };
+          return (
+            <div
+              key={m}
+              className={cx("gr", !on && "pick")}
+              role="radio"
+              aria-checked={on}
+              tabIndex={0}
+              onClick={pick}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && pick()}
+            >
+              <span className="ic bare">
+                <span className={cx("radio", on && "on")} />
+              </span>
+              <div>
+                <div className="tt">
+                  {t(tt)}
+                  {m === "auto" && <span className="rec">{t("nw_recommended")}</span>}
+                </div>
+                <div className="ds">{t(ds)}</div>
+              </div>
+              <span className="end" />
+            </div>
+          );
+        })}
+      </div>
+      {saved && (
+        <div className="gnote" role="status">
+          {t(saved)}
+        </div>
+      )}
+      {error && (
+        <div className="gnote c-danger" role="alert">
+          {error}
+        </div>
+      )}
+
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("nw_extras")}
+      </div>
+      <div className="grp-sub">{t(net?.locked ? "nw_locked" : "nw_extras_sub")}</div>
+      <div className="grp">
+        <Toggle
+          icon="search"
+          title={t("nw_find")}
+          desc={t("nw_find_d")}
+          on={net?.lan_discovery ?? false}
+          disabled={!net || net.locked || busy}
+          onChange={(on) => void change({ lanDiscovery: on })}
+        />
+        {!lan && (
+          <Toggle
+            icon="open"
+            title={t("nw_upnp")}
+            desc={t("nw_upnp_d")}
+            on={net?.port_mapping ?? false}
+            disabled={!net || net.locked || busy}
+            onChange={(on) => void change({ portMapping: on })}
+          />
+        )}
+      </div>
+
+      {lan && net?.host_running && (
+        <>
+          <div className="grp-h" style={{ marginTop: 28 }}>
+            {t("nw_here")}
+          </div>
+          <div className="grp">
+            <Row
+              ic={<Icon name="laptop" />}
+              tt={net.host_lan && here.length > 0 ? <span className="mono">{here[0]}</span> : t("nw_here_next", { port })}
+              ds={
+                net.host_lan && here.length > 1 ? (
+                  <>
+                    {t("nw_here_d")} <span className="mono">{here.slice(1).join(", ")}</span>
+                  </>
+                ) : (
+                  t("nw_here_d")
+                )
+              }
+            >
+              {net.host_lan && here.length > 0 && <CopyText text={here[0]} />}
+            </Row>
+          </div>
+        </>
+      )}
+
+      {lan && hosts.length > 0 && (
+        <>
+          <div className="grp-h" style={{ marginTop: 28 }}>
+            {t("nw_peers")}
+          </div>
+          <div className="grp-sub">{t(net?.lan_discovery ? "nw_peers_found" : "nw_peers_d", { port })}</div>
+          <div className="grp">
+            {hosts.map((h) => (
+              <HostAddress key={h.name} host={h} />
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/** A settings row with an on/off switch at its end. */
+function Toggle({
+  icon,
+  title,
+  desc,
+  on,
+  disabled,
+  onChange,
+}: {
+  icon: IconName;
+  title: string;
+  desc: string;
+  on: boolean;
+  disabled: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <Row ic={<Icon name={icon} />} tt={title} ds={desc}>
+      <button
+        className={cx("switch", on && "on")}
+        role="switch"
+        aria-checked={on}
+        aria-label={title}
+        disabled={disabled}
+        onClick={() => onChange(!on)}
+      />
+    </Row>
+  );
+}
+
+/** A copy button that says so for a moment after copying. */
+function CopyText({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="btn"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {t(copied ? "nw_copied" : "nw_copy")}
+    </button>
+  );
+}
+
+/** Where this device reaches one paired computer, and a way to change it. */
+function HostAddress({ host }: { host: Host }) {
+  const [addrs, setAddrs] = useState(host.addresses ?? []);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    if (!validAddressInput(value)) {
+      setError(t("nw_bad_addr"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setAddrs(await api.setHostAddress(host.name, value));
+      setEditing(false);
+      setValue("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const shown = addrs.length > 0 ? <span className="mono">{shareableAddresses(addrs).join(", ") || addrs.join(", ")}</span> : t("nw_none");
+  return (
+    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger">{error}</span> : shown}>
+      {editing ? (
+        <>
+          <input
+            className="field"
+            style={{ width: 190 }}
+            value={value}
+            autoFocus
+            placeholder={t("nw_addr_ph")}
+            aria-label={t("nw_addr_for", { host: host.name })}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+              if (e.key === "Escape") setEditing(false);
+            }}
+          />
+          <button className="btn" disabled={busy} onClick={() => void save()}>
+            {t("nw_save")}
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              setEditing(false);
+              setError(null);
+            }}
+          >
+            {t("nw_cancel")}
+          </button>
+        </>
+      ) : (
+        <button className="btn" onClick={() => setEditing(true)}>
+          {t("nw_edit")}
+        </button>
+      )}
+    </Row>
+  );
+}
+
+/** A value from the audit log in the page's language where the catalog has it (`dec_approved`, ...). */
+function word(prefix: string, v: string | undefined): string {
+  if (!v) return "";
+  const key = `${prefix}_${v}` as Key;
+  return key in en ? t(key) : v;
+}
+
+/** One audit line as a sentence; names from the host are quoted as they are. */
+function auditText(l: AuditLine): string {
+  const peer = l.peer ?? "?";
+  switch (l.kind) {
+    case "session_start":
+      return t("a_session_start", { peer, client: word("cl", typeof l.client === "string" ? l.client : undefined) });
+    case "session_end":
+      return t("a_session_end", { peer });
+    case "decision":
+      return (l.intent ? `${l.intent} — ` : "") + t("a_decision", { peer, tool: l.tool ?? "", decision: word("dec", l.decision) });
+    case "outcome":
+      return t("a_outcome", { peer, tool: l.tool ?? "", outcome: word("res", l.outcome) }) + (l.error ? `: ${l.error}` : "");
+    case "view_start":
+      return t("a_view_start", { peer });
+    case "view_end":
+      return t("a_view_end", { peer });
+    case "paired":
+      return t("a_paired", { peer, level: String(l.level ?? ""), sas: l.sas ?? "" });
+    case "driver":
+      if (l.origin === "owner") return t(l.state === "paused" ? "a_owner_paused" : "a_owner_resumed");
+      return l.state === "person" ? t("a_driver_person", { device: l.device ?? l.by ?? "" }) : l.state === "paused" ? t("a_driver_paused", { by: l.by ?? "" }) : t("a_driver_agent", { by: l.by ?? "" });
+    case "bypass":
+      if (l.default !== undefined && !l.peer) return t(l.on ? "a_bypass_default_on" : "a_bypass_default_off");
+      return t(l.on ? "a_bypass_on" : "a_bypass_off", { peer });
+    default:
+      return `${l.kind}${l.peer ? ` · ${l.peer}` : ""}`;
+  }
+}
+
+function CheckRow({ check }: { check: DoctorCheck }) {
+  // macOS lists LaunchAgents under Login Items; Windows' autostart is a task or a service, which no
+  // Settings page shows, so there is no button for it there.
+  const pane = mac ? (check.id === "autostart" ? "login_items" : SETTINGS_PANE[check.id]) : undefined;
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <Row
+      ic={<GradeDot grade={check.grade} />}
+      tt={checkName(check.id)}
+      ds={
+        <>
+          <div>{checkSummary(check)}</div>
+          {check.grade !== "ok" && checkSummary(check) !== check.summary && <div style={{ marginTop: 2 }}>{check.summary}</div>}
+          {check.grade !== "ok" && check.fix && <div style={{ marginTop: 2 }}>{t("perm_fix", { fix: check.fix })}</div>}
+          {error && <div className="c-danger">{error}</div>}
+        </>
+      }
+    >
+      {pane && (check.grade !== "ok" || check.id === "autostart") && (
+        <button className="btn" onClick={() => void api.openSystemSettings(pane).catch((e) => setError(String(e)))}>
+          <Icon name="open" size={14} />
+          {t(check.id === "autostart" ? "as_open" : "perm_open")}
+        </button>
+      )}
+    </Row>
   );
 }
 

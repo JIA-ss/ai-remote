@@ -62,7 +62,7 @@ jobs:
           npm ci
           npm run build
       - name: MCP client configuration tests
-        run: node --test tools/mcp-install.test.mjs tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/chat-state.test.mjs
+        run: node --test tools/mcp-install.test.mjs tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs
       - name: macOS bundle signature regression
         if: runner.os == 'macOS'
         run: python3 tools/test_macos_packaging.py

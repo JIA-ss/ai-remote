@@ -8,8 +8,10 @@
 //!
 //! The controller sends one JSON line per command, any time:
 //!
-//! - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`: a message for the agent; with
-//!   `interrupt` the running turn stops and this message goes first;
+//! - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`: a message for the
+//!   agent; with `interrupt` the running turn stops and this message goes first; with `steer` it
+//!   joins the running turn (a `user` event with `"steer":true`, numbered with that turn) when the
+//!   agent can take it (`caps.steer`), and is queued with a `steer_queued` notice otherwise;
 //! - `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`;
 //! - `{"end":{}}`: end the session (its agent process stops);
 //! - `{"bye":{}}`: stop watching (the session goes on); `{"ping":N}` is answered with `{"pong":N}`.
@@ -293,10 +295,10 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
             }
             let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
             let input = Input { id, text, by };
-            if mode.as_deref() == Some("interrupt") {
-                chat.send(Cmd::Interrupt { then: Some(input) })
-            } else {
-                chat.send(Cmd::Input(input))
+            match mode.as_deref() {
+                Some("interrupt") => chat.send(Cmd::Interrupt { then: Some(input) }),
+                Some("steer") => chat.send(Cmd::Steer(input)),
+                _ => chat.send(Cmd::Input(input)),
             }
         }
         Command::Interrupt {} => chat.send(Cmd::Interrupt { then: None }),

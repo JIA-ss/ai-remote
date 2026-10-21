@@ -11,6 +11,10 @@ authors.workspace = true
 [dependencies]
 ar-core.workspace = true
 anyhow.workspace = true
+argon2.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+iroh-mdns-address-lookup.workspace = true
 mcpmesh-node.workspace = true
 mcpmesh-local-api.workspace = true
 serde.workspace = true
