@@ -76,6 +76,9 @@
 6. 文案键 `ag_*` 已经被"已连接的 MCP 客户端"那部分用掉了，新功能改用 `hc_*`。
 7. macOS 的临时目录路径太长，超过 Unix socket 路径上限（SUN_LEN），冒烟脚本改放到 `/tmp` 下。
 
+8. `chat.toml` 写坏时，原先退回默认值，也就是"允许"：文件里原本写着 `enabled = false` 也会被放开。现在改成：写坏时智能体一律关闭；原因显示在 `chat_runtimes` 的 `host.config_error`、doctor、桌面端和命令行；`chat enable|disable` 不会覆盖写坏的文件。我自己测试时就踩到了：拿内置 id `opencode` 作自定义 id，整个文件因此被拒。
+9. 真实 Tauri 应用只编出了内嵌前端的调试版（`npx tauri build --debug --no-bundle`），也用隔离配置启动了（`AI_REMOTE_HOME` 加 `AI_REMOTE_CLI`），但没能点击实测：正式版、本分支调试版和其他会话的调试版 bundle id 相同，电脑操控会认错窗口。对话通道这一层已经由命令行和冒烟测试覆盖；webview 里 Channel 的这一段还没有实测。
+
 ### 下一步
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
