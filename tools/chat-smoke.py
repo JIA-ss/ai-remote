@@ -2,16 +2,19 @@
 """End-to-end check of coding-agent chats on one machine: an isolated host and controller pair over real
 QUIC (admin level, chat tools allowed without asking), a stand-in agent that speaks Claude Code's
 stream-json protocol, and the `ai-remote chat` commands against it: list, run, send --wait, a queued
-message, an interrupt, attach with replay, end, the host's on/off switch, the audit and a lowered level.
+message, an interrupt, a steer into a running turn and one with no turn running, attach with replay, end,
+the host's on/off switch, the audit and a lowered level.
 
   python tools/chat-smoke.py [--cli target/debug/ai-remote] [--quiet] [--real codex=/path/to/codex --model M]
 
 --real adds one real agent as a custom entry (same protocol as the built-in one) and hands it a small
-task; it uses the agent's own sign-in and spends a little of its quota.
+task; it uses the agent's own sign-in and spends a little of its quota. An agent that can steer is also
+told to count to 20, one shell command per number, and steered to stop at 5 once it has started.
 """
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,8 +41,9 @@ def check(name, ok, detail=""):
         failures.append(name)
 
 
-# Speaks just enough of Claude Code's stream-json: echoes each message; one containing SLOW runs until
-# interrupted.
+# Speaks just enough of Claude Code's stream-json: echoes each message (and replays it, as
+# --replay-user-messages does); one containing SLOW runs until interrupted, or until another message
+# arrives, which joins that turn (a steer) and ends it.
 FAKE_AGENT = r'''
 import json, sys, threading
 def out(v):
@@ -56,6 +60,12 @@ for line in sys.stdin:
             out({"type": "result", "subtype": "error_during_execution", "is_error": True})
         continue
     text = msg["message"]["content"][0]["text"]
+    out({"type": "user", "isReplay": True, "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    if slow:
+        slow.set(); slow = None
+        out({"type": "assistant", "message": {"id": "st", "content": [{"type": "text", "text": "steered: " + text}]}})
+        out({"type": "result", "subtype": "success", "is_error": False, "result": "steered: " + text})
+        continue
     if "SLOW" in text:
         slow = threading.Event()
         out({"type": "assistant", "message": {"id": "s", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "sleep 600"}}]}})
@@ -92,6 +102,45 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True,
                               text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
+    def steer_real(kind, rsid):
+        """Counts to 20, one shell command per number, steered to stop at 5 once two have run."""
+        seq = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == rsid)["seq"]
+        watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
+                                  "--since", str(seq)], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+        cli("chat", "send", rsid, "Count from 1 to 20. For each number N run the shell command `sleep 1; echo N` in "
+            "the foreground, one separate command per number (never a loop or several numbers in one command), then "
+            "reply with only the last number printed.")
+        done, sent_at, steer_turn, user_turn, final, t0 = 0, None, None, None, None, time.time()
+        for line in watch.stdout:
+            if not line.startswith("{"):
+                continue
+            e = json.loads(line)
+            if e.get("t") == "turn_start" and steer_turn is None:
+                steer_turn = e["turn"]
+            if e.get("t") == "tool_update" and e.get("status") == "completed":
+                done += 1
+                if done == 2 and sent_at is None:
+                    sent_at = time.time()
+                    cli("chat", "send", rsid, "Change of plan: stop at 5 instead of 20.", "--steer")
+            if e.get("t") == "user" and e.get("steer"):
+                user_turn = e["turn"]
+                print(f"      steer joined after {time.time() - sent_at:.2f} s")
+            if e.get("t") == "turn_end":
+                final = e.get("final_text") or ""
+                break
+            if time.time() - t0 > 300:
+                break
+        watch.stdin.close()
+        try:
+            watch.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            watch.kill()
+        check(f"real {kind}: a steer joins the running turn", user_turn is not None and user_turn == steer_turn,
+              f"turn {steer_turn}, steer in {user_turn}")
+        check(f"real {kind}: the steer changes what it does", final is not None and re.findall(r"\d+", final)[-1:] == ["5"]
+              and done < 12, f"{done} commands, answer {final!r}, {time.time() - t0:.1f} s")
+
     log = open(base / "host.log", "w")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
                             stdout=log, stderr=log, env=env)
@@ -112,6 +161,9 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("chat list finds the custom agent", rows.get("fake", {}).get("verdict") == "ok"
               and rows["fake"].get("version") == "2.1.0", json.dumps(rows.get("fake"))[:200] or r.stderr[-200:])
         check("chat list reports built-in agents", "claude" in rows and "codex" in rows)
+        check("caps say who can steer", rows.get("fake", {}).get("caps", {}).get("steer") is True
+              and rows.get("codex", {}).get("caps", {}).get("steer") is True
+              and rows.get("opencode", {}).get("caps", {}).get("steer") is False)
 
         r = cli("chat", "run", "fake", "hello there", "--cwd", work)
         check("chat run prints the answer and exits 0", r.returncode == 0 and "you said: hello there" in r.stdout,
@@ -154,6 +206,32 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         users = [e["text"] for e in events if e.get("t") == "user"]
         check("replayed messages are the ones sent", users == ["first", "second", "SLOW job", "after slow"], str(users))
 
+        # A steer while a turn runs joins it: one turn, the message numbered with it.
+        r = cli("chat", "send", sid, "SLOW again")
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            s = next((x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid), {})
+            if s.get("turns") == 5 and s.get("state") == "running":
+                break
+            time.sleep(0.3)
+        r = cli("chat", "send", sid, "change of plan", "--steer", "--wait")
+        check("chat send --steer joins the running turn", r.returncode == 0 and "steered: change of plan" in r.stdout
+              and "(steer) change of plan" in r.stdout, f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-200:]}")
+        r = cli("chat", "send", sid, "no turn now", "--steer", "--wait")
+        check("a steer with no turn running starts one", r.returncode == 0 and "you said: no turn now" in r.stdout,
+              f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
+        p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
+                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+        events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        steered = [e for e in events if e.get("t") == "user" and e.get("steer")]
+        starts = {e["turn"] for e in events if e.get("t") == "turn_start"}
+        check("the steer is one user event with steer:true in the running turn",
+              len(steered) == 1 and steered[0]["text"] == "change of plan" and steered[0]["turn"] == 5 and 5 in starts,
+              json.dumps(steered)[:300])
+        check("a steer with no turn says why", any(e.get("t") == "notice" and e.get("code") == "steer_queued" for e in events))
+        s = next((x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid), {})
+        check("a steer adds no turn of its own", s.get("turns") == 6, json.dumps(s)[:200])
+
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
 
@@ -167,7 +245,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         audit = [json.loads(l) for l in (host_home / "host" / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
         turns = [a for a in audit if a.get("kind") == "chat_turn"]
-        check("each turn is audited", len(turns) == 5, str(len(turns)))
+        check("each turn is audited", len(turns) == 7, str(len(turns)))
+        check("the audit counts steers", sum(t.get("steers", 0) for t in turns) == 1)
         check("the audit keeps hashes, not the conversation", not any("hello there" in json.dumps(a) for a in audit
                                                                       if a.get("kind", "").startswith("chat")))
 
@@ -224,6 +303,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+            if rows.get(f"real-{kind}", {}).get("caps", {}).get("steer"):
+                steer_real(kind, rsid)
             cli("chat", "end", rsid)
 
         peers = json.loads(cli("--json", "peers", home=host_home).stdout)

@@ -19,6 +19,13 @@ use super::{detect::Resolved, event::Out, interrupt_grace, proc::AgentProc, runt
 pub enum LiveCmd {
     /// Start a turn with this message.
     Prompt { text: String },
+    /// Add this message to the running turn; answered with [`Out::Steered`], [`Out::SteerLate`] or
+    /// [`Out::SteerRejected`] (sent only to agents whose caps have `steer`).
+    ///
+    /// [`Out::Steered`]: super::event::Out::Steered
+    /// [`Out::SteerLate`]: super::event::Out::SteerLate
+    /// [`Out::SteerRejected`]: super::event::Out::SteerRejected
+    Steer { id: String, text: String },
     /// Stop the current turn; the adapter answers with a turn end.
     Interrupt,
     /// The answer to a question the agent asked.

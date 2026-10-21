@@ -53,6 +53,10 @@ pub enum ChatCommand {
         /// Wait for the turn to end and print the answer.
         #[arg(long)]
         wait: bool,
+        /// Add the message to the running turn (agents that can take it, see `chat list`);
+        /// otherwise, or with no turn running, it is queued as usual.
+        #[arg(long)]
+        steer: bool,
         #[command(flatten)]
         target: Target,
     },
@@ -182,11 +186,12 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             chat.send(json!({"bye": {}})).await;
             finish_turn(&end, json_out);
         }
-        ChatCommand::Send { session, text, wait, target } => {
+        ChatCommand::Send { session, text, wait, steer, target } => {
             let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
             let since = issued["seq"].as_u64().unwrap_or(0);
             let mut chat = Conversation::open(profile, &target, &issued, since).await?;
-            chat.send(json!({"input": {"text": text}})).await;
+            let mode = if steer { "steer" } else { "queue" };
+            chat.send(json!({"input": {"text": text, "mode": mode}})).await;
             if wait {
                 let end = chat.until_turn_end(json_out).await?;
                 chat.send(json!({"bye": {}})).await;
@@ -409,7 +414,8 @@ impl Printer {
         match t {
             "user" => {
                 close(self, &mut out);
-                println!("\n> {}", ev["text"].as_str().unwrap_or(""));
+                let steer = if ev["steer"] == true { "(steer) " } else { "" };
+                println!("\n> {steer}{}", ev["text"].as_str().unwrap_or(""));
             }
             "message" => {
                 if self.thinking {

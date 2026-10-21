@@ -13,8 +13,15 @@
 //! - Interrupt: a `control_request` of subtype `interrupt`; the turn then ends with a `result`.
 //! - A turn ends with its `result` line only. A `result` that reports an error (401, a prompt too
 //!   long) ends the turn as failed with its text.
+//! - Steer: a user line written while a turn runs is read at the turn's next model request (after
+//!   the tool results it is waiting for) and becomes part of that turn; written after the turn's
+//!   last request, it starts a turn of its own once the `result` is out (a new `system` `init`,
+//!   then its own `result`). `--replay-user-messages` echoes every user line when the agent takes
+//!   it (`isReplay: true`), which tells the two apart: echoed before the `result`, the message
+//!   joined the turn ([`Out::Steered`]); still unechoed at the `result`, it runs next
+//!   ([`Out::SteerLate`]). Measured with Claude Code 2.1.293, see AGENTS.md.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -36,6 +43,7 @@ pub fn args(l: &super::Launch<'_>) -> Vec<String> {
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        "--replay-user-messages",
         "--permission-mode",
         "bypassPermissions",
         "--disallowedTools",
@@ -66,6 +74,19 @@ struct State {
     interrupting: bool,
     retried: bool,
     next_req: u64,
+    /// User lines written and not yet echoed, oldest first; `Some` for steers.
+    written: VecDeque<Written>,
+    /// A user line of the running turn was echoed (the turn's own message, or a steer).
+    echoed: bool,
+    /// The last model request of the turn: its model and how many tokens it took in and out.
+    last_model: Option<String>,
+    last_context: Option<u64>,
+}
+
+struct Written {
+    steer: Option<String>,
+    /// Reported as [`Out::SteerLate`]: the agent runs it as a turn of its own.
+    late: bool,
 }
 
 pub async fn run(
@@ -108,11 +129,19 @@ pub async fn run(
             cmd = cmds.recv() => match cmd {
                 Some(LiveCmd::Prompt { text }) => {
                     st.retried = false;
-                    let line = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
-                    if let Err(e) = proc.write_line(line.to_string()).await {
-                        report(&out, Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(format!("{e:#}")) }).await;
+                    match proc.write_line(user_line(&text)).await {
+                        Ok(()) => st.written.push_back(Written { steer: None, late: false }),
+                        Err(e) => {
+                            report(&out, Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(format!("{e:#}")) }).await;
+                        }
                     }
                 }
+                Some(LiveCmd::Steer { id, text }) => match proc.write_line(user_line(&text)).await {
+                    Ok(()) => st.written.push_back(Written { steer: Some(id), late: false }),
+                    Err(e) => {
+                        report(&out, Out::SteerRejected { id, reason: format!("{e:#}") }).await;
+                    }
+                },
                 Some(LiveCmd::Interrupt) => {
                     st.interrupting = true;
                     st.next_req += 1;
@@ -134,6 +163,10 @@ pub async fn run(
             },
         }
     }
+}
+
+fn user_line(text: &str) -> String {
+    json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string()
 }
 
 /// Translates one line of Claude Code's output; returns lines to write back and messages for the
@@ -199,6 +232,16 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             }
         }
         "assistant" if !nested => {
+            let u = &v["message"]["usage"];
+            if let Some(input) = u["input_tokens"].as_u64() {
+                st.last_context = Some(
+                    input
+                        + u["cache_read_input_tokens"].as_u64().unwrap_or(0)
+                        + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+                        + u["output_tokens"].as_u64().unwrap_or(0),
+                );
+                st.last_model = v["message"]["model"].as_str().map(str::to_string);
+            }
             let msg = v["message"]["id"].as_str().unwrap_or("").to_string();
             let streamed = st.streamed.contains(&msg);
             for (i, block) in v["message"]["content"].as_array().into_iter().flatten().enumerate() {
@@ -222,6 +265,18 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                     _ => {}
                 }
             }
+        }
+        "user" if !nested && v["isReplay"].as_bool() == Some(true) => {
+            // The agent took a user line we wrote.
+            if let Some(w) = st.written.pop_front()
+                && let Some(id) = w.steer
+                && (!w.late || st.echoed)
+            {
+                // Taken into the running turn (a late one that opens its own turn is that turn's
+                // message, already reported).
+                outs.push(Out::Steered { id });
+            }
+            st.echoed = true;
         }
         "user" if !nested => {
             for block in v["message"]["content"].as_array().into_iter().flatten() {
@@ -251,7 +306,17 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 }),
                 output_tokens: usage["output_tokens"].as_u64(),
                 cost_usd: v["total_cost_usd"].as_f64(),
+                context_window: context_window(&v["modelUsage"], st.last_model.as_deref()),
+                context_used: st.last_context.take(),
             }));
+            // Steers the turn did not take: the agent runs them next, on its own.
+            for w in st.written.iter_mut().filter(|w| !w.late) {
+                if let Some(id) = &w.steer {
+                    w.late = true;
+                    outs.push(Out::SteerLate { id: id.clone() });
+                }
+            }
+            st.echoed = false;
             let text = v["result"].as_str().map(str::to_string);
             let failed = v["is_error"].as_bool() == Some(true) || v["subtype"].as_str().is_some_and(|s| s != "success");
             let status = if st.interrupting {
@@ -284,6 +349,21 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
         _ => {}
     }
     (writes, outs)
+}
+
+/// The context window of `model` in a `result`'s `modelUsage` (keyed by model, sometimes with a
+/// suffix such as `[1m]`), or the largest one listed.
+fn context_window(usage: &Value, model: Option<&str>) -> Option<u64> {
+    let models = usage.as_object()?;
+    let of = |v: &Value| v["contextWindow"].as_u64();
+    model
+        .and_then(|m| {
+            models
+                .iter()
+                .find(|(k, v)| k.as_str() == m || v["canonicalModel"].as_str() == Some(m) || k.starts_with(m))
+                .and_then(|(_, v)| of(v))
+        })
+        .or_else(|| models.values().filter_map(of).max())
 }
 
 /// A `tool_use` block as a tool call (or, for the to-do list, a plan).
@@ -448,6 +528,7 @@ mod tests {
             id: "claude".into(),
             name: "Claude Code".into(),
             runtime: crate::chat::runtimes::builtin("claude").unwrap(),
+            caps: crate::chat::runtimes::builtin("claude").unwrap().caps,
             program: "claude".into(),
             prefix: vec![],
             env: Default::default(),
@@ -464,5 +545,39 @@ mod tests {
         assert!(a.contains("--permission-mode bypassPermissions"), "{a}");
         assert!(a.contains("--setting-sources user --strict-mcp-config"), "{a}");
         assert!(a.ends_with("--model haiku --resume s1"), "{a}");
+    }
+
+    fn replay() -> Value {
+        json!({"type": "user", "isReplay": true, "message": {"role": "user", "content": [{"type": "text", "text": "x"}]}})
+    }
+
+    #[test]
+    fn steers_echoed_before_the_result_joined_the_turn_and_the_rest_run_next() {
+        let mut st = State::default();
+        st.written.push_back(Written { steer: None, late: false });
+        st.written.push_back(Written { steer: Some("s1".into()), late: false });
+        st.written.push_back(Written { steer: Some("s2".into()), late: false });
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                replay(),
+                json!({"type": "assistant", "message": {"id": "a", "model": "claude-x", "usage": {"input_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 3, "output_tokens": 2}, "content": [{"type": "text", "text": "hi"}]}}),
+                replay(),
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "done", "modelUsage": {"claude-x[1m]": {"contextWindow": 1000000}, "claude-haiku": {"contextWindow": 200000}}}),
+            ],
+        );
+        let shown: Vec<String> = outs.iter().map(|o| format!("{o:?}")).collect();
+        assert!(matches!(&outs[1], Out::Steered { id } if id == "s1"), "{shown:?}");
+        assert!(
+            matches!(&outs[2], Out::Ev(Ev::Usage { context_used: Some(110), context_window: Some(1000000), .. })),
+            "{shown:?}"
+        );
+        assert!(matches!(&outs[3], Out::SteerLate { id } if id == "s2"), "{shown:?}");
+        assert!(matches!(&outs[4], Out::TurnEnd { .. }), "{shown:?}");
+        // s2 opens the next turn: its echo is that turn's message, not a steer of it.
+        let (_, outs) =
+            run_lines(&mut st, &[json!({"type": "system", "subtype": "init", "session_id": "s"}), replay()]);
+        assert!(!outs.iter().any(|o| matches!(o, Out::Steered { .. })));
+        assert!(st.written.is_empty());
     }
 }

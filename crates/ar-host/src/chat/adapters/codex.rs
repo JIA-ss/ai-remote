@@ -12,6 +12,14 @@
 //!   `turn/completed`; its message becomes the turn's reason, so the user sees why and can pick
 //!   another model.
 //! - Notifications of other threads (an app-server may host several) are ignored.
+//! - Steer: `turn/steer` with the running turn's id (`expectedTurnId`) adds a message to it; the
+//!   agent reads it at its next step (measured with 0.163: answered in 7 ms, a count to 20 stopped
+//!   at 5 when told to). It fails with `no active turn to steer` once the turn is over; the message
+//!   then goes to the queue. A steer sent before `turn/start` has answered waits for the turn id.
+//! - Command output streams as `item/commandExecution/outputDelta` (tool updates carrying one
+//!   piece of text each, up to [`PREVIEW`] per command); file changes carry unified diffs, shown
+//!   one diff per hunk; `thread/tokenUsage/updated` gives the context window and how much of it
+//!   the last request used.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -20,7 +28,9 @@ use tokio::sync::mpsc;
 
 use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
-    event::{Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value},
+    event::{
+        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+    },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
 };
@@ -41,6 +51,7 @@ enum Pending {
     Initialize,
     Thread { resumed: bool },
     TurnStart,
+    Steer { id: String },
     Other,
 }
 
@@ -57,6 +68,14 @@ struct State {
     last_error: Option<String>,
     /// A question request waiting for answers: its JSON-RPC id, the question ids and the answers so far.
     asking: Option<(Value, Vec<String>, HashMap<String, String>)>,
+    /// A turn was asked for and has no id yet.
+    starting: bool,
+    /// Steers waiting for that id.
+    steer_wait: Vec<(String, String)>,
+    /// Bytes of output streamed per command.
+    output: HashMap<String, usize>,
+    /// File changes whose diff was shown.
+    diffed: HashSet<String>,
 }
 
 impl State {
@@ -120,9 +139,19 @@ pub async fn run(
                         let line = turn_start(&mut st, &text);
                         let _ = proc.write_line(line).await;
                     } else {
+                        st.starting = true;
                         st.waiting.push_back(text);
                     }
                 }
+                Some(LiveCmd::Steer { id, text }) => match steer(&mut st, id, text) {
+                    Ok(Some(line)) => {
+                        let _ = proc.write_line(line).await;
+                    }
+                    Ok(None) => {}
+                    Err(o) => {
+                        report(&out, *o).await;
+                    }
+                },
                 Some(LiveCmd::Interrupt) => match (st.thread.clone(), st.turn.clone()) {
                     (Some(thread), Some(turn)) => {
                         let line = st.request("turn/interrupt", json!({"threadId": thread, "turnId": turn}), Pending::Other);
@@ -165,7 +194,28 @@ pub async fn run(
     }
 }
 
+/// A steer for the running turn: the request to write, nothing yet (waiting for the turn id), or
+/// (with no turn running) the refusal to report.
+fn steer(st: &mut State, id: String, text: String) -> Result<Option<String>, Box<Out>> {
+    match (st.thread.clone(), st.turn.clone()) {
+        (Some(thread), Some(turn)) => Ok(Some(st.request(
+            "turn/steer",
+            json!({
+                "threadId": thread, "expectedTurnId": turn, "clientUserMessageId": id,
+                "input": [{"type": "text", "text": text, "text_elements": []}],
+            }),
+            Pending::Steer { id },
+        ))),
+        _ if st.starting => {
+            st.steer_wait.push((id, text));
+            Ok(None)
+        }
+        _ => Err(Box::new(Out::SteerRejected { id, reason: "no turn is running".into() })),
+    }
+}
+
 fn turn_start(st: &mut State, text: &str) -> String {
+    st.starting = true;
     st.final_text = None;
     st.last_error = None;
     st.streamed.clear();
@@ -228,10 +278,26 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::Thread { resumed: false }), Err(e)) => {
                 outs.push(Out::Exited(format!("Codex could not start a thread: {e}")))
             }
-            (Some(Pending::TurnStart), Ok(r)) => st.turn = r["turn"]["id"].as_str().map(str::to_string),
+            (Some(Pending::TurnStart), Ok(r)) => {
+                st.starting = false;
+                st.turn = r["turn"]["id"].as_str().map(str::to_string);
+                for (id, text) in std::mem::take(&mut st.steer_wait) {
+                    match steer(st, id, text) {
+                        Ok(Some(line)) => writes.push(line),
+                        Ok(None) => {}
+                        Err(o) => outs.push(*o),
+                    }
+                }
+            }
             (Some(Pending::TurnStart), Err(e)) => {
+                st.starting = false;
+                for (id, _) in std::mem::take(&mut st.steer_wait) {
+                    outs.push(Out::SteerRejected { id, reason: "the turn did not start".into() });
+                }
                 outs.push(Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(e) })
             }
+            (Some(Pending::Steer { id }), Ok(_)) => outs.push(Out::Steered { id }),
+            (Some(Pending::Steer { id }), Err(e)) => outs.push(Out::SteerRejected { id, reason: e }),
             (Some(Pending::Other), Err(e)) => {
                 outs.push(Out::Ev(Ev::Notice { level: "warn", code: "rpc_error", text: e }))
             }
@@ -305,9 +371,50 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
         }
         "item/started" => {
             if let Some(ev) = item_started(&p["item"]) {
+                if matches!(&ev, Ev::ToolCall { content, .. } if !content.is_empty()) {
+                    st.diffed.insert(p["item"]["id"].as_str().unwrap_or("").to_string());
+                }
                 outs.push(Out::Ev(ev));
             }
         }
+        "item/commandExecution/outputDelta" => {
+            let id = p["itemId"].as_str().unwrap_or("").to_string();
+            let delta = p["delta"].as_str().unwrap_or("");
+            let sent = st.output.entry(id.clone()).or_default();
+            if *sent >= PREVIEW || delta.is_empty() {
+                return;
+            }
+            let (text, truncated) = cut(delta, PREVIEW - *sent);
+            *sent = if truncated { PREVIEW } else { *sent + text.len() };
+            outs.push(Out::Ev(Ev::ToolUpdate {
+                call_id: id,
+                status: None,
+                content: vec![ToolContent::Text { text }],
+                truncated,
+            }));
+        }
+        "item/fileChange/patchUpdated" => {
+            let id = p["itemId"].as_str().unwrap_or("").to_string();
+            let content = diffs(&p["changes"]);
+            if !content.is_empty() && st.diffed.insert(id.clone()) {
+                outs.push(Out::Ev(Ev::ToolUpdate { call_id: id, status: None, content, truncated: false }));
+            }
+        }
+        "item/mcpToolCall/progress" => {
+            if let Some(m) = p["message"].as_str().filter(|m| !m.is_empty()) {
+                outs.push(Out::Ev(Ev::ToolUpdate {
+                    call_id: p["itemId"].as_str().unwrap_or("").to_string(),
+                    status: None,
+                    content: vec![ToolContent::Text { text: format!("{}\n", cut(m, 400).0) }],
+                    truncated: false,
+                }));
+            }
+        }
+        "thread/compacted" => outs.push(Out::Ev(Ev::Notice {
+            level: "info",
+            code: "compacted",
+            text: "Codex summarized the conversation so far to make room in its context".into(),
+        })),
         "item/completed" => item_completed(st, &p["item"], outs),
         "turn/plan/updated" => {
             let entries = p["plan"]
@@ -331,6 +438,8 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
                 input_tokens: last["inputTokens"].as_u64(),
                 output_tokens: last["outputTokens"].as_u64(),
                 cost_usd: None,
+                context_window: p["tokenUsage"]["modelContextWindow"].as_u64(),
+                context_used: last["totalTokens"].as_u64(),
             }));
         }
         "error" => {
@@ -345,6 +454,9 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
         "turn/completed" => {
             let turn = &p["turn"];
             st.turn = None;
+            st.starting = false;
+            st.output.clear();
+            st.diffed.clear();
             let status = match turn["status"].as_str().unwrap_or("") {
                 "completed" => TurnStatus::Completed,
                 "interrupted" => TurnStatus::Interrupted,
@@ -373,20 +485,9 @@ fn item_started(item: &Value) -> Option<Ev> {
             (ToolKind::Execute, item["command"].as_str().unwrap_or("command").to_string(), vec![], None)
         }
         "fileChange" => {
-            let changes: Vec<&Value> = item["changes"].as_array().into_iter().flatten().collect();
-            let paths: Vec<&str> = changes.iter().filter_map(|c| c["path"].as_str()).collect();
-            let content = changes
-                .iter()
-                .take(20)
-                .map(|c| ToolContent::Text {
-                    text: cut(
-                        &format!("{}\n{}", c["path"].as_str().unwrap_or(""), c["diff"].as_str().unwrap_or("")),
-                        PREVIEW,
-                    )
-                    .0,
-                })
-                .collect();
-            (ToolKind::Edit, format!("edit {}", paths.join(", ")), content, None)
+            let paths: Vec<&str> =
+                item["changes"].as_array().into_iter().flatten().filter_map(|c| c["path"].as_str()).collect();
+            (ToolKind::Edit, format!("edit {}", paths.join(", ")), diffs(&item["changes"]), None)
         }
         "mcpToolCall" => (
             ToolKind::Other,
@@ -401,6 +502,14 @@ fn item_started(item: &Value) -> Option<Ev> {
             Some(preview_value(&item["arguments"])),
         ),
         "webSearch" => (ToolKind::Fetch, format!("search {}", item["query"].as_str().unwrap_or("")), vec![], None),
+        "imageView" => (ToolKind::Read, format!("view {}", item["path"].as_str().unwrap_or("image")), vec![], None),
+        "imageGeneration" => (ToolKind::Other, "generate an image".to_string(), vec![], None),
+        "collabAgentToolCall" => (
+            ToolKind::Think,
+            format!("agent {}", item["tool"].as_str().unwrap_or("")),
+            vec![],
+            item["prompt"].as_str().map(|p| json!({"prompt": cut(p, PREVIEW).0})),
+        ),
         _ => return None,
     };
     let locations = item["changes"]
@@ -438,38 +547,165 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
                 outs.push(Out::Ev(Ev::Thought { id, text: text.join("\n"), delta: false }));
             }
         }
-        "commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall" | "webSearch" => {
+        "plan" => {
+            // The plan Codex proposes in plan mode (its deltas may not add up to it, so only the
+            // complete text is shown).
+            let text = item["text"].as_str().unwrap_or("");
+            if !text.is_empty() {
+                outs.push(Out::Ev(Ev::Message { id, text: text.to_string(), delta: false }));
+            }
+        }
+        "contextCompaction" => {}
+        "commandExecution"
+        | "fileChange"
+        | "mcpToolCall"
+        | "dynamicToolCall"
+        | "webSearch"
+        | "imageView"
+        | "imageGeneration"
+        | "collabAgentToolCall" => {
             let status = match item["status"].as_str().unwrap_or("completed") {
-                "failed" | "declined" => ToolStatus::Failed,
+                "failed" | "declined" | "errored" => ToolStatus::Failed,
                 "inProgress" => ToolStatus::InProgress,
                 _ => ToolStatus::Completed,
             };
-            let mut text = item["aggregatedOutput"].as_str().unwrap_or("").to_string();
+            let status = if item["success"].as_bool() == Some(false) { ToolStatus::Failed } else { status };
+            let mut content = Vec::new();
+            if item["type"] == "fileChange" && !st.diffed.contains(&id) {
+                content = diffs(&item["changes"]);
+            }
+            // Output that streamed is not sent again.
+            let streamed = st.output.get(&id).copied();
+            let mut text = if streamed.is_some() {
+                String::new()
+            } else {
+                item["aggregatedOutput"].as_str().unwrap_or("").to_string()
+            };
             if let Some(code) = item["exitCode"].as_i64()
                 && code != 0
             {
                 text.push_str(&format!("\n(exit code {code})"));
             }
             if text.is_empty()
-                && let Some(r) = item.get("result").filter(|r| !r.is_null())
+                && let Some(r) = item.get("result").filter(|r| r.is_object())
             {
                 text = super::content_text(&r["content"]);
+            }
+            if text.is_empty()
+                && let Some(items) = item.get("contentItems").filter(|c| c.is_array())
+            {
+                text = super::content_text(items);
+            }
+            if text.is_empty() && item["type"] == "webSearch" {
+                let a = &item["action"];
+                text = match a["type"].as_str().unwrap_or("") {
+                    "openPage" => format!("opened {}", a["url"].as_str().unwrap_or("")),
+                    "findInPage" => format!(
+                        "found '{}' in {}",
+                        a["pattern"].as_str().unwrap_or(""),
+                        a["url"].as_str().unwrap_or("")
+                    ),
+                    _ => a["query"]
+                        .as_str()
+                        .or(item["query"].as_str())
+                        .map(|q| format!("searched {q}"))
+                        .unwrap_or_default(),
+                };
+            }
+            if text.is_empty()
+                && let Some(p) = item["savedPath"].as_str()
+            {
+                text = format!("saved {p}");
             }
             if text.is_empty()
                 && let Some(e) = item["error"]["message"].as_str()
             {
                 text = e.to_string();
             }
-            let (text, truncated) = cut(text.trim(), PREVIEW);
-            outs.push(Out::Ev(Ev::ToolUpdate {
-                call_id: id,
-                status: Some(status),
-                content: if text.is_empty() { vec![] } else { vec![ToolContent::Text { text }] },
-                truncated,
-            }));
+            let (text, truncated) = if streamed.is_some() {
+                // Only what was not streamed: the exit code line.
+                (text.trim_start().to_string(), streamed.is_some_and(|n| n >= PREVIEW))
+            } else {
+                cut(text.trim(), PREVIEW)
+            };
+            if !text.is_empty() {
+                content.push(ToolContent::Text { text });
+            }
+            outs.push(Out::Ev(Ev::ToolUpdate { call_id: id, status: Some(status), content, truncated }));
         }
         _ => {}
     }
+}
+
+/// The diffs of a file change, one per hunk (old and new text of the hunk), so they show as
+/// diffs with the right counts of added and removed lines.
+fn diffs(changes: &Value) -> Vec<ToolContent> {
+    let mut out = Vec::new();
+    for c in changes.as_array().into_iter().flatten() {
+        let path = c["path"].as_str().unwrap_or("").to_string();
+        let kind = c["kind"]["type"].as_str().unwrap_or("update");
+        let diff = c["diff"].as_str().unwrap_or("");
+        let hunks = hunks(diff);
+        if hunks.is_empty() {
+            // An added file comes as its content, a deleted one may come empty.
+            let (old, new) = match kind {
+                "add" => (None, diff.to_string()),
+                "delete" => (Some(diff.to_string()), String::new()),
+                _ => continue,
+            };
+            out.push(ToolContent::Diff { path, old: old.map(|o| cut(&o, DIFF_SIDE).0), new: cut(&new, DIFF_SIDE).0 });
+        } else {
+            for (old, new) in hunks {
+                out.push(ToolContent::Diff {
+                    path: path.clone(),
+                    old: (kind != "add").then(|| cut(&old, DIFF_SIDE).0),
+                    new: cut(&new, DIFF_SIDE).0,
+                });
+            }
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    out
+}
+
+/// The hunks of a unified diff as (old text, new text).
+fn hunks(diff: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur: Option<(String, String)> = None;
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            out.extend(cur.take());
+            cur = Some((String::new(), String::new()));
+            continue;
+        }
+        let Some((old, new)) = cur.as_mut() else { continue };
+        let (sign, rest) = line.split_at(line.len().min(1));
+        match sign {
+            " " => {
+                old.push_str(rest);
+                old.push('\n');
+                new.push_str(rest);
+                new.push('\n');
+            }
+            "-" => {
+                old.push_str(rest);
+                old.push('\n');
+            }
+            "+" => {
+                new.push_str(rest);
+                new.push('\n');
+            }
+            "" => {
+                old.push('\n');
+                new.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out.extend(cur);
+    out
 }
 
 #[cfg(test)]
@@ -579,5 +815,74 @@ mod tests {
         let (w, _) =
             handle(&mut st, r#"{"id":9,"method":"account/chatgptAuthTokens/refresh","params":{}}"#, &opts(None));
         assert!(w[0].contains("-32601"));
+    }
+
+    #[test]
+    fn steers_go_to_the_running_turn_or_wait_for_its_id() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        // No turn: refused.
+        assert!(
+            matches!(steer(&mut st, "s0".into(), "x".into()), Err(o) if matches!(*o, Out::SteerRejected { ref id, .. } if id == "s0"))
+        );
+        // Asked for, no id yet: waits, then goes out with the id.
+        let _ = turn_start(&mut st, "count");
+        assert!(matches!(steer(&mut st, "s1".into(), "stop at 5".into()), Ok(None)));
+        let id = st.next;
+        let (w, _) = handle(&mut st, &format!(r#"{{"id":{id},"result":{{"turn":{{"id":"tu"}}}}}}"#), &opts(None));
+        let req: Value = serde_json::from_str(&w[0]).unwrap();
+        assert_eq!(req["method"], "turn/steer");
+        assert_eq!(req["params"]["expectedTurnId"], "tu");
+        assert_eq!(req["params"]["input"][0]["text"], "stop at 5");
+        let (_, o) = handle(&mut st, &format!(r#"{{"id":{},"result":{{"turnId":"tu"}}}}"#, req["id"]), &opts(None));
+        assert!(matches!(&o[0], Out::Steered { id } if id == "s1"));
+        // The turn ended meanwhile: refused, so it is queued.
+        let line = steer(&mut st, "s2".into(), "more".into()).unwrap().unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        let (_, o) = handle(
+            &mut st,
+            &format!(r#"{{"id":{},"error":{{"code":-32600,"message":"no active turn to steer"}}}}"#, req["id"]),
+            &opts(None),
+        );
+        assert!(matches!(&o[0], Out::SteerRejected { id, reason } if id == "s2" && reason.contains("no active turn")));
+    }
+
+    #[test]
+    fn output_streams_diffs_split_per_hunk_and_usage_has_the_context() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let diff = "--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -10,2 +10,3 @@\n x\n+y\n z\n";
+        let lines = [
+            r#"{"method":"item/started","params":{"threadId":"th","item":{"type":"commandExecution","id":"c1","command":"ls","status":"inProgress"}}}"#.to_string(),
+            r#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"th","itemId":"c1","delta":"1\n"}}"#.to_string(),
+            r#"{"method":"item/completed","params":{"threadId":"th","item":{"type":"commandExecution","id":"c1","status":"failed","aggregatedOutput":"1\n","exitCode":3}}}"#.to_string(),
+            json!({"method": "item/started", "params": {"threadId": "th", "item": {"type": "fileChange", "id": "f1", "status": "inProgress", "changes": [{"path": "/w/f.rs", "kind": {"type": "update"}, "diff": diff}]}}}).to_string(),
+            r#"{"method":"item/completed","params":{"threadId":"th","item":{"type":"fileChange","id":"f1","status":"completed","changes":[]}}}"#.to_string(),
+            r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"th","turnId":"t","tokenUsage":{"last":{"inputTokens":90,"outputTokens":10,"totalTokens":100},"total":{},"modelContextWindow":475000}}}"#.to_string(),
+            r#"{"method":"item/completed","params":{"threadId":"th","item":{"type":"plan","id":"p1","text":"1. do it"}}}"#.to_string(),
+        ];
+        let mut outs = Vec::new();
+        for l in &lines {
+            outs.extend(handle(&mut st, l, &opts(None)).1);
+        }
+        let shown: Vec<String> = outs.iter().map(|o| format!("{o:?}")).collect();
+        assert!(
+            matches!(&outs[1], Out::Ev(Ev::ToolUpdate { status: None, content, .. }) if matches!(&content[0], ToolContent::Text { text } if text == "1\n")),
+            "{shown:?}"
+        );
+        // The output is not sent again at the end; the exit code is.
+        assert!(
+            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), content, .. }) if matches!(&content[..], [ToolContent::Text { text }] if text == "(exit code 3)")),
+            "{shown:?}"
+        );
+        let Out::Ev(Ev::ToolCall { content, .. }) = &outs[3] else { panic!("{shown:?}") };
+        assert_eq!(content.len(), 2, "one diff per hunk");
+        assert!(
+            matches!(&content[0], ToolContent::Diff { old: Some(o), new, .. } if o == "a\nb\nc\n" && new == "a\nB\nc\n")
+        );
+        assert!(
+            matches!(&content[1], ToolContent::Diff { old: Some(o), new, .. } if o == "x\nz\n" && new == "x\ny\nz\n")
+        );
+        assert!(matches!(&outs[4], Out::Ev(Ev::ToolUpdate { content, .. }) if content.is_empty()), "{shown:?}");
+        assert!(matches!(&outs[5], Out::Ev(Ev::Usage { context_window: Some(475000), context_used: Some(100), .. })));
+        assert!(matches!(&outs[6], Out::Ev(Ev::Message { text, delta: false, .. }) if text == "1. do it"));
     }
 }
