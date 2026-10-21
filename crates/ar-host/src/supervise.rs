@@ -36,6 +36,10 @@ impl Default for Backoff {
 /// Exit code of a host that found another one running for its profile: nothing to restart.
 pub const EXIT_ALREADY_RUNNING: u8 = 3;
 
+/// Exit code of a macOS system-agent host whose session left the console; see
+/// [`crate::handoff::EXIT_STEPPED_ASIDE`].
+pub const EXIT_STEPPED_ASIDE: u8 = crate::handoff::EXIT_STEPPED_ASIDE;
+
 #[cfg(test)]
 mod tests {
     use super::*;

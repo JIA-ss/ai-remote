@@ -58,6 +58,11 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
         return Ok(());
     }
     let with_admin = admin_steps_allowed(&plan, profile, "install", scope, flags.service)?;
+    if scope == Scope::All {
+        // Installing means "run it": a stop recorded by `stop-host` must not keep the agent the
+        // plan loads from starting.
+        clear_stop_marker(profile);
+    }
     execute(&plan, with_admin)?;
     if scope == Scope::FirewallOnly {
         println!("\nThe firewall rules are in place.");
@@ -102,8 +107,8 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
         println!(
             "\nlaunchd starts the host as the installing user; check it without sudo:\n\n  ai-remote host status\n  \
              ai-remote doctor\n\nThen grant Screen Recording and Accessibility to ai-remote-hostw if doctor says they are \
-             missing, and restart the host (`ai-remote stop-host`, then `launchctl kickstart -k gui/<uid>/<label>` or \
-             log out and in)."
+             missing, and restart the host (`launchctl kickstart -k gui/<uid>/<label>`, or log out and in; not \
+             `ai-remote stop-host`, whose stop holds until the next login)."
         );
         return Ok(());
     }
@@ -146,6 +151,7 @@ pub async fn host_uninstall(profile: &Profile, dry_run: bool, firewall_only: boo
         println!("\nDone.");
         return Ok(());
     }
+    clear_stop_marker(profile);
     println!("\nAutostart is removed.");
     if !with_admin && plan.has_admin_steps() {
         println!(
@@ -186,6 +192,9 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
     let p = profile.clone();
     let status = tokio::task::spawn_blocking(move || install::status(&p)).await?;
     let host = running_host(profile).await;
+    #[cfg(target_os = "macos")]
+    let (running, system_agent) =
+        (host.is_some(), matches!(&status, Ok(s) if s.installed && s.kind.contains("login window")));
     if json_out {
         let autostart = match &status {
             Ok(s) => serde_json::to_value(s)?,
@@ -253,7 +262,46 @@ pub async fn host_status(profile: &Profile, json_out: bool) -> Result<()> {
         ),
         None => println!("host:      not running"),
     }
+    #[cfg(target_os = "macos")]
+    print_handoff_state(profile, running, system_agent);
     Ok(())
+}
+
+/// Removes the record `stop-host` leaves for the macOS system agent (see `ar_host::handoff`).
+fn clear_stop_marker(profile: &Profile) {
+    if let Ok(path) = ar_host::handoff::marker_path(profile)
+        && let Err(e) = ar_host::handoff::clear_marker(&path)
+    {
+        println!("Warning: {e:#}");
+    }
+}
+
+/// macOS system agent: a stop that still holds, and where a waiting instance says why it waits.
+#[cfg(target_os = "macos")]
+fn print_handoff_state(profile: &Profile, running: bool, system_agent: bool) {
+    use ar_host::{handoff, platform::macos};
+    let marker = handoff::marker_path(profile).ok().and_then(|p| handoff::read_marker(&p).ok().flatten());
+    let this_boot = marker.as_ref().is_some_and(|m| macos::boot_session().as_deref() == Some(m.boot.as_str()));
+    if running || !system_agent {
+        return;
+    }
+    if this_boot && marker.as_ref().is_some_and(|m| m.login_window) {
+        println!(
+            "           stopped with `ai-remote stop-host` at the login window: the system agent stays stopped in every \
+             session until a restart (or `host install`)"
+        );
+    } else if this_boot {
+        println!(
+            "           stopped with `ai-remote stop-host`: the system agent stays stopped in this login session and at \
+             the login window until the next login or restart (or `host install`)"
+        );
+    } else if let Ok(log) = profile.log_path(Role::Host) {
+        println!(
+            "           a system agent that waits (its session is not on the console, or another host holds the \
+             profile) says so in {}",
+            log.display()
+        );
+    }
 }
 
 /// The running host's doctor report.

@@ -17,6 +17,7 @@ pub mod doctor;
 mod events;
 mod files_channel;
 mod gate;
+pub mod handoff;
 pub mod install;
 pub mod mounts;
 pub mod platform;
@@ -39,7 +40,7 @@ use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
 use ar_net::{
     ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Peer, ipc,
 };
-use tokio_util::sync::CancellationToken;
+pub use tokio_util::sync::CancellationToken;
 
 use crate::{approval::Approver, audit::AuditLog, tools::Registry};
 
@@ -159,6 +160,26 @@ pub struct HostOptions {
     /// No console: everything meant for the owner goes to the log. A pairing ticket is a bearer
     /// credential, so a background host never mints one by itself.
     pub background: bool,
+    /// Cancelled when this host must step aside for another instance (the macOS system agent
+    /// whose session left the console, see [`handoff`]); [`run_claimed`] then returns
+    /// [`StopReason::SteppedAside`] with the slot still held.
+    pub step_aside: Option<CancellationToken>,
+}
+
+/// Why [`run_claimed`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// `ai-remote stop-host` or Ctrl+C.
+    Requested,
+    /// [`HostOptions::step_aside`] was cancelled.
+    SteppedAside,
+}
+
+/// A host that stopped serving, handing back the profile's slot: the caller decides when to let
+/// it go (a host stepping aside exits while still holding it, see [`handoff`]).
+pub struct Stopped {
+    pub reason: StopReason,
+    pub claim: Claim,
 }
 
 /// Where messages for the host owner go: the terminal in the foreground, the log otherwise.
@@ -222,11 +243,12 @@ impl Claim {
 /// Runs the host until Ctrl+C or a `shutdown` request on the control channel.
 pub async fn run(profile: Profile, opts: HostOptions) -> Result<()> {
     let claim = Claim::acquire(&profile)?;
-    run_claimed(profile, claim, opts).await
+    run_claimed(profile, claim, opts).await.map(|_| ())
 }
 
-/// [`run`] with the profile's slot already claimed.
-pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> Result<()> {
+/// [`run`] with the profile's slot already claimed. Returns the slot with the reason it stopped;
+/// on an error the slot is released.
+pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> Result<Stopped> {
     platform::init_process();
     let owner = Owner { background: opts.background };
     let config_path = profile.host_config_path()?;
@@ -308,7 +330,8 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     }
 
     let shutdown = CancellationToken::new();
-    loop {
+    let step_aside = opts.step_aside.clone().unwrap_or_default();
+    let reason = loop {
         tokio::select! {
             conn = listener.accept() => match conn {
                 Ok(conn) => {
@@ -318,15 +341,19 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
                 }
                 Err(e) => tracing::warn!(%e, "control connection failed"),
             },
-            _ = tokio::signal::ctrl_c() => break,
-            _ = shutdown.cancelled() => break,
+            _ = tokio::signal::ctrl_c() => break StopReason::Requested,
+            _ = shutdown.cancelled() => break StopReason::Requested,
+            _ = step_aside.cancelled() => break StopReason::SteppedAside,
         }
-    }
+    };
     // Close live controller connections and give the close frames a moment to leave.
     state.stopping.cancel();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    owner.say("ai-remote host stopped.");
-    Ok(())
+    owner.say(match reason {
+        StopReason::Requested => "ai-remote host stopped.",
+        StopReason::SteppedAside => "ai-remote host stepped aside: this session left the console.",
+    });
+    Ok(Stopped { reason, claim: Claim { listener } })
 }
 
 /// Shows the host side of every pairing ceremony: the controller printed a three-word safety code
@@ -369,4 +396,26 @@ async fn announce_pairings(mesh: &Mesh, owner: Owner) {
 fn fmt_epoch(epoch: u64) -> String {
     let remaining = epoch.saturating_sub(ar_core::unix_now());
     format!("{} minutes from now", remaining / 60)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A host stepping aside exits while it still holds the slot it got back from
+    /// [`run_claimed`]: holding a [`Claim`] keeps every other start out until it is dropped.
+    #[tokio::test]
+    async fn a_held_claim_keeps_the_profile_until_dropped() {
+        // Short: a Unix socket path must fit in about 100 bytes.
+        let root = std::path::PathBuf::from(format!("/tmp/ar-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = Profile::at(&root).unwrap();
+        let held = Claim::acquire(&profile).unwrap();
+        let second = Claim::acquire(&profile).err().expect("the slot is held");
+        assert!(second.downcast_ref::<AlreadyRunning>().is_some(), "{second:#}");
+        drop(held);
+        let again = Claim::acquire(&profile).expect("free once dropped");
+        drop(again);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
