@@ -78,6 +78,8 @@
   不出公网，但会经网关）；TCP 0、5353 / 1900 / 5351 0、公网地址 0。
 - 坑：Windows OpenSSH 断开会杀掉会话里起的进程，测试被控端要用 `Invoke-CimMethod Win32_Process Create` 起；
   PowerShell 里 `$Home` 是只读内置变量。控制端代理闲置 30 分钟会自己退出，换 pid，按进程统计时要以抓包时的 pid 为准。
+- **两台真实机器已切到仅限局域网（2026-10-21，用户要求"直接切"）**，`quiet = true` 保留：Windows 开发机的服务改用本分支 release 版（`host install --service` 重装：停服务、改 binPath、给新程序加防火墙放行；这个版本没有 `host start`，用 `sc start` 起）；Mac 用 #14 + #18 + #19 打的包替换 `/Applications/ai-remote.app`（先删旧包再 `ditto`，然后 `launchctl kickstart -k`）。两边先用新 CLI
+  `ai-remote network mode lan` 写配置，旧配对存的是随机端口，所以各自 `hosts address` 填一次对方的 `<ip>:47800`。结果：Mac → Windows `direct`、`info` 0.05 s；Windows → Mac `direct`、0.16 s；两边 `doctor` 的 `network`（安静、已锁定）和 `lan` 都是 ok。Mac 换包后屏幕录制 / 辅助功能授权失效（ad-hoc 签名变了），要机主在 app 的"本设备"页重新允许。
 
 ## 安静模式：受管理网络里少发流量（2026-10-21，分支 `feat/quiet-network`）
 
