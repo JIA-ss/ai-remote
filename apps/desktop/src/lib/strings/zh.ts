@@ -494,4 +494,23 @@ export const zh: Record<keyof typeof en, string> = {
   pv_relay_d: "能直连时，连接直接在你的设备之间建立。中继只转发它读不懂的加密数据。",
   pv_log: "每次调用都有记录",
   pv_log_d: "每台电脑都在本地记录智能体和人在那里做过的事。机密内容只记录大小。",
+  // 会话页的标题条、浮动工具条和 HUD（2026-10-21 桌面端重做）。
+  fs_enter: "进入全屏",
+  fs_exit: "退出全屏",
+  fs_hint: "全屏：⌃⌘F。只在观看时，Esc 也能退出。",
+  hud_latency: "延迟",
+  hud_fps: "fps",
+  hud_mbps: "Mbps",
+  hud_waiting: "等待视频",
+  hud_lowered: "已降到 {mbps} Mbps",
+  show_log: "显示记录",
+  hide_log: "隐藏记录",
+  // 浮动工具条：一个圆点加一句短状态（2026-10-21）。
+  drv_idle: "无人操作",
+  drv_agent: "{agent} 操作中",
+  drv_you: "你在操作",
+  drv_waiting: "等待你批准",
+  drv_paused: "已暂停",
+  drv_offline: "离线",
+  drv_connecting: "连接中",
 };

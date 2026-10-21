@@ -17,6 +17,61 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 桌面端视觉重做（2026-10-21，分支 `claude/desktop-ui-polish-4212f0`）
+
+用户对 debug 包的评价是"太丑了，审美停在上个世纪，而且没有全屏显示"，要求做成一流 macOS 原生工具的样子（无边框、
+现代、克制），并给会话页加沉浸全屏。调研结论、设计原则和令牌表在 `docs/desktop-design.md`；改前 / 改后截图在
+`docs/images/desktop/`（`before-*` 是旧版，`after-*` 是本轮）。
+
+### 决定
+
+- **令牌名不动、取值重定义；覆盖层推倒重来。** 生成的 `tokens.css / base.css / v2.css / v2-pages.css` 一行没改
+  （生成器不在仓库里），`liquid-glass.css` 删除，`native.css` 是唯一的覆盖层（加载最后），新 class 以 `nt-` 开头。
+  两套中性灰（深 / 浅）、一个强调色（智能体蓝，也是选中和主按钮）、"你"的琥珀色保留为语义色、状态色在线绿 / 空闲灰 /
+  中继橙 / 告警红。没有发光、光晕、噪点、壁纸，卡片不描边。
+- **外壳**：侧栏 240 px 贴左、整高，顶部 48 px 拖拽条给红绿灯；内容列自带 48 px 标题条（`TitleBar` 多了 `end` 插槽）。
+  macOS 上窗口 `transparent` + `windowEffects: ["sidebar","windowBackground"]`，侧栏透出桌面材质，内容区 CSS 画成不透明；
+  主题被钉住（非"跟随系统"）或"减少透明度"时侧栏改画 `--canvas`（`data-theme-choice` / `data-transparency`）。
+- **会话页**（`Session.tsx`，推流 / 解码 / 指针 / 输入逻辑没动）：黑色舞台边到边，画面按比例 contain 铺满短边（信箱只在一侧），边缘按 `devicePixelRatio` 取整到设备像素；底部浮条（状态圆点 + 短文案"无人操作 / 智能体操作中 / 你在操作"，接管 / 交还是普通尺寸强调色按钮，
+  不显示设备 id；窗口态和全屏态同一套 3 s 自动隐藏）；右上 HUD（尺寸、fps、Mbps、
+  延迟、线路，等宽数字）；时间线移到右侧日志栏顶部；待批准横幅在舞台顶部。`.stream-metrics` 这个 class 保留在 HUD 上，
+  smoke 模式和 `tools/stream-e2e.py` 读它。
+- **沉浸全屏**（`lib/fullscreen.ts`）：Tauri `setFullscreen`，权限 `core:window:allow-set-fullscreen / allow-is-fullscreen`。
+  ⌃⌘F 和标题条按钮进入；Esc 只在"观看"时退出（接管后 Esc 要发给远端）；绿灯按钮进的原生全屏靠 `onResized` 后 0.3 / 1 / 2 s
+  三次 `isFullscreen` 同步；自己触发的切换 1.5 s 内忽略监听结果（否则过渡期间读到旧值会把状态翻回去）。全屏下浮条在
+  鼠标移动时出现、3 s 无操作隐藏；接管状态下只有靠上下边缘才出现（浮条压着远端像素）。
+- 动效只有浮条进出场（motion `AnimatePresence`，180 ms，8 px 位移）。
+
+### 踩过的坑
+
+1. `tauri.conf.json` 里窗口材质字段叫 `windowEffects`，不是 `effects`（写错 Tauri 直接拒绝配置）。
+2. **WebKit 丢掉两个带 `backdrop-filter` 的浮层之一**：顶部 / 底部浮条同时做 transform 动画时，macOS 26 上只画出一个，
+   另一个要等下一次重绘。浮条改成实色（`rgb(28 28 30 / .96)`），HUD 也去掉模糊。
+3. `left: 50%` 的绝对定位锚点只能拿到容器一半的可用宽度，里面的文字会被省略；锚点要 `width: max-content`，
+   并且**不要**再给子元素百分比 `max-width`（和 max-content 父元素循环，又会把文字挤掉）。
+4. `tools/stream-ui.test.mjs` 对 `Session.tsx` 的 `require` 列表是白名单，新依赖（`motion/react`、`../lib/fullscreen`）
+   要加桩；它跑在没有 `window` 的 vm 里，所以夹具里补了 `window`。
+5. 截图：`screencapture -l` 在本机没有权限；computer-use 的窗口截图（`app_screenshot`）对透明窗口时好时坏，稳定的是
+   整屏截图再按窗口位置裁（`tools` 里没放脚本，裁剪参数见 PR）。
+
+### 实测（本机 macOS，debug 包，被控端 win-dev 5120×2160 极致档）
+
+- 四个主页面 + 电脑页 + 设置页深 / 浅色都截了图，侧栏材质、无边框卡片、HUD 和浮条按设计显示。
+- 会话页：画面边到边、HUD 显示 5120×2160 · 75~81 fps · 15.5~16 Mbps · 17~19 ms · 直连；浮条文字不再截断。
+- 全屏：均衡档（1920×810 / 60 fps）下进入 2.5 s 内页面就是最终布局（顶部浮条、底部浮条、HUD、画面铺满宽度），3 s 后浮条
+  自动隐藏，Esc 退出立即回到窗口态。**极致档（5120×2160 / 75 fps）下进入全屏后页面要 5~10 s 才跟上**（画面停在旧尺寸、
+  顶部浮条晚出现、退出后 chrome 晚回来），一有鼠标事件就追上；不透明窗口一样。原因是全屏时画布变成 5120×2160 设备像素，
+  每帧 `drawImage` 把合成器喂饱了，UI 重绘排不上队；不是状态机的问题（试过 `setFocus` 唤醒，没用，已去掉）。
+
+### 下一步
+
+- [ ] 极致档全屏下 UI 重绘滞后 5~10 s：画布 5K@75fps 的 `drawImage` 压满合成器。可选方案：全屏时把画布交给
+      `OffscreenCanvas` + worker，或在 UI 层级变化时临时降帧（`setBitrate` 之外还没有降帧的控制行）。
+- [ ] Windows 端没验证（本机只有 Mac）：`tauri-plugin-frame` 的标题栏高度仍是 48，`[data-os="windows"]` 下的字体和
+      标题条布局要在 Windows 上看一眼。
+- [ ] 设备卡片的悬停态、侧栏行的键盘焦点环还是生成层的样式，没有专门过。
+- [ ] 待批准 / 活动记录在有数据（决策卡、收据）时的样子只在演示模式看过，没有真实数据截图。
+
 ## 命令行远程操作（2026-10-12，分支 `feat/cli-remote`）
 
 目标：人、脚本和 CI 不经 MCP 也能直接操作被控端，形态参照内部测试机工具的命令行：

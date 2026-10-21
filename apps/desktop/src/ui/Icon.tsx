@@ -20,7 +20,9 @@ import {
   Laptop,
   Link,
   Lock,
+  Maximize2,
   Menu,
+  Minimize2,
   MessageSquare,
   Monitor,
   MoreHorizontal,
@@ -86,6 +88,8 @@ const FLUENT = {
   open: "E8A7",
   key: "E8D7",
   lock: "E72E",
+  fullscreen: "E740",
+  exitFullscreen: "E73F",
 } as const;
 
 export type IconName = keyof typeof FLUENT;
@@ -130,6 +134,8 @@ const LUCIDE: Record<IconName, LucideIcon> = {
   open: ExternalLink,
   key: KeyRound,
   lock: Lock,
+  fullscreen: Maximize2,
+  exitFullscreen: Minimize2,
 };
 
 const mac = detectOs() === "mac";
