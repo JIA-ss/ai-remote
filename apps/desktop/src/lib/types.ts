@@ -51,6 +51,8 @@ export interface HostAccess {
 export interface NetworkSettings {
   /** `auto`: address lookup, hole punching, relays. `lan`: direct on the local network only. */
   mode: "auto" | "lan";
+  /** Find devices on the local network and be found by them (mDNS); off by default. */
+  lan_discovery: boolean;
   /** Ask the router to open a port (UPnP, NAT-PMP, PCP); off by default. */
   port_mapping: boolean;
   /** `quiet = true` in ai-remote.toml keeps it off; the setting cannot turn it on. */

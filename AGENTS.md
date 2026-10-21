@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,25 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
+
+用户要求：所有网络相关的设置都能在界面里操作、普通用户知道是什么意思，局域网模式和局域网发现的开关要友好，e2e 跑通再准备上线。
+
+- 设置 > 网络：**连接方式**是两张单选卡（自动〔推荐〕/ 仅限局域网，用被控端级别那种 `.radio` 行），**可选功能**两个
+  `.switch` 开关（在局域网里自动发现设备 = `lan_discovery`；让路由器开放端口（UPnP）= `port_mapping`，仅限局域网时隐藏）；
+  仅限局域网时显示**这台电脑的地址**（只显示别的设备能用的：去掉回环、`fe80::`、`169.254.`，IPv4 在前，带复制按钮）和
+  **要连接的电脑**（每台一行，修改 → 输入框，先在前端校验是 IP 再提交）。`quiet = true` 时两个开关变灰并写明原因。
+  文案都按"能做什么、代价是什么"写，避免 mDNS / NAT 这类术语打头。
+- 后端改成一个 `update_network(mode?, lan_discovery?, port_mapping?)`，同时写被控端和控制端两份配置，打开开关前
+  `ar_core::config::ensure_not_quiet` 检查锁；命令行 `ai-remote network [mode auto|lan | discovery on|off | upnp on|off]` 走同一套。
+- 修了一个竞态：改设置后重启控制端代理，紧接着的请求会撞上还没退出完的旧代理（"daemon closed the connection without
+  answering"）。`ar_controller::restart_agent` 发 `shutdown` 后等到控制通道不再应答（最多 10 s）才返回，app 和命令行共用。
+- 测试：`tools/network-ui.test.mjs`（地址过滤与输入校验）；`tools/network-ui-smoke.py`（camofox REST 驱动演示页，17 项，
+  截图在 `target/network-ui`）；`tools/network-e2e.py`（一台机器上隔离的被控端和控制端，真实 QUIC，15 项：默认安静、两端切
+  仅限局域网、配对、调用、doctor `lan`、被控端零 TCP 连接、换端口后 20 s 拨号超时、`hosts address` 后 0.05 s 恢复、quiet 锁拒绝）。
+  仓库里原来的 `tools/desktop-ui-smoke.py` 依赖的 camofox 命令行（另一个分支的包）本机没有，所以新脚本直接用 REST。
+- 坑：macOS 临时目录太长，控制端代理的 Unix 套接字路径会超长（`SUN_LEN`），e2e 的临时目录放 `/tmp`。
 
 ## 仅局域网（内网直连）模式（2026-10-21，分支 `feat/lan-direct`，基于 PR #18）
 
@@ -731,6 +750,10 @@ AR_SIZES=5120x2160 AR_CODECS=hevc,av1 AR_KBPS=120000 cargo test -p ar-host --rel
 cargo test -p ar-host --release --lib hardware_encoders_open_and_close_repeatedly -- --ignored --nocapture
 # 用 WebCodecs 解上面的码流（默认 Edge，可传 Chrome 路径）
 node tools/webcodecs-decode-check.mjs
+# 网络设置：隔离 host/controller，两端切仅限局域网、换端口、手动设地址、quiet 锁（先 cargo build -p ai-remote）
+python tools/network-e2e.py
+# 网络设置页（演示数据，camofox REST，截图在 target/network-ui）
+python tools/network-ui-smoke.py
 # 端到端：隔离 host/controller + 真实 QUIC；--desktop 再测桌面端（先 cd apps/desktop && npx tauri build --debug --no-bundle）
 python tools/stream-e2e.py --animate --desktop target/debug/ai-remote-desktop.exe
 python tools/stream-e2e.py --pattern 5120x2160 --desktop target/debug/ai-remote-desktop.exe   # 高码率、可重复

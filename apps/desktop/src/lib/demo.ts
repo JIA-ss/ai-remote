@@ -104,11 +104,13 @@ const toPending = (p: RawPending): PendingApproval => ({
 /** Controllers paired with this computer, as its host would list them. */
 const network: NetworkSettings = {
   mode: "auto",
+  lan_discovery: false,
   port_mapping: false,
-  locked: false,
+  // `?locked`: a computer whose ai-remote.toml says quiet = true (screenshots).
+  locked: typeof location !== "undefined" && new URLSearchParams(location.search).has("locked"),
   host_running: true,
   host_lan: false,
-  host_addresses: ["192.168.1.20:47800"],
+  host_addresses: ["192.168.1.20:47800", "[fe80::1c:2]:47800", "127.0.0.1:47800"],
   lan_port: 47800,
 };
 
@@ -228,14 +230,12 @@ export const demoBackend: Backend = {
     await wait(80);
     return { ...network };
   },
-  async setPortMapping(on) {
+  async updateNetwork(change) {
     await wait(300);
-    network.port_mapping = on;
-    return { ...network };
-  },
-  async setNetworkMode(mode) {
-    await wait(300);
-    network.mode = mode;
+    if (change.mode) network.mode = change.mode;
+    if (change.lanDiscovery !== undefined) network.lan_discovery = change.lanDiscovery;
+    if (change.portMapping !== undefined) network.port_mapping = change.portMapping;
+    network.host_lan = network.mode === "lan";
     return { ...network };
   },
   async setHostAddress(host, address) {

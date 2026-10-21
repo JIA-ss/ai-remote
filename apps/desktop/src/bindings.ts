@@ -83,18 +83,14 @@ export const commands = {
 	 */
 	networkSettings: () => typedError<Json, string>(__TAURI_INVOKE("network_settings")),
 	/**
-	 *  Turns router port mapping on or off for this computer, as a host and as a controller. The
-	 *  controller agent is restarted so it applies now (live views and agents reconnect); a host
-	 *  running here applies it when it next starts.
+	 *  Changes this computer's network settings, for its host and its controller alike; each `None`
+	 *  stays as it is. `mode`: `auto` (address lookup, hole punching, relays) or `lan` (direct on the
+	 *  local network only; a host listens on a fixed port). `lan_discovery`: find and be found on the
+	 *  local network (mDNS). `port_mapping`: ask the router for a port (UPnP, NAT-PMP, PCP). The
+	 *  controller agent restarts so the change applies now (live views and agents reconnect); a host
+	 *  running here applies it when it next starts. Returns the settings as [`network_settings`] does.
 	 */
-	setPortMapping: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_port_mapping", { on })),
-	/**
-	 *  Switches how this computer reaches its peers: `auto` (address lookup, hole punching, relays) or
-	 *  `lan` (direct on the local network only; a host listens on a fixed port). Written for the host
-	 *  and the controller; the controller agent restarts to apply it now, a running host at its next
-	 *  start. Paired hosts are then dialled at their stored addresses (see `set_host_address`).
-	 */
-	setNetworkMode: (mode: string) => typedError<Json, string>(__TAURI_INVOKE("set_network_mode", { mode })),
+	updateNetwork: (mode: string | null, lanDiscovery: boolean | null, portMapping: boolean | null) => typedError<Json, string>(__TAURI_INVOKE("update_network", { mode, lanDiscovery, portMapping })),
 	/**
 	 *  Sets the addresses a paired host is dialled at (`ip`, `ip:port`, several separated by commas);
 	 *  in LAN mode the only way to reach a host whose address changed.

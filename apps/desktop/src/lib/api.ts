@@ -10,6 +10,13 @@ import type { AgentStatus, Driver, FeedEvent, Host, HostAccess, Level, LocalCont
 
 export type TurnAction = "take_over" | "hand_back" | "pause" | "resume";
 
+/** One change on Settings > Network; whatever is left out stays as it is. */
+export interface NetworkChange {
+  mode?: NetworkSettings["mode"];
+  lanDiscovery?: boolean;
+  portMapping?: boolean;
+}
+
 export interface ToolContent {
   type: "text" | "image" | string;
   text?: string;
@@ -103,10 +110,8 @@ export interface Backend {
   setLocalBypass(peer: string, on: boolean): Promise<void>;
   /** This computer's router port mapping (UPnP), whether quiet mode locks it, whether a host runs here. */
   networkSettings(): Promise<NetworkSettings>;
-  /** Turns router port mapping on or off here; the controller applies it at once, a running host at its next start. */
-  setPortMapping(on: boolean): Promise<NetworkSettings>;
-  /** `auto` or `lan` (direct on the local network only), for this computer as a host and a controller. */
-  setNetworkMode(mode: NetworkSettings["mode"]): Promise<NetworkSettings>;
+  /** Changes how this computer connects (as host and controller); the controller applies it at once, a running host at its next start. */
+  updateNetwork(change: NetworkChange): Promise<NetworkSettings>;
   /** Where to dial a paired host (`ip`, `ip:port`, several separated by commas); returns the addresses kept. */
   setHostAddress(host: string, address: string): Promise<string[]>;
   /**
@@ -278,12 +283,9 @@ const tauriBackend: Backend = {
   async networkSettings() {
     return unwrap(await commands.networkSettings()) as NetworkSettings;
   },
-  async setPortMapping(on) {
-    unwrap(await commands.setPortMapping(on));
-    return unwrap(await commands.networkSettings()) as NetworkSettings;
-  },
-  async setNetworkMode(mode) {
-    return unwrap(await commands.setNetworkMode(mode)) as NetworkSettings;
+  async updateNetwork(change) {
+    const v = await commands.updateNetwork(change.mode ?? null, change.lanDiscovery ?? null, change.portMapping ?? null);
+    return unwrap(v) as NetworkSettings;
   },
   async setHostAddress(host, address) {
     const v = unwrap(await commands.setHostAddress(host, address)) as { addresses: string[] };
