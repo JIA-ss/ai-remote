@@ -84,6 +84,8 @@ export interface Backend {
   localHost(doctor: boolean): Promise<LocalHost>;
   /** A one-time pairing ticket from the host here. Shown once; never logged. */
   localPairCode(level: Level): Promise<PairTicket>;
+  /** Stops answering the pair code shown now (its dialog was closed). */
+  localWithdrawCode(): Promise<void>;
   /** Pauses (every controller's calls are refused) or resumes the agent on this computer. */
   localPause(on: boolean): Promise<void>;
   /** Stops the host here; `localStart` starts the installed one again. */
@@ -274,6 +276,9 @@ const tauriBackend: Backend = {
   },
   async localPairCode(level) {
     return unwrap(await commands.localHostPairCode(level)) as PairTicket;
+  },
+  async localWithdrawCode() {
+    unwrap(await commands.localHostWithdrawCode());
   },
   async localPause(on) {
     unwrap(await commands.localHostPause(on));

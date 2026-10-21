@@ -616,7 +616,12 @@ async fn handle(agent: &Arc<Agent>, req: AgentRequest, shutdown: &CancellationTo
         }),
         AgentRequest::DisconnectAgent { id } => json!({"disconnected": agent.sessions.stop(id)}),
         AgentRequest::Pair { ticket, name } => {
-            let paired = agent.mesh.pair(&ticket, name.as_deref()).await?;
+            // A pair code (eight digits, or the link in its QR code) finds the host and fetches its
+            // ticket first; anything else is the ticket itself.
+            let paired = match ar_net::PairCode::parse(&ticket) {
+                Some(code) => agent.mesh.pair_code(&code, name.as_deref()).await?,
+                None => agent.mesh.pair(&ticket, name.as_deref()).await?,
+            };
             // A fresh pairing supersedes whatever this host refused before.
             agent.clear_refusal(&paired.peer);
             agent.invalidate(&paired.peer).await;

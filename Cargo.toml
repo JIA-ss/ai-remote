@@ -24,6 +24,8 @@ mcpmesh-local-api = { version = "=0.58.0", features = ["client", "service"] }
 rmcp = { version = "=3.5.1", default-features = false, features = ["base64", "server", "client", "macros", "transport-async-rw", "transport-io", "transport-child-process"] }
 
 anyhow = "1"
+# Stretching pair codes (crates/ar-net/src/paircode.rs).
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures = "0.3"
 arboard = "3"
@@ -38,12 +40,16 @@ enigo = "0.6"
 # Size-based rotation of the background host log.
 file-rotate = "0.8"
 getrandom = "0.3"
+# Local-network discovery of pair-code rendezvous endpoints (the same crate the transport uses).
+iroh-mdns-address-lookup = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Same major as rmcp's child-process transport, so the build carries one copy.
 process-wrap = { version = "10", features = ["tokio1"] }
 # macOS LaunchAgent property lists (`ai-remote host install`).
 plist = "1"
 quick-xml = "0.42"
+# The QR code of a pair code (an SVG path the UI draws).
+qrcode = { version = "0.14", default-features = false }
 rfd = "0.17"
 # Verifying approver signatures (already in the tree through the transport); SubjectPublicKeyInfo parsing.
 ring = "0.17"
@@ -65,6 +71,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Reading Windows Firewall rules (doctor, `host status`); rules are written with netsh.exe.
 windows_firewall = "0.8"
 xcap = "0.9"
+# Pair-code key stretching is far too slow unoptimized.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
 [profile.dev.package.fast_image_resize]
 opt-level = 3
 [profile.dev.package.yuvutils-rs]

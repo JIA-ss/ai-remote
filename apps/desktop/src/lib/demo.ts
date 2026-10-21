@@ -256,7 +256,20 @@ export const demoBackend: Backend = {
   },
   async localPairCode(level) {
     await wait(300);
-    return { line: "ai-remote-ticket-demo-" + level + "-" + Math.random().toString(36).slice(2, 10), expires_at: Math.floor(Date.now() / 1000) + 86_400, level };
+    // A phone "scans" the demo code a while later, so the safety words can be reviewed too.
+    demoPairedAt = Date.now() + 12_000;
+    demoPairedLevel = level;
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      line: "mcpmesh-invite:DEMO" + level.toUpperCase() + Math.random().toString(36).slice(2, 10).toUpperCase(),
+      expires_at: now + 86_400,
+      level,
+      code: { code: "14071145", grouped: "1407 1145", link: "ai-remote://pair?code=14071145", expires_at: now + 600 },
+      qr: DEMO_QR,
+    };
+  },
+  async localWithdrawCode() {
+    demoPairedAt = 0;
   },
   async localPause(on) {
     await wait(150);
@@ -280,6 +293,9 @@ export const demoBackend: Backend = {
       { ts: now - 6 * minute, kind: "decision", peer: "laptop", tool: "shell", decision: "approved", by: "host", intent: "list the project folder" },
       { ts: now - 6 * minute + 900, kind: "outcome", peer: "laptop", tool: "shell", outcome: "ok" },
       { ts: now - 2 * minute, kind: "driver", state: "person", device: "laptop", by: "laptop" },
+      ...(demoPairedAt && now >= demoPairedAt
+        ? [{ ts: demoPairedAt, kind: "paired", peer: "iphone-15", sas: "harbor-velvet-orbit", level: demoPairedLevel }]
+        : []),
     ];
   },
   async localForget() {
@@ -397,3 +413,9 @@ ${[0, 1, 2, 3, 4].map((i) => `<rect x="${1000 + i * 64}" y="${640 - [120, 180, 1
 <rect x="0" y="952" width="1600" height="48" fill="#E9EDF1" fill-opacity="0.92"/>
 </svg>`;
 }
+
+let demoPairedAt = 0;
+let demoPairedLevel = "control";
+
+/** The QR code of the demo pair code's link (made by the host's `pair_qr::svg_path`). */
+const DEMO_QR = { size: 29, path: "M0 0h7v1h-7zM8 0h1v1h-1zM10 0h3v1h-3zM14 0h5v1h-5zM20 0h1v1h-1zM22 0h7v1h-7zM0 1h1v1h-1zM6 1h1v1h-1zM11 1h3v1h-3zM18 1h2v1h-2zM22 1h1v1h-1zM28 1h1v1h-1zM0 2h1v1h-1zM2 2h3v1h-3zM6 2h1v1h-1zM8 2h2v1h-2zM11 2h1v1h-1zM15 2h1v1h-1zM17 2h1v1h-1zM19 2h2v1h-2zM22 2h1v1h-1zM24 2h3v1h-3zM28 2h1v1h-1zM0 3h1v1h-1zM2 3h3v1h-3zM6 3h1v1h-1zM8 3h5v1h-5zM16 3h1v1h-1zM19 3h1v1h-1zM22 3h1v1h-1zM24 3h3v1h-3zM28 3h1v1h-1zM0 4h1v1h-1zM2 4h3v1h-3zM6 4h1v1h-1zM9 4h3v1h-3zM16 4h1v1h-1zM18 4h1v1h-1zM20 4h1v1h-1zM22 4h1v1h-1zM24 4h3v1h-3zM28 4h1v1h-1zM0 5h1v1h-1zM6 5h1v1h-1zM8 5h2v1h-2zM12 5h1v1h-1zM14 5h1v1h-1zM19 5h2v1h-2zM22 5h1v1h-1zM28 5h1v1h-1zM0 6h7v1h-7zM8 6h1v1h-1zM10 6h1v1h-1zM12 6h1v1h-1zM14 6h1v1h-1zM16 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM22 6h7v1h-7zM8 7h3v1h-3zM12 7h1v1h-1zM14 7h1v1h-1zM16 7h2v1h-2zM19 7h1v1h-1zM1 8h1v1h-1zM3 8h1v1h-1zM5 8h4v1h-4zM11 8h2v1h-2zM14 8h1v1h-1zM16 8h8v1h-8zM25 8h2v1h-2zM28 8h1v1h-1zM0 9h1v1h-1zM2 9h1v1h-1zM4 9h1v1h-1zM8 9h1v1h-1zM12 9h1v1h-1zM14 9h2v1h-2zM19 9h2v1h-2zM23 9h1v1h-1zM25 9h1v1h-1zM27 9h2v1h-2zM0 10h1v1h-1zM3 10h1v1h-1zM6 10h1v1h-1zM8 10h1v1h-1zM10 10h1v1h-1zM12 10h4v1h-4zM17 10h1v1h-1zM21 10h4v1h-4zM27 10h1v1h-1zM1 11h2v1h-2zM5 11h1v1h-1zM9 11h1v1h-1zM11 11h1v1h-1zM13 11h1v1h-1zM15 11h2v1h-2zM18 11h3v1h-3zM23 11h2v1h-2zM26 11h1v1h-1zM0 12h7v1h-7zM9 12h2v1h-2zM12 12h1v1h-1zM15 12h3v1h-3zM21 12h2v1h-2zM28 12h1v1h-1zM1 13h5v1h-5zM8 13h1v1h-1zM14 13h1v1h-1zM16 13h1v1h-1zM18 13h2v1h-2zM21 13h1v1h-1zM26 13h2v1h-2zM1 14h1v1h-1zM4 14h3v1h-3zM9 14h1v1h-1zM11 14h1v1h-1zM14 14h1v1h-1zM16 14h1v1h-1zM20 14h1v1h-1zM22 14h1v1h-1zM24 14h2v1h-2zM27 14h2v1h-2zM2 15h1v1h-1zM7 15h1v1h-1zM13 15h1v1h-1zM15 15h2v1h-2zM19 15h3v1h-3zM25 15h1v1h-1zM28 15h1v1h-1zM3 16h1v1h-1zM5 16h2v1h-2zM9 16h1v1h-1zM16 16h1v1h-1zM19 16h1v1h-1zM23 16h1v1h-1zM25 16h1v1h-1zM27 16h2v1h-2zM1 17h1v1h-1zM5 17h1v1h-1zM7 17h1v1h-1zM10 17h6v1h-6zM20 17h3v1h-3zM27 17h2v1h-2zM0 18h1v1h-1zM4 18h1v1h-1zM6 18h1v1h-1zM11 18h1v1h-1zM13 18h1v1h-1zM18 18h4v1h-4zM23 18h3v1h-3zM27 18h2v1h-2zM2 19h1v1h-1zM4 19h2v1h-2zM7 19h1v1h-1zM9 19h3v1h-3zM14 19h4v1h-4zM20 19h1v1h-1zM25 19h1v1h-1zM27 19h1v1h-1zM0 20h1v1h-1zM2 20h3v1h-3zM6 20h1v1h-1zM9 20h2v1h-2zM12 20h1v1h-1zM14 20h1v1h-1zM19 20h6v1h-6zM26 20h3v1h-3zM8 21h1v1h-1zM10 21h1v1h-1zM14 21h1v1h-1zM16 21h2v1h-2zM19 21h2v1h-2zM24 21h1v1h-1zM26 21h1v1h-1zM28 21h1v1h-1zM0 22h7v1h-7zM8 22h1v1h-1zM10 22h3v1h-3zM16 22h1v1h-1zM18 22h1v1h-1zM20 22h1v1h-1zM22 22h1v1h-1zM24 22h1v1h-1zM26 22h1v1h-1zM0 23h1v1h-1zM6 23h1v1h-1zM8 23h6v1h-6zM15 23h1v1h-1zM18 23h1v1h-1zM20 23h1v1h-1zM24 23h1v1h-1zM26 23h3v1h-3zM0 24h1v1h-1zM2 24h3v1h-3zM6 24h1v1h-1zM9 24h4v1h-4zM14 24h3v1h-3zM18 24h1v1h-1zM20 24h6v1h-6zM28 24h1v1h-1zM0 25h1v1h-1zM2 25h3v1h-3zM6 25h1v1h-1zM8 25h1v1h-1zM13 25h1v1h-1zM15 25h1v1h-1zM17 25h2v1h-2zM22 25h4v1h-4zM28 25h1v1h-1zM0 26h1v1h-1zM2 26h3v1h-3zM6 26h1v1h-1zM9 26h2v1h-2zM12 26h8v1h-8zM21 26h1v1h-1zM24 26h1v1h-1zM28 26h1v1h-1zM0 27h1v1h-1zM6 27h1v1h-1zM8 27h1v1h-1zM11 27h1v1h-1zM13 27h2v1h-2zM16 27h4v1h-4zM21 27h1v1h-1zM23 27h2v1h-2zM27 27h1v1h-1zM0 28h7v1h-7zM9 28h4v1h-4zM14 28h2v1h-2zM17 28h1v1h-1zM19 28h1v1h-1zM24 28h2v1h-2zM27 28h1v1h-1z" };

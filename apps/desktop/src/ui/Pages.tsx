@@ -12,6 +12,7 @@ import { AccessTab, ToolsTab } from "./ComputerTabs";
 import { DecisionCard } from "./Decide";
 import { Glyph, OsGlyph, Pointer, SeatMark, Wordmark } from "./glyphs";
 import { Icon } from "./Icon";
+import { groupCode, looksLikeTicket, toDigits } from "./PairCode";
 import { Stream } from "./Session";
 import { computerFacts, Facts, statusOf } from "./Shell";
 import { TurnLine, turnSpec, type TurnSpec } from "./TurnLine";
@@ -470,19 +471,24 @@ export function WelcomePage({ onPair }: { onPair: () => void }) {
 
 /** Pairing: the ticket, then the safety words both screens show. */
 export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
+  const [code, setCode] = useState("");
   const [ticket, setTicket] = useState("");
+  const [useTicket, setUseTicket] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paired, setPaired] = useState<Paired | null>(null);
   const [step, setStep] = useState<1 | 2 | 3 | "mismatch">(1);
   const host = paired?.peer ?? (name.trim() || "—");
+  const ready = useTicket ? !!ticket.trim() : toDigits(code).length === 8;
 
   const pair = async () => {
+    if (!ready || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const p = await api.pair(ticket.trim().replace(/^ai-remote\s+pair\s+/, ""), name.trim() || undefined);
+      const what = useTicket ? ticket.trim().replace(/^ai-remote\s+pair\s+/, "") : toDigits(code);
+      const p = await api.pair(what, name.trim() || undefined);
       setPaired(p);
       setStep(2);
     } catch (e) {
@@ -518,19 +524,49 @@ export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
 
       {step === 1 && (
         <div style={{ marginTop: 40, maxWidth: 560 }}>
-          <div className="hd">{t("pr_door1")}</div>
+          <div className="hd">{t(useTicket ? "pr_use_ticket" : "pr_door1")}</div>
           <div className="body c2" style={{ marginTop: 8 }}>
-            {t("pr_door1_d")}
+            {t(useTicket ? "pr_ticket_d" : "pr_door1_d")}
           </div>
-          <textarea
-            className="ta-input mono"
-            rows={4}
-            style={{ marginTop: 20 }}
-            value={ticket}
-            onChange={(e) => setTicket(e.target.value)}
-            placeholder={t("pr_ticket_ph")}
-          />
-          <div className="body" style={{ marginTop: 18 }}>
+          {useTicket ? (
+            <textarea
+              className="ta-input mono"
+              rows={4}
+              style={{ marginTop: 20 }}
+              value={ticket}
+              autoFocus
+              onChange={(e) => setTicket(e.target.value)}
+              placeholder={t("pr_ticket_ph")}
+            />
+          ) : (
+            <>
+              <input
+                className="nt-code-input"
+                aria-label={t("pr_code_label")}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                spellCheck={false}
+                value={code}
+                placeholder={t("pr_code_ph")}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // A pasted ticket goes to the ticket field.
+                  if (looksLikeTicket(v)) {
+                    setTicket(v);
+                    setUseTicket(true);
+                    return;
+                  }
+                  setCode(groupCode(v));
+                }}
+                onKeyDown={(e) => e.key === "Enter" && void pair()}
+              />
+              <div className="cap c3" style={{ marginTop: 8 }}>
+                {t("pr_code_hint")}
+              </div>
+            </>
+          )}
+          <div className="body" style={{ marginTop: 22 }}>
             {t("pr_name")}
           </div>
           <input className="field lg ph-field" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pr_name_ph")} style={{ marginTop: 6, width: "100%" }} />
@@ -540,9 +576,19 @@ export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
               <span>{error}</span>
             </div>
           )}
-          <div style={{ marginTop: 20 }}>
-            <button className="btn primary lg" disabled={busy || !ticket.trim()} onClick={pair}>
-              {busy ? t("pairing") : t("pair_btn")}
+          <div className="row" style={{ marginTop: 20, gap: 16, alignItems: "center" }}>
+            <button className="btn primary lg" disabled={busy || !ready} onClick={() => void pair()}>
+              {busy ? t(useTicket ? "pairing" : "pairing_code") : t("pair_btn")}
+            </button>
+            <button
+              className="nt-link"
+              disabled={busy}
+              onClick={() => {
+                setUseTicket((v) => !v);
+                setError(null);
+              }}
+            >
+              {t(useTicket ? "pr_use_code" : "pr_use_ticket")}
             </button>
           </div>
         </div>

@@ -43,7 +43,7 @@
 | `ai-remote host status` | 查看自启项、防火墙规则，以及被控端是否在运行 |
 | `ai-remote host start` | 立即启动已安装的后台被控端（比如 `stop-host` 之后）；桌面端的托盘也用它。Windows 服务要在管理员终端里运行 |
 | `ai-remote doctor` | 分级体检：这台机器到底能不能被操作？ |
-| `ai-remote pair-code [--level L] [--name N]` | 打印一张一次性配对票据 |
+| `ai-remote pair-code [--level L] [--name N]` | 显示一次性配对码（二维码和 8 位数字）以及它背后的票据 |
 | `ai-remote peers` | 已配对的控制端，以及各自的级别和设备 ID；被撤销的标为 `REVOKED` |
 | `ai-remote level <设备> <observe\|control\|admin\|none>` | 修改某个控制端的级别 |
 | `ai-remote revoke <设备>` / `unrevoke <设备>` | 拒绝某个控制端，或解除拒绝 |
@@ -58,7 +58,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `ai-remote pair <票据> [--name N]` | 与被控端配对 |
+| `ai-remote pair <配对码\|票据> [--name N]` | 用配对码（`4821 0937`）或票据与被控端配对 |
 | `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别；默认被控端标为 `(default)` |
 | `ai-remote hosts default [<被控端>\|--clear]` | 查看、设置或清除默认被控端：命令和 Agent 没指定被控端时用它 |
 | `ai-remote unpair <被控端> [--local]` | 解除配对：能连上时被控端也会删掉本设备，然后本控制端忘掉它（`--local`：只在本机忘掉） |
@@ -131,7 +131,7 @@ ai-remote host
 ```
 
 它会打印自己的名称、设备 ID、配置目录、已配对的控制端数量和审计日志路径。还没有配对任何控制端时，
-它还会打印一张配对票据（级别 `control`）；加 `--no-pair-code` 可以不打印。如果眼下弹不出审批框（桌面已锁定），
+它还会显示一个配对码，连同二维码和票据（级别 `control`）；加 `--no-pair-code` 可以不显示。如果眼下弹不出审批框（桌面已锁定），
 它会警告：需要审批的操作都会被拒绝。
 
 用 Ctrl+C 停止，或在另一个终端执行 `ai-remote stop-host`。停止时，所有控制端连接都会以 `host stopping` 为原因关闭。
@@ -390,23 +390,26 @@ ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
 ## 5. 配对步骤
 
 1. **确认被控端在运行**（在被控端执行 `ai-remote host status` 或 `ai-remote status`）。
-2. **在被控端生成票据：**
+2. **在被控端显示配对码**（桌面应用“本设备 → 显示配对码”，或托盘里的“显示配对码”），或在终端执行：
 
    ```sh
    ai-remote pair-code --level control --name laptop
    ```
 
-   `--level` 可以是 `observe`、`control`（默认）或 `admin`：先给够用的最低级别。`--name` 是被控端给兑换这张票据的
-   控制端起的名字（默认用控制端建议的名字，也就是它的机器名）。票据只能用一次，24 小时后过期。
-3. **通过可信的渠道把票据交出去。** 票据就是凭证：谁先兑换，谁就拿到这个级别。
-4. **在控制端兑换：**
+   `--level` 可以是 `observe`、`control`（默认）或 `admin`：先给够用的最低级别。`--name` 是被控端给来配对的
+   控制端起的名字（默认用控制端建议的名字，也就是它的机器名）。它会显示一个二维码、一个 8 位配对码和背后的票据。
+   配对码只能用一次，10 分钟内有效，且只在被控端运行期间有效；显示新码时旧码作废；5 个没能证明配对码的连接会让它作废。
+3. **把配对码交给另一台设备**：当面给，或走可信的渠道。有效期内它就是凭证：谁先用，谁就拿到这个级别。
+4. **在控制端配对**：用 iPhone 应用扫二维码，或在桌面应用的“配对电脑”页输入数字，或执行：
 
    ```sh
-   ai-remote pair <票据> --name office-pc
+   ai-remote pair 4821 0937 --name office-pc
    ```
 
    `--name` 是你在本地给这台被控端起的名字（默认用被控端建议的名字）。命令会打印被控端的名称、
-   由三个英文单词组成的安全码，以及授予的级别。
+   由三个英文单词组成的安全码，以及授予的级别。控制端通过连接本身用的发现机制（n0 的 DNS/pkarr 服务、局域网 mDNS、中继）
+   找到配对码背后的被控端；如果两台机器这样也互相够不着（没有互联网、也不在同一网络），就改用票据：
+   `ai-remote pair <票据>`，只能用一次，24 小时内有效。
 5. **核对安全码**，和被控端显示的比一比：
    - 在终端里运行的被控端会打印 `Paired with controller "laptop" (level: control).` 和 `Safety code: ...`；
    - 后台被控端会在日志里写一行 `controller paired`，带有 `peer=`、`level=` 和 `sas=`。在 Windows 上可以这样查：
