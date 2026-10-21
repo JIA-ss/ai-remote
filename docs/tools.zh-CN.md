@@ -538,7 +538,7 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 | `chat_runtimes` | 允许 | 找到的智能体：`id`、`name`、`version`、`path`、`verdict`（`ok`、`missing`、`below_minimum`、`not_executable`）、`login`（`logged_in` / `logged_out` 及方式，不含账号）、`caps`；另有 `host.can_start`、`host.enabled` |
 | `chat_sessions` | 允许 | 会话列表，最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数；不含对话内容 |
 | `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
-| `chat_attach` | 允许 | 参数 `session`。返回观看票据：发起设备可读写，其他设备只读 |
+| `chat_attach` | 允许 | 参数 `session`。返回票据，可观看会话并给它发消息；任何管理员级别的设备都可以，每条消息记录发送者 |
 | `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
 | `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
 
@@ -600,7 +600,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
   - `{"end":{}}`；
   - `{"bye":{}}`：停止观看；
   - `{"ping":N}`。
-- 每条命令都会重新检查设备是否仍有管理员级别；只读观看者的命令一律被拒绝。
+- 每条命令都会重新检查设备是否仍有管理员级别。
 
 **限制与检查**：
 

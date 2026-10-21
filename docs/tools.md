@@ -607,7 +607,7 @@ settings. Hence every tool here needs admin level, and starting asks the owner b
 | `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`; `host.can_start`, `host.enabled` |
 | `chat_sessions` | allow | the sessions, newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns; never the conversation |
 | `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`. Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
-| `chat_attach` | allow | `session`. A ticket to watch (read-write for the device that started it, read-only for others) |
+| `chat_attach` | allow | `session`. A ticket to watch the session and send it messages (any device with admin level; each message records who sent it) |
 | `chat_interrupt` | allow | stops the running turn; the session takes the next message |
 | `chat_end` | allow | ends the session and its agent process; the transcript stays |
 
@@ -659,7 +659,7 @@ line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`), then t
 and every new one. Commands, one line each: `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`
 (an `id` sent twice runs once), `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`,
 `{"dequeue":{"id":".."}}`, `{"end":{}}`, `{"bye":{}}` (stop watching), `{"ping":N}`. Each command
-checks again that the device has admin level; a read-only viewer's commands are refused.
+checks again that the device has admin level.
 
 **Limits and checks.** Switching agents off on the host (`ai-remote chat disable`, Settings → This
 device in the desktop app) ends every session and refuses new ones, bypassed devices included. A
