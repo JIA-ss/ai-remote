@@ -428,6 +428,60 @@ impl Node {
         self.mesh().endpoint.net_report().get()
     }
 
+    /// The dial hint stored for a paired `peer` (ai-remote patch): the addresses this node dials it
+    /// at, recorded at pairing and refreshed from live connections. `None` when there is no usable
+    /// hint; for a person with several devices, the first device's.
+    pub async fn peer_addr(&self, peer: &str) -> anyhow::Result<Option<iroh::EndpointAddr>> {
+        let mesh = self.mesh();
+        let candidates = crate::daemon::dial::connect_candidates(mesh, peer).await?;
+        let Some(endpoint_id) = candidates.first().copied() else {
+            return Ok(None);
+        };
+        let id = iroh::EndpointId::from_bytes(&endpoint_id)
+            .map_err(|e| anyhow::anyhow!("stored endpoint id for '{peer}' is invalid: {e}"))?;
+        let store = mesh.store.clone();
+        let entry = crate::util::blocking("join peer_addr store read", move || {
+            store.resolve(&endpoint_id)
+        })
+        .await??;
+        let hint = entry.and_then(|e| e.last_addr);
+        let addr = crate::daemon::dial::stored_dial_addr(hint.as_deref(), id);
+        Ok((!addr.addrs.is_empty()).then_some(addr))
+    }
+
+    /// Replace the dial hint for a paired `peer` with `addrs` (ai-remote patch).
+    ///
+    /// For a mesh with no relay and no address lookup the hint is the ONLY way to reach a peer, so
+    /// a peer whose address changed (a new IP, a port that was random before) stays unreachable
+    /// until someone says where it is. Only dialable IP addresses are kept (the same filter every
+    /// dial applies); errors when none is, when `peer` is not paired, or when it names several
+    /// devices. Never creates an allowlist row. The next live connection refreshes the hint as usual.
+    pub async fn set_peer_addr(
+        &self,
+        peer: &str,
+        addrs: &[std::net::SocketAddr],
+    ) -> anyhow::Result<iroh::EndpointAddr> {
+        let mesh = self.mesh();
+        let candidates = crate::daemon::dial::connect_candidates(mesh, peer).await?;
+        let [endpoint_id] = candidates[..] else {
+            anyhow::bail!("'{peer}' resolves to {} devices; name one device", candidates.len());
+        };
+        let id = iroh::EndpointId::from_bytes(&endpoint_id)
+            .map_err(|e| anyhow::anyhow!("stored endpoint id for '{peer}' is invalid: {e}"))?;
+        let addr = crate::daemon::dial::dialable_only(iroh::EndpointAddr::from_parts(
+            id,
+            addrs.iter().map(|a| iroh::TransportAddr::Ip(*a)),
+        ));
+        anyhow::ensure!(!addr.addrs.is_empty(), "no dialable address among {addrs:?}");
+        let json = serde_json::to_string(&addr)?;
+        let store = mesh.store.clone();
+        crate::util::blocking("join set_peer_addr store write", move || {
+            store.set_last_addr(&endpoint_id, &json)
+        })
+        .await??;
+        Ok(addr)
+    }
+
     /// Dial `peer` on a custom `alpn` — the client half of [`accept_protocol`](Self::accept_protocol)
     /// (#67).
     ///
