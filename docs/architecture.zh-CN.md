@@ -159,8 +159,9 @@ ai-remote 没有、也不想要自己的撮合服务器；但每个节点本来�
   结果未知。开启会话没有副作用，所以在复用的连接上开会话失败、或 8 秒内没有响应时，会换一条新连接重试一次
   （被控端明确拒绝了这台设备时除外）。
 - **中继与连通。** 默认使用 n0 的公共中继（只能看到密文）；被控端和控制端都可以通过 `[network] relays = [...]` 改用自建的
-  [iroh-relay](https://github.com/n0-computer/iroh)，并默认保留 n0 中继作兜底。局域网（mDNS）发现、中继连接走 HTTP 代理
-  （从环境变量或系统设置识别）、拨号重试都默认开启，见 [operations.zh-CN.md](operations.zh-CN.md#12-跨网络连接)。
+  [iroh-relay](https://github.com/n0-computer/iroh)，并默认保留 n0 中继作兜底。中继连接走 HTTP 代理
+  （从环境变量或系统设置识别）、拨号重试都默认开启；局域网（mDNS）发现和路由器端口映射需要手动打开（端口映射在桌面端
+  设置 > 网络 里打开，`[network] quiet = true` 把两者锁定为关闭），见 [operations.zh-CN.md](operations.zh-CN.md#12-跨网络连接)。
   控制端会报告每条连接的线路（`path`、`relay`、`relay_n0`），P2P 失败时各端都会提示。
 - **ALPN `app/ai-remote/events/1`。** 活动流和审批通道。控制端每个请求开一条流、写一行 JSON：
   `{"subscribe":true}` 返回被控端最近的审计记录，之后是每条新记录（工具的决策和结果、会话、审批），

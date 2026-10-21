@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use ar_core::{Profile, Role};
-use ar_net::{Mesh, NatReport, NetworkStatus};
+use ar_net::{LanDiscovery, Mesh, NatReport, NetworkOptions, NetworkStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -88,12 +88,20 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
         platform::macos::accessibility_allowed(),
     ));
     checks.push(dpi_check(platform::dpi_awareness()));
+    let net = inputs
+        .profile
+        .host_config_path()
+        .and_then(|p| ar_core::config::HostConfig::load(&p))
+        .and_then(|c| NetworkOptions::from_config(&c.network))
+        .map_err(|e| format!("{e:#}"));
+    checks.push(network_mode_check(&net));
+    let (port_mapping, quiet) = net.as_ref().map_or((false, false), |n| (n.port_mapping, n.quiet));
     checks.push(match inputs.mesh {
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
         None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(match inputs.mesh {
-        Some(mesh) => nat_check(mesh.nat()),
+        Some(mesh) => nat_check(mesh.nat(), port_mapping, quiet),
         None => Check::new("p2p", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(approval_check(platform::prompt_blocker()));
@@ -261,8 +269,37 @@ fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
     }
 }
 
+/// What the host puts on the network beyond its connections (`[network]` in ai-remote.toml).
+fn network_mode_check(net: &Result<NetworkOptions, String>) -> Check {
+    let net = match net {
+        Ok(net) => net,
+        Err(e) => return Check::new("network", Grade::Warn, format!("cannot read ai-remote.toml: {e}")),
+    };
+    let lock = if net.quiet { " (locked by quiet = true)" } else { "" };
+    let mut extra = Vec::new();
+    if net.lan != LanDiscovery::Off {
+        extra.push("local-network discovery (mDNS, about once a second)");
+    }
+    if net.port_mapping {
+        extra
+            .push("router port mapping (UPnP, NAT-PMP, PCP; the gateway is probed every 20 to 26 s without a mapping)");
+    }
+    if extra.is_empty() {
+        return Check::new(
+            "network",
+            Grade::Ok,
+            format!(
+                "quiet: no local-network discovery (mDNS), no router port mapping, name lookups only through \
+                 the system's DNS{lock}"
+            ),
+        );
+    }
+    Check::new("network", Grade::Ok, format!("on besides the connections: {}", extra.join("; ")))
+        .fix("on a managed network (an office), turn them off: Settings > Network in the app, or quiet = true under [network] in ai-remote.toml")
+}
+
 /// Whether this network lets direct (P2P) connections form; without them traffic is relayed.
-fn nat_check(nat: Option<NatReport>) -> Check {
+fn nat_check(nat: Option<NatReport>, port_mapping: bool, quiet: bool) -> Check {
     let Some(n) = nat else {
         return Check::new("p2p", Grade::Warn, "the network report is not ready yet; try again in a few seconds");
     };
@@ -286,7 +323,16 @@ fn nat_check(nat: Option<NatReport>) -> Check {
             Grade::Warn,
             "this network's NAT gives each destination its own port (symmetric NAT): direct connections often fail and are relayed",
         )
-        .fix("enable UPnP or NAT-PMP on the router, use IPv6, or forward a UDP port; a self-hosted relay avoids n0's rate limit"),
+        .fix(if quiet {
+            "use IPv6 or forward a UDP port (quiet mode keeps router port mapping off); a self-hosted relay avoids \
+             n0's rate limit"
+        } else if port_mapping {
+            "use IPv6 or forward a UDP port (router port mapping is on but did not help); a self-hosted relay \
+             avoids n0's rate limit"
+        } else {
+            "turn on router port mapping (Settings > Network in the app; the router must allow UPnP or NAT-PMP), \
+             use IPv6, or forward a UDP port; a self-hosted relay avoids n0's rate limit"
+        }),
     }
 }
 
@@ -651,14 +697,31 @@ mod tests {
     #[test]
     fn p2p_grades() {
         let open = NatReport { udp_v4: true, udp_v6: true, symmetric_nat: Some(false), captive_portal: None };
-        assert_eq!(nat_check(Some(open)).grade, Grade::Ok);
-        assert!(nat_check(Some(open)).summary.contains("IPv6"));
-        let blocked = nat_check(Some(NatReport { udp_v4: false, udp_v6: false, ..open }));
+        assert_eq!(nat_check(Some(open), false, false).grade, Grade::Ok);
+        assert!(nat_check(Some(open), false, false).summary.contains("IPv6"));
+        let blocked = nat_check(Some(NatReport { udp_v4: false, udp_v6: false, ..open }), false, false);
         assert_eq!(blocked.grade, Grade::Warn);
         assert!(blocked.summary.contains("UDP"));
-        let symmetric = nat_check(Some(NatReport { udp_v6: false, symmetric_nat: Some(true), ..open }));
-        assert!(symmetric.summary.contains("symmetric"));
-        assert_eq!(nat_check(None).grade, Grade::Warn);
+        let symmetric = NatReport { udp_v6: false, symmetric_nat: Some(true), ..open };
+        assert!(nat_check(Some(symmetric), false, false).summary.contains("symmetric"));
+        assert!(nat_check(Some(symmetric), false, false).fix.unwrap().contains("turn on router port mapping"));
+        assert!(!nat_check(Some(symmetric), true, false).fix.unwrap().contains("turn on"), "already on");
+        assert!(nat_check(Some(symmetric), false, true).fix.unwrap().contains("quiet mode"));
+        assert_eq!(nat_check(None, false, false).grade, Grade::Warn);
+    }
+
+    #[test]
+    fn network_mode_grades() {
+        let net = |toml: &str| {
+            let cfg: ar_core::config::HostConfig = toml::from_str(toml).unwrap();
+            NetworkOptions::from_config(&cfg.network).map_err(|e| e.to_string())
+        };
+        assert!(network_mode_check(&net("")).summary.starts_with("quiet:"), "quiet by default");
+        assert!(network_mode_check(&net("[network]\nquiet = true\nport_mapping = true\n")).summary.contains("locked"));
+        let on = network_mode_check(&net("[network]\nport_mapping = true\nlan_discovery = \"on\"\n"));
+        assert!(on.summary.contains("port mapping") && on.summary.contains("mDNS"), "{}", on.summary);
+        assert!(on.fix.unwrap().contains("Settings > Network"));
+        assert_eq!(network_mode_check(&Err("bad toml".into())).grade, Grade::Warn);
     }
 
     #[test]
