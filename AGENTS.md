@@ -61,6 +61,9 @@
   - `--real codex=…/codex(0.163) --model gpt-6.1-sol`：一次任务 5.5~9.4 s；能跑 shell 工具；打断 0.1 s 生效；下一轮记得上文（3 次运行）。
   - `--real opencode=…(1.19.3) --model opencode/deepseek-v4.1-flash-free`（ACP）：4.0~7.9 s；工具、打断 0.3 s、续上文都通过（2 次运行）。
 - **单元测试**：`cargo test -p ar-host --lib chat` 共 26 项，三个适配器用真实行格式的样例覆盖；`node --test tools/chat-state.test.mjs` 共 9 项。
+- **Windows（win-dev，Windows 11，debug 构建）**：
+  - `cargo clippy --workspace --all-targets -D warnings` 没有警告，`cargo test --workspace` 全部通过，其中 ar-host 255 项；新加的 Job Object 测试证明，停掉智能体时它拉起的子进程也会一起结束。
+  - `tools/chat-smoke.py` 本机隔离被控端和控制端，假 agent 加真实 Codex 0.162.1（npm 装的 `codex.cmd`，验证了 shim 路径），25 项全部通过：一次任务 9.5 s，打断 0.3 s 生效，下一轮仍记得上文。被控端是终端前台运行的，不是计划任务里的 hostw。
 - **桌面端**：在演示模式下，用浏览器跑通了"电脑页启动 → 会话页对话标签 → 流式步骤 → 停止"，以及 diff / 失败工具 / 思考的渲染。没有在真实 Tauri 应用里对真实被控端试过。
 
 ### 踩过的坑
@@ -75,7 +78,7 @@
 
 ### 下一步
 
-- [ ] Windows：本机 clippy 和测试在 win-dev 上跑；用户态计划任务模式下的真机对话（`.cmd` shim、Job Object、子进程不弹窗）尚未验证。
+- [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
 - [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
 - [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
