@@ -32,10 +32,21 @@ pub async fn connect(profile: &Profile) -> Result<Option<Conn>> {
     }
 }
 
+/// The start of the error for a request the running host does not understand: it is older than
+/// this app. The page turns it into "update the host" (any request, present or future).
+pub const OUTDATED: &str = "host-outdated";
+
 /// One request to the running host; `Ok(None)` when no host runs.
 pub async fn request(profile: &Profile, req: Value) -> Result<Option<Value>> {
     let Some(mut conn) = connect(profile).await? else { return Ok(None) };
-    conn.request(&req).await.map(Some)
+    let op = req["op"].as_str().unwrap_or("?").to_string();
+    conn.request(&req).await.map(Some).map_err(|e| outdated(&op, e))
+}
+
+/// An older host answers a request it does not know with serde's "unknown variant".
+fn outdated(op: &str, e: anyhow::Error) -> anyhow::Error {
+    let text = format!("{e:#}");
+    if text.contains("unknown variant") { anyhow!("{OUTDATED}: {op}") } else { e }
 }
 
 /// Like [`request`], but "no host" is an error for the page.
@@ -286,6 +297,13 @@ mod tests {
         let unknown = Summary::from_probe(&Probe::Unknown("refused".into()), 0);
         assert!(unknown.running && unknown.unknown.is_some(), "a host that cannot be read is not reported stopped");
         assert_eq!(Summary::from_probe(&Probe::Stopped, 0), Summary::STOPPED);
+    }
+
+    #[test]
+    fn an_older_host_is_named_as_such_whatever_the_request() {
+        let old = anyhow!("bad request: unknown variant `request_permission`, expected one of `status`, `peers`");
+        assert_eq!(outdated("request_permission", old).to_string(), "host-outdated: request_permission");
+        assert_eq!(outdated("peers", anyhow!("no such peer")).to_string(), "no such peer");
     }
 
     #[test]

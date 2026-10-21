@@ -76,6 +76,8 @@ export interface LocalHostStatus {
   driver?: Driver;
   /** Why approval prompts cannot be shown now (locked desktop, ...), or `null`. */
   prompt_blocker?: string | null;
+  /** The local requests this host understands; missing from hosts older than the list itself. */
+  ops?: string[];
   /** Windows service mode (SYSTEM): starting it again after a stop takes an administrator. */
   system?: boolean;
   pid: number;

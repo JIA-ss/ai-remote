@@ -54,6 +54,12 @@ function once(part: string, intent: TrayIntent): boolean {
   return true;
 }
 
+/** An error for the page: a request the running host does not know means it is older than this app. */
+function errorText(e: unknown): string {
+  const text = String(e);
+  return text.includes("host-outdated") ? t("host_outdated") : text;
+}
+
 /** "Oct 22, 14:30": a 24-hour ticket's end, with the day. */
 const dayTime = (ms: number) =>
   new Date(ms).toLocaleString(currentLang() === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -455,6 +461,10 @@ function HostPanel({
       return;
     }
     let live = true;
+    if (!lh?.host?.ops?.includes("recent")) {
+      setRecent([]);
+      return;
+    }
     api.localRecent(20).then((v) => live && setRecent(v), () => live && setRecent([]));
     return () => {
       live = false;
@@ -490,7 +500,7 @@ function HostPanel({
       await f();
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -526,7 +536,7 @@ function HostPanel({
       }
       setGrantNote("grant_timeout");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
       setGrantNote(null);
     }
     setGranting(null);
@@ -541,6 +551,9 @@ function HostPanel({
     return () => clearTimeout(timer);
   }, [anchor, lh, doctor, recent]);
   const host = lh?.host ?? null;
+  /** Whether the running host understands `op` (hosts older than the `ops` list understand none of the new ones). */
+  const can = (op: string) => !!host?.ops?.includes(op);
+  const outdated = !!host && !host.ops;
   const paused = host?.driver?.state === "paused";
   const connected = host?.connected ?? [];
   const facts: string[] = [];
@@ -567,7 +580,7 @@ function HostPanel({
     if (host.prompt_blocker) facts.push(t("lh_prompt_blocked", { why: host.prompt_blocker }));
   }
   useEffect(() => {
-    if (!mac || !lh?.host || !doctor) return;
+    if (!mac || !lh?.host?.ops?.includes("permissions") || !doctor) return;
     let live = true;
     api.hostPermissions().then((p) => live && setFreshGrants(p.fresh), () => {});
     return () => {
@@ -603,7 +616,7 @@ function HostPanel({
           >
             {host ? (
               <>
-                <button className="btn" disabled={busy} onClick={() => void act(() => api.localPause(!paused))}>
+                <button className="btn" disabled={busy || !can("pause")} onClick={() => void act(() => api.localPause(!paused))}>
                   <Icon name={paused ? "play" : "pause"} size={14} />
                   {t(paused ? "lh_resume" : "lh_pause")}
                 </button>
@@ -624,6 +637,13 @@ function HostPanel({
                 </button>
               )
             )}
+          </Row>
+        )}
+        {outdated && (
+          <Row ic={<GradeDot grade="warn" />} tt={t("host_old_h")} ds={t("host_old_d")}>
+            <button className="btn primary" onClick={() => setEnable(install?.service ?? true)}>
+              {t("host_old_btn")}
+            </button>
           </Row>
         )}
         {host && (
@@ -648,7 +668,7 @@ function HostPanel({
               <CheckRow
                 key={c.id}
                 check={c}
-                onGrant={host && mac && (c.id === "screen_recording" || c.id === "accessibility") ? () => void grant(c.id) : undefined}
+                onGrant={host && mac && can("request_permission") && (c.id === "screen_recording" || c.id === "accessibility") ? () => void grant(c.id) : undefined}
                 granting={granting === c.id ? grantNote : null}
                 busy={granting !== null}
               />
@@ -707,7 +727,7 @@ function HostPanel({
               onChange={(e) => {
                 const on = e.target.value === "on";
                 setError(null);
-                api.setAppLoginItem(on).then(() => setLoginItem(on), (err) => setError(String(err)));
+                api.setAppLoginItem(on).then(() => setLoginItem(on), (err) => setError(errorText(err)));
               }}
             >
               <option value="off">{t("li_off")}</option>
@@ -723,7 +743,7 @@ function HostPanel({
       </div>
       <div className="grp">
         <Row ic={<Icon name="shield" />} tt={t("rules_h")} ds={t("rules_d")}>
-          <button className="btn" onClick={() => void api.revealProfile().catch((e) => setError(String(e)))}>
+          <button className="btn" onClick={() => void api.revealProfile().catch((e) => setError(errorText(e)))}>
             <Icon name="open" size={14} />
             {t(mac ? "rules_open_mac" : "rules_open_win")}
           </button>
@@ -888,7 +908,7 @@ function CheckRow({
         </button>
       )}
       {pane && (check.grade !== "ok" || check.id === "autostart") && (
-        <button className="btn" onClick={() => void api.openSystemSettings(pane).catch((e) => setError(String(e)))}>
+        <button className="btn" onClick={() => void api.openSystemSettings(pane).catch((e) => setError(errorText(e)))}>
           <Icon name="open" size={14} />
           {t(check.id === "autostart" ? "as_open" : "perm_open")}
         </button>
@@ -908,7 +928,7 @@ function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose:
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api.hostInstallPlan(service).then(setPlan, (e) => {
-      setError(String(e));
+      setError(errorText(e));
       setState("error");
     });
   }, [service]);
@@ -1019,7 +1039,7 @@ function PairCodeDialog({ name, connected, onClose }: { name: string; connected:
       setSince(Date.now() - 1000);
       setTicket(await api.localPairCode(level));
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -1082,7 +1102,7 @@ function PairCodeDialog({ name, connected, onClose }: { name: string; connected:
                   await api.localForget(paired.peer ?? "");
                   setRemoved(true);
                 } catch (e) {
-                  setError(String(e));
+                  setError(errorText(e));
                 } finally {
                   setBusy(false);
                 }
@@ -1175,7 +1195,7 @@ function TrustedControllers({
                     if (e.target.value === "all") {
                       setAsk(c);
                     } else {
-                      api.setLocalBypass(c.name, false).then(load, (err) => setError(String(err)));
+                      api.setLocalBypass(c.name, false).then(load, (err) => setError(errorText(err)));
                     }
                   }}
                 >
