@@ -42,7 +42,11 @@ targets:
         CFBundleDisplayName: ai-remote
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: 连接你已配对的电脑，显示实时画面并发送你授权的操作。
-        NSBonjourServices: ["_irohv1._udp"]
+        NSBonjourServices: ["_irohv1._udp", "_ai-remote-pair._udp"]
+        NSCameraUsageDescription: 扫描电脑上显示的配对二维码。画面只在本机识别，不会保存或上传。
+        CFBundleURLTypes:
+          - CFBundleURLName: io.github.jia-ss.ai-remote.pair
+            CFBundleURLSchemes: [ai-remote]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIRequiresFullScreen: false
         UIApplicationSceneManifest:

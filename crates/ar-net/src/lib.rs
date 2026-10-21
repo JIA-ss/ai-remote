@@ -11,6 +11,7 @@
 //! pairing records the redeemer's principal in that service's allow list.
 
 pub mod ipc;
+pub mod paircode;
 pub mod proxy;
 pub mod refusal;
 
@@ -27,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 pub use mcpmesh_local_api::PeerPath;
 pub use mcpmesh_node::iroh;
+pub use paircode::{CodeOffer, PairCode};
 
 /// ALPN of an MCP session: the controller is the MCP client, the host the MCP server.
 pub const ALPN_MCP: &[u8] = b"app/ai-remote/mcp/1";
@@ -128,7 +130,7 @@ impl LanDiscovery {
 }
 
 /// n0's public relays, as relay URLs.
-fn n0_relay_urls() -> Vec<String> {
+pub(crate) fn n0_relay_urls() -> Vec<String> {
     use iroh::defaults::prod::{AP_RELAY_HOSTNAME, EU_RELAY_HOSTNAME, NA_EAST_RELAY_HOSTNAME, NA_WEST_RELAY_HOSTNAME};
     [NA_EAST_RELAY_HOSTNAME, NA_WEST_RELAY_HOSTNAME, EU_RELAY_HOSTNAME, AP_RELAY_HOSTNAME]
         .iter()
@@ -294,6 +296,11 @@ fn relay_host(relay: &str) -> String {
 #[derive(Clone)]
 pub struct Mesh {
     node: Arc<Node>,
+    /// The name this device claims for itself when it pairs.
+    nickname: String,
+    net: NetworkOptions,
+    /// The pair code this node shows now, if any (one at a time).
+    offer: Arc<tokio::sync::Mutex<Option<paircode::RunningOffer>>>,
 }
 
 impl Mesh {
@@ -305,7 +312,12 @@ impl Mesh {
             .start()
             .await
             .map_err(|e| anyhow!("start transport node: {e}"))?;
-        let mesh = Self { node: Arc::new(node) };
+        let mesh = Self {
+            node: Arc::new(node),
+            nickname: sanitize_name(&opts.nickname),
+            net: opts.network,
+            offer: Default::default(),
+        };
         Ok(mesh)
     }
 
@@ -360,13 +372,73 @@ impl Mesh {
     /// Redeems an invite from a host. `name` is this device's local name for the host.
     pub async fn pair(&self, line: &str, name: Option<&str>) -> Result<Paired> {
         let mut c = self.control().await?;
-        let r = c.pair_as(line.trim(), name.map(sanitize_name)).await.map_err(|e| anyhow!("pair: {e}"))?;
+        let line = line.trim();
+        let r = match c.pair_as(line, name.map(sanitize_name)).await {
+            // The host already has a device by this one's name: an earlier install of this device
+            // (a new key, the same machine name) or another machine called the same. That refusal
+            // leaves the ticket unspent, which matters most for a pair code (it has handed its
+            // ticket over and cannot be used again), so claim a name carrying this device's id
+            // and redeem the same ticket once more.
+            Err(ClientError::Api(e)) if e["code"].as_i64() == Some(mcpmesh_local_api::ERR_NICKNAME_TAKEN) => {
+                let id = self.node.endpoint_id().to_string();
+                // Names are ASCII and at most 40 long: keep room for the suffix.
+                let base = &self.nickname[..self.nickname.len().min(35)];
+                let other = sanitize_name(&format!("{base}-{}", &id[..4]));
+                tracing::info!(taken = %self.nickname, instead = %other, "pairing again under another name");
+                c.set_nickname(&other).await.map_err(|e| anyhow!("rename for pairing: {e}"))?;
+                let r = c.pair_as(line, name.map(sanitize_name)).await;
+                let _ = c.set_nickname(&self.nickname).await;
+                r
+            }
+            r => r,
+        }
+        .map_err(|e| anyhow!("pair: {e}"))?;
         let level = r
             .services
             .iter()
             .filter_map(|s| s.strip_prefix(SERVICE_PREFIX).and_then(|l| l.parse::<Level>().ok()))
             .max();
         Ok(Paired { peer: r.peer_nickname, sas: r.sas_code, level })
+    }
+
+    /// Shows `invite` behind a fresh pair code until the code is used, fails too often, or
+    /// [`CODE_TTL`](paircode::CODE_TTL) (or the ticket's own expiry) passes. Replaces the code shown
+    /// before, which stops working at once.
+    pub async fn offer_code(&self, invite: &Invite) -> Result<CodeOffer> {
+        let code = PairCode::generate();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let left = invite.expires_at.saturating_sub(now).min(paircode::CODE_TTL.as_secs());
+        let mut slot = self.offer.lock().await;
+        if let Some(old) = slot.take() {
+            old.stop().await;
+        }
+        let running = paircode::start_offer(
+            &code,
+            invite.line.clone(),
+            std::time::Instant::now() + Duration::from_secs(left),
+            &self.net,
+        )
+        .await?;
+        *slot = Some(running);
+        Ok(CodeOffer { code: code.digits().into(), grouped: code.grouped(), link: code.link(), expires_at: now + left })
+    }
+
+    /// Stops answering the pair code shown now, if any. Returns whether one was still live.
+    pub async fn withdraw_code(&self) -> bool {
+        match self.offer.lock().await.take() {
+            Some(old) => {
+                let live = !old.finished();
+                old.stop().await;
+                live
+            }
+            None => false,
+        }
+    }
+
+    /// Pairs with the host showing `code`: fetches its ticket, then redeems it like [`pair`](Self::pair).
+    pub async fn pair_code(&self, code: &PairCode, name: Option<&str>) -> Result<Paired> {
+        let line = paircode::fetch_ticket(code, &self.net).await?;
+        self.pair(&line, name).await
     }
 
     /// All paired peers with the level this node grants each.

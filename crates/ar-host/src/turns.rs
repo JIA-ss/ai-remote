@@ -31,6 +31,10 @@ pub enum Driver {
     Paused {
         by: String,
         since_ms: u64,
+        /// Paused by the owner at this computer (the desktop app's tray or page): a person's calls
+        /// are refused too, and only the owner, here, can resume.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        owner: bool,
     },
 }
 
@@ -40,6 +44,9 @@ pub struct Note {
     pub from: String,
     pub text: String,
 }
+
+/// Why a controller cannot take over or resume during the owner's pause.
+const OWNER_PAUSED: &str = "the owner paused this computer at the computer itself; only they can resume it there";
 
 /// Longest message kept; longer ones are cut.
 const MAX_NOTE: usize = 2000;
@@ -55,6 +62,14 @@ struct State {
     driver: Driver,
     control: CancellationToken,
     observe: CancellationToken,
+    /// While the owner's pause holds: the driver to return to when they resume.
+    before_owner_pause: Option<Driver>,
+}
+
+impl State {
+    fn owner_paused(&self) -> bool {
+        matches!(self.driver, Driver::Paused { owner: true, .. })
+    }
 }
 
 impl State {
@@ -79,6 +94,7 @@ impl Default for Turns {
                 driver: Driver::Agent,
                 control: CancellationToken::new(),
                 observe: CancellationToken::new(),
+                before_owner_pause: None,
             }),
             notes: Mutex::default(),
         }
@@ -97,15 +113,27 @@ impl Turns {
         self.state.lock().unwrap().control.clone()
     }
 
-    /// `device` takes the controls; active and queued agent calls lose their grant.
-    pub fn take_over(&self, device: &str, agent_may_watch: bool) -> Driver {
+    /// `device` takes the controls; active and queued agent calls lose their grant. Refused while
+    /// the owner's pause holds.
+    pub fn take_over(&self, device: &str, agent_may_watch: bool) -> Result<Driver> {
+        let mut state = self.state.lock().unwrap();
+        if state.owner_paused() {
+            bail!("{OWNER_PAUSED}");
+        }
         let next = Driver::Person { device: device.to_string(), since_ms: now(), agent_may_watch };
-        self.state.lock().unwrap().change(next)
+        Ok(state.change(next))
     }
 
     /// Gives the controls back to the agent, with an optional message telling it what changed.
     pub fn hand_back(&self, device: &str, note: Option<&str>) -> Result<Driver> {
         let mut state = self.state.lock().unwrap();
+        // Handing back during the owner's pause: their resume then goes to the agent.
+        if state.owner_paused()
+            && matches!(&state.before_owner_pause, Some(Driver::Person { device: d, .. }) if d == device)
+        {
+            state.before_owner_pause = Some(Driver::Agent);
+            return Ok(state.driver.clone());
+        }
         if !matches!(state.driver, Driver::Person { .. }) {
             bail!("nobody has taken over this computer");
         }
@@ -119,17 +147,50 @@ impl Turns {
         Ok(Driver::Agent)
     }
 
+    /// A paired controller pauses the agent. The owner's pause, if on, stays as it is.
     pub fn pause(&self, by: &str) -> Driver {
-        let next = Driver::Paused { by: by.to_string(), since_ms: now() };
-        self.state.lock().unwrap().change(next)
+        let mut state = self.state.lock().unwrap();
+        if state.owner_paused() {
+            return state.driver.clone();
+        }
+        state.change(Driver::Paused { by: by.to_string(), since_ms: now(), owner: false })
     }
 
+    /// A paired controller lets the agent go on; not past the owner's pause.
     pub fn resume(&self) -> Result<Driver> {
         let mut state = self.state.lock().unwrap();
+        if state.owner_paused() {
+            bail!("{OWNER_PAUSED}");
+        }
         if !matches!(state.driver, Driver::Paused { .. }) {
             bail!("the agent is not paused");
         }
         Ok(state.change(Driver::Agent))
+    }
+
+    /// The owner, at this computer, stops everyone: the agent and a person who took over. Kept
+    /// until the owner resumes here; whoever drove before gets the controls back then.
+    pub fn owner_pause(&self) -> Driver {
+        let mut state = self.state.lock().unwrap();
+        if state.owner_paused() {
+            return state.driver.clone();
+        }
+        let before = match &state.driver {
+            Driver::Person { .. } => state.driver.clone(),
+            _ => Driver::Agent,
+        };
+        state.before_owner_pause = Some(before);
+        state.change(Driver::Paused { by: "owner".into(), since_ms: now(), owner: true })
+    }
+
+    /// The owner lifts any pause (theirs or a controller's); nothing to do when none holds.
+    pub fn owner_resume(&self) -> Driver {
+        let mut state = self.state.lock().unwrap();
+        if !matches!(state.driver, Driver::Paused { .. }) {
+            return state.driver.clone();
+        }
+        let next = state.before_owner_pause.take().unwrap_or(Driver::Agent);
+        state.change(next)
     }
 
     /// Queues a message for the agent; it arrives with its next call result.
@@ -159,7 +220,7 @@ impl Turns {
     /// is cancelled when that access ends; it never revives after handback.
     pub fn admits(&self, person: bool, level: Level, host: &str) -> Result<CancellationToken, String> {
         let state = self.state.lock().unwrap();
-        if person {
+        if person && !state.owner_paused() {
             return Ok(CancellationToken::new());
         }
         let grant = || if level == Level::Observe { state.observe.clone() } else { state.control.clone() };
@@ -169,6 +230,10 @@ impl Turns {
             Driver::Person { device, .. } => Err(format!(
                 "A person took over {host} from {device}, so this call did not run. Do not retry right away: \
                  calls work again once they hand back. Tell the user what you were about to do."
+            )),
+            Driver::Paused { owner: true, .. } => Err(format!(
+                "The owner of {host} paused it at that computer, so this call did not run. Only they can resume it \
+                 there; do not retry. Tell the user what you were about to do."
             )),
             Driver::Paused { by, .. } => Err(format!(
                 "{host} is paused (by {by}), so this call did not run. Do not retry right away: calls work \
@@ -224,7 +289,7 @@ mod tests {
     fn a_person_who_takes_over_stops_the_agent_until_they_hand_back() {
         let t = Turns::default();
         assert!(t.admits(false, Level::Control, "pc").is_ok());
-        t.take_over("laptop", false);
+        t.take_over("laptop", false).unwrap();
         let why = t.admits(false, Level::Control, "pc").unwrap_err();
         assert!(why.contains("took over pc from laptop"), "{why}");
         assert!(t.admits(false, Level::Observe, "pc").is_err(), "not watching");
@@ -243,12 +308,12 @@ mod tests {
         let t = Turns::default();
         let before = t.input_cache_lifetime();
         let human = t.admits(true, Level::Control, "pc").unwrap();
-        t.take_over("laptop", false);
+        t.take_over("laptop", false).unwrap();
         assert!(before.is_cancelled());
         let taken = t.input_cache_lifetime();
         t.hand_back("laptop", None).unwrap();
         assert!(taken.is_cancelled());
-        t.take_over("laptop", false);
+        t.take_over("laptop", false).unwrap();
         let fresh = t.input_cache_lifetime();
         assert!(!fresh.is_cancelled());
         t.pause("laptop");
@@ -259,7 +324,7 @@ mod tests {
     #[test]
     fn a_watching_agent_may_only_look() {
         let t = Turns::default();
-        t.take_over("laptop", true);
+        t.take_over("laptop", true).unwrap();
         assert!(t.admits(false, Level::Observe, "pc").is_ok());
         assert!(t.admits(false, Level::Control, "pc").is_err());
     }
@@ -282,7 +347,7 @@ mod tests {
         let queued = t.admits(false, Level::Admin, "pc").unwrap();
         let watching = t.admits(false, Level::Observe, "pc").unwrap();
         let human = t.admits(true, Level::Control, "pc").unwrap();
-        t.take_over("phone", true);
+        t.take_over("phone", true).unwrap();
         t.hand_back("phone", None).unwrap();
         assert!(active.is_cancelled() && queued.is_cancelled());
         assert!(!watching.is_cancelled(), "watching was allowed throughout");
@@ -300,8 +365,30 @@ mod tests {
         assert!(read.is_cancelled() && write.is_cancelled());
         assert!(!t.admits(false, Level::Observe, "pc").unwrap().is_cancelled());
         let read = t.admits(false, Level::Observe, "pc").unwrap();
-        t.take_over("phone", false);
+        t.take_over("phone", false).unwrap();
         assert!(read.is_cancelled());
+    }
+
+    #[test]
+    fn the_owners_pause_stops_everyone_and_only_the_owner_lifts_it() {
+        let t = Turns::default();
+        t.take_over("laptop", false).unwrap();
+        let paused = t.owner_pause();
+        assert!(matches!(paused, Driver::Paused { owner: true, .. }));
+        assert!(t.admits(true, Level::Control, "pc").is_err(), "a person's calls stop too");
+        assert!(t.admits(false, Level::Observe, "pc").unwrap_err().contains("owner of pc"));
+        assert!(t.resume().is_err() && t.take_over("phone", false).is_err(), "controllers cannot lift it");
+        assert_eq!(t.pause("phone"), paused, "a controller's pause does not replace it");
+        // The person who drove gets the controls back.
+        assert!(matches!(t.owner_resume(), Driver::Person { device, .. } if device == "laptop"));
+        assert!(matches!(t.owner_resume(), Driver::Person { .. }), "resuming again changes nothing");
+        // Handing back during the pause makes the resume go to the agent.
+        t.owner_pause();
+        t.hand_back("laptop", None).unwrap();
+        assert_eq!(t.owner_resume(), Driver::Agent);
+        // The owner lifts a controller's pause as well.
+        t.pause("phone");
+        assert_eq!(t.owner_resume(), Driver::Agent);
     }
 
     #[test]

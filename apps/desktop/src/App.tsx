@@ -11,6 +11,7 @@ import { SessionPage } from "./ui/Session";
 import { SettingsWindow } from "./ui/Settings";
 import { Sidebar, TitleBar, type Nav } from "./ui/Shell";
 import { useNow } from "./ui/util";
+import type { TrayIntent } from "./lib/types";
 
 type View = { kind: "main"; nav: Nav | null } | { kind: "session"; host: string; chat?: ChatTarget | null; panel?: "chat" };
 
@@ -41,6 +42,41 @@ export default function App() {
   const [device, setDevice] = useState("this device");
   const [welcomed, setWelcomed] = useState(initialWelcomed);
   const [deviceQuery, setDeviceQuery] = useState("");
+  // The tray menu's "Open Settings", "Show Pairing Code" and "Recent Activity" land here.
+  const [intent, setIntent] = useState<TrayIntent | null>(null);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let stop: (() => void) | null = null;
+    let stopHidden: (() => void) | null = null;
+    let gone = false;
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<Omit<TrayIntent, "n">>("tray-navigate", (e) => {
+        const to = e.payload ?? {};
+        // No view: the window was only brought back (Dock, a click on the icon); stay where we are.
+        if (to.view === "settings") {
+          setView({ kind: "main", nav: "settings" });
+          setIntent({ ...to, n: Date.now() });
+        }
+      }).then((un) => {
+        if (gone) un();
+        else stop = un;
+      }),
+    );
+    // The window went to the tray: a live view must not go on unseen.
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen("window-hidden", () =>
+        setView((v) => (v.kind === "session" ? { kind: "main", nav: { computer: v.host } } : v)),
+      ).then((un) => {
+        if (gone) un();
+        else stopHidden = un;
+      }),
+    );
+    return () => {
+      gone = true;
+      stop?.();
+      stopHidden?.();
+    };
+  }, []);
   const welcome = () => {
     localStorage.setItem(WELCOMED, "1");
     setWelcomed(true);
@@ -80,7 +116,7 @@ export default function App() {
     }
   }
 
-  if (view.kind === "main" && view.nav === "settings") return <SettingsWindow onBack={() => nav("home")} />;
+  if (view.kind === "main" && view.nav === "settings") return <SettingsWindow onBack={() => nav("home")} intent={intent} />;
 
   // Start with the whole workspace, so attention and connection state are visible at a glance.
   const active: Nav = view.kind === "main" ? (view.nav ?? "devices") : "devices";

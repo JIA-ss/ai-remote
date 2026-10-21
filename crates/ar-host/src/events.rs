@@ -146,6 +146,8 @@ impl ProtocolHandler for EventsProtocol {
             conn.close(CLOSE_NO_ACCESS.into(), REASON_NO_LEVEL);
             return Ok(());
         }
+        let _present =
+            self.host.presence().connect(format!("eid:{}", conn.remote_id()), crate::presence::Channel::Events);
         while let Ok((mut send, recv)) = conn.accept_bi().await {
             let host = self.host.clone();
             let peer = peer.clone();
@@ -221,7 +223,7 @@ async fn handle(host: &HostState, peer: &Peer, req: Request) -> anyhow::Result<V
             }
             let turns = host.turns();
             let driver = match t.action {
-                TurnAction::TakeOver => turns.take_over(&peer.name, t.agent_may_watch),
+                TurnAction::TakeOver => turns.take_over(&peer.name, t.agent_may_watch)?,
                 TurnAction::HandBack => turns.hand_back(&peer.name, t.note.as_deref())?,
                 TurnAction::Pause => turns.pause(&peer.name),
                 TurnAction::Resume => turns.resume()?,

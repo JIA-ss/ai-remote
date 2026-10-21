@@ -245,6 +245,8 @@ final class PhoneUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["配对一台电脑"].waitForExistence(timeout: 30))
         app.buttons["配对一台电脑"].tap()
+        XCTAssertTrue(app.buttons["pair-use-ticket"].waitForExistence(timeout: 10))
+        app.buttons["pair-use-ticket"].tap()
         let ticket = app.textViews["pairing-ticket"]
         let submit = app.buttons["pair-submit"]
         XCTAssertTrue(ticket.waitForExistence(timeout: 10))
@@ -282,6 +284,39 @@ final class PhoneUITests: XCTestCase {
         app.terminate()
     }
 
+    func testPairCodeFieldGroupsDigitsAndReportsAnUnknownCode() {
+        let app = XCUIApplication()
+        addUIInterruptionMonitor(withDescription: "Local network permission") { alert in
+            for label in ["Allow", "允许"] where alert.buttons[label].exists {
+                alert.buttons[label].tap()
+                return true
+            }
+            return false
+        }
+        app.launch()
+        XCTAssertTrue(app.buttons["配对一台电脑"].waitForExistence(timeout: 30))
+        app.buttons["配对一台电脑"].tap()
+        let code = app.textFields["pairing-code"]
+        let submit = app.buttons["pair-submit"]
+        XCTAssertTrue(code.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["pair-scan"].exists, "Scanning is offered next to typing")
+        XCTAssertFalse(submit.isEnabled)
+        code.tap()
+        code.typeText("1234567")
+        XCTAssertEqual(code.value as? String, "1234 567", "Digits are grouped as they are typed")
+        XCTAssertFalse(submit.isEnabled, "Seven digits are not a code")
+        code.typeText("8")
+        XCTAssertEqual(code.value as? String, "1234 5678")
+        XCTAssertTrue(submit.isEnabled)
+        attach(app, name: "Pair code entry")
+        submit.tap()
+        // Nobody shows this code: the agent looks for it, then says so.
+        XCTAssertTrue(app.alerts["需要关注"].waitForExistence(timeout: 60))
+        app.alerts["需要关注"].buttons["好"].tap()
+        XCTAssertEqual(code.value as? String, "1234 5678", "A code nobody answered stays for correction")
+        app.terminate()
+    }
+
     func testLaunchAndInvalidPairing() {
         let app = XCUIApplication()
         addUIInterruptionMonitor(withDescription: "Local network permission") { alert in
@@ -294,6 +329,8 @@ final class PhoneUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["配对一台电脑"].waitForExistence(timeout: 30))
         app.buttons["配对一台电脑"].tap()
+        XCTAssertTrue(app.buttons["pair-use-ticket"].waitForExistence(timeout: 10))
+        app.buttons["pair-use-ticket"].tap()
         let ticket = app.textViews["pairing-ticket"]
         XCTAssertTrue(ticket.waitForExistence(timeout: 10))
         let submit = app.buttons["pair-submit"]

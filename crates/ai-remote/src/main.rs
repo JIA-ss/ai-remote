@@ -49,12 +49,13 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
-    /// [host] Print a one-time pairing ticket for a new controller.
+    /// [host] Show a one-time pair code (and its QR code) for a new controller, with the ticket
+    /// for machines that cannot reach each other over the network.
     PairCode {
         /// Level to grant: observe, control or admin.
         #[arg(long, default_value = "control")]
         level: Level,
-        /// This host's name for the controller that redeems it.
+        /// This host's name for the controller that pairs with it.
         #[arg(long)]
         name: Option<String>,
     },
@@ -89,9 +90,12 @@ enum Command {
         #[command(subcommand)]
         command: MountCommand,
     },
-    /// [controller] Pair with a host using its ticket.
+    /// [controller] Pair with a host using its pair code (`4821 0937`) or its ticket.
     Pair {
-        ticket: String,
+        /// The eight-digit pair code the host shows (spaces and dashes are fine), the link in its
+        /// QR code, or the whole `mcpmesh-invite:` ticket.
+        #[arg(num_args = 1.., value_name = "CODE|TICKET")]
+        ticket: Vec<String>,
         /// Your local name for the host.
         #[arg(long)]
         name: Option<String>,
@@ -428,6 +432,9 @@ enum HostAction {
         #[arg(long, conflicts_with = "firewall_only")]
         service: bool,
     },
+    /// Start the installed background host now (the autostart entry's own start command), for
+    /// example after `stop-host`. The desktop app's tray uses this too.
+    Start,
     /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
     /// another profile's autostart still uses them.
     Uninstall {
@@ -485,6 +492,7 @@ async fn run(cli: Cli) -> Result<()> {
             hostops::host_uninstall(&profile, dry_run, firewall_only).await
         }
         Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Host { action: Some(HostAction::Start), .. } => hostops::host_start(&profile, json_out).await,
         Command::Doctor { host: None } => hostops::doctor(&profile, json_out).await,
         Command::Doctor { host: Some(host) } => remote::doctor(&profile, host, json_out).await,
         Command::PairCode { level, name } => {
@@ -493,8 +501,31 @@ async fn run(cli: Cli) -> Result<()> {
                 return print_json(&v);
             }
             let line = v["line"].as_str().unwrap_or_default();
-            println!("On the controlling machine, run:\n\n  ai-remote pair {line}\n");
-            println!("Grants level \"{level}\". Valid once. Check that both machines show the same safety code.");
+            match v["code"]["grouped"].as_str() {
+                Some(code) => {
+                    if let Some(qr) = v["code"]["link"].as_str().and_then(ar_host::pair_qr::terminal) {
+                        for l in qr.lines() {
+                            println!("  {l}");
+                        }
+                        println!();
+                    }
+                    println!("Scan it with the ai-remote app on a phone, or type the pair code on the other computer:");
+                    println!("\n  {code}        (ai-remote pair {})\n", v["code"]["code"].as_str().unwrap_or_default());
+                    let until = v["code"]["expires_at"].as_u64().map(ar_host::fmt_epoch).unwrap_or_default();
+                    println!("Grants level \"{level}\". Works once; it expires {until}.");
+                    println!(
+                        "Without a network between the machines, use the ticket instead:\n\n  ai-remote pair {line}\n"
+                    );
+                }
+                None => {
+                    if let Some(e) = v["code_error"].as_str() {
+                        eprintln!("note: no pair code ({e}); use the ticket");
+                    }
+                    println!("On the controlling machine, run:\n\n  ai-remote pair {line}\n");
+                    println!("Grants level \"{level}\". Valid once.");
+                }
+            }
+            println!("Check that both machines show the same three-word safety code.");
             Ok(())
         }
         Command::Peers => {
@@ -619,6 +650,8 @@ async fn run(cli: Cli) -> Result<()> {
             print_result(json_out, &json!({"host": host, "id": waiting.id, "denied": true}), "denied")
         }
         Command::Pair { ticket, name } => {
+            // `ai-remote pair 4821 0937` arrives as two words.
+            let ticket = ticket.join(" ");
             let v = agent_request(&profile, json!({"op": "pair", "ticket": ticket, "name": name})).await?;
             if json_out {
                 return print_json(&v);
