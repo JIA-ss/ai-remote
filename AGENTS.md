@@ -83,6 +83,7 @@
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
 - [x] 服务模式 chat-runner：代码与单测完成（分支 `feat/host-chat-service`），**真机服务模式未验证**，步骤见下一小节。
+- [ ] 服务模式真机：按下一小节的步骤 1~8 走一遍（要管理员终端）。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
 - [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
@@ -103,7 +104,7 @@
 **实测 / 未测**
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
-- Windows（win-dev）：WIN_RESULT
+- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试用 sh 假智能体，只在 Unix 上跑；Windows 命名管道这一侧走的是同一份 `ar_net::ipc` 代码，但没在 Windows 上端到端跑过。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
 **真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
