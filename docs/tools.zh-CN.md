@@ -477,7 +477,8 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 ### 5.14 文件
 
 级别 admin：文件名和文件内容的敏感程度和 `shell` 能碰到的一样。读元数据直接执行；创建、删除、传输文件默认先问机主。
-所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）。
+所有路径都必须是绝对路径（调用方无从知道被控端的工作目录）；`~` 和 `~/...` 表示被控端登录用户的主目录（被控端
+以 Windows 服务运行时也是），`~/Desktop` 是该用户实际看到的桌面（Windows 上可能被 OneDrive 挪走）。
 
 **`files_list`**：`path`（文件夹），可选 `pattern`（`*`、`?` 通配，不区分大小写）和 `offset`。返回
 `{path, total, offset, next_offset, entries: [{name, kind, size, modified}]}`：`kind` 为 `file`、`dir`、`link`
@@ -538,7 +539,7 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 | `chat_runtimes` | 允许 | 找到的智能体：`id`、`name`、`version`、`path`、`verdict`（`ok`、`missing`、`below_minimum`、`not_executable`）、`login`（`logged_in` / `logged_out` 及方式，不含账号）、`caps`；另有 `host.can_start`、`host.enabled` |
 | `chat_sessions` | 允许 | 会话列表，最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数；不含对话内容 |
 | `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
-| `chat_attach` | 允许 | 参数 `session`。返回观看票据：发起设备可读写，其他设备只读 |
+| `chat_attach` | 允许 | 参数 `session`。返回票据，可观看会话并给它发消息；任何管理员级别的设备都可以，每条消息记录发送者 |
 | `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
 | `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
 
@@ -600,7 +601,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
   - `{"end":{}}`；
   - `{"bye":{}}`：停止观看；
   - `{"ping":N}`。
-- 每条命令都会重新检查设备是否仍有管理员级别；只读观看者的命令一律被拒绝。
+- 每条命令都会重新检查设备是否仍有管理员级别。
 
 **限制与检查**：
 

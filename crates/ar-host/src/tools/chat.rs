@@ -183,8 +183,8 @@ impl Attach {
             spec: ToolSpec::new::<SessionParams>(
                 "chat_attach",
                 Level::Admin,
-                "A ticket to watch a coding-agent session (and, for the device that started it, to keep talking), \
-                 valid once for 2 minutes on the chat channel. Other devices only watch.",
+                "A ticket to a coding-agent session on the chat channel (watch it and send it messages), valid once \
+                 for 2 minutes.",
             )
             .allow()
             .non_destructive(),
@@ -201,8 +201,9 @@ impl Tool for Attach {
     async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: SessionParams = parse(args)?;
         let chat = ctx.host.chat().get(&p.session)?;
-        let mine = chat.creator.principal.is_some() && chat.creator.principal == ctx.session.peer.principal;
-        let role = if mine { Role::Rw } else { Role::Ro };
+        // Every device with level admin may talk to every session: it could start an agent of its
+        // own with the same rights, and each message carries who sent it.
+        let role = Role::Rw;
         let ticket = ctx.host.chat().issue_ticket(&chat.id, ctx.session.peer.principal.clone(), role);
         let mut v = chat.describe();
         v["session"] = json!(chat.id);

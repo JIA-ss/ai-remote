@@ -7,8 +7,8 @@
 //! event and a guarantee that nothing stays pressed. Calls run one at a time, so two calls cannot
 //! interleave their events (a ctrl held by one would turn another's click into ctrl+click).
 
-mod inject;
-mod keys;
+pub(crate) mod inject;
+pub(crate) mod keys;
 
 use std::{sync::Arc, time::Duration};
 

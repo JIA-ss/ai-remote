@@ -19,6 +19,7 @@ pub mod doctor;
 mod events;
 mod files_channel;
 mod gate;
+mod input_channel;
 pub mod install;
 pub mod mounts;
 pub mod platform;
@@ -39,8 +40,8 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
 use ar_net::{
-    ALPN_CHAT, ALPN_EVENTS, ALPN_FILES, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions, NetworkOptions, Peer,
-    ipc,
+    ALPN_CHAT, ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, LanDiscovery, Mesh, MeshOptions,
+    NetworkOptions, Peer, ipc,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -300,6 +301,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         });
     }
     tokio::spawn(chat_channel::enforce(Arc::downgrade(&state)));
+    mesh.accept(ALPN_INPUT, Arc::new(input_channel::InputProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
     announce_pairings(&mesh, owner).await;
 

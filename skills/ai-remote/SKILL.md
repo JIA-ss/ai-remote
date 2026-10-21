@@ -140,7 +140,7 @@ is advertised: it does not depend on layout, scaling or what is in front.
 
 - `files_list` (`path`, `pattern`, `offset`, 500 entries per page), `files_stat`, `files_mkdir`,
   `files_delete` (`recursive` for non-empty folders; deletion is permanent, never to a recycle bin).
-  All paths are absolute paths on the host.
+  All paths are absolute paths on the host (`~` means the host user's home).
 - Whole files move only on the command line, not through MCP:
 
 ```sh

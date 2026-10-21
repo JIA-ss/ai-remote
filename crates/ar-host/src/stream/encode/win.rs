@@ -36,6 +36,18 @@ const OUTPUT_WAIT: Duration = Duration::from_millis(100);
 /// Frames between keyframes the encoder may insert on its own; viewers ask for one when needed.
 const KEYFRAME_SPACING: u32 = 1 << 30;
 
+/// `CODECAPI_AVEncCommonQualityVsSpeed`: 0 is the fastest preset (NVENC's p1). A remote desktop
+/// wants each frame out as soon as it can be: at 4K HEVC it cut encoding from 4.3 to 2.4 ms per
+/// frame for 0.06~1.0 dB of PSNR against the default (33) (2026-10-13, see AGENTS.md).
+/// `AI_REMOTE_ENCODER_QVS=<0..100>` overrides it, for measurements.
+fn quality_vs_speed() -> u32 {
+    #[cfg(test)]
+    if let Some(level) = tuning::quality_vs_speed() {
+        return level;
+    }
+    std::env::var("AI_REMOTE_ENCODER_QVS").ok().and_then(|v| v.parse().ok()).filter(|v| *v <= 100).unwrap_or(0)
+}
+
 fn startup() -> Result<()> {
     static STARTED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
     com();
@@ -273,6 +285,8 @@ impl HardwareEncoder {
                 rate_control(api, bitrate_bps);
                 set(api, &CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
                 set(api, &CODECAPI_AVEncMPVGOPSize, variant_u32(KEYFRAME_SPACING), "GOP");
+                // Like the buffer size below, NVENC reads this only before the media types.
+                set(api, &CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(quality_vs_speed()), "quality vs speed");
                 // NVENC reads the buffer size only before the media types; set after them alone it was
                 // ignored, and every keyframe came out as up to a second of the bitrate (2.4 MB at 4K
                 // 20 Mbit/s), a second of delay on a link that carries just the stream.
@@ -314,6 +328,7 @@ impl HardwareEncoder {
                 #[cfg(test)]
                 tuning::apply(api);
                 set(api, &CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
+                set(api, &CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(quality_vs_speed()), "quality vs speed");
                 set(api, &CODECAPI_AVEncMPVDefaultBPictureCount, variant_u32(0), "B-frames");
                 // Keyframes come on request: a viewer joining or recovering. The stream is reliable.
                 set(api, &CODECAPI_AVEncMPVGOPSize, variant_u32(KEYFRAME_SPACING), "GOP");
@@ -638,9 +653,6 @@ pub(crate) mod tuning {
     /// Sets quality vs speed when asked, and logs whether the encoder admits to both properties.
     pub(super) fn apply(api: &super::ICodecAPI) {
         use super::*;
-        if let Some(level) = quality_vs_speed() {
-            set(api, &CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(level), "quality vs speed");
-        }
         for (name, key) in
             [("quality vs speed", &CODECAPI_AVEncCommonQualityVsSpeed), ("VBV", &CODECAPI_AVEncCommonBufferSize)]
         {
