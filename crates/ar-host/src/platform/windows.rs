@@ -16,9 +16,8 @@ use windows::Win32::{
         Console::GetConsoleWindow,
         RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId},
         StationsAndDesktops::{
-            CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
-            DESKTOP_HOOKCONTROL, DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, GetThreadDesktop,
-            GetUserObjectInformationW, HDESK, OpenInputDesktop, SetThreadDesktop, UOI_NAME,
+            CloseDesktop, DESKTOP_ACCESS_FLAGS, GetThreadDesktop, GetUserObjectInformationW, HDESK, OpenInputDesktop,
+            SetThreadDesktop, UOI_NAME,
         },
         Threading::{
             GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, OpenProcessToken,
