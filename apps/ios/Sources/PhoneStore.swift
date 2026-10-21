@@ -14,6 +14,9 @@ import AIRemoteCore
     public var loading = false
     public var pairSheet = false
     public var showActivity = false
+    public var showChat = false
+    /// The selected host's coding-agent chats, while the chat sheet has been opened in this session.
+    public var chat: PhoneChatStore?
     public var connected = false
     public var image: CGImage?
     public var screen: ScreenGeometry?
@@ -235,8 +238,16 @@ import AIRemoteCore
             if self?.text == sent { self?.text = "" }
         })
     }
+    /// Shows the selected host's coding-agent chats (kept while the session lasts).
+    public func openChat() {
+        guard let selected else { return }
+        if chat?.host != selected.name { chat = PhoneChatStore(client: client, host: selected.name) }
+        showChat = true
+    }
     public func leaveSession() async {
         let handBack = hasDriver
+        showChat = false
+        if let chat { self.chat = nil; await chat.close() }
         leaving = true; defer { leaving = false }
         generation += 1; inputTail?.cancel(); inputTail = nil
         routeWatch?.cancel(); routeWatch = nil; route = nil

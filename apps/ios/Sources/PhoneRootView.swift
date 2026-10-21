@@ -39,6 +39,10 @@ public struct PhoneRootView: View {
                         if store.selected != nil {
                             ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
                             ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
+                            ToolbarItem(placement: .primaryAction) {
+                                Button("智能体", systemImage: "bubble.left.and.text.bubble.right") { store.openChat() }
+                                    .accessibilityIdentifier("session-chat")
+                            }
                         } else {
                             ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                         }
@@ -49,7 +53,10 @@ public struct PhoneRootView: View {
         }
         .sheet(isPresented: $store.pairSheet) { pairing }
         .sheet(isPresented: $store.showActivity) { activity }
-        .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
+        .sheet(isPresented: $store.showChat) {
+            if let chat = store.chat { PhoneChatView(chat: chat) { store.showChat = false } }
+        }
+        .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity && !store.showChat))
         .onChange(of: store.selected?.name) { _, _ in
             fullscreen = false; showKeyboard = false; textFocused = false
             #if DEBUG

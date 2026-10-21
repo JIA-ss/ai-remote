@@ -95,6 +95,21 @@ public actor PhoneClient {
         guard token == generation else { await owner.stopSubscription(subscription: view.subscription); throw CancellationError() }
         return MobileView(subscription: lease(view.subscription, owner: owner), replyJson: view.replyJson)
     }
+    /// Opens a coding-agent chat with a ticket from `chat_attach` (or `chat_start`). The view's reply is
+    /// the host's hello line; the listener gets one event line each.
+    public func chat(host: String, ticket: String, since: UInt64, listener: StreamListener) async throws -> MobileView {
+        let owner = try ready(), token = generation
+        let view = try await owner.watchChat(host: host, ticket: ticket, since: since, listener: listener)
+        guard token == generation else { await owner.stopSubscription(subscription: view.subscription); throw CancellationError() }
+        return MobileView(subscription: lease(view.subscription, owner: owner), replyJson: view.replyJson)
+    }
+    /// One command on an open chat (`input`, `interrupt`, `answer`, ...).
+    public func chatSend(_ id: UInt64, _ command: [String: JSONValue]) async throws {
+        guard let lease = subscriptions[id] else {
+            throw NSError(domain: "ai-remote", code: 3, userInfo: [NSLocalizedDescriptionKey: "对话已断开"])
+        }
+        try await lease.controller.chatSend(subscription: lease.nativeID, commandJson: JSONValue.object(command).text)
+    }
     public func stop(_ id: UInt64) async {
         guard let lease = subscriptions.removeValue(forKey: id) else { return }
         await lease.controller.stopSubscription(subscription: lease.nativeID)

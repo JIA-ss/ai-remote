@@ -49,6 +49,8 @@ struct Subscription {
     cancel: CancellationToken,
     task: JoinHandle<()>,
     keyframes: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Command lines for a coding-agent chat (`chat_send`).
+    commands: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 #[derive(uniffi::Object)]
@@ -109,7 +111,7 @@ impl MobileController {
             };
             listener.ended(reason);
         });
-        self.register(Subscription { cancel, task, keyframes: None })
+        self.register(Subscription { cancel, task, keyframes: None, commands: None })
     }
 
     pub async fn watch_screen(
@@ -169,7 +171,7 @@ impl MobileController {
             };
             listener.ended(reason);
         });
-        let subscription = self.register(Subscription { cancel, task, keyframes: Some(keyframes) })?;
+        let subscription = self.register(Subscription { cancel, task, keyframes: Some(keyframes), commands: None })?;
         Ok(MobileView { subscription, reply_json: reply.to_string() })
     }
 
@@ -178,6 +180,75 @@ impl MobileController {
         if let Some(sender) = sender {
             let _ = sender.try_send(());
         }
+    }
+
+    /// Opens a coding-agent chat with the ticket from a `chat_start` or `chat_attach` call. The reply is
+    /// the host's first line (session, role, runtime, state, seq); every event after `since` then
+    /// arrives as one JSON line through `listener.event`, as the host's chat protocol documents them.
+    pub async fn watch_chat(
+        &self,
+        host: String,
+        ticket: String,
+        since: u64,
+        listener: Arc<dyn MobileStream>,
+    ) -> Result<MobileView> {
+        self.ready()?;
+        let (stream, reply) = self
+            .backend
+            .open_stream(json!({"op":"chat", "host":host, "request": {"ticket":ticket, "since":since}}))
+            .await
+            .map_err(failure)?;
+        let (read, mut write) = tokio::io::split(stream);
+        let cancel = CancellationToken::new();
+        let stopped = cancel.clone();
+        let (commands, mut lines_out) = tokio::sync::mpsc::channel::<String>(32);
+        let task = tokio::spawn(async move {
+            let events = async {
+                let mut lines = BufReader::new(read).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) if !line.is_empty() => listener.event(line),
+                        Ok(Some(_)) => {}
+                        Ok(None) => return "host disconnected".to_string(),
+                        Err(e) => return e.to_string(),
+                    }
+                }
+            };
+            let send = async {
+                while let Some(line) = lines_out.recv().await {
+                    write.write_all(line.as_bytes()).await.map_err(failure)?;
+                }
+                Ok::<_, MobileError>(write)
+            };
+            let reason = tokio::select! {
+                _ = stopped.cancelled() => "stopped".to_string(),
+                r = events => r,
+                r = send => match r {
+                    // Every sender is gone: the subscription was dropped without a stop.
+                    Ok(mut write) => {
+                        let _ = write.write_all(b"{\"bye\":{}}\n").await;
+                        "stopped".to_string()
+                    }
+                    Err(e) => e.to_string(),
+                },
+            };
+            listener.ended(reason);
+        });
+        let subscription = self.register(Subscription { cancel, task, keyframes: None, commands: Some(commands) })?;
+        Ok(MobileView { subscription, reply_json: reply.to_string() })
+    }
+
+    /// Sends one command to an open chat: a JSON object such as `{"input":{"id":"..","text":".."}}`,
+    /// `{"interrupt":{}}` or `{"answer":{"qid":"..","text":".."}}`. Commands go out in order.
+    pub async fn chat_send(&self, subscription: u64, command_json: String) -> Result<()> {
+        let command: Value = serde_json::from_str(&command_json).map_err(failure)?;
+        if !command.is_object() {
+            return Err(failure("a chat command is a JSON object"));
+        }
+        let sender = self.subscriptions.lock().unwrap().get(&subscription).and_then(|s| s.commands.clone());
+        let Some(sender) = sender else { return Err(failure("this chat is closed")) };
+        // Re-encoded so a command is always exactly one line.
+        sender.send(format!("{command}\n")).await.map_err(|_| failure("this chat is closed"))
     }
 
     pub async fn stop_subscription(&self, subscription: u64) {
