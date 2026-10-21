@@ -88,6 +88,32 @@ pub fn session_state() -> SessionState {
     }
 }
 
+/// The profile and desktop folders of the user signed in to this process's session, through their
+/// token (SYSTEM may query it): what `~` means to someone driving the service's host.
+pub fn session_user_folders() -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    use windows::Win32::{
+        System::{Com::CoTaskMemFree, RemoteDesktop::WTSQueryUserToken},
+        UI::Shell::{FOLDERID_Desktop, FOLDERID_Profile, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+    let session = current_session_id()?;
+    // SAFETY: the token is closed below; each returned string is read, then freed with the
+    // allocator the API used.
+    unsafe {
+        let mut token = HANDLE::default();
+        WTSQueryUserToken(session, &mut token).ok()?;
+        let folder = |id| -> Option<std::path::PathBuf> {
+            let path = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, Some(token)).ok()?;
+            let text = path.to_string().ok();
+            CoTaskMemFree(Some(path.0 as *const _));
+            text.map(std::path::PathBuf::from)
+        };
+        let home = folder(&FOLDERID_Profile);
+        let desktop = folder(&FOLDERID_Desktop);
+        let _ = CloseHandle(token);
+        Some((home?, desktop))
+    }
+}
+
 /// Whether this process's token belongs to the LocalSystem account (`S-1-5-18`).
 pub fn runs_as_system() -> bool {
     use windows::Win32::Security::{IsWellKnownSid, TOKEN_USER, TokenUser, WinLocalSystemSid};

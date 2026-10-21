@@ -107,17 +107,31 @@ test("stale metadata responses cannot overwrite a newer reconnect", async () => 
   assert.equal(s.store.get().computers[0].host.path, "relay");
 });
 
+// A host without the live input channel: the control layer falls back to one call per action.
+const olderHostApi = {
+  openInput: async () => { throw new Error("older host"); },
+  clipboardText: async () => null, clipboardFiles: async () => [], setClipboardText: async () => {},
+};
+const remoteInputGlobals = { JSON, Set, document: { hasFocus: () => false }, setInterval: () => 0, clearInterval() {} };
+function remoteInputDependencies(timers) {
+  return {
+    "../lib/i18n": { t: (key) => key },
+    "../lib/manual-input": module("../apps/desktop/src/lib/manual-input.ts", {}, timers),
+    "../lib/live-input": module("../apps/desktop/src/lib/live-input.ts", {}, { JSON, Set }),
+    "../lib/platform": { detectOs: () => "mac" },
+    "react/jsx-runtime": { jsx: (_tag, props) => ({ props }) },
+  };
+}
+
 test("buffered input is discarded on leaving takeover; live buffered text still sends", async () => {
   const timers = clock();
   const calls = [];
   const cleanups = [];
   const { RemoteInput } = module("../apps/desktop/src/ui/RemoteInput.tsx", {
-    "../lib/i18n": { t: (key) => key },
-    "../lib/manual-input": module("../apps/desktop/src/lib/manual-input.ts", {}, timers),
-    react: { useRef: (current) => ({ current }), useEffect: (effect) => cleanups.push(effect()) },
-    "../lib/api": { api: { callTool: async (...args) => { calls.push(args); } } },
-    "react/jsx-runtime": { jsx: (_tag, props) => ({ props }) },
-  }, timers);
+    ...remoteInputDependencies(timers),
+    react: { useRef: (current) => ({ current }), useEffect: (effect) => cleanups.push(effect()), useState: (v) => [v, () => {}] },
+    "../lib/api": { api: { callTool: async (...args) => { calls.push(args); }, ...olderHostApi } },
+  }, { ...timers, ...remoteInputGlobals });
   const props = { host: "test-mac", screen: null, mac: true, onHandBack: () => {} };
   const key = (value) => ({ key: value, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, preventDefault() {} });
   RemoteInput(props).props.onKeyDown(key("a"));
@@ -139,12 +153,10 @@ test("real zero-detail pointer releases click; drag and cancelled pointers do no
   let refs = 0;
   const element = { focus() {}, getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 50 }) };
   const { RemoteInput } = module("../apps/desktop/src/ui/RemoteInput.tsx", {
-    "../lib/i18n": { t: (key) => key },
-    "../lib/manual-input": module("../apps/desktop/src/lib/manual-input.ts", {}, timers),
-    react: { useRef: (current) => ({ current: refs++ === 0 ? element : current }), useEffect: (effect) => effect() },
-    "../lib/api": { api: { callTool: async (...args) => { calls.push(args); } } },
-    "react/jsx-runtime": { jsx: (_tag, props) => ({ props }) },
-  }, timers);
+    ...remoteInputDependencies(timers),
+    react: { useRef: (current) => ({ current: refs++ === 0 ? element : current }), useEffect: (effect) => effect(), useState: (v) => [v, () => {}] },
+    "../lib/api": { api: { callTool: async (...args) => { calls.push(args); }, ...olderHostApi } },
+  }, { ...timers, ...remoteInputGlobals });
   const { props } = RemoteInput({ host: "test-mac", screen: { x: 0, y: 0, width: 1000, height: 500 }, mac: true, onHandBack() {} });
   const pointer = (clientX, clientY) => ({ clientX, clientY, detail: 0, button: 0, pointerId: 1, currentTarget: { setPointerCapture() {} } });
   props.onPointerDown(pointer(60, 45));

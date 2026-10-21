@@ -122,38 +122,113 @@ test("text coalescing remains bounded below the host's text limit", async () => 
   assert.deepEqual(plain(calls).slice(1).map((call) => call.args.text.length), [1024, 1]);
 });
 
-function remoteInputFixture() {
-  const calls = [], errors = [], cleanups = [], pendingTimers = new Map();
+const liveInputSource = readFileSync(new URL("../apps/desktop/src/lib/live-input.ts", import.meta.url), "utf8");
+const liveInputCompiled = ts.transpileModule(liveInputSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const liveInput = {};
+vm.runInNewContext(liveInputCompiled, { exports: liveInput, Error, console, JSON, Math, Set, setTimeout, clearTimeout });
+
+/** `live`: the host offers the live input channel (its lines go to `sent`); otherwise the fallback runs. */
+function remoteInputFixture(live = false) {
+  const calls = [], errors = [], cleanups = [], pendingTimers = new Map(), sent = [], notices = [];
   const first = deferred();
-  let timerId = 0, refId = 0, handBack = 0;
+  let timerId = 0, refId = 0, handBack = 0, closed = 0;
   const element = { focus() {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) };
   const setTimer = (fn) => { const id = ++timerId; pendingTimers.set(id, fn); return id; };
   const clearTimer = (id) => pendingTimers.delete(id);
   const source = readFileSync(new URL("../apps/desktop/src/ui/RemoteInput.tsx", import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
+  const opened = deferred();
   const dependencies = {
-    react: { useRef: (value) => ({ current: refId++ === 0 ? element : value }), useEffect: (effect) => cleanups.push(effect()) },
+    react: {
+      useRef: (value) => ({ current: refId++ === 0 ? element : value }),
+      useEffect: (effect) => cleanups.push(effect()),
+      useState: (value) => [value, () => {}],
+    },
     "react/jsx-runtime": { jsx: (_tag, props) => ({ props }) },
     "../lib/i18n": { t: (key, vars) => `${key}${vars?.error ? `: ${vars.error}` : ""}` },
     "../lib/manual-input": { createManualInputDispatcher },
-    "../lib/api": { api: { callTool: (host, tool, args, person) => {
-      calls.push({ host, tool, args, person });
-      return calls.length === 1 ? first.promise : Promise.resolve({});
-    } } },
+    "../lib/live-input": liveInput,
+    "../lib/platform": { detectOs: () => "mac" },
+    "../lib/api": { api: {
+      callTool: (host, tool, args, person) => {
+        calls.push({ host, tool, args, person });
+        return calls.length === 1 ? first.promise : Promise.resolve({});
+      },
+      openInput: () => opened.promise,
+      clipboardText: async () => null,
+      clipboardFiles: async () => [],
+      setClipboardText: async () => {},
+    } },
   };
   vm.runInNewContext(compiled, { exports, require: (name) => {
     assert.ok(name in dependencies, `unexpected dependency ${name}`);
     return dependencies[name];
-  }, window: { setTimeout: setTimer }, clearTimeout: clearTimer, Date, console });
-  const { props } = exports.RemoteInput({ host: "test-mac", screen: { x: 0, y: 0, width: 1000, height: 1000 }, mac: true,
+  }, window: { setTimeout: setTimer, setInterval: () => 0 }, clearTimeout: clearTimer, clearInterval() {}, setTimeout, Date, console, JSON,
+    document: { hasFocus: () => false } });
+  if (live) opened.resolve({ os: "windows", clipboard: false, clipboardWrite: false, send: async (data) => { sent.push(data); return true; }, close: () => closed++ });
+  else opened.reject(new Error("older host"));
+  const { props } = exports.RemoteInput({ host: "test-mac", screen: { x: 0, y: 0, width: 1000, height: 1000 }, mac: !live,
     onError: (message) => { if (message) errors.push(message); },
+    onNotice: (message) => notices.push(message),
     onHandBack: () => { assert.equal(pendingTimers.size, 0, "cancel text BEFORE handing back"); handBack++; },
   });
   const key = (value, options = {}) => ({ key: value, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, preventDefault() {}, ...options });
   const pointer = { clientX: 50, clientY: 50, detail: 0, button: 0, pointerId: 1, currentTarget: { setPointerCapture() {} } };
-  return { calls, errors, cleanups, pendingTimers, first, props, key, pointer, handBack: () => handBack };
+  const lines = () => sent.flatMap((d) => d.trimEnd().split("\n")).map((l) => JSON.parse(l));
+  return { calls, errors, notices, cleanups, pendingTimers, first, props, key, pointer, handBack: () => handBack, sent, lines, closed: () => closed };
 }
+
+test("with the live channel, moves, presses, wheel and keys stream as lines and nothing becomes a tool call", async () => {
+  const s = remoteInputFixture(true);
+  await tick();
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 10));
+  s.props.onPointerMove({ clientX: 10, clientY: 20 });
+  s.props.onPointerDown({ ...s.pointer, clientX: 10, clientY: 20 });
+  s.props.onPointerMove({ clientX: 60, clientY: 20 });
+  s.props.onPointerUp({ ...s.pointer, clientX: 60, clientY: 20 });
+  await wait();
+  assert.deepEqual(s.lines(), [
+    { m: [100, 200] }, { b: "left", down: true }, { m: [599, 200] }, { b: "left", down: false },
+  ]);
+  s.props.onWheel({ clientX: 60, clientY: 20, deltaX: 0, deltaY: 100, deltaMode: 0 });
+  s.props.onKeyDown(s.key("Meta", { code: "MetaLeft", metaKey: true }));
+  s.props.onKeyDown(s.key("c", { code: "KeyC", metaKey: true }));
+  s.props.onKeyUp(s.key("Meta", { code: "MetaLeft" }));
+  await wait();
+  // Cmd on this Mac drives a Windows host as Ctrl; the key held under it is let go with it.
+  assert.deepEqual(s.lines().slice(4), [
+    { m: [599, 200] }, { w: [0, 2] }, { k: "ctrl", down: true }, { k: "c", down: true }, { k: "ctrl", down: false }, { k: "c", down: false },
+  ]);
+  // A second button pressed while the first is held arrives as a pointermove with both bits set.
+  s.props.onPointerDown({ ...s.pointer, clientX: 10, clientY: 20, buttons: 1 });
+  s.props.onPointerMove({ clientX: 10, clientY: 20, buttons: 3 });
+  s.props.onPointerMove({ clientX: 10, clientY: 20, buttons: 1 });
+  s.props.onPointerUp({ ...s.pointer, clientX: 10, clientY: 20, buttons: 0 });
+  await wait();
+  assert.deepEqual(s.lines().slice(10).filter((l) => "b" in l), [
+    { b: "left", down: true }, { b: "right", down: true }, { b: "right", down: false }, { b: "left", down: false },
+  ]);
+  // ⌃⌘F is the app's full-screen toggle: the F never reaches the host.
+  const before = s.lines().length;
+  s.props.onKeyDown(s.key("f", { code: "KeyF", ctrlKey: true, metaKey: true }));
+  await wait();
+  assert.equal(s.lines().length, before);
+  s.props.onKeyDown(s.key("h", { ctrlKey: true, altKey: true }));
+  assert.equal(s.handBack(), 1);
+  assert.equal(s.calls.length, 0, "no tool calls on the live path");
+  for (const cleanup of s.cleanups) cleanup();
+  assert.equal(s.closed(), 1);
+});
+
+test("without the live channel the fallback is used and a note says so", async () => {
+  const s = remoteInputFixture(false);
+  await tick();
+  assert.match(s.notices[0], /live_input_unavailable/);
+  s.props.onPointerDown(s.pointer); s.props.onPointerUp(s.pointer);
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0].tool, "mouse");
+});
 
 test("hand-back hotkey cancels queued calls, buffered text and gestures before notifying the host", async () => {
   const s = remoteInputFixture();

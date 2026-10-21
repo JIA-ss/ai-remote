@@ -161,6 +161,7 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
     "./Decide": { DecisionCard: () => {} },
     "./RemoteInput": { RemoteInput },
+    "../lib/drop": { watchFileDrop: () => () => {} },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
     "./Icon": { Icon: () => {} },
     "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar: () => {} },
