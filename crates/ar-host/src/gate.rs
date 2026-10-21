@@ -219,6 +219,7 @@ async fn call_gated(
     });
 
     // 5. The call, bounded by the session's lifetime and the request's own cancellation.
+    let _running = host.presence().call(&session.peer.name, name, session.person());
     let started = Instant::now();
     let work = cancel.child_token();
     let _work_guard = work.clone().drop_guard();

@@ -41,8 +41,9 @@
 | `ai-remote host install` | 登录时自动在后台启动被控端（`--service`：作为能到达锁屏的 Windows 服务） |
 | `ai-remote host uninstall` | 删除自启项、停止被控端、删除防火墙规则 |
 | `ai-remote host status` | 查看自启项、防火墙规则，以及被控端是否在运行 |
+| `ai-remote host start` | 立即启动已安装的后台被控端（比如 `stop-host` 之后）；桌面端的托盘也用它。Windows 服务要在管理员终端里运行 |
 | `ai-remote doctor` | 分级体检：这台机器到底能不能被操作？ |
-| `ai-remote pair-code [--level L] [--name N]` | 打印一张一次性配对票据 |
+| `ai-remote pair-code [--level L] [--name N]` | 显示一次性配对码（二维码和 8 位数字）以及它背后的票据 |
 | `ai-remote peers` | 已配对的控制端，以及各自的级别和设备 ID；被撤销的标为 `REVOKED` |
 | `ai-remote level <设备> <observe\|control\|admin\|none>` | 修改某个控制端的级别 |
 | `ai-remote revoke <设备>` / `unrevoke <设备>` | 拒绝某个控制端，或解除拒绝 |
@@ -57,7 +58,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `ai-remote pair <票据> [--name N]` | 与被控端配对 |
+| `ai-remote pair <配对码\|票据> [--name N]` | 用配对码（`4821 0937`）或票据与被控端配对 |
 | `ai-remote hosts` | 已配对的被控端，以及配对时各自授予的级别；默认被控端标为 `(default)` |
 | `ai-remote hosts default [<被控端>\|--clear]` | 查看、设置或清除默认被控端：命令和 Agent 没指定被控端时用它 |
 | `ai-remote unpair <被控端> [--local]` | 解除配对：能连上时被控端也会删掉本设备，然后本控制端忘掉它（`--local`：只在本机忘掉） |
@@ -130,7 +131,7 @@ ai-remote host
 ```
 
 它会打印自己的名称、设备 ID、配置目录、已配对的控制端数量和审计日志路径。还没有配对任何控制端时，
-它还会打印一张配对票据（级别 `control`）；加 `--no-pair-code` 可以不打印。如果眼下弹不出审批框（桌面已锁定），
+它还会显示一个配对码，连同二维码和票据（级别 `control`）；加 `--no-pair-code` 可以不显示。如果眼下弹不出审批框（桌面已锁定），
 它会警告：需要审批的操作都会被拒绝。
 
 用 Ctrl+C 停止，或在另一个终端执行 `ai-remote stop-host`。停止时，所有控制端连接都会以 `host stopping` 为原因关闭。
@@ -292,7 +293,7 @@ ai-remote host uninstall
   `not starting: a host is already running for this profile`，并以退出码 3 退出，不会影响正在运行的被控端。
 - **日志。** `host.log` 超过 8 MiB 时轮转，保留前两份（`host.log.1`、`host.log.2`）。日志文件打开之前发生的错误
   写到临时目录下的 `ai-remote-hostw-error.log`。macOS 上 launchd 还会把进程的 stderr 写到 `host/host-stderr.log`。
-- **`stop-host` 之后重新启动：** 注销再登录；或者再执行一次 `ai-remote host install`（没有被控端在运行时它会启动任务）；
+- **`stop-host` 之后重新启动：** `ai-remote host start`（或桌面端托盘）；注销再登录；或者再执行一次 `ai-remote host install`（没有被控端在运行时它会启动任务）；
   或者自己启动任务：`schtasks /Run /TN "ai-remote\host-<8 位十六进制>"`（任务名见 `ai-remote host status`）。
 - **不弹控制台窗口。** 后台被控端没有控制台，所以它启动的所有东西（shell 命令、后台任务、挂载的 server、系统工具）
   都不带控制台窗口，用户桌面上不会突然弹出窗口。
@@ -389,23 +390,26 @@ ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
 ## 5. 配对步骤
 
 1. **确认被控端在运行**（在被控端执行 `ai-remote host status` 或 `ai-remote status`）。
-2. **在被控端生成票据：**
+2. **在被控端显示配对码**（桌面应用“本设备 → 显示配对码”，或托盘里的“显示配对码”），或在终端执行：
 
    ```sh
    ai-remote pair-code --level control --name laptop
    ```
 
-   `--level` 可以是 `observe`、`control`（默认）或 `admin`：先给够用的最低级别。`--name` 是被控端给兑换这张票据的
-   控制端起的名字（默认用控制端建议的名字，也就是它的机器名）。票据只能用一次，24 小时后过期。
-3. **通过可信的渠道把票据交出去。** 票据就是凭证：谁先兑换，谁就拿到这个级别。
-4. **在控制端兑换：**
+   `--level` 可以是 `observe`、`control`（默认）或 `admin`：先给够用的最低级别。`--name` 是被控端给来配对的
+   控制端起的名字（默认用控制端建议的名字，也就是它的机器名）。它会显示一个二维码、一个 8 位配对码和背后的票据。
+   配对码只能用一次，10 分钟内有效，且只在被控端运行期间有效；显示新码时旧码作废；5 个没能证明配对码的连接会让它作废。
+3. **把配对码交给另一台设备**：当面给，或走可信的渠道。有效期内它就是凭证：谁先用，谁就拿到这个级别。
+4. **在控制端配对**：用 iPhone 应用扫二维码，或在桌面应用的“配对电脑”页输入数字，或执行：
 
    ```sh
-   ai-remote pair <票据> --name office-pc
+   ai-remote pair 4821 0937 --name office-pc
    ```
 
    `--name` 是你在本地给这台被控端起的名字（默认用被控端建议的名字）。命令会打印被控端的名称、
-   由三个英文单词组成的安全码，以及授予的级别。
+   由三个英文单词组成的安全码，以及授予的级别。控制端通过连接本身用的发现机制（n0 的 DNS/pkarr 服务、局域网 mDNS、中继）
+   找到配对码背后的被控端；如果两台机器这样也互相够不着（没有互联网、也不在同一网络），就改用票据：
+   `ai-remote pair <票据>`，只能用一次，24 小时内有效。
 5. **核对安全码**，和被控端显示的比一比：
    - 在终端里运行的被控端会打印 `Paired with controller "laptop" (level: control).` 和 `Safety code: ...`；
    - 后台被控端会在日志里写一行 `controller paired`，带有 `peer=`、`level=` 和 `sas=`。在 Windows 上可以这样查：
@@ -702,6 +706,11 @@ ai-remote tell "Use the D: drive for the export"
 - 轮流操作是为了协调人和 Agent，不是安全边界（同一台设备上的 Agent 也能发出标记为“人”的调用）。真正限制 Agent 的是
   权限级别、策略和审批。
 
+**在被控端本机暂停。** 机主也可以在被控端的桌面端（托盘菜单或“设置 → 本设备”）暂停。这种暂停比控制端的更强：智能体的调用
+*和*接管者的调用都会被拒绝，任何已配对设备都不能恢复或接管，直到机主在那台电脑上恢复（控制端执行 `ai-remote resume` 会被拒绝并
+说明原因）；画面仍可观看。恢复后，暂停前是谁在操作就交还给谁。审计日志里记为带 `"origin": "owner"` 的 `driver` 行，控制端的时间线
+显示“<被控端> 前的人暂停了操作”。
+
 ## 10. 审计日志
 
 被控端上的每一次工具调用都会追加到 `<配置目录>/host/audit.jsonl`，每行一个 JSON 对象。
@@ -824,6 +833,7 @@ address_lookup = []   # 留空：用 n0 的地址查询服务；或填自建的 
   打开了哪些（`network` 检查）。无论哪种模式，名称查询都只走系统 DNS：查询失败就失败，不会转去问 Cloudflare、Google 或
   Quad9（只有系统完全没有配置 DNS 时才用公共 DNS）。配对过的设备照样能连上：通过地址查询服务找到对方，网络允许时打洞直连，
   不行就走中继。网络的 DNS 解析不了中继和地址查询服务的域名时完全连不上（这时请配上这个网络能解析的自建中继和地址查询服务器）。
+  屏幕上显示配对码期间，被控端另起一个短时的连接端点来应答它，网络行为和上面一致（中继、地址查询服务器、端口映射、局域网发现）。
 - **地址查询。** 每台设备每 5 分钟、以及地址变化时，把自己当前的地址发布到 n0 的地址查询服务（`dns.iroh.link`），
   拨号前也在那里查对方的地址。设了 `address_lookup = ["https://dns.example.org/pkarr"]` 后，发布和查询都改用你自建的
   [iroh-dns-server](https://github.com/n0-computer/iroh)。需要互相找到的设备必须配同一组服务器。再加上自建中继和

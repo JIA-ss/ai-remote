@@ -81,14 +81,15 @@ On the **computer to control**, run the installed CLI (make sure Cargo’s bin d
 
 ```sh
 ai-remote host
-# In another terminal on that computer:
+# In another terminal on that computer (or in the desktop app: This device → Show pair code):
 ai-remote pair-code --level control
 ```
 
-On the **controller computer**, redeem the one-time ticket:
+It shows a QR code and an eight-digit pair code. Scan the QR code with the iPhone app, or type the
+digits on the **controller computer** (the desktop app's Pair a computer page, or the CLI):
 
 ```sh
-ai-remote pair <ticket> --name office-pc
+ai-remote pair 4821 0937 --name office-pc
 ai-remote call system_info --host office-pc
 ```
 
