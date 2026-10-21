@@ -92,15 +92,20 @@ pub async fn run(inputs: Inputs<'_>) -> Report {
         .profile
         .host_config_path()
         .and_then(|p| ar_core::config::HostConfig::load(&p))
-        .and_then(|c| NetworkOptions::from_config(&c.network))
+        .and_then(|c| NetworkOptions::from_config(&c.network, Role::Host))
         .map_err(|e| format!("{e:#}"));
     checks.push(network_mode_check(&net));
     let (port_mapping, quiet) = net.as_ref().map_or((false, false), |n| (n.port_mapping, n.quiet));
+    let lan_port = net.as_ref().ok().filter(|n| n.lan_direct).and_then(|n| n.port);
     checks.push(match inputs.mesh {
+        Some(mesh) if mesh.lan_direct() => lan_check(mesh.network().await.map_err(|e| format!("{e:#}")), lan_port),
         Some(mesh) => relay_check(mesh.network().await.map_err(|e| format!("{e:#}"))),
         None => Check::new("relay", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
     checks.push(match inputs.mesh {
+        Some(mesh) if mesh.lan_direct() => {
+            Check::new("p2p", Grade::Skip, "not measured in LAN mode (no relays to measure against)")
+        }
         Some(mesh) => nat_check(mesh.nat(), port_mapping, quiet),
         None => Check::new("p2p", Grade::Skip, "not checked: no host is running (start it and run doctor again)"),
     });
@@ -237,6 +242,37 @@ fn dpi_check(awareness: Option<&str>) -> Check {
         )
         .fix("remove any compatibility override of high-DPI scaling on the executable (Properties > Compatibility)"),
     }
+}
+
+/// LAN mode: no relay; where controllers on this network reach the host, and whether it got the
+/// fixed port they stored.
+fn lan_check(net: Result<Option<NetworkStatus>, String>, port: Option<u16>) -> Check {
+    let addrs = match net {
+        Err(e) => return Check::new("lan", Grade::Warn, format!("cannot read the network state: {e}")),
+        Ok(None) => {
+            return Check::new(
+                "lan",
+                Grade::Warn,
+                "the transport has not reported its addresses yet; try again shortly",
+            );
+        }
+        Ok(Some(n)) => n.direct_addrs,
+    };
+    if let Some(port) = port
+        && !addrs.iter().any(|a| a.ends_with(&format!(":{port}")))
+    {
+        return Check::new(
+            "lan",
+            Grade::Warn,
+            format!("LAN mode, but UDP port {port} was taken: this host listens on another port, so controllers that stored {port} cannot reach it ({})", addrs.join(", ")),
+        )
+        .fix(format!("free UDP port {port} (or set another [network] port) and restart the host"));
+    }
+    Check::new(
+        "lan",
+        Grade::Ok,
+        format!("LAN mode: no relay, no address lookup; controllers on this network reach it at {}", addrs.join(", ")),
+    )
 }
 
 fn relay_check(net: Result<Option<NetworkStatus>, String>) -> Check {
@@ -757,10 +793,29 @@ mod tests {
     }
 
     #[test]
+    fn lan_grades() {
+        let net = |addrs: &[&str]| {
+            Ok(Some(NetworkStatus {
+                online: false,
+                home_relay: None,
+                relays: vec![],
+                direct_addrs: addrs.iter().map(|a| a.to_string()).collect(),
+            }))
+        };
+        let ok = lan_check(net(&["192.168.1.20:47800", "[fe80::1]:47800"]), Some(47800));
+        assert_eq!(ok.grade, Grade::Ok);
+        assert!(ok.summary.contains("192.168.1.20:47800"), "{}", ok.summary);
+        let taken = lan_check(net(&["192.168.1.20:51234"]), Some(47800));
+        assert_eq!(taken.grade, Grade::Warn);
+        assert!(taken.fix.unwrap().contains("47800"));
+        assert_eq!(lan_check(Ok(None), Some(47800)).grade, Grade::Warn);
+    }
+
+    #[test]
     fn network_mode_grades() {
         let net = |toml: &str| {
             let cfg: ar_core::config::HostConfig = toml::from_str(toml).unwrap();
-            NetworkOptions::from_config(&cfg.network).map_err(|e| e.to_string())
+            NetworkOptions::from_config(&cfg.network, Role::Host).map_err(|e| e.to_string())
         };
         assert!(network_mode_check(&net("")).summary.starts_with("quiet:"), "quiet by default");
         assert!(network_mode_check(&net("[network]\nquiet = true\nport_mapping = true\n")).summary.contains("locked"));

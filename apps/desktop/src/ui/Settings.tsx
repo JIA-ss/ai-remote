@@ -9,7 +9,9 @@ import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import { useStore } from "../lib/store";
-import type { AgentStatus, AuditLine, DoctorCheck, Grade, LocalController, LocalHost, NetworkSettings, TrayIntent } from "../lib/types";
+import type { AgentStatus, AuditLine, DoctorCheck, Grade, Host, LocalController, LocalHost, NetworkSettings, TrayIntent } from "../lib/types";
+import type { NetworkChange } from "../lib/api";
+import { shareableAddresses, validAddressInput } from "../lib/network";
 import { CmdLine } from "./CmdLine";
 import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
@@ -709,53 +711,268 @@ function HostPanel({
 }
 
 /**
- * This computer's network settings. Router port mapping (UPnP) is off unless turned on here; it is
- * written to both the host's and the controller's ai-remote.toml, and `quiet = true` there keeps it
- * off. The controller applies a change at once, a running host when it next starts.
+ * Settings > Network, for this computer as a host and as a controller alike: how devices connect
+ * (automatic, or the local network only), and two opt-ins that put traffic on the network beyond the
+ * connections (local-network discovery, router port mapping), which `quiet = true` in ai-remote.toml
+ * keeps off. The controller applies a change at once, a host running here when it next starts. With
+ * the local network only, this computer's address and each paired computer's are shown, the latter
+ * editable for a computer whose IP changed.
  */
 function Network() {
   const [net, setNet] = useState<NetworkSettings | null>(null);
+  const [hosts, setHosts] = useState<Host[]>([]);
   const [busy, setBusy] = useState(false);
-  const [hostNext, setHostNext] = useState(false);
+  const [saved, setSaved] = useState<Key | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api.networkSettings().then(setNet, (e) => setError(String(e)));
+    api.hosts().then(setHosts, () => setHosts([]));
   }, []);
-  const change = async (on: boolean) => {
+  const change = async (c: NetworkChange) => {
+    if (busy || !net) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await api.setPortMapping(on);
+      const next = await api.updateNetwork(c);
       setNet(next);
-      setHostNext(next.host_running);
+      setSaved(next.host_running ? "nw_saved_host" : "nw_saved");
+    } catch (e) {
+      setError(String(e));
+      setSaved(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const lan = net?.mode === "lan";
+  const port = net?.lan_port ?? 47800;
+  const here = shareableAddresses(net?.host_addresses ?? []);
+  const modes: Array<[NetworkSettings["mode"], Key, Key]> = [
+    ["auto", "nw_auto", "nw_auto_d"],
+    ["lan", "nw_lan", "nw_lan_d"],
+  ];
+  return (
+    <>
+      <div className="grp-h">{t("nw_mode")}</div>
+      <div className="grp" role="radiogroup" aria-label={t("nw_mode")}>
+        {modes.map(([m, tt, ds]) => {
+          const on = net?.mode === m;
+          const pick = () => {
+            if (!on) void change({ mode: m });
+          };
+          return (
+            <div
+              key={m}
+              className={cx("gr", !on && "pick")}
+              role="radio"
+              aria-checked={on}
+              tabIndex={0}
+              onClick={pick}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && pick()}
+            >
+              <span className="ic bare">
+                <span className={cx("radio", on && "on")} />
+              </span>
+              <div>
+                <div className="tt">
+                  {t(tt)}
+                  {m === "auto" && <span className="rec">{t("nw_recommended")}</span>}
+                </div>
+                <div className="ds">{t(ds)}</div>
+              </div>
+              <span className="end" />
+            </div>
+          );
+        })}
+      </div>
+      {saved && (
+        <div className="gnote" role="status">
+          {t(saved)}
+        </div>
+      )}
+      {error && (
+        <div className="gnote c-danger" role="alert">
+          {error}
+        </div>
+      )}
+
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("nw_extras")}
+      </div>
+      <div className="grp-sub">{t(net?.locked ? "nw_locked" : "nw_extras_sub")}</div>
+      <div className="grp">
+        <Toggle
+          icon="search"
+          title={t("nw_find")}
+          desc={t("nw_find_d")}
+          on={net?.lan_discovery ?? false}
+          disabled={!net || net.locked || busy}
+          onChange={(on) => void change({ lanDiscovery: on })}
+        />
+        {!lan && (
+          <Toggle
+            icon="open"
+            title={t("nw_upnp")}
+            desc={t("nw_upnp_d")}
+            on={net?.port_mapping ?? false}
+            disabled={!net || net.locked || busy}
+            onChange={(on) => void change({ portMapping: on })}
+          />
+        )}
+      </div>
+
+      {lan && net?.host_running && (
+        <>
+          <div className="grp-h" style={{ marginTop: 28 }}>
+            {t("nw_here")}
+          </div>
+          <div className="grp">
+            <Row
+              ic={<Icon name="laptop" />}
+              tt={net.host_lan && here.length > 0 ? <span className="mono">{here[0]}</span> : t("nw_here_next", { port })}
+              ds={
+                net.host_lan && here.length > 1 ? (
+                  <>
+                    {t("nw_here_d")} <span className="mono">{here.slice(1).join(", ")}</span>
+                  </>
+                ) : (
+                  t("nw_here_d")
+                )
+              }
+            >
+              {net.host_lan && here.length > 0 && <CopyText text={here[0]} />}
+            </Row>
+          </div>
+        </>
+      )}
+
+      {lan && hosts.length > 0 && (
+        <>
+          <div className="grp-h" style={{ marginTop: 28 }}>
+            {t("nw_peers")}
+          </div>
+          <div className="grp-sub">{t(net?.lan_discovery ? "nw_peers_found" : "nw_peers_d", { port })}</div>
+          <div className="grp">
+            {hosts.map((h) => (
+              <HostAddress key={h.name} host={h} />
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/** A settings row with an on/off switch at its end. */
+function Toggle({
+  icon,
+  title,
+  desc,
+  on,
+  disabled,
+  onChange,
+}: {
+  icon: IconName;
+  title: string;
+  desc: string;
+  on: boolean;
+  disabled: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <Row ic={<Icon name={icon} />} tt={title} ds={desc}>
+      <button
+        className={cx("switch", on && "on")}
+        role="switch"
+        aria-checked={on}
+        aria-label={title}
+        disabled={disabled}
+        onClick={() => onChange(!on)}
+      />
+    </Row>
+  );
+}
+
+/** A copy button that says so for a moment after copying. */
+function CopyText({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="btn"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {t(copied ? "nw_copied" : "nw_copy")}
+    </button>
+  );
+}
+
+/** Where this device reaches one paired computer, and a way to change it. */
+function HostAddress({ host }: { host: Host }) {
+  const [addrs, setAddrs] = useState(host.addresses ?? []);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    if (!validAddressInput(value)) {
+      setError(t("nw_bad_addr"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setAddrs(await api.setHostAddress(host.name, value));
+      setEditing(false);
+      setValue("");
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
   };
+  const shown = addrs.length > 0 ? <span className="mono">{shareableAddresses(addrs).join(", ") || addrs.join(", ")}</span> : t("nw_none");
   return (
-    <>
-      <div className="grp">
-        <Row ic={<Icon name="open" />} tt={t("nw_upnp")} ds={t(net?.locked ? "nw_locked" : "nw_upnp_d")}>
-          <span className="dd-wrap">
-            <select
-              className="dd"
-              aria-label={t("nw_upnp")}
-              disabled={!net || net.locked || busy}
-              value={net?.port_mapping ? "on" : "off"}
-              onChange={(e) => void change(e.target.value === "on")}
-            >
-              <option value="off">{t("nw_off")}</option>
-              <option value="on">{t("nw_on")}</option>
-            </select>
-            <Icon name="chevD" size={12} />
-          </span>
-        </Row>
-      </div>
-      {hostNext && <div className="gnote">{t("nw_host_next")}</div>}
-      {error && <div className="gnote c-danger">{error}</div>}
-    </>
+    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger">{error}</span> : shown}>
+      {editing ? (
+        <>
+          <input
+            className="field"
+            style={{ width: 190 }}
+            value={value}
+            autoFocus
+            placeholder={t("nw_addr_ph")}
+            aria-label={t("nw_addr_for", { host: host.name })}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void save();
+              if (e.key === "Escape") setEditing(false);
+            }}
+          />
+          <button className="btn" disabled={busy} onClick={() => void save()}>
+            {t("nw_save")}
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              setEditing(false);
+              setError(null);
+            }}
+          >
+            {t("nw_cancel")}
+          </button>
+        </>
+      ) : (
+        <button className="btn" onClick={() => setEditing(true)}>
+          {t("nw_edit")}
+        </button>
+      )}
+    </Row>
   );
 }
 

@@ -19,6 +19,9 @@ Fourth patch: `[network].port_mapping` and `[network].dns_fallback` (`node/src/c
 and `apply_dns_fallback` in `node/src/daemon/boot.rs`) let ai-remote's quiet mode turn off router port mapping
 (UPnP, NAT-PMP, PCP) and keep DNS lookups on the system's resolvers. Both default to iroh's behaviour. Test:
 `cargo test -p mcpmesh-node --lib -- port_mapping dns_fallback`.
+Fifth patch: `Node::peer_addr` / `Node::set_peer_addr` (`node/src/node.rs`) read and replace a paired peer's
+stored dial hint, for ai-remote's LAN mode (`relay_mode = "disabled"`), where the hint is the only way to
+reach a host whose address changed. Covered end to end by ai-remote's `crates/ar-net/tests/lan_direct.rs`.
 
 Only the five library crates and their original tests are included. CLI/release tooling is
 excluded and the nested workspace member list is shortened accordingly. Sources are unchanged.

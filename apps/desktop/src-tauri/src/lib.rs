@@ -305,9 +305,10 @@ async fn close_chat(state: State<'_, AppState>, id: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// This computer's network settings: whether it asks the router to open a port (UPnP, NAT-PMP,
-/// PCP), as a host or as a controller; whether `quiet = true` in either config locks that off; and
-/// whether ai-remote host runs here (it reads the setting when it starts).
+/// This computer's network settings: how it reaches its peers (`auto`, or `lan`: direct on the
+/// local network only); whether it asks the router to open a port (UPnP, NAT-PMP, PCP), as a host
+/// or as a controller; whether `quiet = true` in either config locks that off; whether ai-remote
+/// host runs here (it reads the settings when it starts) and, in LAN mode, where it is reached.
 #[tauri::command]
 #[specta::specta]
 async fn network_settings(state: State<'_, AppState>) -> Result<Json, String> {
@@ -316,40 +317,68 @@ async fn network_settings(state: State<'_, AppState>) -> Result<Json, String> {
         ControllerConfig::load(&state.profile.controller_config_path().map_err(text)?).map_err(text)?.network;
     let on = |n: &NetworkSection| n.port_mapping.unwrap_or(false);
     let quiet = |n: &NetworkSection| n.quiet.unwrap_or(false);
+    let lan = |n: &NetworkSection| n.mode.as_deref() == Some("lan");
+    let discovery = |n: &NetworkSection| matches!(n.lan_discovery.as_deref(), Some("on" | "resolve"));
+    let host_status = local_host_status(&state.profile).await;
     Ok(Json(json!({
+        "mode": if lan(&host) || lan(&controller) { "lan" } else { "auto" },
+        "lan_discovery": discovery(&host) || discovery(&controller),
         "port_mapping": on(&host) || on(&controller),
         "locked": quiet(&host) || quiet(&controller),
-        "host_running": host_running(&state.profile).await,
+        "host_running": host_status.is_some(),
+        "host_lan": host_status.as_ref().is_some_and(|s| s["lan_direct"] == true),
+        "host_addresses": host_status.map(|s| s["addresses"].clone()).unwrap_or_else(|| json!([])),
+        "lan_port": ar_core::config::LAN_HOST_PORT,
     })))
 }
 
-/// Turns router port mapping on or off for this computer, as a host and as a controller. The
-/// controller agent is restarted so it applies now (live views and agents reconnect); a host
-/// running here applies it when it next starts.
+/// Sets the addresses a paired host is dialled at (`ip`, `ip:port`, several separated by commas);
+/// in LAN mode the only way to reach a host whose address changed.
 #[tauri::command]
 #[specta::specta]
-async fn set_port_mapping(state: State<'_, AppState>, on: bool) -> Result<Json, String> {
-    for path in [state.profile.host_config_path(), state.profile.controller_config_path()] {
-        ar_core::config::set_port_mapping(&path.map_err(text)?, on).map_err(text)?;
-    }
-    let endpoint = state.profile.control_endpoint(Role::Controller).map_err(text)?;
-    let agent_restarted = match Conn::connect(&endpoint).await {
-        Ok(mut conn) => conn.request(&json!({"op": "shutdown"})).await.is_ok(),
-        Err(_) => false,
-    };
-    Ok(Json(json!({
-        "port_mapping": on,
-        "agent_restarted": agent_restarted,
-        "host_running": host_running(&state.profile).await,
-    })))
+async fn set_host_address(state: State<'_, AppState>, host: String, address: String) -> Result<Json, String> {
+    state.request(json!({"op": "set_host_address", "host": host, "address": address})).await
 }
 
-/// Whether ai-remote host runs here for this profile (its local control channel answers).
-async fn host_running(profile: &Profile) -> bool {
-    match profile.control_endpoint(Role::Host) {
-        Ok(endpoint) => Conn::connect(&endpoint).await.is_ok(),
-        Err(_) => false,
+/// The local host's `status` (over its control channel), `None` when no host runs here.
+async fn local_host_status(profile: &Profile) -> Option<Value> {
+    let endpoint = profile.control_endpoint(Role::Host).ok()?;
+    let mut conn = Conn::connect(&endpoint).await.ok()?;
+    conn.request(&json!({"op": "status"})).await.ok()
+}
+
+/// Changes this computer's network settings, for its host and its controller alike; each `None`
+/// stays as it is. `mode`: `auto` (address lookup, hole punching, relays) or `lan` (direct on the
+/// local network only; a host listens on a fixed port). `lan_discovery`: find and be found on the
+/// local network (mDNS). `port_mapping`: ask the router for a port (UPnP, NAT-PMP, PCP). The
+/// controller agent restarts so the change applies now (live views and agents reconnect); a host
+/// running here applies it when it next starts. Returns the settings as [`network_settings`] does.
+#[tauri::command]
+#[specta::specta]
+async fn update_network(
+    state: State<'_, AppState>,
+    mode: Option<String>,
+    lan_discovery: Option<bool>,
+    port_mapping: Option<bool>,
+) -> Result<Json, String> {
+    let paths =
+        [state.profile.host_config_path().map_err(text)?, state.profile.controller_config_path().map_err(text)?];
+    if lan_discovery == Some(true) || port_mapping == Some(true) {
+        ar_core::config::ensure_not_quiet(&[&paths[0], &paths[1]]).map_err(text)?;
     }
+    for path in &paths {
+        if let Some(mode) = &mode {
+            ar_core::config::set_network_mode(path, mode).map_err(text)?;
+        }
+        if let Some(on) = lan_discovery {
+            ar_core::config::set_lan_discovery(path, if on { "on" } else { "off" }).map_err(text)?;
+        }
+        if let Some(on) = port_mapping {
+            ar_core::config::set_port_mapping(path, on).map_err(text)?;
+        }
+    }
+    ar_controller::restart_agent(&state.profile).await;
+    network_settings(state).await
 }
 
 /// This computer as a host, for the "This device" page: the running host's `status` (`null` when
@@ -1003,7 +1032,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         local_host_bypass,
         set_local_host_bypass,
         network_settings,
-        set_port_mapping,
+        update_network,
+        set_host_address,
         local_host,
         local_host_pair_code,
         local_host_withdraw_code,

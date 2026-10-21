@@ -170,7 +170,11 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
                       </div>
                     </>
                   )}
-                  {ticket && !code && <div className="cap c-danger" style={{ marginTop: 8 }}>{t("pc_no_code", { why: ticket.code_error ?? "?" })}</div>}
+                  {ticket && !code && (
+                    <div className="cap c-danger" style={{ marginTop: 8 }}>
+                      {ticket.code_reason === "lan_discovery_off" ? t("pc_no_code_lan") : t("pc_no_code", { why: ticket.code_error ?? "?" })}
+                    </div>
+                  )}
                   <div className="nt-pair-ctl">
                     <button className={cx("btn", expired && "primary")} disabled={busy} onClick={() => void make(level)}>
                       <Icon name="refresh" size={14} />
