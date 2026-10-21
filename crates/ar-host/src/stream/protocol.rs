@@ -173,6 +173,8 @@ impl ProtocolHandler for ScreenProtocol {
             conn.close(CLOSE_NO_ACCESS.into(), REASON_NO_LEVEL);
             return Ok(());
         }
+        let _present =
+            self.host.presence().connect(format!("eid:{}", conn.remote_id()), crate::presence::Channel::Screen);
         while let Ok((send, recv)) = conn.accept_bi().await {
             let host = self.host.clone();
             let viewers = self.viewers.clone();

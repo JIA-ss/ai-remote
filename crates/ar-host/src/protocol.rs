@@ -106,6 +106,7 @@ impl ProtocolHandler for McpProtocol {
         };
         tracing::info!(peer = %peer.name, %level, "controller connected");
         let _registered = self.host.live().register(format!("eid:{remote}"), conn.clone());
+        let _present = self.host.presence().connect(format!("eid:{remote}"), crate::presence::Channel::Tools);
 
         // Everything this connection started ends with it (including revocation, which closes it).
         let conn_cancel = CancellationToken::new();

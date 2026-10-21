@@ -20,11 +20,14 @@ use crate::HostState;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum HostRequest {
     Status,
-    /// Mint a one-time pairing ticket.
+    /// Mint a one-time pairing ticket and show it behind a fresh pair code (replacing the code
+    /// shown before).
     PairCode {
         level: Level,
         name: Option<String>,
     },
+    /// Stop answering the pair code shown now (the dialog showing it was closed).
+    WithdrawCode,
     Peers,
     /// Set or clear (`level: null`) a peer's level.
     SetLevel {
@@ -61,6 +64,19 @@ pub enum HostRequest {
     },
     /// Run the graded preflight from inside the host (its session, token and network).
     Doctor,
+    /// The owner, at this computer (the desktop app's tray or page), stops everyone (`on: true`: the
+    /// agent and a person who took over) or lifts any pause. Paired controllers cannot lift the
+    /// owner's pause; see [`crate::turns::Turns::owner_pause`]. Live views keep running.
+    Pause {
+        on: bool,
+    },
+    /// The latest audit lines (newest last, at most `limit`), for a "recent activity" view at this
+    /// computer. Decision lines carry `args_preview` (the arguments as shown to the owner, about 400
+    /// characters at most, secrets by size only), like the audit log itself.
+    Recent {
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// The paired controllers and whether the owner bypasses each (see [`crate::bypass`]).
     Bypass,
     /// Turn bypass on (until `for_secs` from now, when given) or off for a paired controller. Only
@@ -142,25 +158,92 @@ pub(crate) async fn forget(host: &HostState, p: &Peer) -> Result<Value> {
 async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken) -> Result<Value> {
     let mesh = host.mesh();
     Ok(match req {
-        HostRequest::Status => json!({
-            "name": host.name(),
-            "device": mesh.principal(),
-            "version": VERSION,
-            "peers": mesh.peers().await?.len(),
-            "tools": host.registry().iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>(),
-            "profile": host.profile().root(),
-            // A restart is verified by a changed pid, not by "it answers".
-            "pid": std::process::id(),
-            "exe": std::env::current_exe().ok().map(|p| dunce::simplified(&p).to_path_buf()),
-            "background": host.background(),
-            // LAN mode: where controllers on this network reach this host.
-            "lan_direct": mesh.lan_direct(),
-            "addresses": mesh.network().await.ok().flatten().map(|n| n.direct_addrs).unwrap_or_default(),
-        }),
+        HostRequest::Status => {
+            // Who is here now (every channel: tools, activity feed, live view, files), by pairing
+            // name, and the tool calls running. Reported for the owner's view; nothing is decided on it.
+            let peers = mesh.peers().await?;
+            let name_of =
+                |device: &str| peers.iter().find(|p| p.principal.as_deref() == Some(device)).map(|p| p.name.clone());
+            let presence = host.presence();
+            let controllers: Vec<Value> = presence
+                .connected()
+                .into_iter()
+                .map(|c| {
+                    let name = name_of(&c.device).unwrap_or_else(|| c.device.clone());
+                    json!({"name": name, "device": c.device, "channels": c.channels})
+                })
+                .collect();
+            let mut connected: Vec<String> =
+                controllers.iter().filter_map(|c| c["name"].as_str().map(str::to_owned)).collect();
+            connected.sort();
+            connected.dedup();
+            json!({
+                "name": host.name(),
+                "device": mesh.principal(),
+                "version": VERSION,
+                "peers": peers.len(),
+                "connected": connected,
+                "controllers": controllers,
+                "calls": presence.calls(),
+                "last_call": presence.last_call(),
+                "driver": host.turns().driver(),
+                "prompt_blocker": crate::platform::prompt_blocker(),
+                // Windows service mode: started as SYSTEM; starting it again takes an administrator.
+                "system": crate::platform::runs_as_system(),
+                "tools": host.registry().iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>(),
+                "profile": host.profile().root(),
+                // A restart is verified by a changed pid, not by "it answers".
+                "pid": std::process::id(),
+                "exe": std::env::current_exe().ok().map(|p| dunce::simplified(&p).to_path_buf()),
+                "background": host.background(),
+                // LAN mode: where controllers on this network reach this host.
+                "lan_direct": mesh.lan_direct(),
+                "addresses": mesh.network().await.ok().flatten().map(|n| n.direct_addrs).unwrap_or_default(),
+            })
+        }
+        HostRequest::Pause { on } => {
+            let turns = host.turns();
+            let before = turns.driver();
+            let driver = if on { turns.owner_pause() } else { turns.owner_resume() };
+            if driver != before {
+                let mut line = driver.event("owner");
+                line["origin"] = "owner".into();
+                host.audit().event(line);
+            }
+            json!({"driver": driver})
+        }
+        HostRequest::Recent { limit } => {
+            let (lines, _) = host.audit().subscribe();
+            let limit = limit.unwrap_or(50).min(lines.len());
+            let recent: Vec<Value> =
+                lines[lines.len() - limit..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+            json!({"recent": recent})
+        }
         HostRequest::Doctor => serde_json::to_value(
             crate::doctor::run(crate::doctor::Inputs { profile: host.profile(), mesh: Some(mesh) }).await,
         )?,
-        HostRequest::PairCode { level, name } => serde_json::to_value(mesh.invite(level, name).await?)?,
+        HostRequest::PairCode { level, name } => {
+            let invite = mesh.invite(level, name).await?;
+            let mut v = serde_json::to_value(&invite)?;
+            // The ticket works without the code; a code that cannot be offered (no network to bind
+            // on) is reported next to it rather than failing the request.
+            match mesh.offer_code(&invite).await {
+                Ok(offer) => {
+                    v["qr"] = serde_json::to_value(crate::pair_qr::svg_path(&offer.link))?;
+                    v["code"] = serde_json::to_value(offer)?;
+                }
+                Err(e) => {
+                    v["code_error"] = Value::String(format!("{e:#}"));
+                    // Local network only with local discovery off: the page explains it and points
+                    // to the switch.
+                    if !mesh.pair_code_findable() {
+                        v["code_reason"] = "lan_discovery_off".into();
+                    }
+                }
+            }
+            v
+        }
+        HostRequest::WithdrawCode => json!({"withdrawn": mesh.withdraw_code().await}),
         HostRequest::Peers => {
             let bypassed = host.bypass().list();
             let peers: Vec<Value> = mesh
@@ -353,5 +436,21 @@ mod tests {
             .unwrap();
         assert_eq!(cli, json!({"op": "set_bypass", "peer": "laptop", "on": false, "for_secs": 60}));
         assert!(matches!(serde_json::from_value(json!({"op": "bypass"})).unwrap(), HostRequest::Bypass));
+    }
+
+    #[test]
+    fn tray_requests() {
+        assert!(matches!(
+            serde_json::from_value(json!({"op": "pause", "on": true})).unwrap(),
+            HostRequest::Pause { on: true }
+        ));
+        assert!(matches!(
+            serde_json::from_value(json!({"op": "recent"})).unwrap(),
+            HostRequest::Recent { limit: None }
+        ));
+        assert!(matches!(
+            serde_json::from_value(json!({"op": "recent", "limit": 5})).unwrap(),
+            HostRequest::Recent { limit: Some(5) }
+        ));
     }
 }
