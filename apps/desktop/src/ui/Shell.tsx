@@ -1,5 +1,6 @@
-// Window chrome and navigation: the 48 px title bar (caption buttons come from the window frame),
-// the NavigationView pane with the computer list, and the compact rail used in sessions.
+// Window chrome and navigation: the 48 px title strip at the top of the content area (caption
+// buttons come from the window frame on Windows; on macOS the traffic lights sit over the sidebar's
+// own strip), and the sidebar with the computer list, flush with the window's left edge.
 
 import type { ReactNode } from "react";
 import { api } from "../lib/api";
@@ -12,7 +13,7 @@ import { clock, cx, routeLabel } from "./util";
 
 export type Nav = "devices" | "approvals" | "activity" | "pair" | "settings" | { computer: string };
 
-export function TitleBar({ title, facts, onBack }: { title?: string; facts?: ReactNode; onBack?: () => void }) {
+export function TitleBar({ title, facts, onBack, end }: { title?: string; facts?: ReactNode; onBack?: () => void; end?: ReactNode }) {
   return (
     <header className="tb" data-tauri-drag-region>
       {onBack && (
@@ -37,6 +38,7 @@ export function TitleBar({ title, facts, onBack }: { title?: string; facts?: Rea
       </div>
       {api.kind === "demo" && <span className="demo-badge">{t("preview_badge")}</span>}
       <div className="drag" data-tauri-drag-region />
+      {end && <div className="nt-tb-end">{end}</div>}
       {/* Room for the caption buttons drawn by the window frame. */}
       <div style={{ width: "var(--tauri-frame-controls-width, 0px)", flex: "none" }} />
     </header>
@@ -135,7 +137,7 @@ export function Sidebar({
   onQuery: (query: string) => void;
   onNav: (n: Nav) => void;
 }) {
-  const width = 272;
+  const width = 240;
   const isActive = (n: Nav) =>
     typeof n === "string" ? active === n : typeof active === "object" && active?.computer === n.computer;
   // "you" rows sit with the working ones under one heading.
@@ -146,7 +148,9 @@ export function Sidebar({
     if (list.length) grouped.set(label, [...(grouped.get(label) ?? []), ...list]);
   }
   return (
-    <nav className="side" style={{ width }} aria-label={t("main_navigation")}>
+    <nav className="side" aria-label={t("main_navigation")}>
+      {/* The window's traffic lights (macOS) sit here; the strip drags the window. */}
+      <div className="nt-drag" data-tauri-drag-region />
       <div className="search">
         <Icon name="search" size={14} />
         <input type="search" value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("search_computers")} aria-label={t("search_computers")} />
@@ -200,35 +204,6 @@ export function Sidebar({
       <button type="button" className={cx("nv", isActive("settings") && "sel")} onClick={() => onNav("settings")} aria-current={isActive("settings") ? "page" : undefined}>
         <Icon name="settings" size={16} />
         <span>{t("settings")}</span>
-      </button>
-    </nav>
-  );
-}
-
-/** The compact rail in sessions. */
-export function NavRail({ waiting, os, onNav }: { waiting: number; os: "windows" | "mac"; onNav: (n: Nav | "home") => void }) {
-  return (
-    <nav className="nrail" aria-label={t("main_navigation")}>
-      <button type="button" className="ni" onClick={() => onNav("home")} aria-label={t("devices")} title={t("devices")}>
-        <Icon name="menu" size={16} />
-      </button>
-      <button type="button" className="ni" onClick={() => onNav("approvals")} aria-label={t("approvals")} title={t("approvals")}>
-        <Glyph name="approval" size={18} />
-        {waiting > 0 && <span className="badge">{waiting}</span>}
-      </button>
-      <button type="button" className="ni" onClick={() => onNav("activity")} aria-label={t("activity")} title={t("activity")}>
-        <Icon name="history" size={16} />
-      </button>
-      <div className="sep" />
-      <span className="ni sel" aria-current="page" aria-label={t("current_session")} title={t("current_session")}>
-        <OsGlyph os={os} size={16} />
-      </span>
-      <div className="spacer" />
-      <button type="button" className="ni" onClick={() => onNav("pair")} aria-label={t("pair")} title={t("pair")}>
-        <Icon name="add" size={16} />
-      </button>
-      <button type="button" className="ni" onClick={() => onNav("settings")} aria-label={t("settings")} title={t("settings")}>
-        <Icon name="settings" size={16} />
       </button>
     </nav>
   );

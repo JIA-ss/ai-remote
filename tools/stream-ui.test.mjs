@@ -163,12 +163,16 @@ function sessionModule(hooks, api, createDecoder) {
     "./RemoteInput": { RemoteInput },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
     "./Icon": { Icon: () => {} },
-    "./Shell": { computerFacts: () => [], Facts: () => {}, NavRail: () => {}, TitleBar: () => {} },
+    "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar: () => {} },
+    "../lib/fullscreen": { setFullscreen: async () => {}, isFullscreen: async () => false, watchFullscreen: () => () => {} },
+    "motion/react": { AnimatePresence: ({ children }) => children, motion: { div: "div" } },
     "./TurnLine": { TurnLine: () => {}, turnSpec: () => null },
     "./util": { agentLabel: () => "Test agent", clock: () => "12:00", countdown: () => "1:00", cx: (...values) => values.filter(Boolean).join(" "),
       relayNote: () => null,
       useNow: () => 1000, useSize: () => [{ current: null }, { w: 1000, h: 700 }] },
-  }, { localStorage: { getItem: () => null }, performance });
+  }, { localStorage: { getItem: () => null }, performance,
+    // The page registers its full-screen keys on the window and sizes the picture by device pixels.
+    window: { addEventListener() {}, removeEventListener() {}, devicePixelRatio: 1, setTimeout, clearTimeout } });
   return { ...exported, RemoteInput };
 }
 

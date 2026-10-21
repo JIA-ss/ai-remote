@@ -64,9 +64,9 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
   const [hd, lede] = heads[sec];
   return (
     <div className="win swin" style={{ width: "100vw", height: "100vh" }}>
-      <TitleBar title={t("settings")} onBack={onBack} />
       <div className="body-row">
         <nav className="snav">
+          <div className="nt-drag" data-tauri-drag-region />
           <div className="me">
             <span className="tile">
               <Icon name="laptop" size={20} />
@@ -92,6 +92,8 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
           ))}
         </nav>
         <main className="page">
+          <TitleBar title={t("settings")} onBack={onBack} />
+          <div className="nt-content">
           <div className="spage" style={{ overflowY: "auto" }}>
             <div className="hd">{t(hd)}</div>
             <div className="body c2" style={{ marginTop: 6, maxWidth: 640 }}>
@@ -104,6 +106,7 @@ export function SettingsWindow({ onBack }: { onBack: () => void }) {
               {sec === "approvals" && <Approvals />}
               {sec === "about" && <About version={status?.version} />}
             </div>
+          </div>
           </div>
         </main>
       </div>
