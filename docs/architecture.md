@@ -280,9 +280,11 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
 
 ## 8. Processes and platform rules
 
-- **The host runs in the logged-in user's interactive session, never as a service.** On Windows a
-  service lives in session 0, which has no desktop: screenshots are black, input goes nowhere and no
-  approval prompt can appear.
+- **The host always runs in a session with a desktop.** On Windows a service lives in session 0,
+  which has no desktop: screenshots are black, input goes nowhere and no approval prompt can appear.
+  So the host runs in the logged-in user's interactive session; with `host install --service`, a
+  small service in session 0 starts `ai-remote-hostw` as SYSTEM *inside the console session* and never
+  captures or injects from session 0 itself.
 - **Processes.**
 
   | Process | Started by | Notes |
@@ -300,6 +302,35 @@ description is in [tools.md](tools.md#7-mounted-mcp-servers).
   `--service`, a system LaunchAgent that serves the login window too). `--dry-run` prints every
   change first. See
   [operations.md](operations.md#3-running-the-host).
+- **The tray: the owner's view of the host.** The desktop app (`apps/desktop`) puts an icon in the
+  menu bar (macOS) or notification area (Windows). The mark fades while no host runs here; a
+  corner badge says who is here: a ring while a controller is connected on any channel (tools,
+  activity feed, live view, files), a solid dot while someone operates the computer (a tool call
+  running or just ended, or a person who took over), two bars while paused. On macOS it is a
+  template image that the system tints like every other menu bar icon; on Windows the badge is
+  coloured (blue: an agent, amber: a person, orange: paused). The menu's first line says the same
+  in words; the menu opens the "This device" settings page (permissions with a button to the right
+  System Settings pane on macOS, autostart, paired controllers and bypass, the approval rules' file, recent
+  audit lines), shows a pairing code (minted on demand, shown once, never logged), pauses /
+  resumes, stops / starts the host, and quits. Closing the window keeps the app in the tray while a
+  host runs here or the app is set to open at login (off by default; a per-user LaunchAgent on
+  macOS, a `Run` value under HKCU on Windows, both starting the app with only its icon).
+
+  *Why in the app and not in `ai-remote-hostw`:* a per-user LaunchAgent or a logon task could draw
+  a tray icon, but the service modes cannot: Windows `--service` runs the host as SYSTEM (an icon
+  would sit on no user's notification area or on the wrong desktop), and the macOS system
+  LaunchAgent also runs at the login window. `ai-remote-hostw` has no UI event loop either. One tray
+  for every mode therefore lives in the app, in the signed-in user's session, and talks to whatever
+  host runs over the host's **local control channel** (`host/control.sock`, or the owner-only named pipe): the same channel `ai-remote host
+  status`, `stop-host`, `pair-code`, `peers` and `bypass` use (`HostRequest` in
+  `crates/ar-host/src/control.rs`; `status` reports the connected controllers with their
+  channels, the running and last tool call and the current driver, from a presence record that is
+  only reported and never decides anything; `pause` and `recent` were added for the tray). The service's channel admits the account
+  that installed it, so the app reaches a SYSTEM host as well. What the channel cannot do, the app
+  does through the `ai-remote` command: `host start` (launchctl or the logon task; a Windows service
+  only from an administrator terminal, so the app asks before stopping one) and `doctor` while no
+  host runs (its permission checks are then those of the command, not of the host). The app never needs the host's code, privileges or permissions, and a
+  computer that is only a controller loses nothing: closing the window still quits.
 - **Session state is reported, not guessed.** `system_info` and `doctor` say whether the process is in
   an interactive session, on the console, elevated, and whether the desktop is locked, so an agent can
   tell "I cannot see" from "there is nothing there".

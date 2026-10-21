@@ -41,6 +41,7 @@
 | `ai-remote host install` | 登录时自动在后台启动被控端（`--service`：作为能到达锁屏的 Windows 服务） |
 | `ai-remote host uninstall` | 删除自启项、停止被控端、删除防火墙规则 |
 | `ai-remote host status` | 查看自启项、防火墙规则，以及被控端是否在运行 |
+| `ai-remote host start` | 立即启动已安装的后台被控端（比如 `stop-host` 之后）；桌面端的托盘也用它。Windows 服务要在管理员终端里运行 |
 | `ai-remote doctor` | 分级体检：这台机器到底能不能被操作？ |
 | `ai-remote pair-code [--level L] [--name N]` | 打印一张一次性配对票据 |
 | `ai-remote peers` | 已配对的控制端，以及各自的级别和设备 ID；被撤销的标为 `REVOKED` |
@@ -292,7 +293,7 @@ ai-remote host uninstall
   `not starting: a host is already running for this profile`，并以退出码 3 退出，不会影响正在运行的被控端。
 - **日志。** `host.log` 超过 8 MiB 时轮转，保留前两份（`host.log.1`、`host.log.2`）。日志文件打开之前发生的错误
   写到临时目录下的 `ai-remote-hostw-error.log`。macOS 上 launchd 还会把进程的 stderr 写到 `host/host-stderr.log`。
-- **`stop-host` 之后重新启动：** 注销再登录；或者再执行一次 `ai-remote host install`（没有被控端在运行时它会启动任务）；
+- **`stop-host` 之后重新启动：** `ai-remote host start`（或桌面端托盘）；注销再登录；或者再执行一次 `ai-remote host install`（没有被控端在运行时它会启动任务）；
   或者自己启动任务：`schtasks /Run /TN "ai-remote\host-<8 位十六进制>"`（任务名见 `ai-remote host status`）。
 - **不弹控制台窗口。** 后台被控端没有控制台，所以它启动的所有东西（shell 命令、后台任务、挂载的 server、系统工具）
   都不带控制台窗口，用户桌面上不会突然弹出窗口。
@@ -685,6 +686,11 @@ ai-remote tell "Use the D: drive for the export"
   （`session_start` 里的 `client`）。
 - 轮流操作是为了协调人和 Agent，不是安全边界（同一台设备上的 Agent 也能发出标记为“人”的调用）。真正限制 Agent 的是
   权限级别、策略和审批。
+
+**在被控端本机暂停。** 机主也可以在被控端的桌面端（托盘菜单或“设置 → 本设备”）暂停。这种暂停比控制端的更强：智能体的调用
+*和*接管者的调用都会被拒绝，任何已配对设备都不能恢复或接管，直到机主在那台电脑上恢复（控制端执行 `ai-remote resume` 会被拒绝并
+说明原因）；画面仍可观看。恢复后，暂停前是谁在操作就交还给谁。审计日志里记为带 `"origin": "owner"` 的 `driver` 行，控制端的时间线
+显示“<被控端> 前的人暂停了操作”。
 
 ## 10. 审计日志
 

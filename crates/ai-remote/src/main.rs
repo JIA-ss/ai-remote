@@ -420,6 +420,9 @@ enum HostAction {
         #[arg(long, conflicts_with = "firewall_only")]
         service: bool,
     },
+    /// Start the installed background host now (the autostart entry's own start command), for
+    /// example after `stop-host`. The desktop app's tray uses this too.
+    Start,
     /// Remove the autostart entry, stop the running host, and remove the firewall rules unless
     /// another profile's autostart still uses them.
     Uninstall {
@@ -477,6 +480,7 @@ async fn run(cli: Cli) -> Result<()> {
             hostops::host_uninstall(&profile, dry_run, firewall_only).await
         }
         Command::Host { action: Some(HostAction::Status), .. } => hostops::host_status(&profile, json_out).await,
+        Command::Host { action: Some(HostAction::Start), .. } => hostops::host_start(&profile, json_out).await,
         Command::Doctor { host: None } => hostops::doctor(&profile, json_out).await,
         Command::Doctor { host: Some(host) } => remote::doctor(&profile, host, json_out).await,
         Command::PairCode { level, name } => {

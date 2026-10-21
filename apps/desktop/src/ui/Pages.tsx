@@ -41,7 +41,8 @@ function news(c: Computer, now: number): { hl: string; lede: string | null; who:
     return { hl, lede: t("lede_waiting", { agent, time: clock(asked?.startedMs ?? now), tool: p.tool }), who: "you" };
   }
   if (g === "you") return { hl: t("hl_you", { host }), lede: t("lede_you", { agent }), who: "you" };
-  if (c.feed.driver.state === "paused") return { hl: t("hl_paused", { host }), lede: t("lede_paused", { agent }), who: "idle" };
+  if (c.feed.driver.state === "paused")
+    return { hl: t("hl_paused", { host }), lede: t(c.feed.driver.owner ? "lede_owner_paused" : "lede_paused", { agent, host }), who: "idle" };
   const last = c.feed.steps.at(-1);
   if (g === "working" && last)
     return {
@@ -481,7 +482,7 @@ export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const p = await api.pair(ticket.trim(), name.trim() || undefined);
+      const p = await api.pair(ticket.trim().replace(/^ai-remote\s+pair\s+/, ""), name.trim() || undefined);
       setPaired(p);
       setStep(2);
     } catch (e) {

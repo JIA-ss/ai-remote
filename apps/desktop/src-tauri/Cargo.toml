@@ -28,7 +28,8 @@ serde.workspace = true
 serde_json.workspace = true
 specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
 specta-typescript = "0.0.12"
-tauri = { version = "2", features = [] }
+# `tray-icon`: the menu bar / notification area icon that shows this computer's host (see tray.rs).
+tauri = { version = "2", features = ["tray-icon"] }
 # Windows: native Snap Layouts on a custom title bar (no-op elsewhere).
 tauri-plugin-frame = "1.1"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
