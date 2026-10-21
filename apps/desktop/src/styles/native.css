@@ -395,6 +395,117 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-session.immersive .tb, .nt-session.immersive .nt-rail { display: none; }
 
 /* ======================================================================================
+   6b. Coding-agent chat (session page's Chat tab, computer page's Agents tab)
+   ====================================================================================== */
+.nt-rail.wide { width: clamp(380px, 34vw, 560px); }
+.nt-chat { display: flex; flex-direction: column; min-height: 0; flex: 1; margin-top: 12px; }
+.nt-chat-hd { position: relative; display: flex; align-items: center; gap: 10px; padding: 0 2px 10px; border-bottom: 1px solid var(--stroke-1); }
+.nt-chat-hd .who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.nt-chat-hd .nm { font-size: 13px; font-weight: var(--w-strong); color: var(--text-1); }
+.nt-chat-hd .cwd { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.nt-chat-hd .ico { width: 28px; height: 28px; border-radius: var(--r-control); display: grid; place-items: center; color: var(--text-2); }
+.nt-chat-hd .ico:hover { background: var(--fill-1); }
+.nt-chat .dot, .nt-sessions .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--idle); }
+.nt-chat .dot.running, .nt-chat .dot.starting, .nt-sessions .dot.running, .nt-sessions .dot.starting { background: var(--agent); box-shadow: 0 0 0 3px var(--agent-soft); }
+.nt-chat .dot.interrupting { background: var(--you); }
+.nt-chat .dot.idle, .nt-sessions .dot.idle { background: var(--success); }
+.nt-chat .dot.off, .nt-chat .dot.ended { background: var(--text-4); }
+.nt-chat-menu { position: absolute; right: 0; top: 34px; z-index: 5; display: flex; flex-direction: column; min-width: 160px; padding: 4px; }
+.nt-chat-menu button { text-align: left; padding: 6px 10px; border-radius: var(--r-row); font-size: 13px; color: var(--text-1); }
+.nt-chat-menu button:hover { background: var(--fill-1); }
+.nt-chat-menu button.danger { color: var(--danger); }
+.nt-chat-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 2px 8px; display: flex; flex-direction: column; gap: 14px; user-select: text; }
+.nt-chat-empty { color: var(--text-3); font-size: 13px; line-height: 1.5; padding: 24px 8px; text-align: center; }
+.nt-turn { display: flex; flex-direction: column; gap: 8px; }
+.nt-user { display: flex; justify-content: flex-end; }
+.nt-user .bubble { max-width: 88%; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--card); color: var(--text-1); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nt-msg { font-size: 13px; line-height: 1.6; color: var(--text-1); overflow-wrap: anywhere; }
+.nt-msg p { margin: 0 0 6px; white-space: pre-wrap; }
+.nt-msg p:last-child { margin-bottom: 0; }
+.nt-msg code { font-family: var(--font-data); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--fill-1); }
+.nt-chat-code { margin: 4px 0; padding: 8px 10px; border-radius: var(--r-control); background: var(--well); font-family: var(--font-data); font-size: 12px; line-height: 1.5; white-space: pre; overflow-x: auto; max-height: 320px; color: var(--text-1); }
+.nt-chat-code.small { font-size: 11px; max-height: 220px; }
+.nt-steps { border-radius: var(--r-card); background: var(--fill-1); }
+.nt-steps > .hd, .nt-thought > .hd { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; font-size: 12px; color: var(--text-2); text-align: left; }
+.nt-steps > .bd { display: flex; flex-direction: column; gap: 4px; padding: 0 6px 6px; }
+.nt-thought > .hd { padding: 4px 4px; color: var(--text-3); }
+.nt-thought > .bd { padding: 2px 8px 6px 20px; font-size: 12px; line-height: 1.5; color: var(--text-3); white-space: pre-wrap; }
+.nt-tool { border-radius: var(--r-row); background: var(--card); }
+.nt-tool > .hd { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; text-align: left; font-size: 12px; color: var(--text-1); }
+.nt-tool > .hd:disabled { cursor: default; }
+.nt-tool .ic { color: var(--text-3); display: grid; place-items: center; }
+.nt-tool .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.nt-tool .stat { font-size: 11px; }
+.nt-tool .stat .add, .nt-diff .add { color: var(--success); }
+.nt-tool .stat .del, .nt-diff .del { color: var(--danger); }
+.nt-tool .st { color: var(--success); display: grid; place-items: center; width: 14px; }
+.nt-tool.failed .st { color: var(--danger); }
+.nt-tool .tm { font-size: 11px; color: var(--text-3); min-width: 34px; text-align: right; }
+.nt-tool > .bd { padding: 0 8px 8px; }
+.nt-tool .cut { font-size: 11px; color: var(--text-3); padding-top: 4px; }
+.nt-diff .path { font-size: 11px; color: var(--text-3); padding: 4px 0; }
+.nt-diff pre { margin: 0; padding: 6px 8px; border-radius: var(--r-control); background: var(--well); font-family: var(--font-data); font-size: 11px; line-height: 1.5; overflow-x: auto; max-height: 320px; }
+.nt-diff .ctx { color: var(--text-3); }
+.nt-diff .add { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.nt-diff .del { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.nt-plan { list-style: none; margin: 0; padding: 4px 6px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.nt-plan li { display: flex; align-items: baseline; gap: 8px; }
+.nt-plan li i { width: 8px; height: 8px; border-radius: 2px; border: 1.5px solid var(--text-3); flex: none; transform: translateY(1px); }
+.nt-plan li.in_progress i { border-color: var(--agent); background: var(--agent-soft); }
+.nt-plan li.completed { color: var(--text-3); text-decoration: line-through; }
+.nt-plan li.completed i { border-color: var(--success); background: var(--success); }
+.nt-question { border-radius: var(--r-card); background: var(--card-decide); box-shadow: inset 3px 0 0 var(--you-stroke); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.nt-question.done { box-shadow: none; opacity: .7; }
+.nt-question .q { font-size: 13px; color: var(--text-1); }
+.nt-question .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.nt-turn-ft { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-3); }
+.nt-turn-ft.failed { color: var(--danger); }
+.nt-turn-ft.interrupted { color: var(--you-text); }
+.nt-turn-ft .why { color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; flex-basis: 100%; }
+.nt-turn-ft .meta { margin-left: auto; }
+.nt-chat-note { font-size: 12px; line-height: 1.5; color: var(--text-2); padding: 6px 10px; border-radius: var(--r-row); background: var(--fill-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.nt-chat-note.warn { color: var(--you-text); background: var(--you-soft); }
+.nt-chat-note.err { color: var(--danger); background: var(--danger-fill); }
+.nt-chat-foot { padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.nt-chat-status { display: flex; align-items: center; gap: 8px; min-height: 18px; font-size: 11px; color: var(--text-3); }
+.nt-chat-status .ell, .nt-queue .ell { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-chat-status.busy { color: var(--agent); }
+.nt-chat .spin, .nt-tool .spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: nt-spin .8s linear infinite; display: inline-block; flex: none; }
+.nt-tool .st .spin { color: var(--agent); }
+@keyframes nt-spin { to { transform: rotate(360deg); } }
+.nt-queue { display: flex; flex-direction: column; gap: 4px; }
+.nt-queue .chip { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; border-radius: var(--r-row); background: var(--fill-1); font-size: 12px; color: var(--text-2); }
+.nt-queue .chip .lbl { color: var(--text-3); font-size: 11px; flex: none; }
+.nt-queue .chip button { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; color: var(--text-3); }
+.nt-chat-compose { display: flex; align-items: flex-end; gap: 8px; padding: 8px; }
+.nt-chat-compose textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 13px; line-height: 1.5; max-height: 132px; }
+.nt-chat-compose .send { width: 32px; height: 32px; flex: none; display: grid; place-items: center; }
+.nt-chat-compose .send.stop { background: var(--text-1); color: var(--canvas); }
+.nt-chat-hint { font-size: 11px; color: var(--text-3); }
+.nt-chat-hint .lnk { color: var(--agent); padding: 0; font-size: 11px; }
+.nt-chat-picker { flex: 1; min-height: 0; overflow-y: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.nt-sessions { display: flex; flex-direction: column; gap: 4px; }
+.nt-sessions .sess { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--r-row); background: var(--card); text-align: left; font-size: 12px; color: var(--text-1); }
+.nt-sessions .sess:hover { background: var(--fill-1); }
+.nt-sessions .sess .cwd { color: var(--text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.nt-sessions .sess .n { color: var(--text-3); font-size: 11px; }
+.nt-chat-start { display: flex; flex-direction: column; gap: 6px; }
+.nt-chat-start .lbl { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.nt-chat-start .ta-input, .nt-question .ta-input { width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: var(--r-control); border: 1px solid var(--stroke-input); background: var(--card); color: var(--text-1); font-size: 13px; }
+.nt-chat-start textarea.ta-input { resize: vertical; font: inherit; font-size: 13px; }
+.nt-chat-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.nt-chat-pick .opt { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 10px; border-radius: var(--r-control); background: var(--fill-1); font-size: 13px; color: var(--text-1); }
+.nt-chat-pick .opt.sel { background: var(--agent); color: #fff; }
+.nt-chat-pick .opt .vs { font-size: 11px; opacity: .7; }
+.nt-chat-more { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; font-size: 12px; color: var(--text-2); padding: 4px 0; }
+.nt-chat-adv { display: flex; flex-direction: column; gap: 6px; }
+.nt-chat-adv .chk { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-2); margin-top: 4px; }
+.nt-chat-warn { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.5; color: var(--danger); margin: 6px 0 4px; }
+.nt-chat-warn svg { flex: none; margin-top: 2px; }
+.nt-chat-start .btn.primary { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 900px) { .nt-rail.wide { width: min(420px, 100vw - 60px); } }
+
+/* ======================================================================================
    7. Fallbacks and small windows
    ====================================================================================== */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

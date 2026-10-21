@@ -2,6 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
+import type { ChatEvent, ChatHello, ChatState, RuntimesReport, SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
   Driver,
@@ -171,9 +172,11 @@ export const demoBackend: Backend = {
     const i = hosts.findIndex((h) => h.name === host);
     if (i >= 0) hosts.splice(i, 1);
   },
-  async callTool(host, tool): Promise<ToolResult> {
+  async callTool(host, tool, args = {}): Promise<ToolResult> {
     reachable(host);
     await wait(250);
+    const chat = demoChatTool(host, tool, args);
+    if (chat) return chat;
     if (tool === "screenshot") {
       return { content: [{ type: "image", mimeType: "image/svg+xml", data: btoa(demoScreen()) }] };
     }
@@ -207,6 +210,35 @@ export const demoBackend: Backend = {
   async localControllers() {
     await wait(120);
     return localControllers.map((c) => ({ ...c }));
+  },
+  async localChat() {
+    await wait(80);
+    return { enabled: demoChatEnabled, live: 1, sessions: [] };
+  },
+  async setLocalChat(on) {
+    await wait(150);
+    demoChatEnabled = on;
+  },
+  async openChat(host, ticket, since, onEvent, onClosed) {
+    reachable(host);
+    await wait(200);
+    const s = demoSessions.find((x) => demoTickets.get(ticket) === x.id);
+    if (!s) throw new Error("unknown or already used chat ticket; ask for a new one");
+    demoTickets.delete(ticket);
+    const log = demoLogs.get(s.id) ?? [];
+    const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name }, cwd: s.cwd, state: s.state,
+      seq: log.length, caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: false }, host };
+    for (const e of log) if (e.seq > since) onEvent(e);
+    const listener = (e: ChatEvent) => onEvent(e);
+    demoChatListeners.add(listener);
+    return {
+      hello,
+      send: async (command) => demoChatCommand(s, command),
+      close: () => {
+        demoChatListeners.delete(listener);
+        onClosed();
+      },
+    };
   },
   async setLocalBypass(peer, on) {
     await wait(200);
@@ -314,4 +346,153 @@ ${[0, 1, 2, 3, 4, 5].map((i) => `<rect x="300" y="${310 + i * 34}" width="${640 
 ${[0, 1, 2, 3, 4].map((i) => `<rect x="${1000 + i * 64}" y="${640 - [120, 180, 150, 240, 210][i]}" width="40" height="${[120, 180, 150, 240, 210][i]}" rx="4" fill="#B9C4CF"/>`).join("")}
 <rect x="0" y="952" width="1600" height="48" fill="#E9EDF1" fill-opacity="0.92"/>
 </svg>`;
+}
+
+
+// Coding agents on office-pc: what is installed, one session with a finished turn, and a scripted
+// reply to whatever is sent.
+
+let demoChatEnabled = true;
+const demoTickets = new Map<string, string>();
+const demoChatListeners = new Set<(e: ChatEvent) => void>();
+
+const demoRuntimes: RuntimesReport = {
+  host: { can_start: true, reason: null, enabled: true, max_live: 4 },
+  runtimes: [
+    { id: "claude", name: "Claude Code", base: "claude", custom: false, protocol: "claude-stream-json", verdict: "ok", version: "2.1.174",
+      path: "C:\\Users\\me\\.local\\bin\\claude.exe", login: { state: "logged_in", method: "claude.ai", plan: "max" },
+      caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: false } },
+    { id: "codex", name: "Codex", base: "codex", custom: false, protocol: "codex-app-server", verdict: "ok", version: "0.163.0",
+      path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", login: { state: "logged_in", method: "chatgpt" },
+      caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: true } },
+    { id: "opencode", name: "OpenCode", base: "opencode", custom: false, protocol: "acp", verdict: "ok", version: "1.2.4",
+      path: "C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd", login: null,
+      caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: false } },
+    { id: "gemini", name: "Gemini CLI", base: "gemini", custom: false, protocol: "acp", verdict: "missing",
+      caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: false } },
+    { id: "qwen", name: "Qwen Code", base: "qwen", custom: false, protocol: "acp", verdict: "missing",
+      caps: { interrupt: true, resume: true, partial: true, thinking: true, questions: false } },
+  ],
+};
+
+const t0 = Date.now() - 6 * minute;
+const demoSessions: SessionInfo[] = [
+  { id: "c3f9a1e7b2c4d", runtime: "claude", name: "Claude Code", cwd: "D:\\work\\report-tool", state: "idle", by: { device: "home-laptop" },
+    started_at: t0, turns: 1, last_activity: t0 + 40_000, seq: 0 },
+];
+
+function demoLog(): ChatEvent[] {
+  const evs: Array<Record<string, unknown>> = [
+    { t: "state", state: "running", queued: [] },
+    { t: "user", input_id: "u1", by: { device: "home-laptop" }, text: "The Q3 export fails with a date error. Find out why and fix it." },
+    { t: "turn_start" },
+    { t: "message", id: "m1", text: "Let me look at the export code and reproduce the error first.", delta: false },
+    { t: "tool_call", call_id: "k1", title: "Bash python export.py --quarter Q3", kind: "execute", status: "in_progress", input: { command: "python export.py --quarter Q3" } },
+    { t: "tool_update", call_id: "k1", status: "failed", content: [{ type: "text", text: "ValueError: time data '2026-09-31' does not match format '%Y-%m-%d'\n(exit code 1)" }] },
+    { t: "thought", id: "r1", text: "September has 30 days; the quarter end is computed as month*3 and day 31.", delta: false },
+    { t: "tool_call", call_id: "k2", title: "Read D:\\work\\report-tool\\export.py", kind: "read", status: "completed", locations: ["D:\\work\\report-tool\\export.py"] },
+    { t: "tool_call", call_id: "k3", title: "Edit D:\\work\\report-tool\\export.py", kind: "edit", status: "completed", content: [
+      { type: "diff", path: "D:\\work\\report-tool\\export.py", old: "    end = date(year, quarter * 3, 31)", new: "    last = calendar.monthrange(year, quarter * 3)[1]\n    end = date(year, quarter * 3, last)" }] },
+    { t: "tool_call", call_id: "k4", title: "Bash python export.py --quarter Q3", kind: "execute", status: "in_progress" },
+    { t: "tool_update", call_id: "k4", status: "completed", content: [{ type: "text", text: "wrote out/Q3.pdf (14 pages)" }] },
+    { t: "message", id: "m2", text: "Fixed. The quarter end was always day 31, which does not exist for September (or June). `export.py` now takes the month's real last day from `calendar.monthrange`, and the Q3 export runs: `out/Q3.pdf`, 14 pages.", delta: false },
+    { t: "usage", input_tokens: 18_400, output_tokens: 920 },
+    { t: "turn_end", status: "completed", final_text: "Fixed.", duration_ms: 38_200 },
+    { t: "state", state: "idle", queued: [] },
+  ];
+  return evs.map((e, i) => ({ seq: i + 1, ts: t0 + i * 2600, turn: i >= 2 ? 1 : 0, ...e }) as unknown as ChatEvent);
+}
+const demoLogs = new Map<string, ChatEvent[]>([["c3f9a1e7b2c4d", demoLog()]]);
+
+function push(s: SessionInfo, e: Record<string, unknown>) {
+  const log = demoLogs.get(s.id) ?? [];
+  const ev = { seq: log.length + 1, ts: Date.now(), turn: s.turns, ...e } as unknown as ChatEvent;
+  log.push(ev);
+  demoLogs.set(s.id, log);
+  s.seq = ev.seq;
+  for (const l of demoChatListeners) l(ev);
+}
+
+function setState(s: SessionInfo, state: ChatState) {
+  s.state = state;
+  push(s, { t: "state", state, queued: [] });
+}
+
+async function demoReply(s: SessionInfo, text: string) {
+  setState(s, "running");
+  push(s, { t: "user", input_id: `u${s.turns + 1}`, by: { device: "home-laptop" }, text });
+  s.turns += 1;
+  push(s, { t: "turn_start" });
+  await wait(500);
+  push(s, { t: "tool_call", call_id: `k${s.seq}`, title: "Bash python -m pytest -q", kind: "execute", status: "in_progress" });
+  await wait(1400);
+  if (s.state !== "running") return;
+  push(s, { t: "tool_update", call_id: `k${s.seq - 1}`, status: "completed", content: [{ type: "text", text: "12 passed in 1.84s" }] });
+  const words = "All 12 tests pass, including the new one for quarter ends.".split(" ");
+  for (const w of words) {
+    await wait(70);
+    if (s.state !== "running") return;
+    push(s, { t: "message", id: `m${s.turns}`, text: `${w} `, delta: true });
+  }
+  push(s, { t: "turn_end", status: "completed", duration_ms: 2600 });
+  setState(s, "idle");
+}
+
+async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
+  const input = c.input as { text?: string } | undefined;
+  if (input?.text) void demoReply(s, input.text);
+  if (c.interrupt && s.state === "running") {
+    setState(s, "interrupting");
+    await wait(300);
+    push(s, { t: "turn_end", status: "interrupted", duration_ms: 900 });
+    setState(s, "idle");
+  }
+  if (c.end) setState(s, "ended");
+}
+
+function demoChatTool(host: string, tool: string, args: Record<string, unknown>): ToolResult | null {
+  if (!tool.startsWith("chat_")) return null;
+  const level = hosts.find((h) => h.name === host)?.levelAtPairing;
+  if (level !== "admin") {
+    return { isError: true, content: [{ type: "text", text: `'${tool}' requires level 'admin', but this device has '${level}'.` }] };
+  }
+  const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v });
+  const ticket = (id: string) => {
+    const tk = `t${Math.random().toString(16).slice(2)}`;
+    demoTickets.set(tk, id);
+    return tk;
+  };
+  switch (tool) {
+    case "chat_runtimes":
+      return ok({ ...demoRuntimes, host: { ...demoRuntimes.host, enabled: demoChatEnabled } });
+    case "chat_sessions":
+      return ok({ sessions: demoSessions, live: demoSessions.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    case "chat_start": {
+      if (!demoChatEnabled) return { isError: true, content: [{ type: "text", text: "coding agents are switched off on this host" }] };
+      const rt = demoRuntimes.runtimes.find((r) => r.id === args.runtime);
+      const s: SessionInfo = { id: `c${Math.random().toString(16).slice(2, 14)}`, runtime: String(args.runtime), name: rt?.name ?? String(args.runtime),
+        cwd: String(args.cwd), state: "idle", by: { device: "home-laptop" }, started_at: Date.now(), turns: 0, last_activity: Date.now(), seq: 0 };
+      demoSessions.unshift(s);
+      demoLogs.set(s.id, []);
+      if (typeof args.prompt === "string" && args.prompt) setTimeout(() => void demoReply(s, args.prompt as string), 600);
+      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+    }
+    case "chat_attach": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (!s) return { isError: true, content: [{ type: "text", text: `no chat session '${String(args.session)}'` }] };
+      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+    }
+    case "chat_end": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (s) setState(s, "ended");
+      return ok({ session: args.session, ending: true });
+    }
+    case "chat_interrupt": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (s) void demoChatCommand(s, { interrupt: {} });
+      return ok({ session: args.session, interrupting: true });
+    }
+    default:
+      return null;
+  }
 }

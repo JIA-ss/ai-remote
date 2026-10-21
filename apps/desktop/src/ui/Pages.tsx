@@ -8,7 +8,8 @@ import { currentLang, t, type Key } from "../lib/i18n";
 import { allPending, groupOf, type Computer, type Snapshot } from "../lib/store";
 import type { Step } from "../lib/types";
 import { CmdLine } from "./CmdLine";
-import { AccessTab, ToolsTab } from "./ComputerTabs";
+import type { ChatTarget } from "./AgentChat";
+import { AccessTab, AgentsTab, ToolsTab } from "./ComputerTabs";
 import { DecisionCard } from "./Decide";
 import { Glyph, OsGlyph, Pointer, SeatMark, Wordmark } from "./glyphs";
 import { Icon } from "./Icon";
@@ -76,12 +77,12 @@ function StepRows({ steps }: { steps: Step[] }) {
   );
 }
 
-type Tab = "overview" | "access" | "tools";
+type Tab = "overview" | "access" | "tools" | "agents";
 
 /** `?tab=` opens a tab directly (screenshots of the page outside the app). */
 function initialTab(): Tab {
   const v = new URLSearchParams(location.search).get("tab");
-  return v === "access" || v === "tools" ? v : "overview";
+  return v === "access" || v === "tools" || v === "agents" ? v : "overview";
 }
 
 /** One computer: what is happening there (Overview), this device's access, the tools on offer. */
@@ -90,11 +91,14 @@ export function ComputerPage({
   onWatch,
   onActivity,
   onUnpaired,
+  onOpenChat,
 }: {
   c: Computer;
   onWatch: () => void;
   onActivity: () => void;
   onUnpaired: () => void;
+  /** Opens a coding-agent chat beside the live view. */
+  onOpenChat: (target: ChatTarget) => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const off = c.online === false;
@@ -103,6 +107,7 @@ export function ComputerPage({
     ["overview", "tab_overview"],
     ["access", "tab_access"],
     ["tools", "tab_tools"],
+    ["agents", "tab_agents"],
     ["activity", "tab_activity"],
   ];
   return (
@@ -140,6 +145,8 @@ export function ComputerPage({
         <AccessTab c={c} onUnpaired={onUnpaired} />
       ) : tab === "tools" ? (
         <ToolsTab c={c} />
+      ) : tab === "agents" ? (
+        <AgentsTab c={c} onOpenChat={onOpenChat} />
       ) : (
         <Overview c={c} short={short} onWatch={onWatch} onActivity={onActivity} />
       )}

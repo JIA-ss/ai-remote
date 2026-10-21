@@ -18,6 +18,7 @@ import { preferredCodecs } from "../lib/codec";
 import { createPointerLayer, type PointerLayer } from "../lib/pointer";
 import { createRateController } from "../lib/rate";
 import { createDecoder, type VideoStats } from "../lib/video";
+import { AgentChat, type ChatTarget } from "./AgentChat";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
 import { Glyph, Pointer } from "./glyphs";
@@ -447,12 +448,18 @@ export function SessionPage({
   waiting,
   onBack,
   onNav,
+  chat: chatTarget = null,
+  panel,
 }: {
   c: Computer;
   device: string;
   waiting: number;
   onBack: () => void;
   onNav: (n: Nav | "home") => void;
+  /** A coding-agent session to open in the chat tab (just started, or picked on the computer page). */
+  chat?: ChatTarget | null;
+  /** Open with this tab of the right column. */
+  panel?: "chat";
 }) {
   void waiting;
   void onNav;
@@ -468,7 +475,14 @@ export function SessionPage({
   const [screen, setScreen] = useState<ScreenRect | null>(null);
   const [quality, setQuality] = useState(loadStreamQuality);
   const [stats, setStats] = useState<VideoStats | null>(null);
-  const [tab, setTab] = useState<"steps" | "sees">("steps");
+  const [tab, setTab] = useState<"steps" | "sees" | "chat">(panel === "chat" ? "chat" : "steps");
+  const [chatOpen, setChatOpen] = useState<ChatTarget | null>(chatTarget);
+  useEffect(() => {
+    if (chatTarget) {
+      setChatOpen(chatTarget);
+      setTab("chat");
+    }
+  }, [chatTarget?.session]);
   const [message, setMessage] = useState("");
   const [sent, setSent] = useState(false);
   const [handNote, setHandNote] = useState("");
@@ -716,6 +730,8 @@ export function SessionPage({
                   className="b"
                   onClick={() => {
                     if (immersive) enter(false);
+                    // The decision card lives in the steps tab.
+                    setTab("steps");
                     setTimeout(() => cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
                   }}
                 >
@@ -749,7 +765,7 @@ export function SessionPage({
           )}
         </section>
         {!immersive && (
-          <aside className="nt-rail">
+          <aside className={cx("nt-rail", tab === "chat" && "wide")}>
             {turn && (
               <div className="nt-line" ref={lineRef}>
                 <span className="tnum" style={{ width: 36 }}>
@@ -768,10 +784,16 @@ export function SessionPage({
               <span className={cx(tab === "steps" && "sel")} onClick={() => setTab("steps")} role="tab">
                 {t("tab_steps")}
               </span>
+              <span className={cx(tab === "chat" && "sel")} onClick={() => setTab("chat")} role="tab">
+                {t("tab_chat")}
+              </span>
               <span className={cx(tab === "sees" && "sel")} onClick={() => setTab("sees")} role="tab">
                 {t("tab_sees")}
               </span>
             </div>
+            {tab === "chat" ? (
+              <AgentChat host={host} target={chatOpen} onTarget={setChatOpen} />
+            ) : (
             <div className={cx("rail-scroll", tab === "sees" && "nofade")} style={{ overflowY: "auto" }}>
               {tab === "sees" ? (
                 <div className="note-box">
@@ -827,6 +849,7 @@ export function SessionPage({
                 </>
               )}
             </div>
+            )}
             {tab === "steps" && (
               <div className="composer-foot">
                 {driving ? (
@@ -863,7 +886,8 @@ export function SessionPage({
                             placeholder={composerPh}
                             onChange={(e) => setMessage(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") void send();
+                              // An input method's Enter confirms the composition; it must not send.
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) void send();
                             }}
                           />
                           <span className="hint">{composerHint}</span>

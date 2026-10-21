@@ -29,6 +29,8 @@ struct AppState {
     next_feed: AtomicU32,
     /// Live views: the task copying frames, and the writer that asks the host for keyframes.
     views: Mutex<HashMap<u32, View>>,
+    /// Coding-agent chats: the task copying events, and the writer of commands for the host.
+    chats: Mutex<HashMap<u32, View>>,
 }
 
 struct View {
@@ -177,6 +179,108 @@ async fn set_local_host_bypass(state: State<'_, AppState>, peer: String, on: boo
     let mut conn =
         Conn::connect(&endpoint).await.map_err(|_| "ai-remote host is not running on this computer".to_string())?;
     conn.request(&json!({"op": "set_bypass", "peer": peer, "on": on})).await.map(Json).map_err(text)
+}
+
+/// This computer as a host: whether paired devices may start coding agents here, and the sessions.
+/// `None` when no host runs here for this profile.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_chat(state: State<'_, AppState>) -> Result<Option<Json>, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let Ok(mut conn) = Conn::connect(&endpoint).await else { return Ok(None) };
+    conn.request(&json!({"op": "chat"})).await.map(|v| Some(Json(v))).map_err(text)
+}
+
+/// Allows or forbids coding agents on this computer (see `local_host_chat`); forbidding ends every
+/// session.
+#[tauri::command]
+#[specta::specta]
+async fn set_local_host_chat(state: State<'_, AppState>, on: bool) -> Result<Json, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let mut conn =
+        Conn::connect(&endpoint).await.map_err(|_| "ai-remote host is not running on this computer".to_string())?;
+    conn.request(&json!({"op": "set_chat_enabled", "on": on})).await.map(Json).map_err(text)
+}
+
+/// Longest event line accepted from a chat.
+const CHAT_LINE: u64 = 4 * 1024 * 1024;
+
+/// Opens a coding-agent chat with the ticket in `request` (`{"ticket":"..","since":N}`, from
+/// `chat_start` or `chat_attach`). Every event (one parsed JSON object) goes to `on_event`, and
+/// `{"t":"closed"}` when the chat ends; returns an id for [`chat_send`] and [`close_chat`] and the
+/// host's first reply.
+#[tauri::command]
+#[specta::specta]
+async fn open_chat(
+    state: State<'_, AppState>,
+    host: Option<String>,
+    request: Json,
+    on_event: Channel<Json>,
+) -> Result<(u32, Json), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut conn = state.agent().await.map_err(text)?;
+    let reply = conn.request(&json!({"op": "chat", "host": host, "request": request.0})).await.map_err(text)?;
+    let (stream, buffered) = conn.into_raw();
+    let (read, mut write) = tokio::io::split(stream);
+    let (control, mut lines) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    let task = tokio::spawn(async move {
+        let mut read = BufReader::new(std::io::Cursor::new(buffered).chain(read));
+        let events = async {
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match (&mut read).take(CHAT_LINE + 1).read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if buf.len() as u64 > CHAT_LINE => break,
+                    Ok(_) => {
+                        let Ok(event) = serde_json::from_slice::<Value>(&buf) else { continue };
+                        if on_event.send(Json(event)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        };
+        let up = async {
+            while let Some(line) = lines.recv().await {
+                if write.write_all(&line).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = events => {}
+            _ = up => {}
+        }
+        let _ = on_event.send(Json(json!({"t": "closed"})));
+    });
+    state.chats.lock().unwrap().insert(id, View { task, control });
+    Ok((id, Json(reply)))
+}
+
+/// Sends one command (`{"input":{...}}`, `{"interrupt":{}}`, ...) on chat `id`.
+#[tauri::command]
+#[specta::specta]
+async fn chat_send(state: State<'_, AppState>, id: u32, command: Json) -> Result<(), String> {
+    let control = state.chats.lock().unwrap().get(&id).map(|v| v.control.clone());
+    let control = control.ok_or_else(|| "this chat is closed".to_string())?;
+    let mut line = serde_json::to_vec(&command.0).map_err(|e| e.to_string())?;
+    line.push(b'\n');
+    control.send(line).await.map_err(|_| "this chat is closed".to_string())
+}
+
+/// Stops watching chat `id` (the session goes on on the host).
+#[tauri::command]
+#[specta::specta]
+async fn close_chat(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    let chat = state.chats.lock().unwrap().remove(&id);
+    if let Some(chat) = chat {
+        let _ = chat.control.send(b"{\"bye\":{}}\n".to_vec()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        chat.task.abort();
+    }
+    Ok(())
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -491,6 +595,11 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         set_screen_bitrate,
         stop_screen,
         log_from_page,
+        local_host_chat,
+        set_local_host_chat,
+        open_chat,
+        chat_send,
+        close_chat,
     ])
 }
 
@@ -540,6 +649,7 @@ pub fn run() {
             feeds: Mutex::new(HashMap::new()),
             next_feed: AtomicU32::new(1),
             views: Mutex::new(HashMap::new()),
+            chats: Mutex::new(HashMap::new()),
         })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {

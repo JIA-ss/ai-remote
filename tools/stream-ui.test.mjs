@@ -159,6 +159,7 @@ function sessionModule(hooks, api, createDecoder) {
       startPinging: () => () => {} },
     "../lib/pointer": { createPointerLayer: () => ({ shape() {}, move() {}, hide() {} }) },
     "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
+    "./AgentChat": { AgentChat: () => null },
     "./Decide": { DecisionCard: () => {} },
     "./RemoteInput": { RemoteInput },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
