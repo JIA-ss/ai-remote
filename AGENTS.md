@@ -118,7 +118,9 @@
   智能体）：配对、`chat_runtimes` 与表单默认选中、不存在的文件夹被拒并显示原话、表单启动并直接开通道、列会话、
   命令行启动的会话也可写并回放、delta 合并、发送、忙时排队、停止得到 interrupted、排队消息接着跑、断开后续传不重复。
   2026-10-21 本机 22 项全过（第一版无表单时 18 项）。
-- iOS CI（`ios.yml`，workflow_dispatch 到 `feat/ios-chat`）：第一版通过（模拟器编译、Release 归档、UI 测试）。
+- iOS CI：第一版曾推到 origin 跑过一次 workflow_dispatch 并通过；之后用户要求 `feat/host-chat` 相关改动先不进公开仓库，
+  远端分支已删，**不要再推这个分支跑 CI**，iOS 编译和模拟器验证改在本机（xcodebuild / Claude 的 iOS 模拟器工具）。
+  带新对话表单的这一版没有过 iOS 编译。
 - 没测：UIKit 部分（输入框、组字判断、sheet 布局）**没有在模拟器或真机上点过**。本机后来装了 Xcode，但许可协议没同意
   （`sudo xcodebuild -license`），模拟器工具和 xcodebuild 都用不了；git / swiftc 暂时靠 `DEVELOPER_DIR=/Library/Developer/CommandLineTools`。
 
