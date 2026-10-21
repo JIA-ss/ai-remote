@@ -128,9 +128,19 @@ pub fn install_plan(profile: &Profile, service: bool) -> Result<Plan> {
         ));
     }
     let installed = path.to_string_lossy().into_owned();
+    // `bootout` returns before launchd has let go of the job; bootstrapping the same label at once
+    // fails with "5: Input/output error" (measured replacing a running system agent).
+    let wait_unloaded = format!(
+        "i=0; while {LAUNCHCTL} print {target} >/dev/null 2>&1 && [ $i -lt 40 ]; do sleep 0.25; i=$((i+1)); done"
+    );
     actions.extend([
         Action::WriteFile { path, contents: plist.clone().into_bytes(), preview: plist },
         Action::run_tolerant(LAUNCHCTL.into(), &["bootout".into(), target], "unload an earlier copy"),
+        Action::run_tolerant(
+            "/bin/sh".into(),
+            &["-c".into(), wait_unloaded],
+            "wait until it has unloaded (10 s at most)",
+        ),
         Action::run(
             LAUNCHCTL.into(),
             &["bootstrap".into(), domain, installed],
