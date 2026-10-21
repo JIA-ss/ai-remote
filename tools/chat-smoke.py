@@ -4,7 +4,7 @@ QUIC (admin level, chat tools allowed without asking), a stand-in agent that spe
 stream-json protocol, and the `ai-remote chat` commands against it: list, run, send --wait, a queued
 message, an interrupt, attach with replay, end, the host's on/off switch, the audit and a lowered level.
 
-  python tools/chat-smoke.py [--cli target/debug/ai-remote] [--real codex=/path/to/codex --model M]
+  python tools/chat-smoke.py [--cli target/debug/ai-remote] [--quiet] [--real codex=/path/to/codex --model M]
 
 --real adds one real agent as a custom entry (same protocol as the built-in one) and hands it a small
 task; it uses the agent's own sign-in and spends a little of its quota.
@@ -24,6 +24,9 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--real", action="append", default=[], help="base=path of a real agent, e.g. codex=/usr/local/bin/codex")
 parser.add_argument("--model", help="model for the real agent")
+parser.add_argument("--quiet", action="store_true",
+                    help="write [network] quiet = true for the test host and controller (no mDNS / UPnP; needs a build "
+                         "with quiet mode). Use it on managed networks.")
 options = parser.parse_args()
 
 failures = []
@@ -69,8 +72,12 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     host_home, ctl_home, work = base / "host", base / "controller", base / "work"
     work.mkdir()
     (host_home / "host").mkdir(parents=True)
+    quiet = '[network]\nquiet = true\n\n' if options.quiet else ""
     (host_home / "host" / "ai-remote.toml").write_text(
-        '[host]\napproval_prompt = false\n\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+        quiet + '[host]\napproval_prompt = false\n\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+    if options.quiet:
+        (ctl_home / "controller").mkdir(parents=True)
+        (ctl_home / "controller" / "ai-remote.toml").write_text(quiet, encoding="utf-8")
     fake = base / "fake_agent.py"
     fake.write_text(FAKE_AGENT, encoding="utf-8")
     agents = [f'[[agent]]\nid = "fake"\nbase = "claude"\nname = "Fake agent"\ncommand = {json.dumps(sys.executable)}\n'
