@@ -79,12 +79,50 @@
 8. `chat.toml` 写坏时，原先退回默认值，也就是"允许"：文件里原本写着 `enabled = false` 也会被放开。现在改成：写坏时智能体一律关闭；原因显示在 `chat_runtimes` 的 `host.config_error`、doctor、桌面端和命令行；`chat enable|disable` 不会覆盖写坏的文件。我自己测试时就踩到了：拿内置 id `opencode` 作自定义 id，整个文件因此被拒。
 9. 真实 Tauri 应用只编出了内嵌前端的调试版（`npx tauri build --debug --no-bundle`），也用隔离配置启动了（`AI_REMOTE_HOME` 加 `AI_REMOTE_CLI`），但没能点击实测：正式版、本分支调试版和其他会话的调试版 bundle id 相同，电脑操控会认错窗口。对话通道这一层已经由命令行和冒烟测试覆盖；webview 里 Channel 的这一段还没有实测。
 
+### 运行中插话（steer）与事件补齐（2026-10-21，分支 `claude/host-steer-27deef`，叠在 `feat/host-chat` 上）
+
+用户要对话界面接近 Claude / Codex 原生体验，其中一项是回答过程中随时插话。本节只改被控端、命令行和冒烟脚本；界面由另一个会话按下面的协议接。
+
+**协议**（和界面会话约定好的名字，不改）：
+
+- `caps.steer`：claude、codex 为 true，ACP 智能体为 false；`chat.toml` 自定义条目可写 `steer = false`（只能关）。
+- chat/1 `input.mode = "steer"`：轮次运行中且支持时送进当前轮，**智能体收下后**才发 `{"t":"user",...,"steer":true}`，信封 `turn` 是当前轮；不支持、没有在跑的轮次、正在打断时排队（空闲直接开新一轮），并发 `notice` `steer_queued` 说明原因。
+- `usage` 新增可选 `context_window`、`context_used`。`chat_turn` 审计多了 `steers`（条数）。
+- 命令行 `ai-remote chat send <会话> <文本> --steer`；打印时插话显示为 `> (steer) …`。
+
+**实现**：驱动层（`chat/mod.rs`）新增 `Cmd::Steer`、`LiveCmd::Steer`，适配器用三种回答告知结果：`Out::Steered`（并进当前轮）、`Out::SteerLate`（当前轮已结束、智能体自己会把它当下一轮跑，被控端**不再重发**，放在队首并标记 delivered）、`Out::SteerRejected`（退回队列）。进程退出时，未回答的插话和 delivered 的消息都退回队列，由下一个进程重发。
+
+- **Codex**：`turn/steer`，参数 `threadId`、`expectedTurnId`（必须是当前轮）、`input`、`clientUserMessageId`，返回 `{turnId}`；轮次结束后再发返回 `-32600 no active turn to steer` → 退回队列。`turn/start` 还没回 id 时先缓存，拿到 id 再发。方法名和参数来自本机 `codex app-server generate-json-schema`（0.163）。
+- **Claude Code**：加 `--replay-user-messages`，每条用户消息被收下时回显一行 `{"type":"user","isReplay":true,...}`。回显在本轮 `result` 之前 → 并进当前轮；到 `result` 时还没回显 → `SteerLate`，之后 Claude 会先出新的 `system init`，再把它当一轮跑（自带 `result`）。
+- **ACP**：协议里没有往进行中的 `session/prompt` 追加内容的办法，`steer: false`。
+- **Codex 事件补齐**：`item/commandExecution/outputDelta` 流式输出（`tool_update` 不带 `status`、一段文本；驱动层把连续片段合并，每条命令最多 8 KiB，结束时不再重复整段输出、只补 `(exit code N)`）；文件改动的 unified diff 按 hunk 拆成多个 `diff` 内容（old/new 是该 hunk 的上下文 + 删除 / 上下文 + 新增，界面的增删行数能算对）；`item/fileChange/patchUpdated`、`item/mcpToolCall/progress`；`plan` 条目（计划模式的方案）作为一条消息；`thread/compacted` → `notice` `compacted`；`imageView` / `imageGeneration` / `collabAgentToolCall` 三种工具调用；网页搜索结束时写明搜了什么 / 打开了哪页。待办（`turn/plan/updated`）和 MCP 工具调用原来就有。
+- **上下文用量**：Codex 取 `tokenUsage.modelContextWindow` 和 `last.totalTokens`（每次 `thread/tokenUsage/updated`）；Claude 取 `result.modelUsage[模型].contextWindow` 和本轮最后一条 assistant 消息的 input + cache_read + cache_creation + output（每轮一次）。
+
+**Claude 实验**（win-dev，Windows 11，Claude Code 2.1.293，已登录；实验脚本是临时 Python、没入库：起 `claude.cmd`，参数与适配器相同，逐行记录输出时刻；任务"从 1 数到 20，每个数单独跑一次 `sleep 1; echo N`，最后只回答最后打印的数"）：
+
+| 场景 | 样本 | 写入时刻 | 结果 |
+|---|---|---|---|
+| 第 2 个工具结果后写"改成数到 5" | 3 次（其中 1 次带 replay） | 第 2 个结果之后 | 3 次都只有 1 个 `result`，答 `5`，共 5 次工具调用；带 replay 那次回显在写入后 2.9 s、第 3 个工具结果之后出现（模型正在请求下一步时写入，下一次请求才读到） |
+| 数到 3，最终文字开始流出时写"再说一个 BANANA" | 2 次（其中 1 次带 replay） | 最后一次请求进行中 | 2 次都是 2 个 `result`：先 `3`，然后新 `system init`，再 `3 BANANA`；带 replay 那次回显出现在第一个 `result` 之后 |
+
+结论：能插话（`steer: true`），但"插进当前轮"只在模型之后还要再请求时成立；没有这层回显就分不清两种情况，所以必须加 `--replay-user-messages`。
+
+**单测**：`chat::tests` 新增 4 项（插进当前轮、太晚时作为下一轮且不重发、空闲时直接开轮、`steer = false` 时排队），替身 Claude（sh 脚本）会回显、SLOW 轮次里收到新消息就并进去、LATE 轮次 2 s 内不读输入；适配器单测新增 Claude 回显判定、Codex steer（立即 / 等 turn id / 被拒）、输出增量 + 按 hunk 的 diff + 上下文用量。`cargo test -p ar-host --lib chat` 34 项全过。
+
+**e2e 实测**（测试分支 = 本分支 + `test/host-chat-quiet2`（安静模式），隔离被控端与控制端都写 `[network] quiet = true`；`tools/chat-smoke.py --quiet`；debug 构建）：
+
+- Mac（macOS，Codex 0.163，`--model gpt-6.1-sol`）：3 次全过（每次 33 项：替身 27 项 + 真实 Codex 6 项）。真实插话：插话发出后 0.02 s 收到 `steer:true`（3/3），每次只跑 5 条命令、最终答 `5`，整轮 24~29 s；普通任务 4.4~5.7 s，打断 0.0 s 内生效，下一轮记得上文 1.9~2.2 s。
+- win-dev（Windows 11，Claude Code 2.1.293，`claude.cmd`）：3 次全过（每次 33 项：替身 27 项 + 真实 Claude 6 项；被控端在终端前台运行，不是计划任务里的 hostw）。真实插话：发出后 3.35 / 4.03 / 4.14 s 收到 `steer:true`（要等正在跑的 `sleep 1` 和下一次模型请求），每次只跑 5 条命令、最终答 `5`，整轮 21~31 s；普通任务 5.8~10.2 s，打断 0.1 s 生效，下一轮记得上文 1.6~4.6 s。
+
+**未测**：ACP 智能体真机插话（设计上不支持，只走单测）；Codex 插话正好撞上轮次结束（`no active turn to steer` 退回队列）只有单测和一次手动调用；Claude 插话后紧接着打断（排队中的那条会被 Claude 当下一轮跑）未测；桌面端界面（另一会话）。
+
 ### 下一步
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
 - [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
-- [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
+- [x] Codex / Claude 的运行中插话（见上一小节）。
+- [ ] iOS 只读会话视图；可选的 `kind:"pty"` 原始终端。
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
   - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
   - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）

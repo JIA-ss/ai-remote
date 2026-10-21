@@ -571,6 +571,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 - 一个会话在多轮之间保持同一个智能体进程，每条消息就是这个进程上的一轮。
 - 一轮还在进行时发来的消息进入队列（最多 8 条），按顺序发出；带消息的 `interrupt` 会先停止当前一轮，再优先发这条。
+- `steer`（插话）把消息送进正在进行的这一轮，前提是智能体支持（`caps.steer`：Claude Code、Codex 支持，ACP 智能体不支持；`chat.toml` 里的条目可以写 `steer = false` 关掉）。Claude Code 在这一轮下一次请求模型时读到它；如果这一轮已经发出了最后一次请求，这条消息会作为下一轮执行。不支持或当前没有在进行的轮次时，消息照常排队，并发一条 `steer_queued` 通知说明原因。
 - 以下情况会停掉进程：会话结束；20 分钟没有新的一轮；打断在宽限期内没有生效（Claude 10 s、Codex 3 s、ACP 5 s）；被控端停止。之后会话进入 **parked**，下一条消息会启动新进程，并续接智能体自己的对话（`--resume`、`thread/resume`、`session/load`）。
 - 同时最多运行 4 个智能体进程。
 
@@ -578,13 +579,14 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 - 每个会话的事件各自编号，先写入 `<配置目录>/host/chat/<id>/events.jsonl` 再发出，所以断线重连的查看者可以从它看到的最后一条之后接着要。
 - 每条一行 JSON：`{"seq":N,"ts":<ms>,"turn":K,"t":"<类型>",...}`。`t` 的取值：
-  - `user`、`turn_start`；
+  - `user`：插进当前一轮的消息带 `steer: true`，`turn` 是那一轮；
+  - `turn_start`；
   - `message` / `thought`：字段 `id`、`text`、`delta`，`delta` 为真时接在同一 `id` 的消息后面；
   - `tool_call`：字段 `call_id`、`title`、`kind`（read、edit、delete、move、search、execute、think、fetch、other）、`status`、`input`、`locations`、`content`；
-  - `tool_update`：字段 `call_id`、`status`、`content`（文本或 `{type:"diff",path,old,new}`）、`truncated`；
+  - `tool_update`：字段 `call_id`、`status`、`content`（文本或 `{type:"diff",path,old,new}`）、`truncated`；没有 `status` 时是运行中命令输出的一段；
   - `plan`；
   - `question`：字段 `qid`、`prompt`、`options`；
-  - `usage`；
+  - `usage`：token、费用，智能体给出时还有 `context_window`（上下文总量）和 `context_used`（已用）；
   - `turn_end`：字段 `status`（completed、failed、interrupted）、`final_text`、`duration_ms`、`reason`；
   - `state`：字段 `state`、`queued`；
   - `notice`。
@@ -594,7 +596,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 - 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`），之后收到 `N` 之后的事件和所有新事件。
 - 命令每条一行：
-  - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`：同一个 `id` 发两次只执行一次；
+  - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`：同一个 `id` 发两次只执行一次；
   - `{"interrupt":{}}`；
   - `{"answer":{"qid":"..","text":".."}}`；
   - `{"dequeue":{"id":".."}}`；
@@ -608,7 +610,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 - 在被控端关闭智能体（`ai-remote chat disable`，或桌面端"设置 → 本设备"）会结束所有会话并拒绝新的启动，被 bypass 的设备也一样。
 - 设备失去管理员级别（被降级、吊销、forget 或 bypass 到期）后，几秒内会失去它发起的会话。
 - 暂停会停止正在进行的一轮，并把新消息挡到恢复为止；接管不会，因为智能体不用鼠标键盘。
-- 审计日志记录 `chat_session`（start、attach、detach、end）和 `chat_turn`（谁发的、消息的 SHA-256 和长度、结果、耗时、各类工具次数），从不记录对话内容。
+- 审计日志记录 `chat_session`（start、attach、detach、end）和 `chat_turn`（谁发的、消息的 SHA-256 和长度、结果、耗时、各类工具次数、插话条数），从不记录对话内容。
 - 有智能体在运行时，`doctor` 会给出警告。
 - 被控端重启后，会停掉上一个被控端留下的智能体进程（Windows 上 Job Object 已经停掉了），并把这些会话置为 parked。
 

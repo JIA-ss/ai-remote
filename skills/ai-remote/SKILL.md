@@ -170,6 +170,7 @@ ai-remote chat list                                         # installed agents, 
 ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; prints the answer
 ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
 ai-remote chat send <session> "now run the tests" --wait
+ai-remote chat send <session> "stop after the first file" --steer   # into the running turn (Claude, Codex)
 ai-remote chat end <session>
 ```
 

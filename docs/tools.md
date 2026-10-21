@@ -640,7 +640,11 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 **A session** keeps one agent process between turns (each message is a turn on the same process).
 Messages sent while a turn runs wait in a queue (at most 8) and go out in order; `interrupt` with
-a message stops the turn and sends it first. The process stops when the session ends, after 20 minutes
+a message stops the turn and sends it first; `steer` adds it to the running turn where the agent can
+take one (`caps.steer`: Claude Code and Codex yes, ACP agents no; a `chat.toml` entry may set
+`steer = false`). Claude Code reads it at the turn's next model request; one that arrives after the
+turn's last request runs as the next turn. Otherwise, or with no turn running, it is queued and a
+`steer_queued` notice says why. The process stops when the session ends, after 20 minutes
 without a turn, when an interrupt does not land within its grace (Claude 10 s, Codex 3 s, ACP 5 s), or
 when the host stops; the session is then **parked**, and the next message starts a new process that
 resumes the agent's own conversation (`--resume`, `thread/resume`, `session/load`). At most 4 agent
@@ -648,17 +652,20 @@ processes run at a time.
 
 **Events** are numbered per session and written to `<profile>/host/chat/<id>/events.jsonl` before
 they go out, so a viewer that reconnects asks for what came after the last one it saw. One JSON line
-each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user`, `turn_start`,
+each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user` (`steer: true` when it
+joined the running turn, numbered with it), `turn_start`,
 `message` / `thought` (`id`, `text`, `delta`: continues message `id`), `tool_call` (`call_id`,
 `title`, `kind`: read, edit, delete, move, search, execute, think, fetch, other; `status`; `input`;
 `locations`; `content`), `tool_update` (`call_id`, `status`, `content`: text or
-`{type:"diff",path,old,new}`, `truncated`), `plan`, `question` (`qid`, `prompt`, `options`), `usage`,
+`{type:"diff",path,old,new}`, `truncated`; without `status`, a piece of a running command's output),
+`plan`, `question` (`qid`, `prompt`, `options`), `usage` (tokens, cost, and when the agent reports
+them `context_window` and `context_used`),
 `turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
 (`state`, `queued`), `notice`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
 
 **On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
 line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`), then the events after `N`
-and every new one. Commands, one line each: `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"}}`
+and every new one. Commands, one line each: `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`
 (an `id` sent twice runs once), `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`,
 `{"dequeue":{"id":".."}}`, `{"end":{}}`, `{"bye":{}}` (stop watching), `{"ping":N}`. Each command
 checks again that the device has admin level.
@@ -669,7 +676,7 @@ device that loses admin level (lowered, revoked, forgotten, its bypass ended) lo
 seconds. A pause stops running turns and holds new ones until resumed; a takeover does not (agents do
 not use the mouse or keyboard). The audit log records `chat_session` (start, attach, detach, end) and
 `chat_turn` (who, the SHA-256 and length of the message, outcome, duration, how many tools of each
-kind ran), never the conversation; `doctor` warns while agents run. A host restart stops what its
+kind ran, how many messages steered it), never the conversation; `doctor` warns while agents run. A host restart stops what its
 predecessor's agents left running (on Windows the Job Object already did) and parks their sessions.
 
 ## 6. Result budgets
