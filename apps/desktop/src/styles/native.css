@@ -71,7 +71,7 @@ button { cursor: default; }
 .nt-drag { height: var(--tb-h); flex: none; }
 .tb { height: var(--tb-h); padding: 0 16px 0 12px; gap: 8px; background: transparent; border: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
 [data-os="mac"] .tb { padding-left: 16px; }
-[data-os="mac"] .nt-alone .tb { padding-left: 84px; }
+[data-os="mac"] :is(.nt-alone, .nt-session) .tb { padding-left: 84px; }
 .tb .back { width: 28px; height: 28px; margin: 0; border-radius: var(--r-control); color: var(--text-2); }
 .tb .back:hover { background: var(--fill-1); color: var(--text-1); }
 .tb .app { gap: 10px; padding-left: 0; }
@@ -215,6 +215,9 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 [data-theme="light"] .cp-top .tile { --row-bg: var(--layer); }
 .cp-cols .log .lr .r i, .cp-cols .log .lr.n-wait .r i { box-shadow: 0 0 0 3px var(--layer); }
 .pv, [data-theme="light"] .pv-wrap { border-radius: var(--r-card); box-shadow: none; }
+/* no decision pending: the preview takes the row, at a sensible width */
+.cp-grid > div:empty { display: none; }
+.cp-grid > div:empty + .pv-wrap { grid-column: 1 / -1; max-width: 520px; }
 .pv { clip-path: inset(0 round var(--r-card)); padding: 8px; }
 .pv .shot { border-radius: 6px; }
 .pv .shot .frame { box-shadow: none; }
@@ -324,13 +327,15 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .stream-ended p { max-width: 480px; margin: 0; color: #A6A6AD; line-height: 20px; }
 .stream-ended .btn { background: rgb(255 255 255 / .1); color: #F2F2F3; }
 .session-error { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 12; max-width: calc(100% - 32px); background: #3A1D1F; color: #FFD5D5; border-radius: var(--r-control); padding: 8px 12px; font-size: 12px; overflow-wrap: anywhere; box-shadow: var(--shadow-float); }
-/* floating bars over the stage: dark in both themes, one shadow */
-.nt-anchor { position: absolute; left: 50%; z-index: 8; }
+/* floating bars over the stage: dark and opaque in both themes, one shadow. No backdrop blur: WebKit
+   drops one of two blurred layers while their transforms animate (seen on macOS 26, 2026-10-21). */
+.nt-anchor { position: absolute; left: 50%; z-index: 8; width: max-content; max-width: calc(100% - 32px); }
 .nt-anchor.bottom { bottom: 16px; }
 .nt-anchor.top { top: 12px; }
 .nt-bar { position: relative; display: flex; align-items: center; gap: 4px; height: 44px; padding: 0 6px 0 8px; border-radius: var(--r-float); white-space: nowrap;
-  background: rgb(28 28 30 / .88); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); box-shadow: var(--shadow-float);
-  --text-1: #F2F2F3; --text-2: #A6A6AD; --text-3: #7C7C85; --fill-1: rgb(255 255 255 / .08); --fill-2: rgb(255 255 255 / .14); --stroke-2: rgb(255 255 255 / .18); color: var(--text-1); max-width: calc(100% - 32px); }
+  background: rgb(28 28 30 / .96); box-shadow: var(--shadow-float);
+  --text-1: #F2F2F3; --text-2: #A6A6AD; --text-3: #7C7C85; --fill-1: rgb(255 255 255 / .08); --fill-2: rgb(255 255 255 / .14); --stroke-2: rgb(255 255 255 / .18); color: var(--text-1); }
+/* the anchor is max-content wide and caps itself; a percentage max-width on the bar would cycle and shrink its text */
 .nt-bar.top { height: 36px; padding: 0 6px 0 12px; gap: 8px; }
 .nt-bar .who { display: flex; flex-direction: column; padding: 0 12px 0 6px; min-width: 0; }
 .nt-bar .who .l1 { font-size: 13px; line-height: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -363,7 +368,7 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-route .g { color: inherit; }
 /* the HUD: receiver numbers in the corner, monospace, tabular */
 .nt-hud { position: absolute; right: 12px; top: 12px; z-index: 7; display: flex; align-items: center; gap: 10px; height: 24px; padding: 0 10px; border-radius: 6px;
-  font-family: var(--font-data); font-size: 11px; line-height: 16px; letter-spacing: 0; color: #D6D6DB; background: rgb(0 0 0 / .55); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); white-space: nowrap; pointer-events: auto; font-variant-numeric: tabular-nums; }
+  font-family: var(--font-data); font-size: 11px; line-height: 16px; letter-spacing: 0; color: #D6D6DB; background: rgb(0 0 0 / .7); white-space: nowrap; pointer-events: auto; font-variant-numeric: tabular-nums; }
 .nt-hud span { display: inline-flex; align-items: baseline; gap: 3px; }
 .nt-hud b { font-weight: 500; color: #F2F2F3; }
 .nt-hud .u { color: #8E8E93; font-size: 10px; }
@@ -403,12 +408,11 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
    7. Fallbacks and small windows
    ====================================================================================== */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .nt-bar, .capsule { background: #1C1C1E; }
-  .nt-hud { background: rgb(0 0 0 / .8); }
+  .capsule { background: #1C1C1E; }
 }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   .nt-bar, .capsule { background: #1C1C1E; backdrop-filter: none; -webkit-backdrop-filter: none; }
-  .nt-hud { background: #000; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .nt-hud { background: #000; }
   .side, .snav, .nt-rail { border-color: var(--text-3); }
 }
 @media (prefers-reduced-motion: reduce) {
