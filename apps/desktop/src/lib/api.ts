@@ -5,6 +5,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
+import { hop } from "./hops";
 import type {
   AgentStatus,
   AuditLine,
@@ -12,9 +13,9 @@ import type {
   FeedEvent,
   Host,
   HostAccess,
+  InstallPlan,
   Level,
   LocalController,
-  InstallPlan,
   LocalHost,
   PairTicket,
   PathKind,
@@ -43,6 +44,25 @@ export interface Paired {
   level: Level | null;
 }
 
+/** A person's live input stream to a host (its `input/1` channel), while they drive. */
+export interface LiveInputHandle {
+  os: "windows" | "macos" | "other";
+  /** The host reports its clipboard on this stream. */
+  clipboard: boolean;
+  /** The host accepts this computer's clipboard text on this stream. */
+  clipboardWrite: boolean;
+  /** Writes one or more newline-terminated JSON lines; false when the host is too slow and they were dropped. */
+  send(data: string): Promise<boolean>;
+  close(): void;
+}
+
+export interface TransferResult {
+  remote?: string;
+  local?: string;
+  bytes: number;
+  seconds: number;
+}
+
 export interface Backend {
   kind: "tauri" | "demo";
   status(): Promise<AgentStatus>;
@@ -57,6 +77,20 @@ export interface Backend {
   unpair(host: string): Promise<void>;
   /** `person`: the person at this device makes the call (it runs while they have taken over). */
   callTool(host: string, tool: string, args?: Record<string, unknown>, person?: boolean): Promise<ToolResult>;
+  /**
+   * Opens live input to `host`. `onLine` receives every JSON line the host writes (`clip`,
+   * `clip_files`, `err`, `blocked`), and an empty string when the stream ends.
+   */
+  openInput(host: string, request: { clipboard: boolean }, onLine: (line: string) => void): Promise<LiveInputHandle>;
+  /** This computer's clipboard text (null when it holds none). */
+  clipboardText(): Promise<string | null>;
+  setClipboardText(text: string): Promise<void>;
+  /** Files on this computer's clipboard, as paths. */
+  clipboardFiles(): Promise<string[]>;
+  /** Sends a file to `host` (into `~/Desktop` there unless `remoteDir` says otherwise). */
+  pushFile(host: string, local: string, remoteDir: string | null, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
+  /** Fetches a file from `host` into this computer's Downloads folder. */
+  pullFile(host: string, remote: string, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
   /** Follows a host's activity; returns a function that stops it. */
   subscribe(host: string, onEvent: (e: FeedEvent) => void): Promise<() => void>;
   pending(host: string): Promise<PendingApproval[]>;
@@ -339,6 +373,43 @@ const tauriBackend: Backend = {
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));
   },
+  async openInput(host, request, onLine) {
+    const channel = new Channel<string>();
+    channel.onmessage = (line) => onLine(line);
+    const [id, reply] = unwrap(await commands.openInput(host, request, channel)) as [
+      number,
+      { os?: string; clipboard?: boolean; clipboard_write?: boolean },
+    ];
+    const os = reply.os === "windows" || reply.os === "macos" ? reply.os : "other";
+    return {
+      os,
+      clipboard: reply.clipboard === true,
+      clipboardWrite: reply.clipboard_write === true,
+      send: async (data) => unwrap(await commands.sendInput(id, data)),
+      close: () => void commands.closeInput(id),
+    };
+  },
+  async clipboardText() {
+    return unwrap(await commands.clipboardText());
+  },
+  async setClipboardText(text) {
+    unwrap(await commands.setClipboardText(text));
+  },
+  async clipboardFiles() {
+    return unwrap(await commands.clipboardFiles());
+  },
+  async pushFile(host, local, remoteDir, onProgress) {
+    const channel = new Channel<[number | null, number | null]>();
+    channel.onmessage = ([done, total]) => onProgress(done ?? 0, total ?? 0);
+    const v = unwrap(await commands.pushFile(host, local, remoteDir, channel)) as { remote?: string; bytes?: number; seconds?: number };
+    return { remote: v.remote, bytes: Number(v.bytes ?? 0), seconds: Number(v.seconds ?? 0) };
+  },
+  async pullFile(host, remote, onProgress) {
+    const channel = new Channel<[number | null, number | null]>();
+    channel.onmessage = ([done, total]) => onProgress(done ?? 0, total ?? 0);
+    const v = unwrap(await commands.pullFile(host, remote, null, channel)) as { local?: string; bytes?: number; seconds?: number };
+    return { local: v.local, bytes: Number(v.bytes ?? 0), seconds: Number(v.seconds ?? 0) };
+  },
   async watchScreen(host, onFrame, opts = {}) {
     const channel = new Channel<unknown>();
     channel.onmessage = (m) => {
@@ -374,7 +445,10 @@ const tauriBackend: Backend = {
       } else if (bytes[0] === 5) {
         const shape = parsePointerShape(bytes);
         if (shape) opts.onPointerShape?.(shape);
-      } else onFrame(bytes.buffer);
+      } else {
+        if (bytes[0] === 1 && bytes.length >= 18) hop("page", Number(new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(6)));
+        onFrame(bytes.buffer);
+      }
     };
     const request = {
       monitor: opts.monitor ?? null,
