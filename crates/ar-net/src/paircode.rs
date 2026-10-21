@@ -437,7 +437,7 @@ async fn fetch_from(ep: &Endpoint, host: iroh::EndpointAddr, auth: &[u8; 32]) ->
     let conn = match tokio::time::timeout(DIAL_TIMEOUT, ep.connect(host, ALPN_PAIR_CODE)).await {
         Ok(Ok(conn)) => conn,
         Ok(Err(e)) => {
-            tracing::debug!(error = %e, "pair code: dial failed");
+            tracing::info!(error = %format!("{e:#}"), "pair code: dial failed");
             bail!(NOT_FOUND)
         }
         Err(_) => bail!(NOT_FOUND),
@@ -500,6 +500,39 @@ mod tests {
         assert_ne!(rendezvous_id(&a), rendezvous_id(&b));
         let (ka, kb) = (derive_blocking(&a).unwrap(), derive_blocking(&b).unwrap());
         assert_ne!(ka.auth, kb.auth);
+    }
+
+    /// Against a real host: `AR_PAIR_CODE=12345678 cargo test -p ar-net --lib live_fetch -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs a host showing AR_PAIR_CODE"]
+    async fn live_fetch() {
+        let code = PairCode::parse(&std::env::var("AR_PAIR_CODE").unwrap()).unwrap();
+        let net = NetworkOptions {
+            relays: vec![],
+            relay_fallback_n0: true,
+            proxy: crate::proxy::ProxySetting::Off,
+            lan: LanDiscovery::On,
+            port: None,
+        };
+        let keys = derive(&code).await.unwrap();
+        let host = keys.endpoint.public();
+        println!("rendezvous id {host}");
+        let ep = ephemeral_endpoint(SecretKey::generate(), &net, false).await.unwrap();
+        let start = Instant::now();
+        let r = tokio::time::timeout(DIAL_TIMEOUT, ep.connect(host, ALPN_PAIR_CODE)).await;
+        println!(
+            "connect after {:?}: {:?}",
+            start.elapsed(),
+            r.as_ref().map(|r| r.as_ref().map(|_| "ok").map_err(|e| format!("{e:#}")))
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let start = Instant::now();
+        let r = tokio::time::timeout(DIAL_TIMEOUT, ep.connect(host, ALPN_PAIR_CODE)).await;
+        println!(
+            "second connect after {:?}: {:?}",
+            start.elapsed(),
+            r.as_ref().map(|r| r.as_ref().map(|_| "ok").map_err(|e| format!("{e:#}")))
+        );
     }
 
     /// What one stretch costs (the figure `docs/architecture.md` quotes):

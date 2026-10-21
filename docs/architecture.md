@@ -139,6 +139,15 @@ What resists what (derived from the parameters, not measured as attacks):
 - **Typos** are not detected locally (all eight digits are random); a wrong code ends with "no
   device answered this pair code" after the 20-second search.
 - **No network between the two machines** (no internet and no shared LAN): only the ticket works.
+- **A name clash** (the host still lists an earlier install of this device, or another machine with
+  the same name) is refused by mcpmesh before the ticket is spent; the controller then claims
+  `<name>-<first 4 hex digits of its device id>` and redeems the same ticket once more, because a
+  pair code cannot be used twice.
+
+Measured between two machines (2026-10-21, Mac controller and Windows host on different subnets,
+debug builds): 5 of 7 attempts paired in 2.9–5.8 s; one was a deliberately withdrawn code ("no
+device answered" after 10 s); two attempts shortly after the host started failed the same way and
+are not explained yet (see `AGENTS.md`).
 
 The QR code holds `ai-remote://pair?code=48210937`, not the ticket: it is a small version-3 code
 (29 modules) that phones read from across a desk, and the system camera opens the iPhone app on

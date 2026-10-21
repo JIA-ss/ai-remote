@@ -289,6 +289,8 @@ fn relay_host(relay: &str) -> String {
 #[derive(Clone)]
 pub struct Mesh {
     node: Arc<Node>,
+    /// The name this device claims for itself when it pairs.
+    nickname: String,
     net: NetworkOptions,
     /// The pair code this node shows now, if any (one at a time).
     offer: Arc<tokio::sync::Mutex<Option<paircode::RunningOffer>>>,
@@ -303,7 +305,12 @@ impl Mesh {
             .start()
             .await
             .map_err(|e| anyhow!("start transport node: {e}"))?;
-        let mesh = Self { node: Arc::new(node), net: opts.network, offer: Default::default() };
+        let mesh = Self {
+            node: Arc::new(node),
+            nickname: sanitize_name(&opts.nickname),
+            net: opts.network,
+            offer: Default::default(),
+        };
         Ok(mesh)
     }
 
@@ -358,7 +365,27 @@ impl Mesh {
     /// Redeems an invite from a host. `name` is this device's local name for the host.
     pub async fn pair(&self, line: &str, name: Option<&str>) -> Result<Paired> {
         let mut c = self.control().await?;
-        let r = c.pair_as(line.trim(), name.map(sanitize_name)).await.map_err(|e| anyhow!("pair: {e}"))?;
+        let line = line.trim();
+        let r = match c.pair_as(line, name.map(sanitize_name)).await {
+            // The host already has a device by this one's name: an earlier install of this device
+            // (a new key, the same machine name) or another machine called the same. That refusal
+            // leaves the ticket unspent, which matters most for a pair code (it has handed its
+            // ticket over and cannot be used again), so claim a name carrying this device's id
+            // and redeem the same ticket once more.
+            Err(ClientError::Api(e)) if e["code"].as_i64() == Some(mcpmesh_local_api::ERR_NICKNAME_TAKEN) => {
+                let id = self.node.endpoint_id().to_string();
+                // Names are ASCII and at most 40 long: keep room for the suffix.
+                let base = &self.nickname[..self.nickname.len().min(35)];
+                let other = sanitize_name(&format!("{base}-{}", &id[..4]));
+                tracing::info!(taken = %self.nickname, instead = %other, "pairing again under another name");
+                c.set_nickname(&other).await.map_err(|e| anyhow!("rename for pairing: {e}"))?;
+                let r = c.pair_as(line, name.map(sanitize_name)).await;
+                let _ = c.set_nickname(&self.nickname).await;
+                r
+            }
+            r => r,
+        }
+        .map_err(|e| anyhow!("pair: {e}"))?;
         let level = r
             .services
             .iter()
