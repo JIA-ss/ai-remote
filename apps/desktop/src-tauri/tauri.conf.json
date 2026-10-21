@@ -24,6 +24,14 @@
         "trafficLightPosition": {
           "x": 16,
           "y": 24
+        },
+        "transparent": true,
+        "effects": {
+          "effects": [
+            "sidebar",
+            "windowBackground"
+          ],
+          "state": "followsWindowActiveState"
         }
       }
     ],
