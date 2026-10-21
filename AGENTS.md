@@ -626,12 +626,13 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 
 ### 下一步
 
-- [~] **服务模式真机实跑**（2026-10-20，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
-      SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面上的截图 / doctor / `ctrl+alt+del`（SendSAS）全部通过；
-      **安全桌面上的键鼠注入失败**（原因未定位，见下）；重启登录界面、stop-host、uninstall 未跑。原条目：
+- [x] **服务模式真机实跑**（2026-10-20/21，Windows 开发机，经 zremote 提权会话；详见本节末"真机结果"）：安装、服务起
+      SYSTEM 被控端进 Console 会话、跨网段直连、安全桌面与真实锁屏上的截图 / 推流 / doctor / `ctrl+alt+del`（SendSAS）/
+      **键鼠注入**（修了一个权限 bug 后）、锁屏时服务跟随会话切换，全部通过；重启登录界面、stop-host、uninstall 未跑。原条目：
       `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
-- [ ] `follow_input_desktop` 在安全桌面上实测**没能让注入生效**（见"真机结果"），待定位。
+- [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
+      （d42a8b4 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
 - [x] macOS 锁屏 / 登录界面：锁屏在 `platform/macos.rs` 里按"可达的安全桌面"处理；登录界面靠
       `host install --service` 的系统级 LaunchAgent（`LimitLoadToSessionType = [LoginWindow, Aqua]`）。代码 2026-10-20
       落地，**真机锁屏 / 注销 / 重启验证未做**，见"Mac 被控端补全"一节。
