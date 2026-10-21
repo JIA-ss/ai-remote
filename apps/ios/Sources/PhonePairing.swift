@@ -58,15 +58,16 @@ struct PhonePairSheet: View {
                     }
                     #endif
                     Section {
-                        TextField("0000 0000", text: Binding(
-                            get: { store.pairingCode },
-                            set: { value in
+                        // Regroup after the edit lands: a binding setter that rewrites the value
+                        // leaves the field showing what was typed, not the grouped text.
+                        TextField("0000 0000", text: $store.pairingCode)
+                            .onChange(of: store.pairingCode) { old, value in
                                 if PairCodeText.isTicket(value) {
-                                    store.pairingTicket = value; store.useTicket = true
-                                } else {
+                                    store.pairingTicket = value; store.pairingCode = old; store.useTicket = true
+                                } else if PairCodeText.grouped(value) != value {
                                     store.pairingCode = PairCodeText.grouped(value)
                                 }
-                            }))
+                            }
                             .font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
                             .tracking(3).multilineTextAlignment(.center)
                             .numberPadKeyboard().autocorrectionDisabled().focused($codeFocused)
