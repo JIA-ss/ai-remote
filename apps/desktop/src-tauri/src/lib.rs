@@ -334,6 +334,17 @@ async fn host_setup(
     } else {
         host_local::cli_text(&state.cli, &args).await
     };
+    // launchd may load the agent without starting it (seen after replacing a running copy): start
+    // it as this user, as the tray would.
+    if install && result.is_ok() {
+        for _ in 0..12 {
+            if !matches!(host_local::probe(&state.profile).await, host_local::Probe::Stopped) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let _ = host_local::start_if_expected(&state.profile, &state.cli).await;
+    }
     refresh_tray(&app);
     match result {
         Ok(output) => Ok(Json(json!({"output": output, "elevated": elevated}))),
