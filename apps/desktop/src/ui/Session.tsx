@@ -9,7 +9,7 @@ import { api, type LiveView, type PointerPosition } from "../lib/api";
 import { commands } from "../bindings";
 import { demoScreenUrl } from "../lib/demo";
 import { currentLang, t } from "../lib/i18n";
-import { loadStreamQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
+import { loadStreamQuality, resolveQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
 import { createHostClock, startPinging } from "../lib/clock";
@@ -20,6 +20,7 @@ import { createRateController } from "../lib/rate";
 import { createDecoder, type VideoStats } from "../lib/video";
 import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
+import { watchFileDrop } from "../lib/drop";
 import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, TitleBar, type Nav } from "./Shell";
@@ -49,9 +50,12 @@ export function Stream({
   onStats,
   onRestart,
   onError,
+  onPointerFeed,
 }: {
   host: string;
   onFrame?: () => void;
+  /** Whether the host sends its pointer separately (drawn here, so the local cursor can hide). */
+  onPointerFeed?: (on: boolean) => void;
   onSize?: (w: number, h: number) => void;
   /** Where the streamed monitor is in screen coordinates (for your input while you drive). */
   onScreen?: (r: ScreenRect | null) => void;
@@ -68,8 +72,8 @@ export function Stream({
   const pointerCanvas = useRef<HTMLCanvasElement>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const callbacks = useRef({ onFrame, onSize, onScreen, onStats, onRestart, onError });
-  callbacks.current = { onFrame, onSize, onScreen, onStats, onRestart, onError };
+  const callbacks = useRef({ onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerFeed });
+  callbacks.current = { onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerFeed };
   useEffect(() => {
     callbacks.current.onRestart?.();
     callbacks.current.onScreen?.(null);
@@ -120,7 +124,7 @@ export function Stream({
         const adapted = rate.current();
         if (trace) {
           void commands.logFromPage("info", `Live video: stats ${JSON.stringify({ t: Math.round(performance.now() - started),
-            fps: +stats.decodedFps.toFixed(1), kbps: Math.round(stats.receivedKbps),
+            fps: +stats.decodedFps.toFixed(1), shown: +stats.presentedFps.toFixed(1), kbps: Math.round(stats.receivedKbps),
             latency: stats.latencyMs === null ? null : Math.round(stats.latencyMs), target: adapted })}`);
         }
         if (!stopped) callbacks.current.onStats?.(adapted < requestedKbps ? { ...stats, adaptedKbps: adapted } : stats);
@@ -164,6 +168,7 @@ export function Stream({
         else {
           view = v;
           callbacks.current.onScreen?.(v?.screen ?? null);
+          callbacks.current.onPointerFeed?.(v?.pointer ?? false);
           if (v) stopPinging = startPinging(clock, (n) => v.ping(n));
           movePointer();
         }
@@ -412,8 +417,8 @@ function Hud({ stats, hasFrame, offline, demo, relay }: { stats: VideoStats | nu
         <span>
           <b>{stats.width}×{stats.height}</b>
         </span>
-        <span>
-          <b>{stats.decodedFps.toFixed(0)}</b>
+        <span title={t("hud_fps_detail", { decoded: stats.decodedFps.toFixed(0) })}>
+          <b>{stats.presentedFps.toFixed(0)}</b>
           <i className="u">{t("hud_fps")}</i>
         </span>
         <span>
@@ -474,6 +479,8 @@ export function SessionPage({
   const [hasFrame, setHasFrame] = useState(false);
   const [screen, setScreen] = useState<ScreenRect | null>(null);
   const [quality, setQuality] = useState(loadStreamQuality);
+  // Concrete limits ("auto" follows this display), fixed while the quality stays the same.
+  const limits = useMemo(() => resolveQuality(quality), [quality]);
   const [stats, setStats] = useState<VideoStats | null>(null);
   const [tab, setTab] = useState<"steps" | "sees">("steps");
   const [message, setMessage] = useState("");
@@ -481,6 +488,14 @@ export function SessionPage({
   const [handNote, setHandNote] = useState("");
   const [mayWatch, setMayWatch] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // A passing note from live input (paused, a refused chord) and file transfers.
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pointerFeed, setPointerFeed] = useState(false);
+  // Files on the host's clipboard (paths there) and on this computer's.
+  const [remoteFiles, setRemoteFiles] = useState<string[]>([]);
+  const [localFiles, setLocalFiles] = useState<string[]>([]);
+  const [transfer, setTransfer] = useState<{ name: string; done: number; total: number; direction: "push" | "pull" } | null>(null);
+  const transferring = useRef(false);
   const [acting, setActing] = useState(false);
   const [immersive, setImmersive] = useState(false);
   // In full screen the bars show on movement and leave after 3 s of quiet.
@@ -575,6 +590,57 @@ export function SessionPage({
   const left = Math.round(((stage.w - sw) / 2) * dpr) / dpr;
   const top = Math.round(((stage.h - sh) / 2) * dpr) / dpr;
 
+  const baseName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+  // Transfers waiting their turn: files dropped (or picked) while one runs are queued, not lost.
+  const transferQueue = useRef<Array<{ path: string; direction: "push" | "pull" }>>([]);
+  /** Sends files to the host's desktop, or fetches them to Downloads, one after another. */
+  const moveFiles = async (paths: string[], direction: "push" | "pull") => {
+    transferQueue.current.push(...paths.map((path) => ({ path, direction })));
+    if (transferring.current || transferQueue.current.length === 0) return;
+    transferring.current = true;
+    setActionError(null);
+    let last = "";
+    while (transferQueue.current.length) {
+      const job = transferQueue.current.shift()!;
+      const name = baseName(job.path);
+      try {
+        setTransfer({ name, done: 0, total: 0, direction: job.direction });
+        const progress = (done: number, total: number) => setTransfer({ name, done, total, direction: job.direction });
+        const result =
+          job.direction === "push" ? await api.pushFile(host, job.path, null, progress) : await api.pullFile(host, job.path, progress);
+        last =
+          job.direction === "push"
+            ? t("transfer_sent", { name, path: result.remote ?? "" })
+            : t("transfer_received", { name, path: result.local ?? "" });
+        if (job.direction === "pull") setRemoteFiles((files) => files.filter((f) => f !== job.path));
+        else setLocalFiles((files) => files.filter((f) => f !== job.path));
+      } catch (e) {
+        setActionError(t("transfer_failed", { error: `${name}: ${e instanceof Error ? e.message : String(e)}` }));
+      }
+    }
+    if (last) setNotice(last);
+    transferring.current = false;
+    setTransfer(null);
+  };
+  // Files dropped on the window go to the host's desktop.
+  useEffect(() => {
+    if (c.online === false) return;
+    return watchFileDrop((paths) => void moveFiles(paths, "push"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [host, c.online]);
+  // Notes fade by themselves; errors stay until the next action.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    if (!driving) {
+      setLocalFiles([]);
+      setRemoteFiles([]);
+    }
+  }, [driving]);
+
   const act = async (a: "take_over" | "pause" | "hand_back" | "resume") => {
     if (acting) return;
     setActing(true);
@@ -622,7 +688,7 @@ export function SessionPage({
         className="nt-select"
         aria-label={t("stream_quality")}
         value={quality.id}
-        title={`${t("stream_requested_limits", { edge: quality.maxLongEdge, fps: quality.maxFps, mbps: quality.bitrateKbps / 1000 })}\n${t("stream_requested_note")}`}
+        title={`${t("stream_requested_limits", { edge: limits.maxLongEdge, fps: limits.maxFps, mbps: limits.bitrateKbps / 1000 })}\n${t("stream_requested_note")}`}
         onChange={(e) => {
           const next = streamQuality(e.target.value);
           if (next.id === quality.id) return;
@@ -673,22 +739,59 @@ export function SessionPage({
             {c.online !== false && (
               <Stream
                 host={host}
-                maxFps={quality.maxFps}
-                maxLongEdge={quality.maxLongEdge}
-                bitrateKbps={quality.bitrateKbps}
+                maxFps={limits.maxFps}
+                maxLongEdge={limits.maxLongEdge}
+                bitrateKbps={limits.bitrateKbps}
                 onFrame={() => setHasFrame(true)}
                 onSize={(w, h) => setNative({ w, h })}
                 onScreen={setScreen}
                 onStats={setStats}
                 onRestart={resetVideo}
                 onError={setActionError}
+                onPointerFeed={setPointerFeed}
               />
             )}
             {driving && hasFrame && screen !== null && (
-              <RemoteInput host={host} screen={screen} mac={c.os === "mac"} onHandBack={() => void act("hand_back")} onError={setActionError} />
+              <RemoteInput
+                host={host}
+                screen={screen}
+                mac={c.os === "mac"}
+                remotePointer={pointerFeed}
+                onHandBack={() => void act("hand_back")}
+                onError={setActionError}
+                onNotice={setNotice}
+                onRemoteFiles={setRemoteFiles}
+                onLocalFiles={setLocalFiles}
+              />
             )}
           </div>
           {actionError && <div className="session-error" role="alert">{actionError}</div>}
+          {(transfer || notice || remoteFiles.length > 0 || localFiles.length > 0) && (
+            <div className={cx("nt-notice", actionError && "below-error")} role="status">
+              {transfer ? (
+                <span>
+                  {t(transfer.direction === "push" ? "transfer_sending" : "transfer_receiving", {
+                    name: transfer.name,
+                    pct: transfer.total ? Math.floor((transfer.done / transfer.total) * 100) : 0,
+                  })}
+                </span>
+              ) : (
+                <>
+                  {notice && <span>{notice}</span>}
+                  {remoteFiles.length > 0 && (
+                    <button type="button" className="btn sm" onClick={() => void moveFiles(remoteFiles, "pull")}>
+                      {t("clip_remote_files", { n: remoteFiles.length })}
+                    </button>
+                  )}
+                  {localFiles.length > 0 && (
+                    <button type="button" className="btn sm" onClick={() => void moveFiles(localFiles, "push")}>
+                      {t("clip_local_files", { n: localFiles.length })}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           <AnimatePresence initial={false}>
             {(showBars || !immersive) && (
               <motion.div key="hud" {...hudFade} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 7 }}>

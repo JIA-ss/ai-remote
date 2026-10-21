@@ -95,6 +95,18 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
         );
         return Ok(());
     }
+    // `sudo ai-remote host install --service` on macOS: launchd has started the host as the
+    // owner already, and root may not talk to the owner's control socket (cross-uid refusal).
+    #[cfg(target_os = "macos")]
+    if ar_host::platform::runs_as_root() {
+        println!(
+            "\nlaunchd starts the host as the installing user; check it without sudo:\n\n  ai-remote host status\n  \
+             ai-remote doctor\n\nThen grant Screen Recording and Accessibility to ai-remote-hostw if doctor says they are \
+             missing, and restart the host (`ai-remote stop-host`, then `launchctl kickstart -k gui/<uid>/<label>` or \
+             log out and in)."
+        );
+        return Ok(());
+    }
     println!("\nStarting the background host...");
     let start = install::start_action(profile)?;
     if let Some(note) = start.execute()? {

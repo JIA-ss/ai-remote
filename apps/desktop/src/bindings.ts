@@ -153,6 +153,34 @@ export const commands = {
 	/**  Ends live view `id`. */
 	stopScreen: (id: number) => typedError<null, string>(__TAURI_INVOKE("stop_screen", { id })),
 	/**
+	 *  Opens a person's live input stream to `host` (the host's `input/1` channel). Every line the host
+	 *  writes (clipboard changes, refused events, pauses) is sent on `on_line`; returns an id for
+	 *  [`send_input`] and [`close_input`], and the host's reply (`os`, `clipboard`).
+	 */
+	openInput: (host: string | null, request: Json, onLine: Channel<string>) => typedError<[number, Json], string>(__TAURI_INVOKE("open_input", { host, request, onLine })),
+	/**
+	 *  Writes `data` (one or more newline-terminated JSON lines, see the host's input protocol) on
+	 *  live input `id`. Synchronous on purpose: such commands run one after another in the order the
+	 *  page sent them, so a key's release can never overtake its press (async commands run
+	 *  concurrently). Returns false when a batch of moves was dropped behind a slow host.
+	 */
+	sendInput: (id: number, data: string) => typedError<boolean, string>(__TAURI_INVOKE("send_input", { id, data })),
+	/**  Ends live input `id`; the host releases every key and button it holds. */
+	closeInput: (id: number) => typedError<null, string>(__TAURI_INVOKE("close_input", { id })),
+	/**  The text on this computer's clipboard (`None` when it holds none). */
+	clipboardText: () => typedError<string | null, string>(__TAURI_INVOKE("clipboard_text")),
+	/**  Replaces this computer's clipboard with `text` (what the host's clipboard holds). */
+	setClipboardText: (text: string) => typedError<null, string>(__TAURI_INVOKE("set_clipboard_text", { text })),
+	/**  Files on this computer's clipboard (copied in the file manager), as paths. */
+	clipboardFiles: () => typedError<string[], string>(__TAURI_INVOKE("clipboard_files")),
+	/**
+	 *  Sends the file at `local` to `host`, into folder `remote_dir` (`~/Desktop` by default) under its
+	 *  own name. Progress (`[done, total]` bytes) goes on `on_progress`.
+	 */
+	pushFile: (host: string, local: string, remoteDir: string | null, onProgress: Channel<[number | null, number | null]>) => typedError<Json, string>(__TAURI_INVOKE("push_file", { host, local, remoteDir, onProgress })),
+	/**  Fetches `remote` from `host` into this computer's Downloads folder (or `local_dir`). */
+	pullFile: (host: string, remote: string, localDir: string | null, onProgress: Channel<[number | null, number | null]>) => typedError<Json, string>(__TAURI_INVOKE("pull_file", { host, remote, localDir, onProgress })),
+	/**
 	 *  Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 	 *  webview show up where the app's own messages go.
 	 */

@@ -327,6 +327,8 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .stream-ended strong { font-size: 15px; }
 .stream-ended p { max-width: 480px; margin: 0; color: #A6A6AD; line-height: 20px; }
 .stream-ended .btn { background: rgb(255 255 255 / .1); color: #F2F2F3; }
+.nt-notice { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 12; max-width: calc(100% - 32px); display: flex; gap: 8px; align-items: center; background: rgb(28 28 30 / .96); color: #E8E8ED; border-radius: var(--r-control); padding: 6px 10px; font-size: 12px; overflow-wrap: anywhere; box-shadow: var(--shadow-float); }
+.nt-notice.below-error { top: 60px; }
 .session-error { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 12; max-width: calc(100% - 32px); background: #3A1D1F; color: #FFD5D5; border-radius: var(--r-control); padding: 8px 12px; font-size: 12px; overflow-wrap: anywhere; box-shadow: var(--shadow-float); }
 /* floating bars over the stage: dark and opaque in both themes, one shadow. No backdrop blur: WebKit
    drops one of two blurred layers while their transforms animate (seen on macOS 26, 2026-10-21). */
