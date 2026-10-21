@@ -104,6 +104,7 @@ dependencies = [
  "ar-core",
  "ar-net",
  "block2",
+ "data-encoding",
  "image",
  "objc2",
  "objc2-app-kit",

@@ -42,31 +42,34 @@ fn mac_script(program: &Path, args: &[String], prompt: &str) -> String {
     )
 }
 
-/// One argument for cmd.exe's command line (paths on Windows never contain `"`).
+/// A PowerShell single-quoted string.
 #[cfg(any(windows, test))]
-fn cmd_quote(s: &str) -> String {
-    if !s.is_empty() && !s.contains([' ', '\t', '&', '(', ')', '^', '|', '<', '>']) {
-        s.to_string()
-    } else {
-        format!("\"{s}\"")
-    }
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// The PowerShell that runs `program args…` elevated through UAC, waits, writes its output to
-/// `out` and exits with its exit code.
+/// `out` and exits with its exit code. The elevated side is PowerShell itself, given the command
+/// as `-EncodedCommand` (Base64 of UTF-16LE): no quoting layer between this process and the
+/// program (`Start-Process` → `cmd /c` mangled quoted paths with spaces, measured on Windows 11).
 #[cfg(any(windows, test))]
 fn windows_script(program: &Path, args: &[String], out: &Path) -> String {
-    let mut line = cmd_quote(&program.to_string_lossy());
+    let mut call = format!("& {}", ps_quote(&program.to_string_lossy()));
     for a in args {
-        line.push(' ');
-        line.push_str(&cmd_quote(a));
+        call.push(' ');
+        call.push_str(&ps_quote(a));
     }
-    // cmd /c ""prog" args > "out" 2>&1": cmd drops the outer quotes.
-    let inner = format!("/c \"{line} > {} 2>&1\"", cmd_quote(&out.to_string_lossy()));
-    let ps = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    // Each output line as plain text (Windows PowerShell wraps a native program's stderr as error
+    // records), and the program's own exit code.
+    let inner = format!(
+        "{call} 2>&1 | ForEach-Object {{ \"$_\" }} | Out-File -FilePath {} -Encoding utf8; exit $LASTEXITCODE",
+        ps_quote(&out.to_string_lossy())
+    );
+    let utf16: Vec<u8> = inner.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = data_encoding::BASE64.encode(&utf16);
     format!(
-        "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList {} -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode",
-        ps(&inner)
+        "$p = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' \
+         -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode"
     )
 }
 
@@ -103,7 +106,7 @@ pub async fn run(program: &Path, args: &[String], prompt: &str) -> Result<String
         cmd.args(["-NoProfile", "-NonInteractive", "-Command", &windows_script(program, args, &out)]);
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let status = cmd.output().await.context("run powershell")?;
-        let text = std::fs::read_to_string(&out).unwrap_or_default();
+        let text = std::fs::read_to_string(&out).unwrap_or_default().trim_start_matches('\u{feff}').to_string();
         let _ = std::fs::remove_file(&out);
         if status.status.success() {
             return Ok(text);
@@ -143,15 +146,20 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_command_goes_through_cmd_and_powershell_quoting() {
+    fn the_windows_command_is_encoded_for_the_elevated_powershell() {
         let s = windows_script(
             Path::new(r"C:\Program Files\ai-remote\ai-remote.exe"),
             &["--home".into(), r"C:\Users\o'neil\ai".into(), "host".into(), "install".into()],
             Path::new(r"C:\Temp\out.txt"),
         );
+        let encoded = s.split("'-EncodedCommand','").nth(1).unwrap().split('\'').next().unwrap();
+        let bytes = data_encoding::BASE64.decode(encoded.as_bytes()).unwrap();
+        let utf16: Vec<u16> = bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(
-            s,
-            r#"$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c ""C:\Program Files\ai-remote\ai-remote.exe" --home C:\Users\o''neil\ai host install > C:\Temp\out.txt 2>&1"' -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode"#
+            String::from_utf16(&utf16).unwrap(),
+            r#"& 'C:\Program Files\ai-remote\ai-remote.exe' '--home' 'C:\Users\o''neil\ai' 'host' 'install' 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath 'C:\Temp\out.txt' -Encoding utf8; exit $LASTEXITCODE"#
         );
+        assert!(s.starts_with("$p = Start-Process -FilePath 'powershell.exe'"));
+        assert!(s.ends_with("-Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode"));
     }
 }

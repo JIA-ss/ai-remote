@@ -23,6 +23,7 @@ ar-core.workspace = true
 ar-controller.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true
+data-encoding.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
