@@ -97,6 +97,67 @@ export const commands = {
 	 */
 	setHostAddress: (host: string, address: string) => typedError<Json, string>(__TAURI_INVOKE("set_host_address", { host, address })),
 	/**
+	 *  This computer as a host, for the "This device" page: the running host's `status` (`null` when
+	 *  none runs here) and, with `doctor`, the doctor report: the host's own while it runs (its session,
+	 *  permissions and network), otherwise `ai-remote doctor` run from the command, which still knows
+	 *  the autostart state. The report reads the autostart and firewall state (slow on Windows), so the
+	 *  page asks for it on opening and after a change, and polls the status alone.
+	 */
+	localHost: (doctor: boolean) => typedError<Json, string>(__TAURI_INVOKE("local_host", { doctor })),
+	/**
+	 *  A one-time pairing ticket from the host here, at `level`, and the pair code (with its QR code) that
+	 *  hands it out. Both are credentials: the page shows them once in its own window and this app never
+	 *  logs them.
+	 */
+	localHostPairCode: (level: string) => typedError<Json, string>(__TAURI_INVOKE("local_host_pair_code", { level })),
+	/**
+	 *  Stops answering the pair code shown by `local_host_pair_code` (its dialog was closed). The
+	 *  ticket behind it stays valid until it expires, but nothing hands it out any more.
+	 */
+	localHostWithdrawCode: () => typedError<Json, string>(__TAURI_INVOKE("local_host_withdraw_code")),
+	/**
+	 *  Pauses the agent on this computer (every controller's calls are refused until resumed) or
+	 *  resumes it. From here, at this computer; controllers have their own way (`set_turn`).
+	 */
+	localHostPause: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("local_host_pause", { on })),
+	/**
+	 *  Stops the host here (`ai-remote stop-host`); the autostart entry starts it again at the next
+	 *  login, `local_host_start` right away.
+	 */
+	localHostStop: () => typedError<Json, string>(__TAURI_INVOKE("local_host_stop")),
+	/**  Starts the installed background host (`ai-remote host start`). */
+	localHostStart: () => typedError<Json, string>(__TAURI_INVOKE("local_host_start")),
+	/**  The host's latest audit lines (newest last). */
+	localHostRecent: (limit: number) => typedError<Json, string>(__TAURI_INVOKE("local_host_recent", { limit })),
+	/**  Removes a controller's pairing here (`ai-remote forget`), e.g. when its safety code did not match. */
+	localHostForget: (peer: string) => typedError<Json, string>(__TAURI_INVOKE("local_host_forget", { peer })),
+	/**
+	 *  Keeps the window out of screen capture (where the system supports it) while it shows a pairing
+	 *  ticket, so a connected controller's screenshots and live view do not carry it.
+	 */
+	protectWindow: (on: boolean) => typedError<null, string>(__TAURI_INVOKE("protect_window", { on })),
+	/**
+	 *  Opens one System Settings pane (`screen_recording`, `accessibility`, `login_items`, ...); the
+	 *  person changes the setting there, never this app.
+	 */
+	openSystemSettings: (pane: string) => typedError<null, string>(__TAURI_INVOKE("open_system_settings", { pane })),
+	/**
+	 *  Shows the host's `host/ai-remote.toml` (the approval rules) in the file manager, or its folder
+	 *  while the file does not exist yet.
+	 */
+	revealProfile: () => typedError<null, string>(__TAURI_INVOKE("reveal_profile")),
+	/**  The page's language, so the tray menu reads the same. */
+	setUiLanguage: (lang: string) => __TAURI_INVOKE<void>("set_ui_language", { lang }),
+	/**  Whether the app opens at login (in the tray, without its window). */
+	appLoginItem: () => typedError<boolean, string>(__TAURI_INVOKE("app_login_item")),
+	/**  Turns opening at login on or off for this copy of the app. */
+	setAppLoginItem: (on: boolean) => typedError<null, string>(__TAURI_INVOKE("set_app_login_item", { on })),
+	/**
+	 *  The page shows the window after its first paint, unless the app started in the tray (`--hidden`,
+	 *  from the login item).
+	 */
+	startedHidden: () => __TAURI_INVOKE<boolean>("started_hidden"),
+	/**
 	 *  Starts a live view of `host`: frames go to `on_frame`; returns the view's id and the host's
 	 *  monitors. `request` holds `monitor`, `max_fps`, `max_long_edge`, `bitrate_kbps` (all optional).
 	 */

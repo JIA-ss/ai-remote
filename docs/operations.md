@@ -42,8 +42,9 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 | `ai-remote host install` | start the host automatically at logon, in the background (`--service`: as a Windows service that reaches the lock screen) |
 | `ai-remote host uninstall` | remove the autostart entry, stop the host, remove the firewall rules |
 | `ai-remote host status` | autostart entry, firewall rules, whether the host runs |
+| `ai-remote host start` | start the installed background host now (after `stop-host`); the desktop app's tray uses it. A Windows service needs an administrator terminal |
 | `ai-remote doctor` | graded checks: can this machine really be operated? |
-| `ai-remote pair-code [--level L] [--name N]` | print a one-time pairing ticket |
+| `ai-remote pair-code [--level L] [--name N]` | show a one-time pair code (QR code and eight digits) and the ticket behind it |
 | `ai-remote peers` | paired controllers with their levels and device ids; revoked ones are marked `REVOKED` |
 | `ai-remote level <peer> <observe\|control\|admin\|none>` | change a controller's level |
 | `ai-remote revoke <peer>` / `unrevoke <peer>` | refuse a controller, or lift that |
@@ -58,7 +59,7 @@ options work before or after the subcommand. `ai-remote <command> --help` descri
 
 | Command | What it does |
 |---|---|
-| `ai-remote pair <ticket> [--name N]` | pair with a host |
+| `ai-remote pair <code\|ticket> [--name N]` | pair with a host by its pair code (`4821 0937`) or its ticket |
 | `ai-remote hosts` | paired hosts and the level each granted at pairing; `(default)` marks the default host |
 | `ai-remote hosts default [<host>\|--clear]` | show, set or clear the host commands and agents use when they name none |
 | `ai-remote network [mode auto\|lan \| discovery on\|off \| upnp on\|off]` | show or change this computer's network settings for its host and controller alike (the desktop app's Settings > Network; section 12) |
@@ -137,7 +138,7 @@ ai-remote host
 ```
 
 It prints its name, device id, profile, number of paired controllers and the audit log path. If no
-controller is paired yet, it also prints a pairing ticket (level `control`); `--no-pair-code` skips
+controller is paired yet, it also shows a pair code with its QR code and ticket (level `control`); `--no-pair-code` skips
 that. If approval prompts cannot be shown right now (a locked desktop), it warns that actions which
 need approval will be refused.
 
@@ -335,8 +336,9 @@ print goes to `<profile>/host/host.log`, and it never mints a pairing ticket by 
 - **Logs.** `host.log` is rotated when it passes 8 MiB; two earlier files are kept (`host.log.1`,
   `host.log.2`). Errors before the log can be opened go to `ai-remote-hostw-error.log` in the
   temporary directory. On macOS, launchd also writes the process's stderr to `host/host-stderr.log`.
-- **Starting it again** after `stop-host`: log off and on, run `ai-remote host install` again (it
-  starts the task when no host runs), or start the task yourself:
+- **Starting it again** after `stop-host`: `ai-remote host start` (or the desktop app's tray), log off
+  and on, run `ai-remote host install` again (it starts the task when no host runs), or start the task
+  yourself:
   `schtasks /Run /TN "ai-remote\host-<8 hex digits>"` (`ai-remote host status` shows the name).
 - **No console windows.** The background host has no console, so everything it starts (shell
   commands, jobs, mounted servers, system tools) is started without a console window; nothing pops
@@ -446,25 +448,32 @@ ai-remote pull 'D:\captures\frame.ngfx-gputrace' traces/
 ## 5. Pairing step by step
 
 1. **Make sure the host runs** (`ai-remote host status` or `ai-remote status` on the host).
-2. **Mint a ticket on the host:**
+2. **Show a pair code on the host** (desktop app: This device → Show pair code; tray: Show Pairing
+   Code), or in a terminal:
 
    ```sh
    ai-remote pair-code --level control --name laptop
    ```
 
    `--level` is `observe`, `control` (default) or `admin`: start with the lowest level that does the
-   job. `--name` is the host's own name for the controller that redeems the ticket (default: the name
-   the controller suggests, its machine name). The ticket is valid once and expires after 24 hours.
-3. **Hand the ticket over** on a channel you trust. It is a credential: whoever redeems it first gets
-   the level.
-4. **Redeem it on the controller:**
+   job. `--name` is the host's own name for the controller that pairs (default: the name the
+   controller suggests, its machine name). It shows a QR code, an eight-digit pair code and the
+   ticket behind them. The code works once, for 10 minutes, and only while the host runs; showing a
+   new code withdraws the old one. Five connections that fail to prove the code burn it.
+3. **Give the code to the other device** in person, or on a channel you trust. It is a credential
+   while it lasts: whoever uses it first gets the level.
+4. **Pair on the controller:** scan the QR code with the iPhone app, type the digits on the desktop
+   app's Pair a computer page, or:
 
    ```sh
-   ai-remote pair <ticket> --name office-pc
+   ai-remote pair 4821 0937 --name office-pc
    ```
 
    `--name` is your local name for the host (default: the name the host suggests). It prints the
-   host's name, a three-word safety code and the granted level.
+   host's name, a three-word safety code and the granted level. The controller finds the host behind
+   the code through the same discovery the connection uses (n0's DNS/pkarr service, mDNS on the
+   local network, the relays). If the two machines cannot reach each other that way (no internet and
+   no shared network), use the ticket instead: `ai-remote pair <ticket>`, valid once for 24 hours.
 5. **Compare the safety code** with what the host shows:
    - a host in a terminal prints `Paired with controller "laptop" (level: control).` and
      `Safety code: ...`;
@@ -811,6 +820,14 @@ ai-remote tell "Use the D: drive for the export"
 - Turns coordinate people and agents; they are not a security boundary (an agent on the same device
   could make calls marked as a person's). Levels, policy and approvals are what limit an agent.
 
+**Pausing at the host itself.** The owner can also pause from the desktop app on the host (the tray
+menu or Settings > This device). That pause is stronger than a controller's: the agent's calls *and* a
+person's who took over are refused, and no paired device can resume or take over until the owner
+resumes at that computer (`ai-remote resume` from a controller is refused with that reason); live
+views keep running. On resume, whoever drove before gets the controls back. The audit log records it
+as a `driver` line with `"origin": "owner"`, and controllers' timelines show "someone at <host>
+paused it".
+
 ## 10. Audit log
 
 Every tool call on the host is appended to `<profile>/host/audit.jsonl`, one JSON object per line.
@@ -961,7 +978,8 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   pairing ticket, refreshed from every live connection. When a host's address changes (another IP, or a
   host that used a random port before switching to LAN mode), set it on the controller: in the app under
   Settings > Network, or `ai-remote hosts address <host> 192.168.1.20` (no port: 47800). `doctor` on the
-  host lists the addresses to use (`lan` check). Pairing works over the local network as usual. Devices
+  host lists the addresses to use (`lan` check). Pairing with the ticket works as usual; a pair code can
+  only be found through local discovery, so with that off the host shows the ticket alone and says why. Devices
   outside this network cannot connect, so set it on both ends only where they share a network (an office,
   a home), and give the host a fixed IP (a DHCP reservation on the router).
 - **Fixed port.** Behind a NAT that defeats hole punching (`doctor` reports `p2p` warn), forward a UDP port
@@ -976,7 +994,9 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   through the address lookup service, punch a direct path where the networks allow it and are relayed
   otherwise. Where the network's DNS does not resolve the relay or lookup names, nothing connects (list
   self-hosted relays and lookup servers it does resolve). With the lock on, the app shows both switches
-  off and disabled, and `ai-remote network discovery on` / `upnp on` refuse with the reason.
+  off and disabled, and `ai-remote network discovery on` / `upnp on` refuse with the reason. A pair code
+  on screen runs on a short-lived endpoint of its own that follows the same settings (relays, lookup
+  servers, port mapping, local network).
 - **Address lookup.** Every device publishes its current addresses to n0's lookup service (`dns.iroh.link`)
   every 5 minutes and whenever they change, and looks a peer up there before dialing it. With
   `address_lookup = ["https://dns.example.org/pkarr"]` your own

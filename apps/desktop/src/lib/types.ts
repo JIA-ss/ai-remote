@@ -78,6 +78,119 @@ export interface LocalController {
   until_ms: number | null;
 }
 
+/** The host running on this computer, as its local control channel reports it (`status`). */
+export interface LocalHostStatus {
+  name: string;
+  device: string | null;
+  version: string;
+  /** Paired controllers. */
+  peers: number;
+  /** Controllers with a connection open right now (any channel), by name. Missing from older hosts. */
+  connected?: string[];
+  /** The same, with the channels each has open. Missing from older hosts. */
+  controllers?: Array<{ name: string; device: string; channels: Array<"tools" | "events" | "screen" | "files"> }>;
+  /** Tool calls running now, oldest first. */
+  calls?: Array<{ peer: string; tool: string; person: boolean; since_ms: number }>;
+  /** The last tool call that ended. */
+  last_call?: { peer: string; tool: string; person: boolean; since_ms: number; ended_ms: number } | null;
+  /** Missing from older hosts. */
+  driver?: Driver;
+  /** Why approval prompts cannot be shown now (locked desktop, ...), or `null`. */
+  prompt_blocker?: string | null;
+  /** Windows service mode (SYSTEM): starting it again after a stop takes an administrator. */
+  system?: boolean;
+  pid: number;
+  /** Started at login without a console (the LaunchAgent, logon task or service). */
+  background: boolean;
+}
+
+export type Grade = "skip" | "ok" | "warn" | "fail";
+
+/** One line of the host's doctor report (session, permissions, autostart, network, ...). */
+export interface DoctorCheck {
+  id: string;
+  grade: Grade;
+  summary: string;
+  fix?: string | null;
+}
+
+export interface DoctorReport {
+  overall: Grade;
+  /** `host` when the running host checked itself, `cli` when no host runs here. */
+  checked_in: string;
+  checks: DoctorCheck[];
+}
+
+/** This computer as a host: the running host (`null` when none), the checks and the profile directory. */
+export interface LocalHost {
+  host: LocalHostStatus | null;
+  /** A host listens but cannot be read (why); `host` is then null although one probably runs. */
+  unknown?: string | null;
+  /** Only when asked for (`localHost(true)`). */
+  doctor: DoctorReport | null;
+  profile: string;
+}
+
+/** One audit line of the host here: a decision, an outcome, a session, a change of driver, ... */
+export interface AuditLine {
+  ts: number;
+  kind: string;
+  peer?: string;
+  tool?: string;
+  decision?: string;
+  outcome?: string;
+  intent?: string;
+  by?: string;
+  state?: string;
+  device?: string;
+  error?: string;
+  /** `paired` lines: the safety code and the level granted. */
+  sas?: string;
+  level?: string;
+  [key: string]: unknown;
+}
+
+/** Where the tray menu sends the page (`tray-navigate`): a settings section, and maybe an action. */
+export interface TrayIntent {
+  view?: string;
+  sec?: string;
+  /** `pair_code`: open the pairing-code dialog; `confirm_stop`: ask before stopping a service host. */
+  action?: string;
+  /** An element id to scroll to (`recent`). */
+  anchor?: string;
+  /** A failure the tray could not show itself. */
+  error?: string;
+  /** Distinguishes two identical intents. */
+  n: number;
+}
+
+/** A one-time pairing ticket minted by the host here. */
+export interface PairTicket {
+  /** The whole line the other device pastes (`ai-remote pair <line>`): works with no network between them. */
+  line: string;
+  /** Seconds since the Unix epoch. */
+  expires_at: number;
+  level: Level;
+  /** The short code that hands the ticket out; absent when the host could not offer one (`code_error`). */
+  code?: PairCode;
+  /** The QR code of `code.link`, as an SVG path over a `size` x `size` grid. */
+  qr?: { size: number; path: string } | null;
+  code_error?: string;
+  /** `lan_discovery_off`: Local network only with local discovery off, so no code could be found. */
+  code_reason?: string;
+}
+
+/** An eight-digit pair code a host shows: once, for ten minutes. */
+export interface PairCode {
+  code: string;
+  /** `4821 0937` */
+  grouped: string;
+  /** `ai-remote://pair?code=...`, the QR code's content. */
+  link: string;
+  /** Seconds since the Unix epoch. */
+  expires_at: number;
+}
+
 export interface AgentStatus {
   /** The app's actual MCP executable and arguments, pinned to this device's profile. */
   mcp?: { command: string; args: string[] };
@@ -102,7 +215,7 @@ export interface ConnectedAgent {
 export type Driver =
   | { state: "agent" }
   | { state: "person"; device: string; since_ms: number; agent_may_watch: boolean }
-  | { state: "paused"; by: string; since_ms: number };
+  | { state: "paused"; by: string; since_ms: number; /** Paused by the owner at that computer: only they can resume. */ owner?: boolean };
 
 export interface PendingApproval {
   id: string;
@@ -138,7 +251,7 @@ export type FeedEvent =
       /** The MCP client behind the session (`claude-code`). */
       agent?: string | null;
     }
-  | ({ kind: "driver"; ts: number; by: string; note?: string } & Driver)
+  | ({ kind: "driver"; ts: number; by: string; note?: string; /** `owner`: changed by the owner at that computer. */ origin?: string } & Driver)
   | { kind: "note"; ts: number; from: string; text: string }
   | { kind: "task"; ts: number; session: string; peer: string; task: string }
   | {

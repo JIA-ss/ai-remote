@@ -4,7 +4,8 @@ up with `ai-remote network` (what the desktop app's Settings > Network writes), 
 
   python tools/network-e2e.py [--cli target/debug/ai-remote]
 
-Checks: the quiet defaults; Local network only on both ends; pairing and a tool call with no relay;
+Checks: the quiet defaults; Local network only on both ends; no pair code there without local
+discovery (the ticket instead); pairing and a tool call with no relay;
 doctor's `lan` check; a LAN-mode host with no TCP connection at all (no relay, no address lookup); a
 host that comes back on another port being unreachable at the stored address and reached again once
 it is set with `ai-remote hosts address`; and quiet = true keeping port mapping off. Nothing outside
@@ -115,7 +116,9 @@ def main():
         set_port(host_home, first_port)
 
         host = start_host(host_home)
-        ticket = run_json("pair-code", "--level", "control", "--name", "e2e-ctl", home=host_home)["line"]
+        offer = run_json("pair-code", "--level", "control", "--name", "e2e-ctl", home=host_home)
+        check("no pair code without local discovery, the ticket instead", "code" not in offer and offer.get("code_reason") == "lan_discovery_off", {k: offer.get(k) for k in ("code_reason", "code_error")})
+        ticket = offer["line"]
         paired = run_json("pair", ticket, "--name", "e2e-host", home=ctl_home)
         check("paired over the local network", paired.get("peer") == "e2e-host", paired)
 

@@ -21,10 +21,13 @@ use ar_core::{
 };
 use ar_net::ipc::Conn;
 use serde_json::{Value, json};
-use tauri::{State, ipc::Channel};
+use tauri::{Manager, State, ipc::Channel};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
+mod host_local;
+mod login_item;
 mod transfer;
+mod tray;
 
 struct AppState {
     profile: Profile,
@@ -272,6 +275,153 @@ async fn update_network(
     }
     ar_controller::restart_agent(&state.profile).await;
     network_settings(state).await
+}
+
+/// This computer as a host, for the "This device" page: the running host's `status` (`null` when
+/// none runs here) and, with `doctor`, the doctor report: the host's own while it runs (its session,
+/// permissions and network), otherwise `ai-remote doctor` run from the command, which still knows
+/// the autostart state. The report reads the autostart and firewall state (slow on Windows), so the
+/// page asks for it on opening and after a change, and polls the status alone.
+#[tauri::command]
+#[specta::specta]
+async fn local_host(state: State<'_, AppState>, doctor: bool) -> Result<Json, String> {
+    let (status, unknown) = match host_local::probe(&state.profile).await {
+        host_local::Probe::Running(v) => (Some(v), None),
+        host_local::Probe::Stopped => (None, None),
+        host_local::Probe::Unknown(why) => (None, Some(why)),
+    };
+    let doctor = match (&status, doctor) {
+        (_, false) => None,
+        (Some(_), true) => host_local::request(&state.profile, json!({"op": "doctor"})).await.ok().flatten(),
+        (None, true) => host_local::cli_json(&state.cli, &["doctor"]).await.ok(),
+    };
+    Ok(Json(json!({"host": status, "unknown": unknown, "doctor": doctor, "profile": state.profile.root()})))
+}
+
+/// A one-time pairing ticket from the host here, at `level`, and the pair code (with its QR code) that
+/// hands it out. Both are credentials: the page shows them once in its own window and this app never
+/// logs them.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_pair_code(state: State<'_, AppState>, level: String) -> Result<Json, String> {
+    let level: ar_core::Level = serde_json::from_value(Value::String(level)).map_err(|e| e.to_string())?;
+    host_local::require(&state.profile, json!({"op": "pair_code", "level": level})).await.map(Json).map_err(text)
+}
+
+/// Stops answering the pair code shown by `local_host_pair_code` (its dialog was closed). The
+/// ticket behind it stays valid until it expires, but nothing hands it out any more.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_withdraw_code(state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::require(&state.profile, json!({"op": "withdraw_code"})).await.map(Json).map_err(text)
+}
+
+/// Pauses the agent on this computer (every controller's calls are refused until resumed) or
+/// resumes it. From here, at this computer; controllers have their own way (`set_turn`).
+#[tauri::command]
+#[specta::specta]
+async fn local_host_pause(app: tauri::AppHandle, state: State<'_, AppState>, on: bool) -> Result<Json, String> {
+    let r = host_local::require(&state.profile, json!({"op": "pause", "on": on})).await.map(Json).map_err(text);
+    refresh_tray(&app);
+    r
+}
+
+/// Stops the host here (`ai-remote stop-host`); the autostart entry starts it again at the next
+/// login, `local_host_start` right away.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_stop(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    let r = host_local::require(&state.profile, json!({"op": "shutdown"})).await.map(Json).map_err(text);
+    refresh_tray(&app);
+    r
+}
+
+/// Starts the installed background host (`ai-remote host start`).
+#[tauri::command]
+#[specta::specta]
+async fn local_host_start(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    let r = host_local::cli_json(&state.cli, &["host", "start"]).await.map(Json).map_err(text);
+    refresh_tray(&app);
+    r
+}
+
+/// The host's latest audit lines (newest last).
+#[tauri::command]
+#[specta::specta]
+async fn local_host_recent(state: State<'_, AppState>, limit: u32) -> Result<Json, String> {
+    host_local::require(&state.profile, json!({"op": "recent", "limit": limit})).await.map(Json).map_err(text)
+}
+
+/// Opens one System Settings pane (`screen_recording`, `accessibility`, `login_items`, ...); the
+/// person changes the setting there, never this app.
+#[tauri::command]
+#[specta::specta]
+fn open_system_settings(pane: String) -> Result<(), String> {
+    host_local::open_settings_pane(&pane).map_err(text)
+}
+
+/// Shows the host's `host/ai-remote.toml` (the approval rules) in the file manager, or its folder
+/// while the file does not exist yet.
+#[tauri::command]
+#[specta::specta]
+fn reveal_profile(state: State<'_, AppState>) -> Result<(), String> {
+    let file = state.profile.host_config_path().map_err(text)?;
+    host_local::reveal(&file).map_err(text)
+}
+
+/// Removes a controller's pairing here (`ai-remote forget`), e.g. when its safety code did not match.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_forget(state: State<'_, AppState>, peer: String) -> Result<Json, String> {
+    host_local::require(&state.profile, json!({"op": "forget", "peer": peer})).await.map(Json).map_err(text)
+}
+
+/// Keeps the window out of screen capture (where the system supports it) while it shows a pairing
+/// ticket, so a connected controller's screenshots and live view do not carry it.
+#[tauri::command]
+#[specta::specta]
+fn protect_window(window: tauri::WebviewWindow, on: bool) -> Result<(), String> {
+    window.set_content_protected(on).map_err(|e| e.to_string())
+}
+
+/// Whether the app opens at login (in the tray, without its window).
+#[tauri::command]
+#[specta::specta]
+fn app_login_item() -> Result<bool, String> {
+    login_item::enabled().map_err(text)
+}
+
+/// Turns opening at login on or off for this copy of the app.
+#[tauri::command]
+#[specta::specta]
+fn set_app_login_item(on: bool) -> Result<(), String> {
+    login_item::set(on).map_err(text)?;
+    tray::set_resident(on);
+    Ok(())
+}
+
+/// The page shows the window after its first paint, unless the app started in the tray (`--hidden`,
+/// from the login item).
+#[tauri::command]
+#[specta::specta]
+fn started_hidden() -> bool {
+    login_item::started_hidden()
+}
+
+/// The page's language, so the tray menu reads the same.
+#[tauri::command]
+#[specta::specta]
+fn set_ui_language(app: tauri::AppHandle, lang: String) {
+    if let Some(t) = app.try_state::<tray::Tray<tauri::Wry>>() {
+        t.set_lang(tray::Lang::parse(&lang));
+    }
+}
+
+/// The tray polls again right away, so it follows a change made from the page.
+fn refresh_tray(app: &tauri::AppHandle) {
+    if let Some(t) = app.try_state::<tray::Tray<tauri::Wry>>() {
+        t.refresh();
+    }
 }
 
 /// Calls one host tool and returns the MCP result (`content`, `structuredContent`, `isError`).
@@ -780,6 +930,21 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         network_settings,
         update_network,
         set_host_address,
+        local_host,
+        local_host_pair_code,
+        local_host_withdraw_code,
+        local_host_pause,
+        local_host_stop,
+        local_host_start,
+        local_host_recent,
+        local_host_forget,
+        protect_window,
+        open_system_settings,
+        reveal_profile,
+        set_ui_language,
+        app_login_item,
+        set_app_login_item,
+        started_hidden,
         watch_screen,
         request_keyframe,
         ping_screen,
@@ -832,6 +997,8 @@ pub fn run() {
         eprintln!("{e:#}");
         PathBuf::from("ai-remote")
     });
+    let tray_profile = profile.clone();
+    let tray_cli = cli.clone();
     tauri::Builder::default()
         // Windows: our page draws the 48 px title bar; the plugin adds the caption buttons and the
         // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
@@ -848,12 +1015,49 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            // The menu bar / notification area icon that shows this computer's host; the app
+            // stays there when the window is closed while a host runs here.
+            match tray::install(app.handle(), tray_profile, tray_cli) {
+                Ok(tray) => {
+                    app.manage(tray);
+                }
+                Err(e) => eprintln!("no tray icon: {e:#}"),
+            }
+            // Reading it runs reg.exe on Windows: off the main thread.
+            std::thread::spawn(|| tray::set_resident(login_item::enabled().unwrap_or(false)));
+            if login_item::started_hidden() {
+                tray::set_dock(app.handle(), false);
+            }
             #[cfg(debug_assertions)]
             smoke(app);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the ai-remote app");
+        .on_window_event(|window, event| {
+            // Closing the window leaves the app in the tray while this computer is a host (the
+            // icon is how its owner sees and stops it) or the app opens at login; otherwise closing
+            // quits as before.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+                && window.app_handle().try_state::<tray::Tray<tauri::Wry>>().is_some_and(|t| t.keeps_running())
+            {
+                api.prevent_close();
+                let _ = window.hide();
+                tray::set_dock(window.app_handle(), false);
+                // A live view left open would keep streaming unseen: the page leaves it.
+                let _ = tauri::Emitter::emit(window, "window-hidden", ());
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building the ai-remote app")
+        .run(|app, event| {
+            // macOS: a click on the Dock icon brings the hidden window back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                tray::show_main(app, json!({}));
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 /// Debug builds: `AI_REMOTE_SMOKE=<png>` runs the app without ever showing it to the person at the

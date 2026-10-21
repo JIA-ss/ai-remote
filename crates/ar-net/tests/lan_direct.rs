@@ -74,6 +74,10 @@ async fn lan_mode_pairs_dials_and_is_found_again_at_an_address_set_by_hand() {
     assert!(host.lan_direct());
     let controller = start(ctl_dir.path(), 2, "ctl", Role::Controller, None).await;
     let invite = host.invite(Level::Observe, Some("ctl".into())).await.unwrap();
+    // No relay, no lookup and no local discovery: nothing could find a pair code, so none is offered.
+    let Err(refused) = host.offer_code(&invite).await else { panic!("no pair code without local discovery") };
+    assert!(refused.to_string().contains("local discovery off"), "{refused:#}");
+    assert!(!host.pair_code_findable());
     controller.pair(&invite.line, Some("host")).await.unwrap();
     echo(&controller).await.expect("paired over the ticket's direct addresses");
     let stored = controller.peer_addrs("host").await.unwrap();
