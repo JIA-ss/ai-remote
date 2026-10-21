@@ -1,34 +1,34 @@
 // The chat panel beside the live view: a coding agent running on the host (Claude Code, Codex, ...),
 // started from here or from the computer page, and the conversation with it. Events come from the
 // host's chat channel and are folded by lib/chat.ts; text from the agent is only ever rendered as
-// text nodes (never HTML), and links are not followed from here.
+// text nodes (never HTML), and links are not followed from here. The conversation's look follows
+// Orca's native chat (see ui/chat/).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatConnection } from "../lib/api";
 import {
-  diffLines,
-  diffStat,
+  editQueued,
   emptyChat,
-  inlineParts,
+  inputCommand,
   markAnswered,
   phase,
   reduceChat,
   rememberCwd,
+  rememberSent,
   recentCwds,
-  splitTurn,
-  textParts,
-  type Block,
   type Chat,
   type ChatEvent,
   type ChatHello,
+  type InputMode,
   type Runtime,
   type RuntimesReport,
   type SessionInfo,
-  type ToolItem,
-  type Turn,
 } from "../lib/chat";
 import { t } from "../lib/i18n";
-import { Icon, type IconName } from "./Icon";
+import { Composer } from "./chat/Composer";
+import { secs } from "./chat/Rows";
+import { Transcript } from "./chat/Transcript";
+import { Icon } from "./Icon";
 import { cx } from "./util";
 
 /** The session to show, and a ticket when it was just started (a ticket is valid once). */
@@ -210,213 +210,6 @@ export function StartForm({
   );
 }
 
-/** Text with fenced code blocks and `inline code`, as text nodes. */
-function Prose({ text }: { text: string }) {
-  return (
-    <>
-      {textParts(text).map((p, i) =>
-        p.code ? (
-          <pre key={i} className="nt-chat-code">
-            {p.text}
-          </pre>
-        ) : (
-          <p key={i}>
-            {inlineParts(p.text.trim()).map((s, j) => (s.code ? <code key={j}>{s.text}</code> : <span key={j}>{s.text}</span>))}
-          </p>
-        ),
-      )}
-    </>
-  );
-}
-
-const KIND_ICON: Record<string, IconName> = {
-  execute: "terminal",
-  read: "eye",
-  edit: "copy",
-  delete: "trash",
-  move: "copy",
-  search: "search",
-  fetch: "globe",
-  think: "info",
-  other: "wrench",
-};
-
-function secs(ms: number) {
-  return ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s` : `${Math.floor(ms / 60_000)}:${String(Math.round((ms % 60_000) / 1000)).padStart(2, "0")}`;
-}
-
-function ToolRow({ x, now }: { x: ToolItem; now: number }) {
-  const [open, setOpen] = useState(false);
-  const stat = diffStat(x.content);
-  const running = x.status === "in_progress" || x.status === "pending";
-  const took = (x.endedTs ?? now) - x.startedTs;
-  const detail = x.content.length > 0 || (x.input !== undefined && x.tool !== "execute");
-  return (
-    <div className={cx("nt-tool", x.status, open && "open")}>
-      <button type="button" className="hd" onClick={() => detail && setOpen((v) => !v)} aria-expanded={open} disabled={!detail}>
-        <span className="ic">
-          <Icon name={KIND_ICON[x.tool] ?? "wrench"} size={12} />
-        </span>
-        <span className="ttl mono">{x.title}</span>
-        {stat && (
-          <span className="stat mono">
-            <span className="add">+{stat.add}</span> <span className="del">−{stat.del}</span>
-          </span>
-        )}
-        <span className="st">{running ? <i className="spin" /> : x.status === "failed" ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />}</span>
-        <span className="tm tnum">{running || took >= 100 ? secs(Math.max(took, 0)) : ""}</span>
-      </button>
-      {open && (
-        <div className="bd">
-          {x.input !== undefined && x.tool !== "execute" && !x.content.some((c) => c.type === "diff") && (
-            <pre className="nt-chat-code small">{JSON.stringify(x.input, null, 2)}</pre>
-          )}
-          {x.content.map((c, i) =>
-            c.type === "diff" ? (
-              <div key={i} className="nt-diff">
-                <div className="path mono">{c.path}</div>
-                <pre>
-                  {diffLines(c.old, c.new).map((l, j) => (
-                    <span key={j} className={cx(l.sign === "+" ? "add" : l.sign === "-" ? "del" : "ctx")}>
-                      {l.sign} {l.text}
-                      {"\n"}
-                    </span>
-                  ))}
-                </pre>
-              </div>
-            ) : (
-              <pre key={i} className="nt-chat-code small">
-                {c.text}
-              </pre>
-            ),
-          )}
-          {x.truncated && <div className="cut">{t("hc_cut")}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Thought({ b, now, running }: { b: Extract<Block, { kind: "thought" }>; now: number; running: boolean }) {
-  const [open, setOpen] = useState(false);
-  const took = (running ? now : b.endedTs) - b.startedTs;
-  return (
-    <div className={cx("nt-thought", open && "open")}>
-      <button type="button" className="hd" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <Icon name={open ? "chevD" : "chevR"} size={10} />
-        {t("hc_thought", { s: secs(Math.max(took, 1000)) })}
-      </button>
-      {open && <div className="bd">{b.text}</div>}
-    </div>
-  );
-}
-
-function Question({ b, onAnswer, readonly }: { b: Extract<Block, { kind: "question" }>; onAnswer: (qid: string, text: string) => void; readonly: boolean }) {
-  const [text, setText] = useState("");
-  return (
-    <div className={cx("nt-question", b.answered && "done")}>
-      <div className="q">{b.prompt}</div>
-      {!b.answered && !readonly && (
-        <>
-          {b.options.length > 0 && (
-            <div className="opts">
-              {b.options.map((o) => (
-                <button key={o} type="button" className="btn sm" onClick={() => onAnswer(b.qid, o)}>
-                  {o}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="row">
-            <input className="ta-input" value={text} placeholder={t("hc_answer_ph")} onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && text.trim()) onAnswer(b.qid, text.trim());
-              }} />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function BlockView({ b, now, running, onAnswer, readonly }: { b: Block; now: number; running: boolean; onAnswer: (qid: string, text: string) => void; readonly: boolean }) {
-  switch (b.kind) {
-    case "text":
-      return (
-        <div className="nt-msg">
-          <Prose text={b.text} />
-        </div>
-      );
-    case "thought":
-      return <Thought b={b} now={now} running={running} />;
-    case "tool":
-      return <ToolRow x={b} now={now} />;
-    case "plan":
-      return (
-        <ul className="nt-plan">
-          {b.entries.map((e, i) => (
-            <li key={i} className={e.status}>
-              <i />
-              {e.content}
-            </li>
-          ))}
-        </ul>
-      );
-    case "question":
-      return <Question b={b} onAnswer={onAnswer} readonly={readonly} />;
-    case "notice":
-      return <div className={cx("nt-chat-note", b.level === "error" ? "err" : b.level === "warn" ? "warn" : "")}>{b.text}</div>;
-  }
-}
-
-function TurnView({ turn, now, onAnswer, readonly }: { turn: Turn; now: number; onAnswer: (qid: string, text: string) => void; readonly: boolean }) {
-  const running = turn.status === "running";
-  const [open, setOpen] = useState<boolean | null>(null);
-  const { preamble, steps, answer } = splitTurn(turn);
-  const tools = steps.filter((s) => s.kind === "tool").length;
-  const expanded = open ?? running;
-  return (
-    <div className="nt-turn">
-      {turn.user && (
-        <div className="nt-user">
-          <div className="bubble">{turn.user.text}</div>
-        </div>
-      )}
-      {preamble.map((b, i) => (
-        <BlockView key={`p${i}`} b={b} now={now} running={running} onAnswer={onAnswer} readonly={readonly} />
-      ))}
-      {steps.length > 0 && (
-        <div className={cx("nt-steps", expanded && "open")}>
-          <button type="button" className="hd" onClick={() => setOpen(!expanded)} aria-expanded={expanded}>
-            <Icon name={expanded ? "chevD" : "chevR"} size={10} />
-            {tools ? t("hc_steps", { n: tools }) : t("hc_thinking_only")}
-          </button>
-          {expanded && (
-            <div className="bd">
-              {steps.map((b, i) => (
-                <BlockView key={`s${i}`} b={b} now={now} running={running && i === steps.length - 1} onAnswer={onAnswer} readonly={readonly} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      {answer.map((b, i) => (
-        <BlockView key={`a${i}`} b={b} now={now} running={running} onAnswer={onAnswer} readonly={readonly} />
-      ))}
-      {turn.status !== "running" && (
-        <div className={cx("nt-turn-ft", turn.status)}>
-          {turn.status === "failed" ? t("hc_failed") : turn.status === "interrupted" ? t("hc_stopped") : null}
-          {turn.reason && turn.status !== "completed" && <span className="why">{turn.reason}</span>}
-          <span className="meta tnum">
-            {turn.durationMs != null && secs(turn.durationMs)}
-            {turn.usage?.output != null && ` · ${t("hc_tokens", { n: Math.round(((turn.usage.input ?? 0) + turn.usage.output) / 100) / 10 })}`}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function useNowTick(active: boolean) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -556,67 +349,78 @@ function Picker({ host, onPick }: { host: string; onPick: (t: ChatTarget) => voi
   );
 }
 
+
+const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+/** Sent messages per session, for ↑ / ↓ (kept for this run of the app). */
+const sentBySession = new Map<string, string[]>();
+
 function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: () => void }) {
   const { chat, setChat, hello, error, connected, send } = useConversation(host, target);
-  const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
-  const scroll = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  const [history, setHistory] = useState<string[]>(() => sentBySession.get(target.session) ?? []);
+  const [follow, setFollow] = useState(0);
   const running = chat.state === "running" || chat.state === "starting" || chat.state === "interrupting";
   const now = useNowTick(running);
   const readonly = hello?.role === "ro";
   const ended = chat.state === "ended";
+  const agent = hello?.runtime.name ?? t("hc_agent");
+  const canSteer = !!hello?.caps?.steer;
   const ph = phase(chat);
+  const sendRef = useRef(send);
+  sendRef.current = send;
 
-  useEffect(() => {
-    const el = scroll.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [chat]);
+  const remember = (text: string) => {
+    setHistory((h) => {
+      const next = rememberSent(h, text);
+      sentBySession.set(target.session, next);
+      return next;
+    });
+  };
+  const sendText = (text: string, mode: InputMode | undefined) => {
+    send(inputCommand(newId(), text, mode));
+    remember(text);
+    setFollow((n) => n + 1);
+  };
+  const onAnswer = useCallback((qid: string, value: string) => {
+    sendRef.current({ answer: { qid, text: value } });
+    setChat((c) => markAnswered(c, qid, value));
+    setFollow((n) => n + 1);
+  }, [setChat]);
+  const onContinue = useCallback(() => {
+    sendRef.current(inputCommand(newId(), t("hc_continue_prompt")));
+    setFollow((n) => n + 1);
+  }, []);
 
-  const submit = (interrupt = false) => {
-    const v = text.trim();
-    if (!v) {
-      if (running) send({ interrupt: {} });
-      return;
-    }
-    const id = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    send({ input: { id, text: v, ...(interrupt ? { mode: "interrupt" } : {}) } });
-    setText("");
-    stick.current = true;
-  };
-  const answer = (qid: string, value: string) => {
-    send({ answer: { qid, text: value } });
-    setChat((c) => markAnswered(c, qid));
-  };
-  const status = useMemo(() => {
-    if (ended) return t("hc_st_ended");
-    if (!connected) return error ?? t("hc_st_connecting");
+  const working = useMemo(() => {
     switch (ph.what) {
       case "starting":
         return t("hc_st_starting");
       case "stopping":
         return t("hc_st_stopping");
       case "tool":
-        return `${ph.title ?? ""}`;
-      case "thinking":
-        return t("hc_st_thinking");
+        return ph.title ?? t("hc_working");
       case "writing":
         return t("hc_st_writing");
+      case "asking":
+        return t("hc_st_asking");
       default:
-        return chat.state === "parked" ? t("hc_st_parked") : t("hc_st_idle");
+        return t("hc_st_thinking");
     }
-  }, [ended, connected, error, ph.what, ph.title, chat.state]);
+  }, [ph.what, ph.title]);
+  const status = ended ? t("hc_st_ended") : !connected ? error ?? t("hc_st_connecting") : running ? null : chat.state === "parked" ? t("hc_st_parked") : null;
 
   return (
     <div className="nt-chat">
       <div className="nt-chat-hd">
         <i className={cx("dot", connected ? chat.state : "off")} />
         <div className="who">
-          <span className="nm">{hello?.runtime.name ?? t("hc_agent")}</span>
+          <span className="nm">{agent}</span>
           <span className="cwd mono" title={hello?.cwd}>
             {hello?.cwd ?? ""}
           </span>
         </div>
+        {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
         <button type="button" className="ico" aria-label={t("hc_menu")} onClick={() => setMenu((v) => !v)}>
           <Icon name="more" size={14} />
@@ -634,77 +438,37 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
           </div>
         )}
       </div>
-      <div
-        className="nt-chat-body rail-scroll"
-        ref={scroll}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      {status && <div className={cx("nt-chat-status", !connected && !ended && error && "err")}>{status}</div>}
+      <Transcript
+        chat={chat}
+        now={now}
+        readonly={readonly}
+        empty={t("hc_empty", { agent })}
+        workingLabel={working}
+        follow={follow}
+        onAnswer={onAnswer}
+        onContinue={onContinue}
+      />
+      <Composer
+        agent={agent}
+        host={host}
+        running={running}
+        canSteer={canSteer}
+        disabled={ended ? "ended" : readonly ? "readonly" : null}
+        context={chat.context}
+        queued={chat.queued}
+        history={history}
+        onSend={sendText}
+        onStop={() => send({ interrupt: {} })}
+        onDequeue={(id) => send({ dequeue: { id } })}
+        onEditQueued={(id, text) => {
+          for (const c of editQueued(id, newId(), text)) send(c);
         }}
-      >
-        {chat.notices.map((n, i) => (
-          <div key={`n${i}`} className={cx("nt-chat-note", n.level === "error" ? "err" : n.level === "warn" ? "warn" : "")}>
-            {n.text}
-          </div>
-        ))}
-        {chat.turns.length === 0 && !running && <div className="nt-chat-empty">{t("hc_empty", { agent: hello?.runtime.name ?? t("hc_agent") })}</div>}
-        {chat.turns.map((turn) => (
-          <TurnView key={turn.n} turn={turn} now={now} onAnswer={answer} readonly={readonly} />
-        ))}
-      </div>
-      <div className="nt-chat-foot">
-        <div className={cx("nt-chat-status", running && "busy")}>
-          {running && <i className="spin" />}
-          <span className="ell">{status}</span>
-          {ph.since && running && <span className="tnum">{secs(now - ph.since)}</span>}
-        </div>
-        {chat.queued.length > 0 && (
-          <div className="nt-queue">
-            {chat.queued.map((q) => (
-              <span key={q.id} className="chip">
-                <span className="lbl">{t("hc_queued")}</span>
-                <span className="ell">{q.text}</span>
-                <button type="button" aria-label={t("hc_dequeue")} onClick={() => send({ dequeue: { id: q.id } })}>
-                  <Icon name="x" size={10} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className={cx("composer nt-chat-compose", (ended || readonly) && "off")}>
-          <textarea
-            className="ph-input"
-            rows={Math.min(6, Math.max(1, text.split("\n").length))}
-            value={text}
-            disabled={ended || readonly}
-            placeholder={ended ? t("hc_ph_ended") : readonly ? t("hc_ph_readonly") : running ? t("hc_ph_running") : t("hc_ph", { agent: hello?.runtime.name ?? t("hc_agent"), host })}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              // An input method's Enter confirms the composition; it must not send.
-              if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-              e.preventDefault();
-              submit(e.altKey);
-            }}
-          />
-          {running && !text.trim() ? (
-            <button type="button" className="send stop" onClick={() => send({ interrupt: {} })} aria-label={t("hc_stop")} title={t("hc_stop")}>
-              <Icon name="stop" size={14} />
-            </button>
-          ) : (
-            <button type="button" className="send" onClick={() => submit()} aria-label={t("send")} disabled={!text.trim() || ended || readonly}>
-              <Icon name="send" size={16} />
-            </button>
-          )}
-        </div>
-        {running && text.trim() && (
-          <div className="nt-chat-hint">
-            {t("hc_hint_queue")}
-            <button type="button" className="lnk" onClick={() => submit(true)}>
-              {t("hc_interrupt_send")}
-            </button>
-          </div>
-        )}
-      </div>
+        onSteerQueued={(id, text) => {
+          send({ dequeue: { id } });
+          send(inputCommand(newId(), text, "steer"));
+        }}
+      />
     </div>
   );
 }

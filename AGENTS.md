@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/chat-state.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -90,6 +90,98 @@
   - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）
 - [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
+
+## 对话侧栏照 Orca 重做（2026-10-21，分支 `claude/desktop-chat-ui-f97e8c`，基于 `feat/host-chat`）
+
+用户看了旧对话界面，要求直接照 Orca（stablyai/orca，MIT）的 native chat 搬，做到接近 Claude / Codex 原生 App。只改了桌面端和前端测试，被控端没动（另一个会话在做插话）。来源与许可证见仓库根的 `THIRD_PARTY_NOTICES.md`；每个搬来的组件文件头注明对应的 Orca 组件。
+
+### 怎么搬的
+
+- Orca 的 native-chat 是 108 个组件、5 万多行，依赖它自己的 store、i18n、tiptap、Tailwind + shadcn，整块搬不动。做法：**布局、间距、配色比例、折叠方式和文案语气照抄，组件按我们的事件重写**。
+- 转换层在 `lib/chat.ts` 的 `turnRows`：一轮投影成若干"行"。
+  - 连续的工具调用折成一个"运行组"（run），用一句话概括："运行了 2 条命令，读了 1 个文件"；进行中改成"正在读 1 个文件，运行 2 条命令"。
+  - 夹在两个工具之间的思考算在组里；其他位置的思考单独一行（"思考了 4 s"）。
+  - 编辑（有 diff）是独立的 diff 卡片；Claude 的 Task 工具（`kind: think` 且标题以 Task/Agent 开头）是子智能体行；计划、提问、通知、插话各自一行。
+  - 只有一个工具的运行组直接画成那一行工具（Orca 也是"一条命令就显示命令本身"）。
+- 组件在 `ui/chat/`：`Markdown.tsx`（Markdown、代码块、复制按钮、高亮）、`Rows.tsx`（各类行）、`Composer.tsx`（输入框、排队卡片、上下文用量环）、`Transcript.tsx`（消息列表、跳到最新）。`AgentChat.tsx` 只剩启动表单、会话选择和连接。
+- 样式仍只在 `styles/native.css`（第 6b 节），没有引入 Tailwind。颜色按 Orca 的比例用我们的令牌混出来：正文 88% 前景、代码底 3.5%、行内代码 6%、用户气泡 6%、发丝线 8%。
+
+### 依赖：一个都没加
+
+- **Markdown**：自己写的 `lib/markdown.ts`（约 360 行，GFM 子集：标题、段落、围栏代码、引用、嵌套列表、任务列表、表格、分隔线、行内代码、粗斜体、删除线、链接）。
+  - 没用 marked / react-markdown：前者产出 HTML，要再加 sanitize；后者连同 remark/rehype 要拉进几十个包。
+  - 自己写的版本只产出一棵文本树，React 只渲染文本节点，原始 HTML 永远是文字。这和旧界面"从不渲染 HTML"的承诺一致。
+  - 链接只认 http(s) / mailto，点击复制地址，不在应用里跳转（跳了页面就离开对话栏了）。
+- **语法高亮**：自己写的 `lib/highlight.ts`（约 210 行），覆盖智能体最常输出的十几种语言（JS/TS、Python、Rust、Go、C 系、Shell、PowerShell、JSON、TOML、YAML、SQL、CSS、HTML、diff）。
+  - 没用 shiki：它 4.x 带 WASM 引擎和语法包，体积是 MB 级。
+  - 只是分词着色，猜错只是颜色不对；超过 6 万字符不着色。
+- **diff**：`diffRows` 用 LCS 做真正的逐行 diff，变动前后各留 3 行上下文，中间折成"⋯ N 行未改动"。旧版只掐头去尾，中间两处小改会显示成整段删、整段加。单元格超过 400 万时退回旧做法。
+
+### 和插话会话的协议约定（对方照这个实现）
+
+- `caps.steer: bool`；`input.mode` 可取 `"queue" | "interrupt" | "steer"`。
+  - 前端排队时不带 `mode` 字段，旧被控端照常读得懂。
+- `user` 事件可带 `steer: true`，显示在正在跑的那一轮里，带"插话"标记。
+  - 前端以"当前正在跑的轮"为准，不看事件里的 `turn`；被控端按当前轮编号或按下一轮编号都能正确显示。
+- `notice` 码 `steer_queued`：前端用自己的文案"这个智能体不支持在运行中插话，已排队…"，不用被控端给的文字。
+- `usage` 可带 `context_window`、`context_used`。两个数都有时，输入框右下角显示上下文用量环，超过 90% 变红。
+
+### 交互
+
+- **运行中输入**：
+  - 智能体支持插话时，默认插话；输入框下方的芯片可以切成"排队"。不支持时芯片固定显示"排队"。
+  - ⌥Enter 停止本轮并立即发送。Esc（输入框为空时）等于停止。
+- **排队消息**显示成输入框上方的卡片，有三个操作：
+  - 编辑：协议没有"替换"，实现为先撤回再重新排队，所以编辑过的消息会排到队尾；
+  - 撤回：用现有的 `dequeue`；
+  - 现在插进这一轮：只在支持插话时出现，实现为撤回后用 steer 发送。
+- **其他输入**：↑/↓ 在光标位于开头或结尾时翻看本次运行里发过的消息；输入法组字时的 Enter 不会发送；发送后列表跟到底部。
+- **提问卡片**：选项带编号，按数字键直接回答（焦点不在输入框时）；也可以输入别的回答。回答后卡片收成一行"已回答：…"。
+- **被停止的轮**：显示"你停止了这一轮。[继续]"。"继续"发送"从刚才停下的地方继续，先确认上一步有没有做完"（Orca 的 Continue 也是先让智能体核对）。被停止打断的工具记为"已停止"，不算失败。
+- **长对话**：
+  - 只挂载最近 30 轮，顶上有"显示更早的 N 轮"；
+  - 倒数第 3 轮及更早的轮用 `content-visibility: auto`，在屏幕外时跳过布局和绘制；
+  - 每轮按对象 memo，流式输出时只重渲染正在跑的那一轮；
+  - 读者往上翻时不再自动跟随，出现"跳到最新"按钮。
+- **单复数**：所有计数文案都拆成 `_one` / `_many` 两个键（中文两个一样），修掉了 "1 steps"。测试会检查每个计数键两种语言都有、英文单数不出现 `{n}`。
+
+### 实测
+
+- **门槛检查**：`tsc --noEmit` 通过；`node --test tools/*.test.mjs` 80 通过、0 失败、2 跳过。
+  - 新增 `tools/chat-render.test.mjs` 共 7 项，覆盖 Markdown、高亮和单复数。
+  - `tools/chat-state.test.mjs` 从 9 项扩到 18 项，覆盖行投影、运行组、子智能体、插话（两种 turn 编号）、steer/queue/interrupt、排队编辑、历史、上下文用量、停止后继续、diff 统计、单复数。
+  - 没改 src-tauri，所以没跑 clippy。
+- **纯逻辑性能**（node，本机 M 系列 Mac，单次）：
+  - 200 轮、4.54 万个事件（每轮 12 个工具 + 200 个流式片段）折叠一共 25 ms，平均每个事件 0.56 µs；
+  - 200 轮全部投影成行用了 2.6 ms；
+  - 2.7 KB 的 Markdown 解析一次 0.11 ms；
+  - 浏览器里的渲染耗时没量。
+- **演示模式截图**（camofox，`npx vite` + 演示后端，视口 2319 宽，侧栏 560 px）在 `/tmp/chat-ui-v2/`，没进仓库：
+  - 空闲、展开的工具和 diff、插话加提问、流式输出、排队编辑、停止后继续、深色英文、长消息折叠，共 9 张。
+  - 截图过程中发现并修掉了：
+    - 全局 `.tgt` / `.hd` / `.live` / `.wrap` 类名污染了新组件，新组件改用 `obj` / `rh` / `is-live` / `wrapped`；
+    - 提问卡片在提前 return 之前少调了一个 hook，回答后整页崩溃；
+    - shell 高亮把 `export.py` 的 `export` 当成关键字。
+- **和 Orca 对照**：Orca 文档站（onorca.dev/docs/agents/native-chat）这页没有界面截图，对照依据是它的文档描述和源码。
+
+### 和 Orca 的差距（没做的）
+
+- 发送状态：没有"发送中… / 未发送 + 重试"。协议没有发送确认，要被控端在 `user` 事件里回带 `input_id`，前端去匹配。
+- 消息操作：没有"回退到这里"（Rewind）；没有 ⌘F 查找；没有选中回复里的文字引用到输入框。
+- 输入增强：没有 `@` 文件、`/` 命令与技能选择、附件和图片粘贴。
+- 富内容：没有 Mermaid 和内联图表。
+- 文件路径：点了不能打开，只能复制。
+- 上下文用量环：只有悬停提示，没有 Orca 那种按类别的明细弹窗。
+- 窗口化：Orca 按行测量高度做真正的虚拟列表；这里是"只挂最近 30 轮 + content-visibility"，几千轮的极端长对话没测过。
+- 子智能体：只认 Claude 的 Task 工具。被控端目前只发子智能体的总结（`adapters/claude.rs` 第 145 行），没有子智能体内部的步骤。
+- 后台任务行、停靠在输入框上方的任务列表：没做；计划只在原位显示。
+- 演示里的 `steer_queued` 提示：前端对不支持插话的智能体直接按排队发送，所以正常操作下看不到这条提示。它只在客户端发了 `mode: "steer"`、而被控端判定不支持时出现；渲染逻辑有单测覆盖，但截图里没有它。
+
+### 下一步
+
+- [ ] 和插话会话的分支合流后，跑真实 Claude / Codex 的端到端，确认 `steer: true` 的 `user` 事件用的是哪个 `turn` 编号，以及 `steer_queued` 何时会发。
+- [ ] 在真实 Tauri 应用（WKWebView / WebView2）里看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
+- [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
