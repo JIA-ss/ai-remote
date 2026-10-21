@@ -666,7 +666,20 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
   `input thread switched desktop from="Default" to="Winlogon"`，紧接着 SendInput 仍报 os error 5——
   **线程已经在 Winlogon 上，注入照样被拒**。那么差异不在线程所在桌面，而在进程本身（对照脚本是被控端的子进程，
   却能成功）：候选是被控端进程的 integrity level / 令牌属性（服务用 DuplicateTokenEx + TokenSessionId 造的令牌
-  和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。本轮到此为止，没再往下。下一步排查方向：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
+  和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。
+  **2026-10-21 定位并修复**：在失败点打印上下文（f21cdc0，`platform::input_context`）——线程桌面 Winlogon、输入桌面
+  Winlogon、本进程和前台窗口都是 System 完整性，全部对称；但在**同一个线程**上紧接着用 `GENERIC_ALL` 重新 OpenInputDesktop
+  + SetThreadDesktop 后，SetCursorPos 和 SendInput 立刻成功。差异只在桌面句柄的访问权限：原来沿用采集侧的标志集
+  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（d42a8b4，RustDesk 同）后，
+  SAS 菜单和真实锁屏上 `mouse move`、`keyboard escape` 都成功，Esc 真的关掉了 SAS 菜单（`info` 回到 Default）。
+  用户会话的 Default 桌面上原标志集够用，所以之前从没暴露。`input_context` 的探针留着：只在注入被拒时跑，会发一个
+  相对 (0,0) 的空移动。
+- 真实锁屏（SAS 菜单里选"锁定"）：Windows 11 把控制台切到了**新会话 6**（原用户会话 1 变 Disc），服务日志
+  `the console session changed; stopping the host in the old one from=1 to="none"` → 1.2 s 后
+  `started the host in the console session session=6`，被控端自动跟过去；`info` 报 session 6 / Winlogon / secure，
+  `shot` 截到真实锁屏（PIN 框、用户列表），`mouse move`、`keyboard escape` ok，`view` 3 s H.264 28.7 fps。
+  **没在锁屏上输过密码**（不做）；解锁靠用户自己 RDP（见 skill win-dev-unlock）。
+- 当时写下的排查方向（已走完）：把 `OpenInputDesktop` 失败从 debug 提到 warn 并带 OS 错误
   （或设 `AI_REMOTE_LOG=ar_host=debug` 重启服务看日志）；核对 `move_pointer` / enigo 实际在哪个线程调 API；
   核对被控端进程的 integrity level 与 shell 子进程是否相同。
 - 没跑：重启到登录界面、`stop-host` 连带停服务、`host uninstall` 恢复策略。开发机上服务**仍装着**
