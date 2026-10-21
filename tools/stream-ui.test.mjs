@@ -38,7 +38,7 @@ function apiFixture(reply = { screen: { x: 0, y: 0, width: 1600, height: 1000 } 
     async requestKeyframe() {}, async stopScreen() {},
   };
   const { api } = module("../apps/desktop/src/lib/api.ts", {
-    "@tauri-apps/api/core": { Channel }, "../bindings": { commands }, "./demo": { demoBackend: { kind: "demo" } },
+    "@tauri-apps/api/core": { Channel }, "../bindings": { commands }, "./demo": { demoBackend: { kind: "demo" } }, "./hops": { hop() {} },
   }, { window: { __TAURI_INTERNALS__: {} } });
   return {
     channels, requests, frames, ended, api,
@@ -161,6 +161,7 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
     "./Decide": { DecisionCard: () => {} },
     "./RemoteInput": { RemoteInput },
+    "../lib/drop": { watchFileDrop: () => () => {} },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
     "./Icon": { Icon: () => {} },
     "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar: () => {} },
