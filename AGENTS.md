@@ -83,25 +83,63 @@
   标题条和全屏顶栏在画质下拉左边加"显示器"下拉，用同一套 `nt-select-wrap` / `nt-select`，被控端只有一块屏时不出现。
   记住的那块屏不在了：回到主屏、忘掉这台电脑的选择、提示 `monitor_gone`。演示后端给了三块屏（主屏 1600×1000、左侧竖屏、右侧屏），
   浏览器预览里能看到下拉。
+- 被控端 `stream/capture/dda.rs` + `win.rs`（真机上发现，见下）：DDA 交出的画面是面板扫描方向，竖屏横躺。`duplicate()` 带回
+  `DXGI_OUTDUPL_DESC.Rotation`，`upright()` 选视频处理器的顺时针转角（`ROTATE90/180/270` 对应 `ROTATION_90/180/270`，和微软
+  DDA 示例的映射一致），`Converter::rotated` 里 `VideoProcessorSetStreamRotation`（先查 `FEATURE_CAPS_ROTATION`），推流尺寸按
+  转正后的宽高算。单测 `rotated_outputs_are_turned_upright`；`#[ignore]` 的 `every_monitor_comes_out_upright` 在真机上把每块屏
+  经 DDA 和 WGC 各截一帧、核对方向、把亮度平面写成 PGM 供肉眼看。
+- 桌面端：旧被控端不给原点时，竖屏叫"竖屏 N"（`monitor_n_portrait`），横屏仍是"屏幕 N"。
 - 文档：`docs/architecture*.md` 的 `screen/1`、`docs/desktop-design.md` 的会话页顶栏。
 
-**实测（本机 macOS，2026-10-22，各 1 次）**：
+**实测（本机 macOS，2026-10-22，合并 main 54169f2 之后，各 1 次）**：
 - `cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -- -D warnings` 无警告；`cargo test --workspace --locked`
-  400 过 0 失败 8 忽略（集成时是 397，多的 3 个是上面的单测）。
-- 前端：本文件开头列出的 10 个 `node --test` 文件 116 项 114 过 2 跳过（`stream-ui.test.mjs` 新增 6 项：命名与排序、记住选择与识别
+  402 过 0 失败 8 忽略。`dda.rs` 只在 Windows 编译，另在 win-dev 上跑：`cargo fmt --check` 过、`cargo clippy -p ar-host --all-targets --locked
+  -- -D warnings` 无警告、`cargo test -p ar-host --lib stream::` 25 过 10 忽略（含新单测）。
+- 前端：本文件开头列出的 10 个 `node --test` 文件 118 项 116 过 2 跳过（`stream-ui.test.mjs` 新增 6 项：命名与排序、记住选择与识别
   "屏不在了"、请求带 `monitor` 与回复解析、切屏重开流与回退主屏、标题条和全屏顶栏都有下拉、光标层在负原点竖屏上的位置与移出隐藏；
   `manual-input.test.mjs` 新增 1 项：负原点竖屏上的移动、滚轮和点击落点）；`tsc --noEmit` 过。
 - 浏览器预览（`vite --port 1437` + Camofox，演示后端）：标题条出现"主屏 · 1600×1000"，选项依次是"左侧竖屏 · 1080×1920 / 主屏 ·
   1600×1000 / 右侧屏幕 · 1920×1080"；切到左侧竖屏后画面变成竖的、居中；全屏顶栏里同样有这个下拉，和画质下拉同款；刷新后仍是左侧
   竖屏；英文文案也核对过。这是 Firefox 内核里的原生 select，不是 Tauri 的 WKWebView / WebView2。
 
-**推导（没有真机数据）**：切到 win-dev 左侧竖屏后 `screen` 应为 {-1440, -9, 1440, 2560}，画面四角落在 (-1440, -9) 和 (-1, 2550)
-（单测用同样的数算过）；远端光标到主屏（x ≥ 0）时相对 x ≥ 1440，叠加层隐藏。
+**真机实测（2026-10-22 18:25–18:45，Mac debug 桌面包 → 真实控制端 → win-dev 服务，服务程序是 17:42 换上的那份，没有本分支的改动）**：
+做法：debug 包带 `AI_REMOTE_SMOKE_SCRIPT` 往页面注入驱动脚本（`AI_REMOTE_SMOKE_VISIBLE=1`，窗口出现在 Mac 屏上但不抢焦点），
+`AI_REMOTE_CLI` 指向安装版、不设 `AI_REMOTE_HOME`，复用正在跑的控制端，不起新实例。win-dev 两块竖屏上各盖一个置顶的 WinForms
+记录窗口（进程设 PerMonitorV2，记录物理像素的指针位置、点击、滚轮、按键），测试的点击和按键只落在它上面。
+- 切屏：真实 app 里下拉 3 项"屏幕 1 · 1440×2560 / 屏幕 2 · 1440×2560 / 主屏 · 5120×2160"（旧服务不给原点，所以没有左右），默认主屏；
+  切左、切右都重开了流（审计 `view_start` / `view_end` 的 monitor 依次对上）；进全屏后顶栏有下拉，在全屏里切回左屏生效，退出全屏正常。
+  两轮都走通。
+- **发现 1：服务模式下竖屏横躺**。服务是 SYSTEM，截屏走 DDA；两块竖屏推来都是 2560×1440，桌面转了四分之一圈（左屏测试窗口的字
+  竖着、从右上角往下排）。被控端日志 `DXGI_MODE_ROTATION(4)`（`ROTATE270`）。已在本分支修（见上）。修后在 win-dev 以登录用户跑
+  `every_monitor_comes_out_upright`：两块竖屏 DDA 720×1280、WGC 720×1280，导出的画面方向一致、测试窗口的字在左上角正着；主屏两条路
+  都是 1280×540（1 次）。**经服务推流的端到端没测**：服务还是旧程序，换服务程序要用户同意。
+- **发现 2：服务模式下同一块屏只能有一个观看者**。第二个观看者的 `DuplicateOutput` 返回 `E_INVALIDARG (0x80070057)`（文档列的原因之一：
+  本进程已在复制这个输出），回退 WGC 又是"not supported here"（SYSTEM 不能用 WGC），最后 CPU 路径报
+  `Failed to convert item to GraphicsCaptureItem`——背景里提过的那个错就是它。审计证实两次失败时都有另一个观看者（同一台 Mac 的控制端）
+  正在看主屏。没修，列为后续。
+- 输入：接管左竖屏后，第一次移动（画面中心）在 win-dev 上读到的指针位置是 (-720, 1271)，和预期完全一致（1 个点）。其余移动、点击、
+  滚轮、按键都被被控端以"an ai-remote approval prompt is open on the host, so input is paused"拒绝（审计 `input_end` 三次分别是
+  moves=1 errors=3、moves=1 errors=5、moves=0 errors=5），记录窗口没收到。
+- **发现 3：审批超时后对话框不关，实时输入一直暂停**。屏上两个"ai-remote: approve an action"是另一个会话的 `chat_start`
+  （17:56:14、18:38:31 发起），审计里都已 `approval_resolved verdict=timeout`（60 s），但两个窗口到 18:45 还开着；被控端只看"有没有
+  审批框开着"，于是 18:39 之后没有任何待批请求，接管的人照样不能操作。没修，列为后续；这两个窗口没动（等用户决定）。
+- 远端光标叠加层：win-dev 的光标处于抑制状态（`GetCursorInfo` flags=2），被控端一直报不可见，叠加层全程隐藏；从 zremote 注入的
+  相对移动也清不掉这个状态。所以叠加层在侧屏上的位置真机没测，靠单测。
 
-**未测**：真机上的切换、接管时点击 / 拖动 / 滚轮 / 键盘、光标叠加层在侧屏上的位置和移出时隐藏；竖屏 1440×2560 走硬件编码能否起来；
-混合 DPI 下侧屏光标形状的大小；服务模式（SYSTEM 走 DDA）切非主屏、锁屏后切屏；macOS 被控端多屏（这台 Mac 没接外屏）；
-Windows 控制端（WebView2）里下拉的样子。win-dev 的服务还是 main 8eeabb6 的构建，回复里没有 `x` / `y` / `monitor`：用它测前端时下拉
-显示"主屏 / 屏幕 1 / 屏幕 2"，切换和输入路径照样能测；位置命名和新报错要换新被控端才看得到。
+**坑**：
+- zsh 里 `"VAR=值" 命令` 不算环境变量赋值（`command not found`），带 `&` 的值用 `env 'VAR=a&b' 命令`。
+- `window.__TAURI_INTERNALS__.invoke` 不能替换（赋值不生效），截不到推流回复；预期坐标直接用 `system_info` 的矩形。
+- 合成的 `pointerdown` 没有真实指针，`setPointerCapture` 会抛错、`RemoteInput` 的处理到不了发送那一步：脚本里先把它包一层 try。
+- debug 包和安装版是同一个 bundle id，`localStorage` 共用：脚本结束时删掉 `ai-remote.stream-monitor` 里的 win-dev 和
+  `ai-remote.video-trace`（smoke 模式会写这个键）。可见窗口用户能点到（第三轮被点了一下，跳回主屏、切到了对话栏）。
+- win-dev 是多个会话共用的：别的会话的观看和审批框会直接影响测试，先看审计（`audit.jsonl` 的 `view_*`、`approval_*`）。
+
+**推导（没有真机数据）**：切到左竖屏后画面四角应落在 (-1440, -9) 和 (-1, 2550)（单测用同样的数算过；真机只测到中心点）；
+远端光标到主屏（x ≥ 0）时相对 x ≥ 1440，叠加层隐藏。
+
+**未测**：经服务（DDA）推流的竖屏端到端（服务程序没换）；接管时侧屏的点击 / 拖动 / 滚轮 / 键盘（被留着的审批框挡住）；光标叠加层在侧屏上的
+位置（win-dev 光标被抑制）；混合 DPI 下侧屏光标形状的大小；锁屏后切屏；macOS 被控端多屏（这台 Mac 没接外屏）；Windows 控制端
+（WebView2）里下拉的样子；新被控端回复里的原点、`monitor` 和"there is no monitor"报错在真机上的样子（服务是旧程序）。
 
 **和 PR #34（`fix/fullscreen-cursor`）**：两边都改了 `Session.tsx`。试合并（`git merge-tree`，再在临时 worktree 里合）只有 `Stream`
 的 `callbacks` 那两行冲突，取并集：`{ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown }`；
