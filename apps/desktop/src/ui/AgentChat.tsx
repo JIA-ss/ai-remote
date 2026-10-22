@@ -38,6 +38,7 @@ import {
   type RuntimesReport,
   type SessionInfo,
 } from "../lib/chat";
+import { isCodexRuntime } from "../lib/codex";
 import { t } from "../lib/i18n";
 import { quoteText, rememberImages } from "../lib/chat-input";
 import { Search } from "lucide-react";
@@ -487,6 +488,8 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
   const readonly = hello?.role === "ro";
   const ended = chat.state === "ended";
   const agent = hello?.runtime.name ?? t("hc_agent");
+  // Codex conversations are laid out the way Codex's own app shows them; others keep this panel's rows.
+  const codex = isCodexRuntime(hello?.runtime);
   const canSteer = !!hello?.caps?.steer;
   const ph = phase(chat);
   const sendRef = useRef(send);
@@ -537,7 +540,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
 
   return (
     <div
-      className="nt-chat"
+      className={cx("nt-chat", codex && "cdx")}
       onKeyDownCapture={(e) => {
         // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
@@ -594,6 +597,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         findFocus={findFocus}
         onCloseFind={() => setFinding(false)}
         onQuote={(text) => setInsert((q) => ({ text: quoteText(text), n: (q?.n ?? 0) + 1 }))}
+        variant={codex ? "codex" : "default"}
+        session={target.session}
+        cwd={hello?.cwd ?? null}
       />
       </PreviewProvider>
       <Composer

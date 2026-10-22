@@ -14,6 +14,7 @@ import { phase, stoppedTurn, turnRows, type Block, type Chat, type Outgoing, typ
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { NoticeRow, RowView, TurnFoot, WorkingRow } from "./Rows";
+import { CodexTurnView } from "./codex/CodexTurn";
 
 /** Turns mounted at first; "show earlier" adds this many more each time. */
 const WINDOW = 30;
@@ -190,8 +191,13 @@ function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLE
   );
 }
 
-export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote }: {
+export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote, variant = "default", session = "", cwd = null }: {
   chat: Chat;
+  /** `codex`: turns laid out the way Codex's own app shows them (ui/chat/codex). */
+  variant?: "default" | "codex";
+  /** The session (keys what a Codex turn keeps open) and the folder the agent works in. */
+  session?: string;
+  cwd?: string | null;
   /** The find bar is open; `findFocus` changes when ⌘F asks for its field again. */
   finding?: boolean;
   findFocus?: number;
@@ -323,22 +329,38 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
           {chat.turns.length === 0 && !running && outgoing.length === 0 && <div className="nt-chat-empty">{empty}</div>}
-          {visible.map((turn, i) => (
-            <TurnView
-              key={turn.n}
-              turn={turn}
-              now={turn.status === "running" ? now : 0}
-              readonly={readonly}
-              stopped={stopped === turn}
-              onAnswer={onAnswer}
-              onContinue={onContinue}
-              far={i < visible.length - 2}
-            />
-          ))}
+          {visible.map((turn, i) =>
+            variant === "codex" ? (
+              <CodexTurnView
+                key={turn.n}
+                turn={turn}
+                session={session}
+                cwd={cwd}
+                now={turn.status === "running" ? now : 0}
+                readonly={readonly}
+                stopped={stopped === turn}
+                onAnswer={onAnswer}
+                onContinue={onContinue}
+                far={i < visible.length - 2}
+              />
+            ) : (
+              <TurnView
+                key={turn.n}
+                turn={turn}
+                now={turn.status === "running" ? now : 0}
+                readonly={readonly}
+                stopped={stopped === turn}
+                onAnswer={onAnswer}
+                onContinue={onContinue}
+                far={i < visible.length - 2}
+              />
+            ),
+          )}
           {outgoing.map((o) => (
             <OutgoingRow key={o.id} o={o} onRetry={(x) => onRetry?.(x)} onDiscard={(id) => onDiscard?.(id)} />
           ))}
-          {running && <WorkingRow label={workingLabel} since={ph.since} now={now} />}
+          {/* A Codex turn says itself that it works; the line is for the time before its turn exists. */}
+          {running && (variant !== "codex" || !visible.some((t) => t.status === "running")) && <WorkingRow label={workingLabel} since={ph.since} now={now} />}
         </div>
       </div>
       <button type="button" className="nt-jump" data-shown={away} inert={!away} aria-hidden={!away || undefined} onMouseDown={(e) => e.preventDefault()} onClick={jump}>

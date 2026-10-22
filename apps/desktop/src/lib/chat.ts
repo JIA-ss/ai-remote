@@ -66,6 +66,8 @@ export interface SessionInfo {
 }
 
 export type ToolContent = { type: "text"; text: string } | { type: "diff"; path: string; old: string | null; new: string };
+/** Where the agent says a message belongs (Codex): said between steps, or its answer to the turn. */
+export type MessagePhase = "commentary" | "final_answer";
 export interface PlanEntry {
   content: string;
   status: string;
@@ -75,10 +77,10 @@ export interface PlanEntry {
 export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean; attachments?: Attachment[] }
   | { t: "turn_start" }
-  | { t: "message"; id: string; text: string; delta: boolean }
+  | { t: "message"; id: string; text: string; delta: boolean; phase?: MessagePhase }
   | { t: "thought"; id: string; text: string; delta: boolean }
   | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
-  | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean }
+  | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean; exit_code?: number; duration_ms?: number }
   | { t: "plan"; entries: PlanEntry[] }
   | { t: "question"; qid: string; prompt: string; options?: string[] }
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
@@ -157,7 +159,7 @@ export function chatLineKind(m: unknown): "closed" | "event" | "commands" | "rep
 export interface ChatHello {
   session: string;
   role: "rw" | "ro";
-  runtime: { id: string; name: string };
+  runtime: { id: string; name: string; protocol?: string | null };
   cwd: string;
   state: ChatState;
   seq: number;
@@ -188,14 +190,18 @@ export interface ToolItem {
   stopped?: boolean;
   /** The sub-agent call that made this one (shown inside that sub-agent's row). */
   parent?: string;
+  /** A finished command's exit code and how long the tool ran, when the agent reports them (Codex). */
+  exitCode?: number;
+  durationMs?: number;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
+export type TextBlock = { kind: "text"; id: string; text: string; phase?: MessagePhase };
 export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string };
 
 /** One block of a turn, in the order it happened. */
 export type Block =
-  | { kind: "text"; id: string; text: string }
+  | TextBlock
   | ThoughtBlock
   | ToolItem
   | { kind: "plan"; entries: PlanEntry[] }
@@ -337,11 +343,11 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
         const old = b[i] as Extract<Block, { kind: "text" | "thought" }>;
         b[i] = kind === "thought"
           ? { ...(old as ThoughtBlock), text: e.delta ? old.text + e.text : e.text, endedTs: e.ts }
-          : { ...old, text: e.delta ? old.text + e.text : e.text };
+          : { ...old, text: e.delta ? old.text + e.text : e.text, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) };
       } else if (kind === "thought") {
         b.push({ kind: "thought", id: e.id, text: e.text, startedTs: e.ts, endedTs: e.ts });
       } else {
-        b.push({ kind: "text", id: e.id, text: e.text });
+        b.push({ kind: "text", id: e.id, text: e.text, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) });
       }
       break;
     }
@@ -357,7 +363,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       const status = e.status ?? old.status;
       b[i] = { ...old, status, content: e.content?.length ? [...old.content, ...e.content] : old.content,
         truncated: old.truncated || !!e.truncated,
-        endedTs: status === "completed" || status === "failed" ? e.ts : old.endedTs };
+        endedTs: status === "completed" || status === "failed" ? e.ts : old.endedTs,
+        ...(typeof e.exit_code === "number" ? { exitCode: e.exit_code } : {}),
+        ...(typeof e.duration_ms === "number" ? { durationMs: e.duration_ms } : {}) };
       break;
     }
     case "plan": {

@@ -1517,19 +1517,21 @@ impl Driver {
                 status: None,
                 content: vec![ToolContent::Text { text: joined }],
                 truncated: false,
+                exit_code: None,
+                duration_ms: None,
             };
             return (ev, held);
         }
-        let (is_thought, id, mut text) = match first {
-            Ev::Message { id, text, .. } => (false, id, text),
-            Ev::Thought { id, text, .. } => (true, id, text),
+        let (is_thought, id, mut text, phase) = match first {
+            Ev::Message { id, text, phase, .. } => (false, id, text, phase),
+            Ev::Thought { id, text, .. } => (true, id, text, None),
             other => return (other, None),
         };
         let mut held = None;
         if let Some(rx) = self.out.as_mut() {
             while text.len() < 16 * 1024 {
                 match rx.try_recv() {
-                    Ok(Out::Ev(Ev::Message { id: i, text: t, delta: true })) if !is_thought && i == id => {
+                    Ok(Out::Ev(Ev::Message { id: i, text: t, delta: true, .. })) if !is_thought && i == id => {
                         text.push_str(&t)
                     }
                     Ok(Out::Ev(Ev::Thought { id: i, text: t, delta: true })) if is_thought && i == id => {
@@ -1543,7 +1545,11 @@ impl Driver {
                 }
             }
         }
-        let ev = if is_thought { Ev::Thought { id, text, delta: true } } else { Ev::Message { id, text, delta: true } };
+        let ev = if is_thought {
+            Ev::Thought { id, text, delta: true }
+        } else {
+            Ev::Message { id, text, delta: true, phase }
+        };
         (ev, held)
     }
 
@@ -1652,10 +1658,12 @@ impl Driver {
 /// A piece of a running tool's output (a tool update with only text): its call and the text.
 fn output_chunk(ev: &Ev) -> Option<(&str, &str)> {
     match ev {
-        Ev::ToolUpdate { call_id, status: None, content, truncated: false } => match content.as_slice() {
-            [ToolContent::Text { text }] => Some((call_id, text)),
-            _ => None,
-        },
+        Ev::ToolUpdate { call_id, status: None, content, truncated: false, exit_code: None, duration_ms: None } => {
+            match content.as_slice() {
+                [ToolContent::Text { text }] => Some((call_id, text)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

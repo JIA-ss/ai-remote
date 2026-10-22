@@ -101,6 +101,8 @@ struct State {
     skills: Vec<(String, String)>,
     /// Command items started in the current turn: stopped if it ends interrupted.
     commands: HashSet<String>,
+    /// Where each agent message belongs (`commentary` or `final_answer`), as its item started.
+    phases: HashMap<String, String>,
 }
 
 /// The input items of a message: its text, every skill it names as `$name`, and its images (as
@@ -460,7 +462,8 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
         "item/agentMessage/delta" => {
             let id = p["itemId"].as_str().unwrap_or("").to_string();
             st.streamed.insert(id.clone());
-            outs.push(Out::Ev(Ev::Message { id, text: p["delta"].as_str().unwrap_or("").into(), delta: true }));
+            let phase = st.phases.get(&id).cloned();
+            outs.push(Out::Ev(Ev::Message { id, text: p["delta"].as_str().unwrap_or("").into(), delta: true, phase }));
         }
         "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
             let id = p["itemId"].as_str().unwrap_or("").to_string();
@@ -472,6 +475,11 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                 && let Some(id) = p["item"]["id"].as_str()
             {
                 st.commands.insert(id.to_string());
+            }
+            if p["item"]["type"] == "agentMessage"
+                && let (Some(id), Some(phase)) = (p["item"]["id"].as_str(), p["item"]["phase"].as_str())
+            {
+                st.phases.insert(id.to_string(), phase.to_string());
             }
             if let Some(ev) = item_started(&p["item"]) {
                 if matches!(&ev, Ev::ToolCall { content, .. } if !content.is_empty()) {
@@ -494,13 +502,22 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                 status: None,
                 content: vec![ToolContent::Text { text }],
                 truncated,
+                exit_code: None,
+                duration_ms: None,
             }));
         }
         "item/fileChange/patchUpdated" => {
             let id = p["itemId"].as_str().unwrap_or("").to_string();
             let content = diffs(&p["changes"]);
             if !content.is_empty() && st.diffed.insert(id.clone()) {
-                outs.push(Out::Ev(Ev::ToolUpdate { call_id: id, status: None, content, truncated: false }));
+                outs.push(Out::Ev(Ev::ToolUpdate {
+                    call_id: id,
+                    status: None,
+                    content,
+                    truncated: false,
+                    exit_code: None,
+                    duration_ms: None,
+                }));
             }
         }
         "item/mcpToolCall/progress" => {
@@ -510,6 +527,8 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                     status: None,
                     content: vec![ToolContent::Text { text: format!("{}\n", cut(m, 400).0) }],
                     truncated: false,
+                    exit_code: None,
+                    duration_ms: None,
                 }));
             }
         }
@@ -564,6 +583,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
             st.starting = false;
             st.output.clear();
             st.diffed.clear();
+            st.phases.clear();
             let status = match turn["status"].as_str().unwrap_or("") {
                 "completed" => TurnStatus::Completed,
                 "interrupted" => TurnStatus::Interrupted,
@@ -600,12 +620,34 @@ fn item_started(item: &Value) -> Option<Ev> {
     let call_id = item["id"].as_str()?.to_string();
     let (kind, title, content, input) = match item["type"].as_str()? {
         "commandExecution" => {
-            (ToolKind::Execute, item["command"].as_str().unwrap_or("command").to_string(), vec![], None)
+            let raw = item["command"].as_str().unwrap_or("command");
+            let command = display_command(raw);
+            // Codex's own reading of the command (what it reads, searches or lists), which its
+            // clients show instead of the command line.
+            let actions: Vec<Value> = item["commandActions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(16)
+                .map(|a| {
+                    let mut a = preview_value(a);
+                    if let Some(c) = a.get_mut("command").and_then(|c| c.as_str().map(|c| cut(c, 400).0)) {
+                        a["command"] = Value::String(c);
+                    }
+                    a
+                })
+                .collect();
+            let mut input = json!({"command": cut(&command, PREVIEW).0, "actions": actions});
+            if let Some(cwd) = item["cwd"].as_str() {
+                input["cwd"] = Value::String(cwd.to_string());
+            }
+            (ToolKind::Execute, format!("Shell {command}"), vec![], Some(input))
         }
         "fileChange" => {
             let paths: Vec<&str> =
                 item["changes"].as_array().into_iter().flatten().filter_map(|c| c["path"].as_str()).collect();
-            (ToolKind::Edit, format!("edit {}", paths.join(", ")), diffs(&item["changes"]), None)
+            let input = json!({"files": files(&item["changes"])});
+            (ToolKind::Edit, format!("edit {}", paths.join(", ")), diffs(&item["changes"]), Some(input))
         }
         "mcpToolCall" => (
             ToolKind::Other,
@@ -619,7 +661,10 @@ fn item_started(item: &Value) -> Option<Ev> {
             vec![],
             Some(preview_value(&item["arguments"])),
         ),
-        "webSearch" => (ToolKind::Fetch, format!("search {}", item["query"].as_str().unwrap_or("")), vec![], None),
+        "webSearch" => {
+            let query = item["query"].as_str().unwrap_or("");
+            (ToolKind::Fetch, format!("search {query}"), vec![], Some(json!({"query": cut(query, 400).0})))
+        }
         "imageView" => (ToolKind::Read, format!("view {}", item["path"].as_str().unwrap_or("image")), vec![], None),
         "imageGeneration" => (ToolKind::Other, "generate an image".to_string(), vec![], None),
         "collabAgentToolCall" => (
@@ -653,10 +698,22 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
     match item["type"].as_str().unwrap_or("") {
         "agentMessage" => {
             let text = item["text"].as_str().unwrap_or("").to_string();
-            if !st.streamed.contains(&id) && !text.is_empty() {
-                outs.push(Out::Ev(Ev::Message { id, text: text.clone(), delta: false }));
+            let phase = item["phase"].as_str().map(str::to_string);
+            // A message that streamed without saying where it belongs is sent once more, whole, with
+            // the phase it ended with.
+            let late_phase = st.streamed.contains(&id) && phase.is_some() && !st.phases.contains_key(&id);
+            if (!st.streamed.contains(&id) || late_phase) && !text.is_empty() {
+                outs.push(Out::Ev(Ev::Message {
+                    id: id.clone(),
+                    text: text.clone(),
+                    delta: false,
+                    phase: phase.clone(),
+                }));
             }
-            if item["phase"].as_str() != Some("commentary") {
+            if let Some(phase) = phase.clone() {
+                st.phases.insert(id, phase);
+            }
+            if phase.as_deref() != Some("commentary") {
                 st.final_text = Some(text);
             }
         }
@@ -671,7 +728,7 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
             // complete text is shown).
             let text = item["text"].as_str().unwrap_or("");
             if !text.is_empty() {
-                outs.push(Out::Ev(Ev::Message { id, text: text.to_string(), delta: false }));
+                outs.push(Out::Ev(Ev::Message { id, text: text.to_string(), delta: false, phase: None }));
             }
         }
         "contextCompaction" => {}
@@ -750,7 +807,14 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
             if !text.is_empty() {
                 content.push(ToolContent::Text { text });
             }
-            outs.push(Out::Ev(Ev::ToolUpdate { call_id: id, status: Some(status), content, truncated }));
+            outs.push(Out::Ev(Ev::ToolUpdate {
+                call_id: id,
+                status: Some(status),
+                content,
+                truncated,
+                exit_code: item["exitCode"].as_i64(),
+                duration_ms: item["durationMs"].as_u64(),
+            }));
         }
         _ => {}
     }
@@ -785,6 +849,125 @@ fn diffs(changes: &Value) -> Vec<ToolContent> {
         if out.len() >= 40 {
             break;
         }
+    }
+    out
+}
+
+/// The files of a file change, for clients that show each file once: its path, what happened to it
+/// (`add`, `delete`, `update`), where it moved, and its unified diff (an added file's diff is its
+/// content).
+fn files(changes: &Value) -> Vec<Value> {
+    changes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(40)
+        .map(|c| {
+            let mut f = json!({
+                "path": c["path"].as_str().unwrap_or(""),
+                "kind": c["kind"]["type"].as_str().unwrap_or("update"),
+                "diff": cut(c["diff"].as_str().unwrap_or(""), DIFF_SIDE).0,
+            });
+            if let Some(to) = c["kind"]["move_path"].as_str() {
+                f["move_path"] = Value::String(to.to_string());
+            }
+            f
+        })
+        .collect()
+}
+
+/// A command as the user would type it: Codex runs each one through a shell (`/bin/zsh -lc 'ls -la'`,
+/// `powershell.exe -Command ...`); the wrapper is left out.
+pub(crate) fn display_command(raw: &str) -> String {
+    let words = split_words(raw);
+    let program = |w: &str| {
+        let base = w.rsplit(['/', '\\']).next().unwrap_or(w).to_ascii_lowercase();
+        base.strip_suffix(".exe").map(str::to_string).unwrap_or(base)
+    };
+    let Some(first) = words.first() else { return raw.to_string() };
+    let rest = |from: usize| words.get(from..).map(|w| w.join(" ")).unwrap_or_default();
+    match program(first).as_str() {
+        "bash" | "zsh" | "sh" | "dash" | "fish" | "ksh" => {
+            // `-lc`, `-c`, or `-l -c`, then the script as one word.
+            let flags: Vec<&String> = words[1..].iter().take_while(|w| w.starts_with('-')).collect();
+            let script_at = 1 + flags.len();
+            if flags.iter().any(|f| f.contains('c')) && words.len() == script_at + 1 {
+                return words[script_at].trim().to_string();
+            }
+        }
+        "powershell" | "pwsh" => {
+            let at = words.iter().position(|w| {
+                let w = w.to_ascii_lowercase();
+                w == "-command" || w == "-c"
+            });
+            if let Some(at) = at
+                && at + 1 < words.len()
+            {
+                return rest(at + 1).trim().to_string();
+            }
+        }
+        "cmd" => {
+            if let Some(at) = words.iter().position(|w| w.eq_ignore_ascii_case("/c"))
+                && at + 1 < words.len()
+            {
+                return rest(at + 1).trim().to_string();
+            }
+        }
+        _ => {}
+    }
+    raw.to_string()
+}
+
+/// A command line split into words the way a POSIX shell quotes them (single quotes, double quotes
+/// with backslash escapes, backslashes outside quotes).
+fn split_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                started = true;
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                    cur.push(c);
+                }
+            }
+            '"' => {
+                started = true;
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' if matches!(chars.peek(), Some('"' | '\\' | '$' | '`')) => {
+                            cur.push(chars.next().expect("peeked"))
+                        }
+                        c => cur.push(c),
+                    }
+                }
+            }
+            '\\' if !cfg!(windows) || chars.peek().is_some_and(|n| *n == ' ' || *n == '\'' || *n == '"') => {
+                started = true;
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            c if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        out.push(cur);
     }
     out
 }
@@ -943,14 +1126,92 @@ mod tests {
             outs.extend(handle(&mut st, l, &opts(None)).1);
         }
         let shown: Vec<String> = outs.iter().map(|o| format!("{o:?}")).collect();
-        assert_eq!(outs.len(), 4, "{shown:?}");
-        assert!(matches!(&outs[1], Out::Ev(Ev::ToolCall { kind: ToolKind::Execute, .. })));
+        assert_eq!(outs.len(), 5, "{shown:?}");
         assert!(
-            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), content, .. }) if matches!(&content[0], ToolContent::Text { text } if text.contains("exit code 2")))
+            matches!(&outs[1], Out::Ev(Ev::ToolCall { kind: ToolKind::Execute, title, input: Some(i), .. }) if title == "Shell ls" && i["command"] == "ls")
         );
         assert!(
-            matches!(&outs[3], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "ONE")
+            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), content, exit_code: Some(2), .. }) if matches!(&content[0], ToolContent::Text { text } if text.contains("exit code 2")))
         );
+        // The message streamed before it said where it belongs: sent once more, whole, with its phase.
+        assert!(
+            matches!(&outs[3], Out::Ev(Ev::Message { text, delta: false, phase: Some(p), .. }) if text == "ONE" && p == "final_answer")
+        );
+        assert!(
+            matches!(&outs[4], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "ONE")
+        );
+    }
+
+    #[test]
+    fn commands_files_and_messages_carry_what_codex_says_about_them() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let item = |v: Value| json!({"method": "item/started", "params": {"threadId": "th", "item": v}}).to_string();
+        let done = |v: Value| json!({"method": "item/completed", "params": {"threadId": "th", "item": v}}).to_string();
+        let lines = [
+            item(json!({"type": "agentMessage", "id": "m1", "text": "", "phase": "commentary"})),
+            r#"{"method":"item/agentMessage/delta","params":{"threadId":"th","itemId":"m1","delta":"Looking"}}"#
+                .to_string(),
+            done(json!({"type": "agentMessage", "id": "m1", "text": "Looking", "phase": "commentary"})),
+            item(json!({"type": "commandExecution", "id": "c1", "command": "/bin/zsh -lc 'sed -n 1,80p src/app.ts'",
+                "cwd": "/w", "status": "inProgress",
+                "commandActions": [{"type": "read", "command": "sed -n 1,80p src/app.ts", "name": "app.ts", "path": "/w/src/app.ts"}]})),
+            done(
+                json!({"type": "commandExecution", "id": "c1", "status": "completed", "aggregatedOutput": "x", "exitCode": 0, "durationMs": 1234}),
+            ),
+            item(json!({"type": "fileChange", "id": "f1", "status": "inProgress", "changes": [
+                {"path": "/w/a.txt", "kind": {"type": "update", "move_path": null}, "diff": "@@ -1,2 +1,2 @@\n keep\n-old\n+new\n"},
+                {"path": "/w/b.txt", "kind": {"type": "add"}, "diff": "hello\n"},
+                {"path": "/w/c.txt", "kind": {"type": "update", "move_path": "/w/d.txt"}, "diff": ""}]})),
+            item(json!({"type": "webSearch", "id": "w1", "query": "rust 1.95"})),
+        ];
+        let mut outs = Vec::new();
+        for l in &lines {
+            outs.extend(handle(&mut st, l, &opts(None)).1);
+        }
+        let shown: Vec<String> = outs.iter().map(|o| format!("{o:?}")).collect();
+        // The commentary streamed with its phase, so it is not sent again; it is not the turn's answer.
+        assert!(
+            matches!(&outs[0], Out::Ev(Ev::Message { delta: true, phase: Some(p), .. }) if p == "commentary"),
+            "{shown:?}"
+        );
+        assert!(st.final_text.is_none());
+        let Out::Ev(Ev::ToolCall { title, input: Some(input), .. }) = &outs[1] else { panic!("{shown:?}") };
+        assert_eq!(title, "Shell sed -n 1,80p src/app.ts");
+        assert_eq!(input["command"], "sed -n 1,80p src/app.ts");
+        assert_eq!(input["cwd"], "/w");
+        assert_eq!(input["actions"][0]["type"], "read");
+        assert_eq!(input["actions"][0]["path"], "/w/src/app.ts");
+        assert!(
+            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { exit_code: Some(0), duration_ms: Some(1234), .. })),
+            "{shown:?}"
+        );
+        let Out::Ev(Ev::ToolCall { input: Some(input), content, .. }) = &outs[3] else { panic!("{shown:?}") };
+        let files = input["files"].as_array().unwrap();
+        assert_eq!(files.len(), 3);
+        assert_eq!((files[0]["path"].as_str(), files[0]["kind"].as_str()), (Some("/w/a.txt"), Some("update")));
+        assert!(files[0]["diff"].as_str().unwrap().contains("+new"));
+        assert_eq!(files[1]["kind"], "add");
+        assert_eq!(files[2]["move_path"], "/w/d.txt");
+        assert_eq!(content.len(), 2, "the moved file has no diff to show");
+        assert!(matches!(&outs[4], Out::Ev(Ev::ToolCall { input: Some(i), .. }) if i["query"] == "rust 1.95"));
+    }
+
+    #[test]
+    fn the_shell_around_a_command_is_left_out() {
+        assert_eq!(display_command("/bin/zsh -lc 'ls -la'"), "ls -la");
+        assert_eq!(display_command("bash -lc \"rg -n \\\"x y\\\" src\""), "rg -n \"x y\" src");
+        assert_eq!(display_command("/bin/bash -l -c 'echo it'\\''s'"), "echo it's");
+        assert_eq!(display_command("sh -c ls"), "ls");
+        assert_eq!(
+            display_command(
+                "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command 'Get-ChildItem src'"
+            ),
+            "Get-ChildItem src"
+        );
+        assert_eq!(display_command("cmd.exe /c dir /b"), "dir /b");
+        // Not a shell wrapper, or more than a script: shown as it is.
+        assert_eq!(display_command("git status"), "git status");
+        assert_eq!(display_command("bash script.sh arg"), "bash script.sh arg");
     }
 
     #[test]

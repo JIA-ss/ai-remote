@@ -139,6 +139,10 @@ pub enum Ev {
         id: String,
         text: String,
         delta: bool,
+        /// Where the agent says the message belongs, when it says: `commentary` (said between
+        /// steps) or `final_answer` (its answer to the turn). Codex only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
     },
     /// The agent's reasoning, shown folded.
     Thought {
@@ -170,6 +174,12 @@ pub enum Ev {
         content: Vec<ToolContent>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
+        /// A finished command's exit code, when the agent reports it (Codex).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i64>,
+        /// How long the tool ran, as the agent measured it (Codex).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     Plan {
         entries: Vec<PlanEntry>,
@@ -344,13 +354,19 @@ mod tests {
 
     #[test]
     fn events_serialize_with_their_type() {
-        let ev = Ev::Message { id: "m1".into(), text: "hi".into(), delta: true };
+        let ev = Ev::Message { id: "m1".into(), text: "hi".into(), delta: true, phase: None };
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"t":"message","id":"m1","text":"hi","delta":true})
         );
-        let ev =
-            Ev::ToolUpdate { call_id: "k".into(), status: Some(ToolStatus::Failed), content: vec![], truncated: false };
+        let ev = Ev::ToolUpdate {
+            call_id: "k".into(),
+            status: Some(ToolStatus::Failed),
+            content: vec![],
+            truncated: false,
+            exit_code: None,
+            duration_ms: None,
+        };
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"t":"tool_update","call_id":"k","status":"failed"})

@@ -4,7 +4,12 @@ debug desktop app on its own profile, and a script (tools/desktop-chat-e2e.js) t
 the app's webview (AI_REMOTE_SMOKE_SCRIPT, debug builds only). The chain is the real one: page → Tauri →
 controller agent → QUIC → host → agent process.
 
-The stand-ins speak Claude Code's stream-json: "Rich fake" answers a message containing RICH with
+"Codex fake" (tools/fake-codex-app-server.py) speaks Codex's app-server JSON-RPC instead, for the Codex
+view of the panel (E2E_SCRIPT=tools/desktop-chat-codex-e2e.js): a turn per keyword (EXPLORE, ASK, SLOW,
+FAIL, MANY, NOPHASE, COMPACT). With E2E_CODEX=<path to a codex binary> a real Codex is offered too, as
+"Codex (path)" (for --real; it uses that Codex's sign-in and quota).
+
+The Claude stand-ins speak Claude Code's stream-json: "Rich fake" answers a message containing RICH with
 reasoning, a plan (TodoWrite), Read, a failing Bash, Grep, an Edit, a Markdown answer and context usage;
 SLOW keeps a turn running until the next message (a steer) or Stop; AGENT runs a sub-agent with two steps of its
 own; a message with images answers with their types and sizes; it lists /review, /release-notes and the skill
@@ -240,9 +245,15 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
     agent = base / "rich_agent.py"
     agent.write_text(RICH_AGENT, encoding="utf-8")
     entry = f'command = {json.dumps(sys.executable)}\nargs = ["-u", {json.dumps(str(agent))}]\n'
+    codex_entry = (f'command = {json.dumps(sys.executable)}\n'
+                   f'args = ["-u", {json.dumps(str(ROOT / "tools" / "fake-codex-app-server.py"))}]\n')
+    real_codex = os.environ.get("E2E_CODEX")
+    extra = f'\n[[agent]]\nid = "codexbin"\nbase = "codex"\nname = "Codex (path)"\ncommand = {json.dumps(real_codex)}\n' if real_codex else ""
+    (work / "README.md").write_text("# Report tool\n\nExports quarterly reports.\n", encoding="utf-8")
     (host_home / "host" / "chat.toml").write_text(
         f'[[agent]]\nid = "rich"\nbase = "claude"\nname = "Rich fake"\n{entry}\n'
-        f'[[agent]]\nid = "nosteer"\nbase = "claude"\nname = "No-steer fake"\nsteer = false\n{entry}', encoding="utf-8")
+        f'[[agent]]\nid = "nosteer"\nbase = "claude"\nname = "No-steer fake"\nsteer = false\n{entry}\n'
+        f'[[agent]]\nid = "codexfake"\nbase = "codex"\nname = "Codex fake"\n{codex_entry}{extra}', encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k not in ("AI_REMOTE_HOST", "AI_REMOTE_HOME")}
 
     def cli(*args, home):
