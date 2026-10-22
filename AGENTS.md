@@ -118,7 +118,7 @@
 
 ### 下一步
 
-- [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
+- [x] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：真实 Codex 3 次、Claude 4 次，都没有被控端树里的进程弹窗，结束会话后 0 残留（见"Windows 上的对话"一节）。
 - [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
 - [x] Codex / Claude 的运行中插话（见上一小节）。
@@ -354,7 +354,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [x] 真实 Tauri 端到端（2026-10-22，另一会话在 `claude/desktop-chat-e2e` 333ff9f 做的，`feat/host-chat` 4c655ce + 调试版 + 本机隔离被控端安静模式）：替身智能体 36 项 ×2 次全过；真实 Claude Code 2.1.307 13 项 ×1 次全过，插话 2 s 内带标记进同一轮。真实 Codex 账号对 gpt-5.5 报 400，提问卡片没在真实连接上测过。截图在 `/tmp/desktop-chat-e2e*/`。
   - 它报的问题已修：记住的会话在被控端不存在（被控端重启过）时，面板停在报错和发不出去的输入框 → 现在清掉记忆、回到会话列表并说明原因（`sessionGone`）；从记住的会话进来再点"其他会话"时父组件的 target 本来就是 null，原来不会重新渲染，现在由面板自己的状态驱动。
   - 窗口不可见时 rAF 不触发，事件会积到窗口可见才显示 → 加了 100 ms 定时器兜底；运行计时一直显示 "0 ms" → 计时器在轮次开始时就取当前时间，不再等第一次 1 s 的跳动。这两处没有在不可见窗口里复测。
-- [ ] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
+- [x] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`（见"Windows 上的对话"一节；修了对话区滚动条和代码里中文的字体）。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
 ## 去掉单独的"插话"操作，按智能体原生的方式发送（2026-10-22，分支 `claude/desktop-chat-e2e`）
@@ -423,6 +423,46 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 ### 没做
 
 - [ ] 真实 Codex（账号问题）、提问卡片在真实连接上、Windows 开发机上的桌面端、真实窗口可见时的手感（滚动跟随、键盘）。
+
+## Windows 上的对话：WebView2 界面与后台 hostw（2026-10-22，分支 `claude/win-verify-c5c3c1`，基于 `feat/host-chat` 8b2b63a）
+
+补 Windows 上还没验证的两块：桌面端对话面板在 WebView2 里的渲染，以及用户平时用的后台被控端（计划任务里的 `ai-remote-hostw.exe`，GUI 子系统、没有控制台）拉起智能体。测试机 win-dev（Windows 11，5120×2160，WebView2 155，debug 构建，独立 worktree `%USERPROFILE%\ai-remote-winverify`）；所有测试被控端 / 控制端都是隔离目录、安静网络模式；没有碰真实被控端。GUI 相关的都经 zremote 在交互会话里跑（SSH 会话没有桌面）。
+
+### 桌面端（WebView2）
+
+- **`tools/desktop-chat-e2e.py` 现在能在 Windows 上跑**：可执行文件加 `.exe`，临时目录不再写死 `/tmp`，子进程输出按 UTF-8 读，给 WebView2 传 `--disable-features=CalculateNativeWinOcclusion`（窗口在屏幕外也继续绘制）和一个一次性的数据目录。截图走 `lib.rs` 里已有的 Windows `PrintWindow` 实现。
+- **实测**：替身流程 35 项 ×3 次全过（Mac 的 36 项里有 1 项是"同一会话面板被重挂载"的诊断，Windows 上没触发，不计入）；真实 Claude Code 2.1.293 13 项 ×1 次全过：首轮 30 s，插话 3 s 内作为普通用户消息进同一轮，最终跑 5 条命令停下，上下文环 132k / 1.0M。截图在 Mac 的 `/tmp/win-chat-ui/`、`/tmp/win-chat-real/`、`/tmp/win-chat-render/`（没进仓库）。
+- **新增 `tools/desktop-chat-e2e-render.js`**（`E2E_SCRIPT=tools/desktop-chat-e2e-render.js python tools/desktop-chat-e2e.py`）：查主流程没覆盖的渲染项。WebView2 上 10 项 ×2 次全过：
+  - 长消息（40 行）折叠，`mask-image` 生效（计算值 `linear-gradient(rgb(0,0,0) 65%, transparent)`），可见高度 202 px / 全文 806 px，截图里末行渐隐；
+  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件，**没有用真实中文输入法打过字**；
+  - 6 轮时前 4 轮 `content-visibility: auto`、后 2 轮 `visible`，滚到顶后第 1 轮正常绘制（高 574 px）；
+  - 发送后列表停在底部（距底 < 40 px）；
+  - 字体：正文是 `Segoe UI Variable Text` → `Microsoft YaHei UI`，代码是打包进来的 Geist Mono。
+- **看截图对比 Mac 的结论**：Markdown（标题、列表、表格、代码块）、代码高亮、diff 卡片（红绿底、+/− 列）、失败命令的红框、计划、运行组的句子、插话、停止后继续、排队卡片、回放，都和 Mac 一致；窗口更宽时 diff 行不换行。
+- **修了两处**（`styles/native.css`）：
+  1. 对话区滚动条在 WebView2 上是带上下箭头按钮的灰色经典滚动条。原因：`.nt-chat-body` 设了 `scrollbar-width: thin`，Chromium 一旦看到标准属性就不再用全局的 `::-webkit-scrollbar` 样式。加 `[data-os="windows"] .nt-chat-body { scrollbar-color: var(--stroke-2) transparent; }` 后是透明轨道 + 灰色细滑块（只剩很淡的小箭头）。只对 Windows 生效，Mac 不变。
+  2. 等宽字体栈 `--font-data` 只有 `PingFang SC` 一个中文字体，Windows 上代码块里的中文会落到 `monospace`（宋体系）。在它后面加了 `"Microsoft YaHei UI"`。
+- **坑**：Python 3.12 在 Windows 上 `tempfile.mkdtemp` 给目录设只限本人的 ACL，WebView2 的沙箱进程用不了里面的数据目录，启动时报 `0x80080005`（"服务器运行失败"）并在桌面上留一个"无法创建数据目录"的模态框——第一次跑时 app 就卡在这个框上 60 s、什么都不输出。数据目录现在放在临时目录外层（`%TEMP%\adc-webview-<pid>`），结束删掉。
+
+### 后台被控端（hostw）
+
+- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（只报告不判定，那是智能体自己的事）；`chat end` 后检查被控端下面不剩任何进程（判定）。
+- **窗口监视** `tools/win-window-watch.ps1`：在交互桌面上用 WinEvent 钩子（`EVENT_OBJECT_SHOW`）记下运行期间出现的**每一个**可见顶层窗口（只闪几毫秒的控制台也抓得到），窗口出现的同时记下属主进程的父进程链；另外每 150 ms 轮询一次被控端下面的进程树，结束 3 s 后报告还活着的。
+- **实测**（真实 Codex 0.162.1 `codex.cmd`、Claude Code 2.1.293 `claude.cmd`，都是 npm 垫片；每次 36 项：替身 27 + 真实智能体 9）：Codex 3 次、Claude 4 次都全过（Codex 第 1 次有 1 项失败：我当时把"打断后 3 s 命令还在"写成了判定项，之后改成只报告）。
+  - **控制台窗口**：被控端树里的进程 7 次都**没有**弹过窗口。树里每次 110~200 个进程（conhost 40~70 个——都是隐藏的；node、cmd、git、bash/wsl、MCP 服务、`--version` 探测），全部没有窗口。监视器一共记到 12 个控制台窗口，都不属于被控端：
+    - 1 个 Windows PowerShell 是我的测试脚本自己弹的（无控制台的 Python 调 `powershell` 查进程树），加 `CREATE_NO_WINDOW` 后再没出现；
+    - 1 个 PowerShell 的父进程链是 `svchost(2832) <- services.exe`，是机器上的计划任务，和测试无关；
+    - Claude 第 1 次运行中 1.2 s 内 9 个 `git.exe` 窗口 + 1 个 PowerShell：当时监视器还没记父进程链，归属不明；之后 3 次 Claude 都是 0 个。**这一条没有完全排除**，如果有人在桌面上看到 Claude 会话时闪 git 窗口，先用 `win-window-watch.ps1` 抓父进程链。
+  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端只在会话结束时收整棵树。
+  - **结束会话**：`chat end` 后 2 s，被控端下面 0 个进程（7/7 真实智能体 + 7/7 替身）；整个测试结束后监视器报告的残留 0 个（7/7）。
+  - 其余数字：一次任务 Codex 5.8~17.2 s、Claude 5.4~5.6 s；打断 0.1~0.2 s 生效；插话 Codex 0.08~0.25 s、Claude 3.96~4.40 s 收到 `steer:true`，Codex 最终 6 条命令、Claude 5 条。
+- **推导**：智能体根进程带 `CREATE_NO_WINDOW`（`chat/proc.rs`），它和它拉起的控制台程序共用一个隐藏控制台；所以只有显式要求新控制台（`CREATE_NEW_CONSOLE`）或用 `DETACHED_PROCESS` 再起控制台程序的子进程才会弹窗。被控端本身有没有控制台对此没有影响。
+
+### 未测 / 下一步
+
+- 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
+- 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
+- 被控端在 Codex 打断后是否该替它收掉还在跑的命令：现在不收（会误杀它的 MCP 服务等长期子进程），要做得先能区分"这一轮拉起的工具进程"。
 
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
