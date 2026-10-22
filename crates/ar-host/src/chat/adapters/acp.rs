@@ -220,7 +220,7 @@ fn select_model(st: &mut State, session: &str, r: &Value, model: &str) -> Result
     let matches = |c: &&&Value| {
         let value = c["value"].as_str().unwrap_or("");
         value == model
-            || c["name"] == model
+            || c["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(model))
             || serde_json::from_str::<Vec<String>>(value).is_ok_and(|v| v.last().is_some_and(|m| m == model))
     };
     match choices.iter().find(matches).and_then(|c| c["value"].as_str()) {
@@ -401,13 +401,14 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
         }
         "tool_call" => {
             st.segment += 1;
+            let (title, kind, locations) = describe_call(u);
             outs.push(Out::Ev(Ev::ToolCall {
                 call_id: u["toolCallId"].as_str().unwrap_or("").to_string(),
-                title: cut(u["title"].as_str().unwrap_or("tool"), 400).0,
-                kind: kind(u["kind"].as_str()),
+                title,
+                kind,
                 status: status(u["status"].as_str()).unwrap_or(ToolStatus::Pending),
                 input: u.get("rawInput").filter(|v| !v.is_null()).map(preview_value),
-                locations: locations(u),
+                locations,
                 content: contents(&u["content"]).0,
             }))
         }
@@ -477,6 +478,43 @@ fn status(s: Option<&str>) -> Option<ToolStatus> {
 
 fn locations(u: &Value) -> Vec<String> {
     u["locations"].as_array().into_iter().flatten().filter_map(|l| l["path"].as_str().map(str::to_string)).collect()
+}
+
+/// A tool call's title, kind and paths. Agents that report every call as kind `other` with the
+/// tool's name as its title (DeepSeek Harness: `bash`, `read`) get a kind guessed from that name, the
+/// command or path from `rawInput` as the title, and that path as a location.
+fn describe_call(u: &Value) -> (String, ToolKind, Vec<String>) {
+    let title = u["title"].as_str().unwrap_or("tool");
+    let mut locs = locations(u);
+    let reported = kind(u["kind"].as_str());
+    if reported != ToolKind::Other {
+        return (cut(title, 400).0, reported, locs);
+    }
+    let input = &u["rawInput"];
+    let path = ["file_path", "path", "filePath", "notebook_path"].iter().find_map(|k| input[*k].as_str());
+    if locs.is_empty()
+        && let Some(p) = path
+    {
+        locs.push(p.to_string());
+    }
+    let name = title.to_ascii_lowercase();
+    let guessed = match name.as_str() {
+        "bash" | "shell" | "sh" | "exec" | "execute" | "run" | "terminal" | "powershell" => ToolKind::Execute,
+        "read" | "view" | "cat" | "ls" | "list" => ToolKind::Read,
+        "write" | "edit" | "multiedit" | "multi_edit" | "apply_patch" | "patch" | "create" => ToolKind::Edit,
+        "grep" | "glob" | "search" | "find" => ToolKind::Search,
+        "delete" | "rm" => ToolKind::Delete,
+        "move" | "mv" | "rename" => ToolKind::Move,
+        "fetch" | "webfetch" | "web_fetch" | "websearch" | "web_search" => ToolKind::Fetch,
+        _ => ToolKind::Other,
+    };
+    let subject = match guessed {
+        ToolKind::Execute => input["command"].as_str().map(str::to_string),
+        _ => path.map(|p| format!("{title} {p}")).or_else(|| {
+            ["pattern", "query", "url"].iter().find_map(|k| input[*k].as_str()).map(|q| format!("{title} {q}"))
+        }),
+    };
+    (cut(&subject.unwrap_or_else(|| title.to_string()), 400).0, guessed, locs)
 }
 
 /// A tool call's content blocks: text and diffs (terminals are the agent's own and not shown).
@@ -599,8 +637,8 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_thought_chunk","messageId":"m1","content":{"type":"text","text":"Look first."}}}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"Listing."}}}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"usage_update","used":18234,"size":131072}}}"#,
-            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"bash","kind":"other","status":"in_progress","rawInput":{"command":"ls"}}}}"#,
-            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"failed","content":[{"type":"content","content":{"type":"text","text":"ls: no such dir"}}]}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call","toolCallId":"call_00_ET_D6g3ZEp1Y2NP0aGjGLek2144","title":"bash","kind":"other","status":"in_progress","rawInput":{"command":"sleep 3 && echo finished","description":"Sleep 3 seconds then echo finished"}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_00_ET_D6g3ZEp1Y2NP0aGjGLek2144","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Error: tool call aborted"}}]}}}"#,
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"It is empty."}}}}"#,
         ];
         let mut outs = Vec::new();
@@ -610,7 +648,17 @@ mod tests {
         assert!(matches!(&outs[0], Out::Ev(Ev::Thought { id, .. }) if id == "t1:m1r"));
         assert!(matches!(&outs[1], Out::Ev(Ev::Message { id, .. }) if id == "t1:m1"));
         assert!(matches!(&outs[2], Out::Ev(Ev::Usage { context_used: Some(18234), context_window: Some(131072), .. })));
-        assert!(matches!(&outs[3], Out::Ev(Ev::ToolCall { status: ToolStatus::InProgress, input: Some(_), .. })));
+        assert!(matches!(
+            &outs[3],
+            Out::Ev(Ev::ToolCall { status: ToolStatus::InProgress, kind: ToolKind::Execute, title, input: Some(_), .. })
+                if title == "sleep 3 && echo finished"
+        ));
+        let read = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call","toolCallId":"call_01","title":"read","kind":"other","status":"in_progress","rawInput":{"file_path":"/etc/hosts","limit":2}}}}"#;
+        let (_, r) = handle(&mut st, read, &o, "DeepSeek Harness");
+        assert!(matches!(
+            &r[0],
+            Out::Ev(Ev::ToolCall { kind: ToolKind::Read, title, locations, .. }) if title == "read /etc/hosts" && locations == &["/etc/hosts"]
+        ));
         assert!(matches!(&outs[4], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), .. })));
         assert!(matches!(&outs[5], Out::Ev(Ev::Message { id, .. }) if id == "t1:m2"));
         let done = format!(r#"{{"jsonrpc":"2.0","id":{},"result":{{"stopReason":"end_turn"}}}}"#, st.next);

@@ -127,8 +127,14 @@
 - 它发的是**整条消息**（带 `messageId`），不流式：`caps.partial` 设为 false。适配器现在按 `messageId`（没有时按"工具调用之后另起一条"）分开消息，一轮的 `final_text` 是最后一条消息。这一点也改变了 OpenCode 等其他 ACP 智能体：以前一轮所有文字拼成一条。
 - 登录态：dsh 没有状态命令。看环境变量 `DEEPSEEK_API_KEY`、`$DSH_HOME/.credentials.yaml`（含 `deepseek-account` 视为账号登录）和 `$DSH_HOME/.env`（`$DSH_HOME` 默认 `~/.dsh`），只判断有无、不读出值；连目录都没有报 `logged_out`，其余 `unknown`。`Runtime::login` 因此从"命令参数"改成枚举 `Login`。
 - `caps.steer` false（ACP 不能往进行中的 prompt 追加）。
+- 工具调用：真机上它每次都发 `kind: "other"`，`title` 只是工具名（`bash`、`read`），命令和路径在 `rawInput`。ACP 适配器在 `kind` 缺省或为 `other` 时按工具名推断类型（bash → execute、read → read、edit / write → edit、grep / glob → search 等），用 `rawInput.command` 或路径作标题，路径作 location。报了具体 kind 的智能体不受影响。模型名匹配也改成不区分大小写（它的选项名是 `DeepSeek-V4-Pro`，值的末项是 `deepseek-v4-pro`）。
 
-**Antigravity：暂不接**（用户没有密钥，2026-10-22 决定先不适配）。已写好的适配器存在本地分支 `claude/agy-adapter-parked`（提交 e56e64a，未推送），内容：`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions` 常驻进程（依据官方文档 antigravity.google/docs/cli/headless，prompt 走 stdin）、`--conversation` 续接、打断即结束进程树、`chat.toml` 的 `base = "acp"`（给 Google 另发的 `agy_acp_server.par` 用），以及单测、替身驱动层测试和冒烟里的替身 agy（都通过过）。以后要接，从那个提交挑 agy 相关部分即可；没有真机验证过。
+**真机（Mac，dsh 0.2.1-rc.2，用户自己配的 key，默认模型 deepseek-v4-flash，2026-10-22）**：
+- 直接驱动它的 ACP（`/tmp` 下的临时脚本，没入库）：`initialize` 声明 `sessionCapabilities.resume`；一次"跑 `sleep 3 && echo finished` 再读文件"的任务 4.7 s 完成，消息与思考同一个 `messageId`、`usage_update` 报 `size: 1000000`；`session/cancel` 0.11 s 后 prompt 以 `cancelled` 返回，正在跑的工具以 `failed`（`Error: tool call aborted`）结束；`set_config_option` 切到 `deepseek-v4-pro` 生效；关掉进程后新进程 `session/resume` 立即返回（模型选择保留），下一轮答出上一进程里记住的词。以上各 1 次。
+- `tools/chat-smoke.py --quiet --real deepseek=$HOME/.local/bin/dsh`：29 项全过（1 次；第一次跑时因为工具 kind 是 other，"跑 shell 工具 / 打断"两项没过，改适配器后通过）：答题 2.0 s，跑 shell 工具，打断 0.0 s 内生效，下一轮记得上文 0.6 s；`chat list` 的登录态是 `logged_in` / `api_key`。
+- **dsh 真实对话只在 macOS 测过**（Windows 不配 key）。经被控端 park 之后再续接（`session/resume` 走驱动层）只在单测和上面的协议脚本里覆盖，没有在被控端里端到端测。
+
+**Antigravity：暂不接**（用户没有密钥，2026-10-22 决定先不适配）。已写好的适配器存在本地分支 `claude/agy-adapter-parked`（提交 e56e64a，未推送），内容：`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions` 常驻进程（依据官方文档 antigravity.google/docs/cli/headless，prompt 走 stdin）、`--conversation` 续接、打断即结束进程树、`chat.toml` 的 `base = "acp"`（给 Google 另发的 `agy_acp_server.par` 用），以及单测、替身驱动层测试和冒烟里的替身 agy（都通过过）。以后要接，从那个提交挑 agy 相关部分即可。2026-10-22 两台机器装了 agy 1.4.4（Mac `~/.local/bin/agy`；win-dev `%LOCALAPPDATA%\agy\bin\agy.exe`，官方脚本**不加进 PATH**，接入时要把这两个位置加进 `detect.rs` 的已知位置）。`agy --help` 证实 `--input-format stream-json`、`--conversation`、`--dangerously-skip-permissions` 都在；`--print-timeout` 在 1.4.4 默认是 0（等到这一轮完），搁置分支里传的 `12h` 可以去掉。账号已登录，但 Google 以地区不可用拒绝服务（`agy -p` 输出 `AGY_ERROR: {"status":"PERMISSION_DENIED","error_code":403,...}`，主会话实测），所以**真实成功路径未测：账号地区受限**；接入时要把这行 `AGY_ERROR:` 当作一轮失败、原话显示。
 
 **实测（本机 macOS，2026-10-22）**：
 - 单测新增：ACP 2 项（dsh 的 initialize / `session/resume` / 模型配置项 / 整条消息 / `usage_update` / 工具失败 / 结束文字，按它服务端的真实行格式；resume 失败转新会话 + 模型名不存在），detect 1 项（dsh 的 key / 账号 / 空 key / 没有目录）。
