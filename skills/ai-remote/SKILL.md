@@ -172,6 +172,9 @@ ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; 
 ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
 ai-remote chat send <session> "now run the tests" --wait
 ai-remote chat send <session> "stop after the first file" --steer   # into the running turn (Claude, Codex)
+ai-remote chat send <session> "what is wrong here?" --image shot.png  # images: PNG/JPEG/GIF/WebP, ≤3.75 MiB, up to 4
+ai-remote chat commands <session>                           # its slash commands and skills (send one as text: "/review")
+ai-remote chat files <session> main                         # files in its folder matching "main" (to name as @path)
 ai-remote chat end <session>
 ```
 

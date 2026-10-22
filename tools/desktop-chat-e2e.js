@@ -150,6 +150,105 @@
     await check("context usage shows as a ring", !!ring && /4[12]k \/ 200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
     await shot("01-first-turn");
 
+    // 2b. The composer's input side (one send button, / and @ menus, images, find, quote, usage,
+    // messages on their way) and a sub-agent's own steps. Screenshots go to /tmp/chat-input too.
+    const ta = composer();
+    await check("one send button: no add-to-turn or queue switch", !$(".nt-compose .chip") && $$(".nt-compose .round.send").length === 1);
+    ta.focus();
+    setValue(ta, "/re");
+    const slash = await until("slash menu", () => $(".nt-ac[data-mode=slash]"));
+    const slashItems = $$(".nt-ac .it .nm").map((x) => x.textContent);
+    await check("/ opens the agent's commands, with descriptions", !!slash && slashItems.includes("/review") && slashItems.includes("/release-notes")
+      && /Review the changes/.test(slash.textContent), slashItems.join(" | "));
+    setValue(ta, "/");
+    await until("all commands", () => $$(".nt-ac .it").length >= 3);
+    await check("skills are listed under their own heading", $$(".nt-ac .gh").map((g) => g.textContent).join("|").match(/Skills|技能/) !== null
+      && $$(".nt-ac .it .nm").some((x) => x.textContent === "/tidy"), $(".nt-ac")?.textContent);
+    await shot("10-slash-menu");
+    setValue(ta, "/rev");
+    await until("filtered", () => $$(".nt-ac .it").length === 1);
+    keyDown(ta, "Tab");
+    await check("Tab puts the command in the message", !!(await until("chosen command", () => composer().value === "/review ", 3000)), composer().value);
+    setValue(ta, "look at @mai");
+    const mention = await until("mention menu", () => $$(".nt-ac[data-mode=mention] .it .nm").find((x) => x.textContent === "src/main.rs"));
+    await check("@ lists the session folder's files from the host", !!mention, $(".nt-ac")?.textContent);
+    await shot("11-mention-menu");
+    keyDown(ta, "Enter");
+    await check("Enter puts the file's path in the message", !!(await until("chosen file", () => composer().value === "look at @src/main.rs ", 3000)), composer().value);
+    setValue(ta, "");
+    // An image, pasted (or picked, where the web view will not take a constructed paste).
+    const canvas = document.createElement("canvas");
+    canvas.width = 320; canvas.height = 180;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#2f80ed"; g.fillRect(0, 0, 320, 180); g.fillStyle = "#fff"; g.font = "48px sans-serif"; g.fillText("e2e", 110, 110);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const file = new File([blob], "screenshot.png", { type: "image/png" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    let pasted = "paste";
+    try {
+      ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    } catch {}
+    if (!(await until("pasted chip", () => $(".nt-atts img"), 2000))) {
+      pasted = "file picker";
+      const picker = $(".nt-compose input[type=file]");
+      picker.files = dt.files;
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await check(`an image becomes a chip in the composer (${pasted})`, !!(await until("image chip", () => $(".nt-atts img"))));
+    setValue(ta, "describe this");
+    await shot("12-image-chip");
+    $(".nt-compose .round.send").click();
+    const sentImg = await until("user bubble with the image", () => $$(".nt-user:not(.nt-out)").find((u) => u.textContent.includes("describe this") && $(".imgs img", u)));
+    await check("the sent message shows its image", !!sentImg);
+    const imgReply = await until("image reply", () => lastTurn().textContent.match(/\[images: image\/png (\d+)\]/));
+    await check("the image reaches the agent", !!imgReply, lastTurn()?.textContent.slice(-200));
+    await check("nothing is left on its way once delivered", !!(await until("delivered", () => !$(".nt-out"), 5000)), $(".nt-out")?.textContent);
+    await idle();
+    await shot("13-image-sent");
+    // A sub-agent's own steps fold under its row.
+    await send("AGENT find where the quarter end is built");
+    await idle();
+    const sub = await until("sub-agent row", () => $(".nt-sub", lastTurn()));
+    await check("the sub-agent row counts its own steps", !!sub && /2/.test($(".steps", sub)?.textContent ?? ""), sub?.textContent);
+    $(".rh", sub).click();
+    await check("opening it shows the steps, then its summary", !!(await until("sub steps", () => $$(".nt-sub-steps .nt-tl", sub).length === 2 && $(".nt-sub-bd", sub))),
+      sub?.textContent);
+    await check("the sub-agent's steps are not in the turn's runs", !$$(".nt-run", lastTurn()).some((r) => /quarter_end/.test(r.textContent)));
+    await shot("14-subagent");
+    // Find (⌘F inside the panel).
+    ta.focus();
+    ta.dispatchEvent(new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }));
+    const fq = await until("find bar", () => $(".nt-findbar input"));
+    setValue(fq, "quarter");
+    const count = await until("matches", () => /^\d+\/\d+$/.test($(".nt-findbar .ct")?.textContent ?? "") && $(".nt-findbar .ct").textContent);
+    await check("⌘F finds in the conversation", !!count && parseInt(count.split("/")[1], 10) >= 3, $(".nt-findbar .ct")?.textContent);
+    keyDown(fq, "Enter");
+    await check("Enter goes to the next match", (await until("next", () => $(".nt-findbar .ct").textContent.startsWith("2/"), 3000)) !== null, $(".nt-findbar .ct")?.textContent);
+    await shot("15-find");
+    keyDown(fq, "Escape");
+    await check("Esc closes the find bar", !!(await until("closed", () => !$(".nt-findbar"), 3000)));
+    // Quote a selection from a reply.
+    const para = $$(".nt-reply p", t1).find((p) => p.textContent.length > 10);
+    const range = document.createRange();
+    range.selectNodeContents(para);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    $(".nt-chat-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    const qb = await until("quote button", () => $(".nt-quote"));
+    await check("a selection offers Quote", !!qb);
+    await shot("16-quote");
+    qb.click();
+    await check("Quote puts it in the composer as a quote", !!(await until("quoted", () => composer().value.startsWith("> "), 3000)), composer().value.slice(0, 80));
+    setValue(composer(), "");
+    // The context breakdown.
+    $("button.nt-ring").click();
+    const usage = await until("usage popover", () => $(".nt-usage"));
+    await check("the context ring opens a breakdown of what the agent reported", !!usage && $$(".nt-usage .row").length >= 3, usage?.textContent);
+    await shot("17-usage");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await until("usage closed", () => !$(".nt-usage"), 3000);
+
     // 3. Steer: while a turn runs, Send adds to it.
     const before = turns().length;
     await send("SLOW job");
@@ -180,7 +279,7 @@
 
     // 5. An agent that cannot take a message mid-turn: Send waits for the turn to end; a waiting
     // message can be taken back.
-    $(".nt-chat-hd .ico").click();
+    $$(".nt-chat-hd .ico").at(-1).click();
     (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
     await until("picker", () => $(".nt-chat-start"));
     await check("the session list shows the first session", $$(".nt-sessions .sess").length >= 1, $$(".nt-sessions .sess").map((s) => s.textContent).join(" | "));
@@ -215,7 +314,7 @@
     await shot("05-no-steer");
 
     // 6. Back to the first session: the transcript replays.
-    $(".nt-chat-hd .ico").click();
+    $$(".nt-chat-hd .ico").at(-1).click();
     (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
     await until("picker", () => $$(".nt-sessions .sess").length >= 2);
     await check("the session list has both sessions", $$(".nt-sessions .sess").length === 2);
