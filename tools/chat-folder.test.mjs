@@ -120,3 +120,9 @@ test("what a Windows host's files_list returns (win-dev, 2026-10-22) reads right
   assert.deepEqual(plain(c.listedFolders(root, "system v")), ["System Volume Information"]);
   assert.deepEqual(plain(c.listedFolders(root, "sy")), []);
 });
+
+test("a host from before coding agents is told apart from other failures", () => {
+  assert.ok(c.chatUnsupported("host 'win-dev': Mcp error: -32602: unknown tool 'chat_runtimes'"));
+  assert.ok(!c.chatUnsupported("host 'win-dev': Mcp error: -32602: unknown tool 'files_list'"));
+  assert.ok(!c.chatUnsupported("'chat_runtimes' requires level 'admin', but this device has 'observe'."));
+});

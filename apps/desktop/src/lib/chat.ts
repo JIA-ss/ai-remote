@@ -719,6 +719,11 @@ export function sessionGone(error: string): boolean {
   return /no chat session/i.test(error);
 }
 
+/** A host from before coding agents: it does not know the chat tools at all. */
+export function chatUnsupported(error: string): boolean {
+  return /unknown tool '?chat_/i.test(error);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The composer
 

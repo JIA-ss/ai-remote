@@ -649,6 +649,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - Windows 被控端：2026-10-22 用 Mac 上已装的命令行对 win-dev 的真实被控端（服务模式）只读调用 `ls`（即 `files_list`）核对过返回的路径：`~` → `C:\Users\<用户>`，`~\Desktop` → 重定向后的桌面（另一个用户目录下，选择器不会缩成 `~`），`C:\`、`D:/`、`C:\Users\`（带结尾分隔符原样返回）、`\\localhost\C$` 都能列；单独的 `C:` 会被拒，选择器发请求前已补成 `C:\`。这些返回值写进了 `tools/chat-folder.test.mjs`。顺带发现盘根下的 `$RECYCLE.BIN`、`$GetCurrent`、`System Volume Information` 没有隐藏标记会被列出来，`listedFolders` 现在按名字把它们藏起来（输入 `$` 或名字开头时才显示）。**桌面端选择器本身没在 Windows 被控端上点过**；被控端也列不出盘符清单，要换盘只能输入 `E:\`。
 - `files_list` 被机主改成 ask / deny 时：ask 会每进一个目录弹一次审批，deny 时只能输入路径；只按代码推导，没实测。
 - 演示模式（`lib/demo.ts`）没有 `files_list`，浏览会显示"无法列出"。
+- 旧被控端（没有 `chat_*` 工具，例如 2026-10-22 win-dev 上装成服务的那份）原来在对话侧栏里显示原始错误 `Mcp error: -32602: unknown tool 'chat_runtimes'`。版本号都是 0.0.1，分不出新旧，所以按这个错误判断（`chatUnsupported`），侧栏和电脑页改成黄色提示"被控端版本较旧，更新后再试"。只过了单测和 tsc，没重编 app 看。
 - 和发起会话的约定：本分支的 e2e 仍含插话步骤；去掉插话的分支合进来时要一并改 e2e。
 
 ## 对话里的文件预览（2026-10-22，分支 `claude/chat-preview-97901c`，基于 `feat/host-chat` 0071902）
