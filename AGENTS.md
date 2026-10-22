@@ -38,7 +38,7 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
   `input.query`；`tool_update.exit_code` / `duration_ms`；`message.phase`（commentary / final_answer；流式开始时没说阶段、结束时才说的，
   结束时整条再发一次）。对话 hello 的 `runtime` 多了 `protocol`。另外修了：轮次自己的错误信息原来把服务商的 JSON 原样显示。
 - 桌面端：`lib/codex.ts`（纯函数：去外壳、命令解读的兜底解析、带行号的统一 diff、分组 / 最终回答 / 折叠规则、摘要句）、
-  `ui/chat/codex/CodexTurn.tsx`、`styles/codex.css`（类名全加 `cdx-` / `x-` 前缀：`.live`、`.hd`、`.row` 这些是全局类，第一次截图
+  `ui/codex/CodexTurn.tsx`（入口 `ui/codex/CodexConversation.tsx` 导出 `CodexConversation`）、`styles/codex.css`（类名全加 `cdx-` / `x-` 前缀：`.live`、`.hd`、`.row` 这些是全局类，第一次截图
   就被 `v2.css` 的 `.live` 串了样式）。`AgentChat` 按 `runtime.protocol`（老被控端退回看 id / 名字）给 Codex 会话加 `.cdx` 并换
   `Transcript` 的 `variant="codex"`；Claude Code 和 ACP 智能体照旧走 Orca 那套行。查找、引用、只挂载最近 30 轮、远处轮次
   `content-visibility` 都沿用。按工具调用对象缓存解析结果（运行中的轮次每个事件都重算一遍）。

@@ -13,6 +13,8 @@ import Foundation
 public struct PhoneChatSession: Identifiable, Sendable, Equatable {
     public let id: String
     public let name: String
+    /// The agent's id on the host (`codex`, `claude`, ...).
+    public let runtime: String
     public let cwd: String
     public let state: String
     public let byDevice: String
@@ -22,6 +24,7 @@ public struct PhoneChatSession: Identifiable, Sendable, Equatable {
     public init(_ v: JSONValue) {
         id = v["id"].string ?? ""
         name = v["name"].string ?? v["runtime"].string ?? ""
+        runtime = v["runtime"].string ?? ""
         cwd = v["cwd"].string ?? ""
         state = v["state"].string ?? ""
         byDevice = v["by"]["device"].string ?? ""
@@ -105,6 +108,9 @@ public struct PhoneChatTool: Equatable, Sendable {
     public var endedMs: Double?
     /// Cut short because the turn was stopped: not a failure of the tool.
     public var stopped = false
+    /// A finished command's exit code and how long the tool ran, when the agent reports them (Codex).
+    public var exitCode: Int?
+    public var durationMs: Double?
     public var running: Bool { status == "in_progress" || status == "pending" }
 }
 
@@ -135,7 +141,9 @@ public struct PhoneQueued: Equatable, Sendable, Identifiable {
 
 /// One block of a turn, in the order it happened.
 public enum PhoneChatBlock: Equatable, Sendable {
-    case text(id: String, text: String)
+    /// `phase`: where the agent says a message belongs (Codex): `commentary` (said between steps) or
+    /// `final_answer` (its answer to the turn); nil when it does not say.
+    case text(id: String, text: String, phase: String? = nil)
     case thought(PhoneThought)
     case tool(PhoneChatTool)
     case plan([PhonePlanEntry])
@@ -188,7 +196,7 @@ public struct PhoneChatTurn: Identifiable, Equatable, Sendable {
     /// The agent's last words, for copying.
     public var reply: String {
         if let finalText, !finalText.isEmpty { return finalText }
-        for block in blocks.reversed() { if case .text(_, let text) = block { return text } }
+        for block in blocks.reversed() { if case .text(_, let text, _) = block { return text } }
         return ""
     }
 }
@@ -320,14 +328,16 @@ public struct PhoneChatLog: Equatable, Sendable {
             let id = e["id"].string ?? "", text = e["text"].string ?? "", delta = e["delta"] == .bool(true)
             let at = turns[i].blocks.firstIndex { block in
                 switch block {
-                case .text(let x, _): t == "message" && x == id
+                case .text(let x, _, _): t == "message" && x == id
                 case .thought(let x): t == "thought" && x.id == id
                 default: false
                 }
             }
+            // A message says its phase (Codex) on its first piece or on any later one.
+            let phase = t == "message" ? e["phase"].string : nil
             if let at {
                 switch turns[i].blocks[at] {
-                case .text(_, let old): turns[i].blocks[at] = .text(id: id, text: delta ? old + text : text)
+                case .text(_, let old, let had): turns[i].blocks[at] = .text(id: id, text: delta ? old + text : text, phase: phase ?? had)
                 case .thought(var x):
                     x.text = delta ? x.text + text : text
                     x.endedMs = ts
@@ -335,7 +345,7 @@ public struct PhoneChatLog: Equatable, Sendable {
                 default: break
                 }
             } else if t == "message" {
-                turns[i].blocks.append(.text(id: id, text: text))
+                turns[i].blocks.append(.text(id: id, text: text, phase: phase))
             } else {
                 turns[i].blocks.append(.thought(PhoneThought(id: id, text: text, startedMs: ts, endedMs: ts)))
             }
@@ -354,6 +364,8 @@ public struct PhoneChatLog: Equatable, Sendable {
                 tool.content += e["content"].array.compactMap(PhoneToolContent.init)
                 tool.truncated = tool.truncated || e["truncated"] == .bool(true)
                 if tool.status == "completed" || tool.status == "failed" { tool.endedMs = ts }
+                if let code = e["exit_code"].number { tool.exitCode = Int(code) }
+                if let took = e["duration_ms"].number { tool.durationMs = took }
                 turns[i].blocks[at] = .tool(tool)
             }
         case "plan":
@@ -534,7 +546,7 @@ public func phoneTurnRows(_ turn: PhoneChatTurn) -> [PhoneChatRow] {
         }
         run = nil
         switch x {
-        case .text(let id, let text):
+        case .text(let id, let text, _):
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { rows.append(.text(key: "m\(turn.n):\(id)", text: text, streaming: false)) }
         case .tool(let tool):
             rows.append(.agent(key: "a\(turn.n):\(tool.callID)", tool))

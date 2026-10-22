@@ -7,7 +7,7 @@
 
 import { ChevronRight, CircleCheck, Circle, CircleDot, FileDiff, ListTodo, Play } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { baseName, type PlanEntry, type ThoughtBlock, type ToolItem, type Turn } from "../../../lib/chat";
+import { baseName, type PlanEntry, type ThoughtBlock, type ToolItem, type Turn } from "../../lib/chat";
 import {
   activeAct,
   codexTurn,
@@ -23,13 +23,13 @@ import {
   type ExecInfo,
   type FileChange,
   type Unit,
-} from "../../../lib/codex";
-import { currentLang, t, type Key } from "../../../lib/i18n";
-import { inlineText, parseInline } from "../../../lib/markdown";
-import { cx } from "../../util";
-import { CodeBlock, CopyButton, Highlighted, Markdown } from "../Markdown";
-import { PreviewButton, TurnFiles } from "../Preview";
-import { NoticeRow, QuestionCard, UserRow } from "../Rows";
+} from "../../lib/codex";
+import { currentLang, t, type Key } from "../../lib/i18n";
+import { inlineText, parseInline } from "../../lib/markdown";
+import { cx } from "../util";
+import { CodeBlock, CopyButton, Highlighted, Markdown } from "../chat/Markdown";
+import { PreviewButton, TurnFiles } from "../chat/Preview";
+import { NoticeRow, QuestionCard, UserRow } from "../chat/Rows";
 
 const zh = () => currentLang() === "zh";
 const plural = (key: string, n: number, vars: Record<string, string | number> = {}) => t(`${key}_${n === 1 ? "one" : "many"}` as Key, { n, ...vars });

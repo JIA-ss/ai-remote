@@ -1007,7 +1007,7 @@ export const en = {
   hc_preview_run: "Run scripts",
   hc_preview_run_tip: "Opens the page in a window of its own with its scripts running. That window cannot reach this app; the page may load scripts and styles from a few public CDNs and nothing else.",
   hc_host_old: "The ai-remote on {host} is from before coding agents, so it cannot run one yet. Update ai-remote on that computer, then try again.",
-  // The Codex conversation view (ui/chat/codex): how Codex's own app words a turn.
+  // The Codex conversation view (ui/codex): how Codex's own app words a turn.
   cdx_worked_for: "Worked for {t}",
   cdx_working_for: "Working for {t}",
   cdx_working: "Working",

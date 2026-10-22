@@ -1,5 +1,5 @@
 // How a Codex conversation is shown: the way Codex's own desktop app lays out a turn. Pure, so it is
-// testable without a page (tools/chat-codex.test.mjs); the components are in ui/chat/codex/.
+// testable without a page (tools/chat-codex.test.mjs); the components are in ui/codex/.
 //
 // A turn there is: the user's message on the right; the agent's work as a short list of one-line
 // units — consecutive tool calls folded into one line that names what is happening now ("Running
