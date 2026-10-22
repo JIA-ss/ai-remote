@@ -704,12 +704,25 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
     只读流本身。
 - 演示模式（camofox，`npx vite` + 演示后端）：`/`、`@`、图片、查找、用量弹层截图看过（Firefox 内核，和 WKWebView 不同）。
 
+### 补测（2026-10-22 下午，从 main 8eeabb6 起的 `claude/chat-input-verify`）
+
+- **真实 DeepSeek Harness 0.2.1**（`tools/chat-smoke.py --quiet --real deepseek=… --model deepseek-v4-flash`，本机，1 次 40 项全过）：
+  任务、shell 工具、打断 0.0 s、续上文都过；发图片被被控端直接拒绝并说明"takes no images"（退出码 2）。
+  它**不发 `available_commands_update`**（手动走 `initialize` + `session/new` 抓了 8 s 的输出确认），所以 `/` 列表为空；
+  输入框对空列表的提示改成"还没有列出命令：启动后才会列出，有的智能体不提供命令"，冒烟对没有命令的 ACP 智能体不再判失败。
+  OpenCode 本机没装，没跑。
+- **断网时的"未送达"**（`E2E_SCRIPT=tools/desktop-chat-offline-e2e.js python3 tools/desktop-chat-e2e.py`，debug 桌面包 +
+  本机隔离被控端安静模式，3 次全过）：对话开始后停掉被控端，再发的消息 0.1 s 内显示"未送达：连接断开了"，带重新发送和丢弃；
+  重启被控端，面板自己重连，点重新发送后送达，智能体只回答一次。e2e 脚本加了 `(action) stop-host` / `(action) start-host`
+  两个动作，由 `desktop-chat-e2e.py` 执行。
+  "被控端在线但 15 s 没有确认"这条路径仍只有单测（要让被控端收下命令却不回，测试里做不到不改代码）。
+
 ### 未测 / 没做
 
 - ~~Windows 桌面端（WebView2）：Highlight API、粘贴图片、一行布局~~（2026-10-22 已测，见"Windows 补测"一节）；拖入仍未测。
-- ACP 智能体的图片和命令只有单测和替身；真实 DeepSeek Harness（`images: false`）、OpenCode 没跑。
+- ACP 智能体的图片只有单测和替身（DeepSeek Harness 不收图片；收图片的 ACP 智能体没跑过）；OpenCode 没跑。
 - Codex 启动后第一条消息若在 `skills/list` 回来之前发出，消息里的 `$技能` 不会带 skill 输入项（Codex 是否仅凭文字识别没验证）。
-- 发送状态的"15 s 无 ack 判未送达"和"断线判未送达"只有单测，没在真实断网下点过。
+- 发送状态的"15 s 无 ack 判未送达"只有单测（断线判未送达已补测，见上）。
 - 查找只搜已挂载的内容；引用只在鼠标 / Shift 键松开时出现，触控板长按选择没试。
 - iPhone 端没有跟进（`feat/ios-chat`）。
 
