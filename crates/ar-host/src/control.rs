@@ -163,6 +163,8 @@ impl HostRequest {
         "bypass",
         "set_bypass",
         "set_bypass_default",
+        "chat",
+        "set_chat_enabled",
         "shutdown",
     ];
 
@@ -189,6 +191,8 @@ impl HostRequest {
             Self::Bypass => "bypass",
             Self::SetBypass { .. } => "set_bypass",
             Self::SetBypassDefault { .. } => "set_bypass_default",
+            Self::Chat => "chat",
+            Self::SetChatEnabled { .. } => "set_chat_enabled",
             Self::Shutdown => "shutdown",
         }
     }
@@ -594,6 +598,8 @@ mod tests {
             HostRequest::Bypass,
             HostRequest::SetBypass { peer: "p".into(), on: false, for_secs: None },
             HostRequest::SetBypassDefault { on: false },
+            HostRequest::Chat,
+            HostRequest::SetChatEnabled { on: false },
             HostRequest::Shutdown,
         ];
         assert_eq!(samples.len(), HostRequest::OPS.len());
