@@ -277,7 +277,9 @@ impl RunnerLink {
     /// Serves a connection whose handshake passed, until it ends. A second runner while one is
     /// connected is turned away.
     pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(&self, wire: Wire<S>) {
-        let (read, mut write) = tokio::io::split(wire.io.into_inner());
+        // Keep the handshake's reader: what the other side sent right after it may already be in
+        // its buffer (a host that came back asks for the live agents at once).
+        let (read, mut write) = tokio::io::split(wire.io);
         let mut read = BufReader::new(read);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let conn = Arc::new(Conn { tx, pending: Mutex::new(HashMap::new()), lives: Mutex::new(HashMap::new()) });
@@ -683,7 +685,9 @@ impl Runner {
 
     /// Serves one authenticated host connection until it ends.
     pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(self: &Arc<Self>, wire: Wire<S>) -> Ended {
-        let (read, mut write) = tokio::io::split(wire.io.into_inner());
+        // Keep the handshake's reader: what the other side sent right after it may already be in
+        // its buffer (a host that came back asks for the live agents at once).
+        let (read, mut write) = tokio::io::split(wire.io);
         let mut read = BufReader::new(read);
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let writer = tokio::spawn(async move {

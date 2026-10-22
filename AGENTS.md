@@ -94,6 +94,14 @@ PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\
 Claude Code 2.1.293（已登录，`D:\nodejs\node_global\claude.cmd`，用户 PATH 里找到的）、Codex 0.162.1 等。
 服务模式步骤 3~8（真实对话、锁屏续接、stop-host、安全检查、卸载）仍未做。
 
+**接回时丢请求（真实竞态，CI 撞出来的）**：PR 的 macOS CI 上 `an_agent_outlives_its_host_and_its_session_goes_on` 失败一次，
+本机同一测试 10 次失败 2 次（这条 Unix 路径本分支没改，是原有问题）。加日志后不再复现，改用只记阶段的探针才抓到：
+重启后的被控端发出了 `lives` 请求，runner 一侧从没收到。原因是被控端握手最后写 `{"ok":true}`，接回流程紧接着就发 `lives`，
+runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io.into_inner()` 把缓冲连同 `lives` 一起丢了，被控端干等
+60 s（`LOOKUP`）。真实服务模式下被控端重启（例如锁屏切会话）后接回智能体，走的正是这一步。修法：两侧 `serve` 都保留握手的
+`BufReader`。新单测 `a_request_right_after_the_handshake_is_answered`：没有修复时 3/3 失败，修复后通过；接回测试修复后本机 40/40 过。
+注意：win-dev 真实服务跑的是修复前的包（见上），服务模式步骤 4（锁屏续接）要等换上含这处修复的包再测。
+
 **顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
 `"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
 后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
