@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "official_url": "https://github.com/JIA-ss/ai-remote",
-  "candidate_sha": "9c99007d6efbc69f53f7f358104d8e93c26c5cf0",
-  "default_branch_observed_sha": "b964c5aaf3a5d2f80c126506a14b0e8abd1da1a3",
+  "candidate_sha": "cdc9dddd083c340e6819b492b92b92454d83c687",
+  "default_branch_observed_sha": "d0e01dc44997b83e156bf5716731ba6ceb36bc36",
   "default_branch_name": "main",
   "queries": [
     {
@@ -556,7 +556,7 @@
   "public_source_errors": [
     {
       "tool": "web.run open",
-      "url": "https://github.com/JIA-ss/ai-remote/tree/9c99007d6efbc69f53f7f358104d8e93c26c5cf0",
+      "url": "https://github.com/JIA-ss/ai-remote/tree/cdc9dddd083c340e6819b492b92b92454d83c687",
       "error": "Failed to fetch restricted URL",
       "fallback": "public GitHub API commit/tree and raw.githubusercontent.com fixed-SHA README files"
     }
