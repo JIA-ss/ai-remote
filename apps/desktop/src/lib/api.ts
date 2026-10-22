@@ -99,6 +99,11 @@ export interface Backend {
   pushFile(host: string, local: string, remoteDir: string | null, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
   /** Fetches a file from `host` into this computer's Downloads folder. */
   pullFile(host: string, remote: string, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
+  /**
+   * The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+   * preview (`path` as the session names it; the host checks the session is about it).
+   */
+  previewFile(host: string, session: string, path: string): Promise<Uint8Array>;
   /** Follows a host's activity; returns a function that stops it. */
   subscribe(host: string, onEvent: (e: FeedEvent) => void): Promise<() => void>;
   pending(host: string): Promise<PendingApproval[]>;
@@ -466,6 +471,13 @@ const tauriBackend: Backend = {
     channel.onmessage = ([done, total]) => onProgress(done ?? 0, total ?? 0);
     const v = unwrap(await commands.pullFile(host, remote, null, channel)) as { local?: string; bytes?: number; seconds?: number };
     return { local: v.local, bytes: Number(v.bytes ?? 0), seconds: Number(v.seconds ?? 0) };
+  },
+  async previewFile(host, session, path) {
+    const raw = unwrap(await commands.previewFile(host, session, path)) as unknown;
+    // Raw replies arrive as an ArrayBuffer, or as a byte array on WKWebView's fallback path.
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (Array.isArray(raw)) return Uint8Array.from(raw as number[]);
+    throw new Error("the preview came back in an unexpected form");
   },
   async watchScreen(host, onFrame, opts = {}) {
     const channel = new Channel<unknown>();

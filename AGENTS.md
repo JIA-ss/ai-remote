@@ -7,6 +7,8 @@
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
   `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-folder.test.mjs`、
+
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -438,6 +440,47 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - `files_list` 被机主改成 ask / deny 时：ask 会每进一个目录弹一次审批，deny 时只能输入路径；只按代码推导，没实测。
 - 演示模式（`lib/demo.ts`）没有 `files_list`，浏览会显示"无法列出"。
 - 和发起会话的约定：本分支的 e2e 仍含插话步骤；去掉插话的分支合进来时要一并改 e2e。
+
+## 对话里的文件预览（2026-10-22，分支 `claude/chat-preview-97901c`，基于 `feat/host-chat` b68fac3）
+
+需求：智能体创建或修改的 HTML、Markdown、图片，在桌面端对话侧栏里能直接预览。
+
+### 调研（Orca 1.4.237 安装包，`app.asar` 解包后读代码；Codex / Claude 只有公开资料）
+
+- Orca：HTML 不是任意文件都预览，而是智能体按约定写进对话专用临时目录，再在回答里写 `::orca-visual{file="x.html"}`，回答里内联一个 `<iframe srcDoc sandbox="allow-scripts">`，页面最前面插 CSP（网络全断，脚本只能来自几个 CDN），点开在编辑器标签页；图片是 80 px 缩略图，点开是可缩放弹层；Markdown 文件点开在编辑器标签页的 MarkdownPreview，对话里不内联。
+- Codex 桌面版：官方文档只说 review 窗格看 Git 改动、点文件用外部编辑器打开；"产物预览"只见于第三方和社区，可信度低。Claude artifacts 是对话右侧固定面板。
+
+### 做法
+
+- **形态**（照 Orca，用户要求"会话内也要显示"）：每轮结束后，在轮尾内联显示这一轮写出 / 点名的可预览文件（`lib/preview.ts` 的 `turnFiles`：工具写的 diff 路径和非读非删工具的位置，再加最后一段回答里链接 / 行内代码点名的文件；按文件名去重，最多 4 个）：HTML 是 220 px 高的小窗，Markdown 是前 180 px（渐隐），图片是 96 px 高的缩略图。点卡片、工具行 / 编辑卡上的眼睛按钮、回答里的文件链接或 `out/x.md` 这样的行内代码，都打开全窗口弹层（560 px 侧栏放不下页面）：HTML / Markdown 可切"预览 / 源码"，图片点一下在适应窗口和实际大小之间切换，Esc 关闭。内联卡片接近屏幕时才取文件（IntersectionObserver，页面隐藏时直接取），同一会话里每个文件只取一次（`PreviewProvider` 里按路径缓存 Promise，失败不缓存，弹层的"重新获取"强制再取）。
+- **被控端新工具 `chat_file`**（`crates/ar-host/src/tools/chat.rs`、`chat/preview.rs`）：参数 `session`、`path`；admin 级、默认允许、只读；返回一次性票据，字节走现有的 `app/ai-remote/file/1`（与 `files_pull` 同一个 `Transfers`，审计照常记 `transfer`，工具名 `chat_file`）。没有复用 `files_pull`，因为它默认要机主审批，每次预览弹一次审批不可用。限制：
+  - 路径相对会话工作目录解析（`~` 是用户主目录），解析符号链接后**在工作目录内**，或者这个路径（原样或解析后）出现在本会话**智能体自己的事件**里（工具调用的 locations、diff 的 path、智能体回答文字；人发的消息不算）；
+  - 解析后的真实文件扩展名是 html/htm/md/markdown/png/jpg/jpeg/gif/webp/svg/bmp；
+  - 最大 16 MiB。
+  - 为什么默认允许：调用的设备已是 admin、能和这个会话对话，本来就能让智能体（以用户身份、不询问）把任意文件打印出来；`chat_file` 只省掉这一来回，并且限制在对话涉及的文件上。机主仍可用 `[[rule]] tool = "chat_file"` 改成询问或拒绝。`chat_file` 加进了控制端的 `CHANNEL_TOOLS`，不对 MCP 客户端列出。
+- **Tauri**：`preview_file(host, session, path)` → `transfer::preview`，在内存里收字节并核对 SHA-256，以原始字节（`Frame`，页面里是 `ArrayBuffer`）返回；不写控制端磁盘。
+- **HTML 的安全取舍**：Orca 允许脚本（`allow-scripts`，无 same-origin）；我们**不运行任何脚本**：`sandbox=""`（无脚本、opaque origin、无表单 / 弹窗 / 顶层导航），文档 `<head>` 最前面插 `default-src 'none'` 的 CSP 加 `<base target="_blank">`（不发任何网络请求；链接点了是弹窗，被沙箱拒绝）。原因：WKWebView 里 Tauri IPC 背后的原生消息处理器对所有 frame 可见，没把握让智能体写的脚本跑在应用的 webview 里；而且应用自己的 CSP（`script-src` 回落到 `'self'`）会被 srcdoc 继承，内联脚本本来也跑不了。代价：依赖脚本的页面（图表库）只显示静态部分；页面引用的相对路径图片、外部字体 / CSS 不加载。Markdown 用对话自己的渲染器（只产出文本节点）；SVG 走 `<img>`，脚本不执行。
+
+### 实测（本机 macOS，2026-10-22）
+
+- 单测：`cargo test -p ar-host --lib chat` 37 项全过（新增 3 项：扩展名、"只认智能体的事件"、`previews_read_only_files_the_session_is_about` 用真实会话覆盖目录内 / 目录外未点名 / 符号链接逃出目录 / 人发消息不算 / 智能体写过后放行 / 超 16 MiB）；`node --test tools/*.test.mjs` 92 项 90 过 2 跳过（新增 `tools/chat-preview.test.mjs` 6 项）；`tsc --noEmit` 和 `cargo clippy --workspace --all-targets -D warnings` 通过；debug 构建重新生成的 `bindings.ts` 与手写一致。
+- 端到端（`E2E_SCRIPT=tools/desktop-chat-preview-e2e.js python3 tools/desktop-chat-e2e.py`，debug 桌面包 + 本机隔离被控端，两端 `[network] quiet = true`；替身智能体的 FILES 轮在工作目录写 report.html / notes.md / chart.png、在目录外写一个它点名的 named.md、另放一个没点名的 secret.md）：**24 项全过**（最后一次；之前一次 18 项版本也全过）。覆盖：三种入口、4 个内联预览全部加载、缩略图 64×32、内联和弹层的 iframe 都是 `sandbox=""` 且 CSP 在页面 `<script>` 之前、页面脚本没运行（它会 `parent.postMessage`，1.5 s 内没收到）、外部图片没加载（截图里只显示 alt 文字）、源码视图、Esc、目录外点名的可读、没点名的被拒（"outside this session's folder"）、`.toml` 被拒（"cannot be previewed"）。截图在 `/tmp/chat-preview-e2e/`，没进仓库（推流画面里是本机桌面）。
+- 演示模式（camofox，`npx vite` + 演示后端）：三种内联卡片和弹层的深色截图看过。
+- 耗时：脚本记的"点击 → 弹层就绪"是 50~51 ms，但脚本按 50 ms 轮询、且内联已预取（弹层命中缓存），所以只能说明本机回环下 ≤ 约 50 ms；**未测**冷取时延和跨机器时延。
+
+### 踩过的坑
+
+1. 被控端工具的 `json()` 输出多行美化 JSON，而 `transfer.rs` 只解析结果第一行，第一次端到端全部报 "EOF while parsing"；`chat_file` 改成和文件工具一样输出单行。
+2. 弹层头部的路径用 `direction: rtl` 做左侧省略，开头的 `/` 会被挪到末尾；里面包一层 `<bdi dir="ltr">`。会话头部的工作目录（`AgentChat.tsx` 原有）也有同样的问题，没改。
+3. demo 的 `demoLog()` 在模块加载时执行，用到的常量必须定义在它前面（否则 TDZ）。
+
+### 没做 / 下一步
+
+- [ ] Windows（WebView2）上看一遍：`srcdoc` 继承父页 CSP、`sandbox=""`、`bdi` 的表现。
+- [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
+- [ ] iPhone 端的预览。
+- [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
+- [ ] 会话头部工作目录的 rtl 斜杠错位（`AgentChat.tsx`）。
 
 ## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4c655ce）
 

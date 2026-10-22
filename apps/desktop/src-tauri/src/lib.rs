@@ -989,6 +989,20 @@ async fn pull_file(
     transfer::pull(&state.profile, &state.cli, &host, &remote, &dir, &report).await.map(Json).map_err(text)
 }
 
+/// The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+/// preview in the chat panel (`path` as the session names it). Kept in memory only; raw bytes (an
+/// `ArrayBuffer` in the page), never JSON.
+#[tauri::command]
+#[specta::specta]
+async fn preview_file(
+    state: State<'_, AppState>,
+    host: String,
+    session: String,
+    path: String,
+) -> Result<Frame, String> {
+    transfer::preview(&state.profile, &state.cli, &host, &session, &path).await.map(Frame).map_err(text)
+}
+
 /// Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 /// webview show up where the app's own messages go.
 #[tauri::command]
@@ -1078,6 +1092,7 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard_files,
         push_file,
         pull_file,
+        preview_file,
         log_from_page,
         local_host_chat,
         set_local_host_chat,
