@@ -389,7 +389,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [x] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`（见"Windows 上的对话"一节；修了对话区滚动条和代码里中文的字体）。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
-## 对话输入侧补齐（2026-10-22，分支 `claude/chat-input-8764a1`，基于 `feat/host-chat` 8b2b63a，已合入 `claude/dsh-agy-7f8142`、`claude/chat-preview-97901c`、`claude/chat-folder-5ebe7f`）
+## 对话输入侧补齐（2026-10-22，分支 `claude/chat-input-8764a1`，基于 `feat/host-chat` 8b2b63a，已合入 `claude/dsh-agy-7f8142`、`claude/chat-preview-97901c`、`claude/chat-folder-5ebe7f`，最后合入改写过历史的 `feat/host-chat` 295aa2f，合入后替身冒烟 35 项、桌面 e2e 67 项各再跑 1 次全过）
 
 用户要求体验接近 Claude / Codex 原生 App，把"和 Orca 的差距"里输入这一侧补齐。参考 Orca（`/tmp/orca-src`，MIT）的
 NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、NativeChatContextUsageRing、subagent sections，
