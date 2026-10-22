@@ -2,7 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
-import type { ChatEvent, ChatHello, ChatState, RuntimesReport, SessionInfo } from "./chat";
+import { requester, type ChatEvent, type ChatHello, type ChatReply, type ChatState, type RuntimesReport, type SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
   Driver,
@@ -269,7 +269,7 @@ export const demoBackend: Backend = {
     await wait(150);
     demoChatEnabled = on;
   },
-  async openChat(host, ticket, since, onEvent, onClosed) {
+  async openChat(host, ticket, since, onEvent, onClosed, onReply) {
     reachable(host);
     await wait(200);
     const s = demoSessions.find((x) => demoTickets.get(ticket) === x.id);
@@ -278,15 +278,24 @@ export const demoBackend: Backend = {
     const log = demoLogs.get(s.id) ?? [];
     const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name }, cwd: s.cwd, state: s.state,
       seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host };
+    const commands = s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))];
+    onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "commands", commands });
     for (const e of log) if (e.seq > since) onEvent(e);
     const listener = (e: ChatEvent) => onEvent(e);
     const set = demoChatListeners.get(s.id) ?? new Set();
     set.add(listener);
     demoChatListeners.set(s.id, set);
+    const send = async (command: Record<string, unknown>) => {
+      const reply = await demoChatCommand(s, command);
+      if (reply && !req.reply(reply)) onReply?.(reply);
+    };
+    const req = requester(send);
     return {
-      hello,
-      send: async (command) => demoChatCommand(s, command),
+      hello: { ...hello, acks: true },
+      send,
+      ask: (name, args) => req.ask(name, args),
       close: () => {
+        req.close();
         set.delete(listener);
         onClosed();
       },
@@ -764,11 +773,11 @@ async function step(s: SessionInfo, run: DemoRun, ms: number) {
   return !run.stopped;
 }
 
-async function demoReply(s: SessionInfo, text: string, inputId: string) {
+async function demoReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
   const run: DemoRun = { stopped: false, steers: [], answer: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
-  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text });
+  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
   s.turns += 1;
   const started = Date.now();
   push(s, { t: "turn_start" });
@@ -813,14 +822,26 @@ async function demoReply(s: SessionInfo, text: string, inputId: string) {
   if (next) void demoReply(s, next.text, next.id);
 }
 
-async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
-  const input = c.input as { id?: string; text?: string; mode?: string } | undefined;
+const DEMO_COMMANDS = [
+  { name: "review", description: "Review the changes on this branch", kind: "command", insert: "/review", hint: "<pr>" },
+  { name: "compact", description: "Clear the conversation but keep a summary in context", kind: "command", insert: "/compact", hint: "<instructions>" },
+  { name: "init", description: "Write a CLAUDE.md with notes about this codebase", kind: "command", insert: "/init" },
+];
+const DEMO_SKILLS = [
+  { name: "release-notes", description: "Draft release notes from the commits since the last tag", kind: "skill", insert: "$release-notes" },
+  { name: "tidy", description: "Tidy imports and formatting", kind: "skill", insert: "$tidy" },
+];
+
+async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Promise<ChatReply | null> {
+  const input = c.input as { id?: string; text?: string; mode?: string; attachments?: Array<{ name: string; mime: string; data: string }> } | undefined;
   const run = demoRuns.get(s.id);
-  if (input?.text) {
+  const atts = input?.attachments?.map((a) => ({ name: a.name, mime: a.mime, bytes: Math.floor((a.data.length * 3) / 4) }));
+  if (input && (input.text || atts?.length)) {
+    input.text = input.text ?? "";
     const id = input.id ?? `u${s.seq}`;
     const canSteer = !!demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps.steer;
     if (!run) {
-      void demoReply(s, input.text, id);
+      void demoReply(s, input.text, id, atts);
     } else if (input.mode === "interrupt") {
       await demoStop(s, run);
       void demoReply(s, input.text, id);
@@ -842,7 +863,17 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
   if (ans?.text && run?.answer) run.answer(ans.text);
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");
+  const files = c.files as { rid?: string; query?: string } | undefined;
+  if (files) {
+    const words = (files.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = DEMO_FILES.filter((f) => words.every((w) => f.toLowerCase().includes(w)));
+    await wait(60);
+    return { t: "files", rid: files.rid, files: hits.slice(0, 50), truncated: hits.length > 50, source: "git" };
+  }
+  return input && (input.text || atts?.length) ? { t: "ack", input_id: input.id } : null;
 }
+
+const DEMO_FILES = ["export.py", "README.md", "tests/test_export.py", "report/quarter.py", "report/templates/summary.html", "docs/usage.md", "pyproject.toml"];
 
 async function demoStop(s: SessionInfo, run: DemoRun) {
   run.stopped = true;

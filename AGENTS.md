@@ -6,9 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-folder.test.mjs`、
-
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -418,15 +416,18 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 ### 和 Orca 的差距（没做的）
 
-- 发送状态：没有"发送中… / 未发送 + 重试"。协议没有发送确认，要被控端在 `user` 事件里回带 `input_id`，前端去匹配。
-- 消息操作：没有"回退到这里"（Rewind）；没有 ⌘F 查找；没有选中回复里的文字引用到输入框。
-- 输入增强：没有 `@` 文件、`/` 命令与技能选择、附件和图片粘贴。
-- 富内容：没有 Mermaid 和内联图表。
-- 文件路径：点了不能打开，只能复制。
-- 上下文用量环：只有悬停提示，没有 Orca 那种按类别的明细弹窗。
-- 窗口化：Orca 按行测量高度做真正的虚拟列表；这里是"只挂最近 30 轮 + content-visibility"，几千轮的极端长对话没测过。
-- 子智能体：只认 Claude 的 Task 工具。被控端目前只发子智能体的总结（`adapters/claude.rs` 第 145 行），没有子智能体内部的步骤。
-- 后台任务行、停靠在输入框上方的任务列表：没做；计划只在原位显示。
+（2026-10-22 输入侧补齐后更新，做完的打勾，做法见下面"对话输入侧补齐"一节。）
+
+- [x] 发送状态："发送中… / 未送达 + 重新发送 / 丢弃"。
+- [ ] 消息操作：没有"回退到这里"（Rewind）。
+- [x] ⌘F 查找；[x] 选中回复里的文字引用到输入框。
+- [x] `@` 文件；[x] `/` 命令与技能；[x] 图片粘贴、拖入、选择（只收图片，不收其他附件）。
+- [ ] 富内容：没有 Mermaid 和内联图表。
+- [ ] 文件路径：点了不能打开，只能复制（另一会话 chat-preview 做了预览弹层）。
+- [x] 上下文用量环：点开是按类别的明细（只列智能体报告了的类别）。
+- [ ] 窗口化：Orca 按行测量高度做真正的虚拟列表；这里是"只挂最近 30 轮 + content-visibility"，几千轮的极端长对话没测过。查找也只搜挂着的内容。
+- [x] 子智能体：Claude 子智能体内部的工具调用带 `parent` 发出，折在子智能体行下面。子智能体自己的文字仍不显示（只显示它交回的总结）。Codex 的 `collabAgentToolCall` 没有拆内部步骤。
+- [ ] 后台任务行、停靠在输入框上方的任务列表：没做；计划只在原位显示。
 - 演示里的 `steer_queued` 提示：前端对不支持插话的智能体直接按排队发送，所以正常操作下看不到这条提示。它只在客户端发了 `mode: "steer"`、而被控端判定不支持时出现；渲染逻辑有单测覆盖，但截图里没有它。
 
 ### 下一步
@@ -436,6 +437,94 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   - 窗口不可见时 rAF 不触发，事件会积到窗口可见才显示 → 加了 100 ms 定时器兜底；运行计时一直显示 "0 ms" → 计时器在轮次开始时就取当前时间，不再等第一次 1 s 的跳动。这两处没有在不可见窗口里复测。
 - [x] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`（见"Windows 上的对话"一节；修了对话区滚动条和代码里中文的字体）。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
+
+## 对话输入侧补齐（2026-10-22，分支 `claude/chat-input-8764a1`，基于 `feat/host-chat` 8b2b63a，已合入 `claude/dsh-agy-7f8142`、`claude/chat-preview-97901c`、`claude/chat-folder-5ebe7f`，最后合入改写过历史的 `feat/host-chat` 295aa2f，合入后替身冒烟 35 项、桌面 e2e 67 项各再跑 1 次全过）
+
+用户要求体验接近 Claude / Codex 原生 App，把"和 Orca 的差距"里输入这一侧补齐。参考 Orca（`/tmp/orca-src`，MIT）的
+NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、NativeChatContextUsageRing、subagent sections，
+只借布局和行为，组件按我们的事件重写（文件头注明出处）。没有加新依赖。
+
+### 做了什么（每一步一个提交）
+
+1. **只留一个发送按钮**：`feat/host-chat` 的 e3c0410 已做完（和 iPhone 端一致，插话消息不加标记、保留 `data-steer`）。
+   用户中途又要求：输入框改成一行，**最左边一个 `+`**（加图片），文字在中间，停止 / 发送在右边，提示和上下文环放到框下面
+   （照 Claude App 的截图）。原来的图片图标去掉了。
+2. **发送状态**：被控端对每条 `input` 回 `{"t":"ack","input_id"}`，拒绝时回带 `input_id` 的 `error`，hello 里 `acks: true`；
+   队列满被丢掉的消息发带 `input_id` 的 `queue_full` 通知。前端（`lib/chat.ts` 的 `Outgoing` / `settleOutgoing`）把自己发的
+   消息放在对话末尾显示"发送中…"，收到 `user` 事件或出现在队列里就消失；被拒、连接断开、15 s 没有 ack 时显示"未送达"和
+   "重新发送 / 丢弃"。重发：连接问题用原 id（被控端按 id 去重，不会跑两次），被拒的换新 id。
+3. **`/` 命令与技能**：新事件 `commands`（`name`、`description`、`kind` command|skill、`insert`、`hint`），列表变了才写进
+   对话记录，存进会话 meta；被控端还按"智能体 + 目录"记住最近的列表，新会话在智能体启动前就能用。
+   - Claude Code：启动时写一条 `control_request` `initialize`，回应里有全部命令和技能及说明（本机 2.1.307 实测 200 条，
+     在任何消息之前就回）；第一条 `init` 的 `skills` 说明哪些是技能，所以列表等 `init` 到了才发（否则每次启动发两遍）。
+     旧版本不回 `initialize` 时用 `init` 的 `slash_commands`（只有名字）。
+   - Codex：线程起来后调 `skills/list`（方法名和返回结构来自 0.163 的 `generate-json-schema`），技能以 `$name` 列出；
+     消息里写了 `$name` 时，`turn/start` / `turn/steer` 的 input 里同时带 `{"type":"skill","name","path"}`。Codex TUI 的
+     内置斜杠命令（/compact、/review 等）在 app-server 里不是文字命令，没有列。
+   - ACP：`available_commands_update`（`session/load` 回放期间也收）。
+   - **坑**：第一版把列表放进 hello，win-dev 上 Claude 的 208 条命令超过了控制端读应答行的 64 KiB 上限，attach 直接失败
+     （"oversized reply"）。改成 hello 之后单独一行不编号的 `{"t":"commands",...}`，旧控制端也不受影响。
+   - 输入框：消息开头输入 `/` 弹出（命令在前、技能在后、分组标题），↑↓、Enter / Tab 选中、Esc 关；选中的命令原样作为文字发。
+4. **`@` 文件**：chat/1 新命令 `{"files":{"rid","query","limit"}}`，回 `{"t":"files","rid","files","truncated","source"}`。
+   被控端（`chat/files.rs`）在会话目录里跑 `git ls-files --cached --others --exclude-standard`，不是 git 工作树就向下遍历 6 层
+   （跳过隐藏目录和 node_modules / target 等，不跟符号链接），最多保留 10 万个名字、缓存 10 s，在被控端按"每个词都包含"过滤，
+   最多回 200 个。输入 `@` 后停顿 120 ms 再问；选中插入相对路径（有空格时加引号）。前端的请求 / 应答用 `rid` 配对（`requester`）。
+5. **图片**：`input.attachments: [{name, mime, data(base64)}]`，PNG/JPEG/GIF/WebP，每条最多 4 张，每张解码后 ≤ 3.75 MiB
+   （= base64 5 MiB，Anthropic API 的单图上限），被控端命令行上限因此从 1 MiB 调到 24 MiB。图片只在内存里随排队消息走，
+   对话记录只写 `user.attachments` 的名字、类型、大小。各家：Claude 是文字前的 base64 image 块；Codex 是 data URL 的
+   `image` 输入（实测能认出颜色）；ACP 在 `initialize` 的 `promptCapabilities.image` 为真时发 image 块，否则去掉图片并发
+   `no_images` 通知，同时发新事件 `agent {images:false}`。`caps.images`：Claude、Codex 为真，DeepSeek Harness 为假，其他
+   ACP 先按真、等智能体自己说。输入框：粘贴、拖进输入框、点 `+` 选文件；长边超过 2048 px 或超限时用 canvas 缩小重编码；
+   拖进输入框的文件不会再触发推流画面的"传文件到被控端"（`stopPropagation`）。自己发的图片在本机消息气泡里显示缩略图，
+   其他设备只看到文件名。
+6. **查找 / 引用 / 用量明细**：⌘F / Ctrl+F（焦点在对话面板内时）或标题栏的放大镜打开查找条，用 CSS Custom Highlight API
+   高亮（当前项 `priority = 1` 画在上面），Enter / Shift+Enter 跳转、Esc 关；只搜挂在页面上的文字（折叠内容和没挂载的旧轮次
+   不搜）。在对话里选中文字出现"引用"按钮，点了以 Markdown 引用行插进输入框。上下文环点开是明细：当前占用 / 剩余，上一轮
+   输入（其中读缓存、写缓存）、输出（其中推理）、费用；`usage` 事件新增 `cache_read_tokens`、`cache_write_tokens`、
+   `reasoning_tokens`（Claude 取 `result.usage`，Codex 取 `tokenUsage.last`）；没报的类别不显示。
+7. **子智能体内部步骤**：Claude 带 `parent_tool_use_id` 的 assistant 消息里的工具调用现在作为带 `parent` 的 `tool_call`
+   发出（结果照常是 `tool_update`）；子智能体的文字和它的 TodoWrite 不当作主线的。前端 `turnRows` 把这些调用放进子智能体行
+   （"2 步"，展开是各步，再下面是总结），父调用不是本轮子智能体的仍留在主线。
+   - **`Rows.tsx` 只有两处最小改动**（chat-preview 会话在改消息行渲染）：`UserRow` 里显示附件（新增 `Attachments`），
+     `AgentRow` 接收 `children`。
+- 命令行：`ai-remote chat send … --image <文件>`（可重复，等被控端 ack，被拒时退出码 2 并说原因）、
+  `ai-remote chat commands <会话>`、`ai-remote chat files <会话> [查询]`。协议写在 `docs/tools*.md` 5.15、`chat_channel.rs`
+  文件头、`chat/event.rs`；`skills/ai-remote/SKILL.md` 7b、`docs/operations*.md` 4.1 表格同步了。
+
+### 实测（2026-10-22）
+
+- **门槛**（本机 macOS）：`cargo fmt --check`、`cargo clippy --workspace --all-targets --locked -D warnings` 通过；
+  `cargo test --workspace --locked --no-fail-fast` 361 过 0 失败（ar-host chat 相关新增 13 项：会话里命令列表的保存与去重、
+  新会话复用、图片进智能体且不进记录、`Image::parse` 限制、files 的遍历 / git 两条路、三个适配器的命令 / 图片 / 子智能体）；
+  `tsc --noEmit` 通过；`node --test tools/*.test.mjs` 112 过 2 跳过（新增 `tools/chat-input.test.mjs` 15 项）。
+  `stream::pointer::mac::tests::the_current_pointer_can_be_read` 在一次整跑里失败、单独重跑通过（已知会随光标变化失败，本分支没动）。
+- **`tools/chat-smoke.py --quiet`**（隔离被控端和控制端都是安静模式）：
+  - 本机替身：35 项全过（最后 2 次）。新增：命令列表含说明和技能、`@` 文件（git 工作树里不含被忽略的 node_modules、多词匹配）、
+    图片完整到达智能体（替身回报 base64 长度）、超限图片被拒（退出码 2）、记录里只有名字和大小、命令列表在记录里只出现一次。
+  - 本机真实 Codex 0.163（`--model gpt-6.1-sol`）：1 次全过。认出红色图片；`chat commands` 列出 136 个技能（含工作目录里放的
+    `.codex/skills/pong-skill`），发 `$pong-skill please` 3.8 s 回 SKILLPONG；原有的打断、续上文、插话（数到 5）也过。
+  - win-dev 真实 Claude Code（`D:\nodejs\node_global\claude.cmd`，被控端在终端前台运行，debug 构建）：最后 1 次 44 项全过。
+    认出红色图片；列出 208 条命令；从列表里选 `/pong`（工作目录 `.claude/commands/pong.md`）2.4 s 回 SKILLPONG；插话 4.0 s 进
+    同一轮、数到 5 停。之前两次失败分别是 hello 超过 64 KiB（已改协议）和 Windows 上 Popen 按 GBK 解码（脚本已改 UTF-8）。
+- **`tools/desktop-chat-e2e.py`**（debug 桌面包 + 本机隔离被控端，窗口在屏幕外）：最后 3 次 67 项全过。新增覆盖：一行布局
+  （`+` 在最左、发送在最右）、`/` 弹出（说明、技能分组、Tab 选中）、`@` 弹出（被控端真实列文件、Enter 插入路径）、粘贴图片
+  （WKWebView 接受构造的 paste 事件）、发出后气泡里有缩略图且替身收到图片、送达后没有残留的"发送中"、子智能体"2 步"展开、
+  ⌘F 查找 9 处并跳到第 2 处、Esc 关闭、选中引用、用量明细 ≥ 4 行。截图在 `/tmp/chat-input/`（10~17 号是新的），看过；
+  没进仓库（推流画面是本机桌面）。
+  - e2e 里踩到的：我给"发送中"的消息用了 `nt-out` 类名，和工具输出框撞了（样式也串了），改成 `nt-sending`；用量弹层的 `.bar`
+    继承了输入框底栏的样式、`.hd` / `.row` 是全局类，都改了名；⌘F 原来先关再在下一帧打开，窗口不可见时没有动画帧，查找条
+    打不开，改成直接打开并重新聚焦；`chat send` 等 ack 时把读到的命令列表行放回暂存队列、又从暂存队列读，死循环，改成等 ack
+    只读流本身。
+- 演示模式（camofox，`npx vite` + 演示后端）：`/`、`@`、图片、查找、用量弹层截图看过（Firefox 内核，和 WKWebView 不同）。
+
+### 未测 / 没做
+
+- Windows 桌面端（WebView2）：Highlight API、粘贴图片、拖入、一行布局都没在 WebView2 里看过。
+- ACP 智能体的图片和命令只有单测和替身；真实 DeepSeek Harness（`images: false`）、OpenCode 没跑。
+- Codex 启动后第一条消息若在 `skills/list` 回来之前发出，消息里的 `$技能` 不会带 skill 输入项（Codex 是否仅凭文字识别没验证）。
+- 发送状态的"15 s 无 ack 判未送达"和"断线判未送达"只有单测，没在真实断网下点过。
+- 查找只搜已挂载的内容；引用只在鼠标 / Shift 键松开时出现，触控板长按选择没试。
+- iPhone 端没有跟进（`feat/ios-chat`）。
 
 ## 去掉单独的"插话"操作，按智能体原生的方式发送（2026-10-22，分支 `claude/desktop-chat-e2e`）
 

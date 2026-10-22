@@ -3,16 +3,26 @@
 //!
 //! The controller opens a bi-stream and writes one JSON line, `{"open":{"ticket":"..","since":N}}`,
 //! with a ticket from `chat_start` or `chat_attach`. The host answers with one line,
-//! `{"ok":true,"session":"..","role":"rw"|"ro",...}` or `{"ok":false,"error":".."}`, then sends the
-//! session's events after `since` (from its transcript) and every new one, one JSON line each.
+//! `{"ok":true,"session":"..","role":"rw"|"ro",...}` or `{"ok":false,"error":".."}`, then one
+//! unnumbered `{"t":"commands","commands":[..]}` line (the agent's slash commands and skills as last
+//! known), then the session's events after `since` (from its transcript) and every new one, one
+//! JSON line each.
 //!
 //! The controller sends one JSON line per command, any time:
 //!
 //! - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`: a message for the
 //!   agent; with `interrupt` the running turn stops and this message goes first; with `steer` it
 //!   joins the running turn (a `user` event with `"steer":true`, numbered with that turn) when the
-//!   agent can take it (`caps.steer`), and is queued with a `steer_queued` notice otherwise;
+//!   agent can take it (`caps.steer`), and is queued with a `steer_queued` notice otherwise. The
+//!   host answers `{"t":"ack","input_id":".."}` once the session has it, or
+//!   `{"t":"error","code":..,"input_id":"..","text":".."}` when it refuses it (the hello says
+//!   `"acks":true`); a message later dropped because the queue is full gets a `queue_full` notice
+//!   with its `input_id`;
 //! - `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`;
+//! - `{"files":{"rid":..,"query":"..","limit":N}}`: files in the session's folder whose relative
+//!   path contains every word of `query` (see [`crate::chat::files`]), answered with
+//!   `{"t":"files","rid":..,"files":[".."],"truncated":bool,"source":"git"|"walk"}` (or an
+//!   `error` with the same `rid`);
 //! - `{"end":{}}`: end the session (its agent process stops);
 //! - `{"bye":{}}`: stop watching (the session goes on); `{"ping":N}` is answered with `{"pong":N}`.
 //!
@@ -45,11 +55,12 @@ use tokio::{
 
 use crate::{
     HostState,
-    chat::{Chat, Cmd, Input, MAX_INPUT, Role, event::By, line_seq, random_hex},
+    chat::{Chat, Cmd, Image, Input, MAX_IMAGES, MAX_INPUT, Role, event::By, line_seq, random_hex},
 };
 
-/// Longest command line accepted from a controller.
-const MAX_LINE: usize = 1024 * 1024;
+/// Longest command line accepted from a controller: a message with its images (each at most 5 MiB
+/// in base64).
+const MAX_LINE: usize = 24 * 1024 * 1024;
 /// The opening line must arrive within this.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -65,14 +76,26 @@ struct OpenArgs {
     since: u64,
 }
 
+/// An image sent with a message: `{"name":"..","mime":"image/png","data":"<base64>"}`.
+#[derive(Debug, Deserialize)]
+struct AttachmentIn {
+    #[serde(default)]
+    name: String,
+    mime: String,
+    data: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Command {
     Input {
         id: Option<String>,
+        #[serde(default)]
         text: String,
         #[serde(default)]
         mode: Option<String>,
+        #[serde(default)]
+        attachments: Vec<AttachmentIn>,
     },
     Interrupt {},
     Answer {
@@ -81,6 +104,14 @@ enum Command {
     },
     Dequeue {
         id: String,
+    },
+    /// Files in the session's folder matching `query`, for the `@` menu.
+    Files {
+        rid: Value,
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     End {},
     Bye {},
@@ -183,8 +214,19 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
     let hello = json!({
         "ok": true, "session": chat.id, "role": role, "runtime": {"id": meta.runtime, "name": meta.name},
         "cwd": meta.cwd, "state": meta.state, "seq": upto, "caps": caps, "by": meta.by,
+        // Every input is answered with an `ack` (or an `error` naming it).
+        "acks": true,
+        // Whether this agent takes images with a message (`agent` events update it).
+        "images": host.chat().takes_images(&chat),
     });
     if !write_line(&mut send, &hello.to_string()).await {
+        return;
+    }
+    // The agent's commands and skills for the `/` menu, on a line of their own: a long list would
+    // not fit the reply line older controllers read (64 KiB). Later changes come as numbered
+    // `commands` events.
+    let commands = json!({"t": "commands", "commands": host.chat().commands_for(&chat)});
+    if !write_line(&mut send, &commands.to_string()).await {
         return;
     }
     host.audit().event(json!({"kind": "chat_session", "action": "attach", "chat": chat.id, "peer": peer.name, "principal": peer.principal, "role": role}));
@@ -282,19 +324,43 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
     if let Err(e) = require_admin(host, peer).await {
         return Ok(Some(json!({"t": "error", "text": format!("{e:#}")})));
     }
+    if let Command::Files { rid, query, limit } = cmd {
+        let cwd = std::path::PathBuf::from(chat.meta().cwd);
+        let reply = match chat.files.matches(&cwd, &query, limit.unwrap_or(50)).await {
+            Ok(m) => json!({"t": "files", "rid": rid, "files": m.files, "truncated": m.truncated, "source": m.source}),
+            Err(e) => json!({"t": "error", "rid": rid, "text": format!("cannot list files: {e:#}")}),
+        };
+        return Ok(Some(reply));
+    }
     let by = By { device: peer.name.clone(), principal: peer.principal.clone() };
+    let mut input_id = None;
     let sent = match cmd {
-        Command::Input { id, text, mode } => {
-            if text.trim().is_empty() {
-                return Ok(Some(json!({"t": "error", "text": "empty message"})));
+        Command::Input { id, text, mode, attachments } => {
+            let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
+            // A refusal names the message, so the controller can show it as not sent.
+            let refuse =
+                |text: String| Ok(Some(json!({"t": "error", "code": "refused", "input_id": id, "text": text})));
+            if text.trim().is_empty() && attachments.is_empty() {
+                return refuse("empty message".into());
             }
             if text.len() > MAX_INPUT {
-                return Ok(Some(
-                    json!({"t": "error", "text": format!("the message is longer than {MAX_INPUT} bytes")}),
-                ));
+                return refuse(format!("the message is longer than {MAX_INPUT} bytes"));
             }
-            let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
-            let input = Input { id, text, by };
+            if attachments.len() > MAX_IMAGES {
+                return refuse(format!("a message takes at most {MAX_IMAGES} images"));
+            }
+            let mut images = Vec::new();
+            for a in &attachments {
+                match Image::parse(&a.name, &a.mime, &a.data) {
+                    Ok(i) => images.push(i),
+                    Err(e) => return refuse(format!("{e:#}")),
+                }
+            }
+            if !images.is_empty() && !host.chat().takes_images(chat) {
+                return refuse(format!("{} takes no images", chat.meta().name));
+            }
+            input_id = Some(id.clone());
+            let input = Input { id, text, by, images };
             match mode.as_deref() {
                 Some("interrupt") => chat.send(Cmd::Interrupt { then: Some(input) }),
                 Some("steer") => chat.send(Cmd::Steer(input)),
@@ -305,12 +371,15 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
         Command::Answer { qid, text } => chat.send(Cmd::Answer { qid, text }),
         Command::Dequeue { id } => chat.send(Cmd::Dequeue { id }),
         Command::End {} => chat.send(Cmd::End { reason: format!("ended by {}", peer.name) }),
-        Command::Bye {} | Command::Ping(_) => unreachable!(),
+        Command::Bye {} | Command::Ping(_) | Command::Files { .. } => unreachable!(),
     };
     if !sent {
-        return Ok(Some(json!({"t": "error", "code": "ended", "text": "this session has ended"})));
+        return Ok(Some(
+            json!({"t": "error", "code": "ended", "input_id": input_id, "text": "this session has ended"}),
+        ));
     }
-    Ok(None)
+    // The session has the message (it may still wait in the queue or for the agent to take it).
+    Ok(input_id.map(|id| json!({"t": "ack", "input_id": id})))
 }
 
 /// Every few seconds: ends sessions whose device lost level admin, and stops running turns while

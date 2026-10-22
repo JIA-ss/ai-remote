@@ -54,6 +54,9 @@ pub struct Caps {
     pub questions: bool,
     /// Takes a message while a turn runs into that turn (otherwise it waits for the next one).
     pub steer: bool,
+    /// May take images with a message. For ACP agents this is a guess until the agent says
+    /// (`promptCapabilities.image`); the session then reports what holds (an `agent` event).
+    pub images: bool,
 }
 
 /// A built-in agent.
@@ -75,7 +78,7 @@ pub struct Runtime {
 }
 
 const ACP_CAPS: Caps =
-    Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: false };
+    Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: false, images: true };
 
 /// Every agent this host knows, in display order.
 pub const RUNTIMES: &[Runtime] = &[
@@ -88,7 +91,15 @@ pub const RUNTIMES: &[Runtime] = &[
         login: Login::Command(&["auth", "status"]),
         min_version: Some("2.0.0"),
         auto_mode: None,
-        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: true },
+        caps: Caps {
+            interrupt: true,
+            resume: true,
+            partial: true,
+            thinking: true,
+            questions: false,
+            steer: true,
+            images: true,
+        },
     },
     Runtime {
         id: "codex",
@@ -99,7 +110,15 @@ pub const RUNTIMES: &[Runtime] = &[
         login: Login::Command(&["login", "status"]),
         min_version: Some("0.100.0"),
         auto_mode: None,
-        caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: true, steer: true },
+        caps: Caps {
+            interrupt: true,
+            resume: true,
+            partial: true,
+            thinking: true,
+            questions: true,
+            steer: true,
+            images: true,
+        },
     },
     Runtime {
         id: "deepseek",
@@ -111,7 +130,15 @@ pub const RUNTIMES: &[Runtime] = &[
         min_version: None,
         auto_mode: None,
         // `session/resume`, `usage_update`; whole messages rather than streamed text, no plans.
-        caps: Caps { interrupt: true, resume: true, partial: false, thinking: true, questions: false, steer: false },
+        caps: Caps {
+            interrupt: true,
+            resume: true,
+            partial: false,
+            thinking: true,
+            questions: false,
+            steer: false,
+            images: false,
+        },
     },
     Runtime {
         id: "gemini",

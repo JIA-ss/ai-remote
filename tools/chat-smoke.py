@@ -18,7 +18,10 @@ task; it uses the agent's own sign-in and spends a little of its quota. An agent
 told to count to 20, one shell command per number, and steered to stop at 5 once it has started.
 """
 import argparse
+import base64
 import json
+import struct
+import zlib
 import os
 import re
 import subprocess
@@ -42,6 +45,14 @@ options = parser.parse_args()
 failures = []
 
 
+def png(rgb, w=64, h=64):
+    """A solid-colour PNG."""
+    rows = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+    chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
 def check(name, ok, detail=""):
     print(f"{'ok  ' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
     if not ok:
@@ -57,16 +68,26 @@ def out(v):
     sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
-out({"type": "system", "subtype": "init", "session_id": "fake-session"})
+out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"]})
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "initialize":
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"commands": [
+            {"name": "review", "description": "Review the changes", "argumentHint": "<pr>"},
+            {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
+        continue
     if msg.get("type") == "control_request":
         if slow:
             slow.set(); slow = None
             out({"type": "result", "subtype": "error_during_execution", "is_error": True})
         continue
-    text = msg["message"]["content"][0]["text"]
+    content = msg["message"]["content"]
+    text = next((b["text"] for b in content if b.get("type") == "text"), "")
+    images = [b for b in content if b.get("type") == "image"]
+    if images:
+        # Says what it got, so a test can check the image arrived whole.
+        text += " [images: " + ", ".join(b["source"]["media_type"] + " " + str(len(b["source"]["data"])) for b in images) + "]"
     out({"type": "user", "isReplay": True, "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
     if slow:
         slow.set(); slow = None
@@ -88,6 +109,26 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     base = Path(tmp)
     host_home, ctl_home, work = base / "host", base / "controller", base / "work"
     work.mkdir()
+    (work / "src").mkdir()
+    (work / "src" / "main.rs").write_text("fn main() {}\n")
+    (work / "docs").mkdir()
+    (work / "docs" / "release notes.md").write_text("# notes\n")
+    (work / "node_modules" / "x").mkdir(parents=True)
+    (work / "node_modules" / "x" / "main.js").write_text("")
+    (work / "red.png").write_bytes(png((220, 20, 20)))
+    # Its own work tree (the temporary folder may sit inside another one, e.g. a home kept in git),
+    # where git ignores the build output.
+    (work / ".gitignore").write_text("node_modules/\n")
+    subprocess.run(["git", "init", "-q"], cwd=work, capture_output=True)
+    # A skill in the folder, for Codex's `/` list ($name) and a real run of it.
+    (work / ".codex" / "skills" / "pong-skill").mkdir(parents=True)
+    (work / ".codex" / "skills" / "pong-skill" / "SKILL.md").write_text(
+        "---\nname: pong-skill\ndescription: Answers SKILLPONG. Use when asked to run the pong skill.\n---\n\n"
+        "When this skill is used, reply with exactly the word SKILLPONG and nothing else.\n")
+    # And a project command, for Claude Code's `/` list (/pong).
+    (work / ".claude" / "commands").mkdir(parents=True)
+    (work / ".claude" / "commands" / "pong.md").write_text(
+        "---\ndescription: Answers SKILLPONG\n---\n\nReply with exactly the word SKILLPONG and nothing else.\n")
     (host_home / "host").mkdir(parents=True)
     quiet = '[network]\nquiet = true\n\n' if options.quiet else ""
     (host_home / "host" / "ai-remote.toml").write_text(
@@ -106,8 +147,13 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     env = {k: v for k, v in os.environ.items() if k != "AI_REMOTE_HOST"}
 
     def cli(*args, home=ctl_home, timeout=120):
-        return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        try:
+            return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        except subprocess.TimeoutExpired as e:
+            out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            return subprocess.CompletedProcess(e.cmd, 124, out, err + f"\n(timed out after {timeout} s)")
 
     def host_tree():
         """Windows: the processes under the test host, other than the host's own (name, pid, command line)."""
@@ -133,7 +179,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         seq = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == rsid)["seq"]
         watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
                                   "--since", str(seq)], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL, text=True, env=env)
+                                 stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", env=env)
         cli("chat", "send", rsid, "Count from 1 to 20. For each number N run the shell command `sleep 1; echo N` in "
             "the foreground, one separate command per number (never a loop or several numbers in one command), then "
             "reply with only the last number printed.")
@@ -230,7 +276,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         # attach replays the conversation; with stdin closed it leaves at once.
         p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
-                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
         events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
         ends = [e["status"] for e in events if e.get("t") == "turn_end"]
         check("attach replays every turn in order", ends == ["completed", "completed", "interrupted", "completed"], str(ends))
@@ -252,7 +299,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("a steer with no turn running starts one", r.returncode == 0 and "you said: no turn now" in r.stdout,
               f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
         p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
-                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
         events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
         steered = [e for e in events if e.get("t") == "user" and e.get("steer")]
         starts = {e["turn"] for e in events if e.get("t") == "turn_start"}
@@ -262,6 +310,38 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("a steer with no turn says why", any(e.get("t") == "notice" and e.get("code") == "steer_queued" for e in events))
         s = next((x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid), {})
         check("a steer adds no turn of its own", s.get("turns") == 6, json.dumps(s)[:200])
+
+        # The `/` and `@` menus and images (what the apps' composer uses).
+        r = cli("--json", "chat", "commands", sid)
+        cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
+        check("chat commands lists the agent's commands with their description",
+              any(c.get("insert") == "/review" and c.get("hint") == "<pr>" and c.get("description") for c in cmds)
+              and any(c.get("name") == "tidy" and c.get("kind") == "skill" for c in cmds), json.dumps(cmds)[:300] or r.stderr[-200:])
+        r = cli("--json", "chat", "files", sid, "main")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("chat files lists the folder's files, without build output", found.get("files") == ["src/main.rs"]
+              and found.get("source") in ("git", "walk"), json.dumps(found)[:300] or r.stderr[-200:])
+        r = cli("--json", "chat", "files", sid, "release notes")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("chat files matches every word of the query", found.get("files") == ["docs/release notes.md"], json.dumps(found)[:200])
+        b64 = base64.b64encode((work / "red.png").read_bytes()).decode()
+        r = cli("chat", "send", sid, "what colour", "--image", work / "red.png", "--wait")
+        check("an image reaches the agent whole", r.returncode == 0 and f"[images: image/png {len(b64)}]" in r.stdout
+              and "[image: red.png]" in r.stdout, f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-200:]}")
+        bad = base / "big.png"
+        bad.write_bytes(b"\x89PNG" + os.urandom(4 * 1024 * 1024))
+        r = cli("chat", "send", sid, "too big", "--image", bad)
+        check("an image over the limit is refused (exit 2)", r.returncode == 2 and "larger than" in r.stderr,
+              f"code {r.returncode}: {r.stderr[-200:]}")
+        p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
+        events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        users = [e for e in events if e.get("t") == "user" and e.get("attachments")]
+        check("the transcript keeps the image's name and size, not its bytes",
+              len(users) == 1 and users[0]["attachments"] == [{"name": "red.png", "mime": "image/png", "bytes": len(base64.b64decode(b64))}]
+              and b64[:40] not in p.stdout, json.dumps(users)[:300])
+        check("the command list is in the transcript once", sum(1 for e in events if e.get("t") == "commands" and "seq" in e) == 1)
 
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
@@ -281,7 +361,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         audit = [json.loads(l) for l in (host_home / "host" / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
         turns = [a for a in audit if a.get("kind") == "chat_turn"]
-        check("each turn is audited", len(turns) == 7, str(len(turns)))
+        check("each turn is audited", len(turns) == 8, str(len(turns)))
         check("the audit counts steers", sum(t.get("steers", 0) for t in turns) == 1)
         check("the audit keeps hashes, not the conversation", not any("hello there" in json.dumps(a) for a in audit
                                                                       if a.get("kind", "").startswith("chat")))
@@ -310,7 +390,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             # command to the background and end the turn on their own after a few seconds.
             watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
                                       "--since", str(rs["seq"])], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, env=env)
+                                     stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", env=env)
             cli("chat", "send", rsid, "Use your shell tool to run exactly this command in the foreground and wait for it: "
                 "sleep 45 && echo finished. Then report its output.")
             saw_tool, ends, t0 = False, [], time.time()
@@ -350,6 +430,21 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+            # An image, and a command or skill from the agent's own list.
+            r = cli("chat", "send", rsid, "What colour is this image? Reply with one word.", "--image", work / "red.png",
+                    "--wait", timeout=300)
+            check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
+                  f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            r = cli("--json", "chat", "commands", rsid)
+            cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
+            print(f"      {len(cmds)} commands: {', '.join(c['insert'] for c in cmds[:12])}")
+            pong = next((c for c in cmds if c["name"] in ("pong-skill", "pong")), None)
+            check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and pong is not None, r.stderr[-200:])
+            if pong:
+                t0 = time.time()
+                r = cli("chat", "send", rsid, f"{pong['insert']} please", "--wait", timeout=300)
+                check(f"real {kind}: runs {pong['insert']} chosen from its list", r.returncode == 0 and "SKILLPONG" in r.stdout,
+                      f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             if rows.get(f"real-{kind}", {}).get("caps", {}).get("steer"):
                 steer_real(kind, rsid)
             if options.hostw:

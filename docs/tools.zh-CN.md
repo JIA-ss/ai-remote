@@ -583,27 +583,32 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 - 每个会话的事件各自编号，先写入 `<配置目录>/host/chat/<id>/events.jsonl` 再发出，所以断线重连的查看者可以从它看到的最后一条之后接着要。
 - 每条一行 JSON：`{"seq":N,"ts":<ms>,"turn":K,"t":"<类型>",...}`。`t` 的取值：
-  - `user`：插进当前一轮的消息带 `steer: true`，`turn` 是那一轮；
+  - `user`：插进当前一轮的消息带 `steer: true`，`turn` 是那一轮；`attachments` 是随消息发的图片的名字、类型和大小（图片本身不保存）；
   - `turn_start`；
   - `message` / `thought`：字段 `id`、`text`、`delta`，`delta` 为真时接在同一 `id` 的消息后面；
-  - `tool_call`：字段 `call_id`、`title`、`kind`（read、edit、delete、move、search、execute、think、fetch、other）、`status`、`input`、`locations`、`content`；
+  - `tool_call`：字段 `call_id`、`title`、`kind`（read、edit、delete、move、search、execute、think、fetch、other）、`status`、`input`、`locations`、`content`；Claude Code 子智能体自己的工具调用带 `parent`（子智能体那次调用的 `call_id`）；
   - `tool_update`：字段 `call_id`、`status`、`content`（文本或 `{type:"diff",path,old,new}`）、`truncated`；没有 `status` 时是运行中命令输出的一段；
   - `plan`；
   - `question`：字段 `qid`、`prompt`、`options`；
-  - `usage`：token、费用，智能体给出时还有 `context_window`（上下文总量）和 `context_used`（已用）；
+  - `usage`：token、费用，智能体给出时还有 `context_window`（上下文总量）、`context_used`（已用）、`cache_read_tokens`、`cache_write_tokens`（输入中读 / 写缓存的部分）、`reasoning_tokens`（输出中推理的部分）；
   - `turn_end`：字段 `status`（completed、failed、interrupted）、`final_text`、`duration_ms`、`reason`；
   - `state`：字段 `state`、`queued`；
-  - `notice`。
+  - `commands`：智能体的斜杠命令和技能（完整列表，变了才发）：`name`、`description`、`kind`（command 或 skill）、`insert`（选中后放进消息的文字：`/name`，Codex 技能是 `$name`）、`hint`。来源：Claude Code 在启动时用 `initialize` 控制请求取得全部命令和说明（第一个 `init` 说明哪些是技能）；Codex 用 `skills/list` 列技能（消息里写了 `$技能名` 时，同时带一个 `skill` 输入项）；ACP 智能体发 `available_commands_update`；
+  - `agent`：`images` 表示智能体收不收图片（只在和该类智能体的默认值不同时发，例如不收图片的 ACP 智能体）；
+  - `notice`：与某条消息有关时带 `input_id`（例如队列已满被丢掉的消息）。
 - 工具的输入和输出各截断到 8 KiB，diff 每一侧截断到 64 KiB。
 
 **对话通道**：
 
-- 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`），之后收到 `N` 之后的事件和所有新事件。
+- 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`、`acks`、`images`），接着一行不编号的 `{"t":"commands","commands":[..]}`（最后一次的命令列表；没有时用同一智能体在同一目录的其他会话的列表；单独一行是因为长列表放不进 64 KiB 的应答行），之后收到 `N` 之后的事件和所有新事件。
 - 命令每条一行：
-  - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`：同一个 `id` 发两次只执行一次；
+  - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer","attachments":[...]}}`：同一个 `id` 发两次只执行一次；会话收下后回 `{"t":"ack","input_id":".."}`，拒绝时回 `{"t":"error","code":..,"input_id":"..","text":".."}`；
+    - 附件是 `{"name":"..","mime":"image/png","data":"<base64>"}`：PNG、JPEG、GIF 或 WebP，每条最多 4 张，每张解码后最多 3.75 MiB（base64 后 5 MiB），因此一条命令最长 24 MiB；
+    - 附件和排队的消息一起放在内存里，按各家方式交给智能体：Claude Code 是放在文字前面的 base64 图片块；Codex 是 data URL 形式的图片输入；ACP 智能体在 `promptCapabilities.image` 为真时是图片块，否则去掉图片并发通知；
   - `{"interrupt":{}}`；
   - `{"answer":{"qid":"..","text":".."}}`；
   - `{"dequeue":{"id":".."}}`；
+  - `{"files":{"rid":..,"query":"..","limit":N}}`：列出会话工作目录下相对路径包含 `query` 每个词的文件，回 `{"t":"files","rid":..,"files":[..],"truncated":bool,"source":"git"|"walk"}`，最多 200 个；在 git 工作树里用 `git ls-files`（已跟踪的，加上未跟踪且未被忽略的），否则向下遍历 6 层，跳过隐藏目录和构建输出；
   - `{"end":{}}`；
   - `{"bye":{}}`：停止观看；
   - `{"ping":N}`。

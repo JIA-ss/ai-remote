@@ -7,6 +7,8 @@
 // (edits included: they open to diff cards), reasoning folded behind "Thought for 4 s". `turnRows`
 // is that projection.
 
+import type { Attachment, AttachmentPayload, SlashCommand } from "./chat-input";
+
 export type ChatState = "starting" | "idle" | "running" | "interrupting" | "parked" | "ended";
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -22,6 +24,8 @@ export interface Caps {
   questions: boolean;
   /** A message can be added to the running turn (`mode: "steer"`); hosts without it queue. */
   steer?: boolean;
+  /** May take images with a message (for ACP agents, until the agent says otherwise). */
+  images?: boolean;
 }
 
 /** An agent installed on a host, as `chat_runtimes` reports it. */
@@ -69,19 +73,85 @@ export interface PlanEntry {
 
 /** One event of a chat (see the host's chat/event.rs). */
 export type ChatEvent = { seq: number; ts: number; turn: number } & (
-  | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean }
+  | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean; attachments?: Attachment[] }
   | { t: "turn_start" }
   | { t: "message"; id: string; text: string; delta: boolean }
   | { t: "thought"; id: string; text: string; delta: boolean }
-  | { t: "tool_call"; call_id: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
+  | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
   | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean }
   | { t: "plan"; entries: PlanEntry[] }
   | { t: "question"; qid: string; prompt: string; options?: string[] }
-  | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number }
+  | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
+      cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
-  | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string }
+  | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
+  | { t: "commands"; commands: SlashCommand[] }
+  | { t: "agent"; images?: boolean }
 );
+
+/**
+ * A line from the host that is not part of the conversation: `ack` (a message reached the host),
+ * `error` (a refused command; `input_id` names the message it refused), and answers to requests
+ * carrying a `rid` (see `files`).
+ */
+export type ChatReply = { t: string; input_id?: string; rid?: string; code?: string; text?: string; [k: string]: unknown };
+
+/**
+ * Requests that the host answers with a reply carrying the same `rid` (`{"files":{...}}`): `ask`
+ * sends `{[name]: {...args, rid}}` and resolves with the reply; `reply` feeds replies in and says
+ * whether one was a request's answer.
+ */
+export function requester(send: (command: Record<string, unknown>) => Promise<void>, timeoutMs = 10_000) {
+  let next = 0;
+  const waiting = new Map<string, { ok: (r: ChatReply) => void; fail: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  return {
+    ask(name: string, args: Record<string, unknown>): Promise<ChatReply> {
+      const rid = `r${++next}`;
+      return new Promise<ChatReply>((ok, fail) => {
+        const timer = setTimeout(() => {
+          waiting.delete(rid);
+          fail(new Error("no answer from the host"));
+        }, timeoutMs);
+        waiting.set(rid, { ok, fail, timer });
+        send({ [name]: { ...args, rid } }).catch((e) => {
+          clearTimeout(timer);
+          waiting.delete(rid);
+          fail(e instanceof Error ? e : new Error(String(e)));
+        });
+      });
+    },
+    reply(m: ChatReply): boolean {
+      const w = typeof m.rid === "string" ? waiting.get(m.rid) : undefined;
+      if (!w) return false;
+      clearTimeout(w.timer);
+      waiting.delete(m.rid as string);
+      if (m.t === "error") w.fail(new Error(m.text ?? "refused"));
+      else w.ok(m);
+      return true;
+    },
+    close() {
+      for (const w of waiting.values()) {
+        clearTimeout(w.timer);
+        w.fail(new Error("the chat closed"));
+      }
+      waiting.clear();
+    },
+  };
+}
+
+/** What a line from the chat channel is: the end of the chat, a numbered event, or a reply. */
+export function chatLineKind(m: unknown): "closed" | "event" | "commands" | "reply" | "notice" | null {
+  if (!m || typeof m !== "object") return null;
+  const e = m as { t?: unknown; seq?: unknown; input_id?: unknown; rid?: unknown };
+  if (e.t === "closed" || e.t === "bye") return "closed";
+  if (typeof e.seq === "number") return "event";
+  // The agent's commands as last known, sent right after the reply (not numbered).
+  if (e.t === "commands") return "commands";
+  if (e.t === "ack" || e.rid !== undefined || (e.t === "error" && typeof e.input_id === "string")) return "reply";
+  if (e.t === "error") return "notice";
+  return null;
+}
 
 /** What the host answered when the chat channel opened. */
 export interface ChatHello {
@@ -94,6 +164,12 @@ export interface ChatHello {
   caps: Caps | null;
   by?: { device: string };
   host?: string;
+  /** The host answers every input with an `ack` (or a refusal naming it). */
+  acks?: boolean;
+  /** The agent's commands and skills as last known (`commands` events replace them). */
+  commands?: SlashCommand[];
+  /** Whether the agent takes images with a message (`agent` events update it). */
+  images?: boolean;
 }
 
 export interface ToolItem {
@@ -110,6 +186,8 @@ export interface ToolItem {
   endedTs: number | null;
   /** Cut short because the turn was stopped: not a failure of the tool. */
   stopped?: boolean;
+  /** The sub-agent call that made this one (shown inside that sub-agent's row). */
+  parent?: string;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
@@ -124,7 +202,7 @@ export type Block =
   | QuestionBlock
   | { kind: "notice"; level: string; code: string; text: string }
   /** A message added to the running turn (`steer`). */
-  | { kind: "user"; text: string; by: string; ts: number; steer: true };
+  | { kind: "user"; text: string; by: string; ts: number; steer: true; inputId?: string; attachments?: Attachment[] };
 
 export interface Usage {
   input?: number;
@@ -132,11 +210,14 @@ export interface Usage {
   cost?: number;
   contextWindow?: number;
   contextUsed?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
 }
 
 export interface Turn {
   n: number;
-  user: { text: string; by: string; ts: number } | null;
+  user: { text: string; by: string; ts: number; inputId?: string; attachments?: Attachment[] } | null;
   blocks: Block[];
   status: TurnStatus | "running";
   startedTs: number | null;
@@ -155,9 +236,19 @@ export interface Chat {
   notices: Array<{ level: string; code: string; text: string; ts: number }>;
   /** How full the agent's context window is, from its last report that had both numbers. */
   context: { used: number; window: number } | null;
+  /** Ids of the latest messages the host accepted into the conversation (`user` events). */
+  inputs: string[];
+  /** Messages the host dropped after accepting them (the queue was full), with why. */
+  dropped: Array<{ id: string; text: string }>;
+  /** The agent's commands and skills from its last `commands` event (null: none came). */
+  commands: SlashCommand[] | null;
+  /** Whether the agent takes images, from its last `agent` event (null: it did not say). */
+  images: boolean | null;
+  /** The agent's last usage report, for the context ring's breakdown. */
+  usage: Usage | null;
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null, usage: null });
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -168,6 +259,10 @@ function newTurn(n: number): Turn {
 
 /** Folds one event into the chat; returns a new chat object (blocks are copied on write). */
 export function reduceChat(prev: Chat, e: ChatEvent): Chat {
+  if (e.seq < 0 && e.t === "commands") {
+    // The list the host knew when the chat opened; a numbered `commands` event is newer.
+    return prev.commands === null ? { ...prev, commands: e.commands ?? [] } : prev;
+  }
   if (e.seq < 0) {
     // Not part of the conversation (a refused command): shown, never numbered.
     if (e.t !== "notice") return prev;
@@ -194,24 +289,32 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       c.state = e.state;
       c.queued = e.queued ?? [];
       return c;
+    case "commands":
+      c.commands = e.commands ?? [];
+      return c;
+    case "agent":
+      if (typeof e.images === "boolean") c.images = e.images;
+      return c;
     case "user": {
+      if (e.input_id) c.inputs = [...c.inputs.slice(-99), e.input_id];
       if (e.steer) {
         // Added to a running turn: shown where it landed, inside that turn. The host numbers it with
         // the running turn; an older host may number it as the next one, so the running turn wins.
         const running = [...c.turns].reverse().find((t) => t.status === "running");
         const target = running ? running.n : c.turns.some((t) => t.n === e.turn) ? e.turn : e.turn + 1;
-        touch(target).blocks.push({ kind: "user", text: e.text, by: e.by?.device ?? "", ts: e.ts, steer: true });
+        touch(target).blocks.push({ kind: "user", text: e.text, by: e.by?.device ?? "", ts: e.ts, steer: true, inputId: e.input_id, attachments: e.attachments });
         return c;
       }
       // The user line comes right before its turn starts (whose number is one more).
       const turn = touch(e.turn + 1);
-      turn.user = { text: e.text, by: e.by?.device ?? "", ts: e.ts };
+      turn.user = { text: e.text, by: e.by?.device ?? "", ts: e.ts, inputId: e.input_id, attachments: e.attachments };
       return c;
     }
     case "turn_start":
       touch(e.turn).startedTs = e.ts;
       return c;
     case "notice":
+      if (e.input_id) c.dropped = [...c.dropped.slice(-19), { id: e.input_id, text: e.text }];
       if (e.level === "debug") return c;
       if (e.turn > 0 && c.turns.some((t) => t.n === e.turn && t.status === "running")) {
         touch(e.turn).blocks.push({ kind: "notice", level: e.level, code: e.code, text: e.text });
@@ -243,7 +346,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       break;
     }
     case "tool_call":
-      b.push({ kind: "tool", callId: e.call_id, title: e.title, tool: e.kind, status: e.status, input: e.input,
+      b.push({ kind: "tool", callId: e.call_id, ...(e.parent ? { parent: e.parent } : {}), title: e.title, tool: e.kind, status: e.status, input: e.input,
         locations: e.locations ?? [], content: e.content ?? [], truncated: false, startedTs: e.ts,
         endedTs: e.status === "completed" || e.status === "failed" ? e.ts : null });
       break;
@@ -268,7 +371,10 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false });
       break;
     case "usage": {
-      turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used };
+      turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
+        cacheRead: e.cache_read_tokens, cacheWrite: e.cache_write_tokens, reasoning: e.reasoning_tokens };
+      // A report without token counts (a turn that made no request) keeps the last one for the breakdown.
+      if (typeof e.input_tokens === "number" || typeof e.output_tokens === "number") c.usage = turn.usage;
       if (typeof e.context_window === "number" && typeof e.context_used === "number" && e.context_window > 0) {
         c.context = { used: e.context_used, window: e.context_window };
       }
@@ -319,12 +425,13 @@ export function isEdit(x: ToolItem): boolean {
 }
 
 export type Row =
-  | { kind: "user"; key: string; text: string; by: string; ts: number; steer: boolean }
+  | { kind: "user"; key: string; text: string; by: string; ts: number; steer: boolean; inputId?: string; attachments?: Attachment[] }
   | { kind: "text"; key: string; text: string; streaming: boolean }
   | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** Tool calls in a row (with the reasoning between them), summarized in one sentence. */
   | { kind: "run"; key: string; members: Array<ToolItem | ThoughtBlock>; tools: ToolItem[]; live: boolean }
-  | { kind: "agent"; key: string; tool: ToolItem }
+  /** A sub-agent, with the tool calls it made (`children`, in order). */
+  | { kind: "agent"; key: string; tool: ToolItem; children: ToolItem[] }
   | { kind: "plan"; key: string; entries: PlanEntry[] }
   | { kind: "question"; key: string; block: QuestionBlock }
   | { kind: "notice"; key: string; level: string; code: string; text: string };
@@ -335,11 +442,21 @@ const joinsRun = (x: Block) => x.kind === "tool" && !isSubagent(x);
 export function turnRows(turn: Turn): Row[] {
   const rows: Row[] = [];
   const running = turn.status === "running";
-  if (turn.user) rows.push({ kind: "user", key: `u${turn.n}`, text: turn.user.text, by: turn.user.by, ts: turn.user.ts, steer: false });
+  if (turn.user) {
+    rows.push({ kind: "user", key: `u${turn.n}`, text: turn.user.text, by: turn.user.by, ts: turn.user.ts, steer: false,
+      inputId: turn.user.inputId, attachments: turn.user.attachments });
+  }
   const b = turn.blocks;
+  // A sub-agent's own calls go inside its row, not in the turn's runs.
+  const agents = new Set(b.filter((x): x is ToolItem => x.kind === "tool" && isSubagent(x)).map((x) => x.callId));
+  const children = new Map<string, ToolItem[]>();
+  for (const x of b) {
+    if (x.kind === "tool" && x.parent && agents.has(x.parent)) children.set(x.parent, [...(children.get(x.parent) ?? []), x]);
+  }
   let run: Extract<Row, { kind: "run" }> | null = null;
   for (let i = 0; i < b.length; i++) {
     const x = b[i];
+    if (x.kind === "tool" && x.parent && agents.has(x.parent)) continue;
     if (joinsRun(x)) {
       const tool = x as ToolItem;
       if (!run) {
@@ -368,7 +485,7 @@ export function turnRows(turn: Turn): Row[] {
         if (x.text.trim()) rows.push({ kind: "text", key: `m${turn.n}:${x.id}`, text: x.text, streaming: false });
         break;
       case "tool":
-        rows.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x });
+        rows.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x, children: children.get(x.callId) ?? [] });
         break;
       case "plan":
         rows.push({ kind: "plan", key: `p${turn.n}`, entries: x.entries });
@@ -380,7 +497,7 @@ export function turnRows(turn: Turn): Row[] {
         rows.push({ kind: "notice", key: `n${turn.n}:${i}`, level: x.level, code: x.code, text: x.text });
         break;
       case "user":
-        rows.push({ kind: "user", key: `s${turn.n}:${i}`, text: x.text, by: x.by, ts: x.ts, steer: true });
+        rows.push({ kind: "user", key: `s${turn.n}:${i}`, text: x.text, by: x.by, ts: x.ts, steer: true, inputId: x.inputId, attachments: x.attachments });
         break;
     }
   }
@@ -613,8 +730,10 @@ export function sendMode(running: boolean, caps: Caps | null | undefined, interr
 }
 
 /** The input command for the host (see chat/1 in docs/architecture.md). */
-export function inputCommand(id: string, text: string, mode?: InputMode): { input: { id: string; text: string; mode?: InputMode } } {
-  return { input: { id, text, ...(mode && mode !== "queue" ? { mode } : {}) } };
+export function inputCommand(id: string, text: string, mode?: InputMode, attachments?: AttachmentPayload[]): {
+  input: { id: string; text: string; mode?: InputMode; attachments?: AttachmentPayload[] };
+} {
+  return { input: { id, text, ...(mode && mode !== "queue" ? { mode } : {}), ...(attachments?.length ? { attachments } : {}) } };
 }
 
 /**
@@ -623,6 +742,81 @@ export function inputCommand(id: string, text: string, mode?: InputMode): { inpu
  */
 export function editQueued(queuedId: string, newId: string, text: string): Array<Record<string, unknown>> {
   return [{ dequeue: { id: queuedId } }, inputCommand(newId, text, "queue")];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Messages on their way: shown at the end of the conversation until the host has them.
+
+/**
+ * A message this device sent and the conversation does not show yet. `sending` until the host
+ * acknowledges it (`acked`), then until it appears as a `user` event or in the queue; `failed` when
+ * the host refused it, the connection dropped before the ack, or no ack came in time.
+ */
+export interface Outgoing {
+  id: string;
+  text: string;
+  mode?: InputMode;
+  at: number;
+  state: "sending" | "acked" | "failed";
+  error?: string;
+  /** The host refused this id: a retry needs a new one (the host may remember this one). */
+  refused?: boolean;
+  /** Images sent with it, as data URLs for the bubble (the host keeps only their names). */
+  images?: Array<{ name: string; url: string }>;
+  /** The images as sent, for a retry. */
+  attachments?: AttachmentPayload[];
+}
+
+/** An unacknowledged message counts as not sent after this long (hosts that acknowledge only). */
+export const SEND_TIMEOUT_MS = 15_000;
+
+/**
+ * Updates messages on their way against the conversation: delivered ones (a `user` event or a
+ * queued entry with their id) leave, dropped ones fail, and unacknowledged ones fail after
+ * [`SEND_TIMEOUT_MS`] when the host acknowledges messages at all.
+ */
+export function settleOutgoing(out: Outgoing[], chat: Chat, now: number, hostAcks: boolean): Outgoing[] {
+  let changed = false;
+  const next: Outgoing[] = [];
+  for (const o of out) {
+    if (chat.inputs.includes(o.id) || chat.queued.some((q) => q.id === o.id) || (o.state === "acked" && chat.state === "ended")) {
+      changed = true;
+      continue;
+    }
+    const dropped = chat.dropped.find((d) => d.id === o.id);
+    if (dropped && o.state !== "failed") {
+      next.push({ ...o, state: "failed", error: dropped.text, refused: true });
+      changed = true;
+    } else if (hostAcks && o.state === "sending" && now - o.at > SEND_TIMEOUT_MS) {
+      next.push({ ...o, state: "failed", error: "timeout" });
+      changed = true;
+    } else next.push(o);
+  }
+  return changed ? next : out;
+}
+
+/** Applies a reply from the host to messages on their way (an `ack`, or a refusal naming one). */
+export function outgoingReply(out: Outgoing[], m: ChatReply): Outgoing[] {
+  if (!m.input_id) return out;
+  const i = out.findIndex((o) => o.id === m.input_id);
+  if (i < 0) return out;
+  const next = out.slice();
+  if (m.t === "ack") {
+    if (next[i].state === "sending") next[i] = { ...next[i], state: "acked" };
+  } else if (m.t === "error") {
+    next[i] = { ...next[i], state: "failed", error: m.text ?? m.code ?? "refused", refused: true };
+  }
+  return next;
+}
+
+/** The connection dropped: what the host had not acknowledged is not sent. */
+export function outgoingDisconnected(out: Outgoing[]): Outgoing[] {
+  return out.some((o) => o.state === "sending") ? out.map((o) => (o.state === "sending" ? { ...o, state: "failed" as const, error: "disconnected" } : o)) : out;
+}
+
+/** Sending a failed message again: the same id when the host may have it (it ignores repeats), a new one after a refusal. */
+export function retryOutgoing(o: Outgoing, newId: string, now: number): Outgoing {
+  return { ...o, id: o.refused ? newId : o.id, state: "sending", error: undefined, refused: undefined, at: now };
 }
 
 /** Sent messages, newest last, for ↑ / ↓ in the composer. */

@@ -886,3 +886,71 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-pvi-f.image .cap { border-bottom: 0; height: 24px; font-size: 11.5px; }
 .nt-pvi-f.image .body img { display: block; height: 96px; max-width: 220px; min-width: 64px; object-fit: cover;
   background: repeating-conic-gradient(color-mix(in srgb, var(--text-1) 6%, transparent) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+
+/* ---------------------------------------------------------------------------------------------
+   6f. The composer's input side (ui/chat/Composer.tsx, Transcript.tsx): messages on their way,
+   the / and @ menus, image attachments, find in the conversation, quoting a selection, the
+   context breakdown. Ported in look from Orca's native chat (MIT). */
+.nt-sending.sending .bubble, .nt-sending.acked .bubble { opacity: .72; }
+.nt-sending.failed .bubble { border-color: color-mix(in srgb, var(--danger) 45%, var(--c-line)); }
+.nt-sending .meta { opacity: 1; }
+.nt-sending .meta .st { padding: 0 4px; }
+.nt-sending .meta .st.bad { color: var(--danger); }
+.nt-user .bubble .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.nt-user .bubble .imgs img { height: 64px; max-width: 160px; object-fit: cover; border-radius: 6px; border: 1px solid var(--c-line); }
+.nt-user .bubble .imgs .att { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--c-hover); font-size: 11.5px; color: var(--c-faint); }
+.nt-compose-wrap { position: relative; }
+.nt-ac { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; max-height: 300px; overflow-y: auto; padding: 4px;
+  border-radius: 10px; background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 8px 28px rgb(0 0 0 / .18); }
+.nt-ac .gh { padding: 6px 8px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--c-faint); }
+.nt-ac .it { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px 8px; border-radius: 6px; text-align: left; font-size: 12.5px; color: var(--c-strong); min-width: 0; }
+.nt-ac .it.on { background: var(--c-hover); }
+.nt-ac .it .ic { flex: none; align-self: center; color: var(--c-faint); }
+.nt-ac .it .nm { flex: none; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-ac[data-mode="mention"] .it .nm { flex: 1; max-width: none; direction: rtl; text-align: left; }
+.nt-ac .it .hint { flex: none; font-size: 11.5px; color: var(--c-faint); font-family: var(--font-mono, ui-monospace, monospace); }
+.nt-ac .it .ds { flex: 1; min-width: 0; font-size: 11.5px; color: var(--c-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-ac .st { padding: 6px 8px; font-size: 12px; color: var(--c-faint); }
+.nt-atts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
+.nt-atts .att { position: relative; display: block; }
+.nt-atts .att img { display: block; height: 52px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--c-line); }
+.nt-atts .att .rm { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%;
+  background: var(--c-strong); color: var(--raised); opacity: 0; transition: opacity .12s; }
+.nt-atts .att:hover .rm, .nt-atts .att .rm:focus-visible { opacity: 1; }
+/* One row (Claude's composer): + on the left, the text, Stop / Send on the right; hints and the
+   context ring below the box. */
+.nt-compose { padding: 6px 6px 6px 4px; }
+.nt-compose .line { display: flex; align-items: flex-end; gap: 4px; }
+.nt-compose .line textarea { flex: 1; min-width: 0; align-self: center; padding: 4px 2px; }
+.nt-plus { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--c-faint); }
+.nt-plus:hover { background: var(--c-hover); color: var(--c-strong); }
+.nt-plus.no { opacity: .4; cursor: not-allowed; }
+.nt-compose-ft { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; padding: 0 4px 0 10px; }
+.nt-compose-ft .hint-l { min-width: 0; flex: 1; display: flex; }
+.nt-compose-ft .hint { font-size: 11px; color: var(--c-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-compose-ft .hint.warn { color: var(--danger); }
+.nt-compose-ft .nt-usage { bottom: calc(100% + 6px); }
+.nt-transcript .nt-findbar { position: absolute; top: 6px; right: 10px; z-index: 15; display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 8px;
+  border-radius: 8px; background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 6px 20px rgb(0 0 0 / .16); }
+.nt-findbar input { width: 180px; height: 24px; border: 0; outline: 0; background: transparent; font-size: 12.5px; color: var(--c-strong); }
+.nt-findbar .ct { min-width: 44px; font-size: 11.5px; color: var(--c-faint); text-align: right; padding-right: 4px; }
+::highlight(nt-find) { background-color: color-mix(in srgb, #f5c400 38%, transparent); color: inherit; }
+::highlight(nt-find-cur) { background-color: #f5a300; color: #000; }
+.nt-transcript .nt-quote { position: absolute; z-index: 16; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px;
+  border-radius: 7px; background: var(--c-strong); color: var(--raised); font-size: 12px; box-shadow: 0 4px 14px rgb(0 0 0 / .2); }
+.nt-ring-box { position: relative; display: inline-flex; }
+button.nt-ring { padding: 2px 4px; border-radius: 6px; }
+button.nt-ring:hover, button.nt-ring[aria-expanded="true"] { background: var(--c-hover); }
+.nt-usage { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 25; width: 260px; padding: 12px 14px; border-radius: 10px;
+  background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 8px 28px rgb(0 0 0 / .18); font-size: 12px; color: var(--c-strong); text-align: left; }
+.nt-usage .ttl { font-weight: 600; font-size: 12.5px; margin-bottom: 8px; }
+.nt-usage .meter { height: 6px; border-radius: 3px; background: var(--c-hover); overflow: hidden; }
+.nt-usage .meter i { display: block; height: 100%; background: var(--agent); border-radius: 3px; }
+.nt-usage .sum { margin: 6px 0 8px; color: var(--c-faint); font-size: 11.5px; }
+.nt-usage dl { margin: 0; display: grid; gap: 3px; }
+.nt-usage .urow { display: flex; justify-content: space-between; gap: 12px; }
+.nt-usage .urow.sub dt { padding-left: 12px; color: var(--c-faint); }
+.nt-usage dt { margin: 0; } .nt-usage dd { margin: 0; color: var(--c-strong); }
+.nt-usage .note { margin-top: 8px; font-size: 11px; color: var(--c-faint); }
+.nt-sub .rh .steps { font-size: 11.5px; color: var(--c-faint); }
+.nt-sub-steps { margin: 2px 0 4px 7px; padding-left: 12px; border-left: 1px solid var(--c-line); display: flex; flex-direction: column; gap: 1px; }

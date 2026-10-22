@@ -8,7 +8,7 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Most text kept of a tool's input or output in an event; the rest is cut (`truncated: true`).
@@ -54,6 +54,52 @@ pub struct PlanEntry {
     pub status: String,
 }
 
+/// A slash command or skill the agent offers, for the composer's `/` menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// `command` or `skill`.
+    pub kind: String,
+    /// What choosing it puts in the message: `/name` for commands, how the agent names a skill
+    /// otherwise (`$name` for Codex). The message goes to the agent as typed.
+    pub insert: String,
+    /// What the command takes, when the agent says (`<file>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// Most characters of a command's description kept.
+pub const COMMAND_DESCRIPTION: usize = 240;
+/// Most commands kept in a list.
+pub const MAX_COMMANDS: usize = 400;
+
+impl SlashCommand {
+    pub fn new(kind: &str, name: &str, insert: String, description: &str, hint: Option<&str>) -> Self {
+        let description = description.trim();
+        let description = match description.char_indices().nth(COMMAND_DESCRIPTION) {
+            Some((at, _)) => format!("{}…", &description[..at]),
+            None => description.to_string(),
+        };
+        Self {
+            name: name.to_string(),
+            description,
+            kind: kind.to_string(),
+            insert,
+            hint: hint.map(str::trim).filter(|h| !h.is_empty()).map(str::to_string),
+        }
+    }
+}
+
+/// What a transcript keeps of an image sent with a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub mime: String,
+    pub bytes: usize,
+}
+
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +129,9 @@ pub enum Ev {
         text: String,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         steer: bool,
+        /// The images sent with it (their bytes are not kept).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     TurnStart {},
     /// Text from the agent. With `delta` it continues the message `id`.
@@ -99,6 +148,10 @@ pub enum Ev {
     },
     ToolCall {
         call_id: String,
+        /// The tool call of the sub-agent that made this one (Claude Code's `Agent` / `Task`
+        /// tool): shown inside that sub-agent's row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
         title: String,
         kind: ToolKind,
         status: ToolStatus,
@@ -141,6 +194,14 @@ pub enum Ev {
         /// Tokens the conversation takes of it now (the last request's input and output).
         #[serde(skip_serializing_if = "Option::is_none")]
         context_used: Option<u64>,
+        /// Of `input_tokens`: read from the prompt cache, and written to it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_read_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_write_tokens: Option<u64>,
+        /// Of `output_tokens`: the model's reasoning.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
     },
     TurnEnd {
         status: TurnStatus,
@@ -155,8 +216,20 @@ pub enum Ev {
         state: super::State,
         queued: Vec<Queued>,
     },
-    /// Something the user should know that is not part of the conversation.
+    /// What the running agent says it can do, where that differs from what its kind was assumed to
+    /// (an ACP agent that takes no images).
+    Agent {
+        images: bool,
+    },
+    /// The commands and skills the agent offers now (all of them; the list replaces the last one).
+    Commands {
+        commands: Vec<SlashCommand>,
+    },
+    /// Something the user should know that is not part of the conversation. `input_id` names the
+    /// message it is about when it is about one (a message dropped because the queue was full).
     Notice {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_id: Option<String>,
         level: &'static str,
         code: &'static str,
         text: String,

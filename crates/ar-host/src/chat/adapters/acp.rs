@@ -16,6 +16,11 @@
 //!   `session/resume` (DeepSeek Harness) continues without replaying and is preferred.
 //! - A model is chosen with the session's `model` config option when the agent lists one
 //!   (`session/set_config_option`, matched by value or name), otherwise with `session/set_model`.
+//! - Images go in the prompt as `image` blocks when the agent says it takes them
+//!   (`promptCapabilities.image`); otherwise they are left out with a notice, and the session
+//!   tells viewers (`agent` event) so the composer stops offering them.
+//! - The agent's commands (`available_commands_update`) go to the `/` menu; choosing one sends
+//!   `/name …` as the prompt, which is how ACP runs them.
 //! - Text after a tool call is a new message (or each `messageId` its own), so a turn reads as the
 //!   agent wrote it; the turn's final text is its last message.
 //!
@@ -28,8 +33,10 @@ use tokio::sync::mpsc;
 
 use super::{LiveCmd, content_text, exit_reason, report};
 use crate::chat::{
+    Image,
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
+        preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
@@ -64,7 +71,9 @@ struct State {
     session: Option<String>,
     loading: bool,
     ready: bool,
-    waiting: VecDeque<String>,
+    waiting: VecDeque<(String, Vec<Image>)>,
+    /// The agent takes images (`promptCapabilities.image`); assumed until it says.
+    images: Option<bool>,
     turn: u32,
     /// Text of the current message, the turn's final text if no other follows.
     text: String,
@@ -83,18 +92,36 @@ impl State {
         jsonrpc::request(self.next, method, params)
     }
 
-    fn prompt(&mut self, text: &str) -> String {
+    /// The `session/prompt` for a message, and a notice when its images had to be left out.
+    fn prompt(&mut self, text: &str, images: &[Image]) -> (String, Option<Out>) {
+        let mut prompt: Vec<Value> = Vec::new();
+        let mut dropped = None;
+        if !images.is_empty() {
+            if self.images == Some(false) {
+                dropped = Some(Out::Ev(Ev::Notice {
+                    input_id: None,
+                    level: "warn",
+                    code: "no_images",
+                    text: format!("this agent takes no images; {} left out, the text was sent", images.len()),
+                }));
+            } else {
+                prompt.extend(images.iter().map(|i| json!({"type": "image", "mimeType": i.mime, "data": &*i.data})));
+            }
+        }
+        if !text.trim().is_empty() || prompt.is_empty() {
+            prompt.push(json!({"type": "text", "text": text}));
+        }
+        (self.prompt_blocks(prompt), dropped)
+    }
+
+    fn prompt_blocks(&mut self, prompt: Vec<Value>) -> String {
         self.turn += 1;
         self.text.clear();
         self.message = None;
         self.segment = 0;
         self.cancelling = false;
         let session = self.session.clone().unwrap_or_default();
-        self.request(
-            "session/prompt",
-            json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
-            Pending::Prompt,
-        )
+        self.request("session/prompt", json!({"sessionId": session, "prompt": prompt}), Pending::Prompt)
     }
 }
 
@@ -150,12 +177,15 @@ pub async fn run(
                 }
             },
             cmd = cmds.recv() => match cmd {
-                Some(LiveCmd::Prompt { text }) => {
+                Some(LiveCmd::Prompt { text, images }) => {
                     if st.ready {
-                        let line = st.prompt(&text);
+                        let (line, dropped) = st.prompt(&text, &images);
+                        if let Some(o) = dropped {
+                            report(&out, o).await;
+                        }
                         let _ = proc.write_line(line).await;
                     } else {
-                        st.waiting.push_back(text);
+                        st.waiting.push_back((text, images));
                     }
                 }
                 Some(LiveCmd::Interrupt) => {
@@ -174,7 +204,7 @@ pub async fn run(
                     }
                 }
                 Some(LiveCmd::Answer { .. }) => {
-                    report(&out, Out::Ev(Ev::Notice { level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
+                    report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
                 }
                 Some(LiveCmd::Steer { id, .. }) => {
                     // ACP has no way to add to a running prompt turn.
@@ -245,6 +275,9 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
         Incoming::Response { id, result } => match (st.pending.remove(&id), result) {
             (Some(Pending::Initialize), Ok(r)) => {
                 let caps = &r["agentCapabilities"];
+                let images = caps["promptCapabilities"]["image"].as_bool() == Some(true);
+                st.images = Some(images);
+                outs.push(Out::Ev(Ev::Agent { images }));
                 let can_resume = caps["sessionCapabilities"]["resume"].is_object();
                 let can_load = caps["loadSession"].as_bool() == Some(true);
                 match opts.resume.clone() {
@@ -262,6 +295,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                     }
                     Some(_) => {
                         outs.push(Out::Ev(Ev::Notice {
+                            input_id: None,
                             level: "warn",
                             code: "context_lost",
                             text: format!("{name} cannot continue an earlier conversation; a new one starts"),
@@ -297,6 +331,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                         Ok(w) => writes.push(w),
                         Err(why) if why.is_empty() => {}
                         Err(why) => outs.push(Out::Ev(Ev::Notice {
+                            input_id: None,
                             level: "warn",
                             code: "model",
                             text: format!("{name} has no model '{model}' ({why}); it uses its own"),
@@ -305,14 +340,17 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 }
                 st.ready = true;
                 outs.push(Out::Session(session));
-                while let Some(text) = st.waiting.pop_front() {
-                    writes.push(st.prompt(&text));
+                while let Some((text, images)) = st.waiting.pop_front() {
+                    let (line, dropped) = st.prompt(&text, &images);
+                    outs.extend(dropped);
+                    writes.push(line);
                 }
             }
             (Some(Pending::Session { continuing: true }), Err(e)) => {
                 st.loading = false;
                 st.session = None;
                 outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "context_lost",
                     text: format!("{name} could not continue the earlier conversation ({e}); a new one starts"),
@@ -339,7 +377,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 outs.push(Out::TurnEnd { status, final_text, reason });
             }
             (Some(Pending::Other), Err(e)) => {
-                outs.push(Out::Ev(Ev::Notice { level: "warn", code: "rpc_error", text: e }))
+                outs.push(Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "rpc_error", text: e }))
             }
             _ => {}
         },
@@ -366,7 +404,11 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
             other => writes.push(jsonrpc::unsupported(&id, other)),
         },
         Incoming::Notification { method, params } => {
-            if method == "session/update" && !st.loading && params["sessionId"].as_str() == st.session.as_deref() {
+            let commands = params["update"]["sessionUpdate"] == "available_commands_update";
+            if method == "session/update"
+                && (!st.loading || commands)
+                && params["sessionId"].as_str() == st.session.as_deref()
+            {
                 update(st, &params["update"], &mut outs);
             }
         }
@@ -404,6 +446,7 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
             let (title, kind, locations) = describe_call(u);
             outs.push(Out::Ev(Ev::ToolCall {
                 call_id: u["toolCallId"].as_str().unwrap_or("").to_string(),
+                parent: None,
                 title,
                 kind,
                 status: status(u["status"].as_str()).unwrap_or(ToolStatus::Pending),
@@ -433,12 +476,34 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
                 .collect();
             outs.push(Out::Ev(Ev::Plan { entries }));
         }
+        "available_commands_update" => {
+            // Run as typed: the agent reads a prompt that starts with `/name`.
+            let commands = u["availableCommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    let name = c["name"].as_str()?.trim_start_matches('/');
+                    Some(SlashCommand::new(
+                        "command",
+                        name,
+                        format!("/{name}"),
+                        c["description"].as_str().unwrap_or(""),
+                        c["input"]["hint"].as_str(),
+                    ))
+                })
+                .collect();
+            outs.push(Out::Ev(Ev::Commands { commands }));
+        }
         "usage_update" => outs.push(Out::Ev(Ev::Usage {
             input_tokens: None,
             output_tokens: None,
             cost_usd: u["cost"]["amount"].as_f64().filter(|_| u["cost"]["currency"] == "USD"),
             context_window: u["size"].as_u64(),
             context_used: u["used"].as_u64(),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
         })),
         _ => {}
     }
@@ -554,7 +619,7 @@ mod tests {
     fn a_loaded_session_hides_its_replay_and_switches_to_auto_mode() {
         let mut st = State::default();
         let _ = st.request("initialize", json!({}), Pending::Initialize);
-        st.waiting.push_back("hi".into());
+        st.waiting.push_back(("hi".into(), vec![]));
         let (w, _) =
             handle(&mut st, r#"{"id":1,"result":{"agentCapabilities":{"loadSession":true}}}"#, &opts(Some("s9")), "A");
         assert!(w[0].contains("session/load") && w[0].contains("s9"));
@@ -575,7 +640,7 @@ mod tests {
     #[test]
     fn updates_permissions_and_the_prompt_answer_make_a_turn() {
         let mut st = State { session: Some("s".into()), ready: true, ..Default::default() };
-        let p = st.prompt("go");
+        let (p, _) = st.prompt("go", &[]);
         assert!(p.contains("session/prompt"));
         let lines = [
             r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Do"}}}}"#,
@@ -631,7 +696,7 @@ mod tests {
         assert!(w[0].contains("session/set_config_option") && w[0].contains(r#"\"deepseek-v4-flash\"]"#), "{}", w[0]);
         assert!(!w.iter().any(|l| l.contains("session/set_model")));
 
-        let p = st.prompt("go");
+        let (p, _) = st.prompt("go", &[]);
         assert!(p.contains("\"u1\""));
         let lines = [
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_thought_chunk","messageId":"m1","content":{"type":"text","text":"Look first."}}}}"#,
@@ -690,5 +755,48 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert!(matches!(&out[0], Out::Ev(Ev::Notice { code: "model", text, .. }) if text.contains("offered: a")));
         assert!(matches!(&out[1], Out::Session(s) if s == "n1"));
+    }
+
+    #[test]
+    fn the_agents_commands_reach_the_menu_even_while_loading() {
+        let mut st = State { session: Some("s".into()), loading: true, ..Default::default() };
+        let (_, outs) = handle(
+            &mut st,
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"init","description":"Create AGENTS.md"},{"name":"review","description":"Review","input":{"hint":"branch"}}]}}}"#,
+            &opts(None),
+            "A",
+        );
+        let Some(Out::Ev(Ev::Commands { commands })) = outs.first() else { panic!("{outs:?}") };
+        assert_eq!(commands.len(), 2);
+        assert_eq!((commands[1].insert.as_str(), commands[1].hint.as_deref()), ("/review", Some("branch")));
+    }
+
+    #[test]
+    fn images_go_in_the_prompt_only_when_the_agent_takes_them() {
+        let img = || crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
+        let mut st = State { session: Some("s".into()), ..Default::default() };
+        let (_, outs) = handle(
+            &mut st,
+            r#"{"id":0,"result":{"agentCapabilities":{"promptCapabilities":{"image":true}}}}"#,
+            &opts(None),
+            "A",
+        );
+        assert!(outs.is_empty(), "no request 0 was pending");
+        st.pending.insert(7, Pending::Initialize);
+        let (_, outs) = handle(
+            &mut st,
+            r#"{"id":7,"result":{"agentCapabilities":{"promptCapabilities":{"image":true}}}}"#,
+            &opts(None),
+            "A",
+        );
+        assert!(matches!(outs[0], Out::Ev(Ev::Agent { images: true })));
+        let (p, dropped) = st.prompt("see", &[img()]);
+        let p: Value = serde_json::from_str(&p).unwrap();
+        assert_eq!(p["params"]["prompt"][0], json!({"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}));
+        assert!(dropped.is_none());
+        st.images = Some(false);
+        let (p, dropped) = st.prompt("see", &[img()]);
+        assert!(!p.contains("image/png"));
+        assert!(matches!(dropped, Some(Out::Ev(Ev::Notice { code: "no_images", .. }))));
     }
 }

@@ -6,7 +6,9 @@ controller agent → QUIC → host → agent process.
 
 The stand-ins speak Claude Code's stream-json: "Rich fake" answers a message containing RICH with
 reasoning, a plan (TodoWrite), Read, a failing Bash, Grep, an Edit, a Markdown answer and context usage;
-SLOW keeps a turn running until the next message (a steer) or Stop; FILES writes an HTML page, Markdown and a
+SLOW keeps a turn running until the next message (a steer) or Stop; AGENT runs a sub-agent with two steps of its
+own; a message with images answers with their types and sizes; it lists /review, /release-notes and the skill
+/tidy; FILES writes an HTML page, Markdown and a
 PNG into the session's folder and a Markdown file outside it (named in a Write), for the file previews
 (tools/desktop-chat-preview-e2e.js, run with E2E_SCRIPT=tools/desktop-chat-preview-e2e.js). "No-steer fake" is the same program
 with `steer = false`. Neither asks questions (Claude's adapter does not carry them), so the question
@@ -50,7 +52,7 @@ def out(v):
     sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
-out({"type": "system", "subtype": "init", "session_id": "fake-session"})
+out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"]})
 OLD = "def quarter_end(year, q):\n    return date(year, q * 3, 31)\n"
 ANSWER = """Fixed: the quarter end was always **day 31**.
 
@@ -131,9 +133,29 @@ def files():
     answer = "Done: the [report](out/report.html), notes in `out/notes.md` and a chart `out/chart.png`."
     out({"type": "assistant", "message": {"id": "f2", "content": [{"type": "text", "text": answer}]}})
     out({"type": "result", "subtype": "success", "is_error": False, "result": answer})
+def subagent():
+    # A sub-agent (the Agent tool) with two steps of its own, then its summary.
+    out({"type": "assistant", "message": {"id": "a0", "content": [{"type": "tool_use", "id": "ag1", "name": "Agent",
+         "input": {"description": "Find where the quarter end is built", "prompt": "..."}}]}})
+    out({"type": "assistant", "parent_tool_use_id": "ag1", "message": {"id": "a1", "content": [
+         {"type": "tool_use", "id": "sg1", "name": "Grep", "input": {"pattern": "quarter_end"}},
+         {"type": "tool_use", "id": "sr1", "name": "Read", "input": {"file_path": "/work/export.py"}}]}})
+    out({"type": "user", "parent_tool_use_id": "ag1", "message": {"content": [
+         {"type": "tool_result", "tool_use_id": "sg1", "content": "export.py:1"},
+         {"type": "tool_result", "tool_use_id": "sr1", "content": OLD}]}})
+    out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "ag1",
+         "content": [{"type": "text", "text": "It is built in `export.py`, line 2."}]}]}})
+    out({"type": "assistant", "message": {"id": "a2", "content": [{"type": "text", "text": "The sub-agent found it in export.py."}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "found"})
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "initialize":
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"commands": [
+            {"name": "review", "description": "Review the changes on this branch", "argumentHint": "<pr>"},
+            {"name": "release-notes", "description": "Draft release notes from the commits"},
+            {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
+        continue
     if msg.get("type") == "control_request":
         if slow:
             slow.set(); slow = None
@@ -141,7 +163,12 @@ for line in sys.stdin:
         continue
     if msg.get("type") != "user":
         continue
-    text = msg["message"]["content"][0]["text"]
+    content = msg["message"]["content"]
+    text = next((b["text"] for b in content if b.get("type") == "text"), "")
+    images = [b for b in content if b.get("type") == "image"]
+    if images:
+        # Says what it got, so a test can check the image arrived whole.
+        text += " [images: " + ", ".join(b["source"]["media_type"] + " " + str(len(b["source"]["data"])) for b in images) + "]"
     out({"type": "user", "isReplay": True, "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
     if slow:
         slow.set(); slow = None
@@ -156,6 +183,8 @@ for line in sys.stdin:
         rich(); continue
     if "FILES" in text:
         files(); continue
+    if "AGENT" in text:
+        subagent(); continue
     out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m"}}})
     for word in ("you ", "said: ", text):
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word}}})
@@ -177,6 +206,10 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
     webview = Path(tempfile.gettempdir()) / f"adc-webview-{os.getpid()}"
     host_home, desk, work = base / "host", base / "desk", base / "work"
     work.mkdir()
+    # Files for the @ menu.
+    (work / "src").mkdir()
+    (work / "src" / "main.rs").write_text("fn main() {}\n")
+    (work / "export.py").write_text("def quarter_end(year, q):\n    return date(year, q * 3, 31)\n")
     quiet = "[network]\nquiet = true\n"
     (host_home / "host").mkdir(parents=True)
     (host_home / "host" / "ai-remote.toml").write_text(

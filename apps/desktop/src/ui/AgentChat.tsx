@@ -18,6 +18,11 @@ import {
   tildeFolder,
   inputCommand,
   markAnswered,
+  outgoingDisconnected,
+  outgoingReply,
+  retryOutgoing,
+  settleOutgoing,
+  type Outgoing,
   phase,
   reduceChat,
   rememberCwd,
@@ -33,7 +38,9 @@ import {
   type SessionInfo,
 } from "../lib/chat";
 import { t } from "../lib/i18n";
-import { Composer } from "./chat/Composer";
+import { quoteText, rememberImages } from "../lib/chat-input";
+import { Search } from "lucide-react";
+import { Composer, type ComposerImage } from "./chat/Composer";
 import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/FolderPicker";
 import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
@@ -249,6 +256,8 @@ function useConversation(host: string, target: ChatTarget | null) {
   const conn = useRef<ChatConnection | null>(null);
   const chatRef = useRef(chat);
   chatRef.current = chat;
+  /** Messages this device sent that the conversation does not show yet. */
+  const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
   useEffect(() => {
     if (!target) return;
     let live = true;
@@ -283,8 +292,11 @@ function useConversation(host: string, target: ChatTarget | null) {
         }, () => {
           if (!live) return;
           setConnected(false);
+          setOutgoing(outgoingDisconnected);
           conn.current = null;
           retry = setTimeout(() => void open(), 3000);
+        }, (m) => {
+          if (live) setOutgoing((o) => outgoingReply(o, m));
         });
         ticket = undefined;
         if (!live) {
@@ -327,7 +339,39 @@ function useConversation(host: string, target: ChatTarget | null) {
     }
     void conn.current.send(command).catch((e) => setError(String(e)));
   };
-  return { chat, setChat, hello, error, connected, gone, send };
+  // Delivered messages leave the list; unanswered ones fail after a while.
+  const acks = !!hello?.acks;
+  useEffect(() => setOutgoing((o) => settleOutgoing(o, chat, Date.now(), acks)), [chat, acks]);
+  const anySending = outgoing.some((o) => o.state === "sending");
+  useEffect(() => {
+    if (!anySending) return;
+    const id = setInterval(() => setOutgoing((o) => settleOutgoing(o, chatRef.current, Date.now(), acks)), 1000);
+    return () => clearInterval(id);
+  }, [anySending, acks]);
+  /** Sends a message and shows it as on its way until the conversation has it. */
+  const sendInput = (o: Outgoing) => {
+    setOutgoing((list) => [...list.filter((x) => x.id !== o.id), o]);
+    const fail = (error: string) => setOutgoing((list) => list.map((x) => (x.id === o.id ? { ...x, state: "failed" as const, error } : x)));
+    if (!conn.current) {
+      fail("disconnected");
+      return;
+    }
+    conn.current.send(inputCommand(o.id, o.text, o.mode, o.attachments)).catch((e) => fail(e instanceof Error ? e.message : String(e)));
+  };
+  const retry = (o: Outgoing) => {
+    setOutgoing((list) => list.filter((x) => x.id !== o.id));
+    const again = retryOutgoing(o, newId(), Date.now());
+    rememberImages(again.id, again.images ?? []);
+    sendInput(again);
+  };
+  const discard = (id: string) => setOutgoing((list) => list.filter((x) => x.id !== id));
+  /** Files in the session's folder matching `query` (the `@` menu). */
+  const listFiles = async (query: string) => {
+    if (!conn.current) throw new Error(t("hc_not_connected"));
+    const r = await conn.current.ask("files", { query, limit: 50 });
+    return { files: Array.isArray(r.files) ? (r.files as string[]) : [], truncated: !!r.truncated };
+  };
+  return { chat, setChat, hello, error, connected, gone, send, conn, outgoing, sendInput, retry, discard, listFiles };
 }
 
 /** The chat tab of the session page. */
@@ -420,12 +464,15 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 const sentBySession = new Map<string, string[]>();
 
 function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
-  const { chat, setChat, hello, error, connected, gone, send } = useConversation(host, target);
+  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = useConversation(host, target);
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {
     if (gone) onLeave(true);
   }, [gone]);
   const [menu, setMenu] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [findFocus, setFindFocus] = useState(0);
+  const [insert, setInsert] = useState<{ text: string; n: number } | null>(null);
   const [history, setHistory] = useState<string[]>(() => sentBySession.get(target.session) ?? []);
   const [follow, setFollow] = useState(0);
   const running = chat.state === "running" || chat.state === "starting" || chat.state === "interrupting";
@@ -445,9 +492,12 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
       return next;
     });
   };
-  const sendText = (text: string, mode: InputMode | undefined) => {
-    send(inputCommand(newId(), text, mode));
-    remember(text);
+  const sendText = (text: string, mode: InputMode | undefined, images: ComposerImage[] = []) => {
+    const id = newId();
+    const shown = images.map((i) => ({ name: i.payload.name, url: i.url }));
+    rememberImages(id, shown);
+    sendInput({ id, text, mode, at: Date.now(), state: "sending", images: shown, attachments: images.map((i) => i.payload) });
+    if (text) remember(text);
     setFollow((n) => n + 1);
   };
   const onAnswer = useCallback((qid: string, value: string) => {
@@ -479,7 +529,19 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
   const status = ended ? t("hc_st_ended") : !connected ? error ?? t("hc_st_connecting") : running ? null : chat.state === "parked" ? t("hc_st_parked") : null;
 
   return (
-    <div className="nt-chat">
+    <div
+      className="nt-chat"
+      onKeyDownCapture={(e) => {
+        // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+          e.preventDefault();
+          e.stopPropagation();
+          // Open, or (already open) back to its field; no animation frame: a hidden page has none.
+          setFinding(true);
+          setFindFocus((n) => n + 1);
+        }
+      }}
+    >
       <div className="nt-chat-hd">
         <i className={cx("dot", connected ? chat.state : "off")} />
         <div className="who">
@@ -488,6 +550,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         </div>
         {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
+        <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
+          <Search size={14} />
+        </button>
         <button type="button" className="ico" aria-label={t("hc_menu")} onClick={() => setMenu((v) => !v)}>
           <Icon name="more" size={14} />
         </button>
@@ -513,8 +578,15 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         empty={t("hc_empty", { agent })}
         workingLabel={working}
         follow={follow}
+        outgoing={outgoing}
+        onRetry={retry}
+        onDiscard={discard}
         onAnswer={onAnswer}
         onContinue={onContinue}
+        finding={finding}
+        findFocus={findFocus}
+        onCloseFind={() => setFinding(false)}
+        onQuote={(text) => setInsert((q) => ({ text: quoteText(text), n: (q?.n ?? 0) + 1 }))}
       />
       </PreviewProvider>
       <Composer
@@ -532,6 +604,11 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         onEditQueued={(id, text) => {
           for (const c of editQueued(id, newId(), text)) send(c);
         }}
+        commands={chat.commands ?? hello?.commands ?? null}
+        usage={chat.usage}
+        insert={insert}
+        listFiles={readonly ? undefined : listFiles}
+        images={(chat.images ?? hello?.images ?? hello?.caps?.images ?? true) ? { ok: true } : { ok: false, why: t("hc_img_unsupported", { agent }) }}
         onSteerQueued={(id, text) => {
           send({ dequeue: { id } });
           send(inputCommand(newId(), text, "steer"));

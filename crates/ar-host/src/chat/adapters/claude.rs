@@ -20,8 +20,14 @@
 //!   it (`isReplay: true`), which tells the two apart: echoed before the `result`, the message
 //!   joined the turn ([`Out::Steered`]); still unechoed at the `result`, it runs next
 //!   ([`Out::SteerLate`]). Measured with Claude Code 2.1.293, see AGENTS.md.
+//! - Commands: a `control_request` of subtype `initialize`, written at start, is answered with
+//!   every slash command and skill with its description (`commands`), before any message; the
+//!   first turn's `system` `init` then says which of them are skills (`skills`). Agents too old to
+//!   answer it still list the names in `init` (`slash_commands`).
 
 use std::collections::{HashSet, VecDeque};
+
+use crate::chat::{Image, event::SlashCommand};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -81,6 +87,37 @@ struct State {
     /// The last model request of the turn: its model and how many tokens it took in and out.
     last_model: Option<String>,
     last_context: Option<u64>,
+    /// The commands `initialize` listed (name, description, argument hint), and which are skills.
+    commands: Vec<(String, String, String)>,
+    skills: HashSet<String>,
+    /// An `init` said which commands are skills: the list goes out from then on (before that, every
+    /// start would send it twice, once without its skills).
+    skills_known: bool,
+}
+
+/// Most tool calls of a session followed (results of others are not shown).
+const MAX_CALLS: usize = 100_000;
+
+/// The request id of the `initialize` written at start.
+const INIT_REQUEST: &str = "ar-init";
+
+/// The `initialize` request that lists the agent's commands.
+pub fn initialize_line() -> String {
+    json!({"type": "control_request", "request_id": INIT_REQUEST, "request": {"subtype": "initialize"}}).to_string()
+}
+
+impl State {
+    fn command_list(&self) -> Out {
+        let commands = self
+            .commands
+            .iter()
+            .map(|(name, description, hint)| {
+                let kind = if self.skills.contains(name) { "skill" } else { "command" };
+                SlashCommand::new(kind, name, format!("/{name}"), description, Some(hint.as_str()))
+            })
+            .collect();
+        Out::Ev(Ev::Commands { commands })
+    }
 }
 
 struct Written {
@@ -97,6 +134,7 @@ pub async fn run(
     name: String,
 ) {
     let mut st = State::default();
+    let _ = proc.write_line(initialize_line()).await;
     loop {
         tokio::select! {
             line = lines.recv() => match line {
@@ -127,16 +165,16 @@ pub async fn run(
                 }
             },
             cmd = cmds.recv() => match cmd {
-                Some(LiveCmd::Prompt { text }) => {
+                Some(LiveCmd::Prompt { text, images }) => {
                     st.retried = false;
-                    match proc.write_line(user_line(&text)).await {
+                    match proc.write_line(user_line(&text, &images)).await {
                         Ok(()) => st.written.push_back(Written { steer: None, late: false }),
                         Err(e) => {
                             report(&out, Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(format!("{e:#}")) }).await;
                         }
                     }
                 }
-                Some(LiveCmd::Steer { id, text }) => match proc.write_line(user_line(&text)).await {
+                Some(LiveCmd::Steer { id, text, images }) => match proc.write_line(user_line(&text, &images)).await {
                     Ok(()) => st.written.push_back(Written { steer: Some(id), late: false }),
                     Err(e) => {
                         report(&out, Out::SteerRejected { id, reason: format!("{e:#}") }).await;
@@ -149,7 +187,7 @@ pub async fn run(
                     let _ = proc.write_line(line.to_string()).await;
                 }
                 Some(LiveCmd::Answer { .. }) => {
-                    report(&out, Out::Ev(Ev::Notice { level: "warn", code: "no_question", text: "Claude Code is not waiting for an answer".into() })).await;
+                    report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: "Claude Code is not waiting for an answer".into() })).await;
                 }
                 Some(LiveCmd::Shutdown { done }) => {
                     proc.shutdown(std::time::Duration::from_secs(3)).await;
@@ -165,8 +203,17 @@ pub async fn run(
     }
 }
 
-fn user_line(text: &str) -> String {
-    json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string()
+/// A user message: its images (as base64 image blocks, the way the Messages API takes them),
+/// then its text.
+fn user_line(text: &str, images: &[Image]) -> String {
+    let mut content: Vec<Value> = images
+        .iter()
+        .map(|i| json!({"type": "image", "source": {"type": "base64", "media_type": i.mime, "data": &*i.data}}))
+        .collect();
+    if !text.trim().is_empty() || content.is_empty() {
+        content.push(json!({"type": "text", "text": text}));
+    }
+    json!({"type": "user", "message": {"role": "user", "content": content}}).to_string()
 }
 
 /// Translates one line of Claude Code's output; returns lines to write back and messages for the
@@ -175,8 +222,8 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
     let mut writes = Vec::new();
     let mut outs = Vec::new();
     let Ok(v) = serde_json::from_str::<Value>(line) else { return (writes, outs) };
-    // Events of sub-agents (the Task tool) carry their parent's tool id; only the summary the
-    // parent receives is shown.
+    // Events of sub-agents (the Agent / Task tool) carry their parent's tool id: their tool calls
+    // are shown inside the sub-agent's row (with `parent`), their streamed text is not.
     let nested = v.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
     match v["type"].as_str().unwrap_or("") {
         "system" => match v["subtype"].as_str().unwrap_or("") {
@@ -187,12 +234,36 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                     st.session = Some(id.to_string());
                     outs.push(Out::Session(id.to_string()));
                 }
+                let skills: HashSet<String> = v["skills"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect();
+                let first = !std::mem::replace(&mut st.skills_known, true);
+                if st.commands.is_empty() {
+                    // No answer to `initialize`: the names alone.
+                    st.commands = v["slash_commands"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|n| n.as_str().map(|n| (n.to_string(), String::new(), String::new())))
+                        .collect();
+                    st.skills = skills;
+                    if !st.commands.is_empty() {
+                        outs.push(st.command_list());
+                    }
+                } else if first || skills != st.skills {
+                    st.skills = skills;
+                    outs.push(st.command_list());
+                }
             }
             "api_retry" if !st.retried => {
                 st.retried = true;
                 let err = v["error"].as_str().unwrap_or("error");
                 let status = v["error_status"].as_u64().map(|s| format!(" ({s})")).unwrap_or_default();
                 outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "api_retry",
                     text: format!("the model API failed{status}: {err}; retrying"),
@@ -258,11 +329,23 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                         delta: false,
                     })),
                     "tool_use" => {
-                        if let Some(o) = tool_call(st, block) {
+                        if let Some(o) = tool_call(st, block, None) {
                             outs.push(o);
                         }
                     }
                     _ => {}
+                }
+            }
+        }
+        "assistant" => {
+            // A sub-agent's own tool calls, shown inside its row; its text stays in its summary.
+            let parent = v["parent_tool_use_id"].as_str();
+            for block in v["message"]["content"].as_array().into_iter().flatten() {
+                if block["type"] == "tool_use"
+                    && st.calls.len() < MAX_CALLS
+                    && let Some(o) = tool_call(st, block, parent)
+                {
+                    outs.push(o);
                 }
             }
         }
@@ -278,7 +361,7 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             }
             st.echoed = true;
         }
-        "user" if !nested => {
+        "user" if v["isReplay"].as_bool() != Some(true) => {
             for block in v["message"]["content"].as_array().into_iter().flatten() {
                 if block["type"] != "tool_result" {
                     continue;
@@ -308,6 +391,9 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 cost_usd: v["total_cost_usd"].as_f64(),
                 context_window: context_window(&v["modelUsage"], st.last_model.as_deref()),
                 context_used: st.last_context.take(),
+                cache_read_tokens: usage["cache_read_input_tokens"].as_u64(),
+                cache_write_tokens: usage["cache_creation_input_tokens"].as_u64(),
+                reasoning_tokens: None,
             }));
             // Steers the turn did not take: the agent runs them next, on its own.
             for w in st.written.iter_mut().filter(|w| !w.late) {
@@ -331,6 +417,21 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             st.interrupting = false;
             st.streamed.clear();
             outs.push(Out::TurnEnd { status, final_text: if failed { None } else { text }, reason });
+        }
+        "control_response" if v["response"]["request_id"] == INIT_REQUEST => {
+            let r = &v["response"]["response"];
+            st.commands = r["commands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                    c["name"].as_str().map(|n| (n.to_string(), s("description"), s("argumentHint")))
+                })
+                .collect();
+            if st.skills_known && !st.commands.is_empty() {
+                outs.push(st.command_list());
+            }
         }
         "control_request" => {
             let id = v["request_id"].clone();
@@ -367,11 +468,11 @@ fn context_window(usage: &Value, model: Option<&str>) -> Option<u64> {
 }
 
 /// A `tool_use` block as a tool call (or, for the to-do list, a plan).
-fn tool_call(st: &mut State, block: &Value) -> Option<Out> {
+fn tool_call(st: &mut State, block: &Value, parent: Option<&str>) -> Option<Out> {
     let call_id = block["id"].as_str()?.to_string();
     let name = block["name"].as_str().unwrap_or("tool");
     let input = &block["input"];
-    if name == "TodoWrite" {
+    if name == "TodoWrite" && parent.is_none() {
         let entries = input["todos"]
             .as_array()
             .into_iter()
@@ -423,6 +524,7 @@ fn tool_call(st: &mut State, block: &Value) -> Option<Out> {
     let shown_input = if content.is_empty() { Some(preview_value(input)) } else { None };
     Some(Out::Ev(Ev::ToolCall {
         call_id,
+        parent: parent.map(str::to_string),
         title,
         kind,
         status: ToolStatus::InProgress,
@@ -579,5 +681,81 @@ mod tests {
             run_lines(&mut st, &[json!({"type": "system", "subtype": "init", "session_id": "s"}), replay()]);
         assert!(!outs.iter().any(|o| matches!(o, Out::Steered { .. })));
         assert!(st.written.is_empty());
+    }
+
+    #[test]
+    fn commands_come_from_initialize_and_skills_from_init() {
+        let mut st = State::default();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": "ar-init", "response": {"commands": [
+                    {"name": "compact", "description": "Clear history but keep a summary", "argumentHint": "<instructions>"},
+                    {"name": "gpu-debug", "description": "Attribute a rendering problem (user)", "argumentHint": ""},
+                ]}}}),
+            ],
+        );
+        // Held until an `init` says which are skills.
+        assert!(outs.is_empty());
+        let (_, outs) = run_lines(
+            &mut st,
+            &[json!({"type": "system", "subtype": "init", "session_id": "s", "skills": ["gpu-debug"]})],
+        );
+        let Some(Out::Ev(Ev::Commands { commands })) = outs.last() else { panic!("{outs:?}") };
+        assert_eq!(
+            (commands[0].kind.as_str(), commands[0].insert.as_str(), commands[0].hint.as_deref()),
+            ("command", "/compact", Some("<instructions>"))
+        );
+        assert_eq!((commands[1].kind.as_str(), commands[1].hint.as_deref()), ("skill", None));
+        // An agent that does not answer `initialize` still names its commands in `init`.
+        let mut old = State::default();
+        let (_, outs) = run_lines(
+            &mut old,
+            &[json!({"type": "system", "subtype": "init", "session_id": "s", "slash_commands": ["clear", "review"]})],
+        );
+        assert!(
+            matches!(outs.last(), Some(Out::Ev(Ev::Commands { commands })) if commands.len() == 2 && commands[1].insert == "/review")
+        );
+    }
+
+    #[test]
+    fn images_go_first_as_base64_blocks() {
+        let img = crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
+        let line: Value = serde_json::from_str(&user_line("what is this", &[img])).unwrap();
+        let content = &line["message"]["content"];
+        assert_eq!(content[0]["source"], json!({"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}));
+        assert_eq!(content[1]["text"], "what is this");
+        // An image alone: no empty text block.
+        let img = crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
+        let line: Value = serde_json::from_str(&user_line("", &[img])).unwrap();
+        assert_eq!(line["message"]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_sub_agents_tool_calls_come_with_their_parent() {
+        let mut st = State::default();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "a1", "name": "Agent", "input": {"description": "Find the date code", "prompt": "..."}}]}}),
+                json!({"type": "assistant", "parent_tool_use_id": "a1", "message": {"id": "s1", "content": [
+                    {"type": "text", "text": "Looking."},
+                    {"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "monthrange"}}]}}),
+                json!({"type": "user", "parent_tool_use_id": "a1", "message": {"content": [{"type": "tool_result", "tool_use_id": "g1", "content": "export.py:2"}]}}),
+                json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a1", "content": [{"type": "text", "text": "It is in export.py"}]}]}}),
+            ],
+        );
+        assert!(
+            matches!(&outs[0], Out::Ev(Ev::ToolCall { call_id, parent: None, kind: ToolKind::Think, .. }) if call_id == "a1")
+        );
+        assert!(
+            matches!(&outs[1], Out::Ev(Ev::ToolCall { call_id, parent: Some(p), kind: ToolKind::Search, .. }) if call_id == "g1" && p == "a1")
+        );
+        assert!(
+            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { call_id, status: Some(ToolStatus::Completed), .. }) if call_id == "g1")
+        );
+        assert!(matches!(&outs[3], Out::Ev(Ev::ToolUpdate { call_id, .. }) if call_id == "a1"));
+        // The sub-agent's own text is not shown as the agent's.
+        assert_eq!(outs.len(), 4, "{outs:?}");
     }
 }

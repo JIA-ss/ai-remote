@@ -13,11 +13,14 @@ use super::*;
 /// back (`--replay-user-messages`).
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
-echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+echo '{"type":"system","subtype":"init","session_id":"fake-session","skills":["tidy"]}'
 REPLAY='{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"(replay)"}]}}'
 SLOW=""
 while IFS= read -r line; do
   case "$line" in
+    *'"subtype":"initialize"'*)
+      echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[{"name":"review","description":"Review the changes","argumentHint":"<pr>"},{"name":"tidy","description":"A skill"}]}}}'
+      continue ;;
     *control_request*)
       [ -n "$SLOW" ] && kill "$SLOW" 2>/dev/null
       SLOW=""
@@ -80,7 +83,12 @@ fn creator() -> Peer {
 }
 
 fn message(text: &str) -> Input {
-    Input { id: format!("u-{text}"), text: text.into(), by: By { device: "laptop".into(), principal: None } }
+    Input {
+        id: format!("u-{text}"),
+        text: text.into(),
+        by: By { device: "laptop".into(), principal: None },
+        images: Vec::new(),
+    }
 }
 
 fn input(text: &str) -> Cmd {
@@ -370,6 +378,7 @@ async fn previews_read_only_files_the_session_is_about() {
     assert!(chat.previewable("link.md").unwrap_err().to_string().contains("outside"));
     // A person naming it does not make it the agent's.
     chat.emit(Ev::User {
+        attachments: vec![],
         input_id: "u".into(),
         by: By { device: "laptop".into(), principal: None },
         text: chart.clone(),
@@ -379,6 +388,7 @@ async fn previews_read_only_files_the_session_is_about() {
     // Once the agent wrote it (a tool call's location), it can be previewed.
     chat.emit(Ev::ToolCall {
         call_id: "w".into(),
+        parent: None,
         title: "Write".into(),
         kind: event::ToolKind::Edit,
         status: event::ToolStatus::Completed,
@@ -391,4 +401,54 @@ async fn previews_read_only_files_the_session_is_about() {
     std::fs::write(f.work.join("big.png"), vec![0u8; (preview::MAX_PREVIEW + 1) as usize]).unwrap();
     assert!(chat.previewable("big.png").unwrap_err().to_string().contains("at most"));
     chat.send(Cmd::End { reason: "done".into() });
+}
+
+#[tokio::test]
+async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    // `initialize` lists the commands; the first `init` says which are skills.
+    let ev = wait_for(&mut rx, |v| v["t"] == "commands" && v["commands"][1]["kind"] == "skill").await;
+    assert_eq!(
+        ev["commands"][0],
+        json!({"name": "review", "description": "Review the changes", "kind": "command", "insert": "/review", "hint": "<pr>"})
+    );
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(chat.meta().commands.len(), 2);
+    // A restart of the agent sends the same list: not written again.
+    chat.send(Cmd::Park { reason: "idle".into() });
+    wait_for(&mut rx, |v| v["t"] == "state" && v["state"] == "parked").await;
+    chat.send(input("second"));
+    let mut lists = 0;
+    loop {
+        let v = wait_for(&mut rx, |v| v["t"] == "commands" || v["t"] == "turn_end").await;
+        if v["t"] == "turn_end" {
+            break;
+        }
+        lists += 1;
+    }
+    assert_eq!(lists, 0);
+    // A new session in the same folder offers them before its agent has started.
+    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    assert_eq!(m.commands_for(&other).len(), 2);
+    assert!(m.commands_for(&chat).iter().any(|c| c.name == "tidy" && c.kind == "skill"));
+}
+
+#[tokio::test]
+async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    assert!(m.takes_images(&chat));
+    let (_, _, mut rx) = chat.follow(0);
+    let mut msg = message("look");
+    msg.images.push(Image::parse("shot.png", "image/png", "iVBORw0KGgo=").unwrap());
+    chat.send(Cmd::Input(msg));
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert_eq!(user["attachments"], json!([{"name": "shot.png", "mime": "image/png", "bytes": 8}]));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let (lines, _, _) = chat.follow(0);
+    assert!(!lines.iter().any(|l| l.contains("iVBORw0KGgo")), "the image's bytes stay out of the transcript");
 }

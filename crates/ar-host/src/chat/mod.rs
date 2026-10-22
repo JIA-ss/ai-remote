@@ -28,6 +28,7 @@
 pub mod adapters;
 pub mod detect;
 pub mod event;
+pub mod files;
 mod jsonrpc;
 pub mod preview;
 pub mod proc;
@@ -51,7 +52,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use self::{
     adapters::{Launch, LiveCmd, LiveHandle},
-    event::{By, Ev, Out, Queued, ToolContent, TurnStatus},
+    event::{By, Ev, Out, Queued, SlashCommand, ToolContent, TurnStatus},
     runtimes::{ChatConfig, Protocol},
 };
 
@@ -124,6 +125,12 @@ pub struct Meta {
     #[serde(default)]
     pub end_reason: Option<String>,
     pub last_activity: u64,
+    /// The commands and skills the agent offered last (see [`Ev::Commands`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<SlashCommand>,
+    /// Whether the agent said it takes images (see [`Ev::Agent`]); its kind's caps until it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 
 /// A message on its way to the agent.
@@ -132,6 +139,53 @@ pub struct Input {
     pub id: String,
     pub text: String,
     pub by: By,
+    /// Images sent with it (kept in memory only: the transcript records their names and sizes).
+    pub images: Vec<Image>,
+}
+
+/// An image sent with a message.
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub name: String,
+    /// One of [`IMAGE_TYPES`].
+    pub mime: String,
+    /// The image, base64 (standard alphabet, padded).
+    pub data: Arc<str>,
+    /// Its size decoded.
+    pub bytes: usize,
+}
+
+/// Images a message may carry.
+pub const MAX_IMAGES: usize = 4;
+/// Largest image accepted, decoded: 3.75 MiB, which is 5 MiB in base64 (the most Anthropic's API
+/// takes per image).
+pub const MAX_IMAGE_BYTES: usize = 3_932_160;
+/// The image types every agent here reads.
+pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+impl Image {
+    /// Checks one image of an `input` command: a type agents read, base64 that decodes, not too big.
+    pub fn parse(name: &str, mime: &str, data: &str) -> Result<Self> {
+        use base64::Engine as _;
+        let mime = mime.trim().to_ascii_lowercase();
+        if !IMAGE_TYPES.contains(&mime.as_str()) {
+            bail!("'{mime}' is not an image type agents read (PNG, JPEG, GIF or WebP)");
+        }
+        if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+            bail!("the image '{name}' is larger than {} MiB", MAX_IMAGE_BYTES as f64 / 1048576.0);
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| anyhow!("the image '{name}' is not valid base64: {e}"))?
+            .len();
+        let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+        Ok(Self { name, mime, data: data.trim().into(), bytes })
+    }
+
+    /// What the transcript records of it.
+    pub fn meta(&self) -> event::Attachment {
+        event::Attachment { name: self.name.clone(), mime: self.mime.clone(), bytes: self.bytes }
+    }
 }
 
 /// A command for a session's driver.
@@ -194,6 +248,9 @@ struct Inner {
     audit: mpsc::UnboundedSender<Value>,
     /// Paused by the person at a controller: no turn may run.
     paused: Mutex<Option<String>>,
+    /// The commands an agent offered last, by agent and folder: what a new session shows in its `/`
+    /// menu before its own agent process has started.
+    commands: Mutex<HashMap<(String, String), Vec<SlashCommand>>>,
 }
 
 /// One chat session.
@@ -206,6 +263,8 @@ pub struct Chat {
     /// The device that started it, whose level is checked while it runs.
     pub creator: Peer,
     dir: PathBuf,
+    /// The folder's files, for the `@` menu.
+    pub files: files::FileCache,
 }
 
 struct Log {
@@ -238,6 +297,7 @@ impl ChatManager {
             tickets: Mutex::new(HashMap::new()),
             audit,
             paused: Mutex::new(None),
+            commands: Mutex::new(HashMap::new()),
         });
         let manager = Self(inner);
         manager.load();
@@ -360,6 +420,8 @@ impl ChatManager {
             ended_at: None,
             end_reason: None,
             last_activity: now_ms(),
+            commands: Vec::new(),
+            images: None,
         };
         let chat = self.insert(meta, creator, &dir)?;
         self.audit(json!({
@@ -368,7 +430,7 @@ impl ChatManager {
             "principal": by.principal, "hardened": hardened,
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
-            chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by }));
+            chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by, images: Vec::new() }));
         }
         self.prune();
         Ok(chat)
@@ -393,6 +455,7 @@ impl ChatManager {
             cmd: tx,
             creator,
             dir: dir.to_path_buf(),
+            files: files::FileCache::default(),
         });
         chat.save();
         self.0.chats.lock().unwrap().insert(chat.id.clone(), chat.clone());
@@ -440,6 +503,7 @@ impl ChatManager {
                 if matches!(chat.state(), State::Running | State::Starting) {
                     chat.send(Cmd::Interrupt { then: None });
                     chat.emit(Ev::Notice {
+                        input_id: None,
                         level: "warn",
                         code: "paused",
                         text: format!("{by} paused this computer; the turn was stopped"),
@@ -463,6 +527,36 @@ impl ChatManager {
 
     fn audit(&self, v: Value) {
         let _ = self.0.audit.send(v);
+    }
+
+    /// The commands to offer for `chat` now: its own agent's last list, or what the same agent offered
+    /// in the same folder (or, failing that, anywhere) in another session.
+    pub fn commands_for(&self, chat: &Chat) -> Vec<SlashCommand> {
+        let m = chat.meta();
+        if !m.commands.is_empty() {
+            return m.commands;
+        }
+        let cache = self.0.commands.lock().unwrap();
+        cache
+            .get(&(m.runtime.clone(), m.cwd.clone()))
+            .or_else(|| cache.iter().find(|((r, _), _)| *r == m.runtime).map(|(_, v)| v))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether `chat`'s agent takes images: what it said, or what its kind is known to do.
+    pub fn takes_images(&self, chat: &Chat) -> bool {
+        let m = chat.meta();
+        if let Some(i) = m.images {
+            return i;
+        }
+        self.0.detector.resolve(&m.runtime, &self.custom()).map(|r| r.caps.images).unwrap_or(false)
+    }
+
+    fn remember_commands(&self, meta: &Meta) {
+        if !meta.commands.is_empty() {
+            self.0.commands.lock().unwrap().insert((meta.runtime.clone(), meta.cwd.clone()), meta.commands.clone());
+        }
     }
 
     /// Loads the sessions on disk. A session whose agent was running when the host stopped is
@@ -492,6 +586,7 @@ impl ChatManager {
                 level: None,
                 revoked: false,
             };
+            self.remember_commands(&meta);
             match self.insert(meta, creator, &dir) {
                 Ok(chat) if was_running => {
                     chat.emit(Ev::TurnEnd {
@@ -762,7 +857,14 @@ impl Driver {
                 if running
                     && self.steer
                     && let Some(l) = &self.live
-                    && l.tx.send(LiveCmd::Steer { id: input.id.clone(), text: input.text.clone() }).await.is_ok()
+                    && l.tx
+                        .send(LiveCmd::Steer {
+                            id: input.id.clone(),
+                            text: input.text.clone(),
+                            images: input.images.clone(),
+                        })
+                        .await
+                        .is_ok()
                 {
                     self.steering.push(input);
                     return false;
@@ -774,7 +876,7 @@ impl Driver {
                 } else {
                     "the agent is not reachable now; the message waits for the next turn".to_string()
                 };
-                self.chat.emit(Ev::Notice { level: "info", code: "steer_queued", text });
+                self.chat.emit(Ev::Notice { input_id: None, level: "info", code: "steer_queued", text });
                 self.enqueue(input).await;
             }
             Cmd::Interrupt { then } => {
@@ -801,6 +903,7 @@ impl Driver {
                     let _ = l.tx.send(LiveCmd::Answer { qid, text }).await;
                 }
                 None => self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "no_question",
                     text: "nothing is waiting for an answer".into(),
@@ -838,6 +941,7 @@ impl Driver {
     async fn enqueue(&mut self, input: Input) {
         if self.queue.len() >= MAX_QUEUE {
             self.chat.emit(Ev::Notice {
+                input_id: Some(input.id.clone()),
                 level: "warn",
                 code: "queue_full",
                 text: format!("{MAX_QUEUE} messages are already waiting; this one was dropped"),
@@ -875,7 +979,14 @@ impl Driver {
         };
         match out {
             Out::Steered { .. } => {
-                self.chat.emit(Ev::User { input_id: input.id, by: input.by, text: input.text, steer: true });
+                let attachments = input.images.iter().map(Image::meta).collect();
+                self.chat.emit(Ev::User {
+                    input_id: input.id,
+                    by: input.by,
+                    text: input.text,
+                    steer: true,
+                    attachments,
+                });
                 if let Some(t) = self.turn.as_mut() {
                     t.steers += 1;
                 }
@@ -884,6 +995,7 @@ impl Driver {
             }
             Out::SteerLate { .. } => {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "info",
                     code: "steer_queued",
                     text: "the agent finished this turn before it read the message; the message runs as the next turn"
@@ -895,6 +1007,7 @@ impl Driver {
             }
             Out::SteerRejected { reason, .. } => {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "info",
                     code: "steer_queued",
                     text: format!(
@@ -925,6 +1038,7 @@ impl Driver {
         let Some(manager) = self.manager() else { return };
         if let Some(by) = manager.0.paused.lock().unwrap().clone() {
             self.chat.emit(Ev::Notice {
+                input_id: None,
                 level: "warn",
                 code: "paused",
                 text: format!("{by} paused this computer; messages wait until it resumes"),
@@ -938,6 +1052,7 @@ impl Driver {
         if self.live.is_none() {
             if manager.live_count() >= MAX_LIVE {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "too_many",
                     text: format!("{MAX_LIVE} agents are already running here; the message waits until one stops"),
@@ -945,7 +1060,12 @@ impl Driver {
                 return;
             }
             if let Err(e) = self.launch(&manager) {
-                self.chat.emit(Ev::Notice { level: "error", code: "start_failed", text: format!("{e:#}") });
+                self.chat.emit(Ev::Notice {
+                    input_id: None,
+                    level: "error",
+                    code: "start_failed",
+                    text: format!("{e:#}"),
+                });
                 self.chat.set_state(State::Parked, &self.queue);
                 // The message stays queued; it goes out with the next attempt.
                 return;
@@ -955,7 +1075,7 @@ impl Driver {
         let Some(live) = &self.live else { return };
         // A message the agent already has starts its turn by itself.
         if !self.delivered.remove(&input.id)
-            && live.tx.send(LiveCmd::Prompt { text: input.text.clone() }).await.is_err()
+            && live.tx.send(LiveCmd::Prompt { text: input.text.clone(), images: input.images.clone() }).await.is_err()
         {
             self.queue.push_front(input);
             return;
@@ -965,6 +1085,7 @@ impl Driver {
             by: input.by.clone(),
             text: input.text.clone(),
             steer: false,
+            attachments: input.images.iter().map(Image::meta).collect(),
         });
         self.chat.emit(Ev::TurnStart {});
         self.chat.set_meta(|m| {
@@ -999,6 +1120,7 @@ impl Driver {
         });
         if meta.proto_session.is_some() {
             self.chat.emit(Ev::Notice {
+                input_id: None,
                 level: "info",
                 code: "resumed",
                 text: format!("{} restarted and resumes the conversation", meta.name),
@@ -1029,6 +1151,23 @@ impl Driver {
             t.last_event = Instant::now();
         }
         match out {
+            Out::Ev(Ev::Agent { images }) => {
+                if self.chat.meta().images != Some(images) {
+                    self.chat.set_meta(|m| m.images = Some(images));
+                    self.chat.emit(Ev::Agent { images });
+                }
+            }
+            Out::Ev(Ev::Commands { mut commands }) => {
+                // Only a list that changed goes into the transcript (an agent sends it at every start).
+                commands.truncate(event::MAX_COMMANDS);
+                if self.chat.meta().commands != commands {
+                    self.chat.set_meta(|m| m.commands = commands.clone());
+                    if let Some(m) = self.manager() {
+                        m.remember_commands(&self.chat.meta());
+                    }
+                    self.chat.emit(Ev::Commands { commands });
+                }
+            }
             Out::Ev(ev) => {
                 if let (Ev::ToolCall { kind, .. }, Some(t)) = (&ev, self.turn.as_mut()) {
                     let k = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(kind_name)).unwrap_or("other");
@@ -1164,7 +1303,7 @@ impl Driver {
             let status = if interrupted { TurnStatus::Interrupted } else { TurnStatus::Failed };
             self.end_turn(status, None, Some(why)).await;
         } else {
-            self.chat.emit(Ev::Notice { level: "info", code: "stopped", text: why });
+            self.chat.emit(Ev::Notice { input_id: None, level: "info", code: "stopped", text: why });
             self.chat.set_state(State::Parked, &self.queue);
         }
     }
@@ -1196,6 +1335,7 @@ impl Driver {
         if let Some(t) = &self.turn {
             if t.interrupt_deadline.is_some_and(|d| now >= d) {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "killed",
                     text: "the agent did not stop in time; its process was ended".into(),
@@ -1205,6 +1345,7 @@ impl Driver {
             }
             if t.interrupt_deadline.is_none() && t.last_event.elapsed() >= QUIET_TURN {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "quiet",
                     text: format!("no event for {} minutes; the turn is stopped", QUIET_TURN.as_secs() / 60),
@@ -1265,3 +1406,22 @@ pub fn interrupt_grace(p: Protocol) -> Duration {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn images_must_be_a_type_agents_read_valid_and_small_enough() {
+        let ok = Image::parse("shot.PNG", "IMAGE/PNG", "iVBORw0KGgo=").unwrap();
+        assert_eq!((ok.mime.as_str(), ok.bytes), ("image/png", 8));
+        assert!(Image::parse("a.svg", "image/svg+xml", "PHN2Zz4=").is_err());
+        assert!(Image::parse("a.png", "image/png", "not base64!").is_err());
+        let big = "A".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4);
+        assert!(Image::parse("a.png", "image/png", &big).unwrap_err().to_string().contains("larger"));
+        assert_eq!(
+            serde_json::to_value(ok.meta()).unwrap(),
+            json!({"name": "shot.PNG", "mime": "image/png", "bytes": 8})
+        );
+    }
+}

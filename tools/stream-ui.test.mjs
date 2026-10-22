@@ -38,7 +38,7 @@ function apiFixture(reply = { screen: { x: 0, y: 0, width: 1600, height: 1000 } 
     async requestKeyframe() {}, async stopScreen() {},
   };
   const { api } = module("../apps/desktop/src/lib/api.ts", {
-    "@tauri-apps/api/core": { Channel }, "../bindings": { commands }, "./demo": { demoBackend: { kind: "demo" } }, "./hops": { hop() {} },
+    "@tauri-apps/api/core": { Channel }, "../bindings": { commands }, "./demo": { demoBackend: { kind: "demo" } }, "./hops": { hop() {} }, "./chat": { chatLineKind: () => null, requester: () => ({ ask: async () => ({}), reply: () => false, close() {} }) },
   }, { window: { __TAURI_INTERNALS__: {} } });
   return {
     channels, requests, frames, ended, api,
