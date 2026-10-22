@@ -4,6 +4,8 @@
 import type { en } from "./en";
 
 export const zh: Record<keyof typeof en, string> = {
+  // ── workspace (ws_): the agents workspace, its sidebar and new-session page ──
+  // ── end workspace ──
   app: "ai-remote",
   preview_badge: "界面预览",
   devices: "设备",
@@ -1077,4 +1079,6 @@ export const zh: Record<keyof typeof en, string> = {
   cdx_more_lines: "还有 {n} 行",
   cdx_collapse: "收起",
   cdx_expand: "展开",
+  // ── claude view (cl_): Claude conversations in the agents workspace ──
+  // ── end claude view ──
 };

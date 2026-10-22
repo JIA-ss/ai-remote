@@ -2,6 +2,8 @@
 // Names from the remote screen and computer, device and agent names are inserted, never translated.
 
 export const en = {
+  // ── workspace (ws_): the agents workspace, its sidebar and new-session page ──
+  // ── end workspace ──
   app: "ai-remote",
   preview_badge: "Preview",
   devices: "Devices",
@@ -1088,4 +1090,6 @@ export const en = {
   cdx_more_lines: "{n} more lines",
   cdx_collapse: "Collapse",
   cdx_expand: "Expand",
+  // ── claude view (cl_): Claude conversations in the agents workspace ──
+  // ── end claude view ──
 };
