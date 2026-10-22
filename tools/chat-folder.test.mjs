@@ -98,3 +98,25 @@ test("how long ago, in one unit", () => {
   assert.deepEqual(plain(c.agoParts(now - 2 * 86400000, now)), { unit: "d", n: 2 });
   assert.deepEqual(plain(c.agoParts(now + 5000, now)), { unit: "now", n: 0 });
 });
+
+test("what a Windows host's files_list returns (win-dev, 2026-10-22) reads right", () => {
+  // `path` values as the host echoed them: ~, a drive root, a folder given with a trailing separator,
+  // a forward-slash drive and a UNC share.
+  const home = "C:\\Users\\sunjiashuai";
+  assert.equal(c.parentFolder(home), "C:\\Users");
+  assert.equal(c.tildeFolder(c.childFolder(home, "code"), home), "~\\code");
+  assert.equal(c.tildeFolder("C:\\Users\\Administrator\\Desktop", home), "C:\\Users\\Administrator\\Desktop");
+  assert.equal(c.childFolder("C:\\Users\\", "lilith"), "C:\\Users\\lilith");
+  assert.equal(c.childFolder("D:/", "work"), "D:/work");
+  assert.equal(c.folderName("\\\\localhost\\C$"), "C$");
+  assert.equal(c.childFolder("\\\\localhost\\C$", "Users"), "\\\\localhost\\C$\\Users");
+  assert.equal(c.parentFolder("\\\\localhost\\C$"), null);
+  // The host refuses a bare drive; the picker sends it with its root.
+  assert.equal(c.trimFolder("C:"), "C:\\");
+  // Drive roots list system folders without a hidden flag: they stay out unless asked for.
+  const root = ["$GetCurrent", "$RECYCLE.BIN", ".conan", "@editron", "Aomei", "System Volume Information", "Users"].map((name) => ({ name, kind: "dir" }));
+  assert.deepEqual(plain(c.listedFolders(root)), ["@editron", "Aomei", "Users"]);
+  assert.deepEqual(plain(c.listedFolders(root, "$r")), ["$RECYCLE.BIN"]);
+  assert.deepEqual(plain(c.listedFolders(root, "system v")), ["System Volume Information"]);
+  assert.deepEqual(plain(c.listedFolders(root, "sy")), []);
+});
