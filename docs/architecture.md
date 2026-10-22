@@ -228,7 +228,11 @@ ticket's length, not tried).
   half of the stream: ask for a keyframe, ping (answered with the stream clock, so it can show the
   latency from capture to display), change the bitrate (the desktop adapts it to the network from
   that latency), and ask for the pointer separately (`"cursor":"client"`: position and shape
-  messages instead of drawing it into the picture; Windows hosts). Any device with a level may watch,
+  messages instead of drawing it into the picture; Windows hosts). `monitor` in the request picks the
+  monitor (an index of `system_info.monitors`, the primary one by default); the reply lists every
+  monitor with its origin and size in screen coordinates (negative left of or above the primary one)
+  and names the one streamed, so the desktop app offers a monitor picker and remembers the choice per
+  computer. Any device with a level may watch,
   and watching is audited (`view_start`, `view_end`). The wire format is documented in
   `crates/ar-host/src/stream/protocol.rs`; see [stream performance](stream-performance.md) for
   requested settings and measurement boundaries.

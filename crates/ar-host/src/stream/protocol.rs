@@ -4,9 +4,14 @@
 //! `{"monitor":null,"max_fps":30,"max_long_edge":1920,"bitrate_kbps":6000,"codecs":["hevc","h264"]}`
 //! (every field optional). `codecs` lists what the viewer decodes, best first; without it the
 //! stream is H.264, which every viewer decodes. The host answers with one JSON line
-//! (`{"ok":true,"monitors":[...],"screen":{x,y,width,height},"codec":"hevc"}`: the streamed
-//! monitor's place in screen coordinates and the codec it starts with; or `{"ok":false,"error":..}`)
-//! and then binary frames until either side closes:
+//! (`{"ok":true,"monitors":[...],"monitor":0,"screen":{x,y,width,height},"codec":"hevc"}`; or
+//! `{"ok":false,"error":..}`) and then binary frames until either side closes. `monitor` in the
+//! request is an index of `system_info`'s monitors (null: the primary one); the reply lists every
+//! monitor (`{"index","x","y","width","height","primary"}`, screen coordinates: a monitor left of or
+//! above the primary one has a negative origin), names the one streamed in `monitor`, and gives its
+//! place in `screen` along with the codec it starts with. A monitor the host does not have is refused
+//! with "there is no monitor <n> on this computer" (hosts from before 2026-10-22 say "no such monitor"
+//! on Windows, "monitor not found" on macOS, and list monitors without `x`, `y` or `monitor`):
 //!
 //! ```text
 //! u8  kind     1 = video frame
@@ -224,6 +229,13 @@ async fn serve(
         return;
     }
     let monitors = capture::monitors().unwrap_or_default();
+    let streamed = match streamed_monitor(req.monitor, &monitors) {
+        Ok(index) => index,
+        Err(error) => {
+            reply(&mut send, json!({"ok": false, "error": error})).await;
+            return;
+        }
+    };
     let wanted: Vec<Codec> = req.codecs.iter().filter_map(|c| Codec::parse(c)).collect();
     // No faster than the display refreshes: the encoder budgets bits per frame from this rate.
     let refresh = capture::refresh_hz(req.monitor).unwrap_or(MAX_FPS);
@@ -250,12 +262,11 @@ async fn serve(
             return;
         }
     };
-    let list: Vec<_> =
-        monitors.iter().map(|(i, w, h, p)| json!({"index": i, "width": w, "height": h, "primary": p})).collect();
     // Where the streamed monitor is on the screen, so a viewer can turn a point of the picture into
     // screen coordinates for the mouse tool.
     let screen = capture.geometry().map(|(x, y, w, h)| json!({"x": x, "y": y, "width": w, "height": h}));
-    let mut answer = json!({"ok": true, "monitors": list, "screen": screen, "codec": codecs[0].name()});
+    let mut answer = json!({"ok": true, "monitors": monitor_list(&monitors), "monitor": streamed, "screen": screen,
+        "codec": codecs[0].name()});
     // The pointer goes separately only when it really is out of the picture.
     let mut pointer = (!draw_pointer && !capture.pointer_drawn())
         .then(|| PointerFeed::new(capture.geometry().map_or((0, 0), |(x, y, _, _)| (x, y))));
@@ -266,7 +277,7 @@ async fn serve(
         return;
     }
     let audit_line =
-        |kind: &str| json!({"kind": kind, "peer": peer.name, "principal": peer.principal, "monitor": req.monitor});
+        |kind: &str| json!({"kind": kind, "peer": peer.name, "principal": peer.principal, "monitor": streamed});
     host.audit().event(audit_line("view_start"));
 
     // Encoding runs on a blocking thread; frames come back over a small channel, so a slow network
@@ -527,6 +538,30 @@ async fn write_frame<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     }
 }
 
+/// The monitor a request streams: the one it names, or the primary one (the first when none is
+/// marked). A named monitor the host does not have is refused with the same words on every platform,
+/// so a viewer that remembered a monitor since unplugged can tell and fall back to the primary one.
+/// An empty list (enumeration failed) refuses nothing and leaves the choice to capture.
+fn streamed_monitor(requested: Option<usize>, monitors: &[capture::MonitorInfo]) -> Result<Option<usize>, String> {
+    match requested {
+        Some(index) if monitors.is_empty() || monitors.iter().any(|m| m.index == index) => Ok(Some(index)),
+        Some(index) => Err(format!(
+            "there is no monitor {index} on this computer: it has {} (0 to {})",
+            monitors.len(),
+            monitors.len() - 1
+        )),
+        None => Ok(monitors.iter().find(|m| m.primary).or(monitors.first()).map(|m| m.index)),
+    }
+}
+
+/// The reply's `monitors`: each one's index, place and size in screen coordinates, and the primary.
+fn monitor_list(monitors: &[capture::MonitorInfo]) -> Vec<serde_json::Value> {
+    monitors
+        .iter()
+        .map(|m| json!({"index": m.index, "x": m.x, "y": m.y, "width": m.width, "height": m.height, "primary": m.primary}))
+        .collect()
+}
+
 /// The pointer for a viewer that draws it: the messages to send when it moved or changed shape.
 struct PointerFeed {
     origin: (i32, i32),
@@ -567,10 +602,18 @@ impl PointerFeed {
             },
             None => 0,
         };
-        let body = json!({"x": now.x - self.origin.0, "y": now.y - self.origin.1, "visible": now.visible, "shape": id});
+        let (x, y) = relative((now.x, now.y), self.origin);
+        let body = json!({"x": x, "y": y, "visible": now.visible, "shape": id});
         out.push(message_bytes(4, 0, 0, ts, body.to_string().as_bytes()));
         out
     }
+}
+
+/// A screen point relative to the streamed monitor's origin (`screen`'s x and y): a monitor left of
+/// or above the primary one has a negative origin, and a point outside `0..width` / `0..height` is on
+/// another monitor (the viewer hides the pointer then).
+fn relative(at: (i32, i32), origin: (i32, i32)) -> (i32, i32) {
+    (at.0 - origin.0, at.1 - origin.1)
 }
 
 /// A kind-5 pointer picture (see the module docs).
@@ -645,6 +688,50 @@ pub fn frame_bytes(data: &[u8], keyframe: bool, codec: Codec, width: u32, height
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// win-dev's monitors as its `system_info` lists them (2026-10-22): a portrait one right of the
+    /// primary, one left of it, then the 5120x2160 primary; both portrait ones start 9 px higher.
+    fn three_monitors() -> Vec<capture::MonitorInfo> {
+        let m = |index, x, y, width, height, primary| capture::MonitorInfo { index, x, y, width, height, primary };
+        vec![m(0, 5120, -9, 1440, 2560, false), m(1, -1440, -9, 1440, 2560, false), m(2, 0, 0, 5120, 2160, true)]
+    }
+
+    #[test]
+    fn the_reply_names_the_streamed_monitor_and_refuses_one_the_host_lacks() {
+        let monitors = three_monitors();
+        // No choice is the primary one, wherever it is in the list.
+        assert_eq!(streamed_monitor(None, &monitors), Ok(Some(2)));
+        assert_eq!(streamed_monitor(Some(1), &monitors), Ok(Some(1)));
+        let error = streamed_monitor(Some(3), &monitors).unwrap_err();
+        assert_eq!(error, "there is no monitor 3 on this computer: it has 3 (0 to 2)");
+        // None marked primary: the first, as capture picks on macOS.
+        let mut unmarked = monitors.clone();
+        unmarked[2].primary = false;
+        assert_eq!(streamed_monitor(None, &unmarked), Ok(Some(0)));
+        // A failed enumeration leaves the choice to capture.
+        assert_eq!(streamed_monitor(Some(5), &[]), Ok(Some(5)));
+        assert_eq!(streamed_monitor(None, &[]), Ok(None));
+    }
+
+    #[test]
+    fn the_monitor_list_carries_negative_origins_and_portrait_sizes() {
+        let list = monitor_list(&three_monitors());
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[1], json!({"index": 1, "x": -1440, "y": -9, "width": 1440, "height": 2560, "primary": false}));
+        assert_eq!(list[2]["primary"], true);
+    }
+
+    #[test]
+    fn pointer_positions_are_relative_to_the_streamed_monitor() {
+        // The left portrait monitor starts at (-1440, -9).
+        let origin = (-1440, -9);
+        assert_eq!(relative((-1440, -9), origin), (0, 0));
+        assert_eq!(relative((-1000, 100), origin), (440, 109));
+        // On the primary monitor: x 1450 is past the left monitor's 1440 px, so the viewer hides it.
+        assert_eq!(relative((10, 10), origin), (1450, 19));
+        // The right one at (5120, -9): a point on the primary is left of it.
+        assert_eq!(relative((5000, 0), (5120, -9)), (-120, 9));
+    }
 
     #[tokio::test]
     async fn slow_write_still_accepts_keyframe_control_and_stop() {
