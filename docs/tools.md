@@ -670,22 +670,44 @@ e.g. `deepseek-v4-pro`; a notice lists what it offers if the name is not among t
 **Events** are numbered per session and written to `<profile>/host/chat/<id>/events.jsonl` before
 they go out, so a viewer that reconnects asks for what came after the last one it saw. One JSON line
 each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user` (`steer: true` when it
-joined the running turn, numbered with it), `turn_start`,
+joined the running turn, numbered with it; `attachments`: name, type and size of the images sent
+with it, whose bytes are not kept), `turn_start`,
 `message` / `thought` (`id`, `text`, `delta`: continues message `id`), `tool_call` (`call_id`,
 `title`, `kind`: read, edit, delete, move, search, execute, think, fetch, other; `status`; `input`;
-`locations`; `content`), `tool_update` (`call_id`, `status`, `content`: text or
+`locations`; `content`; `parent`: the sub-agent call that made it, for Claude Code's sub-agents), `tool_update` (`call_id`, `status`, `content`: text or
 `{type:"diff",path,old,new}`, `truncated`; without `status`, a piece of a running command's output),
 `plan`, `question` (`qid`, `prompt`, `options`), `usage` (tokens, cost, and when the agent reports
-them `context_window` and `context_used`),
+them `context_window`, `context_used`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`),
 `turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
-(`state`, `queued`), `notice`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
+(`state`, `queued`), `commands` (the agent's slash commands and skills, all of them, sent when the
+list changes: `name`, `description`, `kind` command or skill, `insert` — what choosing it puts in
+the message, `/name`, or `$name` for a Codex skill — and `hint`), `agent` (`images`: whether the
+agent takes images, where it differs from what its kind was assumed to do), `notice` (`input_id`
+when it is about a message, e.g. one dropped because the queue was full). Where the commands come
+from: Claude Code answers an `initialize` control request with every command and skill and its
+description (the first `init` says which are skills); Codex lists its skills with `skills/list`
+(a message naming `$skill` carries it as a `skill` input item); ACP agents send
+`available_commands_update`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
 
 **On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
-line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`), then the events after `N`
-and every new one. Commands, one line each: `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`
-(an `id` sent twice runs once), `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`,
-`{"dequeue":{"id":".."}}`, `{"end":{}}`, `{"bye":{}}` (stop watching), `{"ping":N}`. Each command
-checks again that the device has admin level.
+line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`, `acks`, `commands`: the last
+known list, or what the same agent offered in the same folder in another session; `images`), then the
+events after `N` and every new one. Commands, one line each:
+`{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer","attachments":[...]}}` (an `id`
+sent twice runs once; answered `{"t":"ack","input_id":".."}` once the session has it, or
+`{"t":"error","code":..,"input_id":"..","text":".."}` when refused), `{"interrupt":{}}`,
+`{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`,
+`{"files":{"rid":..,"query":"..","limit":N}}` (files in the session's folder whose relative path
+contains every word of `query`: `git ls-files` in a work tree — tracked, and untracked but not
+ignored — otherwise six folder levels without hidden folders or build output; answered
+`{"t":"files","rid":..,"files":[..],"truncated":bool,"source":"git"|"walk"}`, at most 200),
+`{"end":{}}`, `{"bye":{}}` (stop watching), `{"ping":N}`. Each command checks again that the device
+has admin level. An attachment is `{"name":"..","mime":"image/png","data":"<base64>"}`: PNG, JPEG,
+GIF or WebP, at most 4 per message, each at most 3.75 MiB decoded (5 MiB in base64), so a command
+line may be up to 24 MiB. They are kept in memory with the queued message and given to the agent its
+own way (Claude Code: base64 image blocks before the text; Codex: image inputs with data URLs; ACP:
+image blocks when the agent's `promptCapabilities.image` says so, otherwise left out with a
+notice).
 
 **Limits and checks.** Switching agents off on the host (`ai-remote chat disable`, Settings → This
 device in the desktop app) ends every session and refuses new ones, bypassed devices included. A
