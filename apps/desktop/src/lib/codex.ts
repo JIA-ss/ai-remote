@@ -276,8 +276,20 @@ function hostActions(v: unknown): CmdAction[] | null {
 
 const EXIT_LINE = /\n?\(exit code (-?\d+)\)\s*$/;
 
+// A tool call's object is replaced whenever it changes (lib/chat.ts copies on write), so what is
+// read from one is kept per object: a running turn is projected again on every event, and its
+// finished calls (with their diffs) are not parsed again each time.
+const execCache = new WeakMap<ToolItem, ExecInfo>();
+const filesCache = new WeakMap<ToolItem, FileChange[]>();
+
 /** A shell tool call as Codex shows it: the command, what it does, how it ended. */
 export function execInfo(x: ToolItem): ExecInfo {
+  let v = execCache.get(x);
+  if (!v) execCache.set(x, (v = readExec(x)));
+  return v;
+}
+
+function readExec(x: ToolItem): ExecInfo {
   const input = (x.input ?? {}) as { command?: unknown; cwd?: unknown; actions?: unknown };
   const fromTitle = x.title.replace(/^Shell\s+/, "");
   const command = typeof input.command === "string" ? input.command : unwrapShell(fromTitle);
@@ -372,6 +384,12 @@ export function parseUnifiedDiff(diff: string, kind: FileChange["kind"] = "updat
 
 /** The files an edit changed, one entry per file (hosts that send only per-hunk diffs are merged per path). */
 export function fileChanges(x: ToolItem): FileChange[] {
+  let v = filesCache.get(x);
+  if (!v) filesCache.set(x, (v = readFiles(x)));
+  return v;
+}
+
+function readFiles(x: ToolItem): FileChange[] {
   const files = (x.input as { files?: unknown } | undefined)?.files;
   if (Array.isArray(files) && files.length) {
     return files.map((f: Record<string, unknown>) => {

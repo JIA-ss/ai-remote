@@ -6,7 +6,7 @@
 // are this project's own, on this app's Markdown, previews and question card.
 
 import { ChevronRight, CircleCheck, Circle, CircleDot, FileDiff, ListTodo, Play } from "lucide-react";
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { baseName, type PlanEntry, type ThoughtBlock, type ToolItem, type Turn } from "../../../lib/chat";
 import {
   activeAct,
@@ -44,10 +44,18 @@ function Chevron({ open }: { open: boolean }) {
   return <ChevronRight size={12} className={cx("cdx-chev", open && "open")} aria-hidden />;
 }
 
-/** Opens and closes its body with a height animation (Codex's activity disclosure). */
+/** Opens and closes its body with an animation (Codex's activity disclosure); what is open when it
+ * first shows (a transcript being loaded) appears without one. */
 function Reveal({ open, children, className }: { open: boolean; children: ReactNode; className?: string }) {
   const [shown, setShown] = useState(open);
+  const [moved, setMoved] = useState(false);
+  const first = useRef(true);
   useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    setMoved(true);
     if (open) setShown(true);
     else {
       const timer = setTimeout(() => setShown(false), 160);
@@ -55,7 +63,7 @@ function Reveal({ open, children, className }: { open: boolean; children: ReactN
     }
   }, [open]);
   if (!open && !shown) return null;
-  return <div className={cx("cdx-reveal", open ? "x-in" : "x-out", className)}>{children}</div>;
+  return <div className={cx("cdx-reveal", open ? moved && "x-in" : "x-out", className)}>{children}</div>;
 }
 
 /** A one-line activity: its words, and (when it has any) details that open below it. */
@@ -566,13 +574,15 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
           <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
         </div>
       ))}
-      <Reveal open={!folded} className="cdx-work">
-        {work.map((u) => (
-          <div key={u.key} className="cdx-unit" data-unit={u.kind}>
-            <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
-          </div>
-        ))}
-      </Reveal>
+      {work.length > 0 && (
+        <Reveal open={!folded} className="cdx-work">
+          {work.map((u) => (
+            <div key={u.key} className="cdx-unit" data-unit={u.kind}>
+              <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
+            </div>
+          ))}
+        </Reveal>
+      )}
       {v.thinking && <div className="cdx-thinking"><Shimmer on>{t("cdx_thinking")}</Shimmer></div>}
       {v.status === "working" && !v.answer && (
         <div className="cdx-status tnum" aria-live="polite">
