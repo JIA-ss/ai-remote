@@ -36,7 +36,7 @@ struct PhoneFolderPicker: View {
         List {
             if let dir = browsing { browseSections(dir) } else { recentSections }
         }
-        .navigationTitle(browsing == nil ? "选择文件夹" : phoneFolderName(browsing ?? ""))
+        .navigationTitle(browsing.map { phoneFolderName(phoneTildeFolder($0, home: chat.home)) } ?? "选择文件夹")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -52,7 +52,6 @@ struct PhoneFolderPicker: View {
             }
         }
         .task { if chat.folderChoices.isEmpty { open("~") } }
-        .accessibilityIdentifier("chat-folder-picker")
     }
 
     @ViewBuilder private var recentSections: some View {
@@ -73,6 +72,7 @@ struct PhoneFolderPicker: View {
                             Spacer()
                             if phoneSameFolder(f, selection) { Image(systemName: "checkmark").foregroundStyle(.tint) }
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("chat-folder-recent-\(phoneFolderName(f))")
@@ -123,6 +123,7 @@ struct PhoneFolderPicker: View {
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("chat-folder-child-\(name)")

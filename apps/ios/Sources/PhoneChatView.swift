@@ -533,7 +533,8 @@ public struct PhoneChatView: View {
                     }
                 }
             }
-            .frame(maxHeight: 220)
+            // As tall as its rows, up to about five of them.
+            .frame(height: min(220, CGFloat(min(items.count, 50)) * (ac.mode == "slash" ? 48 : 50) + (ac.mode == "slash" ? 26 * CGFloat(Set(items.map(\.section)).count) : 0)))
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.2)))

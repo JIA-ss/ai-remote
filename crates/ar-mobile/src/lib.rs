@@ -304,7 +304,8 @@ impl MobileController {
             reader.read_exact(&mut bytes).await.map_err(|e| failure(format!("the transfer broke off: {e}")))?;
             let mut line = String::new();
             reader.read_line(&mut line).await.map_err(failure)?;
-            let trailer: Value = serde_json::from_str(&line).map_err(|_| failure("the host ended the transfer without an answer"))?;
+            let trailer: Value =
+                serde_json::from_str(&line).map_err(|_| failure("the host ended the transfer without an answer"))?;
             use sha2::Digest;
             let digest: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
             if trailer["sha256"].as_str() != Some(digest.as_str()) {

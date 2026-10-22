@@ -23,14 +23,14 @@ final class PhoneChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["已回答：要"].waitForExistence(timeout: 5), "a numbered option answers the question")
 
         // The edit sits in the run: open the run, then its diff card.
-        app.buttons["chat-run"].tap()
+        app.buttons.matching(identifier: "chat-run").firstMatch.tap()
         let diff = app.buttons["chat-diff"]
         XCTAssertTrue(diff.waitForExistence(timeout: 5))
         diff.tap()
         XCTAssertTrue(app.staticTexts["Run rustup target add aarch64-apple-ios aarch64-apple-ios-sim."].waitForExistence(timeout: 5), "the diff opens")
         attach(app, "diff")
         diff.tap()
-        app.buttons["chat-run"].tap()
+        app.buttons.matching(identifier: "chat-run").firstMatch.tap()
 
         // Sending starts a turn; while it runs, a message joins it (the agent can steer), shown like any other.
         let input = app.textViews["chat-input"]
@@ -190,7 +190,9 @@ final class PhoneChatUITests: XCTestCase {
         app.buttons["chat-folder-browse"].tap()
         XCTAssertTrue(app.buttons["chat-folder-child-work"].waitForExistence(timeout: 5), "the home folder's subfolders")
         app.buttons["chat-folder-child-work"].tap()
-        XCTAssertTrue(app.buttons["chat-folder-child-ai-remote"].waitForExistence(timeout: 5))
+        let found = app.buttons["chat-folder-child-ai-remote"].waitForExistence(timeout: 5)
+        if !found { shot(app, "12x-folder-work"); print(app.debugDescription) }
+        XCTAssertTrue(found)
         app.buttons["chat-folder-child-ai-remote"].tap()
         XCTAssertTrue(app.buttons["chat-folder-child-crates"].waitForExistence(timeout: 5))
         shot(app, "12-folder-browse")
