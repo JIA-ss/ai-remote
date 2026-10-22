@@ -802,7 +802,12 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
   `list` 报错，适配器只记一条 debug 日志，行为同修改前。没有用 `clean` 兜底：它会连前几轮的后台终端一起收。
 - **测试**：单测 `an_interrupted_turn_stops_only_its_own_background_commands`（前一轮的不收、本轮的收、旧版报错时什么都不做）。
   `tools/chat-smoke.py --hostw` 的"打断后命令 10 s 内离开进程树"改成判定项。
-- **实测**：待测（真实 Codex 运行要花额度，等用户确认）。
+- **实测**（win-dev，Windows 11，debug，后台 hostw，真实 Codex 0.162.1 `codex.cmd`，1 次；`tools/chat-smoke.py --quiet --hostw ... --real codex=...`）：
+  打断 0.1 s 生效，被控端日志 `stopping a command of the interrupted turn command="sleep 45 && echo finished"`，那条命令
+  **打断后 1.3 s 离开进程树**（修改前 45.3~46.6 s）；下一轮记得上文、看图、技能、`chat end` 后 0 残留都通过。
+  这次唯一失败的是插话那项："the steer changes what it does"：插话 0.09 s 就进了同一轮，但 Codex 跑满 11 条命令、答 `11`
+  （之前 3 次是 6 条）。改动只在轮次以 interrupted 结束后才发请求，插话这一轮没有被打断，所以判断与本改动无关，是模型没照插话改，
+  但只有这 1 个样本，没有重跑确认（`experimentalApi` 打开后行为是否有变化也没单独对照）。Mac 上没跑。
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
 
