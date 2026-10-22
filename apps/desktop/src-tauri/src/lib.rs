@@ -38,6 +38,8 @@ struct AppState {
     next_feed: AtomicU32,
     /// Live views: the task copying frames, and the writer that asks the host for keyframes.
     views: Mutex<HashMap<u32, View>>,
+    /// Coding-agent chats: the task copying events, and the writer of commands for the host.
+    chats: Mutex<HashMap<u32, View>>,
     /// Live input streams (while you drive): the task copying lines, and the writer to the host.
     inputs: Mutex<HashMap<u32, InputStream>>,
 }
@@ -200,6 +202,108 @@ async fn set_local_host_bypass(state: State<'_, AppState>, peer: String, on: boo
     let mut conn =
         Conn::connect(&endpoint).await.map_err(|_| "ai-remote host is not running on this computer".to_string())?;
     conn.request(&json!({"op": "set_bypass", "peer": peer, "on": on})).await.map(Json).map_err(text)
+}
+
+/// This computer as a host: whether paired devices may start coding agents here, and the sessions.
+/// `None` when no host runs here for this profile.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_chat(state: State<'_, AppState>) -> Result<Option<Json>, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let Ok(mut conn) = Conn::connect(&endpoint).await else { return Ok(None) };
+    conn.request(&json!({"op": "chat"})).await.map(|v| Some(Json(v))).map_err(text)
+}
+
+/// Allows or forbids coding agents on this computer (see `local_host_chat`); forbidding ends every
+/// session.
+#[tauri::command]
+#[specta::specta]
+async fn set_local_host_chat(state: State<'_, AppState>, on: bool) -> Result<Json, String> {
+    let endpoint = state.profile.control_endpoint(Role::Host).map_err(text)?;
+    let mut conn =
+        Conn::connect(&endpoint).await.map_err(|_| "ai-remote host is not running on this computer".to_string())?;
+    conn.request(&json!({"op": "set_chat_enabled", "on": on})).await.map(Json).map_err(text)
+}
+
+/// Longest event line accepted from a chat.
+const CHAT_LINE: u64 = 4 * 1024 * 1024;
+
+/// Opens a coding-agent chat with the ticket in `request` (`{"ticket":"..","since":N}`, from
+/// `chat_start` or `chat_attach`). Every event (one parsed JSON object) goes to `on_event`, and
+/// `{"t":"closed"}` when the chat ends; returns an id for [`chat_send`] and [`close_chat`] and the
+/// host's first reply.
+#[tauri::command]
+#[specta::specta]
+async fn open_chat(
+    state: State<'_, AppState>,
+    host: Option<String>,
+    request: Json,
+    on_event: Channel<Json>,
+) -> Result<(u32, Json), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut conn = state.agent().await.map_err(text)?;
+    let reply = conn.request(&json!({"op": "chat", "host": host, "request": request.0})).await.map_err(text)?;
+    let (stream, buffered) = conn.into_raw();
+    let (read, mut write) = tokio::io::split(stream);
+    let (control, mut lines) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let id = state.next_feed.fetch_add(1, Ordering::Relaxed);
+    let task = tokio::spawn(async move {
+        let mut read = BufReader::new(std::io::Cursor::new(buffered).chain(read));
+        let events = async {
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match (&mut read).take(CHAT_LINE + 1).read_until(b'\n', &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if buf.len() as u64 > CHAT_LINE => break,
+                    Ok(_) => {
+                        let Ok(event) = serde_json::from_slice::<Value>(&buf) else { continue };
+                        if on_event.send(Json(event)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        };
+        let up = async {
+            while let Some(line) = lines.recv().await {
+                if write.write_all(&line).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = events => {}
+            _ = up => {}
+        }
+        let _ = on_event.send(Json(json!({"t": "closed"})));
+    });
+    state.chats.lock().unwrap().insert(id, View { task, control });
+    Ok((id, Json(reply)))
+}
+
+/// Sends one command (`{"input":{...}}`, `{"interrupt":{}}`, ...) on chat `id`.
+#[tauri::command]
+#[specta::specta]
+async fn chat_send(state: State<'_, AppState>, id: u32, command: Json) -> Result<(), String> {
+    let control = state.chats.lock().unwrap().get(&id).map(|v| v.control.clone());
+    let control = control.ok_or_else(|| "this chat is closed".to_string())?;
+    let mut line = serde_json::to_vec(&command.0).map_err(|e| e.to_string())?;
+    line.push(b'\n');
+    control.send(line).await.map_err(|_| "this chat is closed".to_string())
+}
+
+/// Stops watching chat `id` (the session goes on on the host).
+#[tauri::command]
+#[specta::specta]
+async fn close_chat(state: State<'_, AppState>, id: u32) -> Result<(), String> {
+    let chat = state.chats.lock().unwrap().remove(&id);
+    if let Some(chat) = chat {
+        let _ = chat.control.send(b"{\"bye\":{}}\n".to_vec()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        chat.task.abort();
+    }
+    Ok(())
 }
 
 /// This computer's network settings: how it reaches its peers (`auto`, or `lan`: direct on the
@@ -1018,6 +1122,20 @@ async fn pull_file(
     transfer::pull(&state.profile, &state.cli, &host, &remote, &dir, &report).await.map(Json).map_err(text)
 }
 
+/// The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+/// preview in the chat panel (`path` as the session names it). Kept in memory only; raw bytes (an
+/// `ArrayBuffer` in the page), never JSON.
+#[tauri::command]
+#[specta::specta]
+async fn preview_file(
+    state: State<'_, AppState>,
+    host: String,
+    session: String,
+    path: String,
+) -> Result<Frame, String> {
+    transfer::preview(&state.profile, &state.cli, &host, &session, &path).await.map(Frame).map_err(text)
+}
+
 /// Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 /// webview show up where the app's own messages go.
 #[tauri::command]
@@ -1025,6 +1143,22 @@ async fn pull_file(
 fn log_from_page(level: String, message: String) {
     let message: String = message.chars().take(2000).collect();
     eprintln!("[page {level}] {message}");
+    #[cfg(debug_assertions)]
+    smoke_signal(&level, &message);
+}
+
+/// Smoke runs with a script (`AI_REMOTE_SMOKE_SCRIPT`): the page asks for a picture of the window
+/// with `log_from_page('shot', name)` and ends the run with `log_from_page('done', …)`.
+#[cfg(debug_assertions)]
+static SMOKE_SIGNALS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(debug_assertions)]
+fn smoke_signal(level: &str, message: &str) {
+    if (level == "shot" || level == "done")
+        && let Ok(mut s) = SMOKE_SIGNALS.lock()
+    {
+        s.push((level.to_string(), message.to_string()));
+    }
 }
 
 /// Ends a feed started by [`subscribe_events`].
@@ -1096,7 +1230,13 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard_files,
         push_file,
         pull_file,
+        preview_file,
         log_from_page,
+        local_host_chat,
+        set_local_host_chat,
+        open_chat,
+        chat_send,
+        close_chat,
     ])
 }
 
@@ -1148,6 +1288,7 @@ pub fn run() {
             feeds: Mutex::new(HashMap::new()),
             next_feed: AtomicU32::new(1),
             views: Mutex::new(HashMap::new()),
+            chats: Mutex::new(HashMap::new()),
             inputs: Mutex::new(HashMap::new()),
         })
         .invoke_handler(builder.invoke_handler())
@@ -1234,8 +1375,50 @@ fn smoke(app: &tauri::App) {
         }
     }
     let handle = app.handle().clone();
+    // `AI_REMOTE_SMOKE_SCRIPT=<file.js>` runs a script in the page once it has loaded (end-to-end runs
+    // drive the real UI with it); the run then lasts until the script says it is done, or `secs`.
+    let script =
+        std::env::var_os("AI_REMOTE_SMOKE_SCRIPT").map(|p| std::fs::read_to_string(&p).expect("read the smoke script"));
+    if let Some(script) = script.clone() {
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if let Some(w) = handle.get_webview_window("main") {
+                let _ = w.eval(script);
+            }
+        });
+    }
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(secs));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        let shots = std::path::Path::new(&out).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        while script.is_some() && std::time::Instant::now() < deadline {
+            let signals: Vec<(String, String)> =
+                SMOKE_SIGNALS.lock().map(|mut s| s.drain(..).collect()).unwrap_or_default();
+            let mut done = false;
+            for (level, name) in signals {
+                if level == "done" {
+                    done = true;
+                    continue;
+                }
+                let name: String =
+                    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+                if let Some(w) = handle.get_webview_window("main") {
+                    let path = shots.join(format!("{name}.png"));
+                    match capture(&w).and_then(|img| img.save(&path).map_err(|e| e.to_string())) {
+                        Ok(()) => eprintln!("[smoke] saved {}", path.display()),
+                        Err(e) => eprintln!("[smoke] cannot capture {name}: {e}"),
+                    }
+                    let _ = w.eval(format!("window.__smokeShot && window.__smokeShot('{name}')"));
+                }
+            }
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if script.is_none() {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+        }
         if let Some(w) = handle.get_webview_window("main") {
             let _ = w.eval("window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'smoke', message: JSON.stringify({ secure: isSecureContext, decoder: typeof VideoDecoder, visibility: document.visibilityState, canvases: Array.from(document.querySelectorAll('canvas')).map(c => [c.width, c.height]), metrics: document.querySelector('.stream-metrics')?.textContent ?? null, metricsDetail: document.querySelector('.stream-metrics')?.title ?? null }) })");
             let _ = w.eval("window.__TAURI_INTERNALS__.invoke('agent_status').then(s => window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'mcp', message: JSON.stringify(s.mcp) }))");

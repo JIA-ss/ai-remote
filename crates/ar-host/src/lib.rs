@@ -12,6 +12,8 @@ mod approval;
 mod approvers;
 mod audit;
 pub mod bypass;
+pub mod chat;
+mod chat_channel;
 mod control;
 pub mod doctor;
 mod events;
@@ -41,7 +43,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result, anyhow};
 use ar_core::{Level, Profile, Role, config::HostConfig, identity, machine_name};
 use ar_net::{
-    ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, NetworkOptions, Peer, ipc,
+    ALPN_CHAT, ALPN_EVENTS, ALPN_FILES, ALPN_INPUT, ALPN_MCP, ALPN_SCREEN, Mesh, MeshOptions, NetworkOptions, Peer, ipc,
 };
 pub use tokio_util::sync::CancellationToken;
 
@@ -69,6 +71,8 @@ pub struct HostState {
     transfers: tools::files::Transfers,
     /// Controllers the owner trusts with everything (see [`bypass`]).
     bypass: bypass::Bypass,
+    /// Coding agents started and chatted with from controllers (see [`chat`]).
+    chat: chat::ChatManager,
     background: bool,
     /// Cancelled when the host stops.
     stopping: CancellationToken,
@@ -108,6 +112,10 @@ impl HostState {
 
     pub fn bypass(&self) -> &bypass::Bypass {
         &self.bypass
+    }
+
+    pub fn chat(&self) -> &chat::ChatManager {
+        &self.chat
     }
 
     /// Runs without a console (started at login); messages go to the host log only.
@@ -278,6 +286,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
 
     let mut registry = Registry::builtin();
     mounts::extend(&mut registry, &config, &profile).await;
+    let (chat, mut chat_audit) = chat::ChatManager::new(profile.chat_dir()?, profile.chat_config_path()?);
 
     let state = Arc::new(HostState {
         audit: AuditLog::open(&profile.audit_log_path()?)?,
@@ -290,6 +299,7 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
         jobs: tools::jobs::JobManager::new(profile.jobs_dir()?),
         transfers: tools::files::Transfers::default(),
         bypass: bypass::Bypass::open(&profile.bypass_path()?)?,
+        chat,
         profile,
         name,
         config,
@@ -304,6 +314,16 @@ pub async fn run_claimed(profile: Profile, claim: Claim, opts: HostOptions) -> R
     mesh.accept(ALPN_EVENTS, Arc::new(events::EventsProtocol::new(state.clone())))?;
     mesh.accept(ALPN_SCREEN, Arc::new(stream::protocol::ScreenProtocol::new(state.clone())))?;
     mesh.accept(ALPN_FILES, Arc::new(files_channel::FilesProtocol::new(state.clone())))?;
+    mesh.accept(ALPN_CHAT, Arc::new(chat_channel::ChatProtocol::new(state.clone())))?;
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            while let Some(v) = chat_audit.recv().await {
+                state.audit().event(v);
+            }
+        });
+    }
+    tokio::spawn(chat_channel::enforce(Arc::downgrade(&state)));
     mesh.accept(ALPN_INPUT, Arc::new(input_channel::InputProtocol::new(state.clone())))?;
     // Before any ticket is shown: a pairing that completes before the watch starts is not reported.
     announce_pairings(&mesh, owner, state.clone()).await;

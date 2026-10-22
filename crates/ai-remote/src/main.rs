@@ -1,5 +1,6 @@
 //! `ai-remote`: run a host, pair with hosts, and bridge AI agents to them over MCP.
 
+mod chat;
 mod hostops;
 mod remote;
 
@@ -283,6 +284,13 @@ enum Command {
     Push(remote::PushArgs),
     /// [controller] Fetch a file from a host (streamed, SHA-256 checked).
     Pull(remote::PullArgs),
+    /// [controller] Coding agents on a host (Claude Code, Codex, ...): list what is installed, start
+    /// one in a folder and talk to it, or hand it a task. `chat enable|disable|status` [host] allow
+    /// or forbid them on this machine.
+    Chat {
+        #[command(subcommand)]
+        command: chat::ChatCommand,
+    },
     /// [controller] stdio MCP server for AI agents (e.g. `claude mcp add ai-remote -- ai-remote mcp`).
     Mcp,
     /// [controller] Run the controller agent in the foreground (normally started automatically).
@@ -890,6 +898,29 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Rm(a) => remote::rm(&profile, a, json_out).await,
         Command::Push(a) => remote::push(&profile, a, json_out).await,
         Command::Pull(a) => remote::pull(&profile, a, json_out).await,
+        Command::Chat { command } => match command {
+            chat::ChatCommand::Enable | chat::ChatCommand::Disable => {
+                let on = matches!(command, chat::ChatCommand::Enable);
+                let v = host_request(&profile, HostRequest::SetChatEnabled { on }).await?;
+                let msg = if on {
+                    "coding agents may be started here by devices with level admin (asking first unless bypassed)"
+                } else {
+                    "coding agents are switched off here; running sessions were ended"
+                };
+                print_result(json_out, &v, msg)
+            }
+            chat::ChatCommand::Status => {
+                let v = host_request(&profile, HostRequest::Chat).await?;
+                let msg = format!(
+                    "coding agents: {}; {} session(s), {} running",
+                    if v["enabled"] == true { "allowed" } else { "switched off" },
+                    v["sessions"].as_array().map_or(0, Vec::len),
+                    v["live"].as_u64().unwrap_or(0)
+                );
+                print_result(json_out, &v, &msg)
+            }
+            other => chat::command(&profile, other, json_out).await,
+        },
         Command::Watch { host } => watch(&profile, host, json_out).await,
         Command::View { host, seconds, max_fps, max_long_edge, bitrate_kbps, codecs, out, pointer } => {
             let mut request = json!({"max_fps": max_fps, "max_long_edge": max_long_edge, "bitrate_kbps": bitrate_kbps,

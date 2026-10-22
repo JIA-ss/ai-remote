@@ -101,6 +101,13 @@ pub enum HostRequest {
     SetBypassDefault {
         on: bool,
     },
+    /// Whether coding agents may start here, and the sessions (see [`crate::chat`]).
+    Chat,
+    /// Allow or forbid starting coding agents here; forbidding ends every session. Only here, at
+    /// this computer: it holds for bypassed controllers too.
+    SetChatEnabled {
+        on: bool,
+    },
     Shutdown,
 }
 
@@ -412,6 +419,21 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
                 host.audit().event(json!({"kind": "bypass", "default": on, "on": on, "by": "host"}));
             }
             json!({"default": on, "changed": changed})
+        }
+        HostRequest::Chat => json!({
+            "enabled": host.chat().enabled(),
+            "sessions": host.chat().list(),
+            "live": host.chat().live_count(),
+            "can_start": crate::chat::detect::blocked().is_none(),
+            "reason": crate::chat::detect::blocked(),
+        }),
+        HostRequest::SetChatEnabled { on } => {
+            let changed = host.chat().enabled() != on;
+            host.chat().set_enabled(on)?;
+            if changed {
+                tracing::info!(on, "coding agents switched {}", if on { "on" } else { "off" });
+            }
+            json!({"enabled": on, "changed": changed})
         }
         HostRequest::SetBypass { peer, on, for_secs } => {
             let p = mesh.find_peer(&peer).await?;

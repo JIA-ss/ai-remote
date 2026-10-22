@@ -6,20 +6,21 @@ import { t } from "./lib/i18n";
 import { allPending, store, useStore } from "./lib/store";
 import { DevicesPage } from "./ui/Devices";
 import { ActivityPage, ApprovalsPage, ComputerPage, EmptyPage, PairPage, WelcomePage } from "./ui/Pages";
+import type { ChatTarget } from "./ui/AgentChat";
 import { SessionPage } from "./ui/Session";
 import { SettingsWindow } from "./ui/Settings";
 import { Sidebar, TitleBar, type Nav } from "./ui/Shell";
 import { useNow } from "./ui/util";
 import type { TrayIntent } from "./lib/types";
 
-type View = { kind: "main"; nav: Nav | null } | { kind: "session"; host: string };
+type View = { kind: "main"; nav: Nav | null } | { kind: "session"; host: string; chat?: ChatTarget | null; panel?: "chat" };
 
 /** `?view=` opens a page directly (screenshots of the page outside the app). */
 function initialView(): View {
   const q = new URLSearchParams(location.search);
   const v = q.get("view");
   const host = q.get("host");
-  if (v === "session" && host) return { kind: "session", host };
+  if (v === "session" && host) return { kind: "session", host, panel: q.get("panel") === "chat" ? "chat" : undefined };
   if (v === "devices" || v === "approvals" || v === "activity" || v === "pair" || v === "settings") return { kind: "main", nav: v };
   if (v === "computer" && host) return { kind: "main", nav: { computer: host } };
   return { kind: "main", nav: null };
@@ -108,6 +109,8 @@ export default function App() {
           waiting={waiting}
           onBack={() => setView({ kind: "main", nav: { computer: c.host.name } })}
           onNav={nav}
+          chat={view.chat ?? null}
+          panel={view.chat || view.panel === "chat" ? "chat" : undefined}
         />
       );
     }
@@ -156,6 +159,7 @@ export default function App() {
         onUnpaired={() => nav("home")}
         onWatch={() => setView({ kind: "session", host: computer.host.name })}
         onActivity={() => nav("activity")}
+        onOpenChat={(chat) => setView({ kind: "session", host: computer.host.name, chat, panel: "chat" })}
       />
     );
   else page = <EmptyPage onPair={() => nav("pair")} />;

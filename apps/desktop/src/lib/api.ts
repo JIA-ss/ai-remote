@@ -3,6 +3,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
+import type { ChatEvent, ChatHello } from "./chat";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
@@ -99,6 +100,11 @@ export interface Backend {
   pushFile(host: string, local: string, remoteDir: string | null, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
   /** Fetches a file from `host` into this computer's Downloads folder. */
   pullFile(host: string, remote: string, onProgress: (done: number, total: number) => void): Promise<TransferResult>;
+  /**
+   * The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+   * preview (`path` as the session names it; the host checks the session is about it).
+   */
+  previewFile(host: string, session: string, path: string): Promise<Uint8Array>;
   /** Follows a host's activity; returns a function that stops it. */
   subscribe(host: string, onEvent: (e: FeedEvent) => void): Promise<() => void>;
   pending(host: string): Promise<PendingApproval[]>;
@@ -166,6 +172,25 @@ export interface Backend {
   appLoginItem(): Promise<boolean>;
   setAppLoginItem(on: boolean): Promise<void>;
   /**
+   * This computer as a host: whether paired devices may start coding agents here. `null` when
+   * ai-remote host does not run here.
+   */
+  localChat(): Promise<{ enabled: boolean; live: number; sessions: unknown[] } | null>;
+  /** Allows or forbids coding agents on this computer; forbidding ends every session. */
+  setLocalChat(on: boolean): Promise<void>;
+  /**
+   * Opens a coding-agent chat with a ticket from `chat_start` / `chat_attach`: events after `since`
+   * go to `onEvent`, `onClosed` when the channel ends. Returns the host's first reply, a way to send
+   * commands (`{input:{text}}`, `{interrupt:{}}`, ...) and to stop watching.
+   */
+  openChat(
+    host: string,
+    ticket: string,
+    since: number,
+    onEvent: (e: ChatEvent) => void,
+    onClosed: () => void,
+  ): Promise<ChatConnection>;
+  /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
    * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
    */
@@ -221,6 +246,12 @@ export function parsePointerShape(bytes: Uint8Array): PointerShape | null {
     rgba[i + 3] = pixels[i + 3];
   }
   return { id: view.getUint32(18), width, height, hotX: view.getUint16(22), hotY: view.getUint16(24), rgba };
+}
+
+export interface ChatConnection {
+  hello: ChatHello;
+  send(command: Record<string, unknown>): Promise<void>;
+  close(): void;
 }
 
 export interface LiveView {
@@ -404,6 +435,33 @@ const tauriBackend: Backend = {
   async tellAgent(host, text) {
     unwrap(await commands.tellAgent(host, text));
   },
+  async localChat() {
+    return unwrap(await commands.localHostChat()) as { enabled: boolean; live: number; sessions: unknown[] } | null;
+  },
+  async setLocalChat(on) {
+    unwrap(await commands.setLocalHostChat(on));
+  },
+  async openChat(host, ticket, since, onEvent, onClosed) {
+    const channel = new Channel<unknown>();
+    channel.onmessage = (m) => {
+      const e = m as { t?: string };
+      if (!e || typeof e !== "object") return;
+      if (e.t === "closed" || e.t === "bye") onClosed();
+      else if (e.t === "error") {
+        // A command the host refused (not numbered: it is not part of the conversation).
+        const err = e as { code?: string; text?: string };
+        onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "notice", level: "error", code: err.code ?? "error", text: err.text ?? "" });
+      } else if (typeof (e as { seq?: unknown }).seq === "number") onEvent(e as ChatEvent);
+    };
+    const [id, hello] = unwrap(await commands.openChat(host, { ticket, since }, channel)) as [number, ChatHello];
+    return {
+      hello,
+      send: async (command) => {
+        unwrap(await commands.chatSend(id, command));
+      },
+      close: () => void commands.closeChat(id),
+    };
+  },
   async openInput(host, request, onLine) {
     const channel = new Channel<string>();
     channel.onmessage = (line) => onLine(line);
@@ -440,6 +498,13 @@ const tauriBackend: Backend = {
     channel.onmessage = ([done, total]) => onProgress(done ?? 0, total ?? 0);
     const v = unwrap(await commands.pullFile(host, remote, null, channel)) as { local?: string; bytes?: number; seconds?: number };
     return { local: v.local, bytes: Number(v.bytes ?? 0), seconds: Number(v.seconds ?? 0) };
+  },
+  async previewFile(host, session, path) {
+    const raw = unwrap(await commands.previewFile(host, session, path)) as unknown;
+    // Raw replies arrive as an ArrayBuffer, or as a byte array on WKWebView's fallback path.
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (Array.isArray(raw)) return Uint8Array.from(raw as number[]);
+    throw new Error("the preview came back in an unexpected form");
   },
   async watchScreen(host, onFrame, opts = {}) {
     const channel = new Channel<unknown>();

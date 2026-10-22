@@ -4,9 +4,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import { currentLang, t } from "../lib/i18n";
+import { currentLang, t, type Key } from "../lib/i18n";
 import { store, type Computer } from "../lib/store";
 import type { HostAccess, HostTool, Level } from "../lib/types";
+import { type ChatTarget, StartForm, loginLabel, useRuntimes, useSessions } from "./AgentChat";
 import { CmdLine } from "./CmdLine";
 import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
@@ -405,6 +406,120 @@ export function ToolsTab({ c }: { c: Computer }) {
             ))}
           </div>
           <div className="gnote">{t("t_note")}</div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The coding agents installed on the computer (Claude Code, Codex, ...): version, sign-in, where;
+ * the sessions running there; and starting one, which opens its chat beside the live view.
+ */
+export function AgentsTab({ c, onOpenChat }: { c: Computer; onOpenChat: (target: ChatTarget) => void }) {
+  const host = c.host.name;
+  const { report, error, refresh } = useRuntimes(host);
+  const [tick, setTick] = useState(0);
+  const sessions = useSessions(host, tick);
+  if (error) return <TabHead hl={t("hc_hl_err", { host })} lede={error} />;
+  if (!report) return <TabHead hl={t("hc_looking", { host })} />;
+  const installed = report.runtimes.filter((r) => r.verdict !== "missing");
+  const missing = report.runtimes.filter((r) => r.verdict === "missing");
+  const open = (sessions ?? []).filter((s) => s.state !== "ended");
+  const end = async (id: string) => {
+    await api.callTool(host, "chat_end", { session: id }, true).catch(() => {});
+    setTimeout(() => setTick((n) => n + 1), 400);
+  };
+  return (
+    <>
+      <TabHead
+        hl={installed.length ? t("hc_hl", { n: installed.length, host }) : t("hc_hl_none", { host })}
+        lede={report.host.can_start ? (report.host.enabled === false ? t("hc_disabled", { host }) : t("hc_lede")) : report.host.reason}
+      />
+      <div className="tab-grid">
+        <div>
+          <div className="grp-h">
+            {t("hc_installed")}
+            <span className="end">
+              <button className="btn sm" style={{ height: 28, fontSize: 12 }} onClick={refresh}>
+                <Icon name="refresh" size={12} />
+                {t("hc_refresh")}
+              </button>
+            </span>
+          </div>
+          <div className="grp">
+            {installed.map((r) => (
+              <div key={r.id} className="gr noic tool">
+                <div className="tool-l" style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                  <span style={{ fontSize: 14 }}>
+                    {r.name}
+                    <span className="mono meta" style={{ marginLeft: 8 }}>
+                      {r.version ?? ""}
+                    </span>
+                  </span>
+                  <span className="c2 ell mono" style={{ fontSize: 11, maxWidth: 420 }} title={r.path}>
+                    {r.path}
+                  </span>
+                  {r.detail && <span className="c3" style={{ fontSize: 12 }}>{r.detail}</span>}
+                </div>
+                <span className="end">
+                  {r.verdict === "ok" ? (
+                    <span className={cx("cap", r.login?.state === "logged_out" ? "c-danger" : "c2")}>{loginLabel(r) ?? t("hc_ready")}</span>
+                  ) : (
+                    <span className="cap c-danger">{r.verdict === "below_minimum" ? t("hc_too_old") : t("hc_broken")}</span>
+                  )}
+                </span>
+              </div>
+            ))}
+            {installed.length === 0 && (
+              <div className="gr noic">
+                <div className="ds" style={{ marginTop: 0 }}>
+                  {t("hc_none", { host })}
+                </div>
+                <span />
+              </div>
+            )}
+          </div>
+          {missing.length > 0 && <div className="gnote">{t("hc_missing", { list: missing.map((r) => r.name).join(t("sep")) })}</div>}
+          {open.length > 0 && (
+            <>
+              <div className="grp-h" style={{ marginTop: 24 }}>
+                {t("hc_sessions")}
+              </div>
+              <div className="grp">
+                {open.map((s) => (
+                  <div key={s.id} className="gr noic tool">
+                    <div className="tool-l" style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                      <span style={{ fontSize: 14 }}>
+                        {s.name}
+                        <span className="meta" style={{ marginLeft: 8 }}>
+                          {t(`hc_state_${s.state}` as Key)} · {t("hc_turns", { n: s.turns })}
+                        </span>
+                      </span>
+                      <span className="c2 ell mono" style={{ fontSize: 11, maxWidth: 420 }}>
+                        {s.cwd}
+                      </span>
+                    </div>
+                    <span className="end" style={{ gap: 8, display: "inline-flex" }}>
+                      <button className="btn sm" onClick={() => onOpenChat({ session: s.id })}>
+                        {t("hc_open")}
+                      </button>
+                      <button className="btn sm" onClick={() => void end(s.id)}>
+                        {t("hc_end")}
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        <div>
+          <div className="grp-h">{t("hc_new")}</div>
+          <div className="grp" style={{ padding: 16 }}>
+            <StartForm host={host} report={report} onStarted={onOpenChat} />
+          </div>
+          <div className="gnote">{t("hc_note")}</div>
         </div>
       </div>
     </>

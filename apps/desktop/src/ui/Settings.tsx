@@ -358,7 +358,53 @@ function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIn
       </div>
       <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()}>
         {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
+        {controllers && <LocalAgents />}
       </HostPanel>
+    </>
+  );
+}
+
+/**
+ * Whether paired devices may start coding agents on this computer (see the chat tab beside a live
+ * view). Set over the host's local channel only; switching off ends the running sessions.
+ */
+function LocalAgents() {
+  const [state, setState] = useState<{ enabled: boolean; live: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => api.localChat().then((v) => setState(v ? { enabled: v.enabled, live: v.live } : null), (e) => setError(String(e)));
+  useEffect(() => {
+    void load();
+  }, []);
+  if (!state) return error ? <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div> : null;
+  return (
+    <>
+      <div className="grp-h" style={{ marginTop: 28 }}>
+        {t("hc_set_h")}
+      </div>
+      <div className="grp">
+        <Row
+          ic={<Icon name="terminal" />}
+          tt={t("hc_set_t")}
+          ds={state.enabled ? (state.live ? t("hc_set_d_live", { n: state.live }) : t("hc_set_d_on")) : t("hc_set_d_off")}
+        >
+          <span className="dd-wrap">
+            <select
+              className="dd"
+              aria-label={t("hc_set_t")}
+              value={state.enabled ? "on" : "off"}
+              onChange={(e) => {
+                setError(null);
+                api.setLocalChat(e.target.value === "on").then(load, (err) => setError(String(err)));
+              }}
+            >
+              <option value="on">{t("hc_set_on")}</option>
+              <option value="off">{t("hc_set_off")}</option>
+            </select>
+            <Icon name="chevD" size={12} />
+          </span>
+        </Row>
+      </div>
+      {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
     </>
   );
 }

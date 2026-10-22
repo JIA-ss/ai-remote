@@ -118,6 +118,18 @@ impl Profile {
         Ok(dir)
     }
 
+    /// Host: coding-agent chat sessions (one directory each: metadata and transcript).
+    pub fn chat_dir(&self) -> Result<PathBuf> {
+        let dir = self.role_dir(Role::Host)?.join("chat");
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        Ok(dir)
+    }
+
+    /// Host: the coding-agent chat settings (`ai-remote chat enable|disable`, custom entries).
+    pub fn chat_config_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Host)?.join("chat.toml"))
+    }
+
     /// Host: downloaded mount binaries (versioned).
     pub fn mounts_dir(&self) -> Result<PathBuf> {
         let dir = self.role_dir(Role::Host)?.join("mounts");

@@ -6,7 +6,9 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-folder.test.mjs`、
+
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -65,6 +67,147 @@
 复现：`tools/ios.sh framework`、`cd apps/ios && xcodegen generate`，然后
 `TEST_RUNNER_AR_CAPTURE_ADDRESS=<ip>:<port> TEST_RUNNER_AR_CAPTURE_SECONDS=180 TEST_RUNNER_AR_CAPTURE_TICKET="$(cat ticket)" xcodebuild ... -only-testing:AIRemoteUITests/PhoneNetworkUITests/testLocalNetworkOnlySessionForCapture test`，
 同时另开 root 的 pktap 抓包。
+
+## 被控端编程智能体与对话侧栏（2026-10-21，分支 `feat/host-chat`）
+
+用户需求：在主控端列出被控端装了哪些编程智能体 CLI（Claude Code、Codex、OpenCode 等，要同时支持多种），一键以 bypass 方式在被控端启动，在推流画面旁边用对话窗口实时交互。用户文档：`docs/tools*.md` 5.15、`docs/architecture*.md` 的 `chat/1`、`docs/operations*.md` 4.1 表格、`skills/ai-remote/SKILL.md` 7b。
+
+### 调研结论
+
+- 参考了 multica 和 Orca 两个项目：
+  - multica：Go daemon，每个 CLI 一个原生适配器，带一张检测表；
+  - Orca（stablyai/orca）：多端，"会话日志 + 序号游标"续传，原生协议与 PTY 并存。
+- 两者都**只借思路，没有抄代码**：multica 的许可证是 Apache-2.0 加了限制嵌入商用的附加条款，与 AGPL 不兼容；Orca 是 MIT，按思路借用。
+- 选型是"原生适配器 + ACP 词汇的统一事件流"。没有选"全走 ACP"：Claude 和 Codex 的 ACP 桥都需要 Node ≥22 和额外的 npm 包，而且版本与用户本机装的 CLI 对不上。也没有选"PTY 透传"：它给不出"对话窗口"，审计也只能记到字节。
+
+### 设计
+
+- **被控端** `crates/ar-host/src/chat/`：
+  - `runtimes.rs`：数据化的描述表，加上 `chat.toml` 里的自定义条目（例如另一个 `CLAUDE_CONFIG_DIR`）；
+  - `detect.rs`：查找顺序为自身 PATH → 登录 shell（一次 `$SHELL -ilc`，先 unalias，并带回 `$PATH`）→ 安装器常用目录；之后跑 `--version` 取版本，并查登录态；
+  - `proc.rs`：进程树，Unix 用 ProcessSession，Windows 用 Job Object 加 `CREATE_NO_WINDOW`；prompt 只走 stdin；单行上限 32 MiB；
+  - `adapters/{claude,codex,acp}.rs`：三种协议的适配器；
+  - `mod.rs`：ChatManager。每个会话一个 driver 任务，负责排队、打断、parked 后续接、空闲回收、重启时回收孤儿进程，以及按 id 去重重复消息。
+- **事件**：先在被控端编号、写盘，再发出。重连时带 `since`，被控端补发之后的事件；观看者跟不上实时流时，改从磁盘补。
+- **工具与通道**：工具有 `chat_runtimes`、`chat_sessions`、`chat_start`（默认询问）、`chat_attach`、`chat_interrupt`、`chat_end`。对话走 ALPN `app/ai-remote/chat/1`，用法和 files 一样"工具签票 + 专用通道"。`chat_start` / `chat_attach` 加进了 `CHANNEL_TOOLS`，所以 MCP 客户端看不到。
+- **闸门之外**：
+  - 本机总开关 `ai-remote chat enable|disable`：只能在本机设置，对 bypass 设备也生效；
+  - 设备失去 admin 后 2 s 内结束它发起的会话（`chat_channel::enforce`）；
+  - pause 会停掉正在跑的轮次；take_over **不会**（智能体不用鼠标键盘，接管的人往往就是正在对话的人）；
+  - 审计只记 `chat_session` / `chat_turn` 的元数据，不记正文；
+  - `doctor` 新增 `chat` 检查项。
+- **SYSTEM 或 root 身份的被控端**（Windows 服务模式、macOS 登录窗口）：`can_start: false`，不执行任何探测。原因是智能体必须以用户身份运行；用 SYSTEM 身份去执行用户目录里的程序，还等于本地提权。
+- **主控端**：
+  - agent 加 op `chat`，中继逻辑照抄 Screen；
+  - 命令行：`ai-remote chat list|sessions|start|run|attach|send|interrupt|end|enable|disable|status`；
+  - Tauri 命令：`open_chat` / `chat_send` / `close_chat` / `local_host_chat` / `set_local_host_chat`；
+  - 桌面端：电脑页新增「智能体」标签；会话页右栏新增「对话」标签，打开时右栏加宽到 `clamp(380px,34vw,560px)`；设置 → 本设备里加开关。前端状态在 `lib/chat.ts`（纯函数 `reduceChat`，按帧批量合并），界面在 `ui/AgentChat.tsx`。
+
+### 实测（本机 macOS，2026-10-21）
+
+- **协议 spike**（手动驱动，`/tmp` 下执行）：
+  - Claude 同一进程连续写多条 user 帧，每帧各出 `system/init` 和 `result`；`control_request interrupt` 立即收到应答。
+  - Codex 0.163 在同一 thread 上两轮都记得上文；`turn/interrupt` 4 ms 生效；换新进程后 `thread/resume` 上下文仍在。
+- **`tools/chat-smoke.py`**：本机隔离的被控端和控制端，走真实 QUIC，用假 Claude 跑完全部 21 项。
+  - `--real codex=…/codex(0.163) --model gpt-6.1-sol`：一次任务 5.5~9.4 s；能跑 shell 工具；打断 0.1 s 生效；下一轮记得上文（3 次运行）。
+  - `--real opencode=…(1.19.3) --model opencode/deepseek-v4.1-flash-free`（ACP）：4.0~7.9 s；工具、打断 0.3 s、续上文都通过（2 次运行）。
+- **单元测试**：`cargo test -p ar-host --lib chat` 共 26 项，三个适配器用真实行格式的样例覆盖；`node --test tools/chat-state.test.mjs` 共 9 项。
+- **Windows（win-dev，Windows 11，debug 构建）**：
+  - `cargo clippy --workspace --all-targets -D warnings` 没有警告，`cargo test --workspace` 全部通过，其中 ar-host 255 项；新加的 Job Object 测试证明，停掉智能体时它拉起的子进程也会一起结束。
+  - `tools/chat-smoke.py` 本机隔离被控端和控制端，假 agent 加真实 Codex 0.162.1（npm 装的 `codex.cmd`，验证了 shim 路径），25 项全部通过：一次任务 9.5 s，打断 0.3 s 生效，下一轮仍记得上文。被控端是终端前台运行的，不是计划任务里的 hostw。
+- **桌面端**：在演示模式下，用浏览器跑通了"电脑页启动 → 会话页对话标签 → 流式步骤 → 停止"，以及 diff / 失败工具 / 思考的渲染。没有在真实 Tauri 应用里对真实被控端试过。
+
+### 踩过的坑
+
+1. 本机 `claude auth status` 显示 `loggedIn: true`，但 OAuth 已过期，`-p` 每轮都报 401，而且不会自动刷新。所以"已登录"只能当提示，真正的失败要靠 `result` 的 `is_error` 和 `api_error_status` 报出来。
+2. codex 0.137 的默认模型（本机 config 里是 `gpt-5.5`）已经不被 ChatGPT 账号接受，每轮都在 `turn/completed` 之前报 400。适配器把 `error` 通知里的 message 作为本轮失败原因；表单里有模型字段。
+3. serde_json 的 Map 会按字母排序 key，事件信封如果先转成 Map 再序列化，`seq` 就不在开头，`line_seq` 解析不到。改成手工拼字符串。
+4. Codex 会把长命令转到后台，然后自己结束这一轮。测试打断时必须实时跟随事件、一看到工具调用就打断，靠轮询来不及。
+5. React dev 模式会执行两次 effect，一次性票据在第一次挂载时就用掉了。前端在票据失败后改用 `chat_attach` 重新取票。
+6. 文案键 `ag_*` 已经被"已连接的 MCP 客户端"那部分用掉了，新功能改用 `hc_*`。
+7. macOS 的临时目录路径太长，超过 Unix socket 路径上限（SUN_LEN），冒烟脚本改放到 `/tmp` 下。
+
+8. `chat.toml` 写坏时，原先退回默认值，也就是"允许"：文件里原本写着 `enabled = false` 也会被放开。现在改成：写坏时智能体一律关闭；原因显示在 `chat_runtimes` 的 `host.config_error`、doctor、桌面端和命令行；`chat enable|disable` 不会覆盖写坏的文件。我自己测试时就踩到了：拿内置 id `opencode` 作自定义 id，整个文件因此被拒。
+9. 真实 Tauri 应用只编出了内嵌前端的调试版（`npx tauri build --debug --no-bundle`），也用隔离配置启动了（`AI_REMOTE_HOME` 加 `AI_REMOTE_CLI`），但没能点击实测：正式版、本分支调试版和其他会话的调试版 bundle id 相同，电脑操控会认错窗口。对话通道这一层已经由命令行和冒烟测试覆盖；webview 里 Channel 的这一段还没有实测。
+
+### 运行中插话（steer）与事件补齐（2026-10-21，分支 `claude/host-steer-27deef`，叠在 `feat/host-chat` 上）
+
+用户要对话界面接近 Claude / Codex 原生体验，其中一项是回答过程中随时插话。本节只改被控端、命令行和冒烟脚本；界面由另一个会话按下面的协议接。
+
+**协议**（和界面会话约定好的名字，不改）：
+
+- `caps.steer`：claude、codex 为 true，ACP 智能体为 false；`chat.toml` 自定义条目可写 `steer = false`（只能关）。
+- chat/1 `input.mode = "steer"`：轮次运行中且支持时送进当前轮，**智能体收下后**才发 `{"t":"user",...,"steer":true}`，信封 `turn` 是当前轮；不支持、没有在跑的轮次、正在打断时排队（空闲直接开新一轮），并发 `notice` `steer_queued` 说明原因。
+- `usage` 新增可选 `context_window`、`context_used`。`chat_turn` 审计多了 `steers`（条数）。
+- 命令行 `ai-remote chat send <会话> <文本> --steer`；打印时插话显示为 `> (steer) …`。
+
+**实现**：驱动层（`chat/mod.rs`）新增 `Cmd::Steer`、`LiveCmd::Steer`，适配器用三种回答告知结果：`Out::Steered`（并进当前轮）、`Out::SteerLate`（当前轮已结束、智能体自己会把它当下一轮跑，被控端**不再重发**，放在队首并标记 delivered）、`Out::SteerRejected`（退回队列）。进程退出时，未回答的插话和 delivered 的消息都退回队列，由下一个进程重发。
+
+- **Codex**：`turn/steer`，参数 `threadId`、`expectedTurnId`（必须是当前轮）、`input`、`clientUserMessageId`，返回 `{turnId}`；轮次结束后再发返回 `-32600 no active turn to steer` → 退回队列。`turn/start` 还没回 id 时先缓存，拿到 id 再发。方法名和参数来自本机 `codex app-server generate-json-schema`（0.163）。
+- **Claude Code**：加 `--replay-user-messages`，每条用户消息被收下时回显一行 `{"type":"user","isReplay":true,...}`。回显在本轮 `result` 之前 → 并进当前轮；到 `result` 时还没回显 → `SteerLate`，之后 Claude 会先出新的 `system init`，再把它当一轮跑（自带 `result`）。
+- **ACP**：协议里没有往进行中的 `session/prompt` 追加内容的办法，`steer: false`。
+- **Codex 事件补齐**：`item/commandExecution/outputDelta` 流式输出（`tool_update` 不带 `status`、一段文本；驱动层把连续片段合并，每条命令最多 8 KiB，结束时不再重复整段输出、只补 `(exit code N)`）；文件改动的 unified diff 按 hunk 拆成多个 `diff` 内容（old/new 是该 hunk 的上下文 + 删除 / 上下文 + 新增，界面的增删行数能算对）；`item/fileChange/patchUpdated`、`item/mcpToolCall/progress`；`plan` 条目（计划模式的方案）作为一条消息；`thread/compacted` → `notice` `compacted`；`imageView` / `imageGeneration` / `collabAgentToolCall` 三种工具调用；网页搜索结束时写明搜了什么 / 打开了哪页。待办（`turn/plan/updated`）和 MCP 工具调用原来就有。
+- **上下文用量**：Codex 取 `tokenUsage.modelContextWindow` 和 `last.totalTokens`（每次 `thread/tokenUsage/updated`）；Claude 取 `result.modelUsage[模型].contextWindow` 和本轮最后一条 assistant 消息的 input + cache_read + cache_creation + output（每轮一次）。
+
+**Claude 实验**（win-dev，Windows 11，Claude Code 2.1.293，已登录；实验脚本是临时 Python、没入库：起 `claude.cmd`，参数与适配器相同，逐行记录输出时刻；任务"从 1 数到 20，每个数单独跑一次 `sleep 1; echo N`，最后只回答最后打印的数"）：
+
+| 场景 | 样本 | 写入时刻 | 结果 |
+|---|---|---|---|
+| 第 2 个工具结果后写"改成数到 5" | 3 次（其中 1 次带 replay） | 第 2 个结果之后 | 3 次都只有 1 个 `result`，答 `5`，共 5 次工具调用；带 replay 那次回显在写入后 2.9 s、第 3 个工具结果之后出现（模型正在请求下一步时写入，下一次请求才读到） |
+| 数到 3，最终文字开始流出时写"再说一个 BANANA" | 2 次（其中 1 次带 replay） | 最后一次请求进行中 | 2 次都是 2 个 `result`：先 `3`，然后新 `system init`，再 `3 BANANA`；带 replay 那次回显出现在第一个 `result` 之后 |
+
+结论：能插话（`steer: true`），但"插进当前轮"只在模型之后还要再请求时成立；没有这层回显就分不清两种情况，所以必须加 `--replay-user-messages`。
+
+**单测**：`chat::tests` 新增 4 项（插进当前轮、太晚时作为下一轮且不重发、空闲时直接开轮、`steer = false` 时排队），替身 Claude（sh 脚本）会回显、SLOW 轮次里收到新消息就并进去、LATE 轮次 2 s 内不读输入；适配器单测新增 Claude 回显判定、Codex steer（立即 / 等 turn id / 被拒）、输出增量 + 按 hunk 的 diff + 上下文用量。`cargo test -p ar-host --lib chat` 34 项全过。
+
+**e2e 实测**（测试分支 = 本分支 + `test/host-chat-quiet2`（安静模式），隔离被控端与控制端都写 `[network] quiet = true`；`tools/chat-smoke.py --quiet`；debug 构建）：
+
+- Mac（macOS，Codex 0.163，`--model gpt-6.1-sol`）：3 次全过（每次 33 项：替身 27 项 + 真实 Codex 6 项）。真实插话：插话发出后 0.02 s 收到 `steer:true`（3/3），每次只跑 5 条命令、最终答 `5`，整轮 24~29 s；普通任务 4.4~5.7 s，打断 0.0 s 内生效，下一轮记得上文 1.9~2.2 s。
+- win-dev（Windows 11，Claude Code 2.1.293，`claude.cmd`）：3 次全过（每次 33 项：替身 27 项 + 真实 Claude 6 项；被控端在终端前台运行，不是计划任务里的 hostw）。真实插话：发出后 3.35 / 4.03 / 4.14 s 收到 `steer:true`（要等正在跑的 `sleep 1` 和下一次模型请求），每次只跑 5 条命令、最终答 `5`，整轮 21~31 s；普通任务 5.8~10.2 s，打断 0.1 s 生效，下一轮记得上文 1.6~4.6 s。
+
+**未测**：ACP 智能体真机插话（设计上不支持，只走单测）；Codex 插话正好撞上轮次结束（`no active turn to steer` 退回队列）只有单测和一次手动调用；Claude 插话后紧接着打断（排队中的那条会被 Claude 当下一轮跑）未测；桌面端界面（另一会话）。
+
+### DeepSeek Harness（2026-10-22，分支 `claude/dsh-agy-7f8142`，叠在 `feat/host-chat` 上）
+
+用户定的优先级：Claude、Codex、DeepSeek Harness、OpenCode、Antigravity。本节补上 DeepSeek Harness。只改了被控端、冒烟脚本和文档，桌面端没动。
+
+**DeepSeek Harness**（id `deepseek`，命令 `dsh`，参数 `--profile acp`，走通用 ACP 适配器）。协议细节读的是它仓库 `packages/acp/acp` 的源码和 README（MIT，只读，没有抄代码）：
+- 没有 `session/load`，续会话用 `session/resume`（`initialize` 的 `agentCapabilities.sessionCapabilities.resume`）。ACP 适配器现在按能力选：有 resume 用 resume（不回放），否则 load（回放期间不显示），都没有就新开并发 `context_lost`。
+- 没有 modes 和 `session/set_model`：模型是 `configOptions` 里 `category: "model"` 的选项，值是不透明的 `["provider","model"]` JSON。适配器按值、名字或数组最后一项匹配用户填的模型名，发 `session/set_config_option`；匹配不到发 `model` 通知列出可选项；智能体没有 `configOptions` 时照旧 `session/set_model`。
+- `usage_update`（`used`、`size`，可选 `cost`）→ `usage` 的 `context_used` / `context_window`。
+- 它发的是**整条消息**（带 `messageId`），不流式：`caps.partial` 设为 false。适配器现在按 `messageId`（没有时按"工具调用之后另起一条"）分开消息，一轮的 `final_text` 是最后一条消息。这一点也改变了 OpenCode 等其他 ACP 智能体：以前一轮所有文字拼成一条。
+- 登录态：dsh 没有状态命令。看环境变量 `DEEPSEEK_API_KEY`、`$DSH_HOME/.credentials.yaml`（含 `deepseek-account` 视为账号登录）和 `$DSH_HOME/.env`（`$DSH_HOME` 默认 `~/.dsh`），只判断有无、不读出值；连目录都没有报 `logged_out`，其余 `unknown`。`Runtime::login` 因此从"命令参数"改成枚举 `Login`。
+- `caps.steer` false（ACP 不能往进行中的 prompt 追加）。
+- 工具调用：真机上它每次都发 `kind: "other"`，`title` 只是工具名（`bash`、`read`），命令和路径在 `rawInput`。ACP 适配器在 `kind` 缺省或为 `other` 时按工具名推断类型（bash → execute、read → read、edit / write → edit、grep / glob → search 等），用 `rawInput.command` 或路径作标题，路径作 location。报了具体 kind 的智能体不受影响。模型名匹配也改成不区分大小写（它的选项名是 `DeepSeek-V4-Pro`，值的末项是 `deepseek-v4-pro`）。
+
+**真机（Mac，dsh 0.2.1-rc.2，用户自己配的 key，默认模型 deepseek-v4-flash，2026-10-22）**：
+- 直接驱动它的 ACP（`/tmp` 下的临时脚本，没入库）：`initialize` 声明 `sessionCapabilities.resume`；一次"跑 `sleep 3 && echo finished` 再读文件"的任务 4.7 s 完成，消息与思考同一个 `messageId`、`usage_update` 报 `size: 1000000`；`session/cancel` 0.11 s 后 prompt 以 `cancelled` 返回，正在跑的工具以 `failed`（`Error: tool call aborted`）结束；`set_config_option` 切到 `deepseek-v4-pro` 生效；关掉进程后新进程 `session/resume` 立即返回（模型选择保留），下一轮答出上一进程里记住的词。以上各 1 次。
+- `tools/chat-smoke.py --quiet --real deepseek=$HOME/.local/bin/dsh`：29 项全过（1 次；第一次跑时因为工具 kind 是 other，"跑 shell 工具 / 打断"两项没过，改适配器后通过）：答题 2.0 s，跑 shell 工具，打断 0.0 s 内生效，下一轮记得上文 0.6 s；`chat list` 的登录态是 `logged_in` / `api_key`。
+- Windows（win-dev，Windows 11，debug，本分支以 bundle 检出到独立 worktree `%USERPROFILE%\ai-remote-dsh`）：`cargo clippy --workspace --all-targets -D warnings` 无警告；`cargo test -p ar-host --lib chat` 25 项全过（Windows 上跳过 Unix 的驱动层替身测试）；`tools/chat-smoke.py --quiet` 替身部分 28 项全过（1 次）。
+- **dsh 真实对话只在 macOS 测过**（Windows 不配 key）。经被控端 park 之后再续接（`session/resume` 走驱动层）只在单测和上面的协议脚本里覆盖，没有在被控端里端到端测。
+
+**Antigravity：暂不接**（用户没有密钥，2026-10-22 决定先不适配）。已写好的适配器存在本地分支 `claude/agy-adapter-parked`（提交 9012d94，未推送），内容：`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions` 常驻进程（依据官方文档 antigravity.google/docs/cli/headless，prompt 走 stdin）、`--conversation` 续接、打断即结束进程树、`chat.toml` 的 `base = "acp"`（给 Google 另发的 `agy_acp_server.par` 用），以及单测、替身驱动层测试和冒烟里的替身 agy（都通过过）。以后要接，从那个提交挑 agy 相关部分即可。2026-10-22 两台机器装了 agy 1.4.4（Mac `~/.local/bin/agy`；win-dev `%LOCALAPPDATA%\agy\bin\agy.exe`，官方脚本**不加进 PATH**，接入时要把这两个位置加进 `detect.rs` 的已知位置）。`agy --help` 证实 `--input-format stream-json`、`--conversation`、`--dangerously-skip-permissions` 都在；`--print-timeout` 在 1.4.4 默认是 0（等到这一轮完），搁置分支里传的 `12h` 可以去掉。账号已登录，但 Google 以地区不可用拒绝服务（`agy -p` 输出 `AGY_ERROR: {"status":"PERMISSION_DENIED","error_code":403,...}`，主会话实测），所以**真实成功路径未测：账号地区受限**；接入时要把这行 `AGY_ERROR:` 当作一轮失败、原话显示。
+
+**实测（本机 macOS，2026-10-22）**：
+- 单测新增：ACP 2 项（dsh 的 initialize / `session/resume` / 模型配置项 / 整条消息 / `usage_update` / 工具失败 / 结束文字，按它服务端的真实行格式；resume 失败转新会话 + 模型名不存在），detect 1 项（dsh 的 key / 账号 / 空 key / 没有目录）。
+- `tools/chat-smoke.py --quiet`（隔离被控端和控制端，真实 QUIC，debug）：28 项全过（新增 1 项：dsh 以 ACP、`steer: false` 列出）。`--real deepseek=<dsh 路径>` 不用改脚本就能用（`--real` 取内置 id）。
+- `cargo fmt --check`、`clippy --workspace --all-targets -D warnings` 无警告；`cargo test --workspace`（ar-host 270 项等）只有 `ar-net` 的 `ipc::tests::a_second_daemon_cannot_replace_the_live_socket` 在整跑时失败过 1 次，单独重跑 3 次都过，本分支没改 ar-net，判断是偶发；node 测试 78 过 2 跳过；`tsc` 通过。
+
+**未测**：两台机器都没装 `dsh`，**真实 dsh 一次都没跑过**，协议以源码为准（main 分支，npm 当时 0.2.1-rc.2）。Windows 上没有跑。
+
+### 下一步
+
+- [x] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：真实 Codex 3 次、Claude 4 次，都没有被控端树里的进程弹窗，结束会话后 0 残留（见"Windows 上的对话"一节）。
+- [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
+- [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
+- [ ] DeepSeek Harness 真机端到端：装好并配好 key 后跑 `tools/chat-smoke.py --quiet --real deepseek=<dsh 路径> --model deepseek-v4-flash`。
+- [x] Codex / Claude 的运行中插话（见上一小节）。
+- [ ] iOS 只读会话视图；可选的 `kind:"pty"` 原始终端。
+- [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
+  - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
+  - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 50bbbe3 已经有这套机制。）
+- [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
+- [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
 ## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
 
@@ -173,6 +316,312 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - 坑：macOS 上 pktap 的 tcpdump 收到 SIGTERM 不退出，脚本里要用 `kill -9`。
 
 未测：公司 DNS 拦截 `iroh.link` 的情况。
+
+## 对话侧栏照 Orca 重做（2026-10-21，分支 `claude/desktop-chat-ui-f97e8c`，基于 `feat/host-chat`）
+
+用户看了旧对话界面，要求直接照 Orca（stablyai/orca，MIT）的 native chat 搬，做到接近 Claude / Codex 原生 App。只改了桌面端和前端测试，被控端没动（另一个会话在做插话）。来源与许可证见仓库根的 `THIRD_PARTY_NOTICES.md`；每个搬来的组件文件头注明对应的 Orca 组件。
+
+### 怎么搬的
+
+- Orca 的 native-chat 是 108 个组件、5 万多行，依赖它自己的 store、i18n、tiptap、Tailwind + shadcn，整块搬不动。做法：**布局、间距、配色比例、折叠方式和文案语气照抄，组件按我们的事件重写**。
+- 转换层在 `lib/chat.ts` 的 `turnRows`：一轮投影成若干"行"。
+  - 连续的工具调用折成一个"运行组"（run），用一句话概括："运行了 2 条命令，读了 1 个文件"；进行中改成"正在读 1 个文件，运行 2 条命令"。
+  - 夹在两个工具之间的思考算在组里；其他位置的思考单独一行（"思考了 4 s"）。
+  - 编辑也算在运行组里（"编辑了 1 个文件 和 运行了 1 条命令 +3 −2"），展开后是 diff 卡片。最初做成了独立的 diff 卡片行，实机对照 Orca 后改成这样，见下面"Orca 实机对照"。
+  - Claude 的 Task 工具（`kind: think` 且标题以 Task/Agent 开头）是子智能体行；计划、提问、通知、插话各自一行。
+  - 只有一个工具的运行组直接画成那一行工具（Orca 也是"一条命令就显示命令本身"）。
+- 组件在 `ui/chat/`：`Markdown.tsx`（Markdown、代码块、复制按钮、高亮）、`Rows.tsx`（各类行）、`Composer.tsx`（输入框、排队卡片、上下文用量环）、`Transcript.tsx`（消息列表、跳到最新）。`AgentChat.tsx` 只剩启动表单、会话选择和连接。
+- 样式仍只在 `styles/native.css`（第 6b 节），没有引入 Tailwind。颜色按 Orca 的比例用我们的令牌混出来：正文 88% 前景、代码底 3.5%、行内代码 6%、用户气泡 6%、发丝线 8%。
+
+### 依赖：一个都没加
+
+- **Markdown**：自己写的 `lib/markdown.ts`（约 360 行，GFM 子集：标题、段落、围栏代码、引用、嵌套列表、任务列表、表格、分隔线、行内代码、粗斜体、删除线、链接）。
+  - 没用 marked / react-markdown：前者产出 HTML，要再加 sanitize；后者连同 remark/rehype 要拉进几十个包。
+  - 自己写的版本只产出一棵文本树，React 只渲染文本节点，原始 HTML 永远是文字。这和旧界面"从不渲染 HTML"的承诺一致。
+  - 链接只认 http(s) / mailto，点击复制地址，不在应用里跳转（跳了页面就离开对话栏了）。
+- **语法高亮**：自己写的 `lib/highlight.ts`（约 210 行），覆盖智能体最常输出的十几种语言（JS/TS、Python、Rust、Go、C 系、Shell、PowerShell、JSON、TOML、YAML、SQL、CSS、HTML、diff）。
+  - 没用 shiki：它 4.x 带 WASM 引擎和语法包，体积是 MB 级。
+  - 只是分词着色，猜错只是颜色不对；超过 6 万字符不着色。
+- **diff**：`diffRows` 用 LCS 做真正的逐行 diff，变动前后各留 3 行上下文，两段改动之间折成"⋯ N 行未改动"（开头和结尾不标）。旧版只掐头去尾，中间两处小改会显示成整段删、整段加。单元格超过 400 万时退回旧做法。
+
+### 和插话会话的协议约定（对方照这个实现）
+
+- `caps.steer: bool`；`input.mode` 可取 `"queue" | "interrupt" | "steer"`。
+  - 前端排队时不带 `mode` 字段，旧被控端照常读得懂。
+- `user` 事件可带 `steer: true`，显示在正在跑的那一轮里，带"插话"标记。
+  - 前端以"当前正在跑的轮"为准，不看事件里的 `turn`；被控端按当前轮编号或按下一轮编号都能正确显示。
+- `notice` 码 `steer_queued`：前端用自己的文案"这个智能体不支持在运行中插话，已排队…"，不用被控端给的文字。
+- `usage` 可带 `context_window`、`context_used`。两个数都有时，输入框右下角显示上下文用量环，超过 90% 变红。
+
+### 交互
+
+- **运行中输入**：
+  - 智能体支持插话时，默认插话；输入框下方的芯片可以切成"排队"。不支持时芯片固定显示"排队"。
+  - ⌥Enter 停止本轮并立即发送。Esc（输入框为空时）等于停止。
+- **排队消息**显示成输入框上方的卡片，有三个操作：
+  - 编辑：协议没有"替换"，实现为先撤回再重新排队，所以编辑过的消息会排到队尾；
+  - 撤回：用现有的 `dequeue`；
+  - 现在插进这一轮：只在支持插话时出现，实现为撤回后用 steer 发送。
+- **其他输入**：↑/↓ 在光标位于开头或结尾时翻看本次运行里发过的消息；输入法组字时的 Enter 不会发送；发送后列表跟到底部。
+- **提问卡片**：选项带编号，按数字键直接回答（焦点不在输入框时）；也可以输入别的回答。回答后卡片收成一行"已回答：…"。
+- **被停止的轮**：显示"你停止了这一轮。[继续]"。"继续"发送"从刚才停下的地方继续，先确认上一步有没有做完"（Orca 的 Continue 也是先让智能体核对）。被停止打断的工具记为"已停止"，不算失败。
+- **长对话**：
+  - 只挂载最近 30 轮，顶上有"显示更早的 N 轮"；
+  - 倒数第 3 轮及更早的轮用 `content-visibility: auto`，在屏幕外时跳过布局和绘制；
+  - 每轮按对象 memo，流式输出时只重渲染正在跑的那一轮；
+  - 读者往上翻时不再自动跟随，出现"跳到最新"按钮。
+- **单复数**：所有计数文案都拆成 `_one` / `_many` 两个键（中文两个一样），修掉了 "1 steps"。测试会检查每个计数键两种语言都有、英文单数不出现 `{n}`。
+
+### 实测
+
+- **门槛检查**：`tsc --noEmit` 通过；`node --test tools/*.test.mjs` 80 通过、0 失败、2 跳过。
+  - 新增 `tools/chat-render.test.mjs` 共 7 项，覆盖 Markdown、高亮和单复数。
+  - `tools/chat-state.test.mjs` 从 9 项扩到 18 项，覆盖行投影、运行组、子智能体、插话（两种 turn 编号）、steer/queue/interrupt、排队编辑、历史、上下文用量、停止后继续、diff 统计、单复数。
+  - 没改 src-tauri，所以没跑 clippy。
+- **纯逻辑性能**（node，本机 M 系列 Mac，单次）：
+  - 200 轮、4.54 万个事件（每轮 12 个工具 + 200 个流式片段）折叠一共 25 ms，平均每个事件 0.56 µs；
+  - 200 轮全部投影成行用了 2.6 ms；
+  - 2.7 KB 的 Markdown 解析一次 0.11 ms；
+  - 浏览器里的渲染耗时没量。
+- **演示模式截图**（camofox，`npx vite` + 演示后端，视口 2319 宽，侧栏 560 px）在 `/tmp/chat-ui-v2/`，没进仓库：
+  - 空闲、展开的工具和 diff、插话加提问、流式输出、排队编辑、停止后继续、深色英文、长消息折叠，共 9 张。
+  - 第一轮截图过程中发现并修掉了：
+    - 全局 `.tgt` / `.hd` / `.live` / `.wrap` 类名污染了新组件，新组件改用 `obj` / `rh` / `is-live` / `wrapped`；
+    - 提问卡片在提前 return 之前少调了一个 hook，回答后整页崩溃；
+    - shell 高亮把 `export.py` 的 `export` 当成关键字。
+- **和 Orca 对照**：见下一小节。
+
+### Orca 实机对照（2026-10-21）
+
+- **怎么跑的**：
+  - 从官方 GitHub release 下了 Orca 1.4.237（`Orca-1.4.237-arm64-mac.zip`，Developer ID 签名、已公证），放在 `/tmp/orca-app`，用 `--user-data-dir=/tmp/orca-profile --remote-debugging-port=9333` 启动；
+  - 打开设置 → 实验性 → Chat UI；截图、点击都走 CDP（脚本在 `/tmp/orca-cdp/`），不占用屏幕。
+- **没能现场跑任务**：本机 Codex 0.137 用 ChatGPT 账号时 gpt-5.5 / 5.4 / 5.3-codex / 6.1-sol 全部被拒（400），Claude 的 OAuth token 过期，本机也没装 OpenCode。
+  - 改用 Orca 的"智能体会话历史 → 在新聊天中恢复"，把本机一个已结束的 Claude Code 会话在 native chat 里打开。只渲染历史，没有发送任何消息。
+- **截图**：`/tmp/chat-ui-v2/orca-*.png`（Orca）和 `10-after-orca-run-with-diff.png`（改后的我们），没进仓库。
+- **对照后改了的**：
+  - 编辑并进运行组：Orca 写成"编辑 2 文件 和 运行 1 个命令 ✓"，展开后每个文件一行"编辑了 X.swift +7 −6"，再展开是 diff。我们原来把每次编辑做成独立的卡片行，一轮里改的文件多了就很长。现在组标题后另加总的 +N −M。
+  - 句子最后一项用"和 / and"连接。
+  - 命令只显示命令本身，不再写 "Bash"。
+  - 失败数从红字改成灰色的"· 1 个失败"；运行组标题的箭头只在悬停时出现。
+  - diff 行自动换行（原来是横向滚动），复制按钮常显，开头和结尾不再标"N 行未改动"。
+  - "跳到最新"改为"跳到最新消息"，和 Orca 的中文一致。
+- **对照后确认一致的**：
+  - 正文和运行组的层次：运行组用灰字、紧贴在上一段正文下面，展开后左边一条竖线、每行图标 + 目标 + 右侧箭头；
+  - 行内代码的描边底色；
+  - "跳到最新消息"浮在输入框上方居中；
+  - 输入框是一个圆角大框，按钮在文字下方一行。
+- **仍不同的**：
+  - Orca 正文 14 px、内容列最宽约 46 rem 居中；我们在 560 px 侧栏里用 13 px。
+  - Orca 的 diff 有行号槽：Claude 的 Edit 带了真实行号。我们的事件只有改动前后的文本片段，没有行号，所以不显示行号槽（Orca 在不知道行号时也这样做）。
+  - Orca 文件名可以点开文件；我们只能复制。
+
+### 和 Orca 的差距（没做的）
+
+- 发送状态：没有"发送中… / 未发送 + 重试"。协议没有发送确认，要被控端在 `user` 事件里回带 `input_id`，前端去匹配。
+- 消息操作：没有"回退到这里"（Rewind）；没有 ⌘F 查找；没有选中回复里的文字引用到输入框。
+- 输入增强：没有 `@` 文件、`/` 命令与技能选择、附件和图片粘贴。
+- 富内容：没有 Mermaid 和内联图表。
+- 文件路径：点了不能打开，只能复制。
+- 上下文用量环：只有悬停提示，没有 Orca 那种按类别的明细弹窗。
+- 窗口化：Orca 按行测量高度做真正的虚拟列表；这里是"只挂最近 30 轮 + content-visibility"，几千轮的极端长对话没测过。
+- 子智能体：只认 Claude 的 Task 工具。被控端目前只发子智能体的总结（`adapters/claude.rs` 第 145 行），没有子智能体内部的步骤。
+- 后台任务行、停靠在输入框上方的任务列表：没做；计划只在原位显示。
+- 演示里的 `steer_queued` 提示：前端对不支持插话的智能体直接按排队发送，所以正常操作下看不到这条提示。它只在客户端发了 `mode: "steer"`、而被控端判定不支持时出现；渲染逻辑有单测覆盖，但截图里没有它。
+
+### 下一步
+
+- [x] 真实 Tauri 端到端（2026-10-22，另一会话在 `claude/desktop-chat-e2e` c271e66 做的，`feat/host-chat` 4be9e12 + 调试版 + 本机隔离被控端安静模式）：替身智能体 36 项 ×2 次全过；真实 Claude Code 2.1.307 13 项 ×1 次全过，插话 2 s 内带标记进同一轮。真实 Codex 账号对 gpt-5.5 报 400，提问卡片没在真实连接上测过。截图在 `/tmp/desktop-chat-e2e*/`。
+  - 它报的问题已修：记住的会话在被控端不存在（被控端重启过）时，面板停在报错和发不出去的输入框 → 现在清掉记忆、回到会话列表并说明原因（`sessionGone`）；从记住的会话进来再点"其他会话"时父组件的 target 本来就是 null，原来不会重新渲染，现在由面板自己的状态驱动。
+  - 窗口不可见时 rAF 不触发，事件会积到窗口可见才显示 → 加了 100 ms 定时器兜底；运行计时一直显示 "0 ms" → 计时器在轮次开始时就取当前时间，不再等第一次 1 s 的跳动。这两处没有在不可见窗口里复测。
+- [x] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`（见"Windows 上的对话"一节；修了对话区滚动条和代码里中文的字体）。
+- [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
+
+## 去掉单独的"插话"操作，按智能体原生的方式发送（2026-10-22，分支 `claude/desktop-chat-e2e`）
+
+用户："不需要有插话这个操作吧？就用原生 agent 的概念就行了。"Claude Code、Codex 自己就是这样：智能体工作时你照常发消息，
+它在下一步把消息并进正在做的这一轮。所以界面不再给"插话 / 排队"两种选择：
+
+- 输入框只有一个发送。运行中发送的方式由智能体决定（`sendMode`）：`caps.steer` 为真（Claude Code、Codex）发
+  `mode: "steer"`，否则不带 mode（排队，本轮结束后发）。去掉芯片、`hc_mode_*` 文案和样式。占位文字分别是
+  "它工作时也可以继续发消息" / "本轮结束后它会收到这条消息"。
+- 并进当前轮的消息（`user` 带 `steer: true`）显示成普通用户消息，仍在这一轮里，不加标签（保留 `data-steer` 供测试用）。
+- 排队的消息照旧显示在输入框上方，可编辑、撤回；"现在插进这一轮"按钮改叫"立即发给它"。`steer_queued` 提示改成中性的
+  "智能体这一轮结束后会收到这条消息。"
+- 协议没变（`caps.steer`、`input.mode`、`user.steer`、`steer_queued` 都还在）；iOS 端同样的改动交给 PR #22 的会话。
+- 验证（2026-10-22，本机，debug 包）：`tsc` 过，前端测试 84 过；e2e 替身流程 3 次全过（排队 / 撤回改在不支持插话的
+  智能体上测），真实 Claude Code 1 次 13 项全过：第 2 条命令后发的消息作为普通用户消息进了同一轮，Claude 数到 5 停下。
+
+## 对话侧栏：选工作目录、按项目列会话（2026-10-22，分支 `claude/chat-folder-5ebe7f`，基于 `feat/host-chat` 0071902）
+
+用户要求"选择工作目录"和"显示已选目录"照 Codex 桌面版做，并参考 Orca；第一版出来后用户嫌项目和会话列表丑，要求照人家的设计。
+
+### 调研
+
+- **Codex 桌面版**（本机没装，依据官方文档 developers.openai.com/codex/app，未实机）：新对话先选"项目"（一个本地文件夹），用过的项目都会出现在选择器里，没有的就"添加项目"选文件夹；侧栏按项目列线程。
+- **Orca 1.4.237**（`/tmp/orca-app` 解包 + 之前的 CDP 截图 `/tmp/orca-cdp/r4.png`）：左栏"项目"按项目分组，组头是文件夹图标 + 项目名，组内每个工作区 / 会话一张卡（状态点 + 名字，下一行灰色元信息：智能体 · 多久前）；右栏会话历史按项目分组带数量。远端主机上的项目只有一个路径输入框（`/path/to/project/on/host`），**没有远端目录浏览器**。native chat 本身不管选目录。
+- 结论：选择器 = Codex 的"项目 chip + 下拉（最近项目 + 浏览 / 添加）"，会话列表 = Orca 的"项目分组 + 会话卡"。远端浏览 Orca 没有，我们用被控端现成的 `files_list` 补上。
+
+### 做了什么（只改桌面端，被控端没动）
+
+- `ui/chat/FolderPicker.tsx`（新）：
+  - `FolderPicker`：一个 chip（文件夹图标 + 项目名 + 灰色的上级路径，家目录缩成 `~`），点开是下拉：搜索框（搜最近的文件夹，或输入路径）、"最近"（本机记的 + 被控端上开着的会话的目录，去重）、"浏览这台电脑上的文件夹…"。浏览模式有面包屑、`..`、子文件夹（隐藏 `.xxx`，输入 `.` 开头才显示），底部"使用「名字」"。输入路径回车就浏览那个路径；列不出来（策略拒绝、不存在）时显示原因，并给"仍然使用这个路径"（`chat_start` 会再校验）。键盘：↑↓、回车（进入 / 选中）、⌘/Ctrl+回车（选当前浏览的文件夹）、空输入时退格回上级、Esc（先回最近列表，再关闭）。没有最近目录时一打开就浏览 `~`。
+  - `FolderLabel`：会话头部、会话列表、chip 共用；悬停显示完整路径。
+  - 浏览用 `files_list`（admin 级、默认放行、只读，和 `chat_start` 同为 admin，所以能启动智能体的设备就能浏览）。只取第一页（500 项，文件夹排在前面），文件夹超过一页时提示"输入名字缩小范围"。`files_list` 返回的 `path` 是展开后的，列 `~` 时顺便记下被控端的家目录（localStorage `ai-remote.chat.home`），之后显示路径时缩成 `~`。
+- `lib/chat.ts`：路径纯函数 `looksLikePath / trimFolder / folderParts / folderName / parentFolder / childFolder / folderCrumbs / sameFolder / tildeFolder / folderChoices / matchFolders / listedFolders / sessionsByFolder / agoParts`，以及 `knownHome / rememberHome`。Windows（`D:\work`、`D:/work`、`\\server\share`、大小写不敏感）和 Unix、`~` 都覆盖。
+- `AgentChat.tsx`：`StartForm` 的文本框 + datalist 换成 `FolderPicker`（新增可选 `folders` 参数，`Picker` 传开着的会话目录；`ComputerTabs` 不传，照旧可用）；`Picker` 的会话列表改为"项目"分组（组头：图标 + 名字 + 上级路径 + 数量；会话卡：状态点 + 智能体（· 模型）+ 多久前，下一行"就绪 / 运行中 / 已暂停 · N 轮 · 发起设备"）；`Conversation` 只改了头部那个显示 cwd 的 span。
+- 文案：`hc_folder_*` 一段，加在 en.ts / zh.ts 末尾。样式：`native.css` 末尾两节。`hc_cwd_ph` 已不用，没删（避免和别的会话冲突）。
+
+### 踩过的坑
+
+1. **全局短类名会撞**：第一版高亮行用 `.act`，`v2-pages.css` 里 `.act` 是活动页的 `position:absolute; inset:0`，高亮行被拽到选择器顶上；"未选择"状态用 `.empty`，全局 `.empty` 是竖排居中的空态布局，图标和文字上下叠。改成 `.on` / `.none`。新组件里的类名先在 `styles/*.css` 里搜一下有没有顶层规则。
+2. 路径的灰色部分用 `direction: rtl` 让开头省略，内容要包一层 `<bdi>`，否则 `/`、`~` 这类中性字符会被重排到另一头。
+
+### 实测（2026-10-22，本机 macOS，debug 包，隔离被控端 `[network] quiet = true`）
+
+- `node --test tools/*.test.mjs` 92 过 / 0 失败 / 2 跳过，其中新增 `tools/chat-folder.test.mjs` 8 项（路径解析、两种平台、`~` 缩写、去重、筛选、按项目分组、多久前）。`npx tsc --noEmit -p apps/desktop` 通过。
+- `tools/desktop-chat-e2e.py`（替身智能体）**全部通过，共跑 3 次**（后两次是改样式后的重跑）。新增的检查：未选时 chip 提示选择；打开后经真实通道列出被控端家目录（46 个文件夹，隐藏的不显示）；输入路径出现"打开 …"、回车浏览、点子文件夹面包屑更新、底部"使用「work」"、chip 显示 `work` 且悬停是完整路径；会话头部显示项目名 + 上级路径；第二次启动默认选上次的文件夹、打开是最近列表且当前项打勾、会话列表按项目分组。截图 `/tmp/chat-folder-e2e/`（`00-folder-browse`、`04b-folder-recent`、`01-first-turn`）。
+- `tools/desktop-chat-e2e-real.js` 的启动步骤也改成了用选择器（输入路径 → 回车 → 使用），**没有跑**（真实智能体花额度，改动只在选目录这一步）。
+
+### 未测 / 没做
+
+- Windows 被控端（`D:\` 路径、盘符根、UNC）只有单测，没在 win-dev 上点过；被控端无法列出盘符清单，要换盘只能输入 `E:\`。
+- `files_list` 被机主改成 ask / deny 时：ask 会每进一个目录弹一次审批，deny 时只能输入路径；只按代码推导，没实测。
+- 演示模式（`lib/demo.ts`）没有 `files_list`，浏览会显示"无法列出"。
+- 和发起会话的约定：本分支的 e2e 仍含插话步骤；去掉插话的分支合进来时要一并改 e2e。
+
+## 对话里的文件预览（2026-10-22，分支 `claude/chat-preview-97901c`，基于 `feat/host-chat` 0071902）
+
+需求：智能体创建或修改的 HTML、Markdown、图片，在桌面端对话侧栏里能直接预览。
+
+### 调研（Orca 1.4.237 安装包，`app.asar` 解包后读代码；Codex / Claude 只有公开资料）
+
+- Orca：HTML 不是任意文件都预览，而是智能体按约定写进对话专用临时目录，再在回答里写 `::orca-visual{file="x.html"}`，回答里内联一个 `<iframe srcDoc sandbox="allow-scripts">`，页面最前面插 CSP（网络全断，脚本只能来自几个 CDN），点开在编辑器标签页；图片是 80 px 缩略图，点开是可缩放弹层；Markdown 文件点开在编辑器标签页的 MarkdownPreview，对话里不内联。
+- Codex 桌面版：官方文档只说 review 窗格看 Git 改动、点文件用外部编辑器打开；"产物预览"只见于第三方和社区，可信度低。Claude artifacts 是对话右侧固定面板。
+
+### 做法
+
+- **形态**（照 Orca，用户要求"会话内也要显示"）：每轮结束后，在轮尾内联显示这一轮写出 / 点名的可预览文件（`lib/preview.ts` 的 `turnFiles`：工具写的 diff 路径和非读非删工具的位置，再加最后一段回答里链接 / 行内代码点名的文件；按文件名去重，最多 4 个）：HTML 是 220 px 高的小窗，Markdown 是前 180 px（渐隐），图片是 96 px 高的缩略图。点卡片、工具行 / 编辑卡上的眼睛按钮、回答里的文件链接或 `out/x.md` 这样的行内代码，都打开全窗口弹层（560 px 侧栏放不下页面）：HTML / Markdown 可切"预览 / 源码"，图片点一下在适应窗口和实际大小之间切换，Esc 关闭。内联卡片接近屏幕时才取文件（IntersectionObserver，页面隐藏时直接取），同一会话里每个文件只取一次（`PreviewProvider` 里按路径缓存 Promise，失败不缓存，弹层的"重新获取"强制再取）。
+- **被控端新工具 `chat_file`**（`crates/ar-host/src/tools/chat.rs`、`chat/preview.rs`）：参数 `session`、`path`；admin 级、默认允许、只读；返回一次性票据，字节走现有的 `app/ai-remote/file/1`（与 `files_pull` 同一个 `Transfers`，审计照常记 `transfer`，工具名 `chat_file`）。没有复用 `files_pull`，因为它默认要机主审批，每次预览弹一次审批不可用。限制：
+  - 路径相对会话工作目录解析（`~` 是用户主目录），解析符号链接后**在工作目录内**，或者这个路径（原样或解析后）出现在本会话**智能体自己的事件**里（工具调用的 locations、diff 的 path、智能体回答文字；人发的消息不算）；
+  - 解析后的真实文件扩展名是 html/htm/md/markdown/png/jpg/jpeg/gif/webp/svg/bmp；
+  - 最大 16 MiB。
+  - 为什么默认允许：调用的设备已是 admin、能和这个会话对话，本来就能让智能体（以用户身份、不询问）把任意文件打印出来；`chat_file` 只省掉这一来回，并且限制在对话涉及的文件上。机主仍可用 `[[rule]] tool = "chat_file"` 改成询问或拒绝。`chat_file` 加进了控制端的 `CHANNEL_TOOLS`，不对 MCP 客户端列出。
+- **Tauri**：`preview_file(host, session, path)` → `transfer::preview`，在内存里收字节并核对 SHA-256，以原始字节（`Frame`，页面里是 `ArrayBuffer`）返回；不写控制端磁盘。
+- **HTML 的安全取舍**：Orca 允许脚本（`allow-scripts`，无 same-origin）；我们**不运行任何脚本**：`sandbox=""`（无脚本、opaque origin、无表单 / 弹窗 / 顶层导航），文档 `<head>` 最前面插 `default-src 'none'` 的 CSP 加 `<base target="_blank">`（不发任何网络请求；链接点了是弹窗，被沙箱拒绝）。原因：WKWebView 里 Tauri IPC 背后的原生消息处理器对所有 frame 可见，没把握让智能体写的脚本跑在应用的 webview 里；而且应用自己的 CSP（`script-src` 回落到 `'self'`）会被 srcdoc 继承，内联脚本本来也跑不了。代价：依赖脚本的页面（图表库）只显示静态部分；页面引用的相对路径图片、外部字体 / CSS 不加载。Markdown 用对话自己的渲染器（只产出文本节点）；SVG 走 `<img>`，脚本不执行。
+
+### 实测（本机 macOS，2026-10-22）
+
+- 单测：`cargo test -p ar-host --lib chat` 37 项全过（新增 3 项：扩展名、"只认智能体的事件"、`previews_read_only_files_the_session_is_about` 用真实会话覆盖目录内 / 目录外未点名 / 符号链接逃出目录 / 人发消息不算 / 智能体写过后放行 / 超 16 MiB）；`node --test tools/*.test.mjs` 92 项 90 过 2 跳过（新增 `tools/chat-preview.test.mjs` 6 项）；`tsc --noEmit` 和 `cargo clippy --workspace --all-targets -D warnings` 通过；debug 构建重新生成的 `bindings.ts` 与手写一致。
+- 端到端（`E2E_SCRIPT=tools/desktop-chat-preview-e2e.js python3 tools/desktop-chat-e2e.py`，debug 桌面包 + 本机隔离被控端，两端 `[network] quiet = true`；替身智能体的 FILES 轮在工作目录写 report.html / notes.md / chart.png、在目录外写一个它点名的 named.md、另放一个没点名的 secret.md）：**24 项全过**（最后一次；之前一次 18 项版本也全过）。覆盖：三种入口、4 个内联预览全部加载、缩略图 64×32、内联和弹层的 iframe 都是 `sandbox=""` 且 CSP 在页面 `<script>` 之前、页面脚本没运行（它会 `parent.postMessage`，1.5 s 内没收到）、外部图片没加载（截图里只显示 alt 文字）、源码视图、Esc、目录外点名的可读、没点名的被拒（"outside this session's folder"）、`.toml` 被拒（"cannot be previewed"）。截图在 `/tmp/chat-preview-e2e/`，没进仓库（推流画面里是本机桌面）。
+- 演示模式（camofox，`npx vite` + 演示后端）：三种内联卡片和弹层的深色截图看过。
+- 耗时：脚本记的"点击 → 弹层就绪"是 50~51 ms，但脚本按 50 ms 轮询、且内联已预取（弹层命中缓存），所以只能说明本机回环下 ≤ 约 50 ms；**未测**冷取时延和跨机器时延。
+
+### 踩过的坑
+
+1. 被控端工具的 `json()` 输出多行美化 JSON，而 `transfer.rs` 只解析结果第一行，第一次端到端全部报 "EOF while parsing"；`chat_file` 改成和文件工具一样输出单行。
+2. 弹层头部的路径用 `direction: rtl` 做左侧省略，开头的 `/` 会被挪到末尾；里面包一层 `<bdi dir="ltr">`。会话头部的工作目录（`AgentChat.tsx` 原有）也有同样的问题，没改。
+3. demo 的 `demoLog()` 在模块加载时执行，用到的常量必须定义在它前面（否则 TDZ）。
+
+### 没做 / 下一步
+
+- [ ] Windows（WebView2）上看一遍：`srcdoc` 继承父页 CSP、`sandbox=""`、`bdi` 的表现。
+- [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
+- [ ] iPhone 端的预览。
+- [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
+- [ ] 会话头部工作目录的 rtl 斜杠错位（`AgentChat.tsx`）。
+
+## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4be9e12）
+
+`feat/host-chat` 合入桌面新界面、被控端插话之后的第一次端到端：真实的 debug 桌面应用，经 Tauri → 控制端代理 → QUIC →
+本机隔离被控端（安静模式）→ 智能体进程。
+
+- 驱动方式：debug 版的 smoke 模式加了 `AI_REMOTE_SMOKE_SCRIPT=<file.js>`，页面加载后执行脚本，脚本直接操作真实 DOM
+  （React 受控输入框用原生 setter + `input` 事件）；页面用 `log_from_page('shot', name)` 要截图（WKWebView snapshot，
+  窗口在屏幕外也能截），`log_from_page('done', …)` 结束。只在 `debug_assertions` 下编译。
+- `tools/desktop-chat-e2e.py`：起隔离被控端（两个替身智能体：`Rich fake` 走 Claude stream-json，RICH 时发思考、TodoWrite
+  计划、Read、失败的 Bash、Grep、Edit、带标题 / 列表 / 表格 / 代码块的回答、`modelUsage` 上下文；SLOW 时一直运行到下一条
+  消息〔插话〕或停止；`No-steer fake` 是同一个程序加 `steer = false`），桌面 profile 用 `AI_REMOTE_HOME`，所有 home 的
+  host / controller 都写 `[network] quiet = true` 并断言 doctor 的 network 是安静。`tools/desktop-chat-e2e.js` 是替身
+  流程，`tools/desktop-chat-e2e-real.js`（`--real "Claude Code"`）是真实智能体：建个文件 + 一个按顺序跑 20 条命令的任务，
+  跑到第 2 条时插话"改成数到 5"。
+
+### 实测（2026-10-22，本机 macOS，debug 包）
+
+- 替身流程 **36 项全过**（连续 2 次）：启动表单列出智能体并启动、首条消息、思考折叠、计划 3/3、工具折成一句
+  （"读了 1 个文件，运行了 1 条命令，搜索了 1 次 和 编辑了 1 个文件 +2−1 · 1 个失败"）、展开后失败命令红底输出、diff
+  +2 −1、Markdown 标题 / 列表 / 表格 / 代码块、上下文环 42k / 200k；运行中默认插话、插话进同一轮带标记、不新增轮；切排队、
+  排队行、撤回、停止后撤回的消息没跑、"继续"发出新一轮；不支持插话的智能体只有静态"排队"芯片，消息排队，停止后作为下一轮
+  跑；会话列表两条、回到第一个会话回放 4 轮。截图 `/tmp/desktop-chat-e2e/`。
+- 真实 Claude Code 2.1.307（本机账号）**13 项全过**（1 次）：首轮 6 s 完成，命令显示为工具行，有回答，上下文环
+  "129k / 1.0M"；长任务按顺序跑命令，被折成"运行了 N 条命令"；第 2 条命令后插话，2 s 内以"插话"标记进同一轮，最终共
+  5 条命令（数到 5 停下）。同一天早些时候 Claude 报 401（OAuth 令牌过期，`claude auth status` 仍说已登录），面板正确显示
+  重试提示和"失败: Failed to authenticate…"。
+- Codex 0.137.0：账号对默认模型报 400（"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account"），
+  面板正确显示"失败: …"，真实任务没跑成。提问卡片（只有 Codex 适配会发 `question`）因此**没在真实连接上测**。
+
+### 发现
+
+1. **（已修，b077920）** 面板按主机名在 localStorage 记住上次的会话（`ai-remote.chat.last`）；该会话在被控端已不存在时，
+   原来只显示"no chat session '…' on this host"和一个发不出去的输入框。b077920（`sessionGone()`、提示 `hc_session_gone`）
+   之后回到会话列表并提示。e2e 第 0 步复现它：在 localStorage 写一个不存在的会话再切回对话标签。修之前的包这一步失败；
+   在 `feat/host-chat` 0071902 上 5 次都过。
+2. **（已修，b077920）** 面板原来只用 `requestAnimationFrame` 合并事件，窗口不可见（别的 Space、最小化、屏幕外）时
+   rAF 不触发，事件积在内存里不显示；运行计时显示"0 ms"。b077920 加了 100 ms 定时器兜底、计时从轮次开始取当前时间。
+   脚本里原来的 rAF 替换已去掉；0071902 上 5 次运行里 4 次全过，运行中计时 2.5 s 后显示"2.1 s"。
+3. debug 包与安装版同一个 bundle id（`io.github.jia-ss.ai-remote`），共用 WebKit 存储；脚本每次用新的主机名
+   `e2e-<pid>`，结束时删掉自己写的 `ai-remote.chat.*` 条目。
+4. 真实 Claude 一轮要带约 129k tokens 的上下文（本机全局 Claude 配置），慢且贵；按顺序的命令会被折叠，检查命令数要看 run
+   的句子，不能搜 `echo N`。
+
+5. **（误报，已核实）"对话面板会被整体重新挂载"**：原来的检测只看 `.nt-chat` 元素有没有换，把脚本自己的动作（切"步骤"再切回
+   "对话"、回会话列表、换会话、重新打开会话）都算了进去，每次 2~4 次正好是这几步。桌面对话会话加挂载日志跑了 3 次核实：
+   SessionPage 从未卸载。检测已改成只在同一会话（目录 + 第一条用户消息相同）的面板被换掉时报。之前一次"计时、插话芯片"
+   失败的原因没查清，插话芯片现在已去掉，之后没再出现。
+
+### 没做
+
+- [ ] 真实 Codex（账号问题）、提问卡片在真实连接上、Windows 开发机上的桌面端、真实窗口可见时的手感（滚动跟随、键盘）。
+
+## Windows 上的对话：WebView2 界面与后台 hostw（2026-10-22，分支 `claude/win-verify-c5c3c1`，基于 `feat/host-chat` 54625ae）
+
+补 Windows 上还没验证的两块：桌面端对话面板在 WebView2 里的渲染，以及用户平时用的后台被控端（计划任务里的 `ai-remote-hostw.exe`，GUI 子系统、没有控制台）拉起智能体。测试机 win-dev（Windows 11，5120×2160，WebView2 155，debug 构建，独立 worktree `%USERPROFILE%\ai-remote-winverify`）；所有测试被控端 / 控制端都是隔离目录、安静网络模式；没有碰真实被控端。GUI 相关的都经 zremote 在交互会话里跑（SSH 会话没有桌面）。
+
+### 桌面端（WebView2）
+
+- **`tools/desktop-chat-e2e.py` 现在能在 Windows 上跑**：可执行文件加 `.exe`，临时目录不再写死 `/tmp`，子进程输出按 UTF-8 读，给 WebView2 传 `--disable-features=CalculateNativeWinOcclusion`（窗口在屏幕外也继续绘制）和一个一次性的数据目录。截图走 `lib.rs` 里已有的 Windows `PrintWindow` 实现。
+- **实测**：替身流程 35 项 ×3 次全过（Mac 的 36 项里有 1 项是"同一会话面板被重挂载"的诊断，Windows 上没触发，不计入）；真实 Claude Code 2.1.293 13 项 ×1 次全过：首轮 30 s，插话 3 s 内作为普通用户消息进同一轮，最终跑 5 条命令停下，上下文环 132k / 1.0M。截图在 Mac 的 `/tmp/win-chat-ui/`、`/tmp/win-chat-real/`、`/tmp/win-chat-render/`（没进仓库）。
+- **新增 `tools/desktop-chat-e2e-render.js`**（`E2E_SCRIPT=tools/desktop-chat-e2e-render.js python tools/desktop-chat-e2e.py`）：查主流程没覆盖的渲染项。WebView2 上 10 项 ×2 次全过：
+  - 长消息（40 行）折叠，`mask-image` 生效（计算值 `linear-gradient(rgb(0,0,0) 65%, transparent)`），可见高度 202 px / 全文 806 px，截图里末行渐隐；
+  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件，**没有用真实中文输入法打过字**；
+  - 6 轮时前 4 轮 `content-visibility: auto`、后 2 轮 `visible`，滚到顶后第 1 轮正常绘制（高 574 px）；
+  - 发送后列表停在底部（距底 < 40 px）；
+  - 字体：正文是 `Segoe UI Variable Text` → `Microsoft YaHei UI`，代码是打包进来的 Geist Mono。
+- **看截图对比 Mac 的结论**：Markdown（标题、列表、表格、代码块）、代码高亮、diff 卡片（红绿底、+/− 列）、失败命令的红框、计划、运行组的句子、插话、停止后继续、排队卡片、回放，都和 Mac 一致；窗口更宽时 diff 行不换行。
+- **修了两处**（`styles/native.css`）：
+  1. 对话区滚动条在 WebView2 上是带上下箭头按钮的灰色经典滚动条。原因：`.nt-chat-body` 设了 `scrollbar-width: thin`，Chromium 一旦看到标准属性就不再用全局的 `::-webkit-scrollbar` 样式。加 `[data-os="windows"] .nt-chat-body { scrollbar-color: var(--stroke-2) transparent; }` 后是透明轨道 + 灰色细滑块（只剩很淡的小箭头）。只对 Windows 生效，Mac 不变。
+  2. 等宽字体栈 `--font-data` 只有 `PingFang SC` 一个中文字体，Windows 上代码块里的中文会落到 `monospace`（宋体系）。在它后面加了 `"Microsoft YaHei UI"`。
+- **坑**：Python 3.12 在 Windows 上 `tempfile.mkdtemp` 给目录设只限本人的 ACL，WebView2 的沙箱进程用不了里面的数据目录，启动时报 `0x80080005`（"服务器运行失败"）并在桌面上留一个"无法创建数据目录"的模态框——第一次跑时 app 就卡在这个框上 60 s、什么都不输出。数据目录现在放在临时目录外层（`%TEMP%\adc-webview-<pid>`），结束删掉。
+
+### 后台被控端（hostw）
+
+- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（只报告不判定，那是智能体自己的事）；`chat end` 后检查被控端下面不剩任何进程（判定）。
+- **窗口监视** `tools/win-window-watch.ps1`：在交互桌面上用 WinEvent 钩子（`EVENT_OBJECT_SHOW`）记下运行期间出现的**每一个**可见顶层窗口（只闪几毫秒的控制台也抓得到），窗口出现的同时记下属主进程的父进程链；另外每 150 ms 轮询一次被控端下面的进程树，结束 3 s 后报告还活着的。
+- **实测**（真实 Codex 0.162.1 `codex.cmd`、Claude Code 2.1.293 `claude.cmd`，都是 npm 垫片；每次 36 项：替身 27 + 真实智能体 9）：Codex 3 次、Claude 4 次都全过（Codex 第 1 次有 1 项失败：我当时把"打断后 3 s 命令还在"写成了判定项，之后改成只报告）。
+  - **控制台窗口**：被控端树里的进程 7 次都**没有**弹过窗口。树里每次 110~200 个进程（conhost 40~70 个——都是隐藏的；node、cmd、git、bash/wsl、MCP 服务、`--version` 探测），全部没有窗口。监视器一共记到 12 个控制台窗口，都不属于被控端：
+    - 1 个 Windows PowerShell 是我的测试脚本自己弹的（无控制台的 Python 调 `powershell` 查进程树），加 `CREATE_NO_WINDOW` 后再没出现；
+    - 1 个 PowerShell 的父进程链是 `svchost(2832) <- services.exe`，是机器上的计划任务，和测试无关；
+    - Claude 第 1 次运行中 1.2 s 内 9 个 `git.exe` 窗口 + 1 个 PowerShell：当时监视器还没记父进程链，归属不明；之后 3 次 Claude 都是 0 个。**这一条没有完全排除**，如果有人在桌面上看到 Claude 会话时闪 git 窗口，先用 `win-window-watch.ps1` 抓父进程链。
+  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端只在会话结束时收整棵树。
+  - **结束会话**：`chat end` 后 2 s，被控端下面 0 个进程（7/7 真实智能体 + 7/7 替身）；整个测试结束后监视器报告的残留 0 个（7/7）。
+  - 其余数字：一次任务 Codex 5.8~17.2 s、Claude 5.4~5.6 s；打断 0.1~0.2 s 生效；插话 Codex 0.08~0.25 s、Claude 3.96~4.40 s 收到 `steer:true`，Codex 最终 6 条命令、Claude 5 条。
+- **推导**：智能体根进程带 `CREATE_NO_WINDOW`（`chat/proc.rs`），它和它拉起的控制台程序共用一个隐藏控制台；所以只有显式要求新控制台（`CREATE_NEW_CONSOLE`）或用 `DETACHED_PROCESS` 再起控制台程序的子进程才会弹窗。被控端本身有没有控制台对此没有影响。
+
+### 未测 / 下一步
+
+- 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
+- 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
+- 被控端在 Codex 打断后是否该替它收掉还在跑的命令：现在不收（会误杀它的 MCP 服务等长期子进程），要做得先能区分"这一轮拉起的工具进程"。
 
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 

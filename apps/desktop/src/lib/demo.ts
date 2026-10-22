@@ -2,6 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
+import type { ChatEvent, ChatHello, ChatState, RuntimesReport, SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
   Driver,
@@ -221,9 +222,11 @@ export const demoBackend: Backend = {
     const i = hosts.findIndex((h) => h.name === host);
     if (i >= 0) hosts.splice(i, 1);
   },
-  async callTool(host, tool): Promise<ToolResult> {
+  async callTool(host, tool, args = {}): Promise<ToolResult> {
     reachable(host);
     await wait(250);
+    const chat = demoChatTool(host, tool, args);
+    if (chat) return chat;
     if (tool === "screenshot") {
       return { content: [{ type: "image", mimeType: "image/svg+xml", data: btoa(demoScreen()) }] };
     }
@@ -257,6 +260,37 @@ export const demoBackend: Backend = {
   async localControllers() {
     await wait(120);
     return localControllers.map((c) => ({ ...c }));
+  },
+  async localChat() {
+    await wait(80);
+    return { enabled: demoChatEnabled, live: 1, sessions: [] };
+  },
+  async setLocalChat(on) {
+    await wait(150);
+    demoChatEnabled = on;
+  },
+  async openChat(host, ticket, since, onEvent, onClosed) {
+    reachable(host);
+    await wait(200);
+    const s = demoSessions.find((x) => demoTickets.get(ticket) === x.id);
+    if (!s) throw new Error("unknown or already used chat ticket; ask for a new one");
+    demoTickets.delete(ticket);
+    const log = demoLogs.get(s.id) ?? [];
+    const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name }, cwd: s.cwd, state: s.state,
+      seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host };
+    for (const e of log) if (e.seq > since) onEvent(e);
+    const listener = (e: ChatEvent) => onEvent(e);
+    const set = demoChatListeners.get(s.id) ?? new Set();
+    set.add(listener);
+    demoChatListeners.set(s.id, set);
+    return {
+      hello,
+      send: async (command) => demoChatCommand(s, command),
+      close: () => {
+        set.delete(listener);
+        onClosed();
+      },
+    };
   },
   async setLocalBypass(peer, on) {
     await wait(200);
@@ -477,6 +511,13 @@ export const demoBackend: Backend = {
   async pullFile() {
     throw new Error("file transfers need the app");
   },
+  async previewFile(host, _session, path) {
+    reachable(host);
+    await wait(250);
+    const body = demoFiles[path.split(/[\\/]/).pop() ?? ""];
+    if (body === undefined) throw new Error(`${path} is outside this session's folder and the agent has not named it in this session`);
+    return typeof body === "string" ? new TextEncoder().encode(body) : body;
+  },
 };
 
 /** The demo's stand-in for a live view: a still picture of office-pc's screen. */
@@ -500,6 +541,366 @@ ${[0, 1, 2, 3, 4, 5].map((i) => `<rect x="300" y="${310 + i * 34}" width="${640 
 ${[0, 1, 2, 3, 4].map((i) => `<rect x="${1000 + i * 64}" y="${640 - [120, 180, 150, 240, 210][i]}" width="40" height="${[120, 180, 150, 240, 210][i]}" rx="4" fill="#B9C4CF"/>`).join("")}
 <rect x="0" y="952" width="1600" height="48" fill="#E9EDF1" fill-opacity="0.92"/>
 </svg>`;
+}
+
+
+// Coding agents on office-pc: what is installed, one session with two finished turns (tools, an
+// edit, a plan, a message added mid-turn, markdown with a table and code), and a scripted reply to
+// whatever is sent that runs through every kind of row: reasoning, a plan, a run of tools with a
+// failing command, an edit, a question, streamed text and context usage. Messages sent while it
+// runs are added to the turn (Claude Code, Codex) or queued (OpenCode, which cannot take them).
+
+let demoChatEnabled = true;
+const demoTickets = new Map<string, string>();
+const demoChatListeners = new Map<string, Set<(e: ChatEvent) => void>>();
+
+const CAPS = { interrupt: true, resume: true, partial: true, thinking: true, questions: true };
+const demoRuntimes: RuntimesReport = {
+  host: { can_start: true, reason: null, enabled: true, max_live: 4 },
+  runtimes: [
+    { id: "claude", name: "Claude Code", base: "claude", custom: false, protocol: "claude-stream-json", verdict: "ok", version: "2.1.174",
+      path: "C:\\Users\\me\\.local\\bin\\claude.exe", login: { state: "logged_in", method: "claude.ai", plan: "max" },
+      caps: { ...CAPS, questions: false, steer: true } },
+    { id: "codex", name: "Codex", base: "codex", custom: false, protocol: "codex-app-server", verdict: "ok", version: "0.163.0",
+      path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", login: { state: "logged_in", method: "chatgpt" },
+      caps: { ...CAPS, steer: true } },
+    { id: "opencode", name: "OpenCode", base: "opencode", custom: false, protocol: "acp", verdict: "ok", version: "1.2.4",
+      path: "C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd", login: null,
+      caps: { ...CAPS, questions: false, steer: false } },
+    { id: "gemini", name: "Gemini CLI", base: "gemini", custom: false, protocol: "acp", verdict: "missing",
+      caps: { ...CAPS, questions: false } },
+    { id: "qwen", name: "Qwen Code", base: "qwen", custom: false, protocol: "acp", verdict: "missing",
+      caps: { ...CAPS, questions: false } },
+  ],
+};
+
+const t0 = Date.now() - 6 * minute;
+const demoSessions: SessionInfo[] = [
+  { id: "c3f9a1e7b2c4d", runtime: "claude", name: "Claude Code", cwd: "D:\\work\\report-tool", state: "idle", by: { device: "home-laptop" },
+    started_at: t0, turns: 2, last_activity: t0 + 90_000, seq: 0 },
+];
+
+const EXPORT_OLD = [
+  "import calendar",
+  "from datetime import date",
+  "",
+  "",
+  "def quarter_range(year: int, quarter: int) -> tuple[date, date]:",
+  "    start = date(year, quarter * 3 - 2, 1)",
+  "    end = date(year, quarter * 3, 31)",
+  "    return start, end",
+  "",
+  "",
+  "def export(year: int, quarter: int, out: str) -> None:",
+  "    start, end = quarter_range(year, quarter)",
+  "    rows = load_rows(start, end)",
+  "    render_pdf(rows, out)",
+].join("\n");
+const EXPORT_NEW = EXPORT_OLD
+  .replace("    end = date(year, quarter * 3, 31)", "    last = calendar.monthrange(year, quarter * 3)[1]\n    end = date(year, quarter * 3, last)")
+  .replace("    render_pdf(rows, out)", "    render_pdf(rows, out, title=f\"Q{quarter} {year}\")");
+
+const PYTEST_FAIL = [
+  "============================= test session starts =============================",
+  "platform win32 -- Python 3.12.4, pytest-8.3.2",
+  "collected 12 items",
+  "",
+  "tests/test_dates.py ....F                                                [ 41%]",
+  "tests/test_export.py .......                                             [100%]",
+  "",
+  "================================== FAILURES ===================================",
+  "____________________________ test_quarter_end_q3 _____________________________",
+  "",
+  "    def test_quarter_end_q3():",
+  ">       assert quarter_range(2026, 3)[1] == date(2026, 9, 30)",
+  "",
+  "tests/test_dates.py:21:",
+  "_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _",
+  "export.py:7: in quarter_range",
+  "    end = date(year, quarter * 3, 31)",
+  "E   ValueError: day is out of range for month",
+  "=========================== short test summary info ===========================",
+  "FAILED tests/test_dates.py::test_quarter_end_q3 - ValueError: day is out of range",
+  "========================= 1 failed, 11 passed in 1.92s ========================",
+].join("\n");
+
+const ANSWER_1 = `Fixed. The quarter end was always **day 31**, which does not exist for June or September.
+
+### What changed
+- \`quarter_range\` now takes the month's real last day from \`calendar.monthrange\`.
+- The PDF title names the quarter, so exports are easier to tell apart.
+
+| Quarter | Ends | Before | Now |
+|:--|:--|:--|:--|
+| Q1 | Mar 31 | ok | ok |
+| Q2 | Jun 30 | \`ValueError\` | ok |
+| Q3 | Sep 30 | \`ValueError\` | ok |
+| Q4 | Dec 31 | ok | ok |
+
+Run it yourself with:
+
+\`\`\`powershell
+python export.py --quarter Q3 --out out\\Q3.pdf
+\`\`\`
+
+The full suite passes: 12 passed in 1.84 s.`;
+
+const DEMO_SUMMARY = `# 2026 export check
+
+| Quarter | Pages | Status |
+| --- | ---: | --- |
+| Q1 | 11 | ok |
+| Q2 | 12 | ok |
+| Q3 | 14 | ok |
+
+- The quarter end now uses the month's **real last day**.
+- Q4 is skipped until its data is in.
+`;
+
+const DEMO_REPORT = `<!doctype html>
+<html><head><meta charset="utf-8"><title>2026 exports</title>
+<style>body{font:15px/1.5 system-ui;margin:32px;color:#1d1d1f}h1{font-size:22px}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:6px 12px}.ok{color:#1a7f37}</style>
+<script>document.title = "ran a script";</script></head>
+<body><h1>2026 quarterly exports</h1><p>Generated by the report tool after the date fix.</p>
+<table><tr><th>Quarter</th><th>Pages</th><th>Status</th></tr>
+<tr><td>Q1</td><td>11</td><td class="ok">ok</td></tr><tr><td>Q2</td><td>12</td><td class="ok">ok</td></tr><tr><td>Q3</td><td>14</td><td class="ok">ok</td></tr></table>
+<p><a href="https://example.com/">A link</a> stays inside the preview.</p></body></html>`;
+
+const DEMO_CHART = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="200" viewBox="0 0 360 200"><rect width="360" height="200" fill="#fff"/>
+<g fill="#3b82f6"><rect x="40" y="90" width="60" height="90"/><rect x="150" y="80" width="60" height="100"/><rect x="260" y="50" width="60" height="130"/></g>
+<g font-family="system-ui" font-size="13" fill="#333" text-anchor="middle"><text x="70" y="196">Q1</text><text x="180" y="196">Q2</text><text x="290" y="196">Q3</text></g></svg>`;
+
+/** Files of the demo session a preview can read, by name. */
+const demoFiles: Record<string, string | Uint8Array> = { "summary.md": DEMO_SUMMARY, "report.html": DEMO_REPORT, "pages.svg": DEMO_CHART };
+
+function demoLog(): ChatEvent[] {
+  const turn1: Array<Record<string, unknown>> = [
+    { t: "state", state: "running", queued: [] },
+    { t: "user", input_id: "u1", by: { device: "home-laptop" }, text: "The Q3 export fails with a date error. Find out why and fix it." },
+    { t: "turn_start" },
+    { t: "message", id: "m1", text: "Let me reproduce the error first, then look at how the quarter's dates are computed.", delta: false },
+    { t: "tool_call", call_id: "k1", title: "Bash python export.py --quarter Q3", kind: "execute", status: "in_progress", input: { command: "python export.py --quarter Q3" } },
+    { t: "tool_update", call_id: "k1", status: "failed", content: [{ type: "text", text: "Traceback (most recent call last):\n  File \"D:\\work\\report-tool\\export.py\", line 7, in quarter_range\n    end = date(year, quarter * 3, 31)\nValueError: day is out of range for month\n(exit code 1)" }] },
+    { t: "thought", id: "r1", text: "The quarter end is built as month*3 with **day 31**. September has 30 days. Let me check where else that pattern is used before changing it.", delta: false },
+    { t: "tool_call", call_id: "k2", title: "Read D:\\work\\report-tool\\export.py", kind: "read", status: "completed", locations: ["D:\\work\\report-tool\\export.py"] },
+    { t: "tool_call", call_id: "k3", title: "Grep date\\(year, .*31\\)", kind: "search", status: "completed", content: [{ type: "text", text: "export.py:7:    end = date(year, quarter * 3, 31)" }] },
+    { t: "plan", entries: [{ content: "Reproduce the Q3 failure", status: "completed" }, { content: "Use the month's real last day", status: "in_progress" }, { content: "Run the test suite", status: "pending" }] },
+    { t: "tool_call", call_id: "k4", title: "Edit D:\\work\\report-tool\\export.py", kind: "edit", status: "completed", content: [
+      { type: "diff", path: "D:\\work\\report-tool\\export.py", old: EXPORT_OLD, new: EXPORT_NEW }] },
+    { t: "tool_call", call_id: "k5", title: "Bash python -m pytest -q", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q" } },
+    { t: "tool_update", call_id: "k5", status: "completed", content: [{ type: "text", text: "............                                                       [100%]\n12 passed in 1.84s" }] },
+    { t: "plan", entries: [{ content: "Reproduce the Q3 failure", status: "completed" }, { content: "Use the month's real last day", status: "completed" }, { content: "Run the test suite", status: "completed" }] },
+    { t: "message", id: "m2", text: ANSWER_1, delta: false },
+    { t: "usage", input_tokens: 18_400, output_tokens: 920, context_window: 200_000, context_used: 41_800 },
+    { t: "turn_end", status: "completed", final_text: "Fixed.", duration_ms: 38_200 },
+    { t: "state", state: "idle", queued: [] },
+  ];
+  const turn2: Array<Record<string, unknown>> = [
+    { t: "state", state: "running", queued: [] },
+    { t: "user", input_id: "u2", by: { device: "home-laptop" }, text: "Export all four quarters of 2026 to check." },
+    { t: "turn_start" },
+    { t: "tool_call", call_id: "k6", title: "Bash python export.py --year 2026 --quarter Q1", kind: "execute", status: "completed", input: { command: "python export.py --year 2026 --quarter Q1" }, content: [{ type: "text", text: "wrote out/Q1.pdf (11 pages)" }] },
+    { t: "tool_call", call_id: "k7", title: "Bash python export.py --year 2026 --quarter Q2", kind: "execute", status: "completed", input: { command: "python export.py --year 2026 --quarter Q2" }, content: [{ type: "text", text: "wrote out/Q2.pdf (12 pages)" }] },
+    { t: "user", input_id: "u3", by: { device: "home-laptop" }, text: "Skip Q4, its data is not in yet.", steer: true },
+    { t: "message", id: "m3", text: "Got it, I'll stop after Q3.", delta: false },
+    { t: "tool_call", call_id: "k8", title: "Bash python export.py --year 2026 --quarter Q3", kind: "execute", status: "completed", input: { command: "python export.py --year 2026 --quarter Q3" }, content: [{ type: "text", text: "wrote out/Q3.pdf (14 pages)" }] },
+    { t: "tool_call", call_id: "k9", title: "Write D:\\work\\report-tool\\out\\summary.md", kind: "edit", status: "completed", content: [
+      { type: "diff", path: "D:\\work\\report-tool\\out\\summary.md", old: null, new: DEMO_SUMMARY }] },
+    { t: "tool_call", call_id: "k10", title: "Write D:\\work\\report-tool\\out\\report.html", kind: "edit", status: "completed", content: [
+      { type: "diff", path: "D:\\work\\report-tool\\out\\report.html", old: null, new: DEMO_REPORT }] },
+    { t: "tool_call", call_id: "k11", title: "Bash python chart.py --out out/pages.svg", kind: "execute", status: "completed", input: { command: "python chart.py --out out/pages.svg" }, locations: ["D:\\work\\report-tool\\out\\pages.svg"], content: [{ type: "text", text: "wrote out/pages.svg" }] },
+    { t: "message", id: "m4", text: "Q1–Q3 of 2026 export cleanly: `out/Q1.pdf` (11 pages), `out/Q2.pdf` (12) and `out/Q3.pdf` (14). Q4 skipped as you asked. The check is summed up in `out/summary.md`, with a [page](out/report.html) and a chart (`out/pages.svg`).", delta: false },
+    { t: "usage", input_tokens: 9_200, output_tokens: 310, context_window: 200_000, context_used: 52_300 },
+    { t: "turn_end", status: "completed", duration_ms: 21_400 },
+    { t: "state", state: "idle", queued: [] },
+  ];
+  const evs = [...turn1.map((e) => ({ e, turn: e.t === "state" || e.t === "user" ? 0 : 1 })), ...turn2.map((e) => ({ e, turn: (e.t === "state" || e.t === "user") && !e.steer ? 1 : 2 }))];
+  return evs.map(({ e, turn }, i) => ({ seq: i + 1, ts: t0 + i * 2400, turn, ...e }) as unknown as ChatEvent);
+}
+const demoLogs = new Map<string, ChatEvent[]>([["c3f9a1e7b2c4d", demoLog()]]);
+
+/** What a scripted turn is doing, so messages and Stop can reach it. */
+interface DemoRun {
+  stopped: boolean;
+  steers: string[];
+  answer: ((text: string) => void) | null;
+}
+const demoRuns = new Map<string, DemoRun>();
+const demoQueues = new Map<string, Array<{ id: string; text: string }>>();
+const demoAsked = new Set<string>();
+
+function push(s: SessionInfo, e: Record<string, unknown>) {
+  const log = demoLogs.get(s.id) ?? [];
+  const ev = { seq: log.length + 1, ts: Date.now(), turn: s.turns, ...e } as unknown as ChatEvent;
+  log.push(ev);
+  demoLogs.set(s.id, log);
+  s.seq = ev.seq;
+  s.last_activity = ev.ts;
+  for (const l of demoChatListeners.get(s.id) ?? []) l(ev);
+}
+
+function setState(s: SessionInfo, state: ChatState) {
+  s.state = state;
+  push(s, { t: "state", state, queued: demoQueues.get(s.id) ?? [] });
+}
+
+async function stream(s: SessionInfo, run: DemoRun, kind: "message" | "thought", id: string, text: string, ms = 28) {
+  const words = text.split(/(?<=\s)/);
+  for (let i = 0; i < words.length; i += 3) {
+    if (run.stopped) return;
+    push(s, { t: kind, id, text: words.slice(i, i + 3).join(""), delta: true });
+    await wait(ms);
+  }
+}
+
+/** Waits, then shows what was said meanwhile (a message added to the turn). */
+async function step(s: SessionInfo, run: DemoRun, ms: number) {
+  await wait(ms);
+  while (run.steers.length && !run.stopped) {
+    const text = run.steers.shift() as string;
+    push(s, { t: "message", id: `ack${s.seq}`, text: `Noted: “${text}”. Adjusting.`, delta: false });
+    await wait(300);
+  }
+  return !run.stopped;
+}
+
+async function demoReply(s: SessionInfo, text: string, inputId: string) {
+  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  demoRuns.set(s.id, run);
+  setState(s, "running");
+  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text });
+  s.turns += 1;
+  const started = Date.now();
+  push(s, { t: "turn_start" });
+  const n = s.seq;
+  const k = (x: string) => `${x}${n}`;
+  await stream(s, run, "thought", k("r"), "The user wants the leap-year case covered too. February's last day depends on the year, so the same calendar.monthrange fix applies; I should add tests for 2024 and 2026 and run the suite.", 40);
+  if (!(await step(s, run, 300))) return;
+  push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "in_progress" }, { content: "Add leap-year cases", status: "pending" }, { content: "Run the suite", status: "pending" }] });
+  push(s, { t: "tool_call", call_id: k("a"), title: "Read D:\\work\\report-tool\\tests\\test_dates.py", kind: "read", status: "in_progress", locations: ["D:\\work\\report-tool\\tests\\test_dates.py"] });
+  if (!(await step(s, run, 700))) return;
+  push(s, { t: "tool_update", call_id: k("a"), status: "completed" });
+  push(s, { t: "tool_call", call_id: k("b"), title: "Grep def test_ tests/", kind: "search", status: "completed", content: [{ type: "text", text: "tests/test_dates.py:8:def test_quarter_start\ntests/test_dates.py:14:def test_quarter_end_q1\ntests/test_dates.py:20:def test_quarter_end_q3" }] });
+  push(s, { t: "tool_call", call_id: k("c"), title: "Bash python -m pytest -q tests/test_dates.py", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q tests/test_dates.py" } });
+  if (!(await step(s, run, 2200))) return;
+  push(s, { t: "tool_update", call_id: k("c"), status: "failed", content: [{ type: "text", text: PYTEST_FAIL }] });
+  push(s, { t: "thought", id: k("r2"), text: "The checked-in tests still expect the old helper; the installed copy is stale. I'll add the leap-year test next to the others.", delta: false });
+  push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "in_progress" }, { content: "Run the suite", status: "pending" }] });
+  push(s, { t: "tool_call", call_id: k("d"), title: "Edit D:\\work\\report-tool\\tests\\test_dates.py", kind: "edit", status: "completed", content: [{ type: "diff", path: "D:\\work\\report-tool\\tests\\test_dates.py",
+    old: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n",
+    new: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n\n\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n" }] });
+  if (!(await step(s, run, 600))) return;
+  if (!demoAsked.has(s.id)) {
+    demoAsked.add(s.id);
+    push(s, { t: "question", qid: k("q"), prompt: "Should `month_end` live in **export.py** or in a new `dates.py` module?", options: ["Keep it in export.py", "Move it to dates.py"] });
+    const answer = await new Promise<string>((resolve) => (run.answer = resolve));
+    run.answer = null;
+    if (run.stopped) return;
+    push(s, { t: "message", id: k("ans"), text: `Going with: ${answer}.`, delta: false });
+  }
+  push(s, { t: "tool_call", call_id: k("e"), title: "Bash python -m pytest -q", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q" } });
+  if (!(await step(s, run, 1600))) return;
+  push(s, { t: "tool_update", call_id: k("e"), status: "completed", content: [{ type: "text", text: "..............                                                     [100%]\n14 passed in 1.97s" }] });
+  push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "completed" }, { content: "Run the suite", status: "completed" }] });
+  await stream(s, run, "message", k("m"), "All **14 tests** pass, including two new February cases:\n\n1. `2024` — a leap year, ends on the 29th\n2. `2026` — ends on the 28th\n\n```python\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n```\n\nNothing else in the export depended on the old day-31 rule.", 110);
+  if (run.stopped) return;
+  const used = 52_300 + s.turns * 9_000;
+  push(s, { t: "usage", input_tokens: 21_000, output_tokens: 640, context_window: 200_000, context_used: used });
+  push(s, { t: "turn_end", status: "completed", duration_ms: Date.now() - started });
+  demoRuns.delete(s.id);
+  const next = (demoQueues.get(s.id) ?? []).shift();
+  setState(s, "idle");
+  if (next) void demoReply(s, next.text, next.id);
+}
+
+async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
+  const input = c.input as { id?: string; text?: string; mode?: string } | undefined;
+  const run = demoRuns.get(s.id);
+  if (input?.text) {
+    const id = input.id ?? `u${s.seq}`;
+    const canSteer = !!demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps.steer;
+    if (!run) {
+      void demoReply(s, input.text, id);
+    } else if (input.mode === "interrupt") {
+      await demoStop(s, run);
+      void demoReply(s, input.text, id);
+    } else if (input.mode === "steer" && canSteer) {
+      push(s, { t: "user", input_id: id, by: { device: "home-laptop" }, text: input.text, steer: true });
+      run.steers.push(input.text);
+    } else {
+      if (input.mode === "steer") push(s, { t: "notice", level: "info", code: "steer_queued", text: "This agent cannot take a message mid-turn; it is queued." });
+      demoQueues.set(s.id, [...(demoQueues.get(s.id) ?? []), { id, text: input.text }]);
+      push(s, { t: "state", state: s.state, queued: demoQueues.get(s.id) });
+    }
+  }
+  const dq = c.dequeue as { id?: string } | undefined;
+  if (dq?.id) {
+    demoQueues.set(s.id, (demoQueues.get(s.id) ?? []).filter((q) => q.id !== dq.id));
+    push(s, { t: "state", state: s.state, queued: demoQueues.get(s.id) });
+  }
+  const ans = c.answer as { text?: string } | undefined;
+  if (ans?.text && run?.answer) run.answer(ans.text);
+  if (c.interrupt && run) await demoStop(s, run);
+  if (c.end) setState(s, "ended");
+}
+
+async function demoStop(s: SessionInfo, run: DemoRun) {
+  run.stopped = true;
+  run.answer?.("");
+  setState(s, "interrupting");
+  await wait(300);
+  push(s, { t: "turn_end", status: "interrupted", duration_ms: 900 });
+  demoRuns.delete(s.id);
+  const next = (demoQueues.get(s.id) ?? []).shift();
+  setState(s, "idle");
+  if (next) void demoReply(s, next.text, next.id);
+}
+
+function demoChatTool(host: string, tool: string, args: Record<string, unknown>): ToolResult | null {
+  if (!tool.startsWith("chat_")) return null;
+  const level = hosts.find((h) => h.name === host)?.levelAtPairing;
+  if (level !== "admin") {
+    return { isError: true, content: [{ type: "text", text: `'${tool}' requires level 'admin', but this device has '${level}'.` }] };
+  }
+  const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v });
+  const ticket = (id: string) => {
+    const tk = `t${Math.random().toString(16).slice(2)}`;
+    demoTickets.set(tk, id);
+    return tk;
+  };
+  switch (tool) {
+    case "chat_runtimes":
+      return ok({ ...demoRuntimes, host: { ...demoRuntimes.host, enabled: demoChatEnabled } });
+    case "chat_sessions":
+      return ok({ sessions: demoSessions, live: demoSessions.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    case "chat_start": {
+      if (!demoChatEnabled) return { isError: true, content: [{ type: "text", text: "coding agents are switched off on this host" }] };
+      const rt = demoRuntimes.runtimes.find((r) => r.id === args.runtime);
+      const s: SessionInfo = { id: `c${Math.random().toString(16).slice(2, 14)}`, runtime: String(args.runtime), name: rt?.name ?? String(args.runtime),
+        cwd: String(args.cwd), state: "idle", by: { device: "home-laptop" }, started_at: Date.now(), turns: 0, last_activity: Date.now(), seq: 0 };
+      demoSessions.unshift(s);
+      demoLogs.set(s.id, []);
+      if (typeof args.prompt === "string" && args.prompt) setTimeout(() => void demoReply(s, args.prompt as string, "u1"), 600);
+      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+    }
+    case "chat_attach": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (!s) return { isError: true, content: [{ type: "text", text: `no chat session '${String(args.session)}'` }] };
+      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+    }
+    case "chat_end": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (s) setState(s, "ended");
+      return ok({ session: args.session, ending: true });
+    }
+    case "chat_interrupt": {
+      const s = demoSessions.find((x) => x.id === args.session);
+      if (s) void demoChatCommand(s, { interrupt: {} });
+      return ok({ session: args.session, interrupting: true });
+    }
+    default:
+      return null;
+  }
 }
 
 let demoPairedAt = 0;

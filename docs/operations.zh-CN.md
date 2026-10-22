@@ -390,6 +390,10 @@ claude mcp add ai-remote -- ai-remote mcp
 | `ai-remote mkdir <目录>` / `rm <路径> [-r]` | `files_mkdir` / `files_delete` | admin，默认要审批 |
 | `ai-remote push <本地> <远端> [--force] [--mkdir]` | `files_push` + 文件通道 | admin，默认要审批 |
 | `ai-remote pull <远端> [<本地>] [--force]` | `files_pull` + 文件通道 | admin，默认要审批 |
+| `ai-remote chat list [--refresh]` | `chat_runtimes` | admin |
+| `ai-remote chat start <智能体> --cwd <目录> [--prompt ..] [--model ..] [--hardened]` | `chat_start` + 对话通道 | admin，默认要审批 |
+| `ai-remote chat run <智能体> "<任务>" --cwd <目录> [--keep]` | `chat_start` + 对话通道，打印回答 | admin，默认要审批 |
+| `ai-remote chat sessions` / `attach <id>` / `send <id> "<文本>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`、`chat_attach`、`chat_interrupt`、`chat_end` | admin |
 
 **发往哪台被控端。** 依次取 `--host <名称>`、环境变量 `AI_REMOTE_HOST`、本设备的默认被控端、唯一配对的被控端。
 `ai-remote hosts default <名称>` 设置默认被控端（保存在 `controller/hosts.json`；MCP 会话里调用没指定 `host`

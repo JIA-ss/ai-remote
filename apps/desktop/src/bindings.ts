@@ -229,10 +229,37 @@ export const commands = {
 	/**  Fetches `remote` from `host` into this computer's Downloads folder (or `local_dir`). */
 	pullFile: (host: string, remote: string, localDir: string | null, onProgress: Channel<[number | null, number | null]>) => typedError<Json, string>(__TAURI_INVOKE("pull_file", { host, remote, localDir, onProgress })),
 	/**
+	 *  The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+	 *  preview in the chat panel (`path` as the session names it). Kept in memory only; raw bytes (an
+	 *  `ArrayBuffer` in the page), never JSON.
+	 */
+	previewFile: (host: string, session: string, path: string) => typedError<Frame, string>(__TAURI_INVOKE("preview_file", { host, session, path })),
+	/**
 	 *  Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 	 *  webview show up where the app's own messages go.
 	 */
 	logFromPage: (level: string, message: string) => __TAURI_INVOKE<void>("log_from_page", { level, message }),
+	/**
+	 *  This computer as a host: whether paired devices may start coding agents here, and the sessions.
+	 *  `None` when no host runs here for this profile.
+	 */
+	localHostChat: () => typedError<unknown | null, string>(__TAURI_INVOKE("local_host_chat")),
+	/**
+	 *  Allows or forbids coding agents on this computer (see `local_host_chat`); forbidding ends every
+	 *  session.
+	 */
+	setLocalHostChat: (on: boolean) => typedError<Json, string>(__TAURI_INVOKE("set_local_host_chat", { on })),
+	/**
+	 *  Opens a coding-agent chat with the ticket in `request` (`{"ticket":"..","since":N}`, from
+	 *  `chat_start` or `chat_attach`). Every event (one parsed JSON object) goes to `on_event`, and
+	 *  `{"t":"closed"}` when the chat ends; returns an id for [`chat_send`] and [`close_chat`] and the
+	 *  host's first reply.
+	 */
+	openChat: (host: string | null, request: Json, onEvent: Channel<Json>) => typedError<[number, Json], string>(__TAURI_INVOKE("open_chat", { host, request, onEvent })),
+	/**  Sends one command (`{"input":{...}}`, `{"interrupt":{}}`, ...) on chat `id`. */
+	chatSend: (id: number, command: Json) => typedError<null, string>(__TAURI_INVOKE("chat_send", { id, command })),
+	/**  Stops watching chat `id` (the session goes on on the host). */
+	closeChat: (id: number) => typedError<null, string>(__TAURI_INVOKE("close_chat", { id })),
 };
 
 /* Types */
