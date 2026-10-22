@@ -27,6 +27,27 @@ that another copy, signed app or LaunchAgent has the same permission. Doctor che
 host's permissions, console session and screen lock. Remote tool calls do not bring up TCC prompts.
 Use `ai-remote host install --dry-run` to inspect the existing LaunchAgent plan before installation.
 
+**Keep privacy grants across rebuilds: sign with a fixed identity.** macOS records Screen Recording
+and Accessibility against the app's code signature. The default ad hoc signature (`-`) is derived
+from the binary itself, so every rebuild is a new identity: the old entry still shows as on in System
+Settings but no longer applies, and macOS does not ask again (the app's Grant button clears its own
+stale entries first). A self-signed code-signing certificate is enough for a local machine: the
+signature's designated requirement then names the certificate (`certificate leaf = H"…"`), which
+stays the same from build to build. Create it once in Keychain Access (Certificate Assistant →
+Create a Certificate…, name `ai-remote local signing`, Self-Signed Root, Code Signing), then build
+with it:
+
+```sh
+APPLE_SIGNING_IDENTITY="ai-remote local signing" tools/macos.sh build --bundles app
+codesign -dr - target/release/bundle/macos/ai-remote.app/Contents/MacOS/ai-remote-hostw
+```
+
+The second command should print `certificate leaf = H"…"`, the same value after every rebuild.
+`security find-identity -p codesigning` lists such a certificate as `CSSMERR_TP_NOT_TRUSTED`; that
+is expected for a self-signed one and does not stop signing (measured on macOS 27, 2026-10-22: the
+three programs in the bundle are signed with it and `codesign --verify --deep --strict` passes).
+Grant the permissions once after the first build signed this way.
+
 Current limits:
 
 - Remote **Allow** from a Mac is unavailable until the Touch ID/Secure Enclave signer is implemented.
@@ -89,7 +110,21 @@ shell/后台任务和 H.264 实时画面。上面的命令可从仓库根目录�
 后台被控端辅助程序，应用不依赖开发目录或 PATH 上另装的 CLI。
 
 Mac 作为被控端时，需要给实际运行的程序授予“屏幕录制”和“辅助功能”权限，重启后再运行
-`ai-remote doctor`。不同启动方式与签名的权限需要分别核验。控制端暂未支持触控 ID 签名，
+`ai-remote doctor`。不同启动方式与签名的权限需要分别核验。
+
+**重编后保留授权：用固定的签名身份。** macOS 把屏幕录制和辅助功能授权记在 app 的代码签名上。默认的临时签名（`-`）由程序内容
+决定，每编一次就是新身份：系统设置里的旧条目仍显示为开，但已经不作数，系统也不会再问（app 的"授权…"会先清掉自己的旧条目）。
+本机用一张自签名代码签名证书就够了：签名的"指定要求"会写成这张证书（`certificate leaf = H"…"`），每次重编都一样。在"钥匙串访问"
+里建一次（证书助理 → 创建证书…，名称 `ai-remote local signing`，自签名根证书，代码签名），之后带上它编：
+
+```sh
+APPLE_SIGNING_IDENTITY="ai-remote local signing" tools/macos.sh build --bundles app
+codesign -dr - target/release/bundle/macos/ai-remote.app/Contents/MacOS/ai-remote-hostw
+```
+
+第二条命令应输出 `certificate leaf = H"…"`，每次重编都是同一个值。`security find-identity -p codesigning` 会把这类证书标成
+`CSSMERR_TP_NOT_TRUSTED`，自签名证书本来如此，不影响签名（实测 macOS 27，2026-10-22：包内三个程序都用它签名，
+`codesign --verify --deep --strict` 通过）。用这种方式签出的第一个版本装好后授权一次即可。控制端暂未支持触控 ID 签名，
 可以拒绝、接管和交还，允许操作需在被控端或 Windows Hello 设备上确认。窗口聚焦、文件工具、
 原生无障碍树、Intel/旧版 macOS 验收和正式签名发布不属于这次已验证的范围。
 
