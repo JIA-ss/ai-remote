@@ -57,7 +57,7 @@ separate billing rules. The workflows use standard runners, dependency caches an
 
 ## Published result — 2026-10-10
 
-The implementation/homepage merged as `91bed6eb1f4c65450c8ed9a6ddfc79081313f900`.
+The implementation/homepage merged as `a169db85e35e23f1c94e3bf3d768c335dde801bc`.
 [Independent post-publication evidence](launch-post-publication.json) confirms anonymous main API,
 fixed-revision English/Chinese content, link targets, repository description/topics, and public iOS
 CI success. [HTTP audit](launch-http-audit.json) records a 200 repository page, actual H1 and

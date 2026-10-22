@@ -7,7 +7,7 @@ import Foundation
 //
 // The layout follows Orca's native chat (stablyai/orca, MIT): a turn is a list of rows — the user's
 // message, the agent's prose, a folded "run" of tool calls summarized in one sentence (edits included:
-// they open to diff cards), reasoning folded behind "思考了 4 秒". Ported up to desktop d196dc3.
+// they open to diff cards), reasoning folded behind "思考了 4 秒". Ported up to desktop 8d7900c.
 
 /// A session as `chat_sessions` reports it.
 public struct PhoneChatSession: Identifiable, Sendable, Equatable {

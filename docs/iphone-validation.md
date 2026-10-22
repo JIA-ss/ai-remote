@@ -11,7 +11,7 @@ iPhone remote-session acceptance or App Store release is claimed.
 | Swift/Rust lifecycle races | passed | Three close/start and three background/resume races on native Mac core; stable identity and usable reopened controller |
 | Native VideoToolbox H.264 decoder | passed | Replay of a previously captured real Mac frame, 1920×810; rejects a truncated frame |
 | Live Swift phone-core ↔ Mac host test | blocked | Pairing/control requests reached the host, but the Mac was locked and its screen stream correctly refused capture |
-| iOS device/simulator SDK compile | passed | [Public CI run 38049375262](https://github.com/JIA-ss/ai-remote/actions/runs/38049375262), source a0c8612, Xcode 16.4 / iOS 18.5; arm64 simulator and unsigned arm64 device |
+| iOS device/simulator SDK compile | passed | [Public CI run 38049375262](https://github.com/JIA-ss/ai-remote/actions/runs/38049375262), source 16ecc68, Xcode 16.4 / iOS 18.5; arm64 simulator and unsigned arm64 device |
 | Simulator UI acceptance | passed | Same run: launch, invalid ticket/rejection and retained text, background/resume, process relaunch; 1 test / 0 failures |
 | Physical iPhone test | deferred | Owner will connect the phone later |
 

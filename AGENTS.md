@@ -125,7 +125,7 @@
 - [ ] iOS 只读会话视图；可选的 `kind:"pty"` 原始终端。
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
   - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
-  - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）
+  - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 50bbbe3 已经有这套机制。）
 - [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
@@ -372,10 +372,10 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   列表右上角 + 打开新对话表单，启动中显示"如果电脑要求确认，请在电脑上允许"）。
 - 输入法：iOS 上输入框是 `UITextView`，`markedTextRange != nil`（组字中）时发送按钮禁用、回车交给输入法；
   不在组字时回车即发送。
-- 读写权限：`feat/host-chat` 的 7da0505 起，任何管理员设备 `chat_attach` 都拿读写票据。旧被控端只给启动会话的设备
+- 读写权限：`feat/host-chat` 的 7647923 起，任何管理员设备 `chat_attach` 都拿读写票据。旧被控端只给启动会话的设备
   读写，手机端保留"由 X 启动，这台 iPhone 只能查看"的分支，停止按钮在只读时改走 `chat_interrupt` 工具。
 
-- **2026-10-21 晚 跟进桌面端新版对话界面**（桌面分支 `claude/desktop-chat-ui-f97e8c` 5a7cb26，照 Orca native chat 重做）：
+- **2026-10-21 晚 跟进桌面端新版对话界面**（桌面分支 `claude/desktop-chat-ui-f97e8c` 76139b2，照 Orca native chat 重做）：
   - 转换层照搬成 Swift（`PhoneChatModel.swift`）：`reduceChat`（steer 用户消息放进正在跑的轮、`usage.context_window/context_used`、
     被停止的工具记 `stopped`）、`phoneTurnRows`（user / text / run / edit / agent / thought / plan / question / notice）、
     `phoneRunSummary` / `phoneRunOutcome` / `phoneRunSentence`（文案同桌面 `hc_run_*` / `hc_live_*`）、`phoneDiffRows`（LCS 逐行 diff、
@@ -390,7 +390,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
     （不带 mode）；智能体收下的插话（`user` 事件 `steer: true`）在当前轮里显示成普通的用户消息。不支持插话时消息照旧显示在
     输入框上方，可编辑、可移出；`steer_queued` 提示的文案改为"智能体这一轮结束后会收到这条消息。"。停止按钮保留。
   - Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），``` 围起来的代码块单独等宽显示。
-  - 同步到桌面 d196dc3（Orca 实机对照后）：编辑并进运行组（行里没有 edit 了，组展开后编辑是 diff 卡片，组标题后加总的
+  - 同步到桌面 8d7900c（Orca 实机对照后）：编辑并进运行组（行里没有 edit 了，组展开后编辑是 diff 卡片，组标题后加总的
     +N −M，`phoneRunDiffStat`）；一句话最后一项用" 和 "连接、编辑类文案"编辑了 N 个文件"；diff 开头 / 结尾不再放 gap；命令行只显示
     命令本身；失败数灰色"· N 个失败"；diff 行自动换行、复制按钮常显。
   - 没搬：↑/↓ 浏览发送历史、最近文件夹记忆（桌面端键盘 / localStorage 功能）、代码高亮；运行组箭头"悬停才显示"（手机没有悬停）。
@@ -412,7 +412,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   + 打开新对话表单（默认选中可用的智能体，未登录 / 未安装有标注，未安装的不能选），启动被拒时弹出原话。
   `apps/ios/Tests/PhoneChatUITests.swift` 自动走一遍发送、停止、回车发送、列表和表单，本机通过（21 s）；同一次 `xcodebuild test`
   第一次拉起 runner 时崩了一次（设备在 24A94425 运行时、SDK 是 24A94232），所以整体报 TEST FAILED，但用例本身 passed。
-- 模拟器连真实被控端（2026-10-21，同一台 Mac；本分支 cherry-pick 了安静模式 3017e90）：隔离被控端和命令行控制端的
+- 模拟器连真实被控端（2026-10-21，同一台 Mac；本分支 cherry-pick 了安静模式 55e2725）：隔离被控端和命令行控制端的
   `host/`、`controller/` 下都写了 `[network] quiet = true`（`doctor` 的 network 检查确认安静模式），模拟器里 App 的配置目录
   （`simctl get_app_container … data` 下的 `Library/Application Support/ai-remote`）首次启动前也放了同样两份。在实时面板里：
   粘贴票据配对 → 会话页"智能体" → 列出命令行启动的会话并回放 → 发消息得到回答 → 命令行发的慢任务实时出现在手机上、
@@ -1067,11 +1067,11 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 
 ### 延迟、自适应码率、画质、光标（2026-10-12 第三轮）
 
-**延迟指标**（被控端在 `5ff8ff5`，观看端本轮）：帧头 `ts_us` 是按流时钟的采集时间；观看端发 `{"ping":n}`，被控端回
+**延迟指标**（被控端在 `61d66ba`，观看端本轮）：帧头 `ts_us` 是按流时钟的采集时间；观看端发 `{"ping":n}`，被控端回
 kind-3 带流时钟。桌面端 `lib/clock.ts` 取 60 s 内往返最短的一次做映射（NTP 规则，误差 ≤ 半个往返），会话页指标显示
 "采集后 N 毫秒显示（±误差）"（解码出帧绘制时刻 − 采集时刻，中位数/秒）。命令行 `ai-remote view` 报"采集→到达"分位数。
 
-**自适应码率**（`apps/desktop/src/lib/rate.ts`，被控端 `{"bitrate_kbps":n}` 在 `5ff8ff5`）：
+**自适应码率**（`apps/desktop/src/lib/rate.ts`，被控端 `{"bitrate_kbps":n}` 在 `61d66ba`）：
 - 排队信号：延迟比 60 s 内最低值高出的部分。每 0.5 s 评估一次，取这 0.5 s 内**最快 1/5 帧**的延迟（网络排队会推迟
   每一帧，机器忙造成的卡顿只推迟部分帧）。基线另以"半个最短 ping + 80 ms"封顶：慢链路上起流时第一次测到延迟前
   队列就已形成。
@@ -1419,7 +1419,7 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
 - [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
-      （d42a8b4 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
+      （9143cdb 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
 - [x] macOS 锁屏 / 登录界面：锁屏在 `platform/macos.rs` 里按"可达的安全桌面"处理；登录界面靠
       `host install --service` 的系统级 LaunchAgent（`LimitLoadToSessionType = [LoginWindow, Aqua]`）。代码 2026-10-20
       落地，**真机锁屏 / 注销 / 重启验证未做**，见"Mac 被控端补全"一节。
@@ -1434,7 +1434,7 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
 - [x] 服务化以后在锁屏和 UAC 场景下自动选 DDA：已做（`capture::want_dda`），环境变量保留为强制开关。
 
-### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + bd9cd83）
+### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + a70a95d）
 
 通过 zremote 的提权会话在开发机上执行，Mac 作控制端（Mac 10.1.120.x，开发机 10.1.77.x，不同网段）。
 
@@ -1445,19 +1445,19 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 - `keyboard ctrl+alt+del` 走 SendSAS 生效：`info` 变 `input_desktop: Winlogon, secure_desktop: true`，`doctor` 的
   `desktop` / `approval` 按设计变 warn，**安全桌面截图正常**（DDA 在 SYSTEM 下采到 SAS 菜单）。
 - **安全桌面上的注入失败**：`mouse move` 报 `拒绝访问 (os error 5)`（SetCursorPos），`keyboard enter/escape` 报
-  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（bd9cd83）后仍失败，host.log 没有
+  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（a70a95d）后仍失败，host.log 没有
   `cannot switch` 的 warn。对照实验：用被控端的 `shell` 工具（同一个 SYSTEM 令牌、同一 Console 会话）跑一段
   P/Invoke 脚本，在新线程里 OpenInputDesktop(GENERIC_ALL 或本项目的标志) → SetThreadDesktop → SetCursorPos →
   SendInput **全部成功**，桌面名 Winlogon；以用户身份跑则 OpenInputDesktop 就是 err 5。所以系统层没问题，
-  差异在被控端进程内部，未定位。2026-10-21 补一条（f850318 把切桌面日志提到 info）：被控端日志里确实有
+  差异在被控端进程内部，未定位。2026-10-21 补一条（eb395f9 把切桌面日志提到 info）：被控端日志里确实有
   `input thread switched desktop from="Default" to="Winlogon"`，紧接着 SendInput 仍报 os error 5——
   **线程已经在 Winlogon 上，注入照样被拒**。那么差异不在线程所在桌面，而在进程本身（对照脚本是被控端的子进程，
   却能成功）：候选是被控端进程的 integrity level / 令牌属性（服务用 DuplicateTokenEx + TokenSessionId 造的令牌
   和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。
-  **2026-10-21 定位并修复**：在失败点打印上下文（f21cdc0，`platform::input_context`）——线程桌面 Winlogon、输入桌面
+  **2026-10-21 定位并修复**：在失败点打印上下文（4d41d98，`platform::input_context`）——线程桌面 Winlogon、输入桌面
   Winlogon、本进程和前台窗口都是 System 完整性，全部对称；但在**同一个线程**上紧接着用 `GENERIC_ALL` 重新 OpenInputDesktop
   + SetThreadDesktop 后，SetCursorPos 和 SendInput 立刻成功。差异只在桌面句柄的访问权限：原来沿用采集侧的标志集
-  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（d42a8b4，RustDesk 同）后，
+  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（9143cdb，RustDesk 同）后，
   SAS 菜单和真实锁屏上 `mouse move`、`keyboard escape` 都成功，Esc 真的关掉了 SAS 菜单（`info` 回到 Default）。
   用户会话的 Default 桌面上原标志集够用，所以之前从没暴露。`input_context` 的探针留着：只在注入被拒时跑，会发一个
   相对 (0,0) 的空移动。
