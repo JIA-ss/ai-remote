@@ -679,15 +679,25 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - 演示模式（camofox，`npx vite` + 演示后端）：三种内联卡片和弹层的深色截图看过。
 - 耗时：脚本记的"点击 → 弹层就绪"是 50~51 ms，但脚本按 50 ms 轮询、且内联已预取（弹层命中缓存），所以只能说明本机回环下 ≤ 约 50 ms；**未测**冷取时延和跨机器时延。
 
+### 实测（Windows 开发机 win-dev，WebView2，2026-10-22，分支 `claude/win-preview-e2e`）
+
+- 环境：Windows 11、WebView2 155，origin/main 8eeabb6 的 debug 构建（`cargo build -p ai-remote` + `npx tauri build --debug --no-bundle`，独立 worktree `%USERPROFILE%\ai-remote-preview`），被控端和控制端都是隔离目录、`[network] quiet = true`，经 zremote 在交互会话里跑；没碰真实被控端服务。
+- `E2E_SCRIPT=tools/desktop-chat-preview-e2e.js python tools/desktop-chat-e2e.py`：脚本本身不用改就能在 Windows 上跑（win-verify 那次已经做好：PrintWindow 截图、`.exe`、WebView2 数据目录），只修了一处选目录的匹配（见下面的坑）。**原 25 项连跑 3 次全过；加上两项路径显示检查后 27 项连跑 2 次全过**，另 1 次 27 项输出完整、没核对结尾。即：内联四张卡片都加载、缩略图 64×32、内联和弹层 iframe 都是 `sandbox=""`、CSP（`default-src 'none'`）在页面 `<script>` 之前、app 拿不到 frame 的 document（opaque origin）、页面脚本没运行（1.5 s 内没有 `postMessage`、标题没变）、源码视图、Esc、Markdown 表格、PNG 尺寸、目录外点名的文件可读、没点名的和 `.toml` 被被控端拒绝。截图（没进仓库，推流画面里是 win-dev 桌面）看过：HTML 弹层里外部图片只显示 alt 文字，和 Mac 一致。
+- `<bdi dir="ltr">` 路径（新加的两项，用 Range 量每个字形的位置）：Windows 路径 `C:\Users\…\outside\named.md` 在 `direction: rtl` 的框里，首字符 `C` 仍在最左、末字符在右边界内；把框临时收窄到 160 px 后，开头被截在框左外、`named.md` 仍完整可见。宽窗口下路径本来就放得下，所以截断只靠收窄那一项覆盖。
+- 耗时：点击 → 弹层就绪 50~55 ms（同样是 50 ms 轮询 + 内联已预取，只能说明 ≤ 约 50 ms）。
+- 新加的两项和 `.fn` 匹配的改动**没在 Mac 上重跑**（Mac 上没有现成的构建）。
+- **未测**：跨机器（预览字节走真实网络）的冷取时延；HiDPI 缩放；真实智能体写出的文件。
+
 ### 踩过的坑
 
 1. 被控端工具的 `json()` 输出多行美化 JSON，而 `transfer.rs` 只解析结果第一行，第一次端到端全部报 "EOF while parsing"；`chat_file` 改成和文件工具一样输出单行。
 2. 弹层头部的路径用 `direction: rtl` 做左侧省略，开头的 `/` 会被挪到末尾；里面包一层 `<bdi dir="ltr">`。会话头部的工作目录（`AgentChat.tsx` 原有）也有同样的问题，没改。
 3. demo 的 `demoLog()` 在模块加载时执行，用到的常量必须定义在它前面（否则 TDZ）。
+4. Windows 上 `Icon` 是 Segoe Fluent Icons 字形（私用区字符，`chevR` 是 U+E76C），会进 `textContent`，`trim()` 去不掉：选目录时按整行文本找 `work` 一直找不到（行其实 1 s 内就出来了）。e2e 改为比较 `.fn` 的文本（预览和主 e2e 两个脚本）。中途误以为是 WebView2 定时器节流，加过后台节流开关，没用，已撤回。
 
 ### 没做 / 下一步
 
-- [ ] Windows（WebView2）上看一遍：`srcdoc` 继承父页 CSP、`sandbox=""`、`bdi` 的表现。
+- [x] Windows（WebView2）上看一遍：`sandbox=""`、srcdoc 里的 CSP、`bdi` 都正常（见上面 Windows 实测）。
 - [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
 - [ ] iPhone 端的预览。
 - [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
