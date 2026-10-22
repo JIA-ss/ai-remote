@@ -192,7 +192,9 @@ test("the usage breakdown lists only what the agent reported", () => {
   assert.deepEqual(rows.map((r) => r.key), ["input", "cache_read", "output", "cost"]);
   assert.equal(rows[1].sub, true);
   seq = 0;
-  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "usage", input_tokens: 10, output_tokens: 2, cache_read_tokens: 8, reasoning_tokens: 1 })]);
+  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "usage", input_tokens: 10, output_tokens: 2, cache_read_tokens: 8, reasoning_tokens: 1 }),
+    ev(2, { t: "turn_start" }), ev(2, { t: "usage", cost_usd: 0.1 })]);
+  // A later report without token counts keeps the last breakdown.
   assert.deepEqual(plain(c.usage), { input: 10, output: 2, cacheRead: 8, reasoning: 1 });
 });
 

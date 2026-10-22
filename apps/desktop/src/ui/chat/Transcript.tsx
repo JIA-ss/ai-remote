@@ -59,7 +59,7 @@ function failure(error: string | undefined): string {
  */
 function OutgoingRow({ o, onRetry, onDiscard }: { o: Outgoing; onRetry: (o: Outgoing) => void; onDiscard: (id: string) => void }) {
   return (
-    <div className={cx("nt-user nt-out", o.state)} data-out={o.state}>
+    <div className={cx("nt-user nt-sending", o.state)} data-out={o.state}>
       <div className="bubble">
         {o.images && o.images.length > 0 && (
           <div className="imgs">

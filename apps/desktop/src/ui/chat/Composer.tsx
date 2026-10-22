@@ -75,12 +75,12 @@ export function ContextRing({ used, window: total, usage }: { used: number; wind
       </button>
       {open && (
         <div className="nt-usage" role="dialog" aria-label={t("hc_usage_title")} onClick={(e) => e.stopPropagation()}>
-          <div className="hd">{t("hc_usage_title")}</div>
+          <div className="ttl">{t("hc_usage_title")}</div>
           <div className="meter"><i style={{ width: `${p * 100}%` }} /></div>
           <div className="sum tnum">{label}</div>
           <dl>
             {rows.map((r) => (
-              <div key={r.key} className={cx("row", r.sub && "sub")}>
+              <div key={r.key} className={cx("urow", r.sub && "sub")}>
                 <dt>{t(`hc_usage_${r.key}`)}</dt>
                 <dd className="tnum">{r.key === "cost" ? `$${r.value.toFixed(r.value < 1 ? 3 : 2)}` : r.value.toLocaleString()}</dd>
               </div>

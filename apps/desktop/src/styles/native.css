@@ -879,11 +879,11 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
    6f. The composer's input side (ui/chat/Composer.tsx, Transcript.tsx): messages on their way,
    the / and @ menus, image attachments, find in the conversation, quoting a selection, the
    context breakdown. Ported in look from Orca's native chat (MIT). */
-.nt-out.sending .bubble, .nt-out.acked .bubble { opacity: .72; }
-.nt-out.failed .bubble { border-color: color-mix(in srgb, var(--danger) 45%, var(--c-line)); }
-.nt-out .meta { opacity: 1; }
-.nt-out .meta .st { padding: 0 4px; }
-.nt-out .meta .st.bad { color: var(--danger); }
+.nt-sending.sending .bubble, .nt-sending.acked .bubble { opacity: .72; }
+.nt-sending.failed .bubble { border-color: color-mix(in srgb, var(--danger) 45%, var(--c-line)); }
+.nt-sending .meta { opacity: 1; }
+.nt-sending .meta .st { padding: 0 4px; }
+.nt-sending .meta .st.bad { color: var(--danger); }
 .nt-user .bubble .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .nt-user .bubble .imgs img { height: 64px; max-width: 160px; object-fit: cover; border-radius: 6px; border: 1px solid var(--c-line); }
 .nt-user .bubble .imgs .att { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--c-hover); font-size: 11.5px; color: var(--c-faint); }
@@ -920,13 +920,13 @@ button.nt-ring { padding: 2px 4px; border-radius: 6px; }
 button.nt-ring:hover, button.nt-ring[aria-expanded="true"] { background: var(--c-hover); }
 .nt-usage { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 25; width: 260px; padding: 12px 14px; border-radius: 10px;
   background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 8px 28px rgb(0 0 0 / .18); font-size: 12px; color: var(--c-strong); text-align: left; }
-.nt-usage .hd { font-weight: 600; font-size: 12.5px; margin-bottom: 8px; }
+.nt-usage .ttl { font-weight: 600; font-size: 12.5px; margin-bottom: 8px; }
 .nt-usage .meter { height: 6px; border-radius: 3px; background: var(--c-hover); overflow: hidden; }
 .nt-usage .meter i { display: block; height: 100%; background: var(--agent); border-radius: 3px; }
 .nt-usage .sum { margin: 6px 0 8px; color: var(--c-faint); font-size: 11.5px; }
 .nt-usage dl { margin: 0; display: grid; gap: 3px; }
-.nt-usage .row { display: flex; justify-content: space-between; gap: 12px; }
-.nt-usage .row.sub dt { padding-left: 12px; color: var(--c-faint); }
+.nt-usage .urow { display: flex; justify-content: space-between; gap: 12px; }
+.nt-usage .urow.sub dt { padding-left: 12px; color: var(--c-faint); }
 .nt-usage dt { margin: 0; } .nt-usage dd { margin: 0; color: var(--c-strong); }
 .nt-usage .note { margin-top: 8px; font-size: 11px; color: var(--c-faint); }
 .nt-sub .rh .steps { font-size: 11.5px; color: var(--c-faint); }

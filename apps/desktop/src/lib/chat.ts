@@ -367,7 +367,8 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
     case "usage": {
       turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
         cacheRead: e.cache_read_tokens, cacheWrite: e.cache_write_tokens, reasoning: e.reasoning_tokens };
-      c.usage = turn.usage;
+      // A report without token counts (a turn that made no request) keeps the last one for the breakdown.
+      if (typeof e.input_tokens === "number" || typeof e.output_tokens === "number") c.usage = turn.usage;
       if (typeof e.context_window === "number" && typeof e.context_used === "number" && e.context_window > 0) {
         c.context = { used: e.context_used, window: e.context_window };
       }

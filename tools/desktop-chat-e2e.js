@@ -199,11 +199,11 @@
     setValue(ta, "describe this");
     await shot("12-image-chip");
     $(".nt-compose .round.send").click();
-    const sentImg = await until("user bubble with the image", () => $$(".nt-user:not(.nt-out)").find((u) => u.textContent.includes("describe this") && $(".imgs img", u)));
+    const sentImg = await until("user bubble with the image", () => $$(".nt-user:not(.nt-sending)").find((u) => u.textContent.includes("describe this") && $(".imgs img", u)));
     await check("the sent message shows its image", !!sentImg);
     const imgReply = await until("image reply", () => lastTurn().textContent.match(/\[images: image\/png (\d+)\]/));
     await check("the image reaches the agent", !!imgReply, lastTurn()?.textContent.slice(-200));
-    await check("nothing is left on its way once delivered", !!(await until("delivered", () => !$(".nt-out"), 5000)), $(".nt-out")?.textContent);
+    await check("nothing is left on its way once delivered", !!(await until("delivered", () => !$(".nt-sending"), 5000)), $(".nt-sending")?.textContent);
     await idle();
     await shot("13-image-sent");
     // A sub-agent's own steps fold under its row.
@@ -244,7 +244,7 @@
     // The context breakdown.
     $("button.nt-ring").click();
     const usage = await until("usage popover", () => $(".nt-usage"));
-    await check("the context ring opens a breakdown of what the agent reported", !!usage && $$(".nt-usage .row").length >= 3, usage?.textContent);
+    await check("the context ring opens a breakdown of what the agent reported", !!usage && $$(".nt-usage .urow").length >= 4, usage?.textContent);
     await shot("17-usage");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await until("usage closed", () => !$(".nt-usage"), 3000);
