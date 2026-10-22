@@ -1,5 +1,5 @@
 /* ======================================================================================
-   The Codex conversation view (ui/chat/codex): a Codex session's chat panel, laid out the way
+   The Codex conversation view (ui/codex): a Codex session's chat panel, laid out the way
    Codex's own desktop app shows a thread — quiet one-line activity at 60 % ink that brightens on
    hover, chevrons that only show on hover, 16 px between units and 4 px inside a group, the user's
    message in a 5 % ink bubble, "Worked for …" over a hairline, shell output and diffs on a faint

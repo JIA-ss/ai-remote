@@ -998,7 +998,7 @@ export const zh: Record<keyof typeof en, string> = {
   hc_preview_run: "运行脚本",
   hc_preview_run_tip: "在单独的窗口里打开这个页面并运行它的脚本。那个窗口碰不到本应用；页面只能从几个公共 CDN 加载脚本和样式，别的什么都不能请求。",
   hc_host_old: "{host} 上的被控端版本较旧，还不支持编程智能体。把那台电脑上的 ai-remote 更新到最新版后再试。",
-  // Codex 对话视图（ui/chat/codex）：按 Codex 自家应用的说法。
+  // Codex 对话视图（ui/codex）：按 Codex 自家应用的说法。
   cdx_worked_for: "工作了 {t}",
   cdx_working_for: "已工作 {t}",
   cdx_working: "工作中",

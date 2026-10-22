@@ -17,6 +17,60 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## Codex 会话按 Codex 自家应用的样子显示（2026-10-22，分支 `feat/codex-chat-view`，worktree `../ai-remote-codex-view`）
+
+用户要求：拆 ChatGPT 桌面应用（本机 `/Applications/ChatGPT.app`，包名 `com.openai.codex`，26.825，Electron）的 Codex 对话，
+把它的对话和界面完整复刻到我们的 Codex 对话展示；Claude 和 Codex 分开实现、分开表现。
+
+**怎么拆的**：`npx @electron/asar extract app.asar` 后对话界面就在 `webview/assets`（不像 Claude.app 那样从网上加载），没有
+source map，用 prettier 展开后读：`split-items-into-render-groups`（一轮分成用户消息 / 工作条目 / 最终回答 / 改动 / 计划 / 审批）、
+`agent-activity-units`（连续工具调用并成一组，单个且已结束的组退回成一行；组的摘要句按"改文件、读文件、跑命令、搜网页、调工具"
+的顺序拼）、`conversation-blocks`（"Worked for 1m 23s"：最终回答一开始就把工作折起来，停止的轮次不折；插话消息折起后仍可见）、
+`tool-activity-disclosure`（一行文字 60% 墨色，悬停变全色，箭头只在悬停时出现，展开动画）、`exec-shell-container`
+（Shell 卡片：`$ 命令`、输出、右下角 Success / Exit code N）、样式变量（单元间距 16 px、组内 4 px、用户气泡 5% 墨色圆角 16）。
+文案对照它的英文原文。**只借结构和视觉，不抄代码**（它是专有软件，我们是 AGPL）；拆出来的东西只在 `/tmp`，没进仓库。
+
+**做了什么**：
+- 被控端 Codex 适配器（`adapters/codex.rs`）把 Codex 关于条目的信息带出来，全是可选字段，老控制端忽略、老被控端不发：
+  命令的 `tool_call.input = {command, cwd, actions}`（去掉 `/bin/zsh -lc '…'` / `powershell.exe -Command …` 外壳的命令、
+  Codex 自己对命令的解读：read / listFiles / search / unknown），标题改成 `Shell <命令>`（旧界面也不再显示 `-lc …`）；
+  改文件的 `input.files`（逐文件 path、kind、move_path、统一 diff，新建文件的 diff 就是内容，每个 64 KiB 截断）；网页搜索的
+  `input.query`；`tool_update.exit_code` / `duration_ms`；`message.phase`（commentary / final_answer；流式开始时没说阶段、结束时才说的，
+  结束时整条再发一次）。对话 hello 的 `runtime` 多了 `protocol`。另外修了：轮次自己的错误信息原来把服务商的 JSON 原样显示。
+- 桌面端：`lib/codex.ts`（纯函数：去外壳、命令解读的兜底解析、带行号的统一 diff、分组 / 最终回答 / 折叠规则、摘要句）、
+  `ui/codex/CodexTurn.tsx`（入口 `ui/codex/CodexConversation.tsx` 导出 `CodexConversation`）、`styles/codex.css`（类名全加 `cdx-` / `x-` 前缀：`.live`、`.hd`、`.row` 这些是全局类，第一次截图
+  就被 `v2.css` 的 `.live` 串了样式）。`AgentChat` 按 `runtime.protocol`（老被控端退回看 id / 名字）给 Codex 会话加 `.cdx` 并换
+  `Transcript` 的 `variant="codex"`；Claude Code 和 ACP 智能体照旧走 Orca 那套行。查找、引用、只挂载最近 30 轮、远处轮次
+  `content-visibility` 都沿用。按工具调用对象缓存解析结果（运行中的轮次每个事件都重算一遍）。
+- 演示后端（`lib/demo.ts`）加了一个 Codex 会话和一段 Codex 形状的实时回复，`?view=session&host=office-pc&panel=chat` 打开后在
+  会话列表里选 Codex（或预先设 `localStorage["ai-remote.chat.last"] = {"office-pc":"x5d0c7e2a9f1b"}`）。
+
+**测试与实测**（2026-10-22，本机 macOS，debug 包）：
+- `tools/chat-codex.test.mjs` 12 项（已加进 CI 和上面的提交前命令）；`cargo test -p ar-host --lib chat::adapters::codex` 13 项；
+  全量 `cargo test --workspace`、`clippy -D warnings`、全部前端测试过。
+- `tools/fake-codex-app-server.py`：Codex app-server 的 JSON-RPC 替身（走真实的被控端 Codex 适配器），按关键词演一轮：EXPLORE
+  （思考、过程说明、搜/读/列、失败的命令、改两个文件且真写盘、通过的命令、网页搜索、计划、最终回答）、ASK、STEERME、SLOW、
+  FAIL、MANY（8 个文件、300 行输出、700 行 diff）、NOPHASE（不带阶段的老版本）、COMPACT。
+- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，
+  最后 2 次全部通过（约 60 项）：运行中一行显示当前在做什么（不带外壳）、Working for、计划展开、回答一流式开始就折叠、
+  Worked for、Markdown、改动卡片和带行号 diff、展开工作 / 组 / Shell 卡片 / diff、提问等回答、插话后完成仍可见插话、插话 + 停止 +
+  继续、服务商报错原话、8 个文件和长输出 / 长 diff 的"再显示"、无阶段兜底、上下文压缩分隔线、⌘F、Claude 会话不变、重开回放。
+  这些检查第一次跑时抓到 4 个真问题：流式输出片段之间多出空行、计划更新把一组工具调用切断、插话后完成的轮次把插话也折了、
+  轮次错误显示原始 JSON（都已修）。
+- 回归：原有 `desktop-chat-e2e.js` 3 次中 2 次全过、1 次"引用放进输入框"超时（单独重跑 2 次都过，判为偶发）；
+  `-render`、`-offline`、`-preview` 各 1 次全过。
+- 真实 Codex：`E2E_MODEL=gpt-5.6-luna E2E_CODEX=/Applications/ChatGPT.app/Contents/Resources/codex E2E_SCRIPT=tools/desktop-chat-codex-real.js
+  python3 tools/desktop-chat-e2e.py --real "Codex (path)"`（ChatGPT.app 自带的 codex-cli 0.150.0-alpha）1 次全过：读文件、改
+  export.py、跑校验命令（Shell 卡片输出 4 个日期、Success）、折叠与改动卡片；插话"echo two 后停"被采纳回 DONE；停止 `sleep 120`；
+  重开回放。**坑**：本机 `~/.codex/config.toml` 的默认模型 `gpt-5.5` 在 ChatGPT 账号下 0.137 和 0.150 都报"不支持"，要在开始表单
+  的模型里填账号能用的（`~/.codex/models_cache.json` 里列着）。
+- 截图（camofox 演示模式深浅色中英文、真实应用 e2e）看过，不进仓库（真实应用截图里有本机桌面）。
+
+**没做 / 没验证**：
+- Codex 应用里的"撤销 / 审阅"（turn diff 的 Undo、Review）、分叉、编辑已发消息、子智能体面板、MCP 应用嵌入、图片生成预览、
+  审批卡片（我们 Codex 跑在免审批模式）没有对应功能，没做。
+- Windows 上真实 Codex 的 `command` 字段长什么样没实测，只按 shlex 拼接推断并写了单测。
+
 ## 合并进 main：提交身份统一与一次集成（2026-10-22，分支 `integrate/2026-10-22`）
 
 **提交身份**：仓库里只用一个身份 `JIA-ss <627723154@qq.com>`（作者和提交者都是）。2026-10-22 发现 10-20 起的提交带着

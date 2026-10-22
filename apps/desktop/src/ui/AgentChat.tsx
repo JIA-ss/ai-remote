@@ -471,7 +471,11 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 /** Sent messages per session, for ↑ / ↓ (kept for this run of the app). */
 const sentBySession = new Map<string, string[]>();
 
-function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
+/**
+ * One session's conversation: header, find, the transcript, the composer. Codex sessions lay their turns
+ * out the way Codex's own app does (ui/codex); `CodexConversation` is the same panel for them.
+ */
+export function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
   const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = useConversation(host, target);
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {

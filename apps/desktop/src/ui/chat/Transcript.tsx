@@ -14,7 +14,7 @@ import { phase, stoppedTurn, turnRows, type Block, type Chat, type Outgoing, typ
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { NoticeRow, RowView, TurnFoot, WorkingRow } from "./Rows";
-import { CodexTurnView } from "./codex/CodexTurn";
+import { CodexTurnView } from "../codex/CodexTurn";
 
 /** Turns mounted at first; "show earlier" adds this many more each time. */
 const WINDOW = 30;
@@ -193,7 +193,7 @@ function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLE
 
 export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote, variant = "default", session = "", cwd = null }: {
   chat: Chat;
-  /** `codex`: turns laid out the way Codex's own app shows them (ui/chat/codex). */
+  /** `codex`: turns laid out the way Codex's own app shows them (ui/codex). */
   variant?: "default" | "codex";
   /** The session (keys what a Codex turn keeps open) and the folder the agent works in. */
   session?: string;
