@@ -255,6 +255,84 @@ macOS 被控端多屏（这台 Mac 没接外屏）；Windows 控制端（WebView
 Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询问 / 拒绝时的浏览体验；超过一页（500 项）的文件夹只提示不翻页；
 粘贴图片（`UITextView` 粘贴）、查找、选中引用、上下文用量明细、子智能体内部步骤这几项桌面端有、这次没做。
 
+## 服务模式下同一块屏多个观看者：共用一个 Desktop Duplication（2026-10-22，分支 `fix/dda-shared-viewers`）
+
+起因：PR #35 在 win-dev 真机上的"发现 2"（见 `feat/multi-monitor` 那一节）。服务模式（SYSTEM，截屏走 DDA）下第二个观看者看
+同一块屏失败，看到的是误导性的 `Failed to convert item to GraphicsCaptureItem`。
+
+**原因（读代码 + 微软文档）**：每个观看者的 `capture::start` 各自 `dda::start`，各自 `IDXGIOutput1::DuplicateOutput`。
+`DuplicateOutput` 的文档把"调用进程已经在复制这个输出"列为 `E_INVALIDARG` 的原因之一，所以同一进程里每块屏只能有一个复制，
+`MAX_VIEWERS = 3` 在 DDA 下实际是每块屏 1 个。DDA 失败后回退 WGC（SYSTEM 用不了：`not supported here`），再回退 CPU 路径
+（也是 WGC：`Failed to convert item to GraphicsCaptureItem`），观看者只看到最后这条。同一块屏快速重开（换画质、重试）也可能
+撞上旧复制还没释放。
+
+**改了什么**：
+- `stream/capture/shared.rs`（新，和平台无关，Mac 上也跑测试）：按 key（显示器）登记正在跑的采集源。第一个观看者启动它，
+  后来的加入，最后一个离开时停掉它，并且**拿着注册表的锁等采集线程结束**：这样马上重连的观看者会等旧的复制放手，
+  而不是撞上 `E_INVALIDARG`。采集线程从不拿注册表的锁，所以不会死锁。
+- `stream/capture/dda.rs`：每块屏一个复制线程（`static DUPLICATIONS`，key 是 `HMONITOR`），每个观看者有自己的帧率、长边上限
+  （编码器可能会调低）、`Converter`（含纹理池）和 slot；每帧对每个观看者各转换一次。一个观看者的转换器建不起来只关它自己的
+  slot，不影响别人。复制失败重试时的 500 ms 等待改成可打断（`pause`），最后一个观看者离开时不用干等。共用一个 D3D 设备：
+  多个观看者的硬件编码器在同一个（多线程保护的）设备上。
+- `DuplicateOutput` 失败时按错误码说人话（`why_refused`）：`E_INVALIDARG` → 这块屏的 DDA 已被本被控端占用（另一个观看者）；
+  `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE` → 同时用 DDA 抓这块屏的程序太多（Windows 最多 4 个）；`E_ACCESSDENIED`、
+  `DXGI_ERROR_UNSUPPORTED`、`DXGI_ERROR_SESSION_DISCONNECTED` 各有一句；其他码保持 `duplicate the output: ...`。
+- `stream/capture.rs`：以 SYSTEM 运行时 DDA 失败就直接报它的错（`capture the screen with Desktop Duplication: ...`），
+  不再落到 WGC / CPU 两条注定失败的路。非 SYSTEM（用户态被控端在安全桌面上、或 `AI_REMOTE_CAPTURE=dda`）仍回退 WGC。
+- 文档：`docs/operations*.md` 服务模式一段补了"同一块屏最多 3 个观看者共用一个复制"。
+
+**测试**：
+- `capture::shared::tests` 5 项（Mac 和 Windows 都跑）：同屏共用一个采集源、各自收到帧、一个离开后另一个照收；最后一个离开时
+  等采集线程结束；启动失败不留残骸；**马上重连的观看者等旧采集源放手**（模拟 DXGI 规则：旧的还占着输出时再启动就失败；
+  旧的放手要 50 ms，新观看者第 10 ms 进来）；4 个线程反复进出的压力测试。变异检查：把"拿着锁等线程"改成先放锁，
+  重连那一项失败（压力测试抓不到，所以才加了确定性的那一项）。
+- `dda::tests::refusals_say_why_in_words`（只在 Windows）：`E_INVALIDARG` 的文案和 `0x80070057` 都在。
+- `dda::bench::two_viewers_of_one_monitor_both_get_frames`（`#[ignore]`，手动在 Windows 真机跑，不用服务、以登录用户身份）：
+  主屏上两个观看者（长边 1280 / 640）同时出帧且尺寸各自；第一个离开后第二个继续出帧；最后一个离开后马上来的新观看者能出帧。
+  改之前第二个 `start` 应当直接 `E_INVALIDARG`（同一进程复制两次），所以不用服务也能复现。
+  `cargo test -p ar-host --lib two_viewers_of_one_monitor -- --ignored --nocapture`
+
+**实测（本机 macOS，2026-10-22，各 1 次）**：`cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -- -D warnings`
+无警告；`cargo test --workspace --locked` 404 过 0 失败 8 忽略（含 `capture::shared` 5 项）；前端 10 个 `node --test` 文件 111 项
+109 过 2 跳过；`tsc --noEmit` 过。`dda.rs` 只在 Windows 编译：win-dev（Windows 11，debug，独立 worktree
+`%USERPROFILE%\ai-remote-ddashare`，等 #35 的会话测完、交还机器后才跑，没碰服务）上 `cargo fmt --check` 过、
+`cargo clippy -p ar-host --all-targets --locked -- -D warnings` 无警告、`cargo test -p ar-host --lib stream::` 27 过 0 失败 10 忽略
+（含 `refusals_say_why_in_words` 和 `capture::shared` 5 项），各 1 次。
+
+**真机实测（win-dev，Windows 11，主屏 5120×2160，2026-10-22 20:21–20:35，用户同意后做的，期间租着 win-dev）**：
+- 不用服务也能复现根因：main（54169f2）加上同一个手动测试，以登录用户身份跑，第二个 `start` 报
+  `duplicate the output: 参数错误。 (0x80070057)`（1 次）。本分支跑 3 次都过：日志 `another viewer joined this monitor's
+  Desktop Duplication viewers=2`，两个观看者 1280×540 / 640×270 同时出帧，第一个离开后第二个继续出帧，最后一个离开后马上来的
+  新观看者 130 / 633 / 58 ms 出首帧。
+- 经服务端到端（Mac 上安装版的控制端 `ai-remote view`，HEVC，30 fps）。换之前（原服务程序）：第一路 1280×540 28 fps，4 s 后
+  开的第二路报 `start screen capture: Failed to convert item to GraphicsCaptureItem`，复现了原问题。临时把服务换成本分支的
+  release 构建（新程序放在 `%USERPROFILE%\ar-pr38\bin`，只改注册表 ImagePath，原 ImagePath 存在 `ar-pr38\imagepath-original.txt`；
+  win-dev 防火墙三个配置文件都关着，不用加规则）之后，各 1 次：
+  - 两路同看主屏：都出帧，1280×540 29.8 fps（首帧 122 ms）、640×270 29.8 fps（首帧 80 ms）。
+  - 三路：当时还有一个不是测试发起的观看者（同一台 Mac 的控制端，服务重启后自己连回来的）在看主屏，所以我的两路加它正好
+    3 个，host.log 出现 `viewers=3`，三路都出帧（1920×810 29.9 fps、1280×540 29.9 fps）；我的第三路是第 4 个，被
+    `MAX_VIEWERS = 3` 以 "too many people are watching this computer right now" 拒绝，符合设计。
+  - 第一路看着的同时第二路连开两次：第二次同样因为满 3 个被拒（前一次的观看者槽位还没释放加上那个外部观看者）；第一路结束后
+    马上开的新一路 87 ms 出首帧，没有撞上旧复制。
+  - 测试期间 host.log 没有 WARN / ERROR。
+- 测完换回：ImagePath 恢复、两个程序的 SHA-256 与测试前一致（hostw `82A9C78A…`、ai-remote `52C8AB20…`），chat-runner 重新连上，
+  Mac 上 `ai-remote view` 3 s 出 88 帧。chat-runner 停服务时不退出、占着 `ai-remote-svc-bin` 里的程序，所以换服务程序要放到别的
+  目录、改 ImagePath，不能原地覆盖（#35 的会话发现的）。
+- win-dev 上留着 `%USERPROFILE%\ai-remote-ddashare`（本分支）和 `ai-remote-ddamain`（main + 手动测试补丁）两个 worktree 及
+  `ar-pr38` 目录，以后可删。
+
+**未测**：多个观看者共用一个设备时的编码耗时（推导：每帧每个观看者多一次视频处理器转换，量级 1 ms 以内，没测）；两个观看者看
+不同的屏（命令行 `view` 没有选屏参数）；锁屏 / 安全桌面上的多观看者；显示配置变化后 `HMONITOR` 可能换值，key 用的是
+`HMONITOR`，这种情况下新旧复制线程的行为和改之前一样（没处理、没测）。
+
+**和 PR #35（`feat/multi-monitor`）**：两边都改了 `dda.rs` 的 `start` / `run`。#35 给 `duplicate()` 加了第三个返回值
+`rotation`、`SizedConverter` 加了转角、建转换器改成 `Converter::rotated(..., turn)`。合并时：`duplicate()` 用 #35 的签名、
+保留本分支的 `.map_err(refused)`；`run` 用本分支的结构，`let Some((output, dup, rotation))`，把 `*rotation` 传给
+`Viewer::deliver`；`deliver` 里照 #35 用 `upright(rotation, input)` 算 `(turn, (width, height))`，按转正后的宽高算
+`stream_size`，`SizedConverter` 带上 `turn` 比较，`Converter::rotated(gpu.clone(), input, output, self.fps, turn)`。
+两边各加了一个 `#[cfg(test)] mod tests`（合并后会重名，合成一个），`bench` 里两个手动测试都留着。2026-10-22 在临时
+worktree 里按这个办法试合并过：没有冲突标记、`cargo fmt --check` 过；`dda.rs` 在 Mac 上编不到，合并结果没编译过。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、

@@ -273,7 +273,9 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
         // Desktop Duplication instead of Windows Graphics Capture where the secure desktop (lock
         // screen, UAC) must be seen: a host running as SYSTEM (service mode) can open it and WGC
         // cannot show it, and a host already looking at a secure desktop. `AI_REMOTE_CAPTURE=dda`
-        // or `=wgc` forces either way (testing). Falls through to WGC on failure.
+        // or `=wgc` forces either way (testing). Falls through to WGC on failure, except as SYSTEM:
+        // WGC is not available to SYSTEM, so both paths below would fail too, and their errors ("not
+        // supported here", "Failed to convert item to GraphicsCaptureItem") would hide the real one.
         if want_dda() {
             match dda::start(monitor, max_fps, edge.clone(), slot.clone()) {
                 Ok(dda) => {
@@ -288,6 +290,10 @@ pub fn start(index: Option<usize>, max_fps: u32, max_long_edge: u32, draw_pointe
                         // Desktop Duplication does not draw it (yet).
                         pointer_drawn: false,
                     });
+                }
+                Err(error) if crate::platform::runs_as_system() => {
+                    tracing::warn!(error = %format!("{error:#}"), "Desktop Duplication unavailable");
+                    return Err(error.context("capture the screen with Desktop Duplication"));
                 }
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), "Desktop Duplication unavailable; using WGC");
@@ -372,6 +378,8 @@ fn want_dda() -> bool {
 mod dda;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(any(windows, test))]
+mod shared;
 #[cfg(windows)]
 pub mod win;
 
