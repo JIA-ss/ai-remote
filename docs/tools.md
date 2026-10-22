@@ -683,10 +683,12 @@ they go out, so a viewer that reconnects asks for what came after the last one i
 each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user` (`steer: true` when it
 joined the running turn, numbered with it; `attachments`: name, type and size of the images sent
 with it, whose bytes are not kept), `turn_start`,
-`message` / `thought` (`id`, `text`, `delta`: continues message `id`), `tool_call` (`call_id`,
+`message` / `thought` (`id`, `text`, `delta`: continues message `id`; a Codex `message` also says its
+`phase`, `commentary` between steps or `final_answer`), `tool_call` (`call_id`,
 `title`, `kind`: read, edit, delete, move, search, execute, think, fetch, other; `status`; `input`;
 `locations`; `content`; `parent`: the sub-agent call that made it, for Claude Code's sub-agents), `tool_update` (`call_id`, `status`, `content`: text or
-`{type:"diff",path,old,new}`, `truncated`; without `status`, a piece of a running command's output),
+`{type:"diff",path,old,new}`, `truncated`; without `status`, a piece of a running command's output;
+Codex also gives a finished command's `exit_code` and the tool's `duration_ms`),
 `plan`, `question` (`qid`, `prompt`, `options`), `usage` (tokens, cost, and when the agent reports
 them `context_window`, `context_used`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`),
 `turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
@@ -699,9 +701,17 @@ from: Claude Code answers an `initialize` control request with every command and
 description (the first `init` says which are skills); Codex lists its skills with `skills/list`
 (a message naming `$skill` carries it as a `skill` input item); ACP agents send
 `available_commands_update`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
+What Codex says about its items goes into the tool call's `input`, so a controller can show them the
+way Codex's own app does: a command (title `Shell <command>`) has `{command, cwd, actions}` — the
+command without the shell Codex runs it in (`/bin/zsh -lc '…'`, `powershell.exe -Command …`) and
+Codex's reading of it, each action `read` (`path`, `name`), `listFiles` (`path`), `search` (`query`,
+`path`) or `unknown`; a file change has `{files: [{path, kind: add|delete|update, move_path, diff}]}`
+with each file's unified diff (an added file's is its content, cut to 64 KiB); a web search has
+`{query}`. All of these are optional: older hosts do not send them.
 
 **On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
-line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`, `acks`, `images`), then one
+line (`ok`, `session`, `role`, `runtime` — `id`, `name` and `protocol`, which says the agent's kind
+for a custom agent too — `cwd`, `state`, `seq`, `caps`, `acks`, `images`), then one
 unnumbered `{"t":"commands","commands":[..]}` line (the last known list, or what the same agent
 offered in the same folder in another session; a line of its own because a long list would not fit
 the 64 KiB reply line), then the events after `N` and every new one. Commands, one line each:
