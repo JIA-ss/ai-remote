@@ -500,6 +500,9 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
             cost_usd: u["cost"]["amount"].as_f64().filter(|_| u["cost"]["currency"] == "USD"),
             context_window: u["size"].as_u64(),
             context_used: u["used"].as_u64(),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
         })),
         _ => {}
     }

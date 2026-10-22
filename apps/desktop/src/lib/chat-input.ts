@@ -152,3 +152,65 @@ export function rememberImages(inputId: string, images: Array<{ name: string; ur
 export function imagesOf(inputId: string | undefined): Array<{ name: string; url: string }> {
   return (inputId && sentImages.get(inputId)) || [];
 }
+
+// ---------------------------------------------------------------------------------------------
+// Find in the conversation, quoting a selection, the context breakdown
+
+/** Where `query` occurs in `text`, case-insensitively, as [start, end) offsets. */
+export function findMatches(text: string, query: string, max = 1000): Array<[number, number]> {
+  const q = query.toLowerCase();
+  if (!q) return [];
+  const hay = text.toLowerCase();
+  const out: Array<[number, number]> = [];
+  for (let at = hay.indexOf(q); at >= 0 && out.length < max; at = hay.indexOf(q, at + q.length)) out.push([at, at + q.length]);
+  return out;
+}
+
+/** The next match to show after `current` (wrapping), going back with `dir` -1. */
+export function stepMatch(current: number, count: number, dir: -1 | 1): number {
+  if (count <= 0) return -1;
+  if (current < 0) return dir > 0 ? 0 : count - 1;
+  return (current + dir + count) % count;
+}
+
+/** A selection quoted for the composer: Markdown quote lines, then an empty line for the reply. */
+export function quoteText(selected: string): string {
+  const lines = selected.replace(/\s+$/, "").replace(/^\s*\n/, "").split("\n");
+  return `${lines.map((l) => (l.trim() ? `> ${l}` : ">")).join("\n")}\n\n`;
+}
+
+/** Adds a quote to what is already typed (on a line of its own). */
+export function withQuote(text: string, quote: string): string {
+  if (!text.trim()) return quote;
+  return `${text.replace(/\s+$/, "")}\n\n${quote}`;
+}
+
+/** What the context ring's popover lists: only the numbers the agent reported. */
+export interface UsageReport {
+  input?: number;
+  output?: number;
+  cost?: number;
+  contextWindow?: number;
+  contextUsed?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+}
+
+export type UsageRow = { key: "context" | "free" | "input" | "cache_read" | "cache_write" | "output" | "reasoning" | "cost"; value: number; sub?: boolean };
+
+export function usageRows(u: UsageReport | null, context: { used: number; window: number } | null): UsageRow[] {
+  const rows: UsageRow[] = [];
+  if (context) {
+    rows.push({ key: "context", value: context.used });
+    rows.push({ key: "free", value: Math.max(0, context.window - context.used) });
+  }
+  if (!u) return rows;
+  if (typeof u.input === "number") rows.push({ key: "input", value: u.input });
+  if (typeof u.cacheRead === "number" && u.cacheRead > 0) rows.push({ key: "cache_read", value: u.cacheRead, sub: true });
+  if (typeof u.cacheWrite === "number" && u.cacheWrite > 0) rows.push({ key: "cache_write", value: u.cacheWrite, sub: true });
+  if (typeof u.output === "number") rows.push({ key: "output", value: u.output });
+  if (typeof u.reasoning === "number" && u.reasoning > 0) rows.push({ key: "reasoning", value: u.reasoning, sub: true });
+  if (typeof u.cost === "number") rows.push({ key: "cost", value: u.cost });
+  return rows;
+}

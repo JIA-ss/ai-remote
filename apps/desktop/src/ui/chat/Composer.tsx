@@ -20,6 +20,9 @@ import {
   MAX_IMAGE_BYTES,
   MAX_IMAGES,
   type AttachmentPayload,
+  type UsageReport,
+  usageRows,
+  withQuote,
   matchCommands,
   mentionText,
   moveActive,
@@ -39,18 +42,53 @@ function tokens(n: number): string {
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
-/** How full the agent's context window is; red past 90 %. */
-export function ContextRing({ used, window: total }: { used: number; window: number }) {
+/** How full the agent's context window is; red past 90 %. Opens what it is made of. */
+export function ContextRing({ used, window: total, usage }: { used: number; window: number; usage?: UsageReport | null }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
   const p = Math.max(0, Math.min(1, used / total));
   const label = t("hc_context", { used: tokens(used), window: tokens(total), p: Math.round(p * 100) });
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const rows = usageRows(usage ?? null, { used, window: total });
   return (
-    <span className={cx("nt-ring", p >= 0.9 && "crit")} role="img" aria-label={label} title={label}>
-      <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} aria-hidden>
-        <circle cx={RING / 2} cy={RING / 2} r={R} className="track" strokeWidth={STROKE} fill="none" />
-        <circle cx={RING / 2} cy={RING / 2} r={R} className="fill" strokeWidth={STROKE} fill="none" strokeDasharray={C}
-          strokeDashoffset={C * (1 - p)} strokeLinecap="round" transform={`rotate(-90 ${RING / 2} ${RING / 2})`} />
-      </svg>
-      <span className="pct tnum">{Math.round(p * 100)}%</span>
+    <span className="nt-ring-box" ref={box}>
+      <button type="button" className={cx("nt-ring", p >= 0.9 && "crit")} aria-label={label} title={open ? undefined : label} aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}>
+        <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} aria-hidden>
+          <circle cx={RING / 2} cy={RING / 2} r={R} className="track" strokeWidth={STROKE} fill="none" />
+          <circle cx={RING / 2} cy={RING / 2} r={R} className="fill" strokeWidth={STROKE} fill="none" strokeDasharray={C}
+            strokeDashoffset={C * (1 - p)} strokeLinecap="round" transform={`rotate(-90 ${RING / 2} ${RING / 2})`} />
+        </svg>
+        <span className="pct tnum">{Math.round(p * 100)}%</span>
+      </button>
+      {open && (
+        <div className="nt-usage" role="dialog" aria-label={t("hc_usage_title")} onClick={(e) => e.stopPropagation()}>
+          <div className="hd">{t("hc_usage_title")}</div>
+          <div className="bar"><i style={{ width: `${p * 100}%` }} /></div>
+          <div className="sum tnum">{label}</div>
+          <dl>
+            {rows.map((r) => (
+              <div key={r.key} className={cx("row", r.sub && "sub")}>
+                <dt>{t(`hc_usage_${r.key}`)}</dt>
+                <dd className="tnum">{r.key === "cost" ? `$${r.value.toFixed(r.value < 1 ? 3 : 2)}` : r.value.toLocaleString()}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="note">{t("hc_usage_note")}</div>
+        </div>
+      )}
     </span>
   );
 }
@@ -249,6 +287,10 @@ export interface ComposerProps {
   onSteerQueued: (id: string, text: string) => void;
   /** The agent's commands and skills, for the `/` menu (null: it has not said yet). */
   commands?: SlashCommand[] | null;
+  /** The agent's last usage report, for the context ring's breakdown. */
+  usage?: UsageReport | null;
+  /** Text to add to the field (a quoted selection); `n` changes each time. */
+  insert?: { text: string; n: number } | null;
   /** Files in the session's folder matching a query, for the `@` menu. */
   listFiles?: (query: string) => Promise<{ files: string[]; truncated?: boolean }>;
 }
@@ -263,6 +305,18 @@ export function Composer(p: ComposerProps) {
   const mode: InputMode | undefined = sendMode(p.running, { steer: p.canSteer } as Caps);
 
   useEffect(() => setAt(p.history.length), [p.history.length]);
+  // A quoted selection goes below what is typed, with the caret after it.
+  useEffect(() => {
+    if (!p.insert) return;
+    setText((v) => {
+      const next = withQuote(v, p.insert!.text);
+      requestAnimationFrame(() => {
+        area.current?.focus();
+        area.current?.setSelectionRange(next.length, next.length);
+      });
+      return next;
+    });
+  }, [p.insert?.n]);
 
   // The `/` and `@` menus: what the caret is in, unless Esc closed it for that word.
   const [caret, setCaret] = useState(0);
@@ -499,7 +553,7 @@ export function Composer(p: ComposerProps) {
             {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
           </div>
           <div className="right">
-            {p.context && <ContextRing used={p.context.used} window={p.context.window} />}
+            {p.context && <ContextRing used={p.context.used} window={p.context.window} usage={p.usage} />}
             {p.running && !p.disabled && (
               <button type="button" className="round stop" onClick={(e) => { e.stopPropagation(); p.onStop(); }} aria-label={t("hc_stop")} title={t("hc_stop_k")}>
                 <Square size={12} fill="currentColor" />

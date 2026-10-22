@@ -499,6 +499,9 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
                 cost_usd: None,
                 context_window: p["tokenUsage"]["modelContextWindow"].as_u64(),
                 context_used: last["totalTokens"].as_u64(),
+                cache_read_tokens: last["cachedInputTokens"].as_u64(),
+                cache_write_tokens: last["cacheWriteInputTokens"].as_u64().filter(|n| *n > 0),
+                reasoning_tokens: last["reasoningOutputTokens"].as_u64(),
             }));
         }
         "error" => {

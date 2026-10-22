@@ -376,6 +376,9 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 cost_usd: v["total_cost_usd"].as_f64(),
                 context_window: context_window(&v["modelUsage"], st.last_model.as_deref()),
                 context_used: st.last_context.take(),
+                cache_read_tokens: usage["cache_read_input_tokens"].as_u64(),
+                cache_write_tokens: usage["cache_creation_input_tokens"].as_u64(),
+                reasoning_tokens: None,
             }));
             // Steers the turn did not take: the agent runs them next, on its own.
             for w in st.written.iter_mut().filter(|w| !w.late) {

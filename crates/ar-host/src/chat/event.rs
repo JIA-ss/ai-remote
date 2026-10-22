@@ -190,6 +190,14 @@ pub enum Ev {
         /// Tokens the conversation takes of it now (the last request's input and output).
         #[serde(skip_serializing_if = "Option::is_none")]
         context_used: Option<u64>,
+        /// Of `input_tokens`: read from the prompt cache, and written to it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_read_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_write_tokens: Option<u64>,
+        /// Of `output_tokens`: the model's reasoning.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
     },
     TurnEnd {
         status: TurnStatus,

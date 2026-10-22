@@ -38,7 +38,8 @@ import {
   type SessionInfo,
 } from "../lib/chat";
 import { t } from "../lib/i18n";
-import { rememberImages } from "../lib/chat-input";
+import { quoteText, rememberImages } from "../lib/chat-input";
+import { Search } from "lucide-react";
 import { Composer, type ComposerImage } from "./chat/Composer";
 import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/FolderPicker";
 import { secs } from "./chat/Rows";
@@ -469,6 +470,8 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
     if (gone) onLeave(true);
   }, [gone]);
   const [menu, setMenu] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [insert, setInsert] = useState<{ text: string; n: number } | null>(null);
   const [history, setHistory] = useState<string[]>(() => sentBySession.get(target.session) ?? []);
   const [follow, setFollow] = useState(0);
   const running = chat.state === "running" || chat.state === "starting" || chat.state === "interrupting";
@@ -525,7 +528,18 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
   const status = ended ? t("hc_st_ended") : !connected ? error ?? t("hc_st_connecting") : running ? null : chat.state === "parked" ? t("hc_st_parked") : null;
 
   return (
-    <div className="nt-chat">
+    <div
+      className="nt-chat"
+      onKeyDownCapture={(e) => {
+        // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+          e.preventDefault();
+          e.stopPropagation();
+          setFinding(false);
+          requestAnimationFrame(() => setFinding(true));
+        }
+      }}
+    >
       <div className="nt-chat-hd">
         <i className={cx("dot", connected ? chat.state : "off")} />
         <div className="who">
@@ -534,6 +548,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         </div>
         {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
+        <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
+          <Search size={14} />
+        </button>
         <button type="button" className="ico" aria-label={t("hc_menu")} onClick={() => setMenu((v) => !v)}>
           <Icon name="more" size={14} />
         </button>
@@ -564,6 +581,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         onDiscard={discard}
         onAnswer={onAnswer}
         onContinue={onContinue}
+        finding={finding}
+        onCloseFind={() => setFinding(false)}
+        onQuote={(text) => setInsert((q) => ({ text: quoteText(text), n: (q?.n ?? 0) + 1 }))}
       />
       </PreviewProvider>
       <Composer
@@ -582,6 +602,8 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
           for (const c of editQueued(id, newId(), text)) send(c);
         }}
         commands={chat.commands ?? hello?.commands ?? null}
+        usage={chat.usage}
+        insert={insert}
         listFiles={readonly ? undefined : listFiles}
         images={(chat.images ?? hello?.images ?? hello?.caps?.images ?? true) ? { ok: true } : { ok: false, why: t("hc_img_unsupported", { agent }) }}
         onSteerQueued={(id, text) => {

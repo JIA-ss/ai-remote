@@ -166,3 +166,32 @@ test("an input carries its images; the conversation keeps their names; this devi
   assert.equal(input.imagesOf("u1")[0].name, "a.png");
   assert.deepEqual(plain(input.imagesOf("nope")), []);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Find, quote, usage
+
+test("find matches case-insensitively and steps around", () => {
+  assert.deepEqual(plain(input.findMatches("Export export EXPORT", "export")), [[0, 6], [7, 13], [14, 20]]);
+  assert.deepEqual(plain(input.findMatches("aaa", "aa")), [[0, 2]]);
+  assert.deepEqual(plain(input.findMatches("abc", "")), []);
+  assert.equal(input.stepMatch(-1, 3, 1), 0);
+  assert.equal(input.stepMatch(-1, 3, -1), 2);
+  assert.equal(input.stepMatch(2, 3, 1), 0);
+  assert.equal(input.stepMatch(0, 0, 1), -1);
+});
+
+test("a selection becomes a quote below what is typed", () => {
+  assert.equal(input.quoteText("line one\n\nline two\n"), "> line one\n>\n> line two\n\n");
+  assert.equal(input.withQuote("", "> a\n\n"), "> a\n\n");
+  assert.equal(input.withQuote("my reply  ", "> a\n\n"), "my reply\n\n> a\n\n");
+});
+
+test("the usage breakdown lists only what the agent reported", () => {
+  assert.deepEqual(plain(input.usageRows(null, { used: 42000, window: 200000 })), [{ key: "context", value: 42000 }, { key: "free", value: 158000 }]);
+  const rows = plain(input.usageRows({ input: 41200, cacheRead: 40000, cacheWrite: 0, output: 600, cost: 0.0123 }, null));
+  assert.deepEqual(rows.map((r) => r.key), ["input", "cache_read", "output", "cost"]);
+  assert.equal(rows[1].sub, true);
+  seq = 0;
+  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "usage", input_tokens: 10, output_tokens: 2, cache_read_tokens: 8, reasoning_tokens: 1 })]);
+  assert.deepEqual(plain(c.usage), { input: 10, output: 2, cacheRead: 8, reasoning: 1 });
+});

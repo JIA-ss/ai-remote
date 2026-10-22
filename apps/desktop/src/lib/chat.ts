@@ -81,7 +81,8 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean }
   | { t: "plan"; entries: PlanEntry[] }
   | { t: "question"; qid: string; prompt: string; options?: string[] }
-  | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number }
+  | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
+      cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
@@ -205,6 +206,9 @@ export interface Usage {
   cost?: number;
   contextWindow?: number;
   contextUsed?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
 }
 
 export interface Turn {
@@ -236,9 +240,11 @@ export interface Chat {
   commands: SlashCommand[] | null;
   /** Whether the agent takes images, from its last `agent` event (null: it did not say). */
   images: boolean | null;
+  /** The agent's last usage report, for the context ring's breakdown. */
+  usage: Usage | null;
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null, usage: null });
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -357,7 +363,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false });
       break;
     case "usage": {
-      turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used };
+      turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
+        cacheRead: e.cache_read_tokens, cacheWrite: e.cache_write_tokens, reasoning: e.reasoning_tokens };
+      c.usage = turn.usage;
       if (typeof e.context_window === "number" && typeof e.context_used === "number" && e.context_window > 0) {
         c.context = { used: e.context_used, window: e.context_window };
       }

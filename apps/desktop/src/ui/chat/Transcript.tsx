@@ -7,8 +7,9 @@
 // request), finished turns skip layout and paint while off screen (`content-visibility`), and a turn
 // re-renders only when its own events arrive (each turn is memoized on its object).
 
-import { ArrowDown, RotateCcw, X } from "lucide-react";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ChevronDown, ChevronUp, Quote, RotateCcw, X } from "lucide-react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { findMatches, stepMatch } from "../../lib/chat-input";
 import { phase, stoppedTurn, turnRows, type Block, type Chat, type Outgoing, type Turn } from "../../lib/chat";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
@@ -85,8 +86,111 @@ function OutgoingRow({ o, onRetry, onDiscard }: { o: Outgoing; onRetry: (o: Outg
   );
 }
 
-export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue }: {
+/** The CSS Custom Highlight API where the web view has it (WebKit 17.2+, Chromium 105+). */
+type Highlights = { set(name: string, h: unknown): void; delete(name: string): void };
+function highlights(): { reg: Highlights; make: (ranges: Range[]) => unknown } | null {
+  const css = (globalThis as { CSS?: { highlights?: Highlights } }).CSS;
+  const H = (globalThis as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+  return css?.highlights && H ? { reg: css.highlights, make: (r) => new H(...r) } : null;
+}
+
+/**
+ * Find in the conversation (⌘F / Ctrl+F; Orca's NativeChatFindBar): the text shown now is searched
+ * (folded parts and turns not mounted are not), matches are highlighted, Enter / Shift+Enter step
+ * through them, Esc closes.
+ */
+function FindBar({ root, onShow, onClose }: { root: React.RefObject<HTMLElement | null>; onShow: (r: Range) => void; onClose: () => void }) {
+  const [q, setQ] = useState("");
+  const [cur, setCur] = useState(-1);
+  const [ranges, setRanges] = useState<Range[]>([]);
+  const [tick, setTick] = useState(0);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => field.current?.focus(), []);
+  // New text (the agent writes on) searches again, at most a few times a second.
+  useEffect(() => {
+    const el = root.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const mo = new MutationObserver(() => {
+      if (!timer) timer = setTimeout(() => { timer = null; setTick((n) => n + 1); }, 250);
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => {
+      mo.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+  }, [root]);
+  useEffect(() => {
+    const el = root.current;
+    const found: Range[] = [];
+    if (el && q) {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n && found.length < 1000; n = walker.nextNode()) {
+        for (const [a, b] of findMatches(n.nodeValue ?? "", q, 1000 - found.length)) {
+          const r = document.createRange();
+          r.setStart(n, a);
+          r.setEnd(n, b);
+          found.push(r);
+        }
+      }
+    }
+    setRanges(found);
+    setCur((c) => (found.length ? Math.min(Math.max(c, 0), found.length - 1) : -1));
+  }, [q, tick]);
+  useEffect(() => {
+    const h = highlights();
+    if (h) {
+      h.reg.set("nt-find", h.make(ranges));
+      h.reg.set("nt-find-cur", h.make(cur >= 0 && ranges[cur] ? [ranges[cur]] : []));
+    }
+    return () => {
+      h?.reg.delete("nt-find");
+      h?.reg.delete("nt-find-cur");
+    };
+  }, [ranges, cur]);
+  useEffect(() => {
+    if (cur >= 0 && ranges[cur]) onShow(ranges[cur]);
+  }, [cur, q]);
+  const step = (dir: -1 | 1) => setCur((c) => stepMatch(c, ranges.length, dir));
+  return (
+    <div className="nt-findbar" role="search">
+      <input
+        ref={field}
+        value={q}
+        placeholder={t("hc_find_ph")}
+        aria-label={t("hc_find_ph")}
+        onChange={(e) => { setQ(e.target.value); setCur(0); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            step(e.shiftKey ? -1 : 1);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+      />
+      <span className="ct tnum" aria-live="polite">{q ? (ranges.length ? `${cur + 1}/${ranges.length}` : t("hc_find_none")) : ""}</span>
+      <button type="button" className="nt-ib" aria-label={t("hc_find_prev")} title={t("hc_find_prev")} disabled={!ranges.length} onClick={() => step(-1)}>
+        <ChevronUp size={13} />
+      </button>
+      <button type="button" className="nt-ib" aria-label={t("hc_find_next")} title={t("hc_find_next")} disabled={!ranges.length} onClick={() => step(1)}>
+        <ChevronDown size={13} />
+      </button>
+      <button type="button" className="nt-ib" aria-label={t("hc_find_close")} title={t("hc_find_close")} onClick={onClose}>
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, onCloseFind, onQuote }: {
   chat: Chat;
+  /** The find bar is open. */
+  finding?: boolean;
+  onCloseFind?: () => void;
+  /** Quote a selection from the conversation in the composer. */
+  onQuote?: (text: string) => void;
   outgoing?: Outgoing[];
   onRetry?: (o: Outgoing) => void;
   onDiscard?: (id: string) => void;
@@ -131,6 +235,45 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
     return () => ro.disconnect();
   }, []);
 
+  const inner = useRef<HTMLDivElement>(null);
+  /** Scrolls a find match into view; the list stops following the end meanwhile. */
+  const show = (r: Range) => {
+    const el = scroller.current;
+    if (!el) return;
+    const box = r.getBoundingClientRect();
+    const view = el.getBoundingClientRect();
+    if (box.top < view.top + 40 || box.bottom > view.bottom - 40) {
+      stick.current = false;
+      setAway(true);
+      el.scrollTop += box.top - view.top - el.clientHeight / 3;
+    }
+  };
+  // A selection in the conversation offers to quote it (Orca's NativeChatSelectionQuote).
+  const [quote, setQuote] = useState<{ text: string; top: number; left: number } | null>(null);
+  const pickQuote = () => {
+    if (!onQuote || readonly) return;
+    const sel = window.getSelection();
+    const el = scroller.current;
+    if (!sel || sel.isCollapsed || !el || !sel.rangeCount || !el.contains(sel.anchorNode) || !el.contains(sel.focusNode)) {
+      setQuote(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (!text) return setQuote(null);
+    const r = sel.getRangeAt(0).getBoundingClientRect();
+    const box = el.parentElement!.getBoundingClientRect();
+    setQuote({ text, top: Math.max(4, r.top - box.top - 34), left: Math.min(Math.max(4, r.left - box.left + r.width / 2 - 40), box.width - 90) });
+  };
+  useEffect(() => {
+    if (!quote) return;
+    const gone = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) setQuote(null);
+    };
+    document.addEventListener("selectionchange", gone);
+    return () => document.removeEventListener("selectionchange", gone);
+  }, [quote]);
+
   const jump = () => {
     const el = scroller.current;
     if (!el) return;
@@ -141,17 +284,29 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
 
   return (
     <div className="nt-transcript">
+      {finding && <FindBar root={inner} onShow={show} onClose={() => onCloseFind?.()} />}
+      {quote && (
+        <button type="button" className="nt-quote" style={{ top: quote.top, left: quote.left }}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => { onQuote?.(quote.text); setQuote(null); window.getSelection()?.removeAllRanges(); }}>
+          <Quote size={12} aria-hidden />
+          <span>{t("hc_quote")}</span>
+        </button>
+      )}
       <div
         className="nt-chat-body"
         ref={scroller}
+        onMouseUp={() => setTimeout(pickQuote, 0)}
+        onKeyUp={(e) => e.shiftKey && pickQuote()}
         onScroll={(e) => {
+          if (quote) setQuote(null);
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
           stick.current = atEnd;
           if (atEnd === away) setAway(!atEnd);
         }}
       >
-        <div className="nt-chat-inner">
+        <div className="nt-chat-inner" ref={inner}>
           {first > 0 && (
             <button type="button" className="nt-earlier" onClick={() => setShown((n) => n + WINDOW)}>
               {t("hc_earlier", { n: Math.min(first, WINDOW) })}
