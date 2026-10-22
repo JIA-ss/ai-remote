@@ -41,15 +41,19 @@ mod restart {
     use super::*;
     use crate::chat::{Backend, ChatManager, Cmd, Input, State, event::By};
 
-    /// Claude Code's protocol, just enough: LATE answers a second later, SLOW runs until
-    /// interrupted, anything else answers at once. Each answer says the process id, so the test
-    /// can tell one process from another.
+    /// Claude Code's protocol, just enough: LATE answers a second later, a message with an image
+    /// answers "image", anything else answers at once with the process id, so the test can tell
+    /// one process from another.
     const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
 while IFS= read -r line; do
   case "$line" in
+    *'"subtype":"initialize"'*)
+      echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}' ;;
     *control_request*) echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+    *'"type":"image"'*)
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"image"}' ;;
     *LATE*) sleep 1
       echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
       echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"pid $$\"}" ;;
@@ -226,6 +230,33 @@ done
         assert!(!alive, "the agent stopped with the runner");
         drop((chat, m2));
         rt2.shutdown_background();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_image_crosses_the_pipe_to_an_agent_in_the_runner() {
+        let f = fixture();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        let (_, _, mut rx) = chat.follow(0);
+        let image = crate::chat::Image {
+            name: "dot.png".into(),
+            mime: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+            bytes: 8,
+        };
+        chat.send(Cmd::Input(Input {
+            id: "u-image".into(),
+            text: "what is this".into(),
+            by: By { device: "laptop".into(), principal: None },
+            images: vec![image],
+        }));
+        let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+        assert_eq!(end["final_text"], "image", "{end}");
+        m.close().await;
+        drop((chat, m));
+        rt.shutdown_background();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
