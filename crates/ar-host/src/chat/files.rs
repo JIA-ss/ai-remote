@@ -167,7 +167,9 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
         }
-        let cache = FileCache::new(true);
+        // Walking, whatever git there is: a temporary folder can sit inside a work tree (a home folder
+        // kept in git).
+        let cache = FileCache::new(false);
         let m = cache.matches(root, "", 50).await.unwrap();
         assert_eq!(m.source, "walk");
         assert_eq!(m.files.len(), 4, "{m:?}");
