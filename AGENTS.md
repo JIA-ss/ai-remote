@@ -137,10 +137,12 @@ Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询
 
 **实测（本机 macOS，2026-10-22，各 1 次）**：`cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -- -D warnings`
 无警告；`cargo test --workspace --locked` 404 过 0 失败 8 忽略（含 `capture::shared` 5 项）；前端 10 个 `node --test` 文件 111 项
-109 过 2 跳过；`tsc --noEmit` 过。`dda.rs` 只在 Windows 编译，Mac 上编不到，靠 PR 的 windows-2025 CI。
+109 过 2 跳过；`tsc --noEmit` 过。`dda.rs` 只在 Windows 编译：win-dev（Windows 11，debug，独立 worktree
+`%USERPROFILE%\ai-remote-ddashare`，等 #35 的会话测完、交还机器后才跑，没碰服务）上 `cargo fmt --check` 过、
+`cargo clippy -p ar-host --all-targets --locked -- -D warnings` 无警告、`cargo test -p ar-host --lib stream::` 27 过 0 失败 10 忽略
+（含 `refusals_say_why_in_words` 和 `capture::shared` 5 项），各 1 次。
 
-**未测**：win-dev 上的 `two_viewers_of_one_monitor_both_get_frames`（写这节时 win-dev 被 PR #35 的会话租着、在临时换服务程序做
-多屏真机测试，没去打扰）；经服务（SYSTEM）两个控制端同时看同一块屏的端到端（要换 win-dev 服务程序，须用户同意）；多个观看者
+**未测**：win-dev 上手动跑的 `two_viewers_of_one_monitor_both_get_frames`（会截屏、在主屏左上角闪一个小窗口，等用户同意）；经服务（SYSTEM）两个控制端同时看同一块屏的端到端（要换 win-dev 服务程序，须用户同意）；多个观看者
 共用一个设备时的编码耗时（推导：每帧多一次视频处理器转换，量级 1 ms 以内，没测）。显示配置变化后 `HMONITOR` 可能换值，
 key 用的是 `HMONITOR`，这种情况下新旧复制线程的行为和改之前一样（没处理、没测）。
 
