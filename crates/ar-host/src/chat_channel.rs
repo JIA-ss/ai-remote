@@ -17,6 +17,10 @@
 //!   `"acks":true`); a message later dropped because the queue is full gets a `queue_full` notice
 //!   with its `input_id`;
 //! - `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`;
+//! - `{"files":{"rid":..,"query":"..","limit":N}}`: files in the session's folder whose relative
+//!   path contains every word of `query` (see [`crate::chat::files`]), answered with
+//!   `{"t":"files","rid":..,"files":[".."],"truncated":bool,"source":"git"|"walk"}` (or an
+//!   `error` with the same `rid`);
 //! - `{"end":{}}`: end the session (its agent process stops);
 //! - `{"bye":{}}`: stop watching (the session goes on); `{"ping":N}` is answered with `{"pong":N}`.
 //!
@@ -85,6 +89,14 @@ enum Command {
     },
     Dequeue {
         id: String,
+    },
+    /// Files in the session's folder matching `query`, for the `@` menu.
+    Files {
+        rid: Value,
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     End {},
     Bye {},
@@ -290,6 +302,14 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
     if let Err(e) = require_admin(host, peer).await {
         return Ok(Some(json!({"t": "error", "text": format!("{e:#}")})));
     }
+    if let Command::Files { rid, query, limit } = cmd {
+        let cwd = std::path::PathBuf::from(chat.meta().cwd);
+        let reply = match chat.files.matches(&cwd, &query, limit.unwrap_or(50)).await {
+            Ok(m) => json!({"t": "files", "rid": rid, "files": m.files, "truncated": m.truncated, "source": m.source}),
+            Err(e) => json!({"t": "error", "rid": rid, "text": format!("cannot list files: {e:#}")}),
+        };
+        return Ok(Some(reply));
+    }
     let by = By { device: peer.name.clone(), principal: peer.principal.clone() };
     let mut input_id = None;
     let sent = match cmd {
@@ -316,7 +336,7 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
         Command::Answer { qid, text } => chat.send(Cmd::Answer { qid, text }),
         Command::Dequeue { id } => chat.send(Cmd::Dequeue { id }),
         Command::End {} => chat.send(Cmd::End { reason: format!("ended by {}", peer.name) }),
-        Command::Bye {} | Command::Ping(_) => unreachable!(),
+        Command::Bye {} | Command::Ping(_) | Command::Files { .. } => unreachable!(),
     };
     if !sent {
         return Ok(Some(

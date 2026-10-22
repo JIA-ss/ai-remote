@@ -824,8 +824,17 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Prom
   if (ans?.text && run?.answer) run.answer(ans.text);
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");
+  const files = c.files as { rid?: string; query?: string } | undefined;
+  if (files) {
+    const words = (files.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = DEMO_FILES.filter((f) => words.every((w) => f.toLowerCase().includes(w)));
+    await wait(60);
+    return { t: "files", rid: files.rid, files: hits.slice(0, 50), truncated: hits.length > 50, source: "git" };
+  }
   return input?.text ? { t: "ack", input_id: input.id } : null;
 }
+
+const DEMO_FILES = ["export.py", "README.md", "tests/test_export.py", "report/quarter.py", "report/templates/summary.html", "docs/usage.md", "pyproject.toml"];
 
 async function demoStop(s: SessionInfo, run: DemoRun) {
   run.stopped = true;

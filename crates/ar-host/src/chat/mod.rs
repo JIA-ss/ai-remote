@@ -28,6 +28,7 @@
 pub mod adapters;
 pub mod detect;
 pub mod event;
+pub mod files;
 mod jsonrpc;
 pub mod preview;
 pub mod proc;
@@ -212,6 +213,8 @@ pub struct Chat {
     /// The device that started it, whose level is checked while it runs.
     pub creator: Peer,
     dir: PathBuf,
+    /// The folder's files, for the `@` menu.
+    pub files: files::FileCache,
 }
 
 struct Log {
@@ -401,6 +404,7 @@ impl ChatManager {
             cmd: tx,
             creator,
             dir: dir.to_path_buf(),
+            files: files::FileCache::default(),
         });
         chat.save();
         self.0.chats.lock().unwrap().insert(chat.id.clone(), chat.clone());

@@ -361,7 +361,13 @@ function useConversation(host: string, target: ChatTarget | null) {
     sendInput(retryOutgoing(o, newId(), Date.now()));
   };
   const discard = (id: string) => setOutgoing((list) => list.filter((x) => x.id !== id));
-  return { chat, setChat, hello, error, connected, gone, send, conn, outgoing, sendInput, retry, discard };
+  /** Files in the session's folder matching `query` (the `@` menu). */
+  const listFiles = async (query: string) => {
+    if (!conn.current) throw new Error(t("hc_not_connected"));
+    const r = await conn.current.ask("files", { query, limit: 50 });
+    return { files: Array.isArray(r.files) ? (r.files as string[]) : [], truncated: !!r.truncated };
+  };
+  return { chat, setChat, hello, error, connected, gone, send, conn, outgoing, sendInput, retry, discard, listFiles };
 }
 
 /** The chat tab of the session page. */
@@ -454,7 +460,7 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 const sentBySession = new Map<string, string[]>();
 
 function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
-  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard } = useConversation(host, target);
+  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = useConversation(host, target);
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {
     if (gone) onLeave(true);
@@ -570,6 +576,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
           for (const c of editQueued(id, newId(), text)) send(c);
         }}
         commands={chat.commands ?? hello?.commands ?? null}
+        listFiles={readonly ? undefined : listFiles}
         onSteerQueued={(id, text) => {
           send({ dequeue: { id } });
           send(inputCommand(newId(), text, "steer"));
