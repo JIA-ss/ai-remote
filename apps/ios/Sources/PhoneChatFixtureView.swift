@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// Simulator UI acceptance only (`-ui-chat-fixture`): the production chat view over demo events, with no
-/// host. Sending starts a turn running a slow tool; while it runs, sending adds to it (steer) or, with the
-/// chip switched, queues; stop ends the turn as interrupted and offers 继续.
+/// host. Sending starts a turn running a slow tool; while it runs, sending joins the turn (steer) or, with
+/// `-ui-chat-no-steer`, queues; stop ends the turn as interrupted and offers 继续.
 public struct PhoneChatFixtureView: View {
     @PhoneViewState<PhoneChatStore> private var chat: PhoneChatStore
 
@@ -49,7 +49,8 @@ public struct PhoneChatFixtureView: View {
         ]
         chat.current = session
         chat.role = "rw"; chat.connected = true; chat.runtimeName = "Claude Code"
-        var caps = PhoneChatCaps(); caps.steer = true
+        // `-ui-chat-no-steer`: an agent that cannot take a message mid-turn, so sending queues.
+        var caps = PhoneChatCaps(); caps.steer = !ProcessInfo.processInfo.arguments.contains("-ui-chat-no-steer")
         chat.caps = caps
         for line in lines { chat.fixtureEvent(line) }
         _chat = State(initialValue: chat)

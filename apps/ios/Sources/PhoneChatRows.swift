@@ -20,7 +20,8 @@ struct PhoneChatRowView: View {
 
     var body: some View {
         switch row {
-        case .user(_, let text, let by, let ts, let steer): PhoneUserRow(text: text, by: by, ts: ts, steer: steer)
+        // A message that joined the running turn (steer) is shown where it landed, like any other.
+        case .user(_, let text, let by, let ts, _): PhoneUserRow(text: text, by: by, ts: ts)
         case .text(_, let text, _): PhoneMarkdownText(text: text)
         case .thought(_, let thought, let live): PhoneThoughtRow(thought: thought, live: live)
         case .run(_, let members, let tools, let live): PhoneRunRow(members: members, tools: tools, live: live)
@@ -127,7 +128,6 @@ struct PhoneUserRow: View {
     let text: String
     let by: String
     let ts: Double
-    let steer: Bool
     @PhoneViewState private var open = false
     private var long: Bool { text.components(separatedBy: "\n").count > 12 || text.count > 1200 }
 
@@ -135,10 +135,6 @@ struct PhoneUserRow: View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 4) {
-                if steer {
-                    Label("插话", systemImage: "arrow.turn.down.right").font(.caption2.weight(.medium)).foregroundStyle(.blue)
-                        .accessibilityIdentifier("chat-steer-tag")
-                }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(text).textSelection(.enabled).lineLimit(long && !open ? 12 : nil)
                     if long {
@@ -146,8 +142,7 @@ struct PhoneUserRow: View {
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(steer ? Color.blue.opacity(0.08) : Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
-                .overlay { if steer { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.blue.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])) } }
+                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
                 HStack(spacing: 6) {
                     if !by.isEmpty { Text(by) }
                     if ts > 0 { Text(Date(timeIntervalSince1970: ts / 1000), style: .time) }

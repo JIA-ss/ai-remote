@@ -75,13 +75,32 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
                 chat.log.turns.count == 2 && chat.log.turns[1].userText == "hello again" && chat.log.turns[1].status == "completed"
             }, "\(chat.log.turns.count) turns")
 
+            // The stand-in agent can steer (like Claude Code): a message sent while it works joins the turn.
+            check("the agent can steer", chat.caps?.steer == true, "\(String(describing: chat.caps))")
             chat.draft = "SLOW job"
             await chat.send()
             check("a slow turn shows a running tool", await wait("running tool") {
                 chat.log.busy && chat.log.turns.last?.blocks.contains { if case .tool(let t) = $0 { t.status != "completed" } else { false } } == true
             }, "state \(chat.log.state)")
-            // Queue explicitly (the composer's chip), whatever the agent can do.
-            chat.steerWhileRunning = false
+            check("while it works, sending steers", chat.sendMode == "steer")
+            let steeredTurn = chat.log.turns.last?.n
+            chat.draft = "use the release profile"
+            await chat.send()
+            check("the steer joins the running turn as a user line", await wait("steer") {
+                chat.log.turns.last?.n == steeredTurn
+                    && chat.log.turns.last?.blocks.contains { if case .user(let text, _, _) = $0 { text == "use the release profile" } else { false } } == true
+            }, "\(chat.log.turns.last?.blocks.count ?? 0) blocks")
+            check("the agent acts on it in the same turn", await wait("steered") {
+                chat.log.turns.last?.n == steeredTurn && chat.log.turns.last?.status == "completed" && chat.log.turns.last?.reply.hasPrefix("steered:") == true
+            }, chat.log.turns.last?.reply ?? "")
+            check("nothing was queued", chat.log.queued.isEmpty)
+
+            // An agent that cannot steer (caps.steer false, e.g. ACP agents): a message waits in the queue.
+            chat.caps?.steer = false
+            chat.draft = "SLOW again"
+            await chat.send()
+            _ = await wait("running again") { chat.log.busy && chat.log.turns.last?.status == "running" }
+            check("while it works, sending queues", chat.sendMode == "queue")
             chat.draft = "queued while busy"
             await chat.send()
             check("a message sent while busy waits in the queue", await wait("queue") { chat.log.queued.map(\.text) == ["queued while busy"] },
@@ -96,15 +115,14 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             if let q = chat.log.queued.last { await chat.dequeue(q.id) }
             check("a queued message can be taken back", await wait("dequeue") { chat.log.queued.map(\.text) == ["queued while busy"] },
                   "\(chat.log.queued.map(\.text))")
-            chat.steerWhileRunning = true
             await chat.interrupt()
             check("stop ends the turn as interrupted", await wait("interrupted") {
-                chat.log.turns.contains { $0.userText == "SLOW job" && $0.status == "interrupted" }
+                chat.log.turns.contains { $0.userText == "SLOW again" && $0.status == "interrupted" }
             })
             check("the queued message runs next", await wait("queued turn") {
                 chat.log.turns.last?.userText == "queued while busy" && chat.log.turns.last?.status == "completed" && !chat.log.busy
             })
-            let ending = chat.log.turns.first { $0.userText == "SLOW job" }?.ending ?? ""
+            let ending = chat.log.turns.first { $0.userText == "SLOW again" }?.ending ?? ""
             check("the interrupted turn says so", ending.hasPrefix("已停止"), ending)
 
             // A dropped connection resumes from the last event, without repeating any.

@@ -32,7 +32,7 @@ final class PhoneChatUITests: XCTestCase {
         diff.tap()
         app.buttons["chat-run"].tap()
 
-        // Sending starts a turn; while it runs, sending adds to it (steer).
+        // Sending starts a turn; while it runs, a message joins it (the agent can steer), shown like any other.
         let input = app.textViews["chat-input"]
         input.tap()
         input.typeText("再跑一次测试")
@@ -40,27 +40,14 @@ final class PhoneChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["再跑一次测试"].waitForExistence(timeout: 5))
         let stop = app.buttons["chat-stop"]
         XCTAssertTrue(stop.waitForExistence(timeout: 5), "a running turn shows the stop button")
-        XCTAssertEqual(app.buttons["chat-mode"].label, "插话", "steer is the default while the agent works")
+        XCTAssertFalse(app.buttons["chat-mode"].exists, "no steer / queue switch")
         input.tap()
         input.typeText("用 release 配置")
         app.buttons["chat-send"].tap()
-        XCTAssertTrue(app.staticTexts["用 release 配置"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["chat-steer-tag"].exists, "the steer is flagged")
+        XCTAssertTrue(app.staticTexts["用 release 配置"].waitForExistence(timeout: 5), "the message joins the running turn")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-queue"].exists, "it is not queued")
+        XCTAssertFalse(app.staticTexts["插话"].exists, "and not flagged")
         attach(app, "steer")
-
-        // The chip switches to queueing; a queued message can be taken back.
-        app.buttons["chat-mode"].tap()
-        XCTAssertEqual(app.buttons["chat-mode"].label, "排队")
-        input.tap()
-        input.typeText("跑完再看文档")
-        app.buttons["chat-send"].tap()
-        let card = app.descendants(matching: .any)["chat-queue"]
-        XCTAssertTrue(card.waitForExistence(timeout: 5), "the queued message shows above the composer")
-        XCTAssertTrue(card.staticTexts["跑完再看文档"].exists)
-        XCTAssertTrue(app.buttons["chat-queued-steer"].exists && app.buttons["chat-queued-edit"].exists, "send now and edit")
-        attach(app, "queued")
-        app.buttons["chat-queued-remove"].tap()
-        waitFor("queue emptied") { !card.exists }
 
         // Stop, then continue.
         stop.tap()
@@ -83,6 +70,32 @@ final class PhoneChatUITests: XCTestCase {
         app.buttons["chat-new-start"].tap()
         XCTAssertTrue(app.alerts["没能启动"].waitForExistence(timeout: 5), "a refused start says why")
         app.alerts["没能启动"].buttons.firstMatch.tap()
+    }
+
+    /// An agent that cannot steer: a message sent while it works waits above the composer.
+    func testQueueWhenTheAgentCannotSteer() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-chat-fixture", "-ui-chat-no-steer"]
+        app.launch()
+        defer { app.terminate() }
+        let input = app.textViews["chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 15))
+        input.tap()
+        input.typeText("先跑测试")
+        app.buttons["chat-send"].tap()
+        XCTAssertTrue(app.buttons["chat-stop"].waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText("跑完再看文档")
+        app.buttons["chat-send"].tap()
+        let card = app.descendants(matching: .any)["chat-queue"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "the queued message shows above the composer")
+        XCTAssertTrue(card.staticTexts["跑完再看文档"].exists)
+        XCTAssertTrue(app.buttons["chat-queued-edit"].exists, "edit")
+        XCTAssertFalse(app.buttons["chat-queued-steer"].exists, "no separate steer")
+        attach(app, "queued")
+        app.buttons["chat-queued-remove"].tap()
+        waitFor("queue emptied") { !card.exists }
     }
 
     private func waitFor(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) {

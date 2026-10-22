@@ -271,16 +271,12 @@ public struct PhoneChatView: View {
     @PhoneViewState private var editing: PhoneQueued?
     @PhoneViewState private var editText = ""
 
-    /// A message waiting for the running turn to end: edit it, take it back, or add it to the turn now.
+    /// A message waiting for the running turn to end: edit it or take it back.
     private func queuedCard(_ q: PhoneQueued) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "text.append").font(.footnote).foregroundStyle(.secondary)
             Text(q.text).font(.footnote).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
             if chat.canWrite {
-                if chat.caps?.steer == true, chat.log.busy {
-                    Button { Task { await chat.steerQueued(q) } } label: { Image(systemName: "arrow.turn.down.right") }
-                        .accessibilityLabel("现在插进这一轮").accessibilityIdentifier("chat-queued-steer")
-                }
                 Button { editText = q.text; editing = q } label: { Image(systemName: "pencil") }
                     .accessibilityLabel("编辑").accessibilityIdentifier("chat-queued-edit")
                 Button { Task { await chat.dequeue(q.id) } } label: { Image(systemName: "trash") }
@@ -294,8 +290,7 @@ public struct PhoneChatView: View {
 
     private var placeholder: String {
         switch chat.sendMode {
-        case "steer": "在它干活时插一句"
-        case "queue": "排一条消息，本轮结束后发送"
+        case "queue": "这一轮结束后发给智能体"
         default: "发消息给 \(chat.runtimeName.isEmpty ? "智能体" : chat.runtimeName)"
         }
     }
@@ -313,21 +308,6 @@ public struct PhoneChatView: View {
                     }
                 }
             HStack(spacing: 10) {
-                if chat.log.busy {
-                    if chat.caps?.steer == true {
-                        Button { chat.steerWhileRunning.toggle() } label: {
-                            Label(chat.sendMode == "steer" ? "插话" : "排队",
-                                  systemImage: chat.sendMode == "steer" ? "arrow.turn.down.right" : "text.append")
-                                .font(.caption.weight(.medium))
-                        }
-                        .buttonStyle(.bordered).controlSize(.mini)
-                        .accessibilityHint(chat.sendMode == "steer" ? "发送会插进智能体正在做的这一轮。点一下改成本轮结束后再发。" : "发送会排队，本轮结束后智能体才收到。")
-                        .accessibilityIdentifier("chat-mode")
-                    } else {
-                        Label("排队", systemImage: "text.append").font(.caption).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("chat-mode")
-                    }
-                }
                 Spacer()
                 if chat.log.busy {
                     Button { Task { await chat.interrupt() } } label: {
@@ -347,7 +327,7 @@ public struct PhoneChatView: View {
                             Button("停止本轮并立即发送", systemImage: "bolt") { Task { await chat.send(interrupt: true) } }
                         }
                     }
-                    .accessibilityLabel(chat.sendMode == "steer" ? "插话" : chat.sendMode == "queue" ? "排队发送" : "发送")
+                    .accessibilityLabel("发送")
                     .accessibilityIdentifier("chat-send")
                 }
             }

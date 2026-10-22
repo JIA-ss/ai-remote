@@ -15,9 +15,6 @@ import SwiftUI
     public var runtimeName = ""
     /// What the agent can do (`caps` of the channel's hello); nil before the channel opens.
     public var caps: PhoneChatCaps?
-    /// While a turn runs, a message is added to it (steer) when the agent can take that; this switch
-    /// (the composer's chip) sends it after the turn instead.
-    public var steerWhileRunning = true
     public var connected = false
     /// Why the conversation's connection ended, when it did; the log stays and can be resumed.
     public var disconnected: String?
@@ -176,15 +173,12 @@ import SwiftUI
         if reason != "stopped" { disconnected = reason == "host disconnected" ? "被控端断开了对话" : reason }
     }
 
-    /// How sending is handled now: nil while nothing runs; `steer` (added to the running turn) or
-    /// `queue` (sent after it) while the agent works.
-    public var sendMode: String? {
-        let mode = phoneSendMode(running: log.busy, caps: caps)
-        return mode == "steer" && !steerWhileRunning ? "queue" : mode
-    }
+    /// How sending is handled now: nil while nothing runs; while the agent works, `steer` (it joins
+    /// the running turn, as the agent itself does) or `queue` (sent after the turn) by its caps.
+    public var sendMode: String? { phoneSendMode(running: log.busy, caps: caps) }
 
-    /// Sends the draft: a new turn, or while the agent works, added to its turn or queued after it
-    /// (`interrupt`: stop the turn and send this first).
+    /// Sends the draft: a new turn, or while the agent works, joined to its turn or queued after it as
+    /// the agent allows (`interrupt`: stop the turn and send this first).
     public func send(interrupt: Bool = false) async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canWrite, !sending else { return }
@@ -215,12 +209,6 @@ import SwiftUI
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         for c in phoneEditQueued(queuedID: id, newID: UUID().uuidString, text: value) { guard await command(c) else { return } }
-    }
-
-    /// Sends a queued message into the running turn now instead of after it.
-    public func steerQueued(_ queued: PhoneQueued) async {
-        guard await command(["dequeue": .object(["id": .string(queued.id)])]) else { return }
-        _ = await command(phoneInputCommand(id: UUID().uuidString, text: queued.text, mode: "steer"))
     }
 
     /// Answers the agent's question.

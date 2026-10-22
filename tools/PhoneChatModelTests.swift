@@ -184,7 +184,7 @@ test("a message added to the running turn (steer) shows inside it, flagged") {
     // A host without steering queues it and says so.
     c.apply(ev(1, ["t": s("notice"), "level": s("info"), "code": s("steer_queued"), "text": s("queued")]))
     if case .notice(_, let code, let text) = c.turns[0].blocks.last {
-        check(code == "steer_queued" && phoneNoticeText(code: code, text: text).contains("已排队"), "steer_queued")
+        check(code == "steer_queued" && phoneNoticeText(code: code, text: text) == "智能体这一轮结束后会收到这条消息。", "steer_queued")
     } else { check(false, "notice block") }
 }
 

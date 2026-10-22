@@ -383,10 +383,13 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
     改桌面 `lib/chat.ts` 时同步改这里；`tools/PhoneChatModelTests.swift` 用的是桌面 `tools/chat-state.test.mjs` 的同一批用例。
   - 界面（`PhoneChatRows.swift` 对应桌面 `ui/chat/Rows.tsx`，`PhoneChatView.swift` 是对话流和输入区）：工具运行组一句话摘要
     （可展开到每条工具，命令 + 输出末 14 行）、diff 卡片（+N −M，展开逐行着色、gap 行）、思考折叠（"思考了 4.2 秒"）、计划卡、
-    提问卡（编号选项 + 自由回答，回答后显示"已回答：x"）、插话气泡带"插话"标记、"你停止了这一轮 [继续]"、上下文用量环、
-    排队消息卡片（编辑=dequeue+重新排队、移出、现在插进这一轮）、运行中输入默认插话（`caps.steer` 为 true 时，模式 chip 可切到排队）、
-    长按发送按钮"停止本轮并立即发送"（`mode: interrupt`）。Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），
-    ``` 围起来的代码块单独等宽显示。
+    提问卡（编号选项 + 自由回答，回答后显示"已回答：x"）、"你停止了这一轮 [继续]"、上下文用量环、
+    排队消息卡片（编辑=dequeue+重新排队、移出）、长按发送按钮"停止本轮并立即发送"（`mode: interrupt`）。
+  - **2026-10-22 去掉单独的插话操作**（用户要求，照 Claude / Codex 原生 App 的做法）：只有一个发送按钮，没有插话 / 排队 chip，
+    也没有"插话"标记和排队卡片上的"现在插进这一轮"。运行中发送时 `hello.caps.steer` 为 true 就带 `mode: "steer"`，否则排队
+    （不带 mode）；智能体收下的插话（`user` 事件 `steer: true`）在当前轮里显示成普通的用户消息。不支持插话时消息照旧显示在
+    输入框上方，可编辑、可移出；`steer_queued` 提示的文案改为"智能体这一轮结束后会收到这条消息。"。停止按钮保留。
+  - Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），``` 围起来的代码块单独等宽显示。
   - 同步到桌面 d196dc3（Orca 实机对照后）：编辑并进运行组（行里没有 edit 了，组展开后编辑是 diff 卡片，组标题后加总的
     +N −M，`phoneRunDiffStat`）；一句话最后一项用" 和 "连接、编辑类文案"编辑了 N 个文件"；diff 开头 / 结尾不再放 gap；命令行只显示
     命令本身；失败数灰色"· N 个失败"；diff 行自动换行、复制按钮常显。
@@ -420,8 +423,15 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - 2026-10-21 晚（新版界面）：`tools/test-phone-chat-model.sh`（Swift 6、warnings as errors，macOS 上跑）17 项全过；
   `python3 tools/phone-chat-smoke.py`（安静模式）24 项全过，新增排队消息编辑、移出；iOS 模拟器 `PhoneChatUITests`（演示数据）
   走行展示、diff 展开、编号选项回答、发送、插话标记、chip 切排队、排队卡片移出、停止后"继续"、会话列表、新对话表单。
-  **没测**：真实被控端上的插话（本分支的被控端还没有 `caps.steer`，插话路径只在演示数据和单测里走过）、真实的计划 / 提问 / diff
+  **没测**：真实被控端上的插话（当时本分支的被控端还没有 `caps.steer`；2026-10-22 已补，见下一条）、真实的计划 / 提问 / diff
   事件（替身智能体不发这些）、上下文用量环的真实数据。
+- 2026-10-22（去掉单独的插话操作后）：`tools/test-phone-chat-model.sh` 17 项全过；`python3 tools/phone-chat-smoke.py`（安静模式）
+  30 项全过，新增**真实被控端上的插话**：替身智能体 `caps.steer=true`，SLOW 轮次运行中 `sendMode` 自动为 steer，发出的消息作为
+  用户行出现在同一轮、智能体在同一轮答 `steered: …`、队列为空；随后把 `caps.steer` 置 false 模拟 ACP 智能体，运行中发送进队列、
+  编辑、移出、停止后排队消息接着跑。iOS 模拟器（iPhone Duo，iOS 27.1）`PhoneChatUITests` 两个用例都过（30 s / 12 s）：
+  运行中发送的消息直接出现在对话里、没有 chip、没有"插话"标记、没有排队卡片；`-ui-chat-no-steer` 启动参数下运行中发送
+  出现排队卡片、能编辑、没有"现在插进这一轮"、移出后卡片消失。**没测**：真机；真实 Claude / Codex 的插话（被控端那边
+  已经在 Mac 和 win-dev 实测过，见"运行中插话"一节，手机端只连过替身）。
 
 ### 踩过的坑
 

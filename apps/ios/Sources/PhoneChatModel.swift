@@ -703,8 +703,9 @@ public func phoneBaseName(_ path: String) -> String {
 
 // MARK: - The composer
 
-/// What sending does while a turn runs: add to it when the agent can take that, else wait for it.
-/// nil: nothing runs, a plain message.
+/// What sending does while a turn runs: the agent's own way of taking a message mid-turn (`steer`,
+/// Claude Code and Codex: it joins the running turn) when its caps say so, else it waits for the turn
+/// to end (`queue`). There is no separate choice for the person. nil: nothing runs, a plain message.
 public func phoneSendMode(running: Bool, caps: PhoneChatCaps?, interrupt: Bool = false) -> String? {
     guard running else { return nil }
     if interrupt { return "interrupt" }
@@ -730,7 +731,7 @@ public let phoneContinuePrompt = "从刚才停下的地方继续。先确认上�
 
 /// Text for a notice: ours for the codes the view knows, the host's otherwise.
 public func phoneNoticeText(code: String, text: String) -> String {
-    code == "steer_queued" ? "这个智能体不支持在运行中插话，已排队，本轮结束后发给它。" : text
+    code == "steer_queued" ? "智能体这一轮结束后会收到这条消息。" : text
 }
 
 /// "850 毫秒", "4.2 秒", "38 秒", "2:05".
