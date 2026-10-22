@@ -47,7 +47,7 @@
 :root, [data-os="mac"], [data-os="windows"] {
   --font-text: -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
   --font-small: var(--font-text); --font-display: var(--font-text);
-  --font-data: "Geist Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", monospace;
+  --font-data: "Geist Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Microsoft YaHei UI", monospace;
   --w-strong: 600; --w-title: 600; --w-display: 600;
   --r-window: 0; --r-panel: 0; --r-stage: 0; --r-card: 10px; --r-control: 6px; --r-row: 6px; --r-tile: 7px; --r-payload: 8px;
   --r-segment-track: 7px; --r-segment: 5px; --r-stream: 0; --r-ref: 4px; --r-capsule: 12px; --r-pill: 8px; --r-float: 12px;
@@ -439,6 +439,9 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-chat-status.err { color: var(--danger); }
 .nt-transcript { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .nt-chat-body { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; user-select: text; scrollbar-width: thin; }
+/* WebView2 draws a thin scrollbar as a grey track with arrow buttons unless it is given colours (the
+   app-wide ::-webkit-scrollbar style no longer applies once scrollbar-width is set). */
+[data-os="windows"] .nt-chat-body { scrollbar-color: var(--stroke-2) transparent; }
 .nt-chat-inner { display: flex; flex-direction: column; gap: 18px; padding: 14px 4px 18px; }
 .nt-chat-empty { color: var(--c-faint); font-size: 13px; line-height: 1.55; padding: 28px 12px; text-align: center; }
 .nt-earlier { align-self: center; font-size: 12px; color: var(--c-faint); padding: 4px 10px; border-radius: 999px; background: var(--c-hover); }
@@ -761,6 +764,63 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 /* Settings > Network: the "Recommended" mark on a choice, and a switch that is locked off. */
 .tt .rec { margin-left: 8px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: var(--w-strong); background: var(--fill-1); color: var(--text-2); vertical-align: 1px; }
 .switch:disabled { opacity: .45; cursor: default; }
+/* The agent's folder (ui/chat/FolderPicker.tsx): a chip with the folder's name and, quieter, where it
+   is; the list under it (recent folders, then the host's folders). Paths keep their end in view. */
+.nt-folder-lbl { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; direction: ltr; text-align: left; overflow: hidden; }
+.nt-folder-lbl .nt-folder-glyph { flex: none; align-self: center; color: var(--text-3); }
+.nt-folder-lbl .fn { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: var(--w-strong); }
+.nt-folder-lbl .fp, .nt-folder-pop .fp { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; color: var(--text-3); font-size: 11px; }
+.nt-folder-lbl.none .fn { max-width: none; color: var(--text-2); font-weight: normal; }
+.nt-chat-hd .nt-folder-lbl.cwd, .nt-sessions .sess .nt-folder-lbl.cwd { direction: ltr; font-size: 12px; }
+.nt-chat-hd .nt-folder-lbl .fn { font-weight: normal; color: var(--text-2); }
+.nt-sessions .sess .nt-folder-lbl .fn { font-weight: normal; color: var(--text-2); }
+.nt-folder { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.nt-folder-btn { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; max-width: 100%; box-sizing: border-box; padding: 5px 8px 5px 10px; border-radius: var(--r-control); background: var(--fill-1); font-size: 13px; color: var(--text-3); text-align: left; }
+.nt-folder-btn:hover, .nt-folder.open .nt-folder-btn { background: var(--fill-2); }
+.nt-folder-btn > .nt-folder-lbl { flex: 0 1 auto; }
+.nt-folder-btn > svg { flex: none; }
+.nt-folder-pop { display: flex; flex-direction: column; border-radius: var(--r-card); background: var(--raised); box-shadow: var(--shadow-float); overflow: hidden; }
+.nt-folder-q { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--stroke-1); color: var(--text-3); }
+.nt-folder-q input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-1); font-size: 12px; }
+.nt-folder-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px 2px; font-size: 12px; color: var(--text-3); }
+.nt-folder-crumbs .crumb { display: inline-flex; align-items: center; gap: 2px; }
+.nt-folder-crumbs button { padding: 2px 4px; border-radius: 4px; color: var(--text-2); }
+.nt-folder-crumbs button:hover { background: var(--fill-1); }
+.nt-folder-crumbs button.cur { color: var(--text-1); font-weight: var(--w-strong); }
+.nt-folder-crumbs .back { margin-right: 4px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; }
+.nt-folder-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; padding: 4px; }
+.nt-folder-list .sec { padding: 6px 8px 2px; font-size: 11px; color: var(--text-3); }
+.nt-folder-list .row { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: var(--r-row); font-size: 13px; color: var(--text-1); text-align: left; min-width: 0; }
+.nt-folder-list .row > svg { flex: none; align-self: center; color: var(--text-3); }
+.nt-folder-list .row .fn { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-folder-list .row .fp { flex: 1; }
+.nt-folder-list .row.child .fn, .nt-folder-list .row.open .fn, .nt-folder-list .row.browse .fn { flex: 1; max-width: none; }
+.nt-folder-list .row.browse { color: var(--agent); }
+.nt-folder-list .row.browse > svg { color: var(--agent); }
+.nt-folder-list .row.on { background: var(--fill-1); }
+.nt-folder-list .row.sel > svg:last-child { margin-left: auto; color: var(--agent); }
+.nt-folder-note { padding: 8px; font-size: 12px; line-height: 1.5; color: var(--text-3); overflow-wrap: anywhere; }
+.nt-folder-note.err { color: var(--danger); }
+.nt-folder-ft { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--stroke-1); }
+.nt-folder-ft .fp { flex: 1; }
+.nt-folder-ft .btn { flex: none; }
+/* The host's sessions by project (Orca's project list): a folder heading with a count, then a card
+   per session: state dot, agent and when, and a quiet line under it. */
+.nt-sessions { gap: 14px; }
+.nt-proj { display: flex; flex-direction: column; gap: 2px; }
+.nt-proj-hd { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 4px 4px; font-size: 13px; }
+.nt-proj-hd .nt-folder-glyph { flex: none; color: var(--text-3); }
+.nt-proj-hd .fn { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--w-strong); color: var(--text-1); }
+.nt-proj-hd .fp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-size: 11px; color: var(--text-4); }
+.nt-proj-hd .n { flex: none; margin-left: auto; padding: 0 6px; border-radius: 8px; background: var(--fill-1); font-size: 11px; line-height: 16px; color: var(--text-3); }
+.nt-sessions .nt-proj .sess { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; grid-template-areas: "dot nm tm" ". meta meta"; align-items: center; column-gap: 10px; row-gap: 2px; padding: 8px 10px; margin-left: 10px; border-radius: var(--r-row); background: transparent; text-align: left; }
+.nt-sessions .nt-proj .sess:hover { background: var(--fill-1); }
+.nt-sessions .nt-proj .sess .dot { grid-area: dot; }
+.nt-sessions .nt-proj .sess .nm { grid-area: nm; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-1); }
+.nt-sessions .nt-proj .sess .tm { grid-area: tm; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.nt-sessions .nt-proj .sess .meta { grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
+.nt-sessions .dot.parked { background: var(--text-4); }
+
 
 /* ---------------------------------------------------------------------------------------------
    6c. File previews from the chat (ui/chat/Preview.tsx): an eye button on tool lines and edit
@@ -818,62 +878,6 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-pvi-f.image .cap { border-bottom: 0; height: 24px; font-size: 11.5px; }
 .nt-pvi-f.image .body img { display: block; height: 96px; max-width: 220px; min-width: 64px; object-fit: cover;
   background: repeating-conic-gradient(color-mix(in srgb, var(--text-1) 6%, transparent) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
-/* The agent's folder (ui/chat/FolderPicker.tsx): a chip with the folder's name and, quieter, where it
-   is; the list under it (recent folders, then the host's folders). Paths keep their end in view. */
-.nt-folder-lbl { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; direction: ltr; text-align: left; overflow: hidden; }
-.nt-folder-lbl .nt-folder-glyph { flex: none; align-self: center; color: var(--text-3); }
-.nt-folder-lbl .fn { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: var(--w-strong); }
-.nt-folder-lbl .fp, .nt-folder-pop .fp { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; color: var(--text-3); font-size: 11px; }
-.nt-folder-lbl.none .fn { max-width: none; color: var(--text-2); font-weight: normal; }
-.nt-chat-hd .nt-folder-lbl.cwd, .nt-sessions .sess .nt-folder-lbl.cwd { direction: ltr; font-size: 12px; }
-.nt-chat-hd .nt-folder-lbl .fn { font-weight: normal; color: var(--text-2); }
-.nt-sessions .sess .nt-folder-lbl .fn { font-weight: normal; color: var(--text-2); }
-.nt-folder { position: relative; display: flex; flex-direction: column; gap: 6px; }
-.nt-folder-btn { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; max-width: 100%; box-sizing: border-box; padding: 5px 8px 5px 10px; border-radius: var(--r-control); background: var(--fill-1); font-size: 13px; color: var(--text-3); text-align: left; }
-.nt-folder-btn:hover, .nt-folder.open .nt-folder-btn { background: var(--fill-2); }
-.nt-folder-btn > .nt-folder-lbl { flex: 0 1 auto; }
-.nt-folder-btn > svg { flex: none; }
-.nt-folder-pop { display: flex; flex-direction: column; border-radius: var(--r-card); background: var(--raised); box-shadow: var(--shadow-float); overflow: hidden; }
-.nt-folder-q { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--stroke-1); color: var(--text-3); }
-.nt-folder-q input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-1); font-size: 12px; }
-.nt-folder-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px 2px; font-size: 12px; color: var(--text-3); }
-.nt-folder-crumbs .crumb { display: inline-flex; align-items: center; gap: 2px; }
-.nt-folder-crumbs button { padding: 2px 4px; border-radius: 4px; color: var(--text-2); }
-.nt-folder-crumbs button:hover { background: var(--fill-1); }
-.nt-folder-crumbs button.cur { color: var(--text-1); font-weight: var(--w-strong); }
-.nt-folder-crumbs .back { margin-right: 4px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; }
-.nt-folder-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; padding: 4px; }
-.nt-folder-list .sec { padding: 6px 8px 2px; font-size: 11px; color: var(--text-3); }
-.nt-folder-list .row { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: var(--r-row); font-size: 13px; color: var(--text-1); text-align: left; min-width: 0; }
-.nt-folder-list .row > svg { flex: none; align-self: center; color: var(--text-3); }
-.nt-folder-list .row .fn { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nt-folder-list .row .fp { flex: 1; }
-.nt-folder-list .row.child .fn, .nt-folder-list .row.open .fn, .nt-folder-list .row.browse .fn { flex: 1; max-width: none; }
-.nt-folder-list .row.browse { color: var(--agent); }
-.nt-folder-list .row.browse > svg { color: var(--agent); }
-.nt-folder-list .row.on { background: var(--fill-1); }
-.nt-folder-list .row.sel > svg:last-child { margin-left: auto; color: var(--agent); }
-.nt-folder-note { padding: 8px; font-size: 12px; line-height: 1.5; color: var(--text-3); overflow-wrap: anywhere; }
-.nt-folder-note.err { color: var(--danger); }
-.nt-folder-ft { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--stroke-1); }
-.nt-folder-ft .fp { flex: 1; }
-.nt-folder-ft .btn { flex: none; }
-/* The host's sessions by project (Orca's project list): a folder heading with a count, then a card
-   per session: state dot, agent and when, and a quiet line under it. */
-.nt-sessions { gap: 14px; }
-.nt-proj { display: flex; flex-direction: column; gap: 2px; }
-.nt-proj-hd { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 4px 4px; font-size: 13px; }
-.nt-proj-hd .nt-folder-glyph { flex: none; color: var(--text-3); }
-.nt-proj-hd .fn { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--w-strong); color: var(--text-1); }
-.nt-proj-hd .fp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-size: 11px; color: var(--text-4); }
-.nt-proj-hd .n { flex: none; margin-left: auto; padding: 0 6px; border-radius: 8px; background: var(--fill-1); font-size: 11px; line-height: 16px; color: var(--text-3); }
-.nt-sessions .nt-proj .sess { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; grid-template-areas: "dot nm tm" ". meta meta"; align-items: center; column-gap: 10px; row-gap: 2px; padding: 8px 10px; margin-left: 10px; border-radius: var(--r-row); background: transparent; text-align: left; }
-.nt-sessions .nt-proj .sess:hover { background: var(--fill-1); }
-.nt-sessions .nt-proj .sess .dot { grid-area: dot; }
-.nt-sessions .nt-proj .sess .nm { grid-area: nm; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-1); }
-.nt-sessions .nt-proj .sess .tm { grid-area: tm; font-size: 11px; color: var(--text-3); white-space: nowrap; }
-.nt-sessions .nt-proj .sess .meta { grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-3); }
-.nt-sessions .dot.parked { background: var(--text-4); }
 
 /* ---------------------------------------------------------------------------------------------
    6f. The composer's input side (ui/chat/Composer.tsx, Transcript.tsx): messages on their way,

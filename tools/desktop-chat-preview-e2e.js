@@ -62,10 +62,26 @@
     const form = await until("start form", () => $(".nt-chat-start"), 30000);
     await check("the chat panel offers to start an agent", !!form);
     $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
-    setValue($("#ag-cwd"), CFG.work);
+    // The folder goes through the picker (ui/chat/FolderPicker.tsx), the way tools/desktop-chat-e2e.js
+    // does it: type the parent, open it, enter the work folder, use it.
+    const work = CFG.work.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+    const above = CFG.work.replace(/[\\/]+$/, "").slice(0, -work.length);
+    $(".nt-chat-start .nt-folder-btn").click();
+    const q = await until("folder search", () => $("#ag-folder-q"));
+    setValue(q, above);
+    await until("open row", () => $(".nt-folder-list .row.open"));
+    q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work))).click();
+    await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work);
+    (await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
+    await check("the work folder is chosen", !!(await until("folder chosen", () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title === CFG.work)),
+      $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title);
     setValue($("#ag-prompt"), "FILES make the report");
     await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
+    const startBtn = $$(".nt-chat-start .btn.primary").filter((b) => !b.closest(".nt-folder")).pop();
+    await check("the start button is ready", !!startBtn && !startBtn.disabled,
+      `${$$(".nt-chat-start .btn.primary").map((b) => `${b.textContent.trim()}${b.disabled ? "(disabled)" : ""}`).join(" | ")} | folder=${$(".nt-chat-start .nt-folder-lbl")?.title}`);
+    startBtn.click();
     await check("the files turn finishes", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)) && !!(await idle(30000)));
 
     const turn = lastTurn();

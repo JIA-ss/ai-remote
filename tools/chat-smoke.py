@@ -6,6 +6,10 @@ message, an interrupt, a steer into a running turn and one with no turn running,
 the host's on/off switch, the audit and a lowered level.
 
   python tools/chat-smoke.py [--cli target/debug/ai-remote] [--quiet] [--real codex=/path/to/codex --model M]
+                             [--hostw target/debug/ai-remote-hostw.exe]
+
+--hostw runs the test host the way a login task does (the windowless ai-remote-hostw, which supervises the
+host and logs to <home>/host/host.log) instead of `ai-remote host` in this console.
 
 --real takes the built-in agent's id: claude, codex, opencode, deepseek (DeepSeek Harness, `dsh`), ...
 
@@ -32,6 +36,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--real", action="append", default=[], help="base=path of a real agent, e.g. codex=/usr/local/bin/codex")
 parser.add_argument("--model", help="model for the real agent")
+parser.add_argument("--hostw", type=Path, help="run the test host with this ai-remote-hostw instead of `ai-remote host`")
 parser.add_argument("--quiet", action="store_true",
                     help="write [network] quiet = true for the test host and controller (no mDNS / UPnP; needs a build "
                          "with quiet mode). Use it on managed networks.")
@@ -150,6 +155,25 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
             return subprocess.CompletedProcess(e.cmd, 124, out, err + f"\n(timed out after {timeout} s)")
 
+    def host_tree():
+        """Windows: the processes under the test host, other than the host's own (name, pid, command line)."""
+        if os.name != "nt":
+            return None
+        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine "
+              "| ConvertTo-Json -Compress")
+        # No console window of its own: this script may run without one (as the window check does).
+        rows = json.loads(subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                                         encoding="utf-8", errors="replace", creationflags=0x08000000).stdout)
+        tree, grew = {host.pid}, True
+        while grew:
+            grew = False
+            for r in rows:
+                if r["ParentProcessId"] in tree and r["ProcessId"] not in tree:
+                    tree.add(r["ProcessId"])
+                    grew = True
+        return [(r["Name"], r["ProcessId"], (r["CommandLine"] or "")[:120]) for r in rows
+                if r["ProcessId"] in tree and r["ProcessId"] != host.pid and r["Name"] != "ai-remote-hostw.exe"]
+
     def steer_real(kind, rsid):
         """Counts to 20, one shell command per number, steered to stop at 5 once two have run."""
         seq = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == rsid)["seq"]
@@ -190,8 +214,11 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
               and done < 12, f"{done} commands, answer {final!r}, {time.time() - t0:.1f} s")
 
     log = open(base / "host.log", "w")
-    host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
-                            stdout=log, stderr=log, env=env)
+    if options.hostw:
+        host = subprocess.Popen([str(options.hostw), "--home", str(host_home)], stdout=log, stderr=log, env=env)
+    else:
+        host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
+                                stdout=log, stderr=log, env=env)
     try:
         ticket = None
         for _ in range(100):
@@ -318,6 +345,11 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
+        if options.hostw:
+            time.sleep(2)
+            left = host_tree()
+            if left is not None:
+                check("no agent process is left under the host after chat end", left == [], str(left)[:400])
 
         r = cli("chat", "disable", home=host_home)
         check("chat disable (on the host)", r.returncode == 0, r.stderr[-200:])
@@ -383,6 +415,17 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
                 watch.kill()
             check(f"real {kind}: runs a shell tool", saw_tool)
             check(f"real {kind}: an interrupt stops the running turn", ends == ["interrupted"], f"{ends}, {stopped_in:.1f} s")
+            if options.hostw and os.name == "nt":
+                # Whether the agent stops the command it was running: it is the agent's to do (the host
+                # only takes the whole tree down when the session ends), so this is reported, not checked.
+                t1, gone = time.time(), None
+                while time.time() - t1 < 60:
+                    if not any("sleep 45" in c for _, _, c in host_tree()):
+                        gone = time.time() - t1
+                        break
+                    time.sleep(1)
+                print(f"      the interrupted command (sleep 45) left the host's tree "
+                      + (f"{gone:.1f} s after the interrupt" if gone is not None else "not within 60 s"))
             t0 = time.time()
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
@@ -404,6 +447,13 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
                       f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             if rows.get(f"real-{kind}", {}).get("caps", {}).get("steer"):
                 steer_real(kind, rsid)
+            if options.hostw:
+                r = cli("chat", "end", rsid)
+                check(f"real {kind}: chat end", r.returncode == 0, r.stderr[-200:])
+                time.sleep(2)
+                left = host_tree()
+                if left is not None:
+                    check(f"real {kind}: no process is left under the host after chat end", left == [], str(left)[:400])
             cli("chat", "end", rsid)
 
         peers = json.loads(cli("--json", "peers", home=host_home).stdout)
@@ -424,7 +474,9 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         cli("stop-agent")
         log.close()
         if failures:
-            print((base / "host.log").read_text(encoding="utf-8", errors="replace")[-3000:])
+            hostw_log = host_home / "host" / "host.log"
+            print(((hostw_log if options.hostw and hostw_log.exists() else base / "host.log")
+                   .read_text(encoding="utf-8", errors="replace"))[-3000:])
 
 print(f"\n{len(failures)} failed" if failures else "\nall passed")
 sys.exit(1 if failures else 0)

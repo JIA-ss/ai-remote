@@ -20,12 +20,13 @@ screen; screenshots land in --out.
   cargo build -p ai-remote && (cd apps/desktop && npx tauri build --debug --no-bundle)
   python3 tools/desktop-chat-e2e.py [--out /tmp/desktop-chat-e2e]
 
-macOS only (the off-screen capture uses WKWebView's snapshot).
+macOS (WKWebView snapshot) and Windows (PrintWindow; the webview is told to keep drawing off screen).
 """
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,10 +34,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+EXE = ".exe" if os.name == "nt" else ""
+TMP = None if os.name == "nt" else "/tmp"
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("--cli", type=Path, default=ROOT / "target/debug/ai-remote")
-parser.add_argument("--app", type=Path, default=ROOT / "target/debug/ai-remote-desktop")
-parser.add_argument("--out", type=Path, default=Path("/tmp/desktop-chat-e2e"))
+parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
+parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
+parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "desktop-chat-e2e")
+parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
                     "panel lists it, e.g. 'Claude Code'): a small file task and a steer; uses its sign-in and quota")
@@ -195,8 +199,11 @@ options.out.mkdir(parents=True, exist_ok=True)
 for old in options.out.glob("*.png"):
     old.unlink()
 
-with tempfile.TemporaryDirectory(prefix="adc-", dir="/tmp") as tmp:
+with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_errors": True} if sys.version_info >= (3, 10) else {})) as tmp:
     base = Path(tmp)
+    # Not inside `base`: on Windows, Python 3.12's mkdtemp gives it an owner-only ACL, and WebView2's
+    # sandboxed processes then cannot use a data folder there (0x80080005 at startup).
+    webview = Path(tempfile.gettempdir()) / f"adc-webview-{os.getpid()}"
     host_home, desk, work = base / "host", base / "desk", base / "work"
     work.mkdir()
     # Files for the @ menu.
@@ -222,7 +229,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir="/tmp") as tmp:
 
     def cli(*args, home):
         return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True, text=True,
-                              timeout=120, env=env)
+                              encoding="utf-8", errors="replace", timeout=120, env=env)
 
     log = open(base / "host.log", "w")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
@@ -251,11 +258,17 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir="/tmp") as tmp:
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
-                   "AI_REMOTE_SMOKE_QUERY": f"view=session&host={name}&panel=chat"}
-        app = subprocess.Popen([str(options.app)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=app_env)
+                   "AI_REMOTE_SMOKE_QUERY": f"view=session&host={name}&panel=chat",
+                   # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
+                   "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
+                   "WEBVIEW2_USER_DATA_FOLDER": str(webview)}
+        app = subprocess.Popen([str(options.app)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                               encoding="utf-8", errors="replace", env=app_env)
         passed = None
         for line in app.stderr:
             line = line.rstrip()
+            if options.verbose:
+                print("  |", line[:400])
             if line.startswith("[page e2e] "):
                 text = line[len("[page e2e] "):]
                 print(text)
@@ -265,7 +278,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir="/tmp") as tmp:
                 print("  app:", line[:300])
             elif line.startswith("[smoke]"):
                 print("  " + line)
-        app.wait(timeout=60)
+        print(f"  app exited with {app.wait(timeout=60)}")
         code = 0 if passed else 1
         if passed is None:
             print("the script did not finish")
@@ -277,7 +290,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir="/tmp") as tmp:
         except subprocess.TimeoutExpired:
             host.kill()
         log.close()
+        shutil.rmtree(webview, ignore_errors=True)
     if code:
-        print((base / "host.log").read_text()[-2000:])
+        print((base / "host.log").read_text(encoding="utf-8", errors="replace")[-2000:])
     print(f"screenshots: {options.out}")
     sys.exit(code)
