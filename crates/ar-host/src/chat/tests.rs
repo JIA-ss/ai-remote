@@ -345,3 +345,50 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
     assert!(user.get("steer").is_none());
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
 }
+
+#[tokio::test]
+async fn previews_read_only_files_the_session_is_about() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
+    std::fs::write(f.work.join("notes.txt"), "x").unwrap();
+    let outside = f.root.join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("chart.png"), b"\x89PNG").unwrap();
+    std::fs::write(outside.join("secret.md"), "s").unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.md"), f.work.join("link.md")).unwrap();
+
+    // Inside the folder, by a relative path; the kind comes from the extension.
+    let p = chat.previewable("report.html").unwrap();
+    assert_eq!((p.kind, p.size), ("html", 11));
+    // Not a previewable kind, even inside the folder.
+    assert!(chat.previewable("notes.txt").unwrap_err().to_string().contains("cannot be previewed"));
+    // Outside and not named by the agent; a link out of the folder counts as outside.
+    let chart = outside.join("chart.png").display().to_string();
+    assert!(chat.previewable(&chart).unwrap_err().to_string().contains("outside"));
+    assert!(chat.previewable("link.md").unwrap_err().to_string().contains("outside"));
+    // A person naming it does not make it the agent's.
+    chat.emit(Ev::User {
+        input_id: "u".into(),
+        by: By { device: "laptop".into(), principal: None },
+        text: chart.clone(),
+        steer: false,
+    });
+    assert!(chat.previewable(&chart).is_err());
+    // Once the agent wrote it (a tool call's location), it can be previewed.
+    chat.emit(Ev::ToolCall {
+        call_id: "w".into(),
+        title: "Write".into(),
+        kind: event::ToolKind::Edit,
+        status: event::ToolStatus::Completed,
+        input: None,
+        locations: vec![chart.clone()],
+        content: vec![],
+    });
+    assert_eq!(chat.previewable(&chart).unwrap().kind, "image");
+    // Too big.
+    std::fs::write(f.work.join("big.png"), vec![0u8; (preview::MAX_PREVIEW + 1) as usize]).unwrap();
+    assert!(chat.previewable("big.png").unwrap_err().to_string().contains("at most"));
+    chat.send(Cmd::End { reason: "done".into() });
+}

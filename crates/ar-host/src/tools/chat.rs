@@ -6,13 +6,15 @@
 //! ask again); listing, watching and stopping do not. `chat_start` and `chat_attach` return a
 //! ticket for the chat channel (`app/ai-remote/chat/1`), where the conversation happens; a
 //! controller that offers its tools to an AI agent does not list them, like the file transfers.
+//! `chat_file` previews a file of a session (see [`crate::chat::preview`]): it returns a ticket for
+//! the files channel, as `files_pull` does, without asking.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use ar_core::Level;
 use async_trait::async_trait;
-use rmcp::model::{CallToolResult, JsonObject};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -21,6 +23,7 @@ use super::{NoParams, Tool, ToolSpec, json, parse};
 use crate::{
     chat::{Role, TICKET_TTL},
     session::ToolCtx,
+    tools::files::{Direction, TICKET_TTL as FILE_TICKET_TTL},
 };
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
@@ -31,6 +34,7 @@ pub fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(Attach::new()),
         Arc::new(Interrupt::new()),
         Arc::new(End::new()),
+        Arc::new(FilePreview::new()),
     ]
 }
 
@@ -274,5 +278,61 @@ impl Tool for End {
         let chat = ctx.host.chat().get(&p.session)?;
         chat.send(crate::chat::Cmd::End { reason: format!("ended by {}", ctx.session.peer.name) });
         Ok(json(json!({"session": chat.id, "ending": true})))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FileParams {
+    /// The session id (from chat_sessions or chat_start).
+    session: String,
+    /// The file as the session names it: absolute, or relative to the session's folder.
+    path: String,
+}
+
+struct FilePreview {
+    spec: ToolSpec,
+}
+
+impl FilePreview {
+    fn new() -> Self {
+        Self {
+            spec: ToolSpec::new::<FileParams>(
+                "chat_file",
+                Level::Admin,
+                "A one-time ticket to read an HTML, Markdown or image file of a coding-agent session for a preview \
+                 (at most 16 MiB, inside the session's folder or named by the agent in the session), redeemed on the \
+                 files channel within 2 minutes.",
+            )
+            .allow()
+            .read_only(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for FilePreview {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let p: FileParams = parse(args)?;
+        let chat = ctx.host.chat().get(&p.session)?;
+        let found = tokio::task::spawn_blocking(move || chat.previewable(&p.path))
+            .await
+            .map_err(|e| anyhow::anyhow!("file worker failed: {e}"))??;
+        let shown = dunce::simplified(&found.path).display().to_string();
+        let ticket = ctx.host.transfers().issue(ctx, "chat_file", found.path, Direction::Pull);
+        // One line, as the file tools answer: the app reads the ticket from the first line.
+        let value = json!({
+            "ticket": ticket,
+            "path": shown,
+            "size": found.size,
+            "kind": found.kind,
+            "expires_in_secs": FILE_TICKET_TTL.as_secs(),
+        });
+        let mut r = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+        r.structured_content = Some(value);
+        Ok(r)
     }
 }

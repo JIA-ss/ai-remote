@@ -542,8 +542,11 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 | `chat_attach` | 允许 | 参数 `session`。返回票据，可观看会话并给它发消息；任何管理员级别的设备都可以，每条消息记录发送者 |
 | `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
 | `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
+| `chat_file` | 允许 | 参数 `session`、`path`。返回一次性票据（2 分钟内在文件通道上兑换），读取会话里的 HTML、Markdown 或图片文件，供应用内预览：最大 16 MiB，且只能是会话工作目录里的文件（按解析符号链接后的真实路径判断），或智能体自己在本会话里提到过的路径（工具调用的位置、diff 或它的回答） |
 
-`chat_start` 和 `chat_attach` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+`chat_start`、`chat_attach` 和 `chat_file` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+
+`chat_file` 不询问机主，因为它没有扩大能力范围：调用的设备已经是管理员级别，本来就能让智能体（以用户身份运行、不询问）把任意文件打印出来。它只限于对话涉及的文件，让一个默认允许的工具读不到更多；仍可以用 `[[rule]]` 把 `chat_file` 改成询问或拒绝。桌面端预览 HTML 时不执行其中的脚本（`sandbox=""` 的 frame，外加一条不从网络加载任何内容的策略），Markdown 用对话自己的渲染器，图片从内存显示；控制端磁盘上不写任何文件。
 
 **查找智能体**：每个命令名按以下顺序查找：
 

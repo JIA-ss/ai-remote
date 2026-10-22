@@ -6,7 +6,9 @@ controller agent → QUIC → host → agent process.
 
 The stand-ins speak Claude Code's stream-json: "Rich fake" answers a message containing RICH with
 reasoning, a plan (TodoWrite), Read, a failing Bash, Grep, an Edit, a Markdown answer and context usage;
-SLOW keeps a turn running until the next message (a steer) or Stop. "No-steer fake" is the same program
+SLOW keeps a turn running until the next message (a steer) or Stop; FILES writes an HTML page, Markdown and a
+PNG into the session's folder and a Markdown file outside it (named in a Write), for the file previews
+(tools/desktop-chat-preview-e2e.js, run with E2E_SCRIPT=tools/desktop-chat-preview-e2e.js). "No-steer fake" is the same program
 with `steer = false`. Neither asks questions (Claude's adapter does not carry them), so the question
 card is not covered here.
 
@@ -95,6 +97,36 @@ def rich():
     out({"type": "result", "subtype": "success", "is_error": False, "result": "Fixed.",
          "usage": {"input_tokens": 1200, "cache_read_input_tokens": 40000, "output_tokens": 600},
          "modelUsage": {"claude-fake": {"contextWindow": 200000}}})
+PAGE = """<!doctype html><html><head><title>Preview page</title>
+<script>parent.postMessage("script ran", "*"); document.title = "script ran";</script></head>
+<body style="font:15px system-ui;margin:24px"><h1 id="h">Quarterly report</h1><p>Static text renders.</p>
+<img src="https://example.com/beacon.png" alt="remote image"></body></html>"""
+NOTES = "# Notes\n\n| Quarter | Pages |\n| --- | ---: |\n| Q1 | 11 |\n\n- **bold** point\n"
+def png(w, h):
+    import struct, zlib
+    rows = b"".join(b"\x00" + b"".join(bytes((x * 255 // w, y * 255 // h, 160)) for x in range(w)) for y in range(h))
+    chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+def files():
+    import os
+    work = os.getcwd()
+    out_dir = os.path.join(work, "out")
+    outside = os.path.join(os.path.dirname(work), "outside")
+    os.makedirs(out_dir, exist_ok=True); os.makedirs(outside, exist_ok=True)
+    page, notes, chart = (os.path.join(out_dir, n) for n in ("report.html", "notes.md", "chart.png"))
+    named, secret = os.path.join(outside, "named.md"), os.path.join(outside, "secret.md")
+    open(page, "w").write(PAGE); open(notes, "w").write(NOTES); open(chart, "wb").write(png(64, 32))
+    open(named, "w").write("# Named outside\n"); open(secret, "w").write("# Not named\n")
+    tool("f1", [{"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": page, "content": PAGE}},
+                {"type": "tool_use", "id": "w2", "name": "Write", "input": {"file_path": notes, "content": NOTES}},
+                {"type": "tool_use", "id": "w3", "name": "Write", "input": {"file_path": named, "content": "# Named outside\n"}},
+                {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "python chart.py > out/chart.png"}}],
+         [{"type": "tool_result", "tool_use_id": "w1", "content": "ok"}, {"type": "tool_result", "tool_use_id": "w2", "content": "ok"},
+          {"type": "tool_result", "tool_use_id": "w3", "content": "ok"}, {"type": "tool_result", "tool_use_id": "b1", "content": "wrote out/chart.png"}])
+    answer = "Done: the [report](out/report.html), notes in `out/notes.md` and a chart `out/chart.png`."
+    out({"type": "assistant", "message": {"id": "f2", "content": [{"type": "text", "text": answer}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": answer})
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
@@ -118,6 +150,8 @@ for line in sys.stdin:
         continue
     if "RICH" in text:
         rich(); continue
+    if "FILES" in text:
+        files(); continue
     out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m"}}})
     for word in ("you ", "said: ", text):
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word}}})

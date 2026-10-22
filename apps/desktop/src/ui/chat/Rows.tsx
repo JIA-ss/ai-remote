@@ -62,6 +62,8 @@ import { t, type Key } from "../../lib/i18n";
 import { inlineText, parseInline } from "../../lib/markdown";
 import { cx } from "../util";
 import { CodeBlock, CopyButton, Highlighted, Markdown } from "./Markdown";
+import { PreviewButton, TurnFiles } from "./Preview";
+import { previewKind } from "../../lib/preview";
 
 /** "1.2 s", "38 s", "2:05". */
 export function secs(ms: number) {
@@ -186,6 +188,13 @@ function ToolDetail({ x }: { x: ToolItem }) {
   );
 }
 
+/** The file a tool call wrote or read that can be previewed (its first such location or diff). */
+function previewTarget(x: ToolItem): string | null {
+  if (x.status === "failed") return null;
+  const paths = [...x.locations, ...x.content.flatMap((c) => (c.type === "diff" ? [c.path] : []))];
+  return paths.find((p) => previewKind(p)) ?? null;
+}
+
 /** One tool call: its kind, what it acted on, how long it took, and its output behind a fold. */
 export function ToolLine({ x, now }: { x: ToolItem; now: number }) {
   const [open, setOpen] = useState(false);
@@ -194,8 +203,8 @@ export function ToolLine({ x, now }: { x: ToolItem; now: number }) {
   const running = runRunning(x);
   const took = (x.endedTs ?? now) - x.startedTs;
   const detail = x.content.length > 0 || toolCommand(x) !== null || (x.input !== undefined && JSON.stringify(x.input) !== "{}") || x.locations.length > 0;
-  return (
-    <div className={cx("nt-tl", x.stopped ? "stopped" : x.status, open && "open")}>
+  const file = previewTarget(x);
+  const head = (
       <button type="button" className="rh" onClick={() => detail && setOpen((v) => !v)} aria-expanded={detail ? open : undefined} disabled={!detail}>
         <Ic size={14} className="ic" aria-hidden />
         {/* A command is its own label ("npm test"), as in Orca; other tools say what they did. */}
@@ -211,6 +220,17 @@ export function ToolLine({ x, now }: { x: ToolItem; now: number }) {
           {detail && <Chevron open={open} />}
         </span>
       </button>
+  );
+  return (
+    <div className={cx("nt-tl", x.stopped ? "stopped" : x.status, open && "open")}>
+      {file ? (
+        <div className="row">
+          {head}
+          <PreviewButton path={file} />
+        </div>
+      ) : (
+        head
+      )}
       {open && <ToolDetail x={x} />}
     </div>
   );
@@ -328,6 +348,7 @@ function DiffFile({ d, status }: { d: Extract<ToolContent, { type: "diff" }>; st
           {(status === "in_progress" || status === "pending") && <Spinner />}
           {rows.length > 0 && <Chevron open={open} />}
         </button>
+        {!deleted && status !== "failed" && <PreviewButton path={d.path} />}
         <CopyButton text={patchText(d.path, rows)} label={t("hc_copy_diff")} />
       </div>
       {open && <DiffBody rows={rows} />}
@@ -507,6 +528,7 @@ export function TurnFoot({ turn, reply, stopped, onContinue, readonly }: { turn:
   const meta = [turn.durationMs != null ? secs(turn.durationMs) : null, tokens != null ? t("hc_tokens", { n: tokens }) : null].filter(Boolean).join(" · ");
   return (
     <>
+      <TurnFiles turn={turn} />
       {turn.status === "failed" && (
         <div className="nt-notice error">
           <CircleAlert size={13} aria-hidden />
