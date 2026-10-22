@@ -26,6 +26,7 @@ import {
   phase,
   reduceChat,
   rememberCwd,
+  chatUnsupported,
   sessionGone,
   rememberSent,
   recentCwds,
@@ -85,13 +86,19 @@ async function call<T>(host: string, tool: string, args: Record<string, unknown>
 
 /** The installed agents of `host`, fetched once per mount (`refresh` looks again). */
 export function useRuntimes(host: string) {
-  const [state, setState] = useState<{ report: RuntimesReport | null; error: string | null }>({ report: null, error: null });
+  const [state, setState] = useState<{ report: RuntimesReport | null; error: string | null; old?: boolean }>({ report: null, error: null });
   const [round, setRound] = useState(0);
   useEffect(() => {
     let live = true;
     call<RuntimesReport>(host, "chat_runtimes", { refresh: round > 0 }).then(
       (report) => live && setState({ report, error: null }),
-      (e) => live && setState({ report: null, error: String(e instanceof Error ? e.message : e) }),
+      (e) => {
+        if (!live) return;
+        const msg = String(e instanceof Error ? e.message : e);
+        // A host from before coding agents answers "unknown tool": say what to do, not the MCP error.
+        if (chatUnsupported(msg)) setState({ report: null, error: t("hc_host_old", { host }), old: true });
+        else setState({ report: null, error: msg });
+      },
     );
     return () => {
       live = false;
@@ -410,7 +417,7 @@ function sessionState(state: SessionInfo["state"]): string {
 
 /** No session open: the sessions on the host, and starting a new one. */
 function Picker({ host, note, onPick }: { host: string; note: string | null; onPick: (t: ChatTarget) => void }) {
-  const { report, error } = useRuntimes(host);
+  const { report, error, old } = useRuntimes(host);
   const sessions = useSessions(host);
   const open = (sessions ?? []).filter((s) => s.state !== "ended");
   const pick = (t: ChatTarget) => {
@@ -452,7 +459,7 @@ function Picker({ host, note, onPick }: { host: string; note: string | null; onP
         </>
       )}
       <div className="grp-h">{t("hc_new")}</div>
-      {error ? <div className="nt-chat-note err">{error}</div> : report ? <StartForm host={host} report={report} compact folders={open.map((s) => s.cwd)} onStarted={pick} /> : <div className="nt-chat-note">{t("hc_looking", { host })}</div>}
+      {error ? <div className={cx("nt-chat-note", old ? "warn" : "err")}>{error}</div> : report ? <StartForm host={host} report={report} compact folders={open.map((s) => s.cwd)} onStarted={pick} /> : <div className="nt-chat-note">{t("hc_looking", { host })}</div>}
     </div>
   );
 }

@@ -1004,4 +1004,5 @@ export const en = {
   hc_preview_close: "Close (Esc)",
   hc_preview_cut: "The file is long; only its first 2 MB are shown.",
   hc_preview_static: "Shown without running its scripts, and without loading anything from the network.",
+  hc_host_old: "The ai-remote on {host} is from before coding agents, so it cannot run one yet. Update ai-remote on that computer, then try again.",
 };

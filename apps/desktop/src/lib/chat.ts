@@ -719,6 +719,11 @@ export function sessionGone(error: string): boolean {
   return /no chat session/i.test(error);
 }
 
+/** A host from before coding agents: it does not know the chat tools at all. */
+export function chatUnsupported(error: string): boolean {
+  return /unknown tool '?chat_/i.test(error);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The composer
 
@@ -980,13 +985,21 @@ export function matchFolders(folders: string[], query: string): string[] {
   return folders.filter((f) => f.toLowerCase().includes(q)).sort((a, b) => Number(starts(b)) - Number(starts(a)));
 }
 
-/** The subfolders in a `files_list` result, hidden ones (`.name`) only when asked for. */
+/** Folders nobody works in that a listing does not mark as hidden: Unix `.name`, and Windows system
+ *  folders (`$RECYCLE.BIN`, `$GetCurrent`, `System Volume Information`; `files_list` has no hidden flag). */
+function hiddenFolder(name: string): boolean {
+  return name.startsWith(".") || name.startsWith("$") || name.toLowerCase() === "system volume information";
+}
+
+/** The subfolders in a `files_list` result; hidden ones only when the filter asks for them (starts
+ *  with `.` or `$`, or names one). */
 export function listedFolders(entries: { name: string; kind: string }[], query = ""): string[] {
   const q = query.trim().toLowerCase();
+  const wantHidden = q.startsWith(".") || q.startsWith("$") || (q.length > 2 && "system volume information".startsWith(q));
   return entries
     .filter((e) => e.kind === "dir" || e.kind === "link")
     .map((e) => e.name)
-    .filter((n) => (q.startsWith(".") || !n.startsWith(".")) && (!q || n.toLowerCase().includes(q)));
+    .filter((n) => (wantHidden || !hiddenFolder(n)) && (!q || n.toLowerCase().includes(q)));
 }
 
 /** The host user's home as last seen by a listing of `~`, remembered per host. */

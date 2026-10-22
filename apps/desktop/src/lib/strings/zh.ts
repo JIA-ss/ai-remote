@@ -993,4 +993,5 @@ export const zh: Record<keyof typeof en, string> = {
   hc_preview_close: "关闭（Esc）",
   hc_preview_cut: "文件太长，只显示前 2 MB。",
   hc_preview_static: "预览不运行页面里的脚本，也不从网络加载任何内容。",
+  hc_host_old: "{host} 上的被控端版本较旧，还不支持编程智能体。把那台电脑上的 ai-remote 更新到最新版后再试。",
 };
