@@ -155,7 +155,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         seq = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == rsid)["seq"]
         watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
                                   "--since", str(seq)], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL, text=True, env=env)
+                                 stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", env=env)
         cli("chat", "send", rsid, "Count from 1 to 20. For each number N run the shell command `sleep 1; echo N` in "
             "the foreground, one separate command per number (never a loop or several numbers in one command), then "
             "reply with only the last number printed.")
@@ -249,7 +249,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         # attach replays the conversation; with stdin closed it leaves at once.
         p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
-                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
         events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
         ends = [e["status"] for e in events if e.get("t") == "turn_end"]
         check("attach replays every turn in order", ends == ["completed", "completed", "interrupted", "completed"], str(ends))
@@ -271,7 +272,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("a steer with no turn running starts one", r.returncode == 0 and "you said: no turn now" in r.stdout,
               f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
         p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
-                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
         events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
         steered = [e for e in events if e.get("t") == "user" and e.get("steer")]
         starts = {e["turn"] for e in events if e.get("t") == "turn_start"}
@@ -305,7 +307,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("an image over the limit is refused (exit 2)", r.returncode == 2 and "larger than" in r.stderr,
               f"code {r.returncode}: {r.stderr[-200:]}")
         p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
-                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
         events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
         users = [e for e in events if e.get("t") == "user" and e.get("attachments")]
         check("the transcript keeps the image's name and size, not its bytes",
@@ -355,7 +358,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             # command to the background and end the turn on their own after a few seconds.
             watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
                                       "--since", str(rs["seq"])], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, env=env)
+                                     stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", env=env)
             cli("chat", "send", rsid, "Use your shell tool to run exactly this command in the foreground and wait for it: "
                 "sleep 45 && echo finished. Then report its output.")
             saw_tool, ends, t0 = False, [], time.time()

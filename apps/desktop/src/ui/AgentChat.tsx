@@ -471,6 +471,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
   }, [gone]);
   const [menu, setMenu] = useState(false);
   const [finding, setFinding] = useState(false);
+  const [findFocus, setFindFocus] = useState(0);
   const [insert, setInsert] = useState<{ text: string; n: number } | null>(null);
   const [history, setHistory] = useState<string[]>(() => sentBySession.get(target.session) ?? []);
   const [follow, setFollow] = useState(0);
@@ -535,8 +536,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
           e.preventDefault();
           e.stopPropagation();
-          setFinding(false);
-          requestAnimationFrame(() => setFinding(true));
+          // Open, or (already open) back to its field; no animation frame: a hidden page has none.
+          setFinding(true);
+          setFindFocus((n) => n + 1);
         }
       }}
     >
@@ -582,6 +584,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         onAnswer={onAnswer}
         onContinue={onContinue}
         finding={finding}
+        findFocus={findFocus}
         onCloseFind={() => setFinding(false)}
         onQuote={(text) => setInsert((q) => ({ text: quoteText(text), n: (q?.n ?? 0) + 1 }))}
       />

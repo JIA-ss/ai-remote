@@ -99,13 +99,16 @@ function highlights(): { reg: Highlights; make: (ranges: Range[]) => unknown } |
  * (folded parts and turns not mounted are not), matches are highlighted, Enter / Shift+Enter step
  * through them, Esc closes.
  */
-function FindBar({ root, onShow, onClose }: { root: React.RefObject<HTMLElement | null>; onShow: (r: Range) => void; onClose: () => void }) {
+function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLElement | null>; focus: number; onShow: (r: Range) => void; onClose: () => void }) {
   const [q, setQ] = useState("");
   const [cur, setCur] = useState(-1);
   const [ranges, setRanges] = useState<Range[]>([]);
   const [tick, setTick] = useState(0);
   const field = useRef<HTMLInputElement>(null);
-  useEffect(() => field.current?.focus(), []);
+  useEffect(() => {
+    field.current?.focus();
+    field.current?.select();
+  }, [focus]);
   // New text (the agent writes on) searches again, at most a few times a second.
   useEffect(() => {
     const el = root.current;
@@ -187,10 +190,11 @@ function FindBar({ root, onShow, onClose }: { root: React.RefObject<HTMLElement 
   );
 }
 
-export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, onCloseFind, onQuote }: {
+export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote }: {
   chat: Chat;
-  /** The find bar is open. */
+  /** The find bar is open; `findFocus` changes when ⌘F asks for its field again. */
   finding?: boolean;
+  findFocus?: number;
   onCloseFind?: () => void;
   /** Quote a selection from the conversation in the composer. */
   onQuote?: (text: string) => void;
@@ -287,7 +291,7 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
 
   return (
     <div className="nt-transcript">
-      {finding && <FindBar root={inner} onShow={show} onClose={() => onCloseFind?.()} />}
+      {finding && <FindBar root={inner} focus={findFocus} onShow={show} onClose={() => onCloseFind?.()} />}
       {quote && (
         <button type="button" className="nt-quote" style={{ top: quote.top, left: quote.left }}
           onMouseDown={(e) => e.preventDefault()}
