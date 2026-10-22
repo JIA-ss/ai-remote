@@ -21,7 +21,7 @@ struct PhoneChatRowView: View {
     var body: some View {
         switch row {
         // A message that joined the running turn (steer) is shown where it landed, like any other.
-        case .user(_, let text, let by, let ts, _): PhoneUserRow(text: text, by: by, ts: ts)
+        case .user(_, let text, let by, let ts, _, let extra): PhoneUserRow(text: text, by: by, ts: ts, extra: extra)
         case .text(_, let text, _): PhoneMarkdownText(text: text)
         case .thought(_, let thought, let live): PhoneThoughtRow(thought: thought, live: live)
         case .run(_, let members, let tools, let live): PhoneRunRow(members: members, tools: tools, live: live)

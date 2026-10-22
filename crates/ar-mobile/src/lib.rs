@@ -21,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 
 uniffi::setup_scaffolding!();
 
+/// Largest file a preview reads (the host refuses larger ones first).
+const MAX_PREVIEW: u64 = 16 * 1024 * 1024;
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MobileError {
     #[error("{message}")]
@@ -262,6 +265,56 @@ impl MobileController {
         let Some(sender) = sender else { return Err(failure("this chat is closed")) };
         // Re-encoded so a command is always exactly one line.
         sender.send(format!("{command}\n")).await.map_err(|_| failure("this chat is closed"))
+    }
+
+    /// The bytes of a file a coding-agent session is about (an HTML page, a Markdown note or an image the
+    /// agent wrote or named), for the conversation's previews: the host's `chat_file` tool (read-only,
+    /// only files in the session's folder or named by the agent, at most 16 MiB) issues a ticket, the
+    /// bytes come over the `files` connection into memory, and their SHA-256 is checked against the
+    /// host's. Nothing is written to disk.
+    pub async fn preview_file(&self, host: String, session: String, path: String) -> Result<Vec<u8>> {
+        self.ready()?;
+        let fetch = async {
+            let reply = self
+                .backend
+                .request(json!({"op":"call", "host":host, "tool":"chat_file", "person":true,
+                    "args":{"session":session, "path":path}}))
+                .await
+                .map_err(|e| failure(format!("{e:#}")))?;
+            let text = reply["content"][0]["text"].as_str().unwrap_or_default();
+            if reply["isError"] == true {
+                return Err(failure(if text.is_empty() { "the host refused the file" } else { text }));
+            }
+            let issued: Value = serde_json::from_str(text.lines().next().unwrap_or("{}")).map_err(failure)?;
+            let ticket = issued["ticket"].as_str().ok_or_else(|| failure("the host issued no transfer ticket"))?;
+            let (stream, opened) = self
+                .backend
+                .open_stream(json!({"op":"files", "host":host, "request":{"ticket":ticket}}))
+                .await
+                .map_err(|e| failure(format!("{e:#}")))?;
+            if opened["ok"] == false {
+                return Err(failure(opened["error"].as_str().unwrap_or("the host refused the file")));
+            }
+            let total = opened["size"].as_u64().ok_or_else(|| failure("the host did not say how big the file is"))?;
+            if total > MAX_PREVIEW {
+                return Err(failure(format!("the file is {total} bytes; previews take at most {MAX_PREVIEW}")));
+            }
+            let mut reader = BufReader::new(stream);
+            let mut bytes = vec![0u8; total as usize];
+            reader.read_exact(&mut bytes).await.map_err(|e| failure(format!("the transfer broke off: {e}")))?;
+            let mut line = String::new();
+            reader.read_line(&mut line).await.map_err(failure)?;
+            let trailer: Value = serde_json::from_str(&line).map_err(|_| failure("the host ended the transfer without an answer"))?;
+            use sha2::Digest;
+            let digest: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            if trailer["sha256"].as_str() != Some(digest.as_str()) {
+                return Err(failure("the received file's SHA-256 does not match the host's"));
+            }
+            Ok(bytes)
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(60), fetch)
+            .await
+            .map_err(|_| failure("the preview timed out; check the host and connection before retrying"))?
     }
 
     pub async fn stop_subscription(&self, subscription: u64) {
