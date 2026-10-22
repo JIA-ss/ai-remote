@@ -642,7 +642,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 - `node --test tools/*.test.mjs` 92 过 / 0 失败 / 2 跳过，其中新增 `tools/chat-folder.test.mjs` 8 项（路径解析、两种平台、`~` 缩写、去重、筛选、按项目分组、多久前）。`npx tsc --noEmit -p apps/desktop` 通过。
 - `tools/desktop-chat-e2e.py`（替身智能体）**全部通过，共跑 3 次**（后两次是改样式后的重跑）。新增的检查：未选时 chip 提示选择；打开后经真实通道列出被控端家目录（46 个文件夹，隐藏的不显示）；输入路径出现"打开 …"、回车浏览、点子文件夹面包屑更新、底部"使用「work」"、chip 显示 `work` 且悬停是完整路径；会话头部显示项目名 + 上级路径；第二次启动默认选上次的文件夹、打开是最近列表且当前项打勾、会话列表按项目分组。截图 `/tmp/chat-folder-e2e/`（`00-folder-browse`、`04b-folder-recent`、`01-first-turn`）。
-- `tools/desktop-chat-e2e-real.js` 的启动步骤也改成了用选择器（输入路径 → 回车 → 使用），**没有跑**（真实智能体花额度，改动只在选目录这一步）。
+- `tools/desktop-chat-e2e-real.js`（真实 Claude Code 2.1.307，本机账号）：2026-10-22 用 main 8eeabb6 之后的 `claude/chat-folder-win` 跑了 1 次，**14 项全过**。选择器输入路径 → 回车 → "使用"，选到 `work`；会话头部显示 `work` 和上级路径；首轮 6 s 完成（建文件 + `cat`）；长任务中途发消息让它数到 5，最终 5 条命令。截图在 `/tmp/chat-folder-real/`。
 
 ### 未测 / 没做
 
