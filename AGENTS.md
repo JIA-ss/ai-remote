@@ -53,7 +53,7 @@
 `cargo test --workspace --locked` 397 过 0 失败 8 忽略；`cargo test -p ar-host --lib chat` 58 过（含新增的 runner 图片测试）；
 `node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
 **未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
-其中经 runner 的插话只有代码没有端到端测试，图片只在 Mac 上用 Unix 套接字测过（Windows 命名管道没测）；全屏修复在真实 App
+经 runner 的插话、图片、重启续接后来补了测试，在 Mac（Unix 套接字）和 Windows（命名管道）上都过了，见该节；全屏修复在真实 App
 原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
 
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
@@ -264,20 +264,41 @@
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
 - Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试用 sh 假智能体，只在 Unix 上跑；Windows 命名管道这一侧走的是同一份 `ar_net::ipc` 代码，但没在 Windows 上端到端跑过。
+- 2026-10-22 补（分支 `chore/runner-verify`）：runner 的端到端测试改为两平台都跑——Windows 上替身是 PowerShell 脚本、端点是真的命名管道；
+  新增"运行中插话经管道送达并并入当前轮次"（替身像 Claude Code 一样回显两行，走 `Steered`，`turns` 仍是 1）。Mac 连跑 2 次、
+  win-dev 连跑 3 次，6 项全过（握手、密钥、重启续接、插话、图片、runner 不在）；win-dev 上 clippy `-D warnings` 无警告。
+  这些仍是用户态进程内的测试，SYSTEM 拉起 runner 那一段只能真机验证。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
-**真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
+**真机验证步骤**（Windows 开发机。标"人"的步骤要用户在场或在管理员终端里做，agent 不代做；`<host>` 是 Mac 上已配对的这台开发机）：
 
-0. 前提：开发机上已经有一个服务在跑（`ai-remote-host-cc166525`，安静模式，`[network] quiet = true`，构建在 `ai-remote-quiet` 目录）。替换或重装它之前先问用户。本分支要先合入 PR #18（`feat/quiet-network`，或 cherry-pick 55e2725），否则读到 `quiet = true` 会启动失败。在公司网络里起任何测试用的被控端或控制端（包括隔离的 `--home`）时，都要在它的 `host/` 和 `controller/` 下各放一份写有 `[network] quiet = true` 的 `ai-remote.toml`。
-
-1. 构建并安装：`cargo build --release -p ai-remote`，管理员终端里 `ai-remote host install --service`（先 `--dry-run` 看计划）。`ai-remote host status` 为 running。
-2. 控制端 `ai-remote chat list --host <host>`：应列出用户装的 codex / claude 等且 `can_start: true`、版本和登录态与用户终端里一致（说明是用户身份探测的）。被控端机器上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"`：应有两个进程，一个用户名 `NT AUTHORITY\SYSTEM`（被控端），一个是登录用户（runner，命令行带 `--chat-runner`）。`host/chat-runner.log` 有 `connected to the host`。
-3. `ai-remote chat run --host <host> codex <某个用户目录> "列出当前目录"`（或桌面端「智能体」标签）：轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，且没有弹控制台窗口。
-4. **锁屏续接**：发一个耗时的任务（例如"sleep 60 后回复 done"），轮次运行中按 Win+L。服务日志应出现 console session 切换和新会话里重拉 host；runner 进程 pid 不变；控制端重新 `chat attach` 后看到 `reattached` 通知，60 s 后收到 done，轮次 completed，没有"host restarted during this turn"。用 win-dev-unlock 解锁后再发一条，仍是同一个智能体进程（`chat sessions` 里 pid 不变）。
-5. **交接丢消息**：难以手动复现，单测已覆盖；真机上只看有没有挂住的轮次。
-6. `ai-remote stop-host`：服务停止，runner 和智能体进程都退出（`chat-runner.log` 有 `told the agent runner to exit`）。`sc start` 后再 `chat list`，会拉起新的 runner。
-7. 安全检查：用另一个本地普通用户（或低完整性进程）连 `\\.\pipe\ai-remote-chat-runner-<id>` 应被 ACL 拒；同一用户下随便连上去（不带密钥）应在 `host.log` 里看到 `refused a connection to the agent runner endpoint`。
-8. 用完 `ai-remote host uninstall`（管理员终端）。
+0. 现状与前提（2026-10-22 查）：开发机上已经有一个真实服务 `ai-remote-host-cc166525` 在跑，配置目录
+   `C:\Users\sunjiashuai\AppData\Local\ai-remote\data`，安静模式，binPath 指向 `ai-remote-lan\target\release` 的构建（属于
+   `feat/lan-direct` 那边）。验证要把这个服务的程序换成含 runner 的构建，**换之前先征得用户同意**，并记下原 binPath，验证完再换回。
+   验证用的构建已经编好：`C:\Users\sunjiashuai\ai-remote-chat-svc\target\release\`（分支 `chore/runner-verify` = main + runner 测试补强，
+   含 PR #18 的安静模式）。在公司网络里另起测试用的被控端或控制端，都要在它的 home 下 `host/`、`controller/` 各放一份写有
+   `[network] quiet = true` 的 `ai-remote.toml`；本流程只换现有服务的程序，不另起实例。
+1. （人，管理员终端）记下原配置后换程序：
+   `sc qc ai-remote-host-cc166525`（记下 BINARY_PATH_NAME），然后
+   `C:\Users\sunjiashuai\ai-remote-chat-svc\target\release\ai-remote.exe --home C:\Users\sunjiashuai\AppData\Local\ai-remote\data host install --service --dry-run`，
+   确认计划只改这一个服务的 binPath 后去掉 `--dry-run` 再执行。`... host status` 应为 running。
+2. 探测以用户身份进行：Mac 上 `ai-remote chat list --host <host>`，应列出开发机上装的 codex / claude 等，`can_start: true`，版本和登录态与用户
+   在自己终端里看到的一致。开发机上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"` 应有两个进程：`NT AUTHORITY\SYSTEM` 的被控端，
+   和登录用户的 runner（命令行带 `--chat-runner`）。`<配置目录>\host\chat-runner.log` 有 `connected to the host`。
+3. （人：会花真实智能体的额度）`ai-remote chat run --host <host> codex <用户目录下某个文件夹> "列出当前目录"`，或在桌面端「智能体」标签里做：
+   轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，没有弹出控制台窗口。再发一条带图片的消息（桌面端拖一张图）、
+   一条运行中插话，确认都送达。
+4. （人）**锁屏续接**：发一个耗时的任务（例如"先 sleep 60 再回复 done"），轮次运行中按 Win+L。服务日志（`host\host.log`）应出现 console
+   session 切换和新会话里重拉被控端；runner 的 pid 不变；控制端重新打开对话后看到 `reattached` 通知，60 s 后收到 done，轮次 completed，
+   没有"the host restarted during this turn"。用 skill win-dev-unlock 解锁后再发一条，`chat sessions` 里智能体 pid 不变。
+5. 交接时丢消息：手动难复现，单测已覆盖；真机上只看有没有挂住不结束的轮次。
+6. （人，会停掉真实服务）`ai-remote stop-host`：服务停止，runner 和智能体进程都退出（`chat-runner.log` 有
+   `the host told the agent runner to exit`）。随后 `sc start ai-remote-host-cc166525`，再 `chat list` 会拉起新的 runner。
+7. 安全检查：以另一个本地普通用户连 `\\.\pipe\ai-remote-chat-runner-<配置 id>` 应被 ACL 拒；同一用户下不带密钥连上去，`host.log` 里应有
+   `refused a connection to the agent runner endpoint`。
+8. （人，管理员终端）恢复：用第 1 步记下的原程序路径执行它自己的 `ai-remote.exe ... host install --service`（或经用户同意后
+   `sc config ai-remote-host-cc166525 binPath= "<原值>"`），再 `sc stop` / `sc start` 让原构建跑起来。**不要** `host uninstall`：
+   那会删掉真实服务。
 
 ## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
 
