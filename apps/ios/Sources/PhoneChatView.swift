@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// The host's coding-agent chats: the session list, and one conversation shown turn by turn.
 public struct PhoneChatView: View {
@@ -55,10 +56,24 @@ public struct PhoneChatView: View {
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 24).listRowBackground(Color.clear)
             }
-            ForEach(chat.sessions) { session in
-                Button { Task { await chat.open(session) } } label: { sessionRow(session) }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat-session-\(session.id)")
+            // By project, as Orca and Codex list threads: the folder with the latest activity first.
+            ForEach(phoneSessionsByFolder(chat.sessions), id: \.folder) { group in
+                Section {
+                    ForEach(group.sessions) { session in
+                        Button { Task { await chat.open(session) } } label: { sessionRow(session) }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("chat-session-\(session.id)")
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        PhoneFolderLabel(path: group.folder, home: chat.home).textCase(nil)
+                        Spacer()
+                        Text("\(group.sessions.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("chat-project-\(phoneFolderName(group.folder))")
+                }
             }
             if chat.loading { ProgressView().frame(maxWidth: .infinity) }
         }
@@ -71,7 +86,10 @@ public struct PhoneChatView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(s.name).font(.headline).lineLimit(1)
-                    Text(s.folder).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if s.lastActivity > 0 {
+                        Text(phoneAgo(s.lastActivity, now: Date().timeIntervalSince1970 * 1000)).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Text("\(phoneChatStateName(s.state, turns: s.turns)) · \(s.turns) 轮 · 由 \(s.byDevice.isEmpty ? "未知设备" : s.byDevice) 启动")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -114,13 +132,17 @@ public struct PhoneChatView: View {
                     .accessibilityIdentifier("chat-new-runtime")
                 }
                 Section {
-                    TextField("文件夹", text: $chat.newCwd)
-                        .font(.body.monospaced()).autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .accessibilityIdentifier("chat-new-cwd")
-                } header: { Text("在电脑上的哪个文件夹工作") } footer: { Text("电脑上的绝对路径，~ 是用户主目录。") }
+                    NavigationLink {
+                        PhoneFolderPicker(chat: chat, selection: $chat.newCwd)
+                    } label: {
+                        HStack {
+                            Image(systemName: "folder").foregroundStyle(.secondary)
+                            if chat.newCwd.isEmpty { Text("选择文件夹").foregroundStyle(.secondary) }
+                            else { PhoneFolderLabel(path: chat.newCwd, home: chat.home) }
+                        }
+                    }
+                    .accessibilityIdentifier("chat-new-cwd")
+                } header: { Text("在电脑上的哪个文件夹工作") } footer: { Text("最近用过的文件夹在最前面，也可以浏览电脑上的文件夹或直接输入路径。") }
                 Section {
                     TextField("第一条消息（可不填）", text: $chat.newPrompt, axis: .vertical).lineLimit(1...6)
                         .accessibilityIdentifier("chat-new-prompt")
@@ -153,7 +175,11 @@ public struct PhoneChatView: View {
             } message: { Text(chat.error ?? "") }
         }
         .interactiveDismissDisabled(chat.starting)
-        .task { await chat.loadRuntimes() }
+        .task {
+            // The last folder used here, as the desktop does; the home folder the first time.
+            if chat.newCwd == "~", let last = chat.recentFolders.first { chat.newCwd = last }
+            await chat.loadRuntimes()
+        }
     }
 
     // MARK: Conversation
@@ -174,6 +200,7 @@ public struct PhoneChatView: View {
                             ForEach(phoneTurnRows(turn)) { row in
                                 PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
                             }
+                            if turn.status != "running" { PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks)) }
                             PhoneTurnFoot(turn: turn, stopped: turn.n == stopped, readonly: readonly) { Task { await chat.continueStopped() } }
                             if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
                                 PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
@@ -183,14 +210,55 @@ public struct PhoneChatView: View {
                     if chat.log.busy, chat.log.turns.last?.status != "running" {
                         PhoneWorkingRow(label: workingLabel, since: nil)
                     }
+                    ForEach(chat.outgoing) { o in outgoingRow(o) }
                     Color.clear.frame(height: 1).id("chat-bottom")
                 }
                 .padding(16)
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: chat.log.seq) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            .onChange(of: chat.outgoing.count) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
             .safeAreaInset(edge: .bottom, spacing: 0) { footer(session) }
         }
+        .environment(\.phoneSentImages, chat.sentImages)
+        .environment(\.phonePreviewOpen) { path in previewing = PhonePreviewTarget(path: path) }
+        // A link in a reply that names a file the agent wrote opens its preview; web links open as usual.
+        .environment(\.openURL, OpenURLAction { url in
+            if let path = phoneFileTarget(url.absoluteString) { previewing = PhonePreviewTarget(path: path); return .handled }
+            return .systemAction
+        })
+        .sheet(item: $previewing) { target in PhonePreviewSheet(chat: chat, path: target.path) { previewing = nil } }
+    }
+
+    @PhoneViewState private var previewing: PhonePreviewTarget?
+
+    /// A message on its way: "发送中…", or why it did not arrive with 重新发送 / 丢弃.
+    private func outgoingRow(_ o: PhoneOutgoing) -> some View {
+        HStack {
+            Spacer(minLength: 40)
+            VStack(alignment: .trailing, spacing: 4) {
+                PhoneAttachmentStrip(attachments: [], pictures: o.images)
+                if !o.text.isEmpty {
+                    Text(o.text).padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color.blue.opacity(o.state == "failed" ? 0.06 : 0.1), in: RoundedRectangle(cornerRadius: 14))
+                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(o.state == "failed" ? Color.orange.opacity(0.6) : .clear))
+                }
+                if o.state == "failed" {
+                    HStack(spacing: 10) {
+                        Label("未送达：\(phoneOutgoingError(o.error))", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                        Button("重新发送") { Task { await chat.retry(o) } }.font(.caption.weight(.medium)).disabled(!chat.canWrite)
+                            .accessibilityIdentifier("chat-retry")
+                        Button("丢弃") { chat.discard(o) }.font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("chat-discard")
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Text("发送中…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-outgoing")
     }
 
     /// What the agent is doing now, in words.
@@ -295,25 +363,40 @@ public struct PhoneChatView: View {
         }
     }
 
+    @PhoneViewState private var caret = 0
+    @PhoneViewState private var setCaret: Int?
+    @PhoneViewState private var menuActive = 0
+    @PhoneViewState private var mentionFiles: [String] = []
+    @PhoneViewState private var mentionError: String?
+    @PhoneViewState private var pickingPhotos = false
+    @PhoneViewState private var photoItems: [PhotosPickerItem] = []
+    @PhoneViewState private var takingPhoto = false
+
+    /// The `/` or `@` menu the caret is in, if any.
+    private var autocomplete: PhoneAutocomplete? { composing ? nil : phoneAutocompleteAt(chat.draft, caret: caret) }
+
     private var composer: some View {
-        let empty = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let empty = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && chat.attachments.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
-            PhoneChatField(text: $chat.draft, composing: $composing) { Task { await chat.send() } }
-                .frame(minHeight: 36)
-                .accessibilityIdentifier("chat-input")
-                .overlay(alignment: .leading) {
-                    if chat.draft.isEmpty {
-                        Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
-                            .accessibilityHidden(true)
+            if let ac = autocomplete { menu(ac) }
+            if !chat.attachments.isEmpty { draftImages }
+            HStack(alignment: .bottom, spacing: 6) {
+                attachButton
+                PhoneChatField(text: $chat.draft, composing: $composing, caret: $caret, setCaret: $setCaret) { Task { await chat.send() } }
+                    .frame(minHeight: 36)
+                    .accessibilityIdentifier("chat-input")
+                    .overlay(alignment: .leading) {
+                        if chat.draft.isEmpty {
+                            Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).lineLimit(1).allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
                     }
-                }
-            HStack(spacing: 10) {
-                Spacer()
                 if chat.log.busy {
                     Button { Task { await chat.interrupt() } } label: {
                         Image(systemName: "stop.circle.fill").font(.title2)
                     }
                     .tint(.red).disabled(chat.log.state == "interrupting")
+                    .padding(.bottom, 4)
                     .accessibilityLabel("停止").accessibilityIdentifier("chat-stop")
                 }
                 if !chat.log.busy || !empty {
@@ -322,6 +405,7 @@ public struct PhoneChatView: View {
                     }
                     // While the input method is composing, the text is not final: nothing is sent.
                     .disabled(composing || chat.sending || empty)
+                    .padding(.bottom, 4)
                     .contextMenu {
                         if chat.log.busy {
                             Button("停止本轮并立即发送", systemImage: "bolt") { Task { await chat.send(interrupt: true) } }
@@ -331,10 +415,144 @@ public struct PhoneChatView: View {
                     .accessibilityIdentifier("chat-send")
                 }
             }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
+            if let note = chat.attachNote {
+                Text(note).font(.caption).foregroundStyle(.orange).accessibilityIdentifier("chat-attach-note")
+            }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
+        .photosPicker(isPresented: $pickingPhotos, selection: $photoItems, maxSelectionCount: max(1, phoneMaxImages - chat.attachments.count),
+                      matching: .images, preferredItemEncoding: .compatible)
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            photoItems = []
+            Task {
+                for item in items {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else { chat.attachNote = "读不出这张图片"; continue }
+                    if let image = phonePrepareImage(data, name: "photo") { chat.attach(image) } else { chat.attachNote = "读不出这张图片" }
+                }
+            }
+        }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $takingPhoto) {
+            PhoneCameraPicker { data in
+                takingPhoto = false
+                if let data, let image = phonePrepareImage(data, name: "camera") { chat.attach(image) }
+            }
+            .ignoresSafeArea()
+        }
+        #endif
+        .task(id: autocomplete.map { $0.mode + ":" + $0.query }) {
+            menuActive = 0
+            guard let ac = autocomplete, ac.mode == "mention" else { return }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            do { mentionFiles = try await chat.files(ac.query); mentionError = nil }
+            catch { mentionFiles = []; mentionError = error.localizedDescription }
+        }
     }
+
+    /// The + on the left: a photo from the library, or one taken now.
+    private var attachButton: some View {
+        Menu {
+            Button("从相册选择", systemImage: "photo.on.rectangle") { pickingPhotos = true }
+                .accessibilityIdentifier("chat-attach-library")
+            #if os(iOS)
+            Button("拍照", systemImage: "camera") { takingPhoto = true }
+                .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
+                .accessibilityIdentifier("chat-attach-camera")
+            #endif
+        } label: {
+            Image(systemName: "plus").font(.body.weight(.semibold)).frame(width: 30, height: 30)
+                .background(Color.secondary.opacity(0.15), in: Circle())
+        }
+        .disabled(!chat.takesImages || chat.attachments.count >= phoneMaxImages)
+        .padding(.bottom, 3)
+        .accessibilityLabel(chat.takesImages ? "添加图片" : "这个智能体不收图片")
+        .accessibilityIdentifier("chat-attach")
+    }
+
+    /// The images waiting to go with the message.
+    private var draftImages: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(chat.attachments) { img in
+                    ZStack(alignment: .topTrailing) {
+                        if let cg = phoneDecodeImage(img.data, maxPixels: 200) {
+                            Image(decorative: cg, scale: 1).resizable().scaledToFill().frame(width: 56, height: 56)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        Button { chat.detach(img.id) } label: {
+                            Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
+                        }
+                        .buttonStyle(.plain).offset(x: 5, y: -5)
+                        .accessibilityLabel("移除 \(img.name)").accessibilityIdentifier("chat-attachment-remove")
+                    }
+                    .padding(.top, 5).padding(.trailing, 5)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-attachments")
+    }
+
+    /// The `/` commands and skills, or the `@` files, above the composer.
+    @ViewBuilder private func menu(_ ac: PhoneAutocomplete) -> some View {
+        let items: [(id: String, title: String, detail: String?, insert: String, section: String)] = ac.mode == "slash"
+            ? phoneMatchCommands(chat.commands, ac.query).map { c in
+                (c.id, c.kind == "skill" && !c.insert.hasPrefix("/") ? c.insert : "/" + c.name, c.description, c.insert, c.kind == "skill" ? "技能" : "命令")
+            }
+            : mentionFiles.map { f in (f, phoneBaseName(f), f == phoneBaseName(f) ? nil : f, phoneMentionText(f), "文件") }
+        VStack(alignment: .leading, spacing: 0) {
+            if items.isEmpty {
+                Text(ac.mode == "slash" ? (chat.commands.isEmpty ? "这个智能体还没有报告它的命令" : "没有匹配的命令")
+                     : (mentionError.map { "列不出文件：\($0)" } ?? "没有匹配的文件"))
+                    .font(.footnote).foregroundStyle(.secondary).padding(10)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(items.prefix(50).enumerated()), id: \.element.id) { i, item in
+                        if i == 0 || items[i - 1].section != item.section, ac.mode == "slash" {
+                            Text(item.section).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 2)
+                        }
+                        Button { choose(ac, item.insert) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title).font(.subheadline.monospaced()).lineLimit(1)
+                                if let detail = item.detail, !detail.isEmpty {
+                                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(i == menuActive ? Color.accentColor.opacity(0.12) : .clear)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("chat-ac-\(item.title)")
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.2)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(ac.mode == "slash" ? "chat-slash-menu" : "chat-mention-menu")
+    }
+
+    private func choose(_ ac: PhoneAutocomplete, _ insert: String) {
+        let applied = phoneApplyChoice(chat.draft, ac, insert: insert)
+        chat.draft = applied.text
+        caret = applied.caret
+        setCaret = applied.caret
+    }
+}
+
+/// The file a preview sheet shows.
+struct PhonePreviewTarget: Identifiable, Equatable {
+    let path: String
+    var id: String { path }
 }
 
 #if os(iOS)
@@ -345,6 +563,9 @@ import UIKit
 struct PhoneChatField: UIViewRepresentable {
     @Binding var text: String
     @Binding var composing: Bool
+    /// Where the caret is (UTF-16 offset), for the `/` and `@` menus; `setCaret` moves it once.
+    @Binding var caret: Int
+    @Binding var setCaret: Int?
     let submit: () -> Void
 
     func makeUIView(context: Context) -> UITextView {
@@ -364,6 +585,10 @@ struct PhoneChatField: UIViewRepresentable {
         context.coordinator.parent = self
         // Never overwrite the field while the input method holds marked text.
         if view.text != text && view.markedTextRange == nil { view.text = text }
+        if let at = setCaret, view.markedTextRange == nil {
+            view.selectedRange = NSRange(location: min(at, (view.text as NSString).length), length: 0)
+            DispatchQueue.main.async { setCaret = nil }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -385,11 +610,14 @@ struct PhoneChatField: UIViewRepresentable {
             let marked = view.markedTextRange != nil
             if parent.composing != marked { parent.composing = marked }
             if !marked { parent.text = view.text }
+            parent.caret = view.selectedRange.location
         }
 
         func textViewDidChangeSelection(_ view: UITextView) {
             let marked = view.markedTextRange != nil
             if parent.composing != marked { parent.composing = marked }
+            let at = view.selectedRange.location
+            if parent.caret != at { parent.caret = at }
         }
 
         func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
@@ -405,9 +633,35 @@ struct PhoneChatField: UIViewRepresentable {
 struct PhoneChatField: View {
     @Binding var text: String
     @Binding var composing: Bool
+    @Binding var caret: Int
+    @Binding var setCaret: Int?
     let submit: () -> Void
     var body: some View {
         TextField("给智能体的消息", text: $text, axis: .vertical).lineLimit(1...5).onSubmit(submit)
+            .onChange(of: text) { _, t in caret = (t as NSString).length }
+    }
+}
+#endif
+
+#if os(iOS)
+/// The camera, for a photo to send (the photo library goes through PhotosPicker).
+struct PhoneCameraPicker: UIViewControllerRepresentable {
+    let done: (Data?) -> Void
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(done) }
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let done: (Data?) -> Void
+        init(_ done: @escaping (Data?) -> Void) { self.done = done }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            done((info[.originalImage] as? UIImage)?.jpegData(compressionQuality: 0.9))
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { done(nil) }
     }
 }
 #endif

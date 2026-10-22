@@ -124,6 +124,10 @@ public actor PhoneClient {
         }
         try await lease.controller.chatSend(subscription: lease.nativeID, commandJson: JSONValue.object(command).text)
     }
+    /// The bytes of a file a chat session is about, for its preview (the host's `chat_file`).
+    public func previewFile(host: String, session: String, path: String) async throws -> Data {
+        try await ready().previewFile(host: host, session: session, path: path)
+    }
     public func stop(_ id: UInt64) async {
         guard let lease = subscriptions.removeValue(forKey: id) else { return }
         await lease.controller.stopSubscription(subscription: lease.nativeID)
