@@ -2,12 +2,8 @@
 // then a steer while it works. Same hooks as desktop-chat-e2e.js.
 (async () => {
   const CFG = __CONFIG__;
-  // The test window is off screen, so the page is hidden and requestAnimationFrame never fires; the panel
-  // folds incoming events once per frame. A timer stands in for frames while hidden.
-  if (document.visibilityState === "hidden") {
-    window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
-    window.cancelAnimationFrame = (id) => clearTimeout(id);
-  }
+  // The test window is off screen (the page is hidden, requestAnimationFrame never fires); the app
+  // folds events on a timer then, which these runs rely on.
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
   const say = (level, message) => invoke("log_from_page", { level, message });
   let failures = 0;

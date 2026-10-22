@@ -388,17 +388,21 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 ### 发现
 
-1. **（真问题，桌面端，未改）** 面板按主机名在 localStorage 记住上次的会话（`ai-remote.chat.last`）；该会话在被控端已不存在
-   （被控端重启、会话结束清理后）时，面板只显示"no chat session '…' on this host"和一个发不出去的输入框，不会回到会话列表。
-   应在 `chat_attach` 报 no chat session 时清掉记忆并回到选择页。
-2. 面板用 `requestAnimationFrame` 每帧合并一次事件；窗口不可见（在别的 Space、最小化、屏幕外）时 rAF 不触发，事件先积在
-   内存里，窗口可见后一次显示，不丢。测试窗口在屏幕外，所以两个脚本在页面 hidden 时把 rAF 换成 16 ms 定时器；不换的话
-   结果取决于测试时屏幕上是什么（同一脚本第一次碰巧通过，第二次 Codex 会话一直是空的）。运行中计时器也显示"0 ms"，
-   推测同因，未查。
+1. **（已修，678685a）** 面板按主机名在 localStorage 记住上次的会话（`ai-remote.chat.last`）；该会话在被控端已不存在时，
+   原来只显示"no chat session '…' on this host"和一个发不出去的输入框。678685a（`sessionGone()`、提示 `hc_session_gone`）
+   之后回到会话列表并提示。e2e 第 0 步复现它：在 localStorage 写一个不存在的会话再切回对话标签。修之前的包这一步失败；
+   在 `feat/host-chat` b68fac3 上 5 次都过。
+2. **（已修，678685a）** 面板原来只用 `requestAnimationFrame` 合并事件，窗口不可见（别的 Space、最小化、屏幕外）时
+   rAF 不触发，事件积在内存里不显示；运行计时显示"0 ms"。678685a 加了 100 ms 定时器兜底、计时从轮次开始取当前时间。
+   脚本里原来的 rAF 替换已去掉；b68fac3 上 5 次运行里 4 次全过，运行中计时 2.5 s 后显示"2.1 s"。
 3. debug 包与安装版同一个 bundle id（`io.github.jia-ss.ai-remote`），共用 WebKit 存储；脚本每次用新的主机名
    `e2e-<pid>`，结束时删掉自己写的 `ai-remote.chat.*` 条目。
 4. 真实 Claude 一轮要带约 129k tokens 的上下文（本机全局 Claude 配置），慢且贵；按顺序的命令会被折叠，检查命令数要看 run
    的句子，不能搜 `echo N`。
+
+5. **（未查）对话面板会被整体重新挂载**：脚本每 50 ms 看一次 `.nt-chat` 是否换了元素，每次运行 2~4 次，侧栏一直在
+   （不是全屏切换）。重新挂载会重连、丢掉输入框状态（插话 / 排队芯片回默认、草稿清空），工作行和队列在重放前短暂消失。
+   b68fac3 上 5 次里 1 次因此失败（计时和插话芯片两项）；之前的 8 次里 3 次在插话 / 排队步骤失败。
 
 ### 没做
 

@@ -4,12 +4,8 @@
 // through the smoke hook (`log_from_page('shot', name)`).
 (async () => {
   const CFG = __CONFIG__;
-  // The test window is off screen, so the page is hidden and requestAnimationFrame never fires; the panel
-  // folds incoming events once per frame. A timer stands in for frames while hidden.
-  if (document.visibilityState === "hidden") {
-    window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
-    window.cancelAnimationFrame = (id) => clearTimeout(id);
-  }
+  // The test window is off screen (the page is hidden, requestAnimationFrame never fires); the app
+  // folds events on a timer then, which these runs rely on.
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
   const say = (level, message) => invoke("log_from_page", { level, message });
   let failures = 0;
@@ -54,7 +50,30 @@
   }
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
 
+  // Diagnostics: say when the chat panel is replaced (a remount loses the composer's state).
+  let panel = null, railGone = 0;
+  setInterval(() => {
+    const now = $(".nt-chat");
+    if (!$(".nt-rail")) railGone++;
+    if (panel && now && now !== panel) say("e2e", `     (note: the chat panel was remounted; rail missing in ${railGone} polls, fullscreen ${!!document.fullscreenElement}, ${innerWidth}x${innerHeight})`);
+    if (now) panel = now;
+  }, 50);
   try {
+    // 0. A remembered session that is gone from the host (it restarted): the panel goes back to the
+    // sessions and says so, instead of staying on an error with a composer that cannot send.
+    await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
+    const tabs = () => $$(".nt-rail .seg [role=tab]");
+    localStorage.setItem("ai-remote.chat.last", JSON.stringify({ ...JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}"), [CFG.host]: "c0ffee0000000" }));
+    tabs()[0].click();
+    await sleep(300);
+    tabs()[1].click();
+    const back = await until("back to the sessions", () => $(".nt-chat-start") && $(".nt-chat-picker .nt-chat-note.warn"), 20000);
+    await check("a remembered session that is gone returns to the sessions with a note",
+      !!back && /不在这台电脑上|no longer on the computer/.test(back.textContent),
+      $(".nt-chat-status, .nt-chat-note")?.textContent);
+    await check("and is forgotten", !(JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host]));
+    await shot("00-gone");
+
     // 1. The start form: pick the rich stand-in, a folder and a first message.
     const form = await until("start form", () => $(".nt-chat-start"), 30000);
     await check("the chat panel offers to start an agent", !!form);
@@ -101,6 +120,9 @@
     const before = turns().length;
     await send("SLOW job");
     await check("a slow turn runs, with stop", !!(await until("running", running)));
+    await sleep(2500);
+    const tm = $(".nt-working .tm")?.textContent ?? "";
+    await check("the working line's timer counts while hidden", /^\d+(\.\d+)? s$/.test(tm.trim()) && parseFloat(tm) >= 1, tm);
     await check("an agent that can steer defaults to steering", !!$(".nt-compose .chip.steer"), $(".nt-compose .chip")?.className);
     await send("change of plan");
     await check("the steer joins the running turn, marked", !!(await until("steer row", () => $$(".nt-user.steer", lastTurn()).some((u) => u.textContent.includes("change of plan")))));
