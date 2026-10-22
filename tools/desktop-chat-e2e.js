@@ -50,13 +50,17 @@
   }
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
 
-  // Diagnostics: say when the chat panel is replaced (a remount loses the composer's state).
-  let panel = null, railGone = 0;
+  // Diagnostics: say when the panel of the same session is replaced (a remount loses the composer's
+  // state). Switching tabs or sessions replaces it on purpose and is not counted.
+  let panel = null, panelKey = "";
+  const sessionKey = () => `${$(".nt-chat-hd .cwd")?.textContent ?? ""}|${$(".nt-user")?.textContent ?? ""}`;
   setInterval(() => {
     const now = $(".nt-chat");
-    if (!$(".nt-rail")) railGone++;
-    if (panel && now && now !== panel) say("e2e", `     (note: the chat panel was remounted; rail missing in ${railGone} polls, fullscreen ${!!document.fullscreenElement}, ${innerWidth}x${innerHeight})`);
-    if (now) panel = now;
+    if (!now) { panel = null; return; }
+    const key = sessionKey();
+    if (panel && now !== panel && key === panelKey && key !== "|") say("e2e", "     (note: the chat panel of the same session was remounted)");
+    panel = now;
+    panelKey = key;
   }, 50);
   try {
     // 0. A remembered session that is gone from the host (it restarted): the panel goes back to the
