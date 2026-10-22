@@ -116,6 +116,18 @@
     esc();
     await until("closed", () => !dialog(), 3000);
 
+    // Diagnosis: when a preview dialog goes away, say whether the chat panel was replaced and what
+    // keys came just before.
+    const keys = [];
+    window.addEventListener("keydown", (e) => keys.push(`${Math.round(performance.now())}:${e.key}:${e.isTrusted}`), true);
+    let panel = $(".nt-chat");
+    new MutationObserver(() => {
+      if (window.__pvOpen && !$(".nt-pv-dlg")) {
+        window.__pvOpen = false;
+        say("e2e", `     (dialog gone at ${Math.round(performance.now())}; panel replaced: ${$(".nt-chat") !== panel}; keys: ${keys.slice(-3).join(" ")}; active: ${document.activeElement?.className})`);
+        panel = $(".nt-chat");
+      } else if ($(".nt-pv-dlg")) window.__pvOpen = true;
+    }).observe(document.body, { childList: true, subtree: true });
     // HTML: a sandboxed frame without scripts; nothing from the network.
     const html = await open("HTML", () => $$(".nt-pv-btn", turn).find((b) => b.getAttribute("aria-label").includes("report.html")).click(),
       () => $(".nt-pv-frame"));
@@ -136,6 +148,23 @@
     await shot("p2-html");
     $$(".nt-pv-hd .seg button")[1].click();
     await check("the source view shows the file's text", !!(await until("source", () => $(".nt-pv-src")?.textContent.includes('<h1 id="h">'), 3000)));
+    // Its scripts run only in a window of its own, which cannot reach the app.
+    $(".nt-pv-run").click();
+    const served = () => invoke("preview_server_requests");
+    const hits = async (name) => (await served()).some((p) => p.endsWith(`/${name}`));
+    let ran = false;
+    for (let i = 0; i < 100 && !ran; i++) {
+      ran = await hits("ran");
+      if (!ran) await sleep(100);
+    }
+    await check("Run scripts opens the page with its scripts running", ran, (await served()).join(" "));
+    await sleep(2500);
+    const seen = (await served()).map((p) => decodeURIComponent(p.split("/").pop()));
+    const has = (m) => seen.some((s) => s === m || s.startsWith(`${m}?`));
+    await check("the page's window cannot call the app (IPC refused, absent or throwing)",
+      (has("ipc-refused") || has("ipc-missing") || has("ipc-threw")) && !has("ipc-allowed"), seen.join(" "));
+    await check("the page cannot fetch from the network", (has("fetch-blocked") || has("fetch-threw")) && !has("fetch-ok"), seen.join(" "));
+    await check("the dialog shows no error from opening it", !$(".nt-pv-note.err"), $(".nt-pv-note.err")?.textContent);
     esc();
     await check("Esc closes the preview", !!(await until("closed", () => !dialog(), 3000)));
 
@@ -186,7 +215,13 @@
       await sleep(100);
       const n = bdi.textContent.length, first = glyph(0), last = glyph(n - 1), box = pathBox.getBoundingClientRect();
       cut = `first ${Math.round(first.left)} last ${Math.round(last.left)}..${Math.round(last.right)} box ${Math.round(box.left)}..${Math.round(box.right)}`;
-      cut = first.left < box.left - 1 && last.right <= box.right + 1 && last.left >= box.left ? `ok ${cut}` : cut;
+      // Chromium puts the cut-off glyphs left of the box; WebKit reports the first glyph just after the
+      // ellipsis. Either way: the text is wider than the box, the cut is on the left (rtl box) and
+      // the name's last glyph is fully in view.
+      const wider = pathBox.scrollWidth > pathBox.clientWidth + 1 || first.left < box.left - 1;
+      cut += ` scroll ${pathBox.scrollWidth}/${pathBox.clientWidth}`;
+      cut = wider && getComputedStyle(pathBox).direction === "rtl" && last.right <= box.right + 1 && last.left >= box.left ? `ok ${cut}` : cut;
+      await shot("p5-narrow-path");
       pathBox.style.maxWidth = "";
     }
     await check("a long path is cut from the left, the name stays", cut.startsWith("ok"), cut);

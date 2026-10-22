@@ -104,7 +104,20 @@ def rich():
          "usage": {"input_tokens": 1200, "cache_read_input_tokens": 40000, "output_tokens": 600},
          "modelUsage": {"claude-fake": {"contextWindow": 200000}}})
 PAGE = """<!doctype html><html><head><title>Preview page</title>
-<script>parent.postMessage("script ran", "*"); document.title = "script ran";</script></head>
+<script>parent.postMessage("script ran", "*"); document.title = "script ran";
+// Run with its scripts (its own window), each outcome asks the preview server for a path.
+var mark = function (p) { new Image().src = p; };
+mark("ran");
+var why = function (e) { return encodeURIComponent(String(e && e.message || e).slice(0, 80)); };
+try {
+  var ipc = window.__TAURI_INTERNALS__;
+  if (!ipc) mark("ipc-missing");
+  else ipc.invoke("agent_status").then(function () { mark("ipc-allowed"); }, function (e) { mark("ipc-refused?" + why(e)); });
+} catch (e) { mark("ipc-threw?" + why(e)); }
+try {
+  fetch("https://example.com/").then(function () { mark("fetch-ok"); }, function () { mark("fetch-blocked"); });
+} catch (e) { mark("fetch-threw?" + why(e)); }
+</script></head>
 <body style="font:15px system-ui;margin:24px"><h1 id="h">Quarterly report</h1><p>Static text renders.</p>
 <img src="https://example.com/beacon.png" alt="remote image"></body></html>"""
 NOTES = "# Notes\n\n| Quarter | Pages |\n| --- | ---: |\n| Q1 | 11 |\n\n- **bold** point\n"

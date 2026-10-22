@@ -9,6 +9,8 @@ export interface PreviewApi {
   open: (path: string) => void;
   /** The file's bytes from the host, fetched once per conversation unless `fresh`. */
   load: (path: string, fresh?: boolean) => Promise<Uint8Array>;
+  /** Opens an HTML file with its scripts running, in a window of its own (fetched again). */
+  runScripts: (path: string) => Promise<void>;
 }
 
 export const PreviewContext = createContext<PreviewApi | null>(null);

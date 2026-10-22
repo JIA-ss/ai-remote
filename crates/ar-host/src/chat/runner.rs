@@ -34,6 +34,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -429,6 +430,13 @@ impl RunnerLink {
         self.request(&c, json!({"op": "runtimes", "custom": custom, "refresh": refresh}), LOOKUP).await
     }
 
+    /// The bytes of a file for a preview, read by the runner with the user's rights.
+    pub async fn read(&self, path: &Path) -> Result<Vec<u8>> {
+        let c = self.ensure().await?;
+        let v = self.request(&c, json!({"op": "read", "path": path.display().to_string()}), LOOKUP).await?;
+        BASE64.decode(v["data"].as_str().context("the runner sent no data")?).context("the runner sent bad data")
+    }
+
     /// Checks that `runtime` can start in `cwd` (expanded and checked as the user).
     pub async fn prepare(&self, runtime: &str, custom: &[CustomAgent], cwd: &str) -> Result<Prepared> {
         let c = self.ensure().await?;
@@ -665,6 +673,8 @@ struct Req {
     upto: u64,
     #[serde(default)]
     cmd: Option<Value>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 /// What a connection's end means for the runner.
@@ -761,6 +771,14 @@ impl Runner {
                 }))
             }
             "launch" => self.launch(req).await,
+            // A file for a preview, read with the user's rights (see `chat::preview`).
+            "read" => {
+                let path = PathBuf::from(req.path.unwrap_or_default());
+                let bytes = tokio::task::spawn_blocking(move || super::preview::read_file(&path))
+                    .await
+                    .map_err(|e| anyhow!("file worker failed: {e}"))??;
+                Ok(json!({"data": BASE64.encode(bytes)}))
+            }
             "lives" => {
                 let lives: Vec<LiveInfo> = self.lives.lock().unwrap().iter().map(|(k, l)| l.info(k)).collect();
                 Ok(serde_json::to_value(lives)?)

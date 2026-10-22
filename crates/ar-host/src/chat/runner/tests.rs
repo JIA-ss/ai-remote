@@ -347,6 +347,24 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_preview_is_read_by_the_runner() {
+        let f = fixture();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
+        let found = chat.previewable("report.html").unwrap();
+        assert_eq!(m.read_preview(&found.path).await.unwrap(), b"<h1>hi</h1>");
+        // The runner checks again: a file that is gone is not read.
+        std::fs::remove_file(f.work.join("report.html")).unwrap();
+        assert!(m.read_preview(&found.path).await.is_err());
+        m.close().await;
+        drop((chat, m));
+        rt.shutdown_background();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_runner_that_is_gone_leaves_a_parked_session() {
         let f = fixture();
         let spawned = Arc::new(AtomicUsize::new(0));

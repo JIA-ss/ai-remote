@@ -105,6 +105,8 @@ export interface Backend {
    * preview (`path` as the session names it; the host checks the session is about it).
    */
   previewFile(host: string, session: string, path: string): Promise<Uint8Array>;
+  /** Opens an HTML file of the session with its scripts running, in a window of its own that cannot reach the app. */
+  openPreviewWindow(host: string, session: string, path: string): Promise<void>;
   /** Follows a host's activity; returns a function that stops it. */
   subscribe(host: string, onEvent: (e: FeedEvent) => void): Promise<() => void>;
   pending(host: string): Promise<PendingApproval[]>;
@@ -523,6 +525,9 @@ const tauriBackend: Backend = {
     channel.onmessage = ([done, total]) => onProgress(done ?? 0, total ?? 0);
     const v = unwrap(await commands.pullFile(host, remote, null, channel)) as { local?: string; bytes?: number; seconds?: number };
     return { local: v.local, bytes: Number(v.bytes ?? 0), seconds: Number(v.seconds ?? 0) };
+  },
+  async openPreviewWindow(host, session, path) {
+    unwrap(await commands.openPreviewWindow(host, session, path));
   },
   async previewFile(host, session, path) {
     const raw = unwrap(await commands.previewFile(host, session, path)) as unknown;

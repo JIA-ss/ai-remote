@@ -11,6 +11,12 @@
 //!   the agent's own events of the session (a tool call's location, a diff, the agent's text);
 //! - the file (after links are followed) has a previewable extension ([`KINDS`]);
 //! - it is at most [`MAX_PREVIEW`] bytes.
+//!
+//! The bytes are read when the ticket is issued and kept with it, so the file cannot be swapped
+//! for another (a link to something else) before the controller fetches it. They are read with
+//! the rights of the user the agent runs as: by this process when it is that user, and by the
+//! agent runner in the user's session when this host runs as SYSTEM (Windows service mode), so a
+//! preview never reads a file the agent itself could not.
 
 use std::{
     fs::File,
@@ -21,7 +27,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::{Chat, detect};
+use super::{Backend, Chat, ChatManager, detect};
 
 /// Largest file a preview reads.
 pub const MAX_PREVIEW: u64 = 16 * 1024 * 1024;
@@ -53,6 +59,46 @@ pub struct Previewable {
     pub path: PathBuf,
     pub size: u64,
     pub kind: &'static str,
+}
+
+/// The bytes of `expected` (a path [`Chat::previewable`] resolved), read by whoever calls this:
+/// the file must still resolve to the same path, be a previewable kind and at most
+/// [`MAX_PREVIEW`] bytes.
+pub fn read_file(expected: &Path) -> Result<Vec<u8>> {
+    let resolved = dunce::canonicalize(expected).with_context(|| format!("cannot read {}", expected.display()))?;
+    if resolved != expected {
+        bail!("{} changed while it was checked; ask again", expected.display());
+    }
+    if kind_of(&resolved).is_none() {
+        bail!("{} cannot be previewed", resolved.display());
+    }
+    let file = File::open(&resolved).with_context(|| format!("cannot read {}", resolved.display()))?;
+    let md = file.metadata()?;
+    if !md.is_file() {
+        bail!("{} is not a file", resolved.display());
+    }
+    let mut bytes = Vec::with_capacity(md.len().min(MAX_PREVIEW) as usize);
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_PREVIEW + 1), &mut bytes)
+        .with_context(|| format!("cannot read {}", resolved.display()))?;
+    if bytes.len() as u64 > MAX_PREVIEW {
+        bail!("{} grew past {} MiB while it was read", resolved.display(), MAX_PREVIEW / 1048576);
+    }
+    Ok(bytes)
+}
+
+impl ChatManager {
+    /// The bytes of a file [`Chat::previewable`] resolved, read as the user the agents run as.
+    pub async fn read_preview(&self, path: &Path) -> Result<Vec<u8>> {
+        match &self.0.backend {
+            Backend::Local(_) => {
+                let p = path.to_path_buf();
+                tokio::task::spawn_blocking(move || read_file(&p))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("file worker failed: {e}"))?
+            }
+            Backend::Runner(link) => link.read(path).await,
+        }
+    }
 }
 
 impl Chat {
@@ -148,6 +194,20 @@ mod tests {
         assert_eq!(kind_of(Path::new("x.svg")), Some("image"));
         assert_eq!(kind_of(Path::new("id_rsa")), None);
         assert_eq!(kind_of(Path::new("a.txt")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_link_after_the_check_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("page.html");
+        std::fs::write(&page, "<p>ok</p>").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "secret").unwrap();
+        let checked = dunce::canonicalize(&page).unwrap();
+        assert_eq!(read_file(&checked).unwrap(), b"<p>ok</p>");
+        std::fs::remove_file(&page).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("secret.txt"), &page).unwrap();
+        assert!(read_file(&checked).unwrap_err().to_string().contains("changed while it was checked"));
     }
 
     #[test]

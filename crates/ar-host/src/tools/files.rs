@@ -64,7 +64,23 @@ pub enum Direction {
     Push { size: u64, sha256: String, overwrite: bool },
     /// Host to controller.
     Pull,
+    /// Host to controller: bytes read when the ticket was issued (a chat preview), not the file
+    /// as it is when the ticket is redeemed.
+    Bytes(Held),
 }
+
+/// Bytes kept with a ticket; shown by length only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Held(pub Arc<Vec<u8>>);
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} bytes", self.0.len())
+    }
+}
+
+/// Most bytes held by outstanding tickets at once; older ones are dropped first.
+const MAX_HELD: usize = 128 * 1024 * 1024;
 
 /// One approved transfer, waiting for its bytes.
 #[derive(Debug, Clone)]
@@ -103,6 +119,15 @@ impl Transfers {
         };
         let mut tickets = self.0.lock().unwrap();
         tickets.retain(|_, t| t.issued.elapsed() < TICKET_TTL);
+        let held = |t: &Ticket| if let Direction::Bytes(b) = &t.direction { b.0.len() } else { 0 };
+        let incoming = held(&ticket);
+        while tickets.values().map(held).sum::<usize>() + incoming > MAX_HELD {
+            let oldest = tickets.values().filter(|t| held(t) > 0).min_by_key(|t| t.issued).map(|t| t.id.clone());
+            match oldest {
+                Some(o) => tickets.remove(&o),
+                None => break,
+            };
+        }
         while tickets.len() >= MAX_TICKETS {
             let oldest = tickets.values().min_by_key(|t| t.issued).map(|t| t.id.clone());
             match oldest {
