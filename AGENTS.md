@@ -17,6 +17,45 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 合并进 main：提交身份统一与一次集成（2026-10-22，分支 `integrate/2026-10-22`）
+
+**提交身份**：仓库里只用一个身份 `JIA-ss <627723154@qq.com>`（作者和提交者都是）。2026-10-22 发现 10-20 起的提交带着
+机器全局 gitconfig 里的工作身份，于是改写了全部历史：树和时间不变，`Co-Authored-By: Claude` 尾注去掉，提交说明里引用的
+哈希换成新的；GitHub 上全部分支强推，Mac 和 Windows 开发机的本地分支原子地挪到新历史，旧对象已清掉。
+- 两台机器的 `.git/config` 都设了 `user.name` / `user.email`（全局配置不动）。提交前 `git var GIT_AUTHOR_IDENT` 必须是上面的身份。
+- **不要再用 2026-10-22 15:20 之前的提交哈希**（旧哈希在本仓库已不存在）；不要把改写前的提交推回来。
+- 在 GitHub 网页上合并 PR 会产生提交者为 GitHub 的合并提交，作者是账号的默认提交邮箱：要保持单一身份就在本地合并后推送，
+  或者确认网页合并用的邮箱。
+- 已合并 PR（#1~#19）的页面上还看得到改写前的提交（GitHub 的 `refs/pull` 保留着），只有 GitHub Support 能删。
+
+**这次合进 main 的**：PR #16（macOS 登录窗口交接）、#14（托盘与"本设备"页）、#23（iPhone 网络设置）、
+`fix/fullscreen-controls`（全屏接管时唤不出菜单，原来是主检出里没提交的改动）、#20（被控端编程智能体）及其上的
+`claude/chat-input-8764a1`（输入侧补齐）、#22（iPhone 对话）、#21（服务模式下用户会话里的 chat-runner）。
+冲突：`AGENTS.md`（各自新增的章节，全部保留）、`PhonePairing.swift`（#16 的输入框焦点和 #23 的网络页开关并存）、
+`PhoneRootView.swift`（网络页和对话页两个 sheet 并存）、#21 与 `feat/host-chat` 的 8 个文件。
+**集成时补的**（各自分支上都没有，合在一起才需要）：
+- `control.rs`：#14 要求每个控制请求都在 `HostRequest::OPS` / `op()` 里有线名（`status` 报给桌面端），#20 新增的 `chat`、
+  `set_chat_enabled` 没登记，合起来编不过。
+- #21 的 runner 是照 51 个提交之前的 `feat/host-chat` 写的：管道两端补了图片（prompt 带 `images`）和插话（`steer` 命令）；
+  `NOTICE_WORDS` 补上 `compacted` / `model` / `no_images` / `other` / `steer_queued`（runner 传回的通知码不在表里会变成
+  `other`）；"能不能收图片 / 插话"改由 `runtimes::caps_of` 从描述表得出，不用找程序，runner 模式和接回的智能体都适用。
+- **安全**：`@` 文件列表原来在会话目录里跑 `git ls-files`。服务模式的被控端是 SYSTEM，而仓库配置（例如 `core.fsmonitor`）
+  能让 git 执行程序，等于让用户以 SYSTEM 身份执行任意程序。runner 模式下改为只遍历目录（`FileCache::new(false)`）。
+- runner 测试里的替身 Claude 把 `initialize` 当成一轮，第一轮提前结束；改为应答 `control_response`，并新增
+  `an_image_crosses_the_pipe_to_an_agent_in_the_runner`。
+
+**没合的**：`claude/eloquent-torvalds-a5b249`（iPhone 对话跟进桌面端，和 #22 的 `ccc95de` / `531eaea` 是同一件事的两次实现，
+而且还带着用户已经否掉的插话芯片；以 #22 为准，分支留在本地）、`claude/agy-adapter-parked`（Antigravity 按用户意思暂不接）。
+`test/*`、`tmp/*`、`backup/desktop-chat-e2e-6cb5281` 是一次性的测试 / 打包 / 备份分支，内容已在别处，已删除。
+`CLAUDE.md` 和 `docs/research-host-agent-chat.zh-CN.md` 留在本地不入库（后者含本机路径）。
+
+**实测（本机 macOS，集成分支）**：`cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -D warnings` 无警告；
+`cargo test --workspace --locked` 397 过 0 失败 8 忽略；`cargo test -p ar-host --lib chat` 58 过（含新增的 runner 图片测试）；
+`node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
+**未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
+其中经 runner 的插话只有代码没有端到端测试，图片只在 Mac 上用 Unix 套接字测过（Windows 命名管道没测）；全屏修复在真实 App
+原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
