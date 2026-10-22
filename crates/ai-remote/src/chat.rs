@@ -57,6 +57,25 @@ pub enum ChatCommand {
         /// otherwise, or with no turn running, it is queued as usual.
         #[arg(long)]
         steer: bool,
+        /// An image to send with it (PNG, JPEG, GIF or WebP, at most 3.75 MiB; up to 4).
+        #[arg(long = "image", value_name = "FILE")]
+        images: Vec<std::path::PathBuf>,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// The slash commands and skills a session's agent offers (what `/` lists in the apps).
+    Commands {
+        session: String,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Files in a session's folder whose path contains every word of QUERY (what `@` lists).
+    Files {
+        session: String,
+        #[arg(default_value = "")]
+        query: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
         #[command(flatten)]
         target: Target,
     },
@@ -186,18 +205,72 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             chat.send(json!({"bye": {}})).await;
             finish_turn(&end, json_out);
         }
-        ChatCommand::Send { session, text, wait, steer, target } => {
+        ChatCommand::Send { session, text, wait, steer, images, target } => {
+            let attachments = images.iter().map(|p| image_attachment(p)).collect::<Result<Vec<_>>>()?;
             let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
             let since = issued["seq"].as_u64().unwrap_or(0);
             let mut chat = Conversation::open(profile, &target, &issued, since).await?;
             let mode = if steer { "steer" } else { "queue" };
-            chat.send(json!({"input": {"text": text, "mode": mode}})).await;
+            let id = format!("cli{}", std::process::id());
+            chat.send(json!({"input": {"id": id, "text": text, "mode": mode, "attachments": attachments}})).await;
+            // The host answers with an ack, or says why it refused the message.
+            if let Some(why) = chat.refusal(&id).await? {
+                eprintln!("the host refused the message: {why}");
+                exit(2);
+            }
             if wait {
                 let end = chat.until_turn_end(json_out).await?;
                 chat.send(json!({"bye": {}})).await;
                 finish_turn(&end, json_out);
             } else {
                 chat.send(json!({"bye": {}})).await;
+            }
+        }
+        ChatCommand::Commands { session, target } => {
+            let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
+            let since = issued["seq"].as_u64().unwrap_or(0);
+            let mut chat = Conversation::open(profile, &target, &issued, since).await?;
+            let commands = chat.hello["commands"].clone();
+            chat.send(json!({"bye": {}})).await;
+            if json_out {
+                print_json(&json!({"commands": commands, "images": chat.hello["images"]}));
+            } else {
+                for c in commands.as_array().into_iter().flatten() {
+                    let hint = c["hint"].as_str().map(|h| format!(" {h}")).unwrap_or_default();
+                    let kind = if c["kind"] == "skill" { " (skill)" } else { "" };
+                    println!(
+                        "{}{hint}{kind}  {}",
+                        c["insert"].as_str().unwrap_or("?"),
+                        c["description"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
+        ChatCommand::Files { session, query, limit, target } => {
+            let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
+            let since = issued["seq"].as_u64().unwrap_or(0);
+            let mut chat = Conversation::open(profile, &target, &issued, since).await?;
+            chat.send(json!({"files": {"rid": 1, "query": query, "limit": limit}})).await;
+            let reply = loop {
+                let Some(v) = chat.next().await? else { return Err(anyhow!("the host ended the chat")) };
+                if v["rid"] == 1 {
+                    break v;
+                }
+            };
+            chat.send(json!({"bye": {}})).await;
+            if reply["t"] == "error" {
+                eprintln!("{}", reply["text"].as_str().unwrap_or("refused"));
+                exit(2);
+            }
+            if json_out {
+                print_json(&reply);
+            } else {
+                for f in reply["files"].as_array().into_iter().flatten() {
+                    println!("{}", f.as_str().unwrap_or(""));
+                }
+                if reply["truncated"] == true {
+                    eprintln!("(more match; narrow the query)");
+                }
             }
         }
         ChatCommand::Interrupt { session, target } => {
@@ -262,6 +335,22 @@ fn print_runtimes(v: &Value) {
     }
 }
 
+/// An image file as a chat attachment (its type from its extension).
+fn image_attachment(path: &std::path::Path) -> Result<Value> {
+    use base64::Engine as _;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return Err(anyhow!("{} is not a PNG, JPEG, GIF or WebP image", path.display())),
+    };
+    let bytes = std::fs::read(path).map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(json!({"name": name, "mime": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}))
+}
+
 fn finish_turn(end: &Value, json_out: bool) {
     if json_out {
         return;
@@ -282,6 +371,8 @@ struct Conversation {
     reader: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
     writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     printer: Printer,
+    /// Lines read ahead while waiting for an answer.
+    pending: std::collections::VecDeque<Value>,
 }
 
 impl Conversation {
@@ -295,7 +386,13 @@ impl Conversation {
         let (stream, buffered) = conn.into_raw();
         let (read, write) = tokio::io::split(stream);
         let read: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(std::io::Cursor::new(buffered).chain(read));
-        Ok(Self { hello, reader: BufReader::new(read), writer: Box::new(write), printer: Printer::default() })
+        Ok(Self {
+            hello,
+            reader: BufReader::new(read),
+            writer: Box::new(write),
+            printer: Printer::default(),
+            pending: Default::default(),
+        })
     }
 
     fn session(&self) -> &str {
@@ -308,8 +405,29 @@ impl Conversation {
         let _ = self.writer.flush().await;
     }
 
+    /// Waits for the host's answer to the message `id`: `None` once it acknowledged it, the reason
+    /// when it refused it. Events meanwhile are kept for the caller (hosts that send no acks: none).
+    async fn refusal(&mut self, id: &str) -> Result<Option<String>> {
+        if self.hello["acks"] != true {
+            return Ok(None);
+        }
+        loop {
+            let Some(v) = self.next().await? else { return Err(anyhow!("the host ended the chat")) };
+            if v["input_id"] == id {
+                return Ok(match v["t"].as_str() {
+                    Some("ack") => None,
+                    _ => Some(v["text"].as_str().unwrap_or("refused").to_string()),
+                });
+            }
+            self.pending.push_back(v);
+        }
+    }
+
     /// The next event line, or `None` when the channel ended.
     async fn next(&mut self) -> Result<Option<Value>> {
+        if let Some(v) = self.pending.pop_front() {
+            return Ok(Some(v));
+        }
         let mut line = String::new();
         if self.reader.read_line(&mut line).await? == 0 {
             return Ok(None);
@@ -415,7 +533,13 @@ impl Printer {
             "user" => {
                 close(self, &mut out);
                 let steer = if ev["steer"] == true { "(steer) " } else { "" };
-                println!("\n> {steer}{}", ev["text"].as_str().unwrap_or(""));
+                let images: String = ev["attachments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|a| format!(" [image: {}]", a["name"].as_str().unwrap_or("?")))
+                    .collect();
+                println!("\n> {steer}{}{images}", ev["text"].as_str().unwrap_or(""));
             }
             "message" => {
                 if self.thinking {

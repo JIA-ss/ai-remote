@@ -14,7 +14,10 @@ task; it uses the agent's own sign-in and spends a little of its quota. An agent
 told to count to 20, one shell command per number, and steered to stop at 5 once it has started.
 """
 import argparse
+import base64
 import json
+import struct
+import zlib
 import os
 import re
 import subprocess
@@ -35,6 +38,14 @@ parser.add_argument("--quiet", action="store_true",
 options = parser.parse_args()
 
 failures = []
+
+
+def png(rgb, w=64, h=64):
+    """A solid-colour PNG."""
+    rows = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+    chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 def check(name, ok, detail=""):
@@ -93,6 +104,18 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     base = Path(tmp)
     host_home, ctl_home, work = base / "host", base / "controller", base / "work"
     work.mkdir()
+    (work / "src").mkdir()
+    (work / "src" / "main.rs").write_text("fn main() {}\n")
+    (work / "docs").mkdir()
+    (work / "docs" / "release notes.md").write_text("# notes\n")
+    (work / "node_modules" / "x").mkdir(parents=True)
+    (work / "node_modules" / "x" / "main.js").write_text("")
+    (work / "red.png").write_bytes(png((220, 20, 20)))
+    # A skill in the folder, for Codex's `/` list ($name) and a real run of it.
+    (work / ".codex" / "skills" / "pong-skill").mkdir(parents=True)
+    (work / ".codex" / "skills" / "pong-skill" / "SKILL.md").write_text(
+        "---\nname: pong-skill\ndescription: Answers SKILLPONG. Use when asked to run the pong skill.\n---\n\n"
+        "When this skill is used, reply with exactly the word SKILLPONG and nothing else.\n")
     (host_home / "host").mkdir(parents=True)
     quiet = '[network]\nquiet = true\n\n' if options.quiet else ""
     (host_home / "host" / "ai-remote.toml").write_text(
@@ -246,6 +269,37 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         s = next((x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid), {})
         check("a steer adds no turn of its own", s.get("turns") == 6, json.dumps(s)[:200])
 
+        # The `/` and `@` menus and images (what the apps' composer uses).
+        r = cli("--json", "chat", "commands", sid)
+        cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
+        check("chat commands lists the agent's commands with their description",
+              any(c.get("insert") == "/review" and c.get("hint") == "<pr>" and c.get("description") for c in cmds)
+              and any(c.get("name") == "tidy" and c.get("kind") == "skill" for c in cmds), json.dumps(cmds)[:300] or r.stderr[-200:])
+        r = cli("--json", "chat", "files", sid, "main")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("chat files lists the folder's files, without build output", found.get("files") == ["src/main.rs"]
+              and found.get("source") == "walk", json.dumps(found)[:300] or r.stderr[-200:])
+        r = cli("--json", "chat", "files", sid, "release notes")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("chat files matches every word of the query", found.get("files") == ["docs/release notes.md"], json.dumps(found)[:200])
+        b64 = base64.b64encode((work / "red.png").read_bytes()).decode()
+        r = cli("chat", "send", sid, "what colour", "--image", work / "red.png", "--wait")
+        check("an image reaches the agent whole", r.returncode == 0 and f"[images: image/png {len(b64)}]" in r.stdout
+              and "[image: red.png]" in r.stdout, f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-200:]}")
+        bad = base / "big.png"
+        bad.write_bytes(b"\x89PNG" + os.urandom(4 * 1024 * 1024))
+        r = cli("chat", "send", sid, "too big", "--image", bad)
+        check("an image over the limit is refused (exit 2)", r.returncode == 2 and "larger than" in r.stderr,
+              f"code {r.returncode}: {r.stderr[-200:]}")
+        p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", sid],
+                           capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
+        events = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        users = [e for e in events if e.get("t") == "user" and e.get("attachments")]
+        check("the transcript keeps the image's name and size, not its bytes",
+              len(users) == 1 and users[0]["attachments"] == [{"name": "red.png", "mime": "image/png", "bytes": len(base64.b64decode(b64))}]
+              and b64[:40] not in p.stdout, json.dumps(users)[:300])
+        check("the command list is in the transcript once", sum(1 for e in events if e.get("t") == "commands") == 1)
+
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
 
@@ -259,7 +313,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         audit = [json.loads(l) for l in (host_home / "host" / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
         turns = [a for a in audit if a.get("kind") == "chat_turn"]
-        check("each turn is audited", len(turns) == 7, str(len(turns)))
+        check("each turn is audited", len(turns) == 8, str(len(turns)))
         check("the audit counts steers", sum(t.get("steers", 0) for t in turns) == 1)
         check("the audit keeps hashes, not the conversation", not any("hello there" in json.dumps(a) for a in audit
                                                                       if a.get("kind", "").startswith("chat")))
@@ -317,6 +371,21 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+            # An image, and a command or skill from the agent's own list.
+            r = cli("chat", "send", rsid, "What colour is this image? Reply with one word.", "--image", work / "red.png",
+                    "--wait", timeout=300)
+            check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
+                  f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            r = cli("--json", "chat", "commands", rsid)
+            cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
+            print(f"      {len(cmds)} commands: {', '.join(c['insert'] for c in cmds[:12])}")
+            pong = next((c for c in cmds if c["name"] == "pong-skill"), None)
+            check(f"real {kind}: lists its commands or skills", len(cmds) > 0, r.stderr[-200:])
+            if pong:
+                t0 = time.time()
+                r = cli("chat", "send", rsid, f"{pong['insert']} please", "--wait", timeout=300)
+                check(f"real {kind}: runs a skill chosen from its list", r.returncode == 0 and "SKILLPONG" in r.stdout,
+                      f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             if rows.get(f"real-{kind}", {}).get("caps", {}).get("steer"):
                 steer_real(kind, rsid)
             cli("chat", "end", rsid)
