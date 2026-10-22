@@ -13,6 +13,12 @@
 //! `--service` (Windows, registered by `ai-remote host install --service`) is the same supervisor
 //! as a service: it runs the host as SYSTEM inside the console session (see `ar_host::service`),
 //! which is what reaches the lock screen and UAC prompts.
+//!
+//! `--owner-uid` (macOS, the system LaunchAgent `ai-remote host install --service` registers)
+//! runs in the login window's session and in the user's: with fast user switching both run at
+//! once, and the one whose session has the screen holds the profile (see `ar_host::handoff`). The
+//! other waits instead of exiting, and the holder steps aside, exiting, when its session leaves
+//! the screen.
 
 // No console window on Windows; the attribute does nothing elsewhere.
 #![windows_subsystem = "windows"]
@@ -22,10 +28,9 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
 use ar_core::{Profile, Role};
 use ar_host::supervise::EXIT_ALREADY_RUNNING;
 use clap::Parser;
@@ -87,6 +92,20 @@ fn main() -> ExitCode {
         // SAFETY: set before any thread is started.
         unsafe { std::env::set_var(ar_core::profile::HOME_ENV, home) };
     }
+    // The macOS system agent becomes its owner before it touches the profile: the profile, the log
+    // included, is the user's, never created by root. launchd also starts it in other users'
+    // sessions, as them; they cannot (and must not) open the owner's profile, so they leave at once,
+    // with 0 so that launchd does not start them again.
+    #[cfg(target_os = "macos")]
+    if let Some(uid) = args.owner_uid {
+        if let Err(e) = ar_host::platform::macos::adopt_owner(uid) {
+            last_resort(&format!("cannot become the installing user (uid {uid}): {e:#}"));
+            return ExitCode::FAILURE;
+        }
+        if !ar_host::platform::macos::login_window_instance() && !ar_host::platform::macos::runs_as(uid) {
+            return ExitCode::SUCCESS;
+        }
+    }
     let (profile, log_path) = match Profile::open_default().and_then(|p| Ok((p.log_path(Role::Host)?, p))) {
         Ok((log, profile)) => (profile, log),
         Err(e) => {
@@ -101,34 +120,37 @@ fn main() -> ExitCode {
     if args.service {
         return run_service(profile, &log_path, args.owner_sid);
     }
-    #[cfg(target_os = "macos")]
-    if let Some(uid) = args.owner_uid
-        && let Err(e) = ar_host::platform::macos::adopt_owner(uid)
-    {
-        last_resort(&format!("cannot become the installing user (uid {uid}): {e:#}"));
-        return ExitCode::FAILURE;
-    }
+    let log = LogSink::init(&log_path);
     #[cfg(windows)]
     if !args.supervised {
-        return supervise(&profile, &log_path);
+        return supervise(&profile);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(uid) = args.owner_uid {
+        return system_agent::run(profile, &log_path, &log, uid);
     }
     #[cfg(windows)]
     let shared_with: Vec<String> = args.owner_sid.into_iter().collect();
     #[cfg(not(windows))]
     let shared_with = Vec::new();
-    run_host(profile, &log_path, &shared_with)
+    run_host(profile, &log_path, &log, &shared_with)
+}
+
+fn runtime() -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            tracing::error!("cannot start the async runtime: {e}");
+            last_resort(&format!("cannot start the async runtime: {e}"));
+            None
+        }
+    }
 }
 
 /// Runs the host in this process until it is stopped. `shared_with`: accounts besides this
 /// process's own that may use the control endpoint (see `ar_host::Claim::acquire_shared`).
-fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => {
-            last_resort(&format!("cannot start the async runtime: {e}"));
-            return ExitCode::FAILURE;
-        }
-    };
+fn run_host(profile: Profile, log_path: &Path, log: &LogSink, shared_with: &[String]) -> ExitCode {
+    let Some(runtime) = runtime() else { return ExitCode::FAILURE };
     // Claim the profile first: a second start (a double-click, a script) must leave the running
     // host alone, its log included, so it only appends a line saying why it quits.
     let claim = {
@@ -138,7 +160,6 @@ fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCo
     let claim = match claim {
         Ok(c) => c,
         Err(e) => {
-            log_appending(log_path);
             if e.downcast_ref::<ar_host::AlreadyRunning>().is_some() {
                 tracing::info!("not starting: {e:#}");
                 return ExitCode::from(EXIT_ALREADY_RUNNING);
@@ -147,17 +168,297 @@ fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = log_rotating(log_path) {
-        last_resort(&format!("{e:#}"));
-        return ExitCode::FAILURE;
-    }
+    log.rotate(log_path);
     tracing::info!(log = %log_path.display(), pid = std::process::id(), "starting the background host");
-    let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true };
+    let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true, step_aside: None };
     match runtime.block_on(ar_host::run_claimed(profile, claim, opts)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("host stopped: {e:#}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The macOS system agent (`--owner-uid`): waits until its session has the console and the
+/// profile is free, serves, and steps aside by exiting when its session leaves the console. See
+/// `ar_host::handoff` for the rule; this is the process side of it.
+#[cfg(target_os = "macos")]
+mod system_agent {
+    use std::{
+        path::Path,
+        process::ExitCode,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use ar_core::Profile;
+    use ar_host::{
+        CancellationToken, Claim, StopReason,
+        handoff::{self, ClaimState, Decision, Situation, WaitLog},
+        platform::macos,
+    };
+
+    use super::{LogSink, runtime};
+
+    pub fn run(profile: Profile, log_path: &Path, log: &LogSink, owner_uid: u32) -> ExitCode {
+        let Some(runtime) = runtime() else { return ExitCode::FAILURE };
+        let login_window = macos::login_window_instance();
+        // Another user's Aqua session: launchd starts the agent there too, as that user. (The
+        // LoginWindow instance is the owner's even when AI_REMOTE_KEEP_ROOT keeps it root.)
+        let foreign_user = !login_window && !macos::runs_as(owner_uid);
+        let signals = Signals::install(&runtime);
+        let marker_path = match handoff::marker_path(&profile) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("host stopped: {e:#}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let boot = macos::boot_session();
+        let asid = macos::audit_session_id();
+        let stopped = || {
+            let (marker, corrupt) = match handoff::read_marker(&marker_path) {
+                Ok(m) => (m, false),
+                Err(e) => {
+                    tracing::warn!("ignoring the stop marker: {e:#}");
+                    (None, true)
+                }
+            };
+            if handoff::stale(marker.as_ref(), corrupt, boot.as_deref()) {
+                // From an earlier boot, or unreadable: it means nothing to anyone. A marker of this
+                // boot this instance does not honour stays: it may be meant for the other instance.
+                let _ = handoff::clear_marker(&marker_path);
+                return false;
+            }
+            handoff::honored(marker.as_ref(), boot.as_deref(), asid, login_window)
+        };
+        let raw = Arc::new(RawConsoleLog::default());
+        let mut mesh_busy_since: Option<std::time::Instant> = None;
+        let mut mesh_busy_logged = false;
+        let mut wait_log = WaitLog::default();
+        loop {
+            // Wait for this instance's turn.
+            let claim = loop {
+                if signals.terminated() {
+                    tracing::info!("terminated (SIGTERM) while waiting");
+                    return ExitCode::from(handoff::EXIT_TERMINATED);
+                }
+                let look = |claim| Situation {
+                    foreign_user,
+                    stopped: !foreign_user && stopped(),
+                    console: raw.read(login_window),
+                    login_window,
+                    claim,
+                };
+                let mut held: Option<Claim> = None;
+                let mut decision = handoff::decide(&look(ClaimState::NotTried));
+                if decision == Decision::TryClaim {
+                    let attempt = {
+                        let _in_runtime = runtime.enter();
+                        Claim::acquire(&profile)
+                    };
+                    decision = match attempt {
+                        // Look again with the slot held: a stop recorded just before the holder let
+                        // go, or a switch in the meantime, still counts.
+                        Ok(c) => {
+                            held = Some(c);
+                            handoff::decide(&look(ClaimState::Held))
+                        }
+                        Err(e) if e.downcast_ref::<ar_host::AlreadyRunning>().is_some() => {
+                            handoff::decide(&look(ClaimState::Taken))
+                        }
+                        Err(e) => {
+                            tracing::error!("host stopped: {e:#}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                }
+                if let Some(line) = wait_log.note(decision) {
+                    tracing::info!(pid = std::process::id(), login_window, "{line}");
+                }
+                match decision {
+                    Decision::NotOurs | Decision::Stopped => return ExitCode::SUCCESS,
+                    Decision::Wait(w) => {
+                        drop(held);
+                        // A real wait ends any busy-transport episode: the next one counts afresh.
+                        mesh_busy_since = None;
+                        mesh_busy_logged = false;
+                        std::thread::sleep(w.interval());
+                    }
+                    Decision::Serve => break held.expect("serve only with the slot held"),
+                    Decision::TryClaim => unreachable!("decided with a claim outcome"),
+                }
+            };
+            log.rotate(log_path);
+            tracing::info!(log = %log_path.display(), pid = std::process::id(), login_window, "starting the background host");
+            match serve(&runtime, &profile, claim, login_window, &signals, &raw) {
+                Served::Stopped => return ExitCode::SUCCESS,
+                Served::Leave { claim, code } => {
+                    if code == handoff::EXIT_STEPPED_ASIDE {
+                        tracing::info!(
+                            "stepping aside: this session left the console; the instance that has it takes over"
+                        );
+                    } else {
+                        tracing::info!("terminated (SIGTERM)");
+                    }
+                    // Exit with the slot still held: the kernel frees it together with the transport's
+                    // database lock and socket, so the next holder never finds the transport busy.
+                    let _ = std::io::Write::flush(&mut log.clone());
+                    let _hold = claim;
+                    std::process::exit(code.into());
+                }
+                Served::MeshBusy(e) => {
+                    log.append(log_path);
+                    if signals.terminated() {
+                        tracing::info!("terminated (SIGTERM)");
+                        return ExitCode::from(handoff::EXIT_TERMINATED);
+                    }
+                    // Usually the previous holder still on its way out: give the slot back and retry
+                    // for a while. The transport reports any failure to open its database this way,
+                    // so past that it is a failure (exit 1; launchd starts the agent again, throttled).
+                    let since = *mesh_busy_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= MESH_BUSY_LIMIT {
+                        tracing::error!("host stopped: {e:#}");
+                        return ExitCode::FAILURE;
+                    }
+                    if !mesh_busy_logged {
+                        tracing::info!("waiting: {e:#}");
+                        mesh_busy_logged = true;
+                    }
+                    std::thread::sleep(handoff::Wait::Taken.interval());
+                    continue;
+                }
+                Served::Failed => return ExitCode::FAILURE,
+            }
+        }
+    }
+
+    /// How long a busy transport database is retried before it counts as a failure: a predecessor
+    /// that is exiting frees it within a second or two.
+    const MESH_BUSY_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// Reads the console and logs the raw read whenever it changes, so the log shows what each
+    /// decision rested on (the LoginWindow instance's read after its identity switch is not verified).
+    #[derive(Default)]
+    struct RawConsoleLog(Mutex<Option<handoff::ConsoleRead>>);
+
+    impl RawConsoleLog {
+        fn read(&self, login_window: bool) -> handoff::ConsoleRead {
+            let now = handoff::read_console();
+            let mut last = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if *last != Some(now) {
+                tracing::info!(
+                    login_window,
+                    session_on_console = ?now.session,
+                    console_device_owner = ?now.device_owner,
+                    counts_as_on_console = handoff::on_console(now, login_window),
+                    "console read"
+                );
+                *last = Some(now);
+            }
+            now
+        }
+    }
+
+    enum Served {
+        /// Stopped on request (`stop-host`, Ctrl+C): exit 0.
+        Stopped,
+        /// Exit with `code` while still holding `claim`.
+        Leave {
+            claim: Claim,
+            code: u8,
+        },
+        /// The transport's database could not be opened (usually: the previous holder is still
+        /// exiting).
+        MeshBusy(anyhow::Error),
+        Failed,
+    }
+
+    /// SIGTERM: launchd ends the LoginWindow instance with it when the user logs in, and either one
+    /// on `launchctl bootout` / `kickstart -k`. While serving, the host first closes the
+    /// controllers' connections; while waiting there is nothing to close, so the process exits.
+    struct Signals {
+        terminated: Arc<AtomicBool>,
+        serving: Arc<Mutex<Option<CancellationToken>>>,
+    }
+
+    impl Signals {
+        fn install(runtime: &tokio::runtime::Runtime) -> Self {
+            let terminated = Arc::new(AtomicBool::new(false));
+            let serving = Arc::new(Mutex::new(None::<CancellationToken>));
+            let _in_runtime = runtime.enter();
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut term) => {
+                    let (terminated, serving) = (terminated.clone(), serving.clone());
+                    runtime.spawn(async move {
+                        // Every SIGTERM is handled: once one is registered the default action never
+                        // comes back. A second one while the host is still closing exits at once.
+                        while term.recv().await.is_some() {
+                            terminated.store(true, Ordering::SeqCst);
+                            let host = serving.lock().unwrap_or_else(|p| p.into_inner()).take();
+                            match host {
+                                Some(leave) => leave.cancel(),
+                                None => {
+                                    tracing::info!("terminated (SIGTERM)");
+                                    std::process::exit(handoff::EXIT_TERMINATED.into());
+                                }
+                            }
+                        }
+                    });
+                }
+                Err(e) => tracing::warn!("cannot handle SIGTERM: {e}"),
+            }
+            Self { terminated, serving }
+        }
+
+        fn terminated(&self) -> bool {
+            self.terminated.load(Ordering::SeqCst)
+        }
+
+        fn serving(&self, leave: Option<CancellationToken>) {
+            *self.serving.lock().unwrap_or_else(|p| p.into_inner()) = leave;
+        }
+    }
+
+    fn serve(
+        runtime: &tokio::runtime::Runtime,
+        profile: &Profile,
+        claim: Claim,
+        login_window: bool,
+        signals: &Signals,
+        raw: &Arc<RawConsoleLog>,
+    ) -> Served {
+        let leave = CancellationToken::new();
+        signals.serving(Some(leave.clone()));
+        let watcher = runtime.spawn({
+            let leave = leave.clone();
+            let raw = raw.clone();
+            async move {
+                handoff::watch_console(login_window, move || raw.read(login_window)).await;
+                leave.cancel();
+            }
+        });
+        let opts = ar_host::HostOptions { pair_code_if_unpaired: false, background: true, step_aside: Some(leave) };
+        let result = runtime.block_on(ar_host::run_claimed(profile.clone(), claim, opts));
+        signals.serving(None);
+        watcher.abort();
+        match result {
+            Ok(stopped) => match stopped.reason {
+                StopReason::Requested => Served::Stopped,
+                StopReason::SteppedAside => {
+                    let code =
+                        if signals.terminated() { handoff::EXIT_TERMINATED } else { handoff::EXIT_STEPPED_ASIDE };
+                    Served::Leave { claim: stopped.claim, code }
+                }
+            },
+            Err(e) if e.downcast_ref::<ar_net::MeshBusy>().is_some() => Served::MeshBusy(e),
+            Err(e) => {
+                tracing::error!("host stopped: {e:#}");
+                Served::Failed
+            }
         }
     }
 }
@@ -166,7 +467,7 @@ fn run_host(profile: Profile, log_path: &Path, shared_with: &[String]) -> ExitCo
 /// hands over to `ar_host::service`, which returns once the service control manager stopped it.
 #[cfg(windows)]
 fn run_service(profile: Profile, log_path: &Path, owner_sid: Option<String>) -> ExitCode {
-    log_appending(log_path);
+    LogSink::init(log_path);
     let Some(owner_sid) = owner_sid else {
         tracing::error!("--service needs --owner-sid <SID> (ai-remote host install --service registers it that way)");
         return ExitCode::FAILURE;
@@ -190,8 +491,7 @@ fn run_service(profile: Profile, log_path: &Path, owner_sid: Option<String>) -> 
 
 /// Runs the host as a child and restarts it after an abnormal exit; a clean stop ends both.
 #[cfg(windows)]
-fn supervise(profile: &Profile, log_path: &Path) -> ExitCode {
-    log_appending(log_path);
+fn supervise(profile: &Profile) -> ExitCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => {
@@ -252,31 +552,84 @@ fn log_filter() -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(ar_host::DEFAULT_LOG_FILTER))
 }
 
-/// The host's own log: rotated by size between lines (an existing crate does the rotation),
-/// keeping [`LOG_KEEP`] earlier files. Only the process that holds the profile writes this way.
-fn log_rotating(path: &Path) -> Result<()> {
-    let file = FileRotate::new(
-        path,
-        AppendCount::new(LOG_KEEP),
-        ContentLimit::BytesSurpassed(LOG_ROTATE_BYTES),
-        Compression::None,
-        None,
-    );
-    tracing_subscriber::fmt().with_env_filter(log_filter()).with_ansi(false).with_writer(Mutex::new(file)).init();
-    Ok(())
+/// The process's log, set up once (a global tracing subscriber cannot be replaced): it appends
+/// each line and closes the file again until this process holds the profile, then writes through
+/// the rotating writer. The supervisor, the Windows service and a start that finds a host running
+/// share the file with the host that owns it, so they never rotate it; the system agent's waiting
+/// instance goes back to appending when it gives the profile up.
+#[derive(Clone)]
+struct LogSink(Arc<Mutex<Sink>>);
+
+enum Sink {
+    Appending(PathBuf),
+    /// Rotated by size between lines (an existing crate does the rotation), keeping
+    /// [`LOG_KEEP`] earlier files.
+    Rotating(FileRotate<AppendCount>),
 }
 
-/// Appends each line to the log and closes it again, never rotating: for the supervisor and a
-/// start that finds a host running, which share the file with the host that owns it.
-fn log_appending(path: &Path) {
-    let path = path.to_path_buf();
-    let writer = move || -> Box<dyn Write> {
-        match OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(f) => Box::new(f),
-            Err(_) => Box::new(std::io::sink()),
+impl LogSink {
+    fn appending(path: &Path) -> Self {
+        Self(Arc::new(Mutex::new(Sink::Appending(path.to_path_buf()))))
+    }
+
+    /// The global subscriber, appending to `path`.
+    fn init(path: &Path) -> Self {
+        let sink = Self::appending(path);
+        tracing_subscriber::fmt().with_env_filter(log_filter()).with_ansi(false).with_writer(sink.clone()).init();
+        sink
+    }
+
+    /// Writes through the rotating writer: only for the process that holds the profile.
+    fn rotate(&self, path: &Path) {
+        let file = FileRotate::new(
+            path,
+            AppendCount::new(LOG_KEEP),
+            ContentLimit::BytesSurpassed(LOG_ROTATE_BYTES),
+            Compression::None,
+            None,
+        );
+        *self.lock() = Sink::Rotating(file);
+    }
+
+    /// Back to appending (after giving the profile up).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn append(&self, path: &Path) {
+        *self.lock() = Sink::Appending(path.to_path_buf());
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Sink> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+impl Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut *self.lock() {
+            Sink::Appending(path) => {
+                // A log that cannot be opened loses the line rather than the host.
+                if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = f.write_all(buf);
+                }
+                Ok(buf.len())
+            }
+            Sink::Rotating(file) => file.write(buf),
         }
-    };
-    tracing_subscriber::fmt().with_env_filter(log_filter()).with_ansi(false).with_writer(writer).init();
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &mut *self.lock() {
+            Sink::Appending(_) => Ok(()),
+            Sink::Rotating(file) => file.flush(),
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
+    type Writer = LogSink;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
 }
 
 /// Where errors go before the log exists.
@@ -284,5 +637,34 @@ fn last_resort(message: &str) {
     let path = std::env::temp_dir().join("ai-remote-hostw-error.log");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "[{}] {message}", ar_core::unix_now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_subscriber_writes_through_appending_rotating_and_appending_again() {
+        let dir = std::env::temp_dir().join(format!("ai-remote-hostw-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("host.log");
+        let sink = LogSink::appending(&path);
+        let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(sink.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("first, appending");
+            sink.rotate(&path);
+            tracing::info!("second, rotating");
+            sink.append(&path);
+            tracing::info!("third, appending again");
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let order: Vec<usize> = ["first, appending", "second, rotating", "third, appending again"]
+            .iter()
+            .map(|l| text.find(l).unwrap_or_else(|| panic!("missing {l:?} in {text:?}")))
+            .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -293,6 +293,59 @@ root to the user. If `doctor` says the desktop is usable but the picture stays b
 run as root at the login window, as RustDesk does, and report it. `sudo ai-remote … host uninstall`
 removes the system agent; without sudo the uninstall stops at it and says so.
 
+**Fast user switching and logout.** launchd runs one copy of the system agent per GUI session:
+one in your session, one at the login window. With fast user switching ("Login Window..." in the
+user menu) your session keeps running in the background while the login window shows, so both
+copies run at once against the same profile. One rule decides which serves: **only the copy whose
+session is on the console holds the profile.** The copy that holds it checks every second; after two
+reads in a row saying its session left the console it closes the controllers' connections and
+exits with code 4 while still holding the profile, which frees the control endpoint and the
+transport in the same instant. The other copy, which was polling, claims it within a second and
+starts the transport. A controller sees a disconnect and reconnects to the same device. Switching
+back works the same way the other round. A real logout ends your session and its copy with it; the
+login window's copy then claims. The lock screen is still your session on the console: nothing
+changes there. Expected handover: about 2-3 s to notice the switch plus the transport's start
+(derived, *not measured on a real machine yet*).
+
+A copy that waits does not exit and does not restart every 10 s; it logs one line per change, for
+example:
+
+```text
+waiting: this session is not on the console (the screen shows another session or the login window)
+waiting: another host holds this profile (the other session's instance, or a host in a terminal)
+this session has the console: taking over the profile
+stepping aside: this session left the console; the instance that has it takes over
+not starting: the host was stopped with `ai-remote stop-host` (see `host status`)
+```
+
+Consequences worth knowing:
+
+- A host in a terminal (`ai-remote host`) keeps the profile; the agent waits with one `waiting` line
+  and takes over when you quit the terminal host, with Ctrl+C or with `stop-host` alike (only the
+  system agent records a stop).
+- `ai-remote stop-host` on the system agent stays a stop: the stopping host records it in
+  `<profile>/host/stopped`, and the other copy does not take over. A stop made in your session holds
+  there (lock screen, switching back) and at the login window until the next real login or a
+  restart; a stop made while the login window was served holds in every session until a restart.
+  `host install` (and `host uninstall`) clears it, and `host status` says when it holds. If the
+  record cannot be written, `stop-host` is refused rather than handing over to the other copy. To
+  restart the agent after granting privacy permissions, use `launchctl kickstart -k
+  gui/<uid>/<label>` rather than `stop-host`.
+- The login window's copy reads its session with the identity it switched to, which is not verified
+  on a real machine yet. Each copy logs a `console read` line whenever what it reads changes. When
+  that session cannot be read, the login window's copy falls back to the owner of `/dev/console`
+  (root while the login window has the screen) and gives the profile back once a user's session
+  has the screen, even if launchd keeps it running.
+- A transport database that stays unopenable for 15 s (normally it is the previous holder exiting)
+  stops the copy with exit 1; launchd starts it again, throttled.
+- A session that is not on the console, such as one opened through Screen Sharing, never serves the
+  profile: the host there steps aside.
+- Another user's session also starts a copy (as that user); it exits at once without touching the
+  owner's profile.
+- `AI_REMOTE_KEEP_ROOT=1` together with this handover is untested: the login window's copy then
+  creates the control lock and the stop record as root, and your session's copy may fail to open
+  them.
+
 #### Checking and removing it
 
 ```sh

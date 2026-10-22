@@ -259,6 +259,45 @@ ScreenCaptureKit 的画面。如果 `doctor` 说桌面可用但那里的画面�
 `AI_REMOTE_KEEP_ROOT=1`（plist 加一项 `EnvironmentVariables`），让它像 RustDesk 一样在登录界面以 root 运行，
 并反馈。`sudo ai-remote … host uninstall` 移除系统级 agent；不加 sudo 的卸载会在这一步停下并说明。
 
+**快速用户切换与注销。** launchd 为每个图形会话各起一份系统级 agent：你的会话里一份，登录界面一份。
+快速用户切换（用户菜单里的“登录窗口…”）时，你的会话在后台继续运行、屏幕显示登录界面，所以两份会同时运行、
+用同一个配置目录。由一条规则决定谁来服务：**只有自己会话在控制台上的那一份持有配置目录。** 持有的那份每秒
+检查一次，连续两次读到自己会话已离开控制台，就关闭控制端连接，在仍持有配置目录的情况下以退出码 4 退出，
+控制端点和传输层在同一时刻释放。另一份一直在轮询，一秒内拿到配置目录并启动传输层。控制端看到的是一次断开，
+随后重连到同一台设备。切回原会话时反过来同样处理。真正的注销会结束你的会话和其中那一份，登录界面那一份随后
+接手。锁屏仍是你的会话、仍在控制台上，什么都不变。预计交接耗时：约 2-3 秒察觉切换，加上传输层启动时间
+（推导值，*尚未在真机实测*）。
+
+等待中的那一份不退出、也不会每 10 秒被重启一次；每次状态变化只写一行日志，例如：
+
+```text
+waiting: this session is not on the console (the screen shows another session or the login window)
+waiting: another host holds this profile (the other session's instance, or a host in a terminal)
+this session has the console: taking over the profile
+stepping aside: this session left the console; the instance that has it takes over
+not starting: the host was stopped with `ai-remote stop-host` (see `host status`)
+```
+
+需要知道的后果：
+
+- 终端里运行的被控端（`ai-remote host`）占着配置目录时，agent 只写一行 `waiting` 并等待；终端被控端退出后
+  （Ctrl+C 或 `stop-host` 都一样，只有系统级 agent 会记录停止），agent 接手。
+- 对系统级 agent 执行 `ai-remote stop-host` 仍然是停止：停止的被控端会写下 `<配置目录>/host/stopped`，另一份
+  不会接手。在你的会话里做的停止，在同一个登录会话里（锁屏、切回原会话）以及登录界面上一直有效，直到下一次
+  真正登录或重启；在登录界面被服务期间做的停止，在所有会话里一直有效，直到重启。`host install`（以及
+  `host uninstall`）会清除它，`host status` 会说明它是否生效。如果写不了这个记录，`stop-host` 会被拒绝，
+  而不是悄悄交给另一份。授予隐私权限后要重启 agent，请用 `launchctl kickstart -k gui/<uid>/<label>`，
+  不要用 `stop-host`。
+- 登录界面那一份降权后读到的会话状态尚未在真机验证。每一份在读数变化时都会记一行 `console read`。读不到会话
+  状态时，登录界面那一份改看 `/dev/console` 的属主（登录界面占屏时是 root），一旦某个用户会话占了屏幕就让出
+  配置目录，即使 launchd 没有结束它。
+- 传输层数据库连续 15 秒打不开（正常情况下是上一个持有者还在退出）时，这一份以退出码 1 停止，由 launchd
+  按节流重新拉起。
+- 不在控制台上的会话（比如通过“屏幕共享”打开的会话）永远不会服务这个配置目录：那里的被控端会让出。
+- 其他用户的会话也会起一份（以那个用户身份），它会立即退出，不碰所有者的配置目录。
+- `AI_REMOTE_KEEP_ROOT=1` 与这套交接一起使用未经测试：登录界面那一份会以 root 创建控制锁文件和停止记录，你的
+  会话里那一份可能打不开它们。
+
 #### 查看与卸载
 
 ```sh

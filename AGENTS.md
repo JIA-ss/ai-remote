@@ -246,6 +246,8 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   有设备配对后切到三词核对页（一致 / 不一致并移除）。关闭未配对的窗口会撤码。演示后端 12 s 后模拟一台 iPhone 配上，方便看核对页。
 - 桌面控制端：`Pages.tsx` 的 `PairPage` 第一步改成一个大号数字输入框（自动分组，粘贴票据自动切到票据模式），"改用票据"链接。
 - iOS：`PhonePairing.swift`（扫码 + 输入 + 票据入口）、`PhonePairCode.swift`（与平台无关的码解析，`swiftc` 在 macOS 上能跑）。
+  输入框在 iOS 上是 `PairCodeField`（包 `UITextField`），在 `shouldChangeCharactersIn` 里同步过滤、分组后写回。原来用 SwiftUI `TextField` + `.onChange` 事后改写，
+  快速输入时改写和下一个按键抢，CI 上 `typeText("1234567")` 丢了一位（得到 `1234 56`）。本机 iOS 26.2 / iPhone 17 Pro 上该测试连跑 5 次、全部 15 个 UI 测试都过。
   扫码用 AVFoundation（`NSCameraUsageDescription`），拒绝权限时给"打开设置"；`CFBundleURLTypes` 注册 `ai-remote` scheme，
   系统相机扫到二维码直接打开 app 并配对（`PhoneStore.openPairLink`）；`NSBonjourServices` 加 `_ai-remote-pair._udp`。
 
@@ -1298,3 +1300,78 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 - [ ] "native 240" 档的 98.8 fps 瓶颈。
 - [ ] iOS CI 过后在 iPhone 上看 HEVC 和光标叠加。
 
+
+## macOS 登录窗口交接：快速用户切换 / 注销（2026-10-21，分支 `fix/mac-login-window-handoff`）
+
+**问题（真机，macOS 26.5）**：系统级 LaunchAgent（`[LoginWindow, Aqua]`）每个图形会话各起一份。快速用户切换
+（用户菜单 "Login Window…"）时用户会话在后台继续运行，Aqua 那份一直占着配置目录（控制套接字的 flock），
+`session_state` 报 "not in the macOS console session"；LoginWindow 那份降权成同一用户、抢同一把锁，拿不到就以 3
+退出、被 launchd 约每 10 s 拉起一次，登录界面永远没人服务。Apple DTS 的说法：不能把 agent 限制在控制台会话里，
+应由每份自己检测是否在控制台，不在就静默。
+
+**决定**（逻辑在 `ar_host::handoff`，纯函数加单测；进程部分在 `ai-remote-hostw` 的 `system_agent`；只在
+`--owner-uid` 时走，Windows、用户级 LaunchAgent、终端 host 都不变）：
+
+- 规则一条、两边对称：**只有自己会话在控制台上的那一份持有配置目录；离开控制台的那份带着锁退出**。
+- 等待不退出：`decide(Situation)` → `NotOurs | Stopped | Wait(OffConsole 2 s | Taken 1 s) | TryClaim | Serve`；
+  拿到锁后再判一次（堵"对方先写 stop 标记再放锁"的竞态和切换中途的变化）。`WaitLog` 只在状态变化时写一行。
+- 持锁时 `watch_console` 每 1 s 读 `kCGSSessionOnConsoleKey`，连续 2 次离开才 cancel `HostOptions::step_aside`；
+  `run_claimed` 改成返回 `Stopped { reason, claim }`，hostw 在**仍持有 Claim** 时 `process::exit(4)`
+  （`EXIT_STEPPED_ASIDE`）：flock、redb 的 peer store 锁、iroh 的 UDP socket 由内核同时释放。进程内不重跑
+  `run_claimed`，因为 Mesh/HostState 有 Arc 环、`Mesh::shutdown` 没被调用，redb 锁在进程内放不掉。
+- `on_console` 为 `None`（读不到会话字典）时：LoginWindow 那份（launchd 以 root 起的，`login_window_instance()`）
+  算在控制台上，Aqua 那份算不在——避免降权后读不到字典导致登录界面没人服务，又不让后台会话凭猜测占锁。
+- 退出码：3 = 已有 host（非系统 agent 路径，不变）；4 = 让位（launchd 会重新拉起，新进程在门禁里等）；
+  143 = SIGTERM（持锁时先 `stopping.cancel()` 等 300 ms 发 close 帧；等待时直接退出）；0 = stop / 别的用户的会话。
+- `getuid() != owner_uid` 且不是 LoginWindow 那份（=别的用户的 Aqua 会话）：记一行、以 0 退出，不碰配置目录。
+- `stop-host` 仍是停止：`HostRequest::Shutdown` 在 cancel **之前**写 `<profile>/host/stopped`
+  （`{boot: kern.bootsessionuuid, asid: getaudit_addr 的 ai_asid, at}`，临时文件 + rename）。生效条件
+  `honored()`：同一次开机，且（同一个 asid，或本份是 LoginWindow 那份）。即同会话（锁屏、切回）和登录界面保持停止，
+  下一次真正登录（新 asid）或重启后失效并被删除；`host install` / `host uninstall` 清除它。终端 host 被 stop-host
+  停掉时也会写，系统 agent 不接手；Ctrl+C 不写，系统 agent 接手。授权后重启 agent 的提示改成
+  `launchctl kickstart -k`（不再先 stop-host，否则标记会让新进程立刻退出）。
+- 日志 subscriber 只 init 一次：`LogSink`（追加 ↔ 轮转可切换的 `MakeWriter`），拿到锁时切轮转，`MeshBusy` 让回锁时
+  切回追加。`Mesh::start` 遇到 `DataDirInUse` 现在报 `ar_net::MeshBusy`，系统 agent 当作 Taken 处理（放锁、1 s 后重试），
+  作为纵深防御。
+- 刻意不做：协调 daemon、notify(3) 推送（轮询已够；以后可换 `com.apple.coregraphics.GUIConsoleSessionChanged`）、
+  改 plist（不加 ThrottleInterval）、`AI_REMOTE_KEEP_ROOT=1` 下的 fchown（文档注明这个组合未测）。
+
+**已验证**：`cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、
+`cargo test --workspace --locked` 在这台 Mac 上通过。单测：`handoff::tests`（快速切换、切回、注销/重启、锁屏、
+stop-host、崩溃、终端 host、别的用户、`None` 判定、去抖、日志去重、标记语义、标记读写、paused time 下的 1 s 节奏）、
+`tests::a_held_claim_keeps_the_profile_until_dropped`、`platform::macos::tests::the_session_ids_the_stop_marker_uses_are_readable`
+（`auditinfo_addr` 48 字节、asid 可读、boot uuid 36 字符；结构布局先用 clang 的 `offsetof` 对过：`ai_asid` 在 36）、
+hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows target）：Windows 路径只改了共享签名
+（`HostOptions` 多一个字段、`run_claimed` 返回值、`supervise` 少一个参数、日志 init 移到 main），靠 CI。
+
+**未验证（要人在这台 Mac 上做，不能动正在跑的 agent 的会话里做的除外）**：
+
+| 场景 | 怎么看 | 期望 |
+|---|---|---|
+| 快速用户切换到登录界面 | `pgrep -fl ai-remote-hostw`、`host/host.log` | Aqua 那份 `stepping aside` 以 4 退出；LoginWindow 那份 `taking over`；控制端连上看到登录界面。记下交接秒数（推导约 2-3 s + Mesh 启动） |
+| 从登录界面切回原会话 | `launchctl print login/<asid>`、日志 | LoginWindow 那份被 launchd 终止（143）或让位（4）；Aqua 那份 2 s 内接手 |
+| LoginWindow 那份降权后的 `kCGSSessionOnConsoleKey` | 日志里 `waiting`/`taking over` 行、doctor | 记下实际值（`None` 还是 true/false）；若切回后它仍读到 true/None 且没被终止，Aqua 那份会一直 `waiting: another host` |
+| 注销后再登录 / 重启 | 日志 | 新登录界面那份直接接手；登录后 Aqua 那份可能先 `waiting: another host`，再接手 |
+| 锁屏 | 日志 | 无交接行 |
+| stop-host 之后快速切换、锁屏 | `host status`、日志 | 都保持停止（`not starting: … stop-host`）；下次登录后恢复 |
+| 终端 host 运行 10 分钟 | 日志 | 只有一行 `waiting: another host…`，不刷屏 |
+
+**复核后的修正（2026-10-21，同分支，未提交）**：
+
+- LoginWindow 那份读不到会话字典（`None`）时不再无条件算"在控制台上"：改看 `/dev/console` 属主
+  （`ConsoleRead { session, device_owner }`，`platform::macos::console_device_owner`）。root → 在；非 root
+  （用户会话占屏，切回或别的用户）→ 不在，持锁时 2 次读数后让位；两者都读不到才保留旧的猜测。Aqua 那份仍要
+  明确的 true。每份在原始读数变化时记一行 `console read`（真机上据此确认降权后的实际读数）。
+- `MeshBusy`：mcpmesh 把 peer store 的任何 `redb::DatabaseError` 都归成 `DataDirInUse`（权限、损坏也算），
+  所以系统 agent 只重试 15 s（`MESH_BUSY_LIMIT`），之后以 1 退出交给 launchd；"waiting" 一次只记一行，真正等待过
+  一次（`Decision::Wait`）后计时重置。`MeshBusy` 的文案改成"打不开：仍被占用或不可读"。
+- stop 标记：只删对所有人都失效的（别的开机、读不出），同一次开机里自己不认的不删（可能是给另一份的）。
+  标记加 `login_window`（停止发生在 LoginWindow 那份）：后台等待的 Aqua 那份也认它，直到重启。只有系统 agent
+  （`login_window_agent()`）写标记：终端 host / 用户级 LaunchAgent 被 stop-host 停掉不再压住系统 agent。
+  系统 agent 写标记失败时拒绝 `Shutdown`，不再悄悄交接。
+- 别的用户的会话：在 `adopt_owner` 之后、打开配置目录之前就以 0 退出（以前会因为进不去所有者的 `~/Library`
+  以 1 退出、被每 10 s 拉起）；`adopt_owner` 也挪到打开配置目录之前。
+- SIGTERM：信号任务循环接收（第二次 SIGTERM 在 host 还在关闭时直接退出）；等待循环开头和 `MeshBusy` 分支检查
+  `terminated`，以 143 退出，不再丢信号。
+- 仍未做：等待方主动请求持有方让位（控制套接字或 want 文件）。如果真机上 LoginWindow 那份降权后读到的是
+  确定但错误的 `Some(true)`，Aqua 那份仍会一直 `waiting: another host`；上表第三行要据 `console read` 日志确认。

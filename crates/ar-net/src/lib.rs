@@ -23,7 +23,7 @@ use mcpmesh_local_api::{
     AuditKind, BackendSpec, ControlClient, RecentPairing, StatusResult, StreamFrame, StreamSubscription,
     client::ClientError,
 };
-use mcpmesh_node::{Node, NodeBuilder, mcpmesh_trust::ed25519_dalek::SigningKey};
+use mcpmesh_node::{Node, NodeBuilder, StartError, mcpmesh_trust::ed25519_dalek::SigningKey};
 use serde::{Deserialize, Serialize};
 
 pub use mcpmesh_local_api::PeerPath;
@@ -338,11 +338,13 @@ impl Mesh {
     /// Starts the node. Requires a multi-thread tokio runtime.
     pub async fn start(opts: MeshOptions) -> Result<Self> {
         write_node_config(&opts)?;
-        let node = NodeBuilder::new(&opts.root)
-            .device_key(SigningKey::from_bytes(&opts.device_key))
-            .start()
-            .await
-            .map_err(|e| anyhow!("start transport node: {e}"))?;
+        let node =
+            NodeBuilder::new(&opts.root).device_key(SigningKey::from_bytes(&opts.device_key)).start().await.map_err(
+                |e| match e {
+                    StartError::DataDirInUse { path } => anyhow::Error::new(MeshBusy(path)),
+                    e => anyhow!("start transport node: {e}"),
+                },
+            )?;
         let mesh = Self {
             node: Arc::new(node),
             nickname: sanitize_name(&opts.nickname),
@@ -675,6 +677,25 @@ impl Mesh {
         }
     }
 }
+
+/// The transport's peer database could not be opened. Usually another process's transport node
+/// still owns this mesh directory (a host that is still on its way out), which is worth retrying
+/// for a few seconds; but the transport reports every open failure of that database the same way
+/// (permissions, corruption), so a caller must bound its retries and then treat it as a failure.
+#[derive(Debug)]
+pub struct MeshBusy(pub PathBuf);
+
+impl std::fmt::Display for MeshBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the transport's peer database cannot be opened: still in use by another process, or unreadable ({})",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for MeshBusy {}
 
 fn peers_from_status(status: &StatusResult) -> Vec<Peer> {
     let mut peers: Vec<Peer> = status

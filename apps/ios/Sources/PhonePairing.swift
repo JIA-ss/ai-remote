@@ -9,7 +9,11 @@ import UIKit
 struct PhonePairSheet: View {
     @Bindable var store: PhoneStore
     @State private var scanning = false
+    #if os(iOS)
+    @State private var codeFocused = false
+    #else
     @FocusState private var codeFocused: Bool
+    #endif
 
     private var ready: Bool {
         store.useTicket
@@ -58,8 +62,14 @@ struct PhonePairSheet: View {
                     }
                     #endif
                     Section {
-                        // Regroup after the edit lands: a binding setter that rewrites the value
-                        // leaves the field showing what was typed, not the grouped text.
+                        #if os(iOS)
+                        // Grouped inside the keystroke itself: rewriting the text after SwiftUI publishes the
+                        // edit races the next key, and fast typing lost a digit.
+                        PairCodeField(text: $store.pairingCode, focused: $codeFocused) { ticket in
+                            store.pairingTicket = ticket; store.useTicket = true
+                        }
+                        .frame(height: 56).padding(.vertical, 6)
+                        #else
                         TextField("0000 0000", text: $store.pairingCode)
                             .onChange(of: store.pairingCode) { old, value in
                                 if PairCodeText.isTicket(value) {
@@ -73,6 +83,7 @@ struct PhonePairSheet: View {
                             .numberPadKeyboard().autocorrectionDisabled().focused($codeFocused)
                             .accessibilityIdentifier("pairing-code")
                             .padding(.vertical, 6)
+                        #endif
                         Button("改用完整票据") { store.useTicket = true }.font(.footnote).accessibilityIdentifier("pair-use-ticket")
                     } header: { Text("或输入配对码") } footer: {
                         Text("在电脑上打开 ai-remote → 本设备 → 显示配对码。配对码只能用一次，10 分钟内有效。")
@@ -238,6 +249,70 @@ final class QRCameraController: UIViewController, AVCaptureMetadataOutputObjects
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
         }
+    }
+}
+#endif
+
+#if os(iOS)
+/// The pair code field. Each keystroke is filtered and grouped (`4821 0937`) before UIKit applies it,
+/// so the field never shows ungrouped text and a key typed while the previous one is still being
+/// published is not lost. Pasting a ticket hands it to `onTicket` instead.
+struct PairCodeField: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var focused: Bool
+    var onTicket: (String) -> Void
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        let base = UIFont.monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
+        field.font = base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: 40) } ?? base
+        field.defaultTextAttributes[.kern] = 3
+        field.textAlignment = .center
+        field.keyboardType = .numberPad
+        field.autocorrectionType = .no
+        field.spellCheckingType = .no
+        field.placeholder = "0000 0000"
+        field.accessibilityIdentifier = "pairing-code"
+        field.delegate = context.coordinator
+        field.text = text
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text { field.text = text }
+        if focused, !field.isFirstResponder {
+            DispatchQueue.main.async { field.becomeFirstResponder() }
+        } else if !focused, field.isFirstResponder {
+            DispatchQueue.main.async { field.resignFirstResponder() }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: PairCodeField
+        init(parent: PairCodeField) { self.parent = parent }
+
+        func textField(_ field: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+            let current = field.text ?? ""
+            guard let span = Range(range, in: current) else { return false }
+            let edited = current.replacingCharacters(in: span, with: string)
+            if PairCodeText.isTicket(edited) {
+                parent.onTicket(edited)
+                return false
+            }
+            let grouped = PairCodeText.grouped(edited)
+            field.text = grouped
+            let end = field.endOfDocument
+            field.selectedTextRange = field.textRange(from: end, to: end)
+            parent.text = grouped
+            return false
+        }
+
+        func textFieldDidBeginEditing(_ field: UITextField) { if !parent.focused { parent.focused = true } }
+        func textFieldDidEndEditing(_ field: UITextField) { if parent.focused { parent.focused = false } }
     }
 }
 #endif

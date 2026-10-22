@@ -417,6 +417,17 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             json!({"peer": peer, "removed": removed})
         }
         HostRequest::Shutdown => {
+            // Before the slot is released: the system agent's other instance, waiting for it,
+            // must find the stop already recorded (see `crate::handoff`). Without the record the
+            // stop would quietly become a hand-over to that instance, so it is refused instead.
+            // Only the system agent records a stop.
+            #[cfg(target_os = "macos")]
+            crate::handoff::record_stop(host.profile()).map_err(|e| {
+                anyhow!(
+                    "not stopping: cannot record the stop, and the system agent's other instance would take over \
+                     ({e:#}); `ai-remote host uninstall` removes the agent"
+                )
+            })?;
             shutdown.cancel();
             json!({"stopping": true})
         }
