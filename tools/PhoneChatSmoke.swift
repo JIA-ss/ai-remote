@@ -45,6 +45,7 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             await chat.start()
             let mine = chat.current?.id ?? ""
             check("the new-chat form starts a session and opens it", !mine.isEmpty && !chat.showNew && chat.error == nil, chat.error ?? "")
+            check("the folder is remembered for the next start", chat.recentFolders.first == cwd, chat.recentFolders.joined(separator: ","))
             check("it opens with the start ticket, read-write", await wait("connected") { chat.connected } && chat.role == "rw")
             await chat.leave()
             check("chat_sessions lists both sessions", Set(chat.sessions.map(\.id)) == [mine, foreign],
@@ -124,6 +125,70 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             })
             let ending = chat.log.turns.first { $0.userText == "SLOW again" }?.ending ?? ""
             check("the interrupted turn says so", ending.hasPrefix("已停止"), ending)
+
+            // The composer: the agent's commands, files for @, images, and messages on their way.
+            check("the host acknowledges messages", chat.hostAcks)
+            check("the agent's commands and skills are known", Set(chat.commands.map(\.name)).isSuperset(of: ["review", "tidy"])
+                  && chat.commands.contains { $0.name == "tidy" && $0.kind == "skill" }, chat.commands.map { "\($0.kind):\($0.name)" }.joined(separator: ","))
+            check("the / menu finds a command by name", phoneMatchCommands(chat.commands, "rev").first?.insert == "/review")
+            let found = (try? await chat.files("report")) ?? []
+            check("@ lists files in the session's folder", found.contains("docs/report.html"), found.joined(separator: ","))
+            let both = (try? await chat.files("docs notes")) ?? []
+            check("@ matches every word", both == ["docs/notes.md"], both.joined(separator: ","))
+            check("the agent takes images", chat.takesImages)
+            let png = phoneFixturePNG(width: 320, height: 200)
+            chat.attach(phonePrepareImage(png, name: "chart")!)
+            chat.draft = "look at this"
+            await chat.send()
+            check("a sent message shows as on its way at once", chat.outgoing.count == 1 && chat.draft.isEmpty && chat.attachments.isEmpty)
+            check("the image reaches the agent whole", await wait("image turn") {
+                chat.log.turns.last?.userText == "look at this" && chat.log.turns.last?.reply.contains("[images: image/png \(png.base64EncodedString().count)]") == true
+            }, chat.log.turns.last?.reply ?? "")
+            check("the message leaves the on-its-way list once the conversation has it", await wait("settled") { chat.outgoing.isEmpty }, "\(chat.outgoing)")
+            let row = chat.log.turns.last.flatMap { phoneTurnRows($0).first }
+            if case .user(_, _, _, _, _, let extra)? = row {
+                check("the conversation keeps the image's name and size; this phone keeps its picture",
+                      extra.attachments.first?.mime == "image/png" && extra.attachments.first?.bytes == png.count && chat.sentImages[extra.inputID ?? ""]?.first?.data == png,
+                      "\(extra)")
+            } else { check("the user row", false) }
+            // Five images: the host refuses the message; the bubble says so and can be sent again or dropped.
+            chat.attachments = (0..<5).map { PhoneImage(name: "x\($0).png", mime: "image/png", data: png) }
+            chat.draft = "too many"
+            await chat.send()
+            check("a refused message is shown as not delivered, with the host's words", await wait("refused") { chat.outgoing.first?.state == "failed" },
+                  "\(chat.outgoing.map { "\($0.state) \($0.error ?? "")" })")
+            check("a refused message is not part of the conversation", chat.log.turns.last?.userText == "look at this")
+            if let o = chat.outgoing.first { chat.discard(o) }
+            check("dropping it puts its text back", chat.outgoing.isEmpty && chat.draft == "too many", chat.draft)
+            chat.draft = ""; chat.attachments = []
+
+            // The folder picker browses the host.
+            if let listed = try? await chat.browse(cwd) {
+                check("the folder picker lists the session folder's subfolders", listed.folders.contains("docs") && listed.folders.contains("out")
+                      && !listed.folders.contains(".hidden"), listed.folders.joined(separator: ","))
+            } else { check("the folder picker lists the session folder", false) }
+            _ = try? await chat.browse("~")
+            check("listing ~ tells where the host user's home is", chat.home == NSHomeDirectory() || chat.home?.isEmpty == false, chat.home ?? "nil")
+            do { _ = try await chat.browse(cwd + "/nope"); check("a missing folder is refused", false) }
+            catch { check("a missing folder is refused with the host's words", !error.localizedDescription.isEmpty, error.localizedDescription) }
+
+            // Previews: the files a turn wrote or named, read from the host into memory.
+            let outside = (cwd as NSString).deletingLastPathComponent + "/outside"
+            chat.draft = "see `docs/report.html`, `out/chart.png` and `\(outside)/named.md`"
+            await chat.send()
+            check("the reply names three previewable files", await wait("files turn") {
+                chat.log.turns.last.map { phoneTurnFiles($0.blocks) } == ["docs/report.html", "out/chart.png", outside + "/named.md"]
+            }, chat.log.turns.last.map { phoneTurnFiles($0.blocks).joined(separator: ",") } ?? "")
+            let page = try? await chat.preview("docs/report.html")
+            check("a page in the session's folder previews byte for byte", page == FileManager.default.contents(atPath: cwd + "/docs/report.html"))
+            let chart = try? await chat.preview("out/chart.png")
+            check("an image previews and decodes", chart.flatMap { phoneDecodeImage($0) }?.width == 64)
+            let named = try? await chat.preview(outside + "/named.md")
+            check("a file outside the folder that the agent named previews", named.map { String(decoding: $0, as: UTF8.self) } == "# named\n")
+            do { _ = try await chat.preview(outside + "/secret.md"); check("an unnamed file outside the folder is refused", false) }
+            catch { check("an unnamed file outside the folder is refused", error.localizedDescription.contains("outside"), error.localizedDescription) }
+            do { _ = try await chat.preview("Cargo.toml"); check("a kind that is not previewed is refused", false) }
+            catch { check("a kind that is not previewed is refused", true, error.localizedDescription) }
 
             // A dropped connection resumes from the last event, without repeating any.
             let before = chat.log

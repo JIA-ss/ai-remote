@@ -30,12 +30,30 @@ import SwiftUI
     public var newPrompt = ""
     /// A `chat_start` is waiting (for the agent, or for the owner to allow it on the computer).
     public var starting = false
+    /// Images to send with the next message (at most four; scaled before they are attached).
+    public var attachments: [PhoneImage] = []
+    /// Why an image was not attached, shown under the composer until the next change.
+    public var attachNote: String?
+    /// Messages this phone sent that the conversation does not show yet (sending / not delivered).
+    public var outgoing: [PhoneOutgoing] = []
+    /// The host answers every input with an `ack` (or a refusal naming it): the hello's `acks`.
+    public var hostAcks = false
+    /// Pictures of the images this phone sent, by message id, for its own bubbles (this run only).
+    public var sentImages: [String: [PhoneImage]] = [:]
+    /// The host user's home as last seen by a listing of `~` (shortens paths to `~`).
+    public var home: String?
     private let client: PhoneClient
     private var subscription: UInt64?
     private var generation = 0
+    /// Requests waiting for the reply with their `rid` (`files`).
+    private var waiting: [String: CheckedContinuation<JSONValue, Error>] = [:]
+    private var nextRid = 0
+    /// Preview bytes of this conversation's files, fetched once each (a failure is not kept).
+    private var previews: [String: Task<Data, Error>] = [:]
     #if DEBUG
     /// Simulator UI acceptance (`-ui-chat-fixture`): no host; what would go to it is folded in locally.
     var fixture = false
+    var fixtureRefuse = false
     private var fixtureSeq = 1000
     func fixtureEvent(_ fields: [String: JSONValue]) {
         fixtureSeq += 1
@@ -48,6 +66,72 @@ import SwiftUI
     public init(client: PhoneClient, host: String) {
         self.client = client
         self.host = host
+        home = (UserDefaults.standard.dictionary(forKey: Self.homeKey) as? [String: String])?[host]
+    }
+
+    // MARK: Folders on the host
+
+    private static let recentKey = "ai-remote.chat.cwd"
+    private static let homeKey = "ai-remote.chat.home"
+
+    /// Folders agents were last started in on this host, newest first (kept on this phone).
+    public var recentFolders: [String] {
+        (UserDefaults.standard.dictionary(forKey: Self.recentKey) as? [String: [String]])?[host] ?? []
+    }
+    public func rememberFolder(_ cwd: String) {
+        var all = (UserDefaults.standard.dictionary(forKey: Self.recentKey) as? [String: [String]]) ?? [:]
+        all[host] = Array(([cwd] + (all[host] ?? []).filter { !phoneSameFolder($0, cwd) }).prefix(6))
+        UserDefaults.standard.set(all, forKey: Self.recentKey)
+    }
+    /// The folders to offer first: recent ones, then those of the host's sessions.
+    public var folderChoices: [String] { phoneFolderChoices(recent: recentFolders, sessions: sessions.map(\.cwd)) }
+
+    /// A folder on the host and its subfolders (`files_list`, the first page: folders come first).
+    /// Listing `~` also tells where the host user's home is.
+    public func browse(_ path: String) async throws -> (path: String, folders: [String], more: Bool) {
+        #if DEBUG
+        if fixture { return try fixtureBrowse(path) }
+        #endif
+        let reply = try await client.call(host: host, tool: "files_list", args: ["path": .string(path)])
+        let listed = PhoneChatStore.firstLine(reply)
+        let shown = listed["path"].string ?? path
+        if path.trimmingCharacters(in: .whitespaces) == "~", home != shown {
+            home = shown
+            var all = (UserDefaults.standard.dictionary(forKey: Self.homeKey) as? [String: String]) ?? [:]
+            all[host] = shown
+            UserDefaults.standard.set(all, forKey: Self.homeKey)
+        }
+        return (shown, phoneListedFolders(listed["entries"].array, query: ""), listed["next_offset"].number != nil || listed["more"] == .bool(true))
+    }
+
+    /// A tool's answer: its structured content, or the JSON line in its first text block.
+    static func firstLine(_ reply: JSONValue) -> JSONValue {
+        if case .object = reply["structuredContent"] { return reply["structuredContent"] }
+        let text = reply["content"].array.first?["text"].string ?? "{}"
+        return (try? JSONValue.parse(String(text.split(separator: "\n", maxSplits: 1).first ?? "{}"))) ?? .null
+    }
+
+    // MARK: Previews
+
+    /// The bytes of a file this conversation is about (fetched once; `fresh` asks again).
+    public func preview(_ path: String, fresh: Bool = false) async throws -> Data {
+        guard let session = current else { throw NSError(domain: "ai-remote", code: 4, userInfo: [NSLocalizedDescriptionKey: "没有打开的会话"]) }
+        if !fresh, let task = previews[path] { return try await task.value }
+        let client = client, host = host
+        #if DEBUG
+        let fixture = fixture
+        #endif
+        let task = Task<Data, Error> {
+            #if DEBUG
+            if fixture { return try await PhoneChatStore.fixturePreview(path) }
+            #endif
+            return try await client.previewFile(host: host, session: session.id, path: path)
+        }
+        previews[path] = task
+        do { return try await task.value } catch {
+            if previews[path] == task { previews[path] = nil }
+            throw error
+        }
     }
 
     public var canWrite: Bool { role == "rw" && connected && log.state != "ended" }
@@ -96,9 +180,10 @@ import SwiftUI
         do {
             let reply = try await client.call(host: host, tool: "chat_start", args: args)
             let started = reply["structuredContent"]
+            rememberFolder(cwd)
             await close()
             current = PhoneChatSession(started)
-            log = PhoneChatLog()
+            log = PhoneChatLog(); outgoing = []; previews = [:]
             showNew = false; newPrompt = ""
             // The ticket in the reply is good once; if it cannot be used, attach asks for a new one.
             if let ticket = started["ticket"].string, await open(ticket: ticket, since: 0) { return }
@@ -109,7 +194,7 @@ import SwiftUI
     public func open(_ session: PhoneChatSession) async {
         await close()
         current = session
-        log = PhoneChatLog()
+        log = PhoneChatLog(); outgoing = []; previews = [:]
         await attach(since: 0)
     }
 
@@ -151,13 +236,24 @@ import SwiftUI
             role = hello["role"].string
             caps = PhoneChatCaps(hello["caps"])
             runtimeName = hello["runtime"]["name"].string ?? session.name
+            hostAcks = hello["acks"] == .bool(true)
+            if case .array(let list) = hello["commands"] { log.knownCommands(list) }
+            if case .bool(let b) = hello["images"] { log.images = b }
             if let state = hello["state"].string { log.state = state }
             connected = true
             Task { [weak self] in
                 for await line in lines {
                     guard let self, token == self.generation else { return }
                     if line.hasPrefix("\u{0}") { self.ended(String(line.dropFirst()), token: token) }
-                    else { self.log.apply(line: line) }
+                    else { self.received(line) }
+                }
+            }
+            // Messages that got no answer in time count as not delivered.
+            Task { [weak self] in
+                while true {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard let self, token == self.generation, self.connected else { return }
+                    self.settle()
                 }
             }
             return true
@@ -167,8 +263,34 @@ import SwiftUI
         }
     }
 
+    /// One line from the host: an event, the agent's commands, a reply to this phone, or a refusal.
+    func received(_ line: String) {
+        guard let m = try? JSONValue.parse(line) else { return }
+        switch phoneChatLineKind(m) {
+        case "event"?: log.apply(m)
+        case "commands"?: log.knownCommands(m["commands"].array)
+        case "reply"?:
+            if let rid = m["rid"].string ?? m["rid"].number.map({ String(Int($0)) }), let waiter = waiting.removeValue(forKey: rid) {
+                if m["t"].string == "error" {
+                    waiter.resume(throwing: NSError(domain: "ai-remote", code: 5, userInfo: [NSLocalizedDescriptionKey: m["text"].string ?? "被控端拒绝了"]))
+                } else { waiter.resume(returning: m) }
+            } else { outgoing = phoneOutgoingReply(outgoing, m) }
+        case "notice"?:
+            log.apply(.object(["t": .string("notice"), "seq": .number(-1), "level": .string("error"), "code": m["code"], "text": m["text"]]))
+        default: break
+        }
+        settle()
+    }
+
+    private func settle() {
+        let next = phoneSettleOutgoing(outgoing, log: log, now: Date().timeIntervalSince1970 * 1000, hostAcks: hostAcks)
+        if next != outgoing { outgoing = next }
+    }
+
     private func ended(_ reason: String, token: Int) {
         guard token == generation else { return }
+        outgoing = phoneOutgoingDisconnected(outgoing)
+        failWaiting()
         connected = false; subscription = nil
         if reason != "stopped" { disconnected = reason == "host disconnected" ? "被控端断开了对话" : reason }
     }
@@ -181,14 +303,87 @@ import SwiftUI
     /// the agent allows (`interrupt`: stop the turn and send this first).
     public func send(interrupt: Bool = false) async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, canWrite, !sending else { return }
+        let images = attachments
+        guard !text.isEmpty || !images.isEmpty, canWrite, !sending else { return }
         sending = true; defer { sending = false }
         let mode = interrupt && log.busy ? "interrupt" : sendMode
-        if await command(phoneInputCommand(id: UUID().uuidString, text: text, mode: mode)),
-           draft.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-            draft = ""
+        let o = PhoneOutgoing(id: UUID().uuidString, text: text, mode: mode, at: Date().timeIntervalSince1970 * 1000, images: images)
+        // Shown at once as on its way; it leaves when the conversation shows it.
+        draft = ""; attachments = []; attachNote = nil
+        if !images.isEmpty { sentImages[o.id] = images }
+        outgoing.append(o)
+        await deliver(o)
+    }
+
+    private func deliver(_ o: PhoneOutgoing) async {
+        if !(await command(phoneInputCommand(id: o.id, text: o.text, mode: o.mode, images: o.images), report: false)),
+           let i = outgoing.firstIndex(where: { $0.id == o.id }) {
+            outgoing[i].state = "failed"; outgoing[i].error = "disconnected"
+        }
+        settle()
+    }
+
+    /// Sends a message that did not arrive again (the same id unless the host refused it).
+    public func retry(_ o: PhoneOutgoing) async {
+        guard let i = outgoing.firstIndex(where: { $0.id == o.id }), canWrite else { return }
+        let again = phoneRetryOutgoing(outgoing[i], newID: UUID().uuidString, now: Date().timeIntervalSince1970 * 1000)
+        if again.id != o.id, let images = sentImages[o.id] { sentImages[again.id] = images }
+        outgoing[i] = again
+        await deliver(again)
+    }
+
+    /// Forgets a message that did not arrive; its text goes back to the composer when that is empty.
+    public func discard(_ o: PhoneOutgoing) {
+        outgoing.removeAll { $0.id == o.id }
+        if draft.isEmpty { draft = o.text }
+        if attachments.isEmpty { attachments = o.images }
+    }
+
+    // MARK: The composer's menus and images
+
+    /// The agent's commands and skills for the `/` menu.
+    public var commands: [PhoneSlashCommand] { log.commands ?? [] }
+    /// Whether the agent takes images: what it said last, else its runtime's caps.
+    public var takesImages: Bool { log.images ?? caps?.images ?? false }
+
+    /// Files in the session's folder whose path contains every word of `query`, for the `@` menu.
+    public func files(_ query: String, limit: Int = 50) async throws -> [String] {
+        #if DEBUG
+        if fixture { return phoneRankFiles(Self.fixtureFiles.filter { f in query.split(separator: " ").allSatisfy { f.lowercased().contains($0.lowercased()) } }, query) }
+        #endif
+        guard let id = subscription else { throw NSError(domain: "ai-remote", code: 3, userInfo: [NSLocalizedDescriptionKey: "对话已断开"]) }
+        nextRid += 1
+        let rid = "p\(nextRid)"
+        let reply: JSONValue = try await withCheckedThrowingContinuation { (k: CheckedContinuation<JSONValue, Error>) in
+            self.waiting[rid] = k
+            let client = self.client
+            Task { @MainActor in
+                do { try await client.chatSend(id, ["files": .object(["rid": .string(rid), "query": .string(query), "limit": .number(Double(limit))])]) }
+                catch { self.waiting.removeValue(forKey: rid)?.resume(throwing: error) }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(10))
+                self.waiting.removeValue(forKey: rid)?.resume(throwing: NSError(domain: "ai-remote", code: 6, userInfo: [NSLocalizedDescriptionKey: "被控端没有回应"]))
+            }
+        }
+        return phoneRankFiles(reply["files"].array.compactMap(\.string), query)
+    }
+
+    private func failWaiting() {
+        let all = waiting; waiting = [:]
+        for (_, k) in all { k.resume(throwing: NSError(domain: "ai-remote", code: 3, userInfo: [NSLocalizedDescriptionKey: "对话已断开"])) }
+    }
+
+    /// Attaches an image (already encoded and scaled); says why when the host would refuse it.
+    public func attach(_ image: PhoneImage) {
+        switch phoneImageProblem(mime: image.mime, bytes: image.data.count, have: attachments.count) {
+        case "count"?: attachNote = "一条消息最多带 \(phoneMaxImages) 张图片"
+        case "type"?: attachNote = "只能发送 PNG、JPEG、GIF 或 WebP 图片"
+        case "size"?: attachNote = "图片太大（压缩后仍超过 \(phoneSizeLabel(phoneMaxImageBytes))）"
+        default: attachments.append(image); attachNote = nil
         }
     }
+    public func detach(_ id: String) { attachments.removeAll { $0.id == id } }
 
     /// Stops the running turn; the session stays and takes the next message.
     /// A watch-only conversation (an older host) still stops through the `chat_interrupt` tool.
@@ -232,13 +427,13 @@ import SwiftUI
     }
 
     /// One command on the open chat; false (with the error shown) when it did not go out.
-    private func command(_ command: [String: JSONValue]) async -> Bool {
+    private func command(_ command: [String: JSONValue], report: Bool = true) async -> Bool {
         #if DEBUG
         if fixture { fixtureCommand(command); return true }
         #endif
-        guard let id = subscription else { self.error = "对话已断开"; return false }
+        guard let id = subscription else { if report { self.error = "对话已断开" }; return false }
         do { try await client.chatSend(id, command); return true }
-        catch { self.error = error.localizedDescription; return false }
+        catch { if report { self.error = error.localizedDescription }; return false }
     }
 
     #if DEBUG
@@ -249,15 +444,22 @@ import SwiftUI
         let me: JSONValue = .object(["device": .string("ui-fixture")])
         if let input = command["input"] {
             let text = input["text"].string ?? ""
+            let attachments: JSONValue = .array(input["attachments"].array.map { a in
+                .object(["name": a["name"], "mime": a["mime"], "bytes": .number(Double(Data(base64Encoded: a["data"].string ?? "")?.count ?? 0))])
+            })
+            // `-ui-chat-unacked`: the first message is refused, so the bubble offers to send it again.
+            if fixtureRefuse { fixtureRefuse = false; received(JSONValue.object(["t": .string("error"), "code": .string("refused"), "input_id": input["id"], "text": .string("UI 测试：被控端拒收了这条消息")]).text); return }
+            received(JSONValue.object(["t": .string("ack"), "input_id": input["id"]]).text)
             switch input["mode"].string {
             case "steer" where log.busy:
-                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me, "steer": .bool(true)])
+                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me, "steer": .bool(true), "input_id": input["id"], "attachments": attachments])
             case nil where log.busy:
                 let queued = log.queued.map { JSONValue.object(["id": .string($0.id), "text": .string($0.text)]) }
                 fixtureEvent(["t": .string("state"), "turn": .number(n), "state": .string("running"),
                               "queued": .array(queued + [.object(["id": input["id"], "text": .string(text)])])])
+                settle()
             default:
-                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me])
+                fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me, "input_id": input["id"], "attachments": attachments])
                 fixtureEvent(["t": .string("turn_start"), "turn": .number(n + 1)])
                 fixtureEvent(["t": .string("state"), "turn": .number(n + 1), "state": .string("running")])
                 fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("Bash sleep 600"),
@@ -274,9 +476,58 @@ import SwiftUI
     }
     #endif
 
+    #if DEBUG
+    static let fixtureFiles = ["README.md", "apps/ios/README.md", "docs/report.html", "docs/notes.md", "out/chart.png", "tools/ios.sh", "Cargo.toml"]
+
+    /// A small folder tree for the fixture's folder picker.
+    func fixtureBrowse(_ path: String) throws -> (path: String, folders: [String], more: Bool) {
+        let tree: [String: [String]] = ["/Users/me": ["Desktop", "notes", "work"], "/Users/me/work": ["ai-remote", "site"],
+                                        "/Users/me/work/ai-remote": ["apps", "crates", "docs"], "/Users/me/notes": [], "/Users/me/work/site": []]
+        var p = phoneTrimFolder(path)
+        if p == "~" || p.hasPrefix("~/") { p = "/Users/me" + p.dropFirst() }
+        if path.trimmingCharacters(in: .whitespaces) == "~" { home = "/Users/me" }
+        guard let folders = tree[p] else { throw NSError(domain: "ai-remote", code: 7, userInfo: [NSLocalizedDescriptionKey: "\(p) does not exist"]) }
+        return (p, folders, false)
+    }
+
+    /// What a host would send for the fixture's files: a page, a note and a chart.
+    static func fixturePreview(_ path: String) async throws -> Data {
+        try await Task.sleep(for: .milliseconds(150))
+        switch phonePreviewKind(path) {
+        case "html"?:
+            return Data(("<!doctype html><html><head><title>报告</title><style>body{font:16px -apple-system;margin:24px}h1{color:#2563eb}"
+                + ".bar{height:18px;background:#16a34a;border-radius:4px}</style></head>"
+                + "<body><h1>构建报告</h1><p>iOS 构建通过，用时 <b>4 分 12 秒</b>。</p><div class=bar style=width:70%></div>"
+                + "<p id=js>脚本没有运行</p><script>document.getElementById('js').textContent='脚本运行了'</script><img src=https://example.com/x.png alt=外部图片></body></html>").utf8)
+        case "markdown"?:
+            return Data("""
+                # 构建说明
+
+                先装 **Xcode**，再运行：
+
+                ```sh
+                tools/ios.sh framework
+                ```
+
+                - 第一步：`rustup target add aarch64-apple-ios-sim`
+                - 第二步：`xcodegen generate`
+
+                > 模拟器里不能拍照。
+
+                | 平台 | 状态 |
+                |---|---|
+                | iOS | 通过 |
+                """.utf8)
+        default:
+            return phoneFixturePNG(width: 320, height: 200)
+        }
+    }
+    #endif
+
     /// Stops watching (the agent keeps its session on the host).
     public func close() async {
         generation += 1
+        failWaiting()
         if let id = subscription { await client.stop(id) }
         subscription = nil; connected = false; role = nil; disconnected = nil
     }
@@ -284,7 +535,7 @@ import SwiftUI
     /// Back to the session list.
     public func leave() async {
         await close()
-        current = nil; log = PhoneChatLog(); draft = ""
+        current = nil; log = PhoneChatLog(); draft = ""; attachments = []; outgoing = []; previews = [:]
         await loadSessions()
     }
 }

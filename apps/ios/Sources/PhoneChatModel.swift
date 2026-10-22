@@ -67,11 +67,14 @@ public struct PhoneChatCaps: Equatable, Sendable {
     /// A message can be added to the running turn (`mode: "steer"`); hosts without it queue.
     public var steer = false
     public var questions = false
+    /// May take images with a message (for ACP agents, until the agent says otherwise).
+    public var images = false
     public init() {}
     public init(_ v: JSONValue) {
         interrupt = v["interrupt"] != .bool(false)
         steer = v["steer"] == .bool(true)
         questions = v["questions"] == .bool(true)
+        images = v["images"] == .bool(true)
     }
 }
 
@@ -155,6 +158,12 @@ public struct PhoneChatTurn: Identifiable, Equatable, Sendable {
     public var userText: String?
     public var userBy = ""
     public var userTs: Double = 0
+    /// The id the sender gave the user's message, and the images it came with (names and sizes only).
+    public var userInputID: String?
+    public var userAttachments: [PhoneAttachment] = []
+    /// Images of messages added to the turn (`steer`), by the index of their block.
+    public var steerAttachments: [Int: [PhoneAttachment]] = [:]
+    public var steerInputs: [Int: String] = [:]
     public var blocks: [PhoneChatBlock] = []
     /// `running`, `completed`, `failed` or `interrupted`.
     public var status = "running"
@@ -207,7 +216,21 @@ public struct PhoneChatLog: Equatable, Sendable {
     public var notices: [PhoneChatNotice] = []
     /// How full the agent's context window is, from its last report that had both numbers.
     public var context: PhoneContextUsage?
+    /// Ids of the latest messages the host accepted into the conversation (`user` events).
+    public var inputs: [String] = []
+    /// Messages the host dropped after accepting them (the queue was full), with why.
+    public var dropped: [PhoneQueued] = []
+    /// The agent's commands and skills from its last `commands` event (nil: none came).
+    public var commands: [PhoneSlashCommand]?
+    /// Whether the agent takes images, from its last `agent` event (nil: it did not say).
+    public var images: Bool?
     public init() {}
+
+    /// The list the host knew when the chat opened (unnumbered, right after the hello); a numbered
+    /// `commands` event is newer and wins.
+    public mutating func knownCommands(_ list: [JSONValue]) {
+        if commands == nil { commands = list.map(PhoneSlashCommand.init) }
+    }
 
     /// The agent is working on a turn (the stop button is useful).
     public var busy: Bool { state == "running" || state == "interrupting" || state == "starting" }
@@ -248,19 +271,30 @@ public struct PhoneChatLog: Equatable, Sendable {
             state = e["state"].string ?? state
             queued = e["queued"].array.map { PhoneQueued(id: $0["id"].string ?? "", text: $0["text"].string ?? "") }
             return
+        case "commands":
+            commands = e["commands"].array.map(PhoneSlashCommand.init)
+            return
+        case "agent":
+            if case .bool(let b) = e["images"] { images = b }
+            return
         case "user":
             let text = e["text"].string ?? "", by = e["by"]["device"].string ?? ""
+            let attachments = e["attachments"].array.map(PhoneAttachment.init)
+            if let id = e["input_id"].string { inputs = Array((inputs + [id]).suffix(100)) }
             if e["steer"] == .bool(true) {
                 // Added to a running turn: shown where it landed, inside that turn. The host numbers it with
                 // the running turn; an older host may number it as the next one, so the running turn wins.
                 let target = turns.last(where: { $0.status == "running" })?.n ?? (turns.contains { $0.n == n } ? n : n + 1)
                 let i = touch(target)
                 turns[i].blocks.append(.user(text: text, by: by, ts: ts))
+                if !attachments.isEmpty { turns[i].steerAttachments[turns[i].blocks.count - 1] = attachments }
+                if let id = e["input_id"].string { turns[i].steerInputs[turns[i].blocks.count - 1] = id }
                 return
             }
             // The user line comes right before its turn starts (whose number is one more).
             let i = touch(n + 1)
             turns[i].userText = text; turns[i].userBy = by; turns[i].userTs = ts
+            turns[i].userInputID = e["input_id"].string; turns[i].userAttachments = attachments
             return
         case "turn_start":
             let i = touch(n)
@@ -268,6 +302,7 @@ public struct PhoneChatLog: Equatable, Sendable {
             return
         case "notice":
             let level = e["level"].string ?? "info"
+            if let id = e["input_id"].string { dropped = Array((dropped + [PhoneQueued(id: id, text: e["text"].string ?? "")]).suffix(20)) }
             guard level != "debug" else { return }
             let code = e["code"].string ?? "", text = e["text"].string ?? ""
             if n > 0, let i = turns.firstIndex(where: { $0.n == n && $0.status == "running" }) {
@@ -417,8 +452,16 @@ public enum PhoneRunMember: Equatable, Sendable {
     case thought(PhoneThought)
 }
 
+/// What else a user row carries: the id its sender gave it (this device shows its own pictures by
+/// it) and the images it came with (names and sizes; the bytes stay with the sender).
+public struct PhoneUserExtra: Equatable, Sendable {
+    public var inputID: String?
+    public var attachments: [PhoneAttachment] = []
+    public init(inputID: String? = nil, attachments: [PhoneAttachment] = []) { self.inputID = inputID; self.attachments = attachments }
+}
+
 public enum PhoneChatRow: Equatable, Sendable, Identifiable {
-    case user(key: String, text: String, by: String, ts: Double, steer: Bool)
+    case user(key: String, text: String, by: String, ts: Double, steer: Bool, extra: PhoneUserExtra = PhoneUserExtra())
     case text(key: String, text: String, streaming: Bool)
     case thought(key: String, PhoneThought, live: Bool)
     /// Tool calls in a row (with the reasoning between them), summarized in one sentence.
@@ -430,7 +473,7 @@ public enum PhoneChatRow: Equatable, Sendable, Identifiable {
 
     public var id: String {
         switch self {
-        case .user(let k, _, _, _, _), .text(let k, _, _), .thought(let k, _, _), .run(let k, _, _, _),
+        case .user(let k, _, _, _, _, _), .text(let k, _, _), .thought(let k, _, _), .run(let k, _, _, _),
              .agent(let k, _), .plan(let k, _), .question(let k, _), .notice(let k, _, _, _): k
         }
     }
@@ -457,7 +500,8 @@ private func joinsRun(_ b: PhoneChatBlock) -> Bool {
 public func phoneTurnRows(_ turn: PhoneChatTurn) -> [PhoneChatRow] {
     var rows: [PhoneChatRow] = []
     let running = turn.status == "running"
-    if let text = turn.userText { rows.append(.user(key: "u\(turn.n)", text: text, by: turn.userBy, ts: turn.userTs, steer: false)) }
+    if let text = turn.userText { rows.append(.user(key: "u\(turn.n)", text: text, by: turn.userBy, ts: turn.userTs, steer: false,
+                                     extra: PhoneUserExtra(inputID: turn.userInputID, attachments: turn.userAttachments))) }
     let b = turn.blocks
     // The open run, as an index into rows.
     var run: Int?
@@ -497,7 +541,9 @@ public func phoneTurnRows(_ turn: PhoneChatTurn) -> [PhoneChatRow] {
         case .plan(let entries): rows.append(.plan(key: "p\(turn.n)", entries))
         case .question(let q): rows.append(.question(key: "q\(turn.n):\(q.qid)", q))
         case .notice(let level, let code, let text): rows.append(.notice(key: "n\(turn.n):\(i)", level: level, code: code, text: text))
-        case .user(let text, let by, let ts): rows.append(.user(key: "s\(turn.n):\(i)", text: text, by: by, ts: ts, steer: true))
+        case .user(let text, let by, let ts):
+            rows.append(.user(key: "s\(turn.n):\(i)", text: text, by: by, ts: ts, steer: true,
+                              extra: PhoneUserExtra(inputID: turn.steerInputs[i], attachments: turn.steerAttachments[i] ?? [])))
         case .thought: break
         }
     }

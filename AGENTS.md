@@ -56,6 +56,48 @@
 经 runner 的插话、图片、重启续接后来补了测试，在 Mac（Unix 套接字）和 Windows（命名管道）上都过了，见该节；全屏修复在真实 App
 原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
 
+## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
+
+桌面端经 #24 合进 main 的对话功能，iPhone 端这次补齐。被控端和协议都没改，只用已有的 `chat_file`、`files_list`、chat/1 的
+`files` / `ack` / `commands` / `attachments`。
+
+- **Rust 核心**（`ar-mobile`）：新增 `preview_file(host, session, path)`：调 `chat_file` 拿票据，经内嵌控制端的 `files` 流读进内存，
+  核对 SHA-256，不写盘；上限 16 MiB、整体 60 s 超时。其余（`files_list`、`chat_file` 调用）走已有的 `request`。
+- **纯逻辑**（`PhoneChatInput.swift`，照 `lib/chat-input.ts`、`lib/chat.ts` 的目录 / 发送状态部分、`lib/preview.ts` 移植，改桌面端时同步改这里）：
+  `/` `@` 菜单（光标位置按 UTF-16，和 `UITextView` 一致）、图片限制、行分类（`phoneChatLineKind`）、发送中 / 未送达
+  （`PhoneOutgoing` 一组函数）、主控端路径规则（Windows / Unix / `~`）、按项目分组、`phoneTurnFiles` / `phoneFileTarget` /
+  `phonePreviewDocument`。`PhoneChatLog` 多了 `inputs`、`dropped`、`commands`、`images`，用户消息带 `input_id` 和附件。
+  `PhoneChatMedia.swift`：ImageIO 处理图片（相册 / 相机的 HEIC 等一律缩到长边 2048 转 JPEG，已合规的 PNG/JPEG/GIF/WebP 原样发）。
+- **Store**：按行分流（事件 / 命令列表 / 带 `rid` 的回复 / ack 与拒绝 / 其他错误）；发送立刻显示为"发送中…"，收到 `user` 事件或进队列后消失，
+  被拒、断线、15 s 无 ack 显示"未送达"，可"重新发送"（断线用原 id，被拒换新 id）或"丢弃"（文字和图片回到输入框）；
+  `@` 文件经 `{"files":{rid,..}}`，10 s 超时；浏览目录用 `files_list`（列 `~` 时记下被控端的家目录，路径缩写成 `~`）；
+  最近文件夹按主机存在 `UserDefaults`；预览按路径缓存，失败不缓存。
+- **界面**：会话列表按项目分组（文件夹名 + 上级路径 + 数量，会话行带"多久前"）；新对话的文件夹是一行，点进 `PhoneFolderPicker`
+  （最近 → 浏览：面包屑、`..`、子文件夹、底部"使用「名字」"；输入路径回车直接打开；列不出时给原因和"仍然使用这个路径"）；
+  已完成的轮次下面显示它写出 / 点名的文件卡片（图片是缩略图），点卡片、diff 卡片上的眼睛、回复里指向文件的链接都打开预览 sheet；
+  输入框一行：左 `+`（从相册选择 / 拍照，智能体不收图片时置灰）、中间文字、右停止 / 发送，上方是待发图片和 `/` `@` 菜单。
+- **HTML 预览的取舍**：用 `WKWebView` 显示，但关掉内容 JavaScript（`allowsContentJavaScript = false`），页面最前面插桌面端同一条
+  CSP（不联网、只收内联样式和 data 图片），`nonPersistent` 数据存储，第一次加载之后的所有导航都拒绝；另有"源码"视图。
+  理由：只看源码对网页报告没用，静态 HTML/CSS 才是要看的；不跑脚本和桌面端规则一致。iPhone 上的网页视图本来就碰不到应用代码
+  （没有注册任何 script message handler），所以这是谨慎而不是堵漏洞，代价是靠脚本画的页面（图表库）只剩静态部分。SVG 也走这个网页视图。
+- Info.plist 的相机说明改成同时覆盖扫码和拍照发给智能体；相册用 `PhotosPicker`（系统进程内选图），不需要相册权限说明。
+
+**实测（2026-10-22，本机 macOS）**：
+- `tools/test-phone-chat-model.sh` 31 项全过（新增 14 项，用例照搬 `chat-input` / `chat-folder` / `chat-preview` / `chat-state` 的 JS 测试）。
+- `$HOME/.local/bin/python3.12 tools/phone-chat-smoke.py`（隔离被控端 + 替身智能体，三个 home 都 `[network] quiet = true`）53 项全过（1 次）。
+  新增：记住最近文件夹、hello `acks`、命令和技能列表、`@` 文件（多词匹配）、发图片后替身收到的 base64 长度与原图一致、发送中列表在对话出现后清空、
+  5 张图被被控端拒绝后显示原话并可丢弃、浏览会话文件夹（隐藏目录不列）、列 `~` 记下家目录、不存在的文件夹报原话、回复点名的三个文件、
+  预览会话目录里的 HTML 逐字节一致、PNG 可解码、目录外但智能体点名的文件可预览、没点名的被拒、`.toml` 被拒。
+- iOS 模拟器（自建 `ios-chat-v3`，iPhone Duo / iOS 27.1，xcodegen 生成工程）`PhoneChatUITests` 3 个用例全过（演示数据，没连被控端）。
+  新用例走：轮次下的三张预览卡片、图片大图、网页（静态内容出现、"脚本没有运行"仍在 = 脚本没跑、外部图片没加载）、源码视图、Markdown 文档、
+  回复里的"报告"链接打开预览、`/re` 弹命令菜单并选中、`@rep` 弹文件菜单并插入路径、第一次发送被拒（`-ui-chat-unacked`）显示未送达后重发成功且气泡带缩略图、
+  会话按项目分组、文件夹选择器从最近进入浏览、逐级进入后"使用"回到表单。截图 `/tmp/ios-chat-v3/01~13`，都看过（没进仓库）。
+- `cargo fmt --check`、`cargo clippy -p ar-mobile --all-targets -D warnings`、`cargo test -p ar-mobile` 过。
+
+**未测**：真机（相册选图、拍照、HEIC 转换只在 Mac 上用 ImageIO 测过 PNG）；模拟器 UI 测试是演示数据，真实被控端上的界面只经过冒烟（同一套 Store 代码在 macOS 上）；
+Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询问 / 拒绝时的浏览体验；超过一页（500 项）的文件夹只提示不翻页；
+粘贴图片（`UITextView` 粘贴）、查找、选中引用、上下文用量明细、子智能体内部步骤这几项桌面端有、这次没做。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
