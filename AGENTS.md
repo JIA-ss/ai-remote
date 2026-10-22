@@ -88,7 +88,7 @@
 - [ ] iOS 只读会话视图；Codex `turn/steer` 和 Claude hooks 的运行中插话；可选的 `kind:"pty"` 原始终端。
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
   - 被控端：把 `chat`、`set_chat_enabled` 加进 `HostRequest::OPS` 和 `op()`；
-  - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 fc64880 已经有这套机制。）
+  - 桌面端：设置页的智能体开关先用 `can("chat")` 判断，再调用 `local_host_chat` / `set_local_host_chat`，并改成经 `host_local::request` 发送。这样旧被控端会统一显示"被控端版本较旧"和"更新被控端…"，不会再把 `unknown variant` 原样露给用户。（托盘分支 50bbbe3 已经有这套机制。）
 - [ ] 合入 PR #18（`[network] quiet = true`）之后：`tools/chat-smoke.py` 给隔离被控端和控制端的 home 都写 `[network] quiet = true`，之后才能再跑。在公司网络里，隔离 home 默认会发 mDNS 组播和 UPnP 探测，容易被 IT 标记。本分支在那之前不起任何测试实例。
 - [ ] 是否向 MCP 客户端开放 `chat_send` / `chat_read`（"AI 指挥 AI"），等用户决定。
 
@@ -113,7 +113,7 @@
 
 **真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
 
-0. 前提：开发机上已经有一个服务在跑（`ai-remote-host-cc166525`，安静模式，`[network] quiet = true`，构建在 `ai-remote-quiet` 目录）。替换或重装它之前先问用户。本分支要先合入 PR #18（`feat/quiet-network`，或 cherry-pick 3017e90），否则读到 `quiet = true` 会启动失败。在公司网络里起任何测试用的被控端或控制端（包括隔离的 `--home`）时，都要在它的 `host/` 和 `controller/` 下各放一份写有 `[network] quiet = true` 的 `ai-remote.toml`。
+0. 前提：开发机上已经有一个服务在跑（`ai-remote-host-cc166525`，安静模式，`[network] quiet = true`，构建在 `ai-remote-quiet` 目录）。替换或重装它之前先问用户。本分支要先合入 PR #18（`feat/quiet-network`，或 cherry-pick 55e2725），否则读到 `quiet = true` 会启动失败。在公司网络里起任何测试用的被控端或控制端（包括隔离的 `--home`）时，都要在它的 `host/` 和 `controller/` 下各放一份写有 `[network] quiet = true` 的 `ai-remote.toml`。
 
 1. 构建并安装：`cargo build --release -p ai-remote`，管理员终端里 `ai-remote host install --service`（先 `--dry-run` 看计划）。`ai-remote host status` 为 running。
 2. 控制端 `ai-remote chat list --host <host>`：应列出用户装的 codex / claude 等且 `can_start: true`、版本和登录态与用户终端里一致（说明是用户身份探测的）。被控端机器上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"`：应有两个进程，一个用户名 `NT AUTHORITY\SYSTEM`（被控端），一个是登录用户（runner，命令行带 `--chat-runner`）。`host/chat-runner.log` 有 `connected to the host`。
@@ -592,11 +592,11 @@ split-frame，H.264 不行；未查证）。所有码流都用 Edge 155 的 WebC
 
 ### 延迟、自适应码率、画质、光标（2026-10-12 第三轮）
 
-**延迟指标**（被控端在 `5ff8ff5`，观看端本轮）：帧头 `ts_us` 是按流时钟的采集时间；观看端发 `{"ping":n}`，被控端回
+**延迟指标**（被控端在 `61d66ba`，观看端本轮）：帧头 `ts_us` 是按流时钟的采集时间；观看端发 `{"ping":n}`，被控端回
 kind-3 带流时钟。桌面端 `lib/clock.ts` 取 60 s 内往返最短的一次做映射（NTP 规则，误差 ≤ 半个往返），会话页指标显示
 "采集后 N 毫秒显示（±误差）"（解码出帧绘制时刻 − 采集时刻，中位数/秒）。命令行 `ai-remote view` 报"采集→到达"分位数。
 
-**自适应码率**（`apps/desktop/src/lib/rate.ts`，被控端 `{"bitrate_kbps":n}` 在 `5ff8ff5`）：
+**自适应码率**（`apps/desktop/src/lib/rate.ts`，被控端 `{"bitrate_kbps":n}` 在 `61d66ba`）：
 - 排队信号：延迟比 60 s 内最低值高出的部分。每 0.5 s 评估一次，取这 0.5 s 内**最快 1/5 帧**的延迟（网络排队会推迟
   每一帧，机器忙造成的卡顿只推迟部分帧）。基线另以"半个最短 ping + 80 ms"封顶：慢链路上起流时第一次测到延迟前
   队列就已形成。
@@ -940,7 +940,7 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       `ai-remote host install --service`，锁屏 / UAC / 重启登录界面 /
       ctrl+alt+del / stop-host / uninstall 各走一遍，把结果填回来；失败先看 `host/host.log`。
 - [x] `follow_input_desktop`：真机上切桌面本身成功，但注入仍被拒，根因是打开输入桌面的句柄缺 `DESKTOP_JOURNALPLAYBACK`
-      （d42a8b4 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
+      （9143cdb 改为 GENERIC_ALL，RustDesk 同），修后锁屏上键鼠都通（见"真机结果"）。
 - [x] macOS 锁屏 / 登录界面：锁屏在 `platform/macos.rs` 里按"可达的安全桌面"处理；登录界面靠
       `host install --service` 的系统级 LaunchAgent（`LimitLoadToSessionType = [LoginWindow, Aqua]`）。代码 2026-10-20
       落地，**真机锁屏 / 注销 / 重启验证未做**，见"Mac 被控端补全"一节。
@@ -955,7 +955,7 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
       影响、并肉眼确认各种光标画得对——**没做**：这段 GPU 合成没法 headless 验证，不适合 agent 盲写上热路径，留给能看屏验证的人。
 - [x] 服务化以后在锁屏和 UAC 场景下自动选 DDA：已做（`capture::want_dda`），环境变量保留为强制开关。
 
-### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + bd9cd83）
+### 真机结果（2026-10-20，Windows 11 开发机，PR #11 分支 + a70a95d）
 
 通过 zremote 的提权会话在开发机上执行，Mac 作控制端（Mac 10.1.120.x，开发机 10.1.77.x，不同网段）。
 
@@ -966,19 +966,19 @@ cargo test -p ar-host --release --lib dda_desktop_switch_recovery -- --ignored -
 - `keyboard ctrl+alt+del` 走 SendSAS 生效：`info` 变 `input_desktop: Winlogon, secure_desktop: true`，`doctor` 的
   `desktop` / `approval` 按设计变 warn，**安全桌面截图正常**（DDA 在 SYSTEM 下采到 SAS 菜单）。
 - **安全桌面上的注入失败**：`mouse move` 报 `拒绝访问 (os error 5)`（SetCursorPos），`keyboard enter/escape` 报
-  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（bd9cd83）后仍失败，host.log 没有
+  `not all input events were sent (UIPI)`。改成在全新 OS 线程上注入（a70a95d）后仍失败，host.log 没有
   `cannot switch` 的 warn。对照实验：用被控端的 `shell` 工具（同一个 SYSTEM 令牌、同一 Console 会话）跑一段
   P/Invoke 脚本，在新线程里 OpenInputDesktop(GENERIC_ALL 或本项目的标志) → SetThreadDesktop → SetCursorPos →
   SendInput **全部成功**，桌面名 Winlogon；以用户身份跑则 OpenInputDesktop 就是 err 5。所以系统层没问题，
-  差异在被控端进程内部，未定位。2026-10-21 补一条（f850318 把切桌面日志提到 info）：被控端日志里确实有
+  差异在被控端进程内部，未定位。2026-10-21 补一条（eb395f9 把切桌面日志提到 info）：被控端日志里确实有
   `input thread switched desktop from="Default" to="Winlogon"`，紧接着 SendInput 仍报 os error 5——
   **线程已经在 Winlogon 上，注入照样被拒**。那么差异不在线程所在桌面，而在进程本身（对照脚本是被控端的子进程，
   却能成功）：候选是被控端进程的 integrity level / 令牌属性（服务用 DuplicateTokenEx + TokenSessionId 造的令牌
   和子进程继承的是否完全一致）、UIPI 相关的进程属性、或 enigo 事件里的 dwExtraInfo。
-  **2026-10-21 定位并修复**：在失败点打印上下文（f21cdc0，`platform::input_context`）——线程桌面 Winlogon、输入桌面
+  **2026-10-21 定位并修复**：在失败点打印上下文（4d41d98，`platform::input_context`）——线程桌面 Winlogon、输入桌面
   Winlogon、本进程和前台窗口都是 System 完整性，全部对称；但在**同一个线程**上紧接着用 `GENERIC_ALL` 重新 OpenInputDesktop
   + SetThreadDesktop 后，SetCursorPos 和 SendInput 立刻成功。差异只在桌面句柄的访问权限：原来沿用采集侧的标志集
-  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（d42a8b4，RustDesk 同）后，
+  （没有 `DESKTOP_JOURNALPLAYBACK`），SendInput 对安全桌面要求这个权限；改成 `GENERIC_ALL`（9143cdb，RustDesk 同）后，
   SAS 菜单和真实锁屏上 `mouse move`、`keyboard escape` 都成功，Esc 真的关掉了 SAS 菜单（`info` 回到 Default）。
   用户会话的 Default 桌面上原标志集够用，所以之前从没暴露。`input_context` 的探针留着：只在注入被拒时跑，会发一个
   相对 (0,0) 的空移动。

@@ -526,8 +526,8 @@
     "tool": "anonymous urllib GitHub REST/raw GET",
     "official_url": "https://github.com/JIA-ss/ai-remote",
     "default_branch": "main",
-    "head_sha": "91bed6eb1f4c65450c8ed9a6ddfc79081313f900",
-    "expected_merge_sha": "91bed6eb1f4c65450c8ed9a6ddfc79081313f900",
+    "head_sha": "a169db85e35e23f1c94e3bf3d768c335dde801bc",
+    "expected_merge_sha": "a169db85e35e23f1c94e3bf3d768c335dde801bc",
     "description": "Open-source MCP remote control for Windows and macOS, with human takeover and an experimental native iPhone controller.",
     "topics": [
       "human-in-the-loop",
@@ -543,7 +543,7 @@
     "readmes": [
       {
         "file": "README.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/README.md",
         "sha256": "1a5034f90022dfea30a381c0f2fcb216f1954c0688c0d4bb785598882321511d",
         "relative_targets": [
           {
@@ -619,7 +619,7 @@
       },
       {
         "file": "README.zh-CN.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/README.zh-CN.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/README.zh-CN.md",
         "sha256": "c9e70627aebc6fa676a78b4bbcd51d3d7a4ddbc8cc44fff46bae204dc7cb732b",
         "relative_targets": [
           {
@@ -697,49 +697,49 @@
     "linked_documents": [
       {
         "file": "docs/macos.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/macos.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/macos.md",
         "sha256": "284da16a71d5ee9c6b3c7e9d2467b70b6342e52be40ddfbe2c3c4d3787b2ccf7",
         "retrieved": true
       },
       {
         "file": "docs/iphone-validation.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/iphone-validation.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/iphone-validation.md",
         "sha256": "a70fb7bdb45323839f82b1b6cbb93cc280bdc7cb9d1a679f91ce27124bdc4550",
         "retrieved": true
       },
       {
         "file": "docs/mcp-clients.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/mcp-clients.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/mcp-clients.md",
         "sha256": "789d2ecc2d5ccd92a25750215f4a47ba23ddf1630b4394d139b97830600e389c",
         "retrieved": true
       },
       {
         "file": "apps/ios/README.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/apps/ios/README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/apps/ios/README.md",
         "sha256": "fcfdc3553f38a408ef57c83c5c065c0f7eb16c45dfceed558e086efd73d4c022",
         "retrieved": true
       },
       {
         "file": "apps/desktop/README.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/apps/desktop/README.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/apps/desktop/README.md",
         "sha256": "56d91c43ad1573e73e4d5c8495368785540be9910ac26e1ddb85ea847e900d32",
         "retrieved": true
       },
       {
         "file": "docs/approvals.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/approvals.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/approvals.md",
         "sha256": "fe4184a64499a75c77de6428e0db966d0e4d75b113f7d083754b57cf45a55ec9",
         "retrieved": true
       },
       {
         "file": "docs/tools.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/tools.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/tools.md",
         "sha256": "ac94d2d734a966c1940797a30483bd050c13a399d51ac9683523c4875091ac78",
         "retrieved": true
       },
       {
         "file": "docs/operations.md",
-        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/91bed6eb1f4c65450c8ed9a6ddfc79081313f900/docs/operations.md",
+        "url": "https://raw.githubusercontent.com/JIA-ss/ai-remote/a169db85e35e23f1c94e3bf3d768c335dde801bc/docs/operations.md",
         "sha256": "50cb65d5734d62936e4a63d0599c10e9eeb7d59706a6de73b5d0d361c100deef",
         "retrieved": true
       }
@@ -759,7 +759,7 @@
   "referenced_ci": {
     "html_url": "https://github.com/JIA-ss/ai-remote/actions/runs/38049375262",
     "name": "iPhone controller",
-    "head_sha": "a0c8612acbb6879549eb9812d3fdd157fcea5ef9",
+    "head_sha": "16ecc68afa42d536e5750e6171a0bf3a44b02ddb",
     "status": "completed",
     "conclusion": "success",
     "created_at": "2026-10-10T11:42:46Z",
@@ -771,11 +771,11 @@
     "/tmp/ar-post-docs-iphone-validation.md"
   ],
   "direct_observations": [
-    "Anonymous GitHub API main resolves to requested merge SHA 91bed6eb1f4c65450c8ed9a6ddfc79081313f900.",
+    "Anonymous GitHub API main resolves to requested merge SHA a169db85e35e23f1c94e3bf3d768c335dde801bc.",
     "Both fixed-SHA README files retrieved; top-level project name, mutual language links, AGPL-3.0 license, official repository link, capability and limits match.",
     "All relative file/image targets in both READMEs exist in the merge tree.",
     "Chinese operations/approvals/tools destinations now use zh-CN files, resolving the earlier optional finding.",
-    "Public iPhone ledger links successful CI at source a0c8612. It separates simulator startup/pairing error UI scope from physical iPhone live remote-session acceptance.",
+    "Public iPhone ledger links successful CI at source 16ecc68. It separates simulator startup/pairing error UI scope from physical iPhone live remote-session acceptance.",
     "Live anonymous repository HTML contains merge SHA, new What works today section and physical-iPhone deferred boundary; old M0 note is absent.",
     "web.run open of the exact official repository URL still returned old README text in this observation; source version is not exposed by that tool. Divergence is recorded without assuming a cache implementation.",
     "All four independent search calls returned source sets without the official repository URL. No query discovery uplift observed in this immediate sample."
