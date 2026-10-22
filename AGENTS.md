@@ -17,6 +17,55 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
+
+起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
+`dns.iroh.link`），同时段桌面端和被控端只在两台机器之间走 UDP 47800。
+
+读代码：iPhone 版的 Rust 核心（`ar-mobile` → `ar_controller::EmbeddedController::start`）本来就和桌面控制端一样读
+`<应用数据>/controller/ai-remote.toml` 的 `[network]`（`NetworkOptions::from_config`），所以**默认已经是安静的**（不做 mDNS、
+不做 UPnP、公共 DNS 只在系统没配 DNS 时用；模拟器里旧数据的 mesh 配置也确认是 `local_discovery = "off"`、`port_mapping = false`）。
+缺的是：手机上没有任何入口写这个文件（模式只能是自动，所以一直连中继），`set_host_address` 被 `MobileController::request`
+的白名单挡着，界面也看不到电脑的地址。
+
+- `ar-mobile` 导出两个同步函数：`network_settings(directory)`（`mode` / `lan_discovery` / `port_mapping` / `locked` / `pair_code` /
+  `lan_port`，用 `NetworkOptions::from_config` 算实际生效值，`quiet` 时两个开关报关）和 `update_network(directory, mode?,
+  lan_discovery?, port_mapping?)`（打开前 `ensure_not_quiet`；手机的局域网发现写 `"resolve"`：只找电脑、不广播自己）。
+  `request` 白名单加 `set_host_address`。配置在核心启动时读，所以 Swift 侧 `PhoneClient.saveNetwork` 写完就 close + start。
+- iOS：电脑列表左上角 **网络**（`PhoneNetworkSheet.swift`）：连接方式两行单选（自动〔推荐〕/ 仅限局域网）、可选功能两个开关
+  （仅限局域网时隐藏 UPnP）、`quiet` 锁定说明；仅限局域网时列出每台电脑的地址，可修改（`PhoneAddress.validInput` 先校验，
+  规则和桌面端 `lib/network.ts` 一样，并且更严：`10.0.0.5:` 这种空端口也拒绝）。文案照桌面端 `nw_*`，"这台电脑"改成"这台 iPhone"。
+  仅限局域网时电脑列表标题下显示"仅限局域网"标签；配对页在仅限局域网又没开发现时说明配对码找不到电脑，给"改用完整票据"和
+  "打开网络设置"；Rust 的英文报错（`PAIR_CODE_NEEDS_DISCOVERY`、仅限局域网下的 `did not answer`）在 `PhoneNetwork.explain` 里换成中文提示。
+- 测试：`crates/ar-mobile/tests/network.rs`（默认安静且不写文件、仅限局域网无配对码、`resolve`、quiet 锁与保留注释、按配置启动的
+  控制端 `lan_direct = true`、`set_host_address` 过了白名单）；`apps/ios/Tests/PhoneNetworkTests.swift`（模型与地址规则，用例同
+  `tools/network-ui.test.mjs`）；`PhoneNetworkUITests.testLocalNetworkOnlyIsOneTapAndPairCodesExplainThemselves`（真实核心：
+  默认两个开关关、一键切仅限局域网、UPnP 隐藏、标签出现、配对页说明，最后切回自动）。
+- `PhoneNetworkUITests.testLocalNetworkOnlySessionForCapture` 是测量用的，默认跳过：在已配对真实电脑的模拟器上通过界面切到
+  仅限局域网、改电脑地址、连进去保持 N 秒，配合抓包。
+
+实测（2026-10-22，本机 macOS，公司网络，iOS 26.2 模拟器，debug app + release 核心）：
+- `xcodebuild test` 全部 24 个用例：23 过、1 跳过（测量用例）；`cargo test -p ar-mobile` 5 个过。
+- 抓包：`tcpdump -i pktap,all -k NP`（按进程标注；`udp` + TCP SYN，另抓一路 `port 53` 看 DNS 名字）360 s，root 由
+  `osascript ... with administrator privileges` 弹窗授权。被控端是一个隔离的临时被控端（`/tmp` 下独立 `--home`，`mode = "lan"`、
+  `port = 47810`、`quiet = true`），没动这台 Mac 上正在用的被控端。app 先在容器里预设 `mode = "lan"`（和界面写的一样），然后由
+  测量用例全程走界面：粘贴票据配对（27 s）→ 网络页改地址为本机局域网地址的 47810 端口 → 打开电脑，40 s 出画面，保持 180 s。
+  结果：app 进程只和被控端（本机局域网地址:47810）互发 UDP（app 发 36,025 个、收 95,235 个，14:25:12–14:28:13；启动到配对前、
+  会话结束后都是 0 个）；**任何进程发往 4 台 n0 中继和 `dns.iroh.link` 解析出的地址的包：0**；**DNS 里含 `iroh` 的查询：0**；
+  app 发往 5353 / 1900 / 5351 / 7842 / 53 / 443 / 80 的包：0；app 的 TCP SYN：0。
+  对照：父会话同一天用同样的命令抓到自动模式下的 app 3 分钟 479 个 UDP 7842 包，说明方法能抓到这类流量。原始抓包已删。
+- 坑：新建的 iOS 26.2 模拟器没有中文字体，截图里中文是方块（布局照样能看）；`xcodebuild test` 跑完测量用例后会卡在收尾
+  （结果包没写完），测试日志里结论已全，kill 掉即可；测量第 201 s 起设备方向被外部改了几次（不是测试自己转的，原因未查），之后会话页的返回按钮找不到，
+  所以测量用例不再点返回，靠 `terminate()` 结束。
+
+限制：局域网发现用的是原始 mDNS 组播，按 Apple 文档真机需要 `com.apple.developer.networking.multicast` 权限，本项目没有申请，
+真机上大概率不工作（未验证），仅限局域网下真机请用完整票据配对。真机上的仅限局域网连接未测（模拟器和 Mac 共用网络栈，
+不经过 iOS 的"本地网络"权限）。新模拟器跑 UI 测试时 app 默认是自动模式，会连几分钟 n0 中继（和 CI 一样）。
+
+复现：`tools/ios.sh framework`、`cd apps/ios && xcodegen generate`，然后
+`TEST_RUNNER_AR_CAPTURE_ADDRESS=<ip>:<port> TEST_RUNNER_AR_CAPTURE_SECONDS=180 TEST_RUNNER_AR_CAPTURE_TICKET="$(cat ticket)" xcodebuild ... -only-testing:AIRemoteUITests/PhoneNetworkUITests/testLocalNetworkOnlySessionForCapture test`，
+同时另开 root 的 pktap 抓包。
+
 ## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
 
 用户要求：所有网络相关的设置都能在界面里操作、普通用户知道是什么意思，局域网模式和局域网发现的开关要友好，e2e 跑通再准备上线。

@@ -1012,6 +1012,13 @@ address_lookup = []   # empty: n0's address lookup service; or your own pkarr se
   it). A change is written to this computer's host and controller configs; the controller applies it at
   once (live sessions reconnect), a host running here when it next starts. `ai-remote network` does the
   same from a terminal.
+- **On the iPhone or iPad.** The computer list's **Network** button opens the same page for the phone's
+  own controller (`<app data>/controller/ai-remote.toml`): Automatic or Local network only, and the two
+  switches, off by default. Its local-network switch writes `"resolve"`: the phone looks for computers and
+  never announces itself. With Local network only it lists every paired computer's address with a way to
+  change it, and a pair code needs that switch (the pairing sheet says so and offers the full ticket). A
+  change restarts the phone's connection core at once. Select Local network only on the computers too, so
+  their address stays the same.
 - **Proxy.** Detected in this order: the `proxy` setting, the `HTTPS_PROXY` / `ALL_PROXY` /
   `HTTP_PROXY` environment variables, the system setting (Windows: Internet Settings of the signed-in
   user; macOS: `scutil --proxy`). Proxy auto-config (PAC) scripts are not evaluated; set `proxy`

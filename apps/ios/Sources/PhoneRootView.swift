@@ -40,6 +40,10 @@ public struct PhoneRootView: View {
                             ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
                             ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
                         } else {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("网络", systemImage: "network") { store.networkSheet = true }
+                                    .accessibilityIdentifier("open-network")
+                            }
                             ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                         }
                     }
@@ -49,7 +53,8 @@ public struct PhoneRootView: View {
         }
         .sheet(isPresented: $store.pairSheet) { pairing }
         .sheet(isPresented: $store.showActivity) { activity }
-        .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity))
+        .sheet(isPresented: $store.networkSheet) { PhoneNetworkSheet(store: store) }
+        .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity && !store.networkSheet))
         .onChange(of: store.selected?.name) { _, _ in
             fullscreen = false; showKeyboard = false; textFocused = false
             #if DEBUG
@@ -76,6 +81,16 @@ public struct PhoneRootView: View {
                     Text("你的电脑，近在手边").font(.title2.weight(.bold))
                     Text("从这里连接电脑，查看画面或接管操作。")
                         .font(.subheadline).foregroundStyle(.secondary)
+                    if store.network?.lan == true {
+                        Button { store.networkSheet = true } label: {
+                            Label("仅限局域网", systemImage: "wifi").font(.footnote.weight(.medium))
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(.blue.opacity(0.1), in: Capsule())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.blue).padding(.top, 2)
+                        .accessibilityHint("只在同一网络里直连，不经过外部服务器。轻点查看网络设置")
+                        .accessibilityIdentifier("network-lan-badge")
+                    }
                 }
                 .padding(.top, 4)
 

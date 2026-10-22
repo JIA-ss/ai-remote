@@ -60,6 +60,20 @@ public actor PhoneClient {
         await task.value
         closing = nil
     }
+    /// This phone's network settings (see `PhoneNetwork`); readable whether or not the core runs.
+    public func readNetwork() throws -> JSONValue {
+        try JSONValue.parse(networkSettings(directory: directory))
+    }
+    /// Saves network settings (`nil` keeps one as it is). The embedded core reads them when it
+    /// starts, so a running one is closed and started again: open views and connections end.
+    public func saveNetwork(mode: String? = nil, lanDiscovery: Bool? = nil, portMapping: Bool? = nil) async throws -> JSONValue {
+        let reply = try updateNetwork(directory: directory, mode: mode, lanDiscovery: lanDiscovery, portMapping: portMapping)
+        if controller != nil || starting != nil {
+            await close()
+            try await start()
+        }
+        return try JSONValue.parse(reply)
+    }
     private func ready() throws -> MobileController {
         guard let controller else { throw NSError(domain: "ai-remote", code: 1, userInfo: [NSLocalizedDescriptionKey: "控制端尚未连接"]) }
         return controller

@@ -9,6 +9,7 @@ import UIKit
 struct PhonePairSheet: View {
     @Bindable var store: PhoneStore
     @State private var scanning = false
+    @State private var showNetwork = false
     #if os(iOS)
     @State private var codeFocused = false
     #else
@@ -48,6 +49,14 @@ struct PhonePairSheet: View {
                         Text("电脑和手机之间不通网络时使用：在电脑的配对窗口里展开“使用完整票据”，复制后粘贴到这里。")
                     }
                 } else {
+                    if store.network?.pairCode == false {
+                        Section {
+                            Label("仅限局域网且没打开“在局域网里自动发现电脑”时，配对码找不到电脑。", systemImage: "wifi.exclamationmark")
+                                .font(.subheadline)
+                            Button("改用完整票据") { store.useTicket = true }
+                            Button("打开网络设置") { showNetwork = true }
+                        }.accessibilityIdentifier("pair-code-needs-discovery")
+                    }
                     #if os(iOS)
                     Section {
                         Button { scanning = true } label: {
@@ -116,7 +125,8 @@ struct PhonePairSheet: View {
                 } cancel: { scanning = false }
             }
             #endif
-        }.modifier(PhoneErrorAlert(store: store))
+            .sheet(isPresented: $showNetwork) { PhoneNetworkSheet(store: store) }
+        }.modifier(PhoneErrorAlert(store: store, enabled: !showNetwork))
     }
 }
 
