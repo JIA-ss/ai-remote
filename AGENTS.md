@@ -684,13 +684,14 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 - `node --test tools/*.test.mjs` 92 过 / 0 失败 / 2 跳过，其中新增 `tools/chat-folder.test.mjs` 8 项（路径解析、两种平台、`~` 缩写、去重、筛选、按项目分组、多久前）。`npx tsc --noEmit -p apps/desktop` 通过。
 - `tools/desktop-chat-e2e.py`（替身智能体）**全部通过，共跑 3 次**（后两次是改样式后的重跑）。新增的检查：未选时 chip 提示选择；打开后经真实通道列出被控端家目录（46 个文件夹，隐藏的不显示）；输入路径出现"打开 …"、回车浏览、点子文件夹面包屑更新、底部"使用「work」"、chip 显示 `work` 且悬停是完整路径；会话头部显示项目名 + 上级路径；第二次启动默认选上次的文件夹、打开是最近列表且当前项打勾、会话列表按项目分组。截图 `/tmp/chat-folder-e2e/`（`00-folder-browse`、`04b-folder-recent`、`01-first-turn`）。
-- `tools/desktop-chat-e2e-real.js` 的启动步骤也改成了用选择器（输入路径 → 回车 → 使用），**没有跑**（真实智能体花额度，改动只在选目录这一步）。
+- `tools/desktop-chat-e2e-real.js`（真实 Claude Code 2.1.307，本机账号）：2026-10-22 用 main 8eeabb6 之后的 `claude/chat-folder-win` 跑了 1 次，**14 项全过**。选择器输入路径 → 回车 → "使用"，选到 `work`；会话头部显示 `work` 和上级路径；首轮 6 s 完成（建文件 + `cat`）；长任务中途发消息让它数到 5，最终 5 条命令。截图在 `/tmp/chat-folder-real/`。
 
 ### 未测 / 没做
 
-- Windows 被控端（`D:\` 路径、盘符根、UNC）只有单测，没在 win-dev 上点过；被控端无法列出盘符清单，要换盘只能输入 `E:\`。
+- Windows 被控端：2026-10-22 用 Mac 上已装的命令行对 win-dev 的真实被控端（服务模式）只读调用 `ls`（即 `files_list`）核对过返回的路径：`~` → `C:\Users\<用户>`，`~\Desktop` → 重定向后的桌面（另一个用户目录下，选择器不会缩成 `~`），`C:\`、`D:/`、`C:\Users\`（带结尾分隔符原样返回）、`\\localhost\C$` 都能列；单独的 `C:` 会被拒，选择器发请求前已补成 `C:\`。这些返回值写进了 `tools/chat-folder.test.mjs`。顺带发现盘根下的 `$RECYCLE.BIN`、`$GetCurrent`、`System Volume Information` 没有隐藏标记会被列出来，`listedFolders` 现在按名字把它们藏起来（输入 `$` 或名字开头时才显示）。**桌面端选择器本身没在 Windows 被控端上点过**；被控端也列不出盘符清单，要换盘只能输入 `E:\`。
 - `files_list` 被机主改成 ask / deny 时：ask 会每进一个目录弹一次审批，deny 时只能输入路径；只按代码推导，没实测。
 - 演示模式（`lib/demo.ts`）没有 `files_list`，浏览会显示"无法列出"。
+- 旧被控端（没有 `chat_*` 工具，例如 2026-10-22 win-dev 上装成服务的那份）原来在对话侧栏里显示原始错误 `Mcp error: -32602: unknown tool 'chat_runtimes'`。版本号都是 0.0.1，分不出新旧，所以按这个错误判断（`chatUnsupported`），侧栏和电脑页改成黄色提示"被控端版本较旧，更新后再试"。只过了单测和 tsc，没重编 app 看。
 - 和发起会话的约定：本分支的 e2e 仍含插话步骤；去掉插话的分支合进来时要一并改 e2e。
 
 ## 对话里的文件预览（2026-10-22，分支 `claude/chat-preview-97901c`，基于 `feat/host-chat` 0071902）
@@ -720,15 +721,25 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - 演示模式（camofox，`npx vite` + 演示后端）：三种内联卡片和弹层的深色截图看过。
 - 耗时：脚本记的"点击 → 弹层就绪"是 50~51 ms，但脚本按 50 ms 轮询、且内联已预取（弹层命中缓存），所以只能说明本机回环下 ≤ 约 50 ms；**未测**冷取时延和跨机器时延。
 
+### 实测（Windows 开发机 win-dev，WebView2，2026-10-22，分支 `claude/win-preview-e2e`）
+
+- 环境：Windows 11、WebView2 155，origin/main 8eeabb6 的 debug 构建（`cargo build -p ai-remote` + `npx tauri build --debug --no-bundle`，独立 worktree `%USERPROFILE%\ai-remote-preview`），被控端和控制端都是隔离目录、`[network] quiet = true`，经 zremote 在交互会话里跑；没碰真实被控端服务。
+- `E2E_SCRIPT=tools/desktop-chat-preview-e2e.js python tools/desktop-chat-e2e.py`：脚本本身不用改就能在 Windows 上跑（win-verify 那次已经做好：PrintWindow 截图、`.exe`、WebView2 数据目录），只修了一处选目录的匹配（见下面的坑）。**原 25 项连跑 3 次全过；加上两项路径显示检查后 27 项连跑 2 次全过**，另 1 次 27 项输出完整、没核对结尾。即：内联四张卡片都加载、缩略图 64×32、内联和弹层 iframe 都是 `sandbox=""`、CSP（`default-src 'none'`）在页面 `<script>` 之前、app 拿不到 frame 的 document（opaque origin）、页面脚本没运行（1.5 s 内没有 `postMessage`、标题没变）、源码视图、Esc、Markdown 表格、PNG 尺寸、目录外点名的文件可读、没点名的和 `.toml` 被被控端拒绝。截图（没进仓库，推流画面里是 win-dev 桌面）看过：HTML 弹层里外部图片只显示 alt 文字，和 Mac 一致。
+- `<bdi dir="ltr">` 路径（新加的两项，用 Range 量每个字形的位置）：Windows 路径 `C:\Users\…\outside\named.md` 在 `direction: rtl` 的框里，首字符 `C` 仍在最左、末字符在右边界内；把框临时收窄到 160 px 后，开头被截在框左外、`named.md` 仍完整可见。宽窗口下路径本来就放得下，所以截断只靠收窄那一项覆盖。
+- 耗时：点击 → 弹层就绪 50~55 ms（同样是 50 ms 轮询 + 内联已预取，只能说明 ≤ 约 50 ms）。
+- 新加的两项和 `.fn` 匹配的改动**没在 Mac 上重跑**（Mac 上没有现成的构建）。
+- **未测**：跨机器（预览字节走真实网络）的冷取时延；HiDPI 缩放；真实智能体写出的文件。
+
 ### 踩过的坑
 
 1. 被控端工具的 `json()` 输出多行美化 JSON，而 `transfer.rs` 只解析结果第一行，第一次端到端全部报 "EOF while parsing"；`chat_file` 改成和文件工具一样输出单行。
 2. 弹层头部的路径用 `direction: rtl` 做左侧省略，开头的 `/` 会被挪到末尾；里面包一层 `<bdi dir="ltr">`。会话头部的工作目录（`AgentChat.tsx` 原有）也有同样的问题，没改。
 3. demo 的 `demoLog()` 在模块加载时执行，用到的常量必须定义在它前面（否则 TDZ）。
+4. Windows 上 `Icon` 是 Segoe Fluent Icons 字形（私用区字符，`chevR` 是 U+E76C），会进 `textContent`，`trim()` 去不掉：选目录时按整行文本找 `work` 一直找不到（行其实 1 s 内就出来了）。e2e 改为比较 `.fn` 的文本（预览和主 e2e 两个脚本）。中途误以为是 WebView2 定时器节流，加过后台节流开关，没用，已撤回。
 
 ### 没做 / 下一步
 
-- [ ] Windows（WebView2）上看一遍：`srcdoc` 继承父页 CSP、`sandbox=""`、`bdi` 的表现。
+- [x] Windows（WebView2）上看一遍：`sandbox=""`、srcdoc 里的 CSP、`bdi` 都正常（见上面 Windows 实测）。
 - [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
 - [ ] iPhone 端的预览。
 - [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
