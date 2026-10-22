@@ -354,7 +354,7 @@ export function Composer(p: ComposerProps) {
   }, [ac?.mode, ac?.query, p.commands, files]);
   useEffect(() => setActive(0), [ac?.mode, ac?.query]);
   const menuStatus = !ac ? null
-    : ac.mode === "slash" ? (p.commands == null ? t("hc_ac_no_commands_yet") : items.length ? null : t("hc_ac_no_match"))
+    : ac.mode === "slash" ? (!p.commands?.length ? t("hc_ac_no_commands_yet") : items.length ? null : t("hc_ac_no_match"))
       : !p.listFiles ? t("hc_ac_no_files")
         : files?.error ? t("hc_ac_files_error", { error: files.error })
           : files?.query !== ac.query && !items.length ? t("hc_ac_loading")

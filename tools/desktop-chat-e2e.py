@@ -272,6 +272,17 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             if line.startswith("[page e2e] "):
                 text = line[len("[page e2e] "):]
                 print(text)
+                # A script can stop and start the host (tools/desktop-chat-offline-e2e.js: a dropped
+                # connection, then the host back).
+                if text.strip() == "(action) stop-host":
+                    cli("stop-host", home=host_home)
+                    try:
+                        host.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        host.kill()
+                elif text.strip() == "(action) start-host":
+                    host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
+                                            stdout=log, stderr=log, env=env)
                 if text in ("all passed",) or re.fullmatch(r"\d+ failed", text):
                     passed = text == "all passed"
             elif line.startswith("[page ") and ("error" in line or "warn" in line):

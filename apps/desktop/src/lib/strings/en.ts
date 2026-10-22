@@ -937,7 +937,7 @@ export const en = {
   hc_ac_skills: "Skills",
   hc_ac_files: "Files",
   hc_ac_no_match: "Nothing matches",
-  hc_ac_no_commands_yet: "The agent lists its commands once it has started; send a first message.",
+  hc_ac_no_commands_yet: "No commands from this agent yet: it lists them once it has started, and some agents offer none.",
   hc_ac_no_files: "This host cannot list files.",
   hc_ac_files_error: "Cannot list files: {error}",
   hc_ac_loading: "Listing files…",
@@ -1016,4 +1016,5 @@ export const en = {
   hc_preview_close: "Close (Esc)",
   hc_preview_cut: "The file is long; only its first 2 MB are shown.",
   hc_preview_static: "Shown without running its scripts, and without loading anything from the network.",
+  hc_host_old: "The ai-remote on {host} is from before coding agents, so it cannot run one yet. Update ai-remote on that computer, then try again.",
 };

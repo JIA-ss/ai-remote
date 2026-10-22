@@ -416,30 +416,42 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             check(f"real {kind}: runs a shell tool", saw_tool)
             check(f"real {kind}: an interrupt stops the running turn", ends == ["interrupted"], f"{ends}, {stopped_in:.1f} s")
             if options.hostw and os.name == "nt":
-                # Whether the agent stops the command it was running: it is the agent's to do (the host
-                # only takes the whole tree down when the session ends), so this is reported, not checked.
+                # The command the interrupted turn was running must stop too. Claude stops it itself;
+                # Codex leaves it as a background terminal, which the adapter terminates once the turn
+                # ends interrupted (see adapters/codex.rs).
                 t1, gone = time.time(), None
                 while time.time() - t1 < 60:
                     if not any("sleep 45" in c for _, _, c in host_tree()):
                         gone = time.time() - t1
                         break
                     time.sleep(1)
-                print(f"      the interrupted command (sleep 45) left the host's tree "
-                      + (f"{gone:.1f} s after the interrupt" if gone is not None else "not within 60 s"))
+                check(f"real {kind}: the interrupted command (sleep 45) stops within 10 s",
+                      gone is not None and gone < 10,
+                      f"{gone:.1f} s after the interrupt" if gone is not None else "still running after 60 s")
             t0 = time.time()
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             # An image, and a command or skill from the agent's own list.
+            takes_images = json.loads(cli("--json", "chat", "commands", rsid).stdout or "{}").get("images", True)
             r = cli("chat", "send", rsid, "What colour is this image? Reply with one word.", "--image", work / "red.png",
                     "--wait", timeout=300)
-            check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
-                  f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            if takes_images:
+                check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
+                      f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            else:
+                # The agent said it takes none: the host refuses the message and says why.
+                check(f"real {kind}: an image is refused, with the reason", r.returncode == 2 and "takes no images" in r.stderr,
+                      f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
             r = cli("--json", "chat", "commands", rsid)
             cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
             print(f"      {len(cmds)} commands: {', '.join(c['insert'] for c in cmds[:12])}")
             pong = next((c for c in cmds if c["name"] in ("pong-skill", "pong")), None)
-            check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and pong is not None, r.stderr[-200:])
+            # Claude and Codex read the folder's command / skill; an ACP agent lists its own.
+            acp = rows.get(f"real-{kind}", {}).get("protocol") == "acp"
+            # An ACP agent may offer none (DeepSeek Harness sends no available_commands_update).
+            if not acp or cmds:
+                check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and (pong is not None or acp), r.stderr[-200:])
             if pong:
                 t0 = time.time()
                 r = cli("chat", "send", rsid, f"{pong['insert']} please", "--wait", timeout=300)

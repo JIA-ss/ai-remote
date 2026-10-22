@@ -29,6 +29,11 @@
       } catch {}
       await sleep(50);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
@@ -71,7 +76,8 @@
     setValue(q, above);
     await until("open row", () => $(".nt-folder-list .row.open"));
     q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work))).click();
+    // Match the name, not the row: on Windows the row's icons are font glyphs (private-use characters).
+    (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work))).click();
     await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work);
     (await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
     await check("the work folder is chosen", !!(await until("folder chosen", () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title === CFG.work)),
@@ -154,6 +160,37 @@
     const out = await open("outside", () => $$(".nt-pv-btn", turn).find((b) => b.getAttribute("aria-label").includes("named.md")).click(),
       () => $(".nt-pv-md h3, .nt-pv-md h1, .nt-pv-md h2"));
     await check("a file outside the folder that the agent wrote can be previewed", !!out && !$(".nt-pv-msg.err"), $(".nt-pv-msg")?.textContent);
+    // The header's path is cut from the left but keeps its own order: the leading "/" or "C:" stays on
+    // the left (not moved to the end by the right-to-left box) and the file's own name stays in view.
+    const pathBox = $(".nt-pv-hd .p");
+    const bdi = $("bdi", pathBox);
+    const glyph = (i) => {
+      const r = document.createRange();
+      r.setStart(bdi.firstChild, i);
+      r.setEnd(bdi.firstChild, i + 1);
+      return r.getBoundingClientRect();
+    };
+    let order = "";
+    if (bdi?.firstChild) {
+      const n = bdi.textContent.length, first = glyph(0), last = glyph(n - 1), box = pathBox.getBoundingClientRect();
+      order = `first ${Math.round(first.left)} last ${Math.round(last.left)}..${Math.round(last.right)} box ${Math.round(box.left)}..${Math.round(box.right)} ` +
+        `${getComputedStyle(pathBox).direction}`;
+      order = first.left < last.left && last.right <= box.right + 1 ? `ok ${order}` : order;
+    }
+    await check("the header path keeps its order", bdi?.getAttribute("dir") === "ltr" && /named\.md$/.test(bdi.textContent) &&
+      order.startsWith("ok"), `${bdi?.textContent} | ${order}`);
+    // Too narrow for the path: the start is cut off on the left, the file's name stays in view.
+    let cut = "";
+    if (bdi?.firstChild) {
+      pathBox.style.maxWidth = "160px";
+      await sleep(100);
+      const n = bdi.textContent.length, first = glyph(0), last = glyph(n - 1), box = pathBox.getBoundingClientRect();
+      cut = `first ${Math.round(first.left)} last ${Math.round(last.left)}..${Math.round(last.right)} box ${Math.round(box.left)}..${Math.round(box.right)}`;
+      cut = first.left < box.left - 1 && last.right <= box.right + 1 && last.left >= box.left ? `ok ${cut}` : cut;
+      pathBox.style.maxWidth = "";
+    }
+    await check("a long path is cut from the left, the name stays", cut.startsWith("ok"), cut);
+    await shot("p5-outside");
     esc();
     await until("closed", () => !dialog(), 3000);
     const session = JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host];

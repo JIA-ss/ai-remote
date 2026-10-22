@@ -23,6 +23,13 @@
 //! - Skills: `skills/list` once the thread is up; they go to the `/` menu as `$name`, which is how
 //!   Codex names a skill in a message, and a message naming one carries it as a `skill` input
 //!   item (its name and path) beside the text, as Codex's own clients send it.
+//! - Commands outlive an interrupt: Codex runs shell commands as "background terminals" (unified
+//!   exec), and `turn/interrupt` only cancels the turn, so a running `sleep 45` keeps going (seen
+//!   on Windows with 0.162; the same code path on every platform). Once a turn ends interrupted,
+//!   the adapter asks for `thread/backgroundTerminals/list` and terminates the ones whose item
+//!   was started in that turn; terminals of earlier turns (a dev server the user asked for) stay.
+//!   Both methods are experimental (0.150 has them, 0.137 does not): `initialize` opts in with
+//!   `experimentalApi`, and a Codex without them leaves its commands running as before.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -54,10 +61,18 @@ pub fn args(_l: &super::Launch<'_>) -> Vec<String> {
 #[derive(Debug)]
 enum Pending {
     Initialize,
-    Thread { resumed: bool },
+    Thread {
+        resumed: bool,
+    },
     TurnStart,
-    Steer { id: String },
+    Steer {
+        id: String,
+    },
     Skills,
+    /// The background terminals, listed to stop those started by these command items.
+    Terminals {
+        items: HashSet<String>,
+    },
     Other,
 }
 
@@ -84,6 +99,8 @@ struct State {
     diffed: HashSet<String>,
     /// The skills Codex offers: name and path.
     skills: Vec<(String, String)>,
+    /// Command items started in the current turn: stopped if it ends interrupted.
+    commands: HashSet<String>,
 }
 
 /// The input items of a message: its text, every skill it names as `$name`, and its images (as
@@ -131,7 +148,7 @@ pub async fn run(
     let mut st = State::default();
     let init = st.request(
         "initialize",
-        json!({"clientInfo": {"name": "ai-remote", "title": "ai-remote", "version": ar_core::VERSION}, "capabilities": null}),
+        json!({"clientInfo": {"name": "ai-remote", "title": "ai-remote", "version": ar_core::VERSION}, "capabilities": {"experimentalApi": true}}),
         Pending::Initialize,
     );
     if proc.write_line(init).await.is_err() {
@@ -253,6 +270,7 @@ fn turn_start(st: &mut State, text: &str, images: &[Image]) -> String {
     st.final_text = None;
     st.last_error = None;
     st.streamed.clear();
+    st.commands.clear();
     let thread = st.thread.clone().unwrap_or_default();
     st.request("turn/start", json!({"threadId": thread, "input": input_items(st, text, images)}), Pending::TurnStart)
 }
@@ -354,6 +372,28 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     .collect();
                 outs.push(Out::Ev(Ev::Commands { commands }));
             }
+            (Some(Pending::Terminals { items }), Ok(r)) => {
+                let thread = st.thread.clone().unwrap_or_default();
+                for t in r["data"].as_array().into_iter().flatten() {
+                    if let (Some(item), Some(pid)) = (t["itemId"].as_str(), t["processId"].as_str())
+                        && items.contains(item)
+                    {
+                        tracing::info!(
+                            command = t["command"].as_str().unwrap_or(""),
+                            "stopping a command of the interrupted turn"
+                        );
+                        writes.push(st.request(
+                            "thread/backgroundTerminals/terminate",
+                            json!({"threadId": thread, "processId": pid}),
+                            Pending::Other,
+                        ));
+                    }
+                }
+            }
+            // A Codex without the method: its commands keep running, as they did before.
+            (Some(Pending::Terminals { .. }), Err(e)) => {
+                tracing::debug!(error = %e, "cannot list Codex's background terminals")
+            }
             (Some(Pending::Steer { id }), Ok(_)) => outs.push(Out::Steered { id }),
             (Some(Pending::Steer { id }), Err(e)) => outs.push(Out::SteerRejected { id, reason: e }),
             (Some(Pending::Other), Err(e)) => {
@@ -409,13 +449,13 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             if params["threadId"].as_str().is_some_and(|t| Some(t) != st.thread.as_deref()) {
                 return (writes, outs);
             }
-            notification(st, &method, &params, &mut outs);
+            notification(st, &method, &params, &mut writes, &mut outs);
         }
     }
     (writes, outs)
 }
 
-fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
+fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String>, outs: &mut Vec<Out>) {
     match method {
         "item/agentMessage/delta" => {
             let id = p["itemId"].as_str().unwrap_or("").to_string();
@@ -428,6 +468,11 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
             outs.push(Out::Ev(Ev::Thought { id, text: p["delta"].as_str().unwrap_or("").into(), delta: true }));
         }
         "item/started" => {
+            if p["item"]["type"] == "commandExecution"
+                && let Some(id) = p["item"]["id"].as_str()
+            {
+                st.commands.insert(id.to_string());
+            }
             if let Some(ev) = item_started(&p["item"]) {
                 if matches!(&ev, Ev::ToolCall { content, .. } if !content.is_empty()) {
                     st.diffed.insert(p["item"]["id"].as_str().unwrap_or("").to_string());
@@ -524,6 +569,17 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
                 "interrupted" => TurnStatus::Interrupted,
                 _ => TurnStatus::Failed,
             };
+            let commands = std::mem::take(&mut st.commands);
+            if status == TurnStatus::Interrupted
+                && !commands.is_empty()
+                && let Some(thread) = st.thread.clone()
+            {
+                writes.push(st.request(
+                    "thread/backgroundTerminals/list",
+                    json!({"threadId": thread, "limit": 100}),
+                    Pending::Terminals { items: commands },
+                ));
+            }
             let reason = turn["error"]["message"].as_str().map(str::to_string).or_else(|| st.last_error.take());
             let status = if status == TurnStatus::Completed && reason.is_some() && st.final_text.is_none() {
                 TurnStatus::Failed
@@ -800,6 +856,63 @@ mod tests {
         );
         handle(&mut st, r#"{"id":3,"result":{"turn":{"id":"tu"}}}"#, &opts(None));
         assert_eq!(st.turn.as_deref(), Some("tu"));
+    }
+
+    #[test]
+    fn an_interrupted_turn_stops_only_its_own_background_commands() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        // A command of an earlier, completed turn keeps running (a server the user asked for).
+        for l in [
+            r#"{"method":"item/started","params":{"threadId":"th","item":{"type":"commandExecution","id":"old","command":"serve"}}}"#,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"t1","status":"completed"}}}"#,
+        ] {
+            let (w, _) = handle(&mut st, l, &opts(None));
+            assert!(w.is_empty(), "a completed turn stops nothing: {w:?}");
+        }
+        let _ = turn_start(&mut st, "go", &[]);
+        handle(
+            &mut st,
+            r#"{"method":"item/started","params":{"threadId":"th","item":{"type":"commandExecution","id":"c2","command":"sleep 45"}}}"#,
+            &opts(None),
+        );
+        let (w, o) = handle(
+            &mut st,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"t2","status":"interrupted"}}}"#,
+            &opts(None),
+        );
+        assert!(matches!(&o[0], Out::TurnEnd { status: TurnStatus::Interrupted, .. }));
+        let list: Value = serde_json::from_str(&w[0]).unwrap();
+        assert_eq!(list["method"], "thread/backgroundTerminals/list");
+        let id = list["id"].as_u64().unwrap();
+        let answer = json!({"id": id, "result": {"data": [
+            {"itemId": "old", "processId": "11", "command": "serve", "cwd": "/w"},
+            {"itemId": "c2", "processId": "12", "command": "sleep 45", "cwd": "/w"},
+        ], "nextCursor": null}});
+        let (w, _) = handle(&mut st, &answer.to_string(), &opts(None));
+        assert_eq!(w.len(), 1, "{w:?}");
+        let stop: Value = serde_json::from_str(&w[0]).unwrap();
+        assert_eq!(stop["method"], "thread/backgroundTerminals/terminate");
+        assert_eq!(stop["params"], json!({"threadId": "th", "processId": "12"}));
+        // A Codex without the method answers with an error: nothing else happens.
+        let _ = turn_start(&mut st, "again", &[]);
+        handle(
+            &mut st,
+            r#"{"method":"item/started","params":{"threadId":"th","item":{"type":"commandExecution","id":"c3","command":"x"}}}"#,
+            &opts(None),
+        );
+        let (w, _) = handle(
+            &mut st,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"t3","status":"interrupted"}}}"#,
+            &opts(None),
+        );
+        let id = serde_json::from_str::<Value>(&w[0]).unwrap()["id"].as_u64().unwrap();
+        let (w, o) = handle(
+            &mut st,
+            &json!({"id": id, "error": {"code": -32601, "message": "unknown method"}}).to_string(),
+            &opts(None),
+        );
+        assert!(w.is_empty() && o.is_empty(), "{w:?} {o:?}");
     }
 
     #[test]

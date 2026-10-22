@@ -21,7 +21,7 @@ struct PhoneChatRowView: View {
     var body: some View {
         switch row {
         // A message that joined the running turn (steer) is shown where it landed, like any other.
-        case .user(_, let text, let by, let ts, _): PhoneUserRow(text: text, by: by, ts: ts)
+        case .user(_, let text, let by, let ts, _, let extra): PhoneUserRow(text: text, by: by, ts: ts, extra: extra)
         case .text(_, let text, _): PhoneMarkdownText(text: text)
         case .thought(_, let thought, let live): PhoneThoughtRow(thought: thought, live: live)
         case .run(_, let members, let tools, let live): PhoneRunRow(members: members, tools: tools, live: live)
@@ -124,10 +124,52 @@ struct PhoneMarkdownText: View {
 
 // MARK: - The user's message
 
+/// Pictures of the images this phone sent, by message id (other devices' images show as names).
+struct PhoneSentImagesKey: EnvironmentKey {
+    static let defaultValue: [String: [PhoneImage]] = [:]
+}
+
+extension EnvironmentValues {
+    var phoneSentImages: [String: [PhoneImage]] {
+        get { self[PhoneSentImagesKey.self] }
+        set { self[PhoneSentImagesKey.self] = newValue }
+    }
+}
+
+/// Images a message came with: thumbnails of this phone's own, names and sizes of anyone else's.
+struct PhoneAttachmentStrip: View {
+    let attachments: [PhoneAttachment]
+    let pictures: [PhoneImage]
+    var body: some View {
+        if !pictures.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(pictures) { p in
+                    if let image = phoneDecodeImage(p.data, maxPixels: 240) {
+                        Image(decorative: image, scale: 1).resizable().scaledToFill().frame(width: 64, height: 64)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .accessibilityLabel("图片 \(p.name)")
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("chat-user-images")
+        } else if !attachments.isEmpty {
+            VStack(alignment: .trailing, spacing: 3) {
+                ForEach(Array(attachments.enumerated()), id: \.offset) { _, a in
+                    Label("\(a.name) · \(phoneSizeLabel(a.bytes))", systemImage: "photo").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("chat-user-attachments")
+        }
+    }
+}
+
 struct PhoneUserRow: View {
     let text: String
     let by: String
     let ts: Double
+    var extra = PhoneUserExtra()
+    @Environment(\.phoneSentImages) private var sent
     @PhoneViewState private var open = false
     private var long: Bool { text.components(separatedBy: "\n").count > 12 || text.count > 1200 }
 
@@ -135,6 +177,8 @@ struct PhoneUserRow: View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 4) {
+                PhoneAttachmentStrip(attachments: extra.attachments, pictures: extra.inputID.flatMap { sent[$0] } ?? [])
+                if !text.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(text).textSelection(.enabled).lineLimit(long && !open ? 12 : nil)
                     if long {
@@ -143,6 +187,7 @@ struct PhoneUserRow: View {
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+                }
                 HStack(spacing: 6) {
                     if !by.isEmpty { Text(by) }
                     if ts > 0 { Text(Date(timeIntervalSince1970: ts / 1000), style: .time) }
@@ -343,9 +388,13 @@ struct PhoneDiffCard: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("chat-diff")
             .overlay(alignment: .trailing) {
-                Button { phoneCopy(Self.patch(path, rows)) } label: { Image(systemName: "doc.on.doc").font(.caption) }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).padding(.trailing, 34)
-                    .accessibilityLabel("复制 diff")
+                HStack(spacing: 14) {
+                    if !deleted { PhonePreviewButton(path: path) }
+                    Button { phoneCopy(Self.patch(path, rows)) } label: { Image(systemName: "doc.on.doc").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .accessibilityLabel("复制 diff")
+                }
+                .padding(.trailing, 34)
             }
             if open {
                 Divider()
