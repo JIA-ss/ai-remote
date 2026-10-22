@@ -56,6 +56,29 @@
 其中经 runner 的插话只有代码没有端到端测试，图片只在 Mac 上用 Unix 套接字测过（Windows 命名管道没测）；全屏修复在真实 App
 原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
 
+## iPhone 对话里的文件预览（2026-10-22，分支 `claude/ios-chat-preview`，基于 main 8eeabb6）
+
+桌面端"对话里的文件预览"一节的手机版：智能体写出或点名的 HTML、Markdown、图片，在每轮结束处内联显示，点开全屏。被控端没改（`chat_file` 已有）。
+
+- **ar-mobile**：`MobileController::preview_file(host, session, path) -> Vec<u8>`（uniffi），照桌面端 `transfer::preview`：`call chat_file`（`person: true`）取一次性票据 → `open_stream({"op":"files"})` 兑换 → 按 `size` 在内存里收字节（>16 MiB 先拒）→ 读尾行核对 SHA-256。取票 30 s、传输 120 s 超时。新增依赖 `sha2`（工作区已有）。`tool_answer` 解析工具结果（拒绝时原话作错误），单测 1 项。
+- **Swift 纯函数** `PhonePreview.swift`（Foundation only）：`phonePreviewKind` / `phoneFileTarget` / `phoneTurnFiles` / `phonePreviewDocument` / `phoneDecodeText` / `phoneSizeLabel`，逐条照 `apps/desktop/src/lib/preview.ts`，**改桌面那边时同步改这里**。`tools/PhoneChatModelTests.swift` 新增 5 项，用的是 `tools/chat-preview.test.mjs` 的同一批用例。和桌面的差别：不插 `<base target="_blank">`（导航由 web view 拦）；CSP 之后加一个 `width=device-width` 的 viewport（为桌面写的页面在手机上原本小得看不清）。
+- **界面** `PhoneChatPreviewViews.swift`：轮结束后（`PhoneTurnPreviews`，放在 `PhoneTurnFoot` 前）每个文件一张卡：HTML 220 pt 小窗、Markdown 前 150 pt 渐隐、图片 96 pt 缩略图，下面一行文件名 + 大小。卡片在 LazyVStack 里，接近屏幕才取（`.task`）。点卡片或回答里指向可预览文件的链接（`openURL` 拦截）→ `fullScreenCover` 全屏：HTML / Markdown 有"预览 / 源码"切换（源码最多显示 512 KB），图片点一下在适应屏幕和原始大小间切换，失败时显示被控端原话和"重新获取"。字节在 `PhoneChatStore.preview` 里按（会话, 路径）缓存 Task，失败不缓存，换会话（`close`）清空。`PhoneClient.preview` 把 `MobileError.Failed(message:)` 换成只含原话的 NSError（否则界面上会显示 `AIRemoteCore.MobileError.Failed(...)`）。
+- **HTML 的安全设置**：`WKWebpagePreferences.allowsContentJavaScript = false`；`WKContentRuleList` 拦截一切 URL，只放行 `about:` / `data:` / `blob:`（WebKit 的 url-filter 不支持 `|`，所以是 1 条 block + 3 条 ignore-previous-rules）；规则编译失败就不显示页面；导航代理只允许 `about:` 文档（链接、iframe、跳转全部取消）；`websiteDataStore = .nonPersistent()`；`userContentController` 里只有这条规则，没有 message handler 和 user script；页面 `<head>` 最前面另插 `default-src 'none'` 的 CSP。SVG 也走这个 web view（`<img src="data:image/svg+xml;base64,…">`）。Markdown 复用 `PhoneMarkdownText`（只渲染行内，标题 `#` 原样显示）。
+- 演示数据（`-ui-chat-fixture`）加了第二轮：写 `out/report.html`（带一段会改文字的脚本和一张远程图片）、命令生成 `out/chart.png`、回答里点名 `out/notes.md`。
+
+**实测（本机 macOS，2026-10-22）**：
+- `tools/test-phone-chat-model.sh`：模型 + 预览共 22 项全过。`swiftc -typecheck` 全部 `Sources`：macOS 14 目标、iOS 17 模拟器目标（带 `-D DEBUG`，含演示视图）都无错误无警告。
+- `cargo test -p ar-mobile --locked` 6 项全过；`cargo clippy -p ar-mobile --all-targets --locked -D warnings` 无警告。
+- `python3 tools/phone-chat-smoke.py`（真实隔离被控端，安静模式，release 核心）：原 30 项 + 预览 4 项全过（2 次）：会话目录内相对路径收到的字节与磁盘一致（31 B）、绝对路径的 76.8 KB 文件完整、目录外未点名的 `secret.md` 和 `.toml` 被拒且显示被控端原话。
+- 模拟器（新建的 iPhone 17 Pro，iOS 26.2，Xcode 27.1；工程是从别的检出复制来的 xcodegen 产物，本机没有 xcodegen）：`PhoneChatUITests` 3 个用例全过（新增 `testPreviewsUnderATurnOpenFullScreen`：三张卡都在；全屏页面显示静态文字、**脚本那行"脚本运行了"没出现**；切源码看到 `<script>`；Markdown、图片全屏能开）。截图里远程图片只显示 alt 文字（推导：被拦了；没抓包确认）。26.2 模拟器没有中文字体，截图里中文是方块。
+- **推导 / 未测**：真机 iPhone；真实智能体产出的文件（只用了替身和演示数据）；跨机器时延；大文件（接近 16 MiB）在手机上的内存和解码耗时；横屏 / iPad 布局；规则列表拦截远程资源只看了截图，没用网络日志核对；iOS CI 见 PR。
+
+**真机验证步骤**（给用户）：
+1. Mac 上 `tools/ios.sh framework`，用 Xcode 打开 `apps/ios/AIRemote.xcodeproj`（`xcodegen generate` 生成）装到 iPhone。
+2. 被控端（`[network] quiet = true`）上用手机开一个 Claude Code / Codex 会话，让它"在 out/ 下写一个 report.html（带一段 `<script>` 改页面文字、一张 https 图片）、一个 notes.md，并生成 chart.png"。
+3. 这一轮结束后：三张卡片出现；HTML 卡里文字是静态原文（脚本没改它）、远程图片不显示；点开全屏能滚动、切源码；点回答里的 `[report](out/report.html)` 链接也打开它；图片点一下切原始大小。
+4. 再让它点名一个会话目录外的文件和一个 `.txt`：前者能预览，后者不出卡片；手动问一个目录外未点名的文件不会出现卡片。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
@@ -688,7 +711,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 - [ ] Windows（WebView2）上看一遍：`srcdoc` 继承父页 CSP、`sandbox=""`、`bdi` 的表现。
 - [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
-- [ ] iPhone 端的预览。
+- [x] iPhone 端的预览（见"iPhone 对话里的文件预览"一节）。
 - [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
 - [ ] 会话头部工作目录的 rtl 斜杠错位（`AgentChat.tsx`）。
 

@@ -6,6 +6,7 @@ use ar_core::{
     config::{self, ControllerConfig},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{
@@ -264,6 +265,50 @@ impl MobileController {
         sender.send(format!("{command}\n")).await.map_err(|_| failure("this chat is closed"))
     }
 
+    /// The bytes of a file a coding-agent chat made or named, for a preview: the host's `chat_file`
+    /// tool issues a one-time ticket (files in the session's folder, or ones the agent named in it;
+    /// HTML, Markdown and images; at most 16 MiB), the bytes come over the file channel and are
+    /// checked against the host's SHA-256. Nothing is written to disk.
+    pub async fn preview_file(&self, host: String, session: String, path: String) -> Result<Vec<u8>> {
+        self.ready()?;
+        let call = json!({"op":"call", "host":host, "tool":"chat_file", "args":{"session":session, "path":path}, "person":true});
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), self.backend.request(call))
+            .await
+            .map_err(|_| failure("the host did not answer in time"))?
+            .map_err(|e| failure(format!("{e:#}")))?;
+        let issued = tool_answer(&result)?;
+        let ticket = issued["ticket"].as_str().ok_or_else(|| failure("the host issued no transfer ticket"))?;
+        let receive = async {
+            let (stream, reply) = self
+                .backend
+                .open_stream(json!({"op":"files", "host":host, "request":{"ticket":ticket}}))
+                .await
+                .map_err(|e| failure(format!("{e:#}")))?;
+            if reply["ok"] == false {
+                return Err(failure(reply["error"].as_str().unwrap_or("the host refused the file")));
+            }
+            let total = reply["size"].as_u64().ok_or_else(|| failure("the host did not say how big the file is"))?;
+            if total > MAX_PREVIEW {
+                return Err(failure(format!("the file is {total} bytes; previews take at most {MAX_PREVIEW}")));
+            }
+            let mut reader = BufReader::new(stream);
+            let mut bytes = vec![0u8; total as usize];
+            reader.read_exact(&mut bytes).await.map_err(|e| failure(format!("the transfer broke off: {e}")))?;
+            let mut line = String::new();
+            (&mut reader).take(64 * 1024).read_line(&mut line).await.map_err(failure)?;
+            let trailer: Value =
+                serde_json::from_str(&line).map_err(|_| failure("the host ended the transfer without an answer"))?;
+            let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            if trailer["sha256"].as_str() != Some(digest.as_str()) {
+                return Err(failure("the received file's SHA-256 does not match the host's"));
+            }
+            Ok(bytes)
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(120), receive)
+            .await
+            .map_err(|_| failure("the transfer took too long"))?
+    }
+
     pub async fn stop_subscription(&self, subscription: u64) {
         let owned = self.subscriptions.lock().unwrap().remove(&subscription);
         if let Some(owned) = owned {
@@ -339,6 +384,21 @@ pub fn update_network(
     network_settings(directory)
 }
 
+/// Largest file a preview takes (the host refuses larger ones first).
+const MAX_PREVIEW: u64 = 16 * 1024 * 1024;
+
+/// The JSON a tool answered with (one line in its first text block), or its refusal as an error.
+fn tool_answer(result: &Value) -> Result<Value> {
+    let texts: Vec<&str> =
+        result["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect();
+    if result["isError"] == true {
+        let text = texts.join("\n");
+        return Err(failure(if text.is_empty() { "the host refused".to_string() } else { text }));
+    }
+    let first = texts.first().and_then(|t| t.lines().next()).unwrap_or("{}");
+    serde_json::from_str(first).map_err(|e| failure(format!("bad answer from the host: {e}")))
+}
+
 impl MobileController {
     fn ready(&self) -> Result<()> {
         if self.closed.load(Ordering::SeqCst) { Err(failure("controller is closed")) } else { Ok(()) }
@@ -360,5 +420,21 @@ impl Drop for MobileController {
         for (_, subscription) in self.subscriptions.get_mut().unwrap().drain() {
             subscription.cancel.cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_answer_is_its_first_line_or_its_refusal() {
+        let issued = json!({"content":[{"type":"text","text":"{\"ticket\":\"t1\",\"size\":5}\nmore"}]});
+        assert_eq!(tool_answer(&issued).unwrap()["ticket"], "t1");
+        let refused = json!({"isError":true,"content":[{"type":"text","text":"outside this session's folder"}]});
+        assert_eq!(tool_answer(&refused).unwrap_err().to_string(), "outside this session's folder");
+        let silent = json!({"isError":true,"content":[]});
+        assert_eq!(tool_answer(&silent).unwrap_err().to_string(), "the host refused");
+        assert!(tool_answer(&json!({"content":[{"type":"text","text":"not json"}]})).is_err());
     }
 }

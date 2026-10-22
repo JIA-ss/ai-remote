@@ -23,14 +23,14 @@ final class PhoneChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["已回答：要"].waitForExistence(timeout: 5), "a numbered option answers the question")
 
         // The edit sits in the run: open the run, then its diff card.
-        app.buttons["chat-run"].tap()
+        app.buttons.matching(identifier: "chat-run").firstMatch.tap()
         let diff = app.buttons["chat-diff"]
         XCTAssertTrue(diff.waitForExistence(timeout: 5))
         diff.tap()
         XCTAssertTrue(app.staticTexts["Run rustup target add aarch64-apple-ios aarch64-apple-ios-sim."].waitForExistence(timeout: 5), "the diff opens")
         attach(app, "diff")
         diff.tap()
-        app.buttons["chat-run"].tap()
+        app.buttons.matching(identifier: "chat-run").firstMatch.tap()
 
         // Sending starts a turn; while it runs, a message joins it (the agent can steer), shown like any other.
         let input = app.textViews["chat-input"]
@@ -96,6 +96,44 @@ final class PhoneChatUITests: XCTestCase {
         attach(app, "queued")
         app.buttons["chat-queued-remove"].tap()
         waitFor("queue emptied") { !card.exists }
+    }
+
+    /// The files a turn wrote, under it: a page that runs no script, Markdown, an image; full screen
+    /// with the page's source.
+    func testPreviewsUnderATurnOpenFullScreen() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-chat-fixture"]
+        app.launch()
+        defer { app.terminate() }
+        let page = app.buttons["chat-preview-report.html"]
+        XCTAssertTrue(page.waitForExistence(timeout: 15), "the page the turn wrote is previewed under it")
+        XCTAssertTrue(app.buttons["chat-preview-notes.md"].exists, "the notes its reply names")
+        XCTAssertTrue(app.buttons["chat-preview-chart.png"].exists, "the chart its command made")
+        attach(app, "previews")
+
+        page.tap()
+        XCTAssertTrue(app.buttons["chat-preview-close"].waitForExistence(timeout: 5))
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.staticTexts["静态内容已显示"].waitForExistence(timeout: 10), "the page's text shows")
+        XCTAssertFalse(web.staticTexts["脚本运行了"].exists, "its script did not run")
+        attach(app, "page full screen")
+        app.segmentedControls["chat-preview-mode"].buttons["源码"].tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "<script>")).firstMatch.waitForExistence(timeout: 5),
+                      "the source shows the markup")
+        app.buttons["chat-preview-close"].tap()
+
+        app.buttons["chat-preview-notes.md"].tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "构建 4 分 10 秒")).firstMatch.waitForExistence(timeout: 5),
+                      "Markdown is drawn like chat text")
+        app.buttons["chat-preview-close"].tap()
+
+        app.buttons["chat-preview-chart.png"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-preview-body"].waitForExistence(timeout: 5), "the image opens")
+        XCTAssertFalse(app.staticTexts["无法显示这张图片。"].exists, "and decodes")
+        attach(app, "image full screen")
+        app.buttons["chat-preview-close"].tap()
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "back in the conversation")
     }
 
     private func waitFor(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) {

@@ -285,5 +285,65 @@ test("phone wording: durations and a session waiting for its first message") {
     check(phoneChatStateName("parked", turns: 0) == "等待第一条消息" && phoneChatStateName("parked", turns: 2) == "已暂停", "parked")
 }
 
+// File previews (apps/ios/Sources/PhonePreview.swift), the cases of the desktop's tools/chat-preview.test.mjs.
+test("preview kinds come from the extension, case-insensitively") {
+    check(phonePreviewKind("/tmp/out/Report.HTML") == .html, "html")
+    check(phonePreviewKind("C:\\work\\notes.md") == .markdown, "md")
+    check(phonePreviewKind("chart.svg") == .image && phonePreviewIsSVG("x.SVG"), "svg")
+    check(phonePreviewKind("a.txt") == nil && phonePreviewKind(".md") == nil && phonePreviewKind("Makefile") == nil, "not previews")
+}
+
+test("files named in a reply: relative, absolute, Windows, file: links, with anchors and line numbers") {
+    check(phoneFileTarget("out/report.html") == "out/report.html", "relative")
+    check(phoneFileTarget("./notes.md") == "./notes.md", "dot")
+    check(phoneFileTarget("C:\\work\\chart.png") == "C:\\work\\chart.png", "windows")
+    check(phoneFileTarget("C:/work/chart.png") == "C:/work/chart.png", "windows slash")
+    check(phoneFileTarget("file:///tmp/a%20b.svg") == "/tmp/a b.svg", "file url")
+    check(phoneFileTarget("file:///C:/x/r.html") == "C:/x/r.html", "file url windows")
+    check(phoneFileTarget("report.html#top") == "report.html", "anchor")
+    check(phoneFileTarget("docs/guide.md:12") == "docs/guide.md", "line")
+    for not in ["https://example.com/a.html", "mailto:a@b.md", "javascript:alert(1)//.html", "npm run build", "src/main.rs", "out/"] {
+        check(phoneFileTarget(not) == nil, not)
+    }
+}
+
+test("an HTML preview's document puts the policy before the page's markup") {
+    let withHead = phonePreviewDocument("<!doctype html><html><head><title>x</title><script>1</script></head><body>hi</body></html>")
+    check(withHead.hasPrefix("<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"), withHead)
+    check(withHead.range(of: "Content-Security-Policy")!.lowerBound < withHead.range(of: "<script>")!.lowerBound, "before script")
+    check(withHead.contains("base-uri 'none'; form-action 'none'\">"), "whole policy")
+    check(phonePreviewDocument("<!DOCTYPE html>\n<p>hi</p>").hasPrefix("<!DOCTYPE html><meta http-equiv"), "doctype")
+    check(phonePreviewDocument("<p>hi</p>").hasPrefix("<meta http-equiv"), "bare")
+    let own = phonePreviewDocument("<HEAD lang=\"en\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src *\">")
+    check(own.range(of: "default-src 'none'")!.lowerBound < own.range(of: "default-src *")!.lowerBound, "own policy after")
+}
+
+test("preview text is cut on a character boundary; sizes in words") {
+    let bytes = Data("ab中文".utf8)
+    check(phoneDecodeText(bytes) == ("ab中文", false), "whole")
+    check(phoneDecodeText(bytes, max: 4) == ("ab", true), "cut")
+    check(phoneSizeLabel(512) == "512 B" && phoneSizeLabel(12 * 1024) == "12 KB" && phoneSizeLabel(Int(3.4 * 1_048_576)) == "3.4 MB", "sizes")
+}
+
+test("a turn's files: what its tools wrote, then what its reply names, one per name") {
+    func tool(kind: String = "edit", status: String = "completed", locations: [String] = [], content: [PhoneToolContent] = []) -> PhoneChatBlock {
+        var x = PhoneChatTool(callID: "c", title: "", kind: kind, status: status, input: nil, startedMs: 0, endedMs: 0)
+        x.locations = locations; x.content = content
+        return .tool(x)
+    }
+    let blocks: [PhoneChatBlock] = [
+        tool(content: [.diff(path: "/w/out/report.html", old: nil, new: "<p>")]),
+        tool(kind: "read", locations: ["/w/in/source.md"]),
+        tool(status: "failed", content: [.diff(path: "/w/broken.md", old: nil, new: "x")]),
+        tool(content: [.diff(path: "/w/gone.png", old: "x", new: "")]),
+        tool(kind: "execute", locations: ["/w/out/chart.svg", "/w/main.rs"]),
+        .text(id: "m", text: "Wrote [the page](out/report.html), `out/notes.md` and `README.txt`; see https://x.dev/a.md"),
+    ]
+    let files = phoneTurnFiles(blocks)
+    check(files == ["/w/out/report.html", "/w/out/chart.svg", "out/notes.md"], "\(files)")
+    let many = (0..<6).map { tool(content: [.diff(path: "/w/p\($0).md", old: nil, new: "x")]) }
+    check(phoneTurnFiles(many).count == phoneMaxInlinePreviews, "at most four")
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

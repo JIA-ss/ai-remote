@@ -174,6 +174,7 @@ public struct PhoneChatView: View {
                             ForEach(phoneTurnRows(turn)) { row in
                                 PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
                             }
+                            PhoneTurnPreviews(turn: turn, chat: chat)
                             PhoneTurnFoot(turn: turn, stopped: turn.n == stopped, readonly: readonly) { Task { await chat.continueStopped() } }
                             if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
                                 PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
@@ -189,6 +190,17 @@ public struct PhoneChatView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: chat.log.seq) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            // A link in a reply to a file that can be previewed opens it here; other links as usual.
+            .environment(\.openURL, OpenURLAction { url in
+                guard let path = phoneFileTarget(url.absoluteString) else { return .systemAction }
+                chat.previewing = PhonePreviewTarget(path: path)
+                return .handled
+            })
+            #if os(iOS)
+            .fullScreenCover(item: $chat.previewing) { target in PhonePreviewScreen(target: target, chat: chat) }
+            #else
+            .sheet(item: $chat.previewing) { target in PhonePreviewScreen(target: target, chat: chat) }
+            #endif
             .safeAreaInset(edge: .bottom, spacing: 0) { footer(session) }
         }
     }

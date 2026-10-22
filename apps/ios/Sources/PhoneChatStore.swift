@@ -30,6 +30,10 @@ import SwiftUI
     public var newPrompt = ""
     /// A `chat_start` is waiting (for the agent, or for the owner to allow it on the computer).
     public var starting = false
+    /// The file preview open full screen, if any.
+    public var previewing: PhonePreviewTarget?
+    /// Preview bytes of the open session, fetched once per file (a failed fetch is not kept).
+    private var previews: [String: Task<Data, Error>] = [:]
     private let client: PhoneClient
     private var subscription: UInt64?
     private var generation = 0
@@ -37,6 +41,8 @@ import SwiftUI
     /// Simulator UI acceptance (`-ui-chat-fixture`): no host; what would go to it is folded in locally.
     var fixture = false
     private var fixtureSeq = 1000
+    /// What `preview` returns in the fixture, by path.
+    var fixtureFiles: [String: Data] = [:]
     func fixtureEvent(_ fields: [String: JSONValue]) {
         fixtureSeq += 1
         var event = fields
@@ -274,11 +280,32 @@ import SwiftUI
     }
     #endif
 
+    /// The bytes of a file the open session made or named, for its preview. Each file is fetched once
+    /// while the session stays open; `again` fetches it anew.
+    public func preview(_ path: String, again: Bool = false) async throws -> Data {
+        guard let session = current?.id else { throw NSError(domain: "ai-remote", code: 4, userInfo: [NSLocalizedDescriptionKey: "没有打开的会话"]) }
+        let key = session + "\u{0}" + path
+        if again { previews[key] = nil }
+        if let pending = previews[key] { return try await pending.value }
+        #if DEBUG
+        if fixture {
+            if let data = fixtureFiles[path] { return data }
+            throw NSError(domain: "ai-remote", code: 5, userInfo: [NSLocalizedDescriptionKey: "UI 测试：没有这个文件"])
+        }
+        #endif
+        let (client, host) = (self.client, self.host)
+        let task = Task { try await client.preview(host: host, session: session, path: path) }
+        previews[key] = task
+        do { return try await task.value }
+        catch { if previews[key] == task { previews[key] = nil }; throw error }
+    }
+
     /// Stops watching (the agent keeps its session on the host).
     public func close() async {
         generation += 1
         if let id = subscription { await client.stop(id) }
         subscription = nil; connected = false; role = nil; disconnected = nil
+        previews = [:]; previewing = nil
     }
 
     /// Back to the session list.

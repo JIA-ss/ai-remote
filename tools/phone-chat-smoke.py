@@ -44,6 +44,14 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     base = Path(tmp)
     host_home, ctl_home, phone, work = base / "host", base / "controller", base / "phone", base / "work"
     work.mkdir()
+    # Files for the previews: two in the session's folder, one outside it that no agent named, one that
+    # is not a preview kind.
+    (work / "out").mkdir()
+    (work / "out" / "report.html").write_text("<!doctype html><h1>Report</h1>\n", encoding="utf-8")
+    (work / "out" / "chart.png").write_bytes(bytes(range(256)) * 300)
+    (work / "settings.toml").write_text("a = 1\n", encoding="utf-8")
+    (base / "outside").mkdir()
+    (base / "outside" / "secret.md").write_text("# not named\n", encoding="utf-8")
     (host_home / "host").mkdir(parents=True)
     # Quiet mode on every role of every home (no mDNS or UPnP on the local network), the phone's too.
     quiet = "[network]\nquiet = true\n"

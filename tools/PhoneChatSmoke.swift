@@ -65,6 +65,21 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             check("the first turn (the start prompt) is answered", await wait("first turn") {
                 chat.log.turns.first?.status == "completed"
             })
+            // Previews: the host's chat_file tool, then the file channel, checked against its SHA-256.
+            do {
+                let page = try await chat.preview("out/report.html")
+                check("a preview of a file in the session's folder arrives whole",
+                      page == FileManager.default.contents(atPath: cwd + "/out/report.html"), "\(page.count) bytes")
+                let chart = try await chat.preview(cwd + "/out/chart.png")
+                check("an absolute path in the folder works too (76.8 KB image)", chart.count == 256 * 300, "\(chart.count) bytes")
+            } catch { check("previews of files in the folder", false, error.localizedDescription) }
+            let outside = URL(fileURLWithPath: cwd).deletingLastPathComponent().appendingPathComponent("outside/secret.md").path
+            for (what, path) in [("a file outside the folder no agent named", outside), ("a file that is not HTML, Markdown or an image", "settings.toml")] {
+                do { _ = try await chat.preview(path); check("\(what) is refused", false, "it was sent") }
+                catch {
+                    check("\(what) is refused with the host's words", error.localizedDescription.hasPrefix("/"), error.localizedDescription)
+                }
+            }
             let answer: String? = chat.log.turns.first?.blocks.compactMap { if case .text(_, let t) = $0 { t } else { nil } }.first
             check("streamed deltas fold into one message", answer == "you said: from the phone", answer ?? "nil")
 
