@@ -7,7 +7,7 @@ controller agent → QUIC → host → agent process.
 "Codex fake" (tools/fake-codex-app-server.py) speaks Codex's app-server JSON-RPC instead, for the Codex
 view of the panel (E2E_SCRIPT=tools/desktop-chat-codex-e2e.js): a turn per keyword (EXPLORE, ASK, SLOW,
 FAIL, MANY, NOPHASE, COMPACT). With E2E_CODEX=<path to a codex binary> a real Codex is offered too, as
-"Codex (path)" (for --real; it uses that Codex's sign-in and quota).
+"Codex (path)" (for --real; it uses that Codex's sign-in and quota); E2E_MODEL=<model> starts it with that model.
 
 The Claude stand-ins speak Claude Code's stream-json: "Rich fake" answers a message containing RICH with
 reasoning, a plan (TodoWrite), Read, a failing Bash, Grep, an Edit, a Markdown answer and context usage;
@@ -284,7 +284,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         script = base / "drive.js"
         source = ROOT / (os.environ.get("E2E_SCRIPT") or ("tools/desktop-chat-e2e-real.js" if options.real else "tools/desktop-chat-e2e.js"))
         script.write_text(source.read_text(encoding="utf-8")
-                          .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real})), encoding="utf-8")
+                          .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
+                                                             "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
                    "AI_REMOTE_SMOKE_QUERY": f"view=session&host={name}&panel=chat",

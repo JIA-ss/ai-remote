@@ -9,7 +9,7 @@
 // module turns the events of a turn (lib/chat.ts) into that structure. The layout was studied from
 // Codex's app; the code and wording here are this project's own.
 
-import { baseName, diffRows, toolOutput, type Block, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ThoughtBlock, type ToolItem, type Turn } from "./chat";
+import { baseName, diffRows, type Block, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ThoughtBlock, type ToolItem, type Turn } from "./chat";
 
 /** Whether a session's agent is Codex: by its protocol, or (hosts that do not say) its id or name. */
 export function isCodexRuntime(runtime: { id?: string; name?: string; protocol?: string | null } | null | undefined): boolean {
@@ -284,7 +284,8 @@ export function execInfo(x: ToolItem): ExecInfo {
   let actions = hostActions(input.actions) ?? parseCommand(command);
   if (!actions.length) actions = [{ type: "unknown" }];
   const explore = actions.every((a) => a.type !== "unknown");
-  let output = toolOutput(x);
+  // Codex streams a command's output in pieces (each is the next bytes, not a line of its own).
+  let output = x.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("");
   let exitCode = typeof x.exitCode === "number" ? x.exitCode : null;
   const m = EXIT_LINE.exec(output);
   if (m) {

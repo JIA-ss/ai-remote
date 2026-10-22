@@ -568,15 +568,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                 reasoning_tokens: last["reasoningOutputTokens"].as_u64(),
             }));
         }
-        "error" => {
-            let m = p["error"]["message"].as_str().unwrap_or("error");
-            // The message is often the provider's JSON; its inner message reads better.
-            let inner = serde_json::from_str::<Value>(m)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-                .unwrap_or_else(|| m.to_string());
-            st.last_error = Some(inner);
-        }
+        "error" => st.last_error = Some(provider_message(p["error"]["message"].as_str().unwrap_or("error"))),
         "turn/completed" => {
             let turn = &p["turn"];
             st.turn = None;
@@ -600,7 +592,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                     Pending::Terminals { items: commands },
                 ));
             }
-            let reason = turn["error"]["message"].as_str().map(str::to_string).or_else(|| st.last_error.take());
+            let reason = turn["error"]["message"].as_str().map(provider_message).or_else(|| st.last_error.take());
             let status = if status == TurnStatus::Completed && reason.is_some() && st.final_text.is_none() {
                 TurnStatus::Failed
             } else {
@@ -851,6 +843,14 @@ fn diffs(changes: &Value) -> Vec<ToolContent> {
         }
     }
     out
+}
+
+/// An error's message: often the provider's JSON, whose inner message reads better.
+fn provider_message(m: &str) -> String {
+    serde_json::from_str::<Value>(m)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| m.to_string())
 }
 
 /// The files of a file change, for clients that show each file once: its path, what happened to it
@@ -1194,6 +1194,18 @@ mod tests {
         assert_eq!(files[2]["move_path"], "/w/d.txt");
         assert_eq!(content.len(), 2, "the moved file has no diff to show");
         assert!(matches!(&outs[4], Out::Ev(Ev::ToolCall { input: Some(i), .. }) if i["query"] == "rust 1.95"));
+    }
+
+    #[test]
+    fn a_turn_that_fails_with_the_providers_json_says_its_message() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let done = json!({"method": "turn/completed", "params": {"threadId": "th", "turn": {"id": "t", "status": "failed",
+            "error": {"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"The 'x' model is not supported\"}}"}}}});
+        let (_, o) = handle(&mut st, &done.to_string(), &opts(None));
+        assert!(
+            matches!(&o[0], Out::TurnEnd { status: TurnStatus::Failed, reason: Some(r), .. } if r == "The 'x' model is not supported"),
+            "{o:?}"
+        );
     }
 
     #[test]

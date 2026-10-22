@@ -8,6 +8,7 @@ the host's Codex adapter sends (initialize, thread/start and /resume, skills/lis
            (one new) that it really writes, a passing command, a web search, plan updates, the answer
   ASK      asks the user (item/tool/requestUserInput) and answers with the choice
   SLOW     runs `sleep 30` until Stop; a message sent meanwhile (turn/steer) is acknowledged
+  STEERME  runs a command until a message is sent meanwhile (up to 20 s), takes it, and answers
   FAIL     the provider refuses: an `error` notification, then the turn fails
   MANY     eight files changed, a long command output and a long diff
   NOPHASE  messages without a phase, as older Codex versions send them
@@ -125,7 +126,7 @@ def end(status="completed", error=None):
 
 def unified(path, old, new):
     import difflib
-    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), "a/" + path, "b/" + path, n=3))[0:]
+    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), "a/" + path, "b/" + path, n=3))
 
 
 def file_change(fid, changes):
@@ -194,7 +195,11 @@ def explore(n):
     plan(("Reproduce the Q3 crash", "completed"), ("Use each month's real last day", "inProgress"), ("Add a test per quarter", "pending"))
     if not message(k("m2"), "Reproduced: the end date is always day 31. I'll take the real last day from `calendar.monthrange` and cover every quarter in a test.", "commentary"):
         return end("interrupted")
-    if not file_change(k("p"), [("export.py", NEW), (os.path.join("tests", "test_quarters.py"), TEST)]):
+    path = os.path.join(cwd, "export.py")
+    old = open(path, encoding="utf-8").read() if os.path.exists(path) else OLD
+    bad = "    return date(year, q * 3, 31)\n"
+    new = old.replace(bad, "    last = calendar.monthrange(year, q * 3)[1]\n    return date(year, q * 3, last)\n") if bad in old else NEW
+    if not file_change(k("p"), [("export.py", new), (os.path.join("tests", "test_quarters.py"), TEST)]):
         return end("interrupted")
     if not command(k("g"), "python3 -m pytest -q", [{"type": "unknown", "command": "python3 -m pytest -q"}],
                    ".....                                                                [100%]\n5 passed in 0.04s\n", 0, 0.6, 2300):
@@ -248,6 +253,24 @@ def slow(n):
             seen += 1
     item_completed({**base, "status": "completed", "aggregatedOutput": "", "exitCode": 0, "durationMs": 30000})
     message(f"a{n}", "Done counting.", "final_answer")
+    end()
+
+
+def steerme(n):
+    cid = f"w{n}"
+    base = {"type": "commandExecution", "id": cid, "command": "/bin/zsh -lc 'npm run build'", "cwd": state["cwd"], "processId": "p" + cid,
+            "source": "agent", "status": "inProgress", "commandActions": [{"type": "unknown", "command": "npm run build"}],
+            "aggregatedOutput": None, "exitCode": None, "durationMs": None}
+    item_started(base)
+    for _ in range(200):
+        if interrupted.wait(0.1):
+            return end("interrupted")
+        if steers:
+            break
+    item_completed({**base, "status": "completed", "aggregatedOutput": "built in 1.2s\n", "exitCode": 0, "durationMs": 1200})
+    taken = steers[0] if steers else "nothing"
+    if not message(f"a{n}", f"Built, and taken into account: {taken}.", "final_answer"):
+        return end("interrupted")
     end()
 
 
@@ -305,7 +328,7 @@ def short(n):
     end()
 
 
-SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact)]
+SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact)]
 
 
 def run_turn(text):

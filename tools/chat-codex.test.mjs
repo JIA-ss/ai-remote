@@ -72,6 +72,8 @@ test("a command's info comes from the host, or from its title and output on olde
   assert.equal(fresh.explore, true);
   assert.deepEqual(plain(fresh.actions), [{ type: "search", query: "x", path: null }]);
   assert.equal(fresh.durationMs, 1234);
+  const streamed = codex.execInfo({ ...base, title: "Shell seq 3", content: [{ type: "text", text: "1\n2" }, { type: "text", text: "\n3\n" }] });
+  assert.equal(streamed.output, "1\n2\n3\n", "streamed pieces join as they came");
   const old = codex.execInfo({ ...base, status: "failed", title: "/bin/zsh -lc 'cargo build'", content: [{ type: "text", text: "error\n" }, { type: "text", text: "(exit code 101)" }] });
   assert.equal(old.command, "cargo build");
   assert.equal(old.explore, false);

@@ -271,7 +271,10 @@ export function DiffView({ lines }: { lines: DiffLine[] }) {
     <div className="cdx-diff" tabIndex={0}>
       {shown.map((l, i) =>
         l.kind === "hunk" ? (
-          <div key={i} className="x-hunk" role="separator">{l.text.replace(/^@@[^@]*@@\s?/, "") || "⋯"}</div>
+          // A hunk's header: the code it is in (as git names it), or a gap between two hunks.
+          i === 0 && !l.text.replace(/^@@[^@]*@@\s?/, "") ? null : (
+            <div key={i} className="x-hunk" role="separator">{l.text.replace(/^@@[^@]*@@\s?/, "") || "⋯"}</div>
+          )
         ) : (
           <div key={i} className={cx("x-dl", `x-${l.kind}`)}>
             <span className="x-no x-o">{l.old ?? ""}</span>
@@ -557,6 +560,12 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
           <div className="x-rule" />
         </div>
       )}
+      {/* What the user added to the running turn stays in view when the work folds (as in Codex). */}
+      {folded && work.filter((u) => u.kind === "steer").map((u) => (
+        <div key={u.key} className="cdx-unit" data-unit={u.kind}>
+          <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
+        </div>
+      ))}
       <Reveal open={!folded} className="cdx-work">
         {work.map((u) => (
           <div key={u.key} className="cdx-unit" data-unit={u.kind}>
