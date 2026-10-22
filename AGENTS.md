@@ -208,10 +208,10 @@ runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io
 侧屏光标形状的大小；锁屏后切屏；`ROTATE90` / `ROTATE180` 的屏（win-dev 两块都是 `ROTATE270`，另两种只有单测和微软示例的映射）；
 macOS 被控端多屏（这台 Mac 没接外屏）；Windows 控制端（WebView2）里下拉的样子。win-dev 的服务现在仍是原来的程序，不含本分支。
 
-**和 PR #34（`fix/fullscreen-cursor`）**：两边都改了 `Session.tsx`。试合并（`git merge-tree`，再在临时 worktree 里合）只有 `Stream`
-的 `callbacks` 那两行冲突，取并集：`{ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown }`；
-合并后 `tsc --noEmit` 过，`stream-ui` + `manual-input` 33 项全过。远端光标移出当前屏时，本分支只保证叠加层隐藏；本地鼠标随之重新出现
-靠 #34 的 `onPointerShown`。
+**和 PR #34（`fix/fullscreen-cursor`）**：两边都改了 `Session.tsx`。#34 先合进了 main；本分支合并 main 9933900 时只有 `Stream` 的
+`callbacks` 那两行冲突，取并集：`{ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown }`，
+合并后 `tsc --noEmit` 过，前端 10 个测试文件 119 项 117 过 2 跳过。远端光标移出当前屏时叠加层隐藏（本分支）、本地鼠标随之重新出现（#34 的
+`onPointerShown`）。
 
 ## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
 
