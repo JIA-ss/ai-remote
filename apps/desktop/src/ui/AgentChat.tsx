@@ -14,6 +14,7 @@ import {
   phase,
   reduceChat,
   rememberCwd,
+  sessionGone,
   rememberSent,
   recentCwds,
   type Chat,
@@ -214,6 +215,9 @@ function useNowTick(active: boolean) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!active) return;
+    // The clock starts from now, not from when the panel mounted: a turn that starts later would
+    // otherwise show "0 ms" until the first tick (or longer, where a hidden page slows timers).
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [active]);
@@ -226,6 +230,8 @@ function useConversation(host: string, target: ChatTarget | null) {
   const [hello, setHello] = useState<ChatHello | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  /** The host no longer has this session: the panel goes back to the list. */
+  const [gone, setGone] = useState(false);
   const conn = useRef<ChatConnection | null>(null);
   const chatRef = useRef(chat);
   chatRef.current = chat;
@@ -237,9 +243,14 @@ function useConversation(host: string, target: ChatTarget | null) {
     // Events are folded at most once per frame: a fast agent must not re-render per token while
     // the live view keeps the compositor busy.
     let pending: ChatEvent[] = [];
+    // A hidden page gets no animation frames at all, so a timer flushes too (whichever comes first).
     let frame = 0;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
     const flush = () => {
+      if (frame) cancelAnimationFrame(frame);
+      if (fallback) clearTimeout(fallback);
       frame = 0;
+      fallback = null;
       const batch = pending;
       pending = [];
       setChat((c) => batch.reduce(reduceChat, c));
@@ -251,7 +262,10 @@ function useConversation(host: string, target: ChatTarget | null) {
         if (!ticket) ticket = (await call<{ ticket: string }>(host, "chat_attach", { session: target.session })).ticket;
         const c = await api.openChat(host, ticket, chatRef.current.seq, (e) => {
           pending.push(e);
-          if (!frame) frame = requestAnimationFrame(flush);
+          if (!frame) {
+            frame = requestAnimationFrame(flush);
+            fallback = setTimeout(flush, 100);
+          }
         }, () => {
           if (!live) return;
           setConnected(false);
@@ -278,7 +292,8 @@ function useConversation(host: string, target: ChatTarget | null) {
         }
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg);
-        if (!/no chat session|requires level|no longer has access/.test(msg)) retry = setTimeout(() => void open(), 5000);
+        if (sessionGone(msg)) setGone(true);
+        else if (!/requires level|no longer has access/.test(msg)) retry = setTimeout(() => void open(), 5000);
       }
     };
     void open();
@@ -286,6 +301,7 @@ function useConversation(host: string, target: ChatTarget | null) {
       live = false;
       if (retry) clearTimeout(retry);
       if (frame) cancelAnimationFrame(frame);
+      if (fallback) clearTimeout(fallback);
       conn.current?.close();
       conn.current = null;
     };
@@ -297,20 +313,24 @@ function useConversation(host: string, target: ChatTarget | null) {
     }
     void conn.current.send(command).catch((e) => setError(String(e)));
   };
-  return { chat, setChat, hello, error, connected, send };
+  return { chat, setChat, hello, error, connected, gone, send };
 }
 
 /** The chat tab of the session page. */
 export function AgentChat({ host, target, onTarget }: { host: string; target: ChatTarget | null; onTarget: (t: ChatTarget | null) => void }) {
+  // Leaving re-renders here even when the parent's target was already null (the panel had opened
+  // the remembered session), and says why when the host no longer had the session.
+  const [left, setLeft] = useState<{ gone: boolean } | null>(null);
   const current = target ?? (lastSession(host) ? { session: lastSession(host) as string } : null);
-  if (!current) return <Picker host={host} onPick={onTarget} />;
+  if (!current) return <Picker host={host} note={left?.gone ? t("hc_session_gone") : null} onPick={(p) => { setLeft(null); onTarget(p); }} />;
   return (
     <Conversation
       key={current.session}
       host={host}
       target={current}
-      onLeave={() => {
+      onLeave={(gone) => {
         rememberSession(host, null);
+        setLeft({ gone: !!gone });
         onTarget(null);
       }}
     />
@@ -318,7 +338,7 @@ export function AgentChat({ host, target, onTarget }: { host: string; target: Ch
 }
 
 /** No session open: the sessions on the host, and starting a new one. */
-function Picker({ host, onPick }: { host: string; onPick: (t: ChatTarget) => void }) {
+function Picker({ host, note, onPick }: { host: string; note: string | null; onPick: (t: ChatTarget) => void }) {
   const { report, error } = useRuntimes(host);
   const sessions = useSessions(host);
   const open = (sessions ?? []).filter((s) => s.state !== "ended");
@@ -328,6 +348,7 @@ function Picker({ host, onPick }: { host: string; onPick: (t: ChatTarget) => voi
   };
   return (
     <div className="nt-chat-picker rail-scroll">
+      {note && <div className="nt-chat-note warn">{note}</div>}
       {open.length > 0 && (
         <>
           <div className="grp-h">{t("hc_sessions")}</div>
@@ -355,8 +376,12 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 /** Sent messages per session, for ↑ / ↓ (kept for this run of the app). */
 const sentBySession = new Map<string, string[]>();
 
-function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: () => void }) {
-  const { chat, setChat, hello, error, connected, send } = useConversation(host, target);
+function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
+  const { chat, setChat, hello, error, connected, gone, send } = useConversation(host, target);
+  // A remembered session the host no longer has (it restarted): forget it and show the list.
+  useEffect(() => {
+    if (gone) onLeave(true);
+  }, [gone]);
   const [menu, setMenu] = useState(false);
   const [history, setHistory] = useState<string[]>(() => sentBySession.get(target.session) ?? []);
   const [follow, setFollow] = useState(0);
