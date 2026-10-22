@@ -29,6 +29,7 @@ pub mod adapters;
 pub mod detect;
 pub mod event;
 mod jsonrpc;
+pub mod preview;
 pub mod proc;
 pub mod runtimes;
 

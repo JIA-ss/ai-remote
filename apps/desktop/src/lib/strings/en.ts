@@ -875,4 +875,18 @@ export const en = {
   hc_save: "Save",
   hc_cancel: "Cancel",
   hc_stop_k: "Stop (Esc)",
+  // File previews in the chat panel
+  hc_preview_open: "Preview {name}",
+  hc_preview_title: "Preview of {name}",
+  hc_preview_loading: "Fetching the file from the host…",
+  hc_preview_fit: "Fit to the window",
+  hc_preview_actual: "Show at actual size",
+  hc_preview_view: "View",
+  hc_preview_rendered: "Preview",
+  hc_preview_source: "Source",
+  hc_preview_copy_path: "Copy path",
+  hc_preview_reload: "Fetch again",
+  hc_preview_close: "Close (Esc)",
+  hc_preview_cut: "The file is long; only its first 2 MB are shown.",
+  hc_preview_static: "Shown without running its scripts, and without loading anything from the network.",
 };

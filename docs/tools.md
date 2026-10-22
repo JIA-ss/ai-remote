@@ -613,10 +613,18 @@ settings. Hence every tool here needs admin level, and starting asks the owner b
 | `chat_attach` | allow | `session`. A ticket to watch the session and send it messages (any device with admin level; each message records who sent it) |
 | `chat_interrupt` | allow | stops the running turn; the session takes the next message |
 | `chat_end` | allow | ends the session and its agent process; the transcript stays |
+| `chat_file` | allow | `session`, `path`. A one-time ticket (2 minutes, files channel) to read an HTML, Markdown or image file of the session for a preview in the app: at most 16 MiB, and only inside the session's folder (after links are followed) or a path the agent itself named in the session (a tool call's location or diff, or its text) |
 
-`chat_start` and `chat_attach` are not listed to MCP clients (like `files_push` / `files_pull`): the
+`chat_start`, `chat_attach` and `chat_file` are not listed to MCP clients (like `files_push` / `files_pull`): the
 conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and command line speak
 (`ai-remote chat`, see [operations.md](operations.md)).
+
+`chat_file` runs without asking because it adds no reach: the device already has level admin and can
+ask the agent, which runs as the user without asking, to print any file. It is kept to the files the
+conversation is about so a default-allowed tool reads no more than that; a `[[rule]]` for `chat_file`
+can still ask or deny. The desktop app shows HTML without running its scripts (a frame with
+`sandbox=""` and a policy that loads nothing from the network), Markdown with the chat's own renderer,
+and images from memory; nothing is written to the controller's disk.
 
 **Finding agents.** Each command name is looked up on the host's own `PATH`, then (Unix) through the
 user's login shell once (`$SHELL -ilc`, aliases and functions of the same name removed; its `PATH` is

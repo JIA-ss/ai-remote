@@ -243,6 +243,34 @@ pub async fn pull(
     }))
 }
 
+/// Most bytes a preview takes into memory (the host refuses larger files first).
+pub const MAX_PREVIEW: u64 = 16 * 1024 * 1024;
+
+/// Reads a file of coding-agent session `session` on `host` into memory for a preview: the
+/// host's `chat_file` checks the file (an HTML, Markdown or image file the session is about) and
+/// issues a ticket, then the bytes come over the files channel with their SHA-256 checked. Nothing
+/// is written to this computer's disk.
+pub async fn preview(profile: &Profile, cli: &Path, host: &str, session: &str, path: &str) -> Result<Vec<u8>> {
+    let issued = call(profile, cli, host, "chat_file", json!({"session": session, "path": path})).await?;
+    let ticket = issued["ticket"].as_str().ok_or_else(|| anyhow!("the host issued no transfer ticket"))?;
+    let (reply, mut reader, _writer) = open_transfer(profile, cli, host, ticket).await?;
+    if reply["ok"] == false {
+        bail!("{}", reply["error"].as_str().unwrap_or("the host refused the file"));
+    }
+    let total = reply["size"].as_u64().ok_or_else(|| anyhow!("the host did not say how big the file is"))?;
+    if total > MAX_PREVIEW {
+        bail!("the file is {total} bytes; previews take at most {MAX_PREVIEW}");
+    }
+    let mut bytes = vec![0u8; total as usize];
+    reader.read_exact(&mut bytes).await.map_err(|e| anyhow!("the transfer broke off: {e}"))?;
+    let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let trailer = read_line(&mut reader).await?;
+    if trailer["sha256"].as_str() != Some(digest.as_str()) {
+        bail!("the received file's SHA-256 does not match the host's");
+    }
+    Ok(bytes)
+}
+
 /// A file name from the host made safe to create here: no drive prefix (`C:x` would leave the
 /// folder on Windows), no characters Windows refuses, no leading dots or trailing dots and spaces.
 fn safe_name(name: &str) -> String {

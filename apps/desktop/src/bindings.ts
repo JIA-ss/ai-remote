@@ -202,6 +202,12 @@ export const commands = {
 	/**  Fetches `remote` from `host` into this computer's Downloads folder (or `local_dir`). */
 	pullFile: (host: string, remote: string, localDir: string | null, onProgress: Channel<[number | null, number | null]>) => typedError<Json, string>(__TAURI_INVOKE("pull_file", { host, remote, localDir, onProgress })),
 	/**
+	 *  The bytes of an HTML, Markdown or image file of coding-agent session `session` on `host`, for a
+	 *  preview in the chat panel (`path` as the session names it). Kept in memory only; raw bytes (an
+	 *  `ArrayBuffer` in the page), never JSON.
+	 */
+	previewFile: (host: string, session: string, path: string) => typedError<Frame, string>(__TAURI_INVOKE("preview_file", { host, session, path })),
+	/**
 	 *  Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 	 *  webview show up where the app's own messages go.
 	 */

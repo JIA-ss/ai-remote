@@ -864,4 +864,18 @@ export const zh: Record<keyof typeof en, string> = {
   hc_save: "保存",
   hc_cancel: "取消",
   hc_stop_k: "停止（Esc）",
+  // 对话里的文件预览
+  hc_preview_open: "预览 {name}",
+  hc_preview_title: "{name} 的预览",
+  hc_preview_loading: "正在从被控端取文件…",
+  hc_preview_fit: "适应窗口",
+  hc_preview_actual: "按实际大小显示",
+  hc_preview_view: "视图",
+  hc_preview_rendered: "预览",
+  hc_preview_source: "源码",
+  hc_preview_copy_path: "复制路径",
+  hc_preview_reload: "重新获取",
+  hc_preview_close: "关闭（Esc）",
+  hc_preview_cut: "文件太长，只显示前 2 MB。",
+  hc_preview_static: "预览不运行页面里的脚本，也不从网络加载任何内容。",
 };

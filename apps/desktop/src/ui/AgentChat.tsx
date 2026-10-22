@@ -28,6 +28,7 @@ import {
 import { t } from "../lib/i18n";
 import { Composer } from "./chat/Composer";
 import { secs } from "./chat/Rows";
+import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
 import { Icon } from "./Icon";
 import { cx } from "./util";
@@ -464,6 +465,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         )}
       </div>
       {status && <div className={cx("nt-chat-status", !connected && !ended && error && "err")}>{status}</div>}
+      <PreviewProvider host={host} session={target.session}>
       <Transcript
         chat={chat}
         now={now}
@@ -474,6 +476,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         onAnswer={onAnswer}
         onContinue={onContinue}
       />
+      </PreviewProvider>
       <Composer
         agent={agent}
         host={host}

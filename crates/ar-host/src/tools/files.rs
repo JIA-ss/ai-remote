@@ -88,7 +88,7 @@ pub struct Ticket {
 pub struct Transfers(Mutex<HashMap<String, Ticket>>);
 
 impl Transfers {
-    fn issue(&self, ctx: &ToolCtx<'_>, tool: &'static str, path: PathBuf, direction: Direction) -> String {
+    pub(crate) fn issue(&self, ctx: &ToolCtx<'_>, tool: &'static str, path: PathBuf, direction: Direction) -> String {
         let id = random_id();
         let ticket = Ticket {
             id: id.clone(),

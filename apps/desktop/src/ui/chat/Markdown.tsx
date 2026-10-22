@@ -11,7 +11,9 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { highlight, languageOf } from "../../lib/highlight";
 import { t } from "../../lib/i18n";
 import { parseMarkdown, safeHref, type Inline, type MdBlock } from "../../lib/markdown";
+import { fileTarget } from "../../lib/preview";
 import { cx } from "../util";
+import { usePreview } from "./preview-context";
 
 async function writeClipboard(text: string): Promise<boolean> {
   try {
@@ -96,12 +98,28 @@ export function CodeBlock({ code, lang, className }: { code: string; lang?: stri
 }
 
 function InlineView({ c }: { c: Inline[] }): ReactNode {
+  const preview = usePreview();
   return c.map((x, i) => {
     switch (x.t) {
       case "text":
         return x.v;
-      case "code":
-        return <code key={i}>{x.v}</code>;
+      case "code": {
+        // `out/report.html` in a reply opens its preview.
+        const file = preview && fileTarget(x.v);
+        if (!file) return <code key={i}>{x.v}</code>;
+        return (
+          <code key={i} className="md-file" role="button" tabIndex={0} title={t("hc_preview_open", { name: x.v })}
+            onClick={() => preview.open(file)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                preview.open(file);
+              }
+            }}>
+            {x.v}
+          </code>
+        );
+      }
       case "br":
         return <br key={i} />;
       case "em":
@@ -112,6 +130,18 @@ function InlineView({ c }: { c: Inline[] }): ReactNode {
         return <del key={i}><InlineView c={x.c} /></del>;
       case "link": {
         const href = safeHref(x.href);
+        const file = !href && preview ? fileTarget(x.href) : null;
+        if (file && preview) {
+          return (
+            <a key={i} className="md-a md-file" href="#" title={t("hc_preview_open", { name: file })}
+              onClick={(e) => {
+                e.preventDefault();
+                preview.open(file);
+              }}>
+              <InlineView c={x.c} />
+            </a>
+          );
+        }
         if (!href) return <span key={i}><InlineView c={x.c} /></span>;
         // Links are not followed from inside the app (the page would leave the panel); a click
         // copies the address, and hovering shows it.
