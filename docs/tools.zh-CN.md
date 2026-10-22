@@ -524,7 +524,7 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 
 ### 5.15 编程智能体
 
-被控端上装好的编程智能体都可以从控制端启动，并在它工作时与它对话。支持 Claude Code、Codex，以及说 Agent Client Protocol 的智能体：Gemini CLI、OpenCode、Qwen Code、Copilot CLI、Cursor Agent、Kimi、Goose。
+被控端上装好的编程智能体都可以从控制端启动，并在它工作时与它对话。支持 Claude Code、Codex，以及说 Agent Client Protocol 的智能体：DeepSeek Harness（`dsh --profile acp`）、Gemini CLI、OpenCode、Qwen Code、Copilot CLI、Cursor Agent、Kimi、Goose。
 
 智能体在被控端以当前登录用户的身份运行，**动手前不询问**：
 
@@ -551,7 +551,7 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 2. （Unix）用户的登录 shell，只运行一次 `$SHELL -ilc`，先去掉同名的别名和函数。这个 shell 的 `PATH` 也会用来启动智能体，所以 launchd 下由 Node.js shim 安装的 CLI 也能运行；
 3. 安装器常用的位置。
 
-版本取自 `--version`，登录态取自 `claude auth status` / `codex login status`。结果缓存一分钟，传 `refresh: true` 会重新查找。被控端以 SYSTEM（Windows 服务模式）或 root 身份运行时什么都不执行，返回 `can_start: false`，因为智能体必须以用户身份运行。
+版本取自 `--version`，登录态取自 `claude auth status` / `codex login status`。DeepSeek Harness 没有查询登录态的命令：它的环境里有 `DEEPSEEK_API_KEY`，或 `$DSH_HOME/.credentials.yaml`（也可能是 DeepSeek 账号登录）、`$DSH_HOME/.env` 里有（`$DSH_HOME` 默认 `~/.dsh`），就算已登录，只看有没有、不读值；连这个目录都没有算未登录；其余情况报 unknown。结果缓存一分钟，传 `refresh: true` 会重新查找。被控端以 SYSTEM（Windows 服务模式）或 root 身份运行时什么都不执行，返回 `can_start: false`，因为智能体必须以用户身份运行。
 
 **自定义智能体**写在 `<配置目录>/host/chat.toml`，不写进 `ai-remote.toml`：
 
@@ -572,7 +572,8 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 - 一个会话在多轮之间保持同一个智能体进程，每条消息就是这个进程上的一轮。
 - 一轮还在进行时发来的消息进入队列（最多 8 条），按顺序发出；带消息的 `interrupt` 会先停止当前一轮，再优先发这条。
 - `steer`（插话）把消息送进正在进行的这一轮，前提是智能体支持（`caps.steer`：Claude Code、Codex 支持，ACP 智能体不支持；`chat.toml` 里的条目可以写 `steer = false` 关掉）。Claude Code 在这一轮下一次请求模型时读到它；如果这一轮已经发出了最后一次请求，这条消息会作为下一轮执行。不支持或当前没有在进行的轮次时，消息照常排队，并发一条 `steer_queued` 通知说明原因。
-- 以下情况会停掉进程：会话结束；20 分钟没有新的一轮；打断在宽限期内没有生效（Claude 10 s、Codex 3 s、ACP 5 s）；被控端停止。之后会话进入 **parked**，下一条消息会启动新进程，并续接智能体自己的对话（`--resume`、`thread/resume`、`session/load`）。
+- 以下情况会停掉进程：会话结束；20 分钟没有新的一轮；打断在宽限期内没有生效（Claude 10 s、Codex 3 s、ACP 5 s）；被控端停止。之后会话进入 **parked**，下一条消息会启动新进程，并续接智能体自己的对话（`--resume`、`thread/resume`、`session/resume` 或 `session/load`）。
+- 指定 `model` 时：Claude Code 用 `--model`；Codex 写在 thread 上；ACP 智能体如果列出了 `model` 配置项，就用这个配置项（DeepSeek Harness 填模型名，例如 `deepseek-v4-pro`；名字不在可选范围内时发一条通知列出可选的），否则用 `session/set_model`。
 - 同时最多运行 4 个智能体进程。
 
 **事件**：

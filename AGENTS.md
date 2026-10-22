@@ -116,11 +116,40 @@
 
 **未测**：ACP 智能体真机插话（设计上不支持，只走单测）；Codex 插话正好撞上轮次结束（`no active turn to steer` 退回队列）只有单测和一次手动调用；Claude 插话后紧接着打断（排队中的那条会被 Claude 当下一轮跑）未测；桌面端界面（另一会话）。
 
+### DeepSeek Harness（2026-10-22，分支 `claude/dsh-agy-7f8142`，叠在 `feat/host-chat` 上）
+
+用户定的优先级：Claude、Codex、DeepSeek Harness、OpenCode、Antigravity。本节补上 DeepSeek Harness。只改了被控端、冒烟脚本和文档，桌面端没动。
+
+**DeepSeek Harness**（id `deepseek`，命令 `dsh`，参数 `--profile acp`，走通用 ACP 适配器）。协议细节读的是它仓库 `packages/acp/acp` 的源码和 README（MIT，只读，没有抄代码）：
+- 没有 `session/load`，续会话用 `session/resume`（`initialize` 的 `agentCapabilities.sessionCapabilities.resume`）。ACP 适配器现在按能力选：有 resume 用 resume（不回放），否则 load（回放期间不显示），都没有就新开并发 `context_lost`。
+- 没有 modes 和 `session/set_model`：模型是 `configOptions` 里 `category: "model"` 的选项，值是不透明的 `["provider","model"]` JSON。适配器按值、名字或数组最后一项匹配用户填的模型名，发 `session/set_config_option`；匹配不到发 `model` 通知列出可选项；智能体没有 `configOptions` 时照旧 `session/set_model`。
+- `usage_update`（`used`、`size`，可选 `cost`）→ `usage` 的 `context_used` / `context_window`。
+- 它发的是**整条消息**（带 `messageId`），不流式：`caps.partial` 设为 false。适配器现在按 `messageId`（没有时按"工具调用之后另起一条"）分开消息，一轮的 `final_text` 是最后一条消息。这一点也改变了 OpenCode 等其他 ACP 智能体：以前一轮所有文字拼成一条。
+- 登录态：dsh 没有状态命令。看环境变量 `DEEPSEEK_API_KEY`、`$DSH_HOME/.credentials.yaml`（含 `deepseek-account` 视为账号登录）和 `$DSH_HOME/.env`（`$DSH_HOME` 默认 `~/.dsh`），只判断有无、不读出值；连目录都没有报 `logged_out`，其余 `unknown`。`Runtime::login` 因此从"命令参数"改成枚举 `Login`。
+- `caps.steer` false（ACP 不能往进行中的 prompt 追加）。
+- 工具调用：真机上它每次都发 `kind: "other"`，`title` 只是工具名（`bash`、`read`），命令和路径在 `rawInput`。ACP 适配器在 `kind` 缺省或为 `other` 时按工具名推断类型（bash → execute、read → read、edit / write → edit、grep / glob → search 等），用 `rawInput.command` 或路径作标题，路径作 location。报了具体 kind 的智能体不受影响。模型名匹配也改成不区分大小写（它的选项名是 `DeepSeek-V4-Pro`，值的末项是 `deepseek-v4-pro`）。
+
+**真机（Mac，dsh 0.2.1-rc.2，用户自己配的 key，默认模型 deepseek-v4-flash，2026-10-22）**：
+- 直接驱动它的 ACP（`/tmp` 下的临时脚本，没入库）：`initialize` 声明 `sessionCapabilities.resume`；一次"跑 `sleep 3 && echo finished` 再读文件"的任务 4.7 s 完成，消息与思考同一个 `messageId`、`usage_update` 报 `size: 1000000`；`session/cancel` 0.11 s 后 prompt 以 `cancelled` 返回，正在跑的工具以 `failed`（`Error: tool call aborted`）结束；`set_config_option` 切到 `deepseek-v4-pro` 生效；关掉进程后新进程 `session/resume` 立即返回（模型选择保留），下一轮答出上一进程里记住的词。以上各 1 次。
+- `tools/chat-smoke.py --quiet --real deepseek=$HOME/.local/bin/dsh`：29 项全过（1 次；第一次跑时因为工具 kind 是 other，"跑 shell 工具 / 打断"两项没过，改适配器后通过）：答题 2.0 s，跑 shell 工具，打断 0.0 s 内生效，下一轮记得上文 0.6 s；`chat list` 的登录态是 `logged_in` / `api_key`。
+- Windows（win-dev，Windows 11，debug，本分支以 bundle 检出到独立 worktree `%USERPROFILE%\ai-remote-dsh`）：`cargo clippy --workspace --all-targets -D warnings` 无警告；`cargo test -p ar-host --lib chat` 25 项全过（Windows 上跳过 Unix 的驱动层替身测试）；`tools/chat-smoke.py --quiet` 替身部分 28 项全过（1 次）。
+- **dsh 真实对话只在 macOS 测过**（Windows 不配 key）。经被控端 park 之后再续接（`session/resume` 走驱动层）只在单测和上面的协议脚本里覆盖，没有在被控端里端到端测。
+
+**Antigravity：暂不接**（用户没有密钥，2026-10-22 决定先不适配）。已写好的适配器存在本地分支 `claude/agy-adapter-parked`（提交 e56e64a，未推送），内容：`agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions` 常驻进程（依据官方文档 antigravity.google/docs/cli/headless，prompt 走 stdin）、`--conversation` 续接、打断即结束进程树、`chat.toml` 的 `base = "acp"`（给 Google 另发的 `agy_acp_server.par` 用），以及单测、替身驱动层测试和冒烟里的替身 agy（都通过过）。以后要接，从那个提交挑 agy 相关部分即可。2026-10-22 两台机器装了 agy 1.4.4（Mac `~/.local/bin/agy`；win-dev `%LOCALAPPDATA%\agy\bin\agy.exe`，官方脚本**不加进 PATH**，接入时要把这两个位置加进 `detect.rs` 的已知位置）。`agy --help` 证实 `--input-format stream-json`、`--conversation`、`--dangerously-skip-permissions` 都在；`--print-timeout` 在 1.4.4 默认是 0（等到这一轮完），搁置分支里传的 `12h` 可以去掉。账号已登录，但 Google 以地区不可用拒绝服务（`agy -p` 输出 `AGY_ERROR: {"status":"PERMISSION_DENIED","error_code":403,...}`，主会话实测），所以**真实成功路径未测：账号地区受限**；接入时要把这行 `AGY_ERROR:` 当作一轮失败、原话显示。
+
+**实测（本机 macOS，2026-10-22）**：
+- 单测新增：ACP 2 项（dsh 的 initialize / `session/resume` / 模型配置项 / 整条消息 / `usage_update` / 工具失败 / 结束文字，按它服务端的真实行格式；resume 失败转新会话 + 模型名不存在），detect 1 项（dsh 的 key / 账号 / 空 key / 没有目录）。
+- `tools/chat-smoke.py --quiet`（隔离被控端和控制端，真实 QUIC，debug）：28 项全过（新增 1 项：dsh 以 ACP、`steer: false` 列出）。`--real deepseek=<dsh 路径>` 不用改脚本就能用（`--real` 取内置 id）。
+- `cargo fmt --check`、`clippy --workspace --all-targets -D warnings` 无警告；`cargo test --workspace`（ar-host 270 项等）只有 `ar-net` 的 `ipc::tests::a_second_daemon_cannot_replace_the_live_socket` 在整跑时失败过 1 次，单独重跑 3 次都过，本分支没改 ar-net，判断是偶发；node 测试 78 过 2 跳过；`tsc` 通过。
+
+**未测**：两台机器都没装 `dsh`，**真实 dsh 一次都没跑过**，协议以源码为准（main 分支，npm 当时 0.2.1-rc.2）。Windows 上没有跑。
+
 ### 下一步
 
 - [ ] Windows 计划任务（后台 hostw）模式下的真机对话、子进程是否弹控制台窗口：尚未验证。终端前台被控端的情况已经测过，见上面的 Windows 实测。
 - [ ] 服务模式 chat-runner：SYSTEM 被控端以用户令牌拉起 `hostw --chat-runner`，同时解决 Win11 锁屏杀掉 hostw 后会话丢失的问题。
 - [ ] Claude 真机端到端：要先在被控端重新登录 Claude（本机 token 已过期）。
+- [ ] DeepSeek Harness 真机端到端：装好并配好 key 后跑 `tools/chat-smoke.py --quiet --real deepseek=<dsh 路径> --model deepseek-v4-flash`。
 - [x] Codex / Claude 的运行中插话（见上一小节）。
 - [ ] iOS 只读会话视图；可选的 `kind:"pty"` 原始终端。
 - [ ] 与 `feat/host-tray` 合流（不论哪个先合进 main，后合的那个 rebase 时做）：
