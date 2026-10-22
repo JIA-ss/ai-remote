@@ -47,7 +47,7 @@
 :root, [data-os="mac"], [data-os="windows"] {
   --font-text: -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
   --font-small: var(--font-text); --font-display: var(--font-text);
-  --font-data: "Geist Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", monospace;
+  --font-data: "Geist Mono", ui-monospace, "SF Mono", Menlo, "PingFang SC", "Microsoft YaHei UI", monospace;
   --w-strong: 600; --w-title: 600; --w-display: 600;
   --r-window: 0; --r-panel: 0; --r-stage: 0; --r-card: 10px; --r-control: 6px; --r-row: 6px; --r-tile: 7px; --r-payload: 8px;
   --r-segment-track: 7px; --r-segment: 5px; --r-stream: 0; --r-ref: 4px; --r-capsule: 12px; --r-pill: 8px; --r-float: 12px;
@@ -439,6 +439,9 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-chat-status.err { color: var(--danger); }
 .nt-transcript { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .nt-chat-body { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; user-select: text; scrollbar-width: thin; }
+/* WebView2 draws a thin scrollbar as a grey track with arrow buttons unless it is given colours (the
+   app-wide ::-webkit-scrollbar style no longer applies once scrollbar-width is set). */
+[data-os="windows"] .nt-chat-body { scrollbar-color: var(--stroke-2) transparent; }
 .nt-chat-inner { display: flex; flex-direction: column; gap: 18px; padding: 14px 4px 18px; }
 .nt-chat-empty { color: var(--c-faint); font-size: 13px; line-height: 1.55; padding: 28px 12px; text-align: center; }
 .nt-earlier { align-self: center; font-size: 12px; color: var(--c-faint); padding: 4px 10px; border-radius: 999px; background: var(--c-hover); }
