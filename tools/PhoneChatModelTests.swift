@@ -172,11 +172,11 @@ test("a message added to the running turn (steer) shows inside it, flagged") {
     check(c.turns.count == 1, "one turn")
     let rows = phoneTurnRows(c.turns[0])
     let shape: [String] = rows.map {
-        if case .user(_, _, _, _, let steer) = $0 { return steer ? "user+steer" : "user" }
+        if case .user(_, _, _, _, let steer, _) = $0 { return steer ? "user+steer" : "user" }
         return $0.kind
     }
     check(shape == ["user", "run", "user+steer", "text"], "\(shape)")
-    if case .user(_, let text, _, _, _) = rows[2] { check(text == "use the release profile", "steer text") }
+    if case .user(_, let text, _, _, _, _) = rows[2] { check(text == "use the release profile", "steer text") }
     // An older host might number it as the next turn: it still lands in the running one.
     c.apply(ev(2, ["t": s("user"), "input_id": s("u3"), "by": by("laptop"), "text": s("and skip docs"), "steer": .bool(true)]))
     check(c.turns.count == 1, "still one turn")
@@ -285,62 +285,191 @@ test("phone wording: durations and a session waiting for its first message") {
     check(phoneChatStateName("parked", turns: 0) == "等待第一条消息" && phoneChatStateName("parked", turns: 2) == "已暂停", "parked")
 }
 
-// File previews (apps/ios/Sources/PhonePreview.swift), the cases of the desktop's tools/chat-preview.test.mjs.
-test("preview kinds come from the extension, case-insensitively") {
-    check(phonePreviewKind("/tmp/out/Report.HTML") == .html, "html")
-    check(phonePreviewKind("C:\\work\\notes.md") == .markdown, "md")
-    check(phonePreviewKind("chart.svg") == .image && phonePreviewIsSVG("x.SVG"), "svg")
-    check(phonePreviewKind("a.txt") == nil && phonePreviewKind(".md") == nil && phonePreviewKind("Makefile") == nil, "not previews")
+// MARK: - The composer, folders and previews (tools/chat-input.test.mjs, chat-folder.test.mjs, chat-preview.test.mjs)
+
+func out(_ id: String, _ state: String = "sending") -> PhoneOutgoing {
+    var o = PhoneOutgoing(id: id, text: id, mode: nil, at: 0); o.state = state; return o
 }
 
-test("files named in a reply: relative, absolute, Windows, file: links, with anchors and line numbers") {
-    check(phoneFileTarget("out/report.html") == "out/report.html", "relative")
-    check(phoneFileTarget("./notes.md") == "./notes.md", "dot")
-    check(phoneFileTarget("C:\\work\\chart.png") == "C:\\work\\chart.png", "windows")
-    check(phoneFileTarget("C:/work/chart.png") == "C:/work/chart.png", "windows slash")
-    check(phoneFileTarget("file:///tmp/a%20b.svg") == "/tmp/a b.svg", "file url")
-    check(phoneFileTarget("file:///C:/x/r.html") == "C:/x/r.html", "file url windows")
-    check(phoneFileTarget("report.html#top") == "report.html", "anchor")
-    check(phoneFileTarget("docs/guide.md:12") == "docs/guide.md", "line")
-    for not in ["https://example.com/a.html", "mailto:a@b.md", "javascript:alert(1)//.html", "npm run build", "src/main.rs", "out/"] {
-        check(phoneFileTarget(not) == nil, not)
+test("a message leaves the list once the conversation shows it, as a user event or queued") {
+    seq = 0
+    let c = fold([
+        ev(0, ["t": s("user"), "input_id": s("a"), "by": by("d"), "text": s("a")]),
+        ev(1, ["t": s("turn_start")]),
+        ev(1, ["t": s("state"), "state": s("running"), "queued": .array([.object(["id": s("b"), "text": s("b")])])]),
+    ])
+    let left = phoneSettleOutgoing([out("a", "acked"), out("b", "acked"), out("c", "acked")], log: c, now: 10, hostAcks: true)
+    check(left.map(\.id) == ["c"], "\(left.map(\.id))")
+}
+
+test("acks, refusals, timeouts and a dropped connection") {
+    var list = [out("a"), out("b"), out("c")]
+    list = phoneOutgoingReply(list, .object(["t": s("ack"), "input_id": s("a")]))
+    list = phoneOutgoingReply(list, .object(["t": s("error"), "code": s("refused"), "input_id": s("b"), "text": s("empty message")]))
+    check(list.map { "\($0.id):\($0.state):\($0.refused)" } == ["a:acked:false", "b:failed:true", "c:sending:false"], "replies")
+    check(phoneSettleOutgoing(list, log: PhoneChatLog(), now: phoneSendTimeoutMs + 1, hostAcks: false) == list, "no timeout without acks")
+    let late = phoneSettleOutgoing(list, log: PhoneChatLog(), now: phoneSendTimeoutMs + 1, hostAcks: true)
+    check(late.map { "\($0.id):\($0.state):\($0.error ?? "-")" } == ["a:acked:-", "b:failed:empty message", "c:failed:timeout"], "\(late)")
+    let gone = phoneOutgoingDisconnected([out("x"), out("y", "acked")])
+    check(gone.map(\.state) == ["failed", "acked"], "disconnected")
+}
+
+test("a message the full queue dropped fails; a retry keeps its id unless the host refused it") {
+    seq = 0
+    let c = fold([ev(1, ["t": s("notice"), "level": s("warn"), "code": s("queue_full"), "text": s("8 messages are already waiting"), "input_id": s("q")])])
+    let q = phoneSettleOutgoing([out("q", "acked")], log: c, now: 1, hostAcks: true)[0]
+    check(q.state == "failed" && q.refused, "dropped")
+    check(phoneRetryOutgoing(q, newID: "new", now: 5).id == "new", "new id after a refusal")
+    var lost = out("l"); lost.state = "failed"; lost.error = "disconnected"
+    let again = phoneRetryOutgoing(lost, newID: "new", now: 5)
+    check(again.id == "l" && again.state == "sending" && again.at == 5, "same id after a lost connection")
+}
+
+test("lines are told apart") {
+    check(phoneChatLineKind(.object(["t": s("commands"), "commands": .array([])])) == "commands", "commands")
+    check(phoneChatLineKind(.object(["t": s("ack"), "input_id": s("a")])) == "reply", "ack")
+    check(phoneChatLineKind(.object(["t": s("files"), "rid": s("r1"), "files": .array([])])) == "reply", "files")
+    check(phoneChatLineKind(.object(["t": s("error"), "input_id": s("a")])) == "reply", "refusal")
+    check(phoneChatLineKind(.object(["t": s("error"), "text": s("x")])) == "notice", "error")
+    check(phoneChatLineKind(.object(["t": s("message"), "seq": .number(3)])) == "event", "event")
+    check(phoneChatLineKind(.object(["t": s("bye")])) == "closed", "closed")
+}
+
+test("the caret's word opens the / menu at the start of the message and @ anywhere") {
+    check(phoneAutocompleteAt("/rev", caret: 4) == PhoneAutocomplete(mode: "slash", query: "rev", start: 0, end: 4), "slash")
+    check(phoneAutocompleteAt("  /", caret: 3) == PhoneAutocomplete(mode: "slash", query: "", start: 2, end: 3), "slash after spaces")
+    check(phoneAutocompleteAt("see /rev", caret: 8) == nil, "not mid-message")
+    check(phoneAutocompleteAt("/usr/bin", caret: 8) == nil, "not a path")
+    check(phoneAutocompleteAt("look at @src/ma and", caret: 15) == PhoneAutocomplete(mode: "mention", query: "src/ma", start: 8, end: 15), "mention")
+    check(phoneAutocompleteAt("mail a@b", caret: 8) == nil, "not an address")
+    check(phoneAutocompleteAt("plain text", caret: 5) == nil, "plain")
+    // UTF-16 offsets, as UITextView counts them.
+    check(phoneAutocompleteAt("看 @文", caret: 4)?.query == "文", "CJK offsets")
+}
+
+test("commands match by name first, then by description; choosing replaces the word") {
+    let cmds = [PhoneSlashCommand(name: "compact", description: "Clear history but keep a summary"),
+                PhoneSlashCommand(name: "review", description: "Review the changes"),
+                PhoneSlashCommand(name: "pr-comments", description: "Get the review comments"),
+                PhoneSlashCommand(name: "tidy", description: "a skill", kind: "skill", insert: "$tidy")]
+    check(phoneMatchCommands(cmds, "re").map(\.name) == ["review", "pr-comments"], "\(phoneMatchCommands(cmds, "re").map(\.name))")
+    check(phoneMatchCommands(cmds, "").count == 4 && phoneMatchCommands(cmds, "zzz").isEmpty, "empty and none")
+    let ac = phoneAutocompleteAt("/re more", caret: 3)!
+    check(phoneApplyChoice("/re more", ac, insert: "/review") == ("/review more", 8), "choose a command")
+    let at = phoneAutocompleteAt("fix @ma", caret: 7)!
+    check(phoneApplyChoice("fix @ma", at, insert: phoneMentionText("src/main.rs")) == ("fix @src/main.rs ", 17), "choose a file")
+    check(phoneMentionText("docs/a b.md") == "@\"docs/a b.md\"", "quoted")
+    check(phoneRankFiles(["src/lib/main.rs", "docs/domain.md", "main.rs", "tests/x_main.rs"], "main")
+          == ["main.rs", "src/lib/main.rs", "docs/domain.md", "tests/x_main.rs"], "file ranking")
+}
+
+test("the agent's command list folds into the chat") {
+    seq = 0
+    var c = fold([ev(0, ["t": s("commands"), "commands": .array([.object(["name": s("review"), "kind": s("command"), "insert": s("/review")])])])])
+    check(c.commands?.first?.insert == "/review" && c.turns.isEmpty, "numbered")
+    check(PhoneChatLog().commands == nil, "none yet")
+    var opened = PhoneChatLog()
+    opened.knownCommands([.object(["name": s("a")])])
+    check(opened.commands?.first?.insert == "/a", "unnumbered fills in, insert defaults to /name")
+    c.knownCommands([])
+    check(c.commands?.first?.insert == "/review", "an event wins over the known list")
+}
+
+test("images are checked against the host's limits; an input carries them; the conversation keeps their names") {
+    check(phoneImageProblem(mime: "image/png", bytes: 1000, have: 0) == nil, "fine")
+    check(phoneImageProblem(mime: "image/svg+xml", bytes: 1000, have: 0) == "type", "type")
+    check(phoneImageProblem(mime: "image/jpeg", bytes: phoneMaxImageBytes + 1, have: 0) == "size", "size")
+    check(phoneImageProblem(mime: "image/png", bytes: 10, have: phoneMaxImages) == "count", "count")
+    check(phoneFitWithin(width: 4000, height: 1000) == (2048, 512, true) && phoneFitWithin(width: 800, height: 600) == (800, 600, false), "fit")
+    let img = PhoneImage(name: "a.png", mime: "image/png", data: Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    check(phoneInputCommand(id: "u1", text: "", mode: nil, images: [img])["input"]?["attachments"].array.first?["data"].string == "iVBORw0KGgo=", "payload")
+    check(phoneInputCommand(id: "u1", text: "hi", mode: "queue", images: [])["input"]?["attachments"] == .null, "no images, no field")
+    seq = 0
+    let c = fold([
+        ev(0, ["t": s("user"), "input_id": s("u1"), "by": by("d"), "text": s(""), "attachments": .array([.object(["name": s("a.png"), "mime": s("image/png"), "bytes": .number(8)])])]),
+        ev(1, ["t": s("turn_start")]),
+        ev(0, ["t": s("agent"), "images": .bool(false)]),
+    ])
+    if case .user(_, _, _, _, _, let extra)? = phoneTurnRows(c.turns[0]).first {
+        check(extra.inputID == "u1" && extra.attachments.first?.name == "a.png" && extra.attachments.first?.bytes == 8, "row extra")
+    } else { check(false, "user row") }
+    check(c.images == false && c.inputs == ["u1"], "agent images, inputs")
+}
+
+test("what is a path and what is a search; trailing separators go, roots stay") {
+    for p in ["/", "/home/a", "~", "~/code", "~\\code", "C:", "c:\\", "D:\\work\\x", "D:/work", "\\\\srv\\share"] { check(phoneLooksLikePath(p), p) }
+    for p in ["app", "code/app", "~code", ""] { check(!phoneLooksLikePath(p), p) }
+    check(phoneTrimFolder("/home/a/") == "/home/a" && phoneTrimFolder("/") == "/" && phoneTrimFolder("D:\\work\\") == "D:\\work", "trim 1")
+    check(phoneTrimFolder("D:\\") == "D:\\" && phoneTrimFolder("D:") == "D:\\" && phoneTrimFolder("D:/") == "D:/" && phoneTrimFolder(" ~/code/ ") == "~/code", "trim 2")
+}
+
+test("names, parents, children and crumbs on both kinds of path") {
+    check(phoneFolderName("D:\\work\\app") == "app" && phoneFolderName("/Users/a/code/app/") == "app" && phoneFolderName("C:\\") == "C:", "names 1")
+    check(phoneFolderName("/") == "/" && phoneFolderName("~") == "~" && phoneFolderName("\\\\srv\\share") == "share", "names 2")
+    check(phoneParentFolder("D:\\work\\app") == "D:\\work" && phoneParentFolder("D:\\work") == "D:\\" && phoneParentFolder("D:\\") == nil, "parents 1")
+    check(phoneParentFolder("/a") == "/" && phoneParentFolder("~/code") == "~" && phoneParentFolder("\\\\srv\\share\\x") == "\\\\srv\\share\\", "parents 2")
+    check(phoneChildFolder("D:\\", "work") == "D:\\work" && phoneChildFolder("D:\\work", "app") == "D:\\work\\app" && phoneChildFolder("/", "tmp") == "/tmp", "children 1")
+    check(phoneChildFolder("~", "code") == "~/code" && phoneChildFolder("C:/Users", "a") == "C:/Users/a", "children 2")
+    check(phoneFolderCrumbs("D:\\work\\app").map { "\($0.name)=\($0.path)" } == ["D:=D:\\", "work=D:\\work", "app=D:\\work\\app"], "crumbs win")
+    check(phoneFolderCrumbs("/home/a").map { "\($0.name)=\($0.path)" } == ["/=/", "home=/home", "a=/home/a"], "crumbs unix")
+}
+
+test("the same folder, the home shortened to ~, choices, matching and listings") {
+    check(phoneSameFolder("D:\\Work\\", "d:/work") && !phoneSameFolder("/home/A", "/home/a"), "same")
+    check(phoneTildeFolder("/Users/a/code/app", home: "/Users/a") == "~/code/app" && phoneTildeFolder("/Users/a", home: "/Users/a/") == "~", "tilde 1")
+    check(phoneTildeFolder("/Users/ab/x", home: "/Users/a") == "/Users/ab/x" && phoneTildeFolder("C:\\Users\\A\\code", home: "c:\\users\\a") == "~\\code", "tilde 2")
+    check(phoneTildeFolder("/tmp", home: nil) == "/tmp", "no home")
+    check(phoneFolderChoices(recent: ["/a/x/", "/b"], sessions: ["/a/x", "D:\\W", "d:\\w\\"]) == ["/a/x", "/b", "D:\\W"], "choices")
+    check(phoneMatchFolders(["/code/myapp", "/code/app", "/srv/other"], "app") == ["/code/app", "/code/myapp"], "match")
+    check(phoneMatchFolders(["/a", "/b"], " ") == ["/a", "/b"], "blank")
+    let entries: [JSONValue] = [.object(["name": s(".git"), "kind": s("dir")]), .object(["name": s("src"), "kind": s("dir")]),
+                                .object(["name": s("tmp"), "kind": s("link")]), .object(["name": s("a.txt"), "kind": s("file")])]
+    check(phoneListedFolders(entries) == ["src", "tmp"] && phoneListedFolders(entries, query: ".g") == [".git"] && phoneListedFolders(entries, query: "SR") == ["src"], "listed")
+}
+
+test("sessions group by folder, latest first; how long ago, in one unit") {
+    func sess(_ id: String, _ cwd: String, _ at: Double) -> PhoneChatSession {
+        PhoneChatSession(.object(["id": s(id), "cwd": s(cwd), "last_activity": .number(at)]))
     }
+    let g = phoneSessionsByFolder([sess("a", "/w/x", 1), sess("b", "/w/y", 5), sess("c", "/w/x/", 9), sess("d", "D:\\P", 2), sess("e", "d:\\p", 3)])
+    check(g.map { "\($0.folder):\($0.sessions.map(\.id).joined())" } == ["/w/x:ca", "/w/y:b", "d:\\p:ed"], "\(g.map(\.folder))")
+    let now = 10.0 * 86_400_000
+    check(phoneAgo(now - 30_000, now: now) == "刚刚" && phoneAgo(now - 5 * 60_000, now: now) == "5 分钟前", "ago 1")
+    check(phoneAgo(now - 3 * 3_600_000, now: now) == "3 小时前" && phoneAgo(now - 2 * 86_400_000, now: now) == "2 天前" && phoneAgo(now + 5000, now: now) == "刚刚", "ago 2")
 }
 
-test("an HTML preview's document puts the policy before the page's markup") {
+test("previews: kinds by extension, files named in a reply, the HTML document's policy") {
+    check(phonePreviewKind("/tmp/out/Report.HTML") == "html" && phonePreviewKind("C:\\work\\notes.md") == "markdown" && phonePreviewKind("chart.svg") == "image", "kinds")
+    check(phonePreviewKind("a.txt") == nil && phonePreviewKind(".md") == nil && phonePreviewKind("Makefile") == nil, "not previewable")
+    check(phoneImageMime("x.SVG") == "image/svg+xml" && phoneImageMime("x.jpg") == "image/jpeg", "mime")
+    let yes: [(String, String)] = [("out/report.html", "out/report.html"), ("./notes.md", "./notes.md"), ("C:\\work\\chart.png", "C:\\work\\chart.png"),
+        ("C:/work/chart.png", "C:/work/chart.png"), ("file:///tmp/a%20b.svg", "/tmp/a b.svg"), ("file:///C:/x/r.html", "C:/x/r.html"),
+        ("report.html#top", "report.html"), ("docs/guide.md:12", "docs/guide.md")]
+    for (input, want) in yes { check(phoneFileTarget(input) == want, "\(input) → \(phoneFileTarget(input) ?? "nil")") }
+    for input in ["https://example.com/a.html", "mailto:a@b.md", "javascript:alert(1)//.html", "npm run build", "src/main.rs", "out/"] {
+        check(phoneFileTarget(input) == nil, input)
+    }
     let withHead = phonePreviewDocument("<!doctype html><html><head><title>x</title><script>1</script></head><body>hi</body></html>")
-    check(withHead.hasPrefix("<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"), withHead)
-    check(withHead.range(of: "Content-Security-Policy")!.lowerBound < withHead.range(of: "<script>")!.lowerBound, "before script")
-    check(withHead.contains("base-uri 'none'; form-action 'none'\">"), "whole policy")
-    check(phonePreviewDocument("<!DOCTYPE html>\n<p>hi</p>").hasPrefix("<!DOCTYPE html><meta http-equiv"), "doctype")
-    check(phonePreviewDocument("<p>hi</p>").hasPrefix("<meta http-equiv"), "bare")
-    let own = phonePreviewDocument("<HEAD lang=\"en\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src *\">")
-    check(own.range(of: "default-src 'none'")!.lowerBound < own.range(of: "default-src *")!.lowerBound, "own policy after")
-}
-
-test("preview text is cut on a character boundary; sizes in words") {
-    let bytes = Data("ab中文".utf8)
-    check(phoneDecodeText(bytes) == ("ab中文", false), "whole")
-    check(phoneDecodeText(bytes, max: 4) == ("ab", true), "cut")
+    check(withHead.hasPrefix("<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"), "after head")
+    check(withHead.range(of: "Content-Security-Policy")!.lowerBound < withHead.range(of: "<script>")!.lowerBound, "before the script")
+    check(phonePreviewDocument("<!DOCTYPE html>\n<p>hi</p>").hasPrefix("<!DOCTYPE html><meta http-equiv"), "after the doctype")
+    check(phonePreviewDocument("<p>hi</p>").hasPrefix("<meta http-equiv"), "at the start")
     check(phoneSizeLabel(512) == "512 B" && phoneSizeLabel(12 * 1024) == "12 KB" && phoneSizeLabel(Int(3.4 * 1_048_576)) == "3.4 MB", "sizes")
 }
 
 test("a turn's files: what its tools wrote, then what its reply names, one per name") {
-    func tool(kind: String = "edit", status: String = "completed", locations: [String] = [], content: [PhoneToolContent] = []) -> PhoneChatBlock {
-        var x = PhoneChatTool(callID: "c", title: "", kind: kind, status: status, input: nil, startedMs: 0, endedMs: 0)
-        x.locations = locations; x.content = content
-        return .tool(x)
+    func tool(_ kind: String = "edit", status: String = "completed", locations: [String] = [], content: [PhoneToolContent] = []) -> PhoneChatBlock {
+        .tool(PhoneChatTool(callID: "c", title: "", kind: kind, status: status, locations: locations, content: content, startedMs: 0, endedMs: 0))
     }
     let blocks: [PhoneChatBlock] = [
         tool(content: [.diff(path: "/w/out/report.html", old: nil, new: "<p>")]),
-        tool(kind: "read", locations: ["/w/in/source.md"]),
+        tool("read", locations: ["/w/in/source.md"]),
         tool(status: "failed", content: [.diff(path: "/w/broken.md", old: nil, new: "x")]),
         tool(content: [.diff(path: "/w/gone.png", old: "x", new: "")]),
-        tool(kind: "execute", locations: ["/w/out/chart.svg", "/w/main.rs"]),
+        tool("execute", locations: ["/w/out/chart.svg", "/w/main.rs"]),
         .text(id: "m", text: "Wrote [the page](out/report.html), `out/notes.md` and `README.txt`; see https://x.dev/a.md"),
     ]
-    let files = phoneTurnFiles(blocks)
-    check(files == ["/w/out/report.html", "/w/out/chart.svg", "out/notes.md"], "\(files)")
+    check(phoneTurnFiles(blocks) == ["/w/out/report.html", "/w/out/chart.svg", "out/notes.md"], "\(phoneTurnFiles(blocks))")
     let many = (0..<6).map { tool(content: [.diff(path: "/w/p\($0).md", old: nil, new: "x")]) }
     check(phoneTurnFiles(many).count == phoneMaxInlinePreviews, "at most four")
 }

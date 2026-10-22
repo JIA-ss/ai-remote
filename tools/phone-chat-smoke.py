@@ -44,14 +44,19 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     base = Path(tmp)
     host_home, ctl_home, phone, work = base / "host", base / "controller", base / "phone", base / "work"
     work.mkdir()
-    # Files for the previews: two in the session's folder, one outside it that no agent named, one that
-    # is not a preview kind.
+    # Files for the @ menu, the folder picker and the previews; one outside the folder that the agent
+    # names (it may be previewed) and one it never names (it may not).
+    for rel, body in {"docs/report.html": "<h1>report</h1>", "docs/notes.md": "# notes\n", "Cargo.toml": "[package]\n",
+                      "README.md": "# readme\n"}.items():
+        (work / rel).parent.mkdir(parents=True, exist_ok=True)
+        (work / rel).write_text(body, encoding="utf-8")
     (work / "out").mkdir()
-    (work / "out" / "report.html").write_text("<!doctype html><h1>Report</h1>\n", encoding="utf-8")
-    (work / "out" / "chart.png").write_bytes(bytes(range(256)) * 300)
-    (work / "settings.toml").write_text("a = 1\n", encoding="utf-8")
+    (work / ".hidden").mkdir()
+    subprocess.run(["sips", "-s", "format", "png", "-z", "40", "64", "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericDocumentIcon.icns",
+                    "--out", str(work / "out/chart.png")], check=True, capture_output=True)
     (base / "outside").mkdir()
-    (base / "outside" / "secret.md").write_text("# not named\n", encoding="utf-8")
+    (base / "outside/named.md").write_text("# named\n", encoding="utf-8")
+    (base / "outside/secret.md").write_text("# secret\n", encoding="utf-8")
     (host_home / "host").mkdir(parents=True)
     # Quiet mode on every role of every home (no mDNS or UPnP on the local network), the phone's too.
     quiet = "[network]\nquiet = true\n"

@@ -124,14 +124,9 @@ public actor PhoneClient {
         }
         try await lease.controller.chatSend(subscription: lease.nativeID, commandJson: JSONValue.object(command).text)
     }
-    /// The bytes of a file a chat session made or named (HTML, Markdown, an image; at most 16 MiB), for
-    /// a preview: the host's `chat_file` tool, then the file channel, checked against its SHA-256.
-    public func preview(host: String, session: String, path: String) async throws -> Data {
-        do { return try await ready().previewFile(host: host, session: session, path: path) }
-        catch MobileError.Failed(let message) {
-            // The host's own words (why it refused, or where the transfer broke off).
-            throw NSError(domain: "ai-remote", code: 4, userInfo: [NSLocalizedDescriptionKey: message])
-        }
+    /// The bytes of a file a chat session is about, for its preview (the host's `chat_file`).
+    public func previewFile(host: String, session: String, path: String) async throws -> Data {
+        try await ready().previewFile(host: host, session: session, path: path)
     }
     public func stop(_ id: UInt64) async {
         guard let lease = subscriptions.removeValue(forKey: id) else { return }

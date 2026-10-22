@@ -102,7 +102,7 @@
     setValue(q, above);
     await check("a typed path offers to open it", !!(await until("open row", () => $(".nt-folder-list .row.open"))));
     keyDown(q, "Enter");
-    const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work));
+    const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work));
     await check("the typed path is browsed and lists the work folder", !!child, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
     await shot("00-folder-browse");
     child.click();
