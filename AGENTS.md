@@ -1192,7 +1192,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
   （dry-run 在 win-dev 的 Windows PowerShell 5 和 pwsh 上都试过，CI 上有 `tools/test_windows_packaging.py`）；真正出一次安装包、在干净的 Windows 上点"开启"没做。
   UAC 通路：第一版 `Start-Process cmd /c` 遇到带空格的路径被拆成 `C:\Program`（win-dev 实测），改成提权 PowerShell + `-EncodedCommand` 后，带空格路径的输出和退出码
   都对（win-dev 上 agent 已提权，所以没弹 UAC 框本身）。
-- macOS 授权在每次重编后失效（见上面坑 2），需要固定身份签名。
+- macOS 授权在每次重编后失效（见上面坑 2）：已有做法——用自签名代码签名证书 `ai-remote local signing` 编（`APPLE_SIGNING_IDENTITY`，见 `docs/macos.md`），2026-10-22 本机已建证书、release 包三个程序都用它签名并通过 `codesign --verify --deep --strict`；装进 `/Applications` 后授权、重编后授权仍在，这两步还没验证（要替换真实被控端，等用户确认）。
 - 从零开始（未安装）点按钮装服务形态 + 两项授权 + doctor 全绿，要用户本人在这台 Mac 上走一遍（输管理员密码、点系统授权框）。
 
 - 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。
