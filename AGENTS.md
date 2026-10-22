@@ -766,14 +766,14 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 后台被控端（hostw）
 
-- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（只报告不判定，那是智能体自己的事）；`chat end` 后检查被控端下面不剩任何进程（判定）。
+- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（2026-10-22 起是判定项：10 s 内必须离开，见下面「Codex 打断后收掉本轮命令」）；`chat end` 后检查被控端下面不剩任何进程（判定）。
 - **窗口监视** `tools/win-window-watch.ps1`：在交互桌面上用 WinEvent 钩子（`EVENT_OBJECT_SHOW`）记下运行期间出现的**每一个**可见顶层窗口（只闪几毫秒的控制台也抓得到），窗口出现的同时记下属主进程的父进程链；另外每 150 ms 轮询一次被控端下面的进程树，结束 3 s 后报告还活着的。
 - **实测**（真实 Codex 0.162.1 `codex.cmd`、Claude Code 2.1.293 `claude.cmd`，都是 npm 垫片；每次 36 项：替身 27 + 真实智能体 9）：Codex 3 次、Claude 4 次都全过（Codex 第 1 次有 1 项失败：我当时把"打断后 3 s 命令还在"写成了判定项，之后改成只报告）。
   - **控制台窗口**：被控端树里的进程 7 次都**没有**弹过窗口。树里每次 110~200 个进程（conhost 40~70 个——都是隐藏的；node、cmd、git、bash/wsl、MCP 服务、`--version` 探测），全部没有窗口。监视器一共记到 12 个控制台窗口，都不属于被控端：
     - 1 个 Windows PowerShell 是我的测试脚本自己弹的（无控制台的 Python 调 `powershell` 查进程树），加 `CREATE_NO_WINDOW` 后再没出现；
     - 1 个 PowerShell 的父进程链是 `svchost(2832) <- services.exe`，是机器上的计划任务，和测试无关；
     - Claude 第 1 次运行中 1.2 s 内 9 个 `git.exe` 窗口 + 1 个 PowerShell：当时监视器还没记父进程链，归属不明；之后 3 次 Claude 都是 0 个。**这一条没有完全排除**，如果有人在桌面上看到 Claude 会话时闪 git 窗口，先用 `win-window-watch.ps1` 抓父进程链。
-  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端只在会话结束时收整棵树。
+  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端当时只在会话结束时收整棵树；已由适配器补上，见下一小节。
   - **结束会话**：`chat end` 后 2 s，被控端下面 0 个进程（7/7 真实智能体 + 7/7 替身）；整个测试结束后监视器报告的残留 0 个（7/7）。
   - 其余数字：一次任务 Codex 5.8~17.2 s、Claude 5.4~5.6 s；打断 0.1~0.2 s 生效；插话 Codex 0.08~0.25 s、Claude 3.96~4.40 s 收到 `steer:true`，Codex 最终 6 条命令、Claude 5 条。
 - **推导**：智能体根进程带 `CREATE_NO_WINDOW`（`chat/proc.rs`），它和它拉起的控制台程序共用一个隐藏控制台；所以只有显式要求新控制台（`CREATE_NEW_CONSOLE`）或用 `DETACHED_PROCESS` 再起控制台程序的子进程才会弹窗。被控端本身有没有控制台对此没有影响。
@@ -782,7 +782,27 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 - 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
 - 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
-- 被控端在 Codex 打断后是否该替它收掉还在跑的命令：现在不收（会误杀它的 MCP 服务等长期子进程），要做得先能区分"这一轮拉起的工具进程"。
+- ~~被控端在 Codex 打断后是否该替它收掉还在跑的命令~~：已做，见下一小节。
+
+### Codex 打断后收掉本轮命令（2026-10-22，分支 `claude/codex-interrupt-kill`）
+
+- **原因（读上游源码，openai/codex main 2026-10-22；不是推测）**：Codex 把 shell 命令跑成"后台终端"（unified exec，
+  `core/src/unified_exec`）。`turn/interrupt` 走 `abort_all_tasks`，只取消这一轮的任务；后台终端只在
+  `thread/backgroundTerminals/clean`、`.../terminate` 或会话关闭（`terminate_all_processes`）时才收。所以**这是 Codex 的
+  设计，和平台无关**：Mac 上同样会留着（按源码推导，没在 Mac 上实测）。被控端的 Job Object 不影响它：命令本来就在被控端的树里，
+  只是没人去杀。另外 Codex 在 Windows 上的进程组清理函数（`utils/pty/src/process_group.rs`）是空实现，Unix 上才真正杀进程组。
+- **做法**（`chat/adapters/codex.rs`）：`initialize` 带 `capabilities.experimentalApi: true`（这两个方法是实验接口，不声明会被拒）；
+  适配器记下本轮 `item/started` 里每个 `commandExecution` 的 id；本轮以 `interrupted` 结束时调
+  `thread/backgroundTerminals/list`，对 `itemId` 属于本轮的逐个 `thread/backgroundTerminals/terminate`。
+  终止由 Codex 自己做（Windows 上它给每个后台终端开了 Job Object），被控端不碰进程树。
+- **取舍**：没有按"进程树里创建时间晚于命令开始"去收——Codex 自己知道哪个进程属于哪条命令，按 `itemId` 匹配不会误杀它的 MCP 服务，
+  也跨平台。只收被打断那一轮开始的命令；之前几轮留下的后台终端（比如用户让它起的开发服务器）不动。被打断那一轮里起的长期进程也会被收，
+  这和"停止这一轮"的意思一致。代价是 `experimentalApi` 打开后 Codex 会多发一些实验字段（适配器忽略未知字段）。
+- **版本**：`list` / `terminate` 在 0.150（ChatGPT.app 内置）、0.162.1（win-dev）都有，0.137 只有 `clean`。没有这两个方法时
+  `list` 报错，适配器只记一条 debug 日志，行为同修改前。没有用 `clean` 兜底：它会连前几轮的后台终端一起收。
+- **测试**：单测 `an_interrupted_turn_stops_only_its_own_background_commands`（前一轮的不收、本轮的收、旧版报错时什么都不做）。
+  `tools/chat-smoke.py --hostw` 的"打断后命令 10 s 内离开进程树"改成判定项。
+- **实测**：待测（真实 Codex 运行要花额度，等用户确认）。
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
 
