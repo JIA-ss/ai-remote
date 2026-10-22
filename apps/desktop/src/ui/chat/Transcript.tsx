@@ -141,7 +141,10 @@ function FindBar({ root, onShow, onClose }: { root: React.RefObject<HTMLElement 
     const h = highlights();
     if (h) {
       h.reg.set("nt-find", h.make(ranges));
-      h.reg.set("nt-find-cur", h.make(cur >= 0 && ranges[cur] ? [ranges[cur]] : []));
+      // The current match is drawn over the others.
+      const current = h.make(cur >= 0 && ranges[cur] ? [ranges[cur]] : []) as { priority?: number };
+      current.priority = 1;
+      h.reg.set("nt-find-cur", current);
     }
     return () => {
       h?.reg.delete("nt-find");

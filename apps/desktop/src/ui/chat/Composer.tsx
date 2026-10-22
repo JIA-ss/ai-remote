@@ -76,7 +76,7 @@ export function ContextRing({ used, window: total, usage }: { used: number; wind
       {open && (
         <div className="nt-usage" role="dialog" aria-label={t("hc_usage_title")} onClick={(e) => e.stopPropagation()}>
           <div className="hd">{t("hc_usage_title")}</div>
-          <div className="bar"><i style={{ width: `${p * 100}%` }} /></div>
+          <div className="meter"><i style={{ width: `${p * 100}%` }} /></div>
           <div className="sum tnum">{label}</div>
           <dl>
             {rows.map((r) => (
