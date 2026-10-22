@@ -41,6 +41,9 @@
   const running = () => !!$(".nt-compose .round.stop");
   const turns = () => $$(".nt-turn");
   const lastTurn = () => turns().at(-1);
+  // The folder picker (ui/chat/FolderPicker.tsx).
+  const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
@@ -85,11 +88,38 @@
     await check("chat_runtimes lists the stand-in agents", !!pick && $$(".nt-chat-pick .opt").some((b) => b.textContent.includes("No-steer fake")),
       $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
     pick.click();
-    setValue($("#ag-cwd"), CFG.work);
+    // 1a. The folder: with nothing recent the picker opens on the host's home (files_list over the real
+    // channel); a typed path is browsed, a subfolder entered with a click, and the footer takes it.
+    const work = CFG.work.split("/").pop();
+    const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
+    await check("with no folder chosen the field asks for one", !!$(".nt-chat-start .nt-folder-lbl.none"), $(".nt-chat-start .nt-folder-btn")?.textContent);
+    $(".nt-chat-start .nt-folder-btn").click();
+    const home = await until("home listing", () => $$(".nt-folder-list .row.child").length > 0 && $(".nt-folder-crumbs"));
+    await check("the picker opens on the host's home and lists its folders", !!home && !$(".nt-folder-note.err"),
+      `${$(".nt-folder-crumbs")?.textContent} | ${$$(".nt-folder-list .row.child").length} folders | ${$(".nt-folder-note")?.textContent ?? ""}`);
+    await check("hidden folders are left out", !$$(".nt-folder-list .row.child .fn").some((x) => x.textContent.startsWith(".")));
+    const q = $("#ag-folder-q");
+    setValue(q, above);
+    await check("a typed path offers to open it", !!(await until("open row", () => $(".nt-folder-list .row.open"))));
+    keyDown(q, "Enter");
+    const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work));
+    await check("the typed path is browsed and lists the work folder", !!child, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
+    await shot("00-folder-browse");
+    child.click();
+    await check("entering a folder updates the crumbs", !!(await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work)), $(".nt-folder-crumbs")?.textContent);
+    const use = await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    await check("the footer offers this folder by name", !!use && use.textContent.includes(work), use?.textContent);
+    use.click();
+    await check("the chosen folder shows by name, the full path on hover",
+      !!(await until("chosen", () => folderShown() === work)) && $(".nt-chat-start .nt-folder-btn .nt-folder-lbl").title === CFG.work,
+      `${folderShown()} | ${$(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title}`);
     setValue($("#ag-prompt"), "RICH fix the quarter export");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
     await check("starting opens the conversation", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)));
+    const hdFolder = await until("header folder", () => $(".nt-chat-hd .nt-folder-lbl"));
+    await check("the header shows the folder's name and where it is", !!hdFolder && $(".fn", hdFolder)?.textContent === work
+      && hdFolder.title === CFG.work && ($(".fp", hdFolder)?.textContent ?? "").length > 0, hdFolder?.textContent);
     await check("the first message shows as the user's", !!(await until("user row", () => $$(".nt-user").some((u) => u.textContent.includes("RICH fix the quarter export")))));
     await check("the first turn finishes", !!(await idle(30000)));
 
@@ -155,7 +185,15 @@
     await until("picker", () => $(".nt-chat-start"));
     await check("the session list shows the first session", $$(".nt-sessions .sess").length >= 1, $$(".nt-sessions .sess").map((s) => s.textContent).join(" | "));
     $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("No-steer fake")).click();
-    setValue($("#ag-cwd"), CFG.work);
+    await check("the last folder is chosen already", folderShown() === work, folderShown());
+    $(".nt-chat-start .nt-folder-btn").click();
+    const recent = await until("recent list", () => $(".nt-folder-list .row.recent"));
+    await check("the picker opens on recent folders, the chosen one marked", !!recent && !!$(".nt-folder-list .row.recent.sel")
+      && $$(".nt-folder-list .row.recent").length === 1, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
+    await check("the session list groups sessions under their folder", $$(".nt-sessions .nt-proj-hd .fn").some((x) => x.textContent === work));
+    await shot("04b-folder-recent");
+    recent.click();
+    await until("picker closed", () => !$(".nt-folder-pop"), 5000);
     setValue($("#ag-prompt"), "SLOW job");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
@@ -188,7 +226,7 @@
     await check("no script errors", false, e && e.stack || e);
   }
   // Leave nothing behind in the webview storage (shared with the installed app): this run's host only.
-  for (const key of ["ai-remote.chat.last", "ai-remote.chat.cwd"]) {
+  for (const key of ["ai-remote.chat.last", "ai-remote.chat.cwd", "ai-remote.chat.home"]) {
     try {
       const all = JSON.parse(localStorage.getItem(key) ?? "{}");
       for (const h of Object.keys(all)) if (h === CFG.host || /^e2e-/.test(h)) delete all[h];

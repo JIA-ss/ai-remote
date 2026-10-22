@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -423,7 +423,7 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 ### 实测（本机 macOS，2026-10-22）
 
-- 单测：`cargo test -p ar-host --lib chat` 37 项全过（新增 3 项：扩展名、"只认智能体的事件"、`previews_read_only_files_the_session_is_about` 用真实会话覆盖目录内 / 目录外未点名 / 符号链接逃出目录 / 人发消息不算 / 智能体写过后放行 / 超 16 MiB）；`node --test tools/*.test.mjs` 92 项 90 过 2 跳过（新增 `tools/chat-preview.test.mjs` 6 项）；`tsc --noEmit` 和 `cargo clippy --workspace --all-targets -D warnings` 通过；debug 构建重新生成的 `bindings.ts` 与手写一致。
+- 单测：`cargo test -p ar-host --lib chat` 37 项全过（新增 3 项：扩展名、"只认智能体的事件"、`previews_read_only_files_the_session_is_about` 用真实会话覆盖目录内 / 目录外未点名 / 符号链接逃出目录 / 人发消息不算 / 智能体写过后放行 / 超 16 MiB）；`node --test tools/*.test.mjs` 92 项 90 过 2 跳过（新增 `tools/chat-preview.test.mjs tools/chat-folder.test.mjs` 6 项）；`tsc --noEmit` 和 `cargo clippy --workspace --all-targets -D warnings` 通过；debug 构建重新生成的 `bindings.ts` 与手写一致。
 - 端到端（`E2E_SCRIPT=tools/desktop-chat-preview-e2e.js python3 tools/desktop-chat-e2e.py`，debug 桌面包 + 本机隔离被控端，两端 `[network] quiet = true`；替身智能体的 FILES 轮在工作目录写 report.html / notes.md / chart.png、在目录外写一个它点名的 named.md、另放一个没点名的 secret.md）：**24 项全过**（最后一次；之前一次 18 项版本也全过）。覆盖：三种入口、4 个内联预览全部加载、缩略图 64×32、内联和弹层的 iframe 都是 `sandbox=""` 且 CSP 在页面 `<script>` 之前、页面脚本没运行（它会 `parent.postMessage`，1.5 s 内没收到）、外部图片没加载（截图里只显示 alt 文字）、源码视图、Esc、目录外点名的可读、没点名的被拒（"outside this session's folder"）、`.toml` 被拒（"cannot be previewed"）。截图在 `/tmp/chat-preview-e2e/`，没进仓库（推流画面里是本机桌面）。
 - 演示模式（camofox，`npx vite` + 演示后端）：三种内联卡片和弹层的深色截图看过。
 - 耗时：脚本记的"点击 → 弹层就绪"是 50~51 ms，但脚本按 50 ms 轮询、且内联已预取（弹层命中缓存），所以只能说明本机回环下 ≤ 约 50 ms；**未测**冷取时延和跨机器时延。

@@ -672,3 +672,167 @@ export function rememberCwd(host: string, cwd: string) {
     // Storage full or unavailable: nothing to remember.
   }
 }
+
+// ---- Folders on the host: the start form's folder picker and how a folder is shown ----
+// Paths are the host's, so they may be Windows (`D:\work\x`, `\\server\share`) or Unix (`/home/x`),
+// and `~` is the host user's home (the host expands it). Nothing here touches the local file system.
+
+/** Whether `s` names a folder rather than being a search: absolute, `~`, a drive or a share. */
+export function looksLikePath(s: string): boolean {
+  const v = s.trim();
+  return v === "~" || /^~[\\/]/.test(v) || v.startsWith("/") || /^[A-Za-z]:([\\/]|$)/.test(v) || v.startsWith("\\\\");
+}
+
+/** `p` without trailing separators, except where that is a root (`/`, `C:\`). */
+export function trimFolder(p: string): string {
+  const v = p.trim();
+  const t = v.replace(/[\\/]+$/, "");
+  if (!t) return v ? (v[0] === "\\" ? "\\" : "/") : "";
+  if (/^[A-Za-z]:$/.test(t)) return t + (v.includes("/") && !v.includes("\\") ? "/" : "\\");
+  return t;
+}
+
+/** The separator a path uses: a backslash once it has one (or is a bare drive), else a slash. */
+function separator(p: string): string {
+  return p.includes("\\") || /^[A-Za-z]:$/.test(p) ? "\\" : "/";
+}
+
+/** A path as its root (`/`, `C:\`, `\\server\share\`, `~`, or "" when relative) and the names below it. */
+export function folderParts(p: string): { root: string; names: string[]; sep: string } {
+  const v = trimFolder(p);
+  const sep = separator(v);
+  let root = "";
+  let rest = v;
+  const unc = /^\\\\[^\\/]+[\\/][^\\/]+/.exec(v);
+  if (unc) root = unc[0] + "\\";
+  else if (/^[A-Za-z]:/.test(v)) root = v.slice(0, 2) + (v[2] === "/" ? "/" : "\\");
+  else if (v.startsWith("~")) root = "~";
+  else if (/^[\\/]/.test(v)) root = v[0];
+  rest = v.slice(Math.min(root.length, v.length));
+  return { root, names: rest.split(/[\\/]+/).filter(Boolean), sep };
+}
+
+function buildFolder(root: string, names: string[], sep: string): string {
+  if (!names.length) return root;
+  if (!root) return names.join(sep);
+  return (/[\\/]$/.test(root) ? root : root + sep) + names.join(sep);
+}
+
+/** What a folder is called: its last name (`app` for `D:\work\app`), or the root itself. */
+export function folderName(p: string): string {
+  const { root, names } = folderParts(p);
+  if (names.length) return names[names.length - 1];
+  const unc = /^\\\\[^\\]+\\([^\\]+)\\$/.exec(root);
+  if (unc) return unc[1];
+  return /^[A-Za-z]:[\\/]$/.test(root) ? root.slice(0, 2) : root;
+}
+
+/** The folder above `p`, or null at a root. */
+export function parentFolder(p: string): string | null {
+  const { root, names, sep } = folderParts(p);
+  return names.length ? buildFolder(root, names.slice(0, -1), sep) : null;
+}
+
+/** `name` inside `dir`, with `dir`'s separator. */
+export function childFolder(dir: string, name: string): string {
+  const { root, names, sep } = folderParts(dir);
+  return buildFolder(root, [...names, name], sep);
+}
+
+/** The steps from the root down to `p`, for a breadcrumb. */
+export function folderCrumbs(p: string): { name: string; path: string }[] {
+  const { root, names, sep } = folderParts(p);
+  const out = root ? [{ name: folderName(root), path: root }] : [];
+  names.forEach((n, i) => out.push({ name: n, path: buildFolder(root, names.slice(0, i + 1), sep) }));
+  return out;
+}
+
+/** Whether two host paths name the same folder (Windows paths compare without case). */
+export function sameFolder(a: string, b: string): boolean {
+  const x = trimFolder(a);
+  const y = trimFolder(b);
+  const windows = (v: string) => /^([A-Za-z]:|\\\\)/.test(v) || (v.includes("\\") && !v.includes("/"));
+  if (!windows(x) && !windows(y)) return x === y;
+  const norm = (v: string) => v.replace(/\//g, "\\").toLowerCase();
+  return norm(x) === norm(y);
+}
+
+/** `p` with the host user's home shortened to `~` (when that home is known). */
+export function tildeFolder(p: string, home: string | null | undefined): string {
+  if (!home) return p;
+  const h = trimFolder(home);
+  if (sameFolder(p, h)) return "~";
+  const { names: hn } = folderParts(h);
+  const { names: pn, sep } = folderParts(p);
+  if (!hn.length || pn.length <= hn.length) return p;
+  return sameFolder(buildFolder(folderParts(p).root, pn.slice(0, hn.length), sep), h) ? `~${sep}${pn.slice(hn.length).join(sep)}` : p;
+}
+
+/** The folders to offer first: recent ones, then those of the host's open sessions; no repeats. */
+export function folderChoices(recent: string[], sessions: string[] = [], limit = 8): string[] {
+  const out: string[] = [];
+  for (const f of [...recent, ...sessions]) {
+    const v = trimFolder(f);
+    if (v && !out.some((o) => sameFolder(o, v))) out.push(v);
+  }
+  return out.slice(0, limit);
+}
+
+/** `folders` that match what was typed (name or path, without case); name matches first. */
+export function matchFolders(folders: string[], query: string): string[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return folders;
+  const starts = (f: string) => folderName(f).toLowerCase().startsWith(q);
+  return folders.filter((f) => f.toLowerCase().includes(q)).sort((a, b) => Number(starts(b)) - Number(starts(a)));
+}
+
+/** The subfolders in a `files_list` result, hidden ones (`.name`) only when asked for. */
+export function listedFolders(entries: { name: string; kind: string }[], query = ""): string[] {
+  const q = query.trim().toLowerCase();
+  return entries
+    .filter((e) => e.kind === "dir" || e.kind === "link")
+    .map((e) => e.name)
+    .filter((n) => (q.startsWith(".") || !n.startsWith(".")) && (!q || n.toLowerCase().includes(q)));
+}
+
+/** The host user's home as last seen by a listing of `~`, remembered per host. */
+const HOME_KEY = "ai-remote.chat.home";
+
+export function knownHome(host: string): string | null {
+  try {
+    return (JSON.parse(localStorage.getItem(HOME_KEY) ?? "{}") as Record<string, string>)[host] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberHome(host: string, home: string) {
+  try {
+    const all = JSON.parse(localStorage.getItem(HOME_KEY) ?? "{}") as Record<string, string>;
+    all[host] = home;
+    localStorage.setItem(HOME_KEY, JSON.stringify(all));
+  } catch {
+    // Nothing to remember then.
+  }
+}
+
+/** The host's sessions by folder (Orca's and Codex's "project → its threads"): the folder with the
+ *  latest activity first, and inside each the latest session first. */
+export function sessionsByFolder<S extends { cwd: string; last_activity: number }>(sessions: S[]): { folder: string; sessions: S[] }[] {
+  const groups: { folder: string; sessions: S[] }[] = [];
+  for (const s of [...sessions].sort((a, b) => b.last_activity - a.last_activity)) {
+    const g = groups.find((x) => sameFolder(x.folder, s.cwd));
+    if (g) g.sessions.push(s);
+    else groups.push({ folder: trimFolder(s.cwd), sessions: [s] });
+  }
+  return groups;
+}
+
+/** How long ago `then` was, in the largest whole unit (for "3 min ago"). */
+export function agoParts(then: number, now: number): { unit: "now" | "m" | "h" | "d"; n: number } {
+  const m = Math.floor(Math.max(0, now - then) / 60000);
+  if (m < 1) return { unit: "now", n: 0 };
+  if (m < 60) return { unit: "m", n: m };
+  if (m < 60 * 24) return { unit: "h", n: Math.floor(m / 60) };
+  return { unit: "d", n: Math.floor(m / 1440) };
+}
