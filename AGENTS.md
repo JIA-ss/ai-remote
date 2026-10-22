@@ -149,6 +149,8 @@ key 用的是 `HMONITOR`，这种情况下新旧复制线程的行为和改之�
 保留本分支的 `.map_err(refused)`；`run` 用本分支的结构，`let Some((output, dup, rotation))`，把 `*rotation` 传给
 `Viewer::deliver`；`deliver` 里照 #35 用 `upright(rotation, input)` 算 `(turn, (width, height))`，按转正后的宽高算
 `stream_size`，`SizedConverter` 带上 `turn` 比较，`Converter::rotated(gpu.clone(), input, output, self.fps, turn)`。
+两边各加了一个 `#[cfg(test)] mod tests`（合并后会重名，合成一个），`bench` 里两个手动测试都留着。2026-10-22 在临时
+worktree 里按这个办法试合并过：没有冲突标记、`cargo fmt --check` 过；`dda.rs` 在 Mac 上编不到，合并结果没编译过。
 
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
