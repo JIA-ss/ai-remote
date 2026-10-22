@@ -7,6 +7,7 @@ import { chatLineKind, requester, type ChatEvent, type ChatHello, type ChatReply
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
+import type { RemoteMonitor } from "./monitors";
 import type {
   AgentStatus,
   AuditLine,
@@ -195,14 +196,15 @@ export interface Backend {
     onReply?: (m: ChatReply) => void,
   ): Promise<ChatConnection>;
   /**
-   * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
-   * a way to ask for a keyframe, and a stop function. The demo backend has no video (`null`).
+   * Starts a live view of monitor `opts.monitor` (an index of the host's monitors; the primary one
+   * when absent): raw frames (header + H.264) go to `onFrame`. Returns the host's monitors, a way to
+   * ask for a keyframe, and a stop function. The demo backend has no video (`null`).
    */
   watchScreen(
     host: string,
     onFrame: (frame: ArrayBuffer) => void,
     opts?: {
-      monitor?: number; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number;
+      monitor?: number | null; maxFps?: number; maxLongEdge?: number; bitrateKbps?: number;
       /** What this machine decodes, best first (see codec.ts); the host defaults to H.264. */
       codecs?: VideoCodec[];
       /** The host's answer to `LiveView.ping(n)`: its stream clock in microseconds. */
@@ -261,7 +263,10 @@ export interface ChatConnection {
 }
 
 export interface LiveView {
-  monitors: Array<{ index: number; width: number; height: number; primary: boolean }>;
+  /** Every monitor of the host (positions from hosts since 2026-10-22). */
+  monitors: RemoteMonitor[];
+  /** The index of the monitor streamed; null from older hosts (the one asked for, or the primary). */
+  monitor: number | null;
   /** Where the streamed monitor sits in screen coordinates (what the mouse tool takes). */
   screen: { x: number; y: number; width: number; height: number } | null;
   requestKeyframe(): void;
@@ -586,10 +591,11 @@ const tauriBackend: Backend = {
     };
     const [id, reply] = unwrap(await commands.watchScreen(host, request, channel)) as [
       number,
-      { monitors?: LiveView["monitors"]; screen?: LiveView["screen"]; cursor?: string },
+      { monitors?: LiveView["monitors"]; monitor?: unknown; screen?: LiveView["screen"]; cursor?: string },
     ];
     return {
-      monitors: reply.monitors ?? [],
+      monitors: Array.isArray(reply.monitors) ? reply.monitors : [],
+      monitor: Number.isInteger(reply.monitor) ? (reply.monitor as number) : null,
       screen: reply.screen ?? null,
       requestKeyframe: () => void commands.requestKeyframe(id),
       ping: (n) => void commands.pingScreen(id, n),
