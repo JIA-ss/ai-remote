@@ -357,6 +357,53 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [ ] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
+## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4c655ce）
+
+`feat/host-chat` 合入桌面新界面、被控端插话之后的第一次端到端：真实的 debug 桌面应用，经 Tauri → 控制端代理 → QUIC →
+本机隔离被控端（安静模式）→ 智能体进程。
+
+- 驱动方式：debug 版的 smoke 模式加了 `AI_REMOTE_SMOKE_SCRIPT=<file.js>`，页面加载后执行脚本，脚本直接操作真实 DOM
+  （React 受控输入框用原生 setter + `input` 事件）；页面用 `log_from_page('shot', name)` 要截图（WKWebView snapshot，
+  窗口在屏幕外也能截），`log_from_page('done', …)` 结束。只在 `debug_assertions` 下编译。
+- `tools/desktop-chat-e2e.py`：起隔离被控端（两个替身智能体：`Rich fake` 走 Claude stream-json，RICH 时发思考、TodoWrite
+  计划、Read、失败的 Bash、Grep、Edit、带标题 / 列表 / 表格 / 代码块的回答、`modelUsage` 上下文；SLOW 时一直运行到下一条
+  消息〔插话〕或停止；`No-steer fake` 是同一个程序加 `steer = false`），桌面 profile 用 `AI_REMOTE_HOME`，所有 home 的
+  host / controller 都写 `[network] quiet = true` 并断言 doctor 的 network 是安静。`tools/desktop-chat-e2e.js` 是替身
+  流程，`tools/desktop-chat-e2e-real.js`（`--real "Claude Code"`）是真实智能体：建个文件 + 一个按顺序跑 20 条命令的任务，
+  跑到第 2 条时插话"改成数到 5"。
+
+### 实测（2026-10-22，本机 macOS，debug 包）
+
+- 替身流程 **36 项全过**（连续 2 次）：启动表单列出智能体并启动、首条消息、思考折叠、计划 3/3、工具折成一句
+  （"读了 1 个文件，运行了 1 条命令，搜索了 1 次 和 编辑了 1 个文件 +2−1 · 1 个失败"）、展开后失败命令红底输出、diff
+  +2 −1、Markdown 标题 / 列表 / 表格 / 代码块、上下文环 42k / 200k；运行中默认插话、插话进同一轮带标记、不新增轮；切排队、
+  排队行、撤回、停止后撤回的消息没跑、"继续"发出新一轮；不支持插话的智能体只有静态"排队"芯片，消息排队，停止后作为下一轮
+  跑；会话列表两条、回到第一个会话回放 4 轮。截图 `/tmp/desktop-chat-e2e/`。
+- 真实 Claude Code 2.1.307（本机账号）**13 项全过**（1 次）：首轮 6 s 完成，命令显示为工具行，有回答，上下文环
+  "129k / 1.0M"；长任务按顺序跑命令，被折成"运行了 N 条命令"；第 2 条命令后插话，2 s 内以"插话"标记进同一轮，最终共
+  5 条命令（数到 5 停下）。同一天早些时候 Claude 报 401（OAuth 令牌过期，`claude auth status` 仍说已登录），面板正确显示
+  重试提示和"失败: Failed to authenticate…"。
+- Codex 0.137.0：账号对默认模型报 400（"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account"），
+  面板正确显示"失败: …"，真实任务没跑成。提问卡片（只有 Codex 适配会发 `question`）因此**没在真实连接上测**。
+
+### 发现
+
+1. **（真问题，桌面端，未改）** 面板按主机名在 localStorage 记住上次的会话（`ai-remote.chat.last`）；该会话在被控端已不存在
+   （被控端重启、会话结束清理后）时，面板只显示"no chat session '…' on this host"和一个发不出去的输入框，不会回到会话列表。
+   应在 `chat_attach` 报 no chat session 时清掉记忆并回到选择页。
+2. 面板用 `requestAnimationFrame` 每帧合并一次事件；窗口不可见（在别的 Space、最小化、屏幕外）时 rAF 不触发，事件先积在
+   内存里，窗口可见后一次显示，不丢。测试窗口在屏幕外，所以两个脚本在页面 hidden 时把 rAF 换成 16 ms 定时器；不换的话
+   结果取决于测试时屏幕上是什么（同一脚本第一次碰巧通过，第二次 Codex 会话一直是空的）。运行中计时器也显示"0 ms"，
+   推测同因，未查。
+3. debug 包与安装版同一个 bundle id（`io.github.jia-ss.ai-remote`），共用 WebKit 存储；脚本每次用新的主机名
+   `e2e-<pid>`，结束时删掉自己写的 `ai-remote.chat.*` 条目。
+4. 真实 Claude 一轮要带约 129k tokens 的上下文（本机全局 Claude 配置），慢且贵；按顺序的命令会被折叠，检查命令数要看 run
+   的句子，不能搜 `echo N`。
+
+### 没做
+
+- [ ] 真实 Codex（账号问题）、提问卡片在真实连接上、Windows 开发机上的桌面端、真实窗口可见时的手感（滚动跟随、键盘）。
+
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
 用户的痛点：被控端只有命令行，权限（屏幕录制 / 辅助功能）要靠 doctor 提示再手动去系统设置加；希望"做成软件托盘之类的，

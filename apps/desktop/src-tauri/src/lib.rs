@@ -996,6 +996,22 @@ async fn pull_file(
 fn log_from_page(level: String, message: String) {
     let message: String = message.chars().take(2000).collect();
     eprintln!("[page {level}] {message}");
+    #[cfg(debug_assertions)]
+    smoke_signal(&level, &message);
+}
+
+/// Smoke runs with a script (`AI_REMOTE_SMOKE_SCRIPT`): the page asks for a picture of the window
+/// with `log_from_page('shot', name)` and ends the run with `log_from_page('done', …)`.
+#[cfg(debug_assertions)]
+static SMOKE_SIGNALS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(debug_assertions)]
+fn smoke_signal(level: &str, message: &str) {
+    if (level == "shot" || level == "done")
+        && let Ok(mut s) = SMOKE_SIGNALS.lock()
+    {
+        s.push((level.to_string(), message.to_string()));
+    }
 }
 
 /// Ends a feed started by [`subscribe_events`].
@@ -1206,8 +1222,50 @@ fn smoke(app: &tauri::App) {
         }
     }
     let handle = app.handle().clone();
+    // `AI_REMOTE_SMOKE_SCRIPT=<file.js>` runs a script in the page once it has loaded (end-to-end runs
+    // drive the real UI with it); the run then lasts until the script says it is done, or `secs`.
+    let script =
+        std::env::var_os("AI_REMOTE_SMOKE_SCRIPT").map(|p| std::fs::read_to_string(&p).expect("read the smoke script"));
+    if let Some(script) = script.clone() {
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if let Some(w) = handle.get_webview_window("main") {
+                let _ = w.eval(script);
+            }
+        });
+    }
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(secs));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        let shots = std::path::Path::new(&out).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        while script.is_some() && std::time::Instant::now() < deadline {
+            let signals: Vec<(String, String)> =
+                SMOKE_SIGNALS.lock().map(|mut s| s.drain(..).collect()).unwrap_or_default();
+            let mut done = false;
+            for (level, name) in signals {
+                if level == "done" {
+                    done = true;
+                    continue;
+                }
+                let name: String =
+                    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+                if let Some(w) = handle.get_webview_window("main") {
+                    let path = shots.join(format!("{name}.png"));
+                    match capture(&w).and_then(|img| img.save(&path).map_err(|e| e.to_string())) {
+                        Ok(()) => eprintln!("[smoke] saved {}", path.display()),
+                        Err(e) => eprintln!("[smoke] cannot capture {name}: {e}"),
+                    }
+                    let _ = w.eval(format!("window.__smokeShot && window.__smokeShot('{name}')"));
+                }
+            }
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if script.is_none() {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+        }
         if let Some(w) = handle.get_webview_window("main") {
             let _ = w.eval("window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'smoke', message: JSON.stringify({ secure: isSecureContext, decoder: typeof VideoDecoder, visibility: document.visibilityState, canvases: Array.from(document.querySelectorAll('canvas')).map(c => [c.width, c.height]), metrics: document.querySelector('.stream-metrics')?.textContent ?? null, metricsDetail: document.querySelector('.stream-metrics')?.title ?? null }) })");
             let _ = w.eval("window.__TAURI_INTERNALS__.invoke('agent_status').then(s => window.__TAURI_INTERNALS__.invoke('log_from_page', { level: 'mcp', message: JSON.stringify(s.mcp) }))");
