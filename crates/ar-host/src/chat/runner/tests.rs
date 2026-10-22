@@ -1,6 +1,6 @@
 //! The runner protocol: the handshake, and a host that dies mid-turn while its agent keeps running
-//! in the runner, then comes back and carries on with the same process (Unix: the stand-in agent
-//! is a shell script; the transport is the same local socket code as the Windows pipe).
+//! in the runner, then comes back and carries on with the same process. The stand-in agent is a
+//! shell script on Unix (over a Unix socket) and a PowerShell script on Windows (over a named pipe).
 
 use super::*;
 
@@ -31,9 +31,8 @@ fn keys_are_kept_for_the_next_host() {
     assert!(parse_key("abcd").is_err());
 }
 
-#[cfg(unix)]
 mod restart {
-    use std::{os::unix::fs::PermissionsExt, sync::atomic::AtomicUsize};
+    use std::sync::atomic::AtomicUsize;
 
     use ar_net::Peer;
     use tokio::sync::broadcast;
@@ -44,6 +43,7 @@ mod restart {
     /// Claude Code's protocol, just enough: LATE answers a second later, a message with an image
     /// answers "image", anything else answers at once with the process id, so the test can tell
     /// one process from another.
+    #[cfg(unix)]
     const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
@@ -64,6 +64,30 @@ while IFS= read -r line; do
 done
 "#;
 
+    /// The same agent in PowerShell (started as `powershell.exe -File`, so no cmd.exe in between).
+    #[cfg(windows)]
+    const FAKE: &str = r#"if ($args.Count -gt 0 -and $args[0] -eq '--version') { [Console]::Out.WriteLine('2.1.0 (Claude Code)'); exit 0 }
+$out = [Console]::Out
+function Say($s) { $out.WriteLine($s); $out.Flush() }
+Say '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  if ($line -like '*"subtype":"initialize"*') {
+    Say '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}'
+  } elseif ($line -like '*control_request*') {
+    Say '{"type":"result","subtype":"error_during_execution","is_error":true}'
+  } elseif ($line -like '*"type":"image"*') {
+    Say '{"type":"result","subtype":"success","is_error":false,"result":"image"}'
+  } elseif ($line -like '*LATE*') {
+    Start-Sleep -Seconds 1
+    Say '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
+    Say ('{"type":"result","subtype":"success","is_error":false,"result":"pid ' + $PID + '"}')
+  } else {
+    Say '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"echo"}]}}'
+    Say ('{"type":"result","subtype":"success","is_error":false,"result":"pid ' + $PID + '"}')
+  }
+}
+"#;
+
     struct Fixture {
         _dir: tempfile::TempDir,
         root: PathBuf,
@@ -72,7 +96,9 @@ done
         key: [u8; 32],
     }
 
+    #[cfg(unix)]
     fn fixture() -> Fixture {
+        use std::os::unix::fs::PermissionsExt;
         // Under /tmp: macOS's temporary directory is too long for a socket path.
         let dir = tempfile::Builder::new().prefix("ar-runner").tempdir_in("/tmp").unwrap();
         let root = dir.path().to_path_buf();
@@ -80,11 +106,39 @@ done
         std::fs::write(&fake, FAKE).unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cfg = format!("[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{}\"\n", fake.display());
+        let endpoint = root.join("ep").join("runner.sock");
+        finish(dir, &cfg, endpoint)
+    }
+
+    #[cfg(windows)]
+    fn fixture() -> Fixture {
+        let dir = tempfile::Builder::new().prefix("ar-runner").tempdir().unwrap();
+        let fake = dir.path().join("fake-claude.ps1");
+        std::fs::write(&fake, FAKE).unwrap();
+        let cfg = format!(
+            "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"powershell.exe\"\nargs = {}\n",
+            serde_json::to_string(&[
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &fake.to_string_lossy()
+            ])
+            .unwrap()
+        );
+        // A pipe of its own per test, like a host's `ai-remote-chat-runner-<instance id>`.
+        let name = dir.path().file_name().unwrap().to_string_lossy().into_owned();
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\ai-remote-chat-runner-test-{name}"));
+        finish(dir, &cfg, endpoint)
+    }
+
+    fn finish(dir: tempfile::TempDir, cfg: &str, endpoint: PathBuf) -> Fixture {
+        let root = dir.path().to_path_buf();
         std::fs::write(root.join("chat.toml"), cfg).unwrap();
         std::fs::create_dir_all(root.join("chat")).unwrap();
         let work = root.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        let endpoint = root.join("ep").join("runner.sock");
         Fixture { _dir: dir, root, work, endpoint, key: new_key() }
     }
 

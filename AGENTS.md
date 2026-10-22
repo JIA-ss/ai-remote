@@ -53,8 +53,42 @@
 `cargo test --workspace --locked` 397 过 0 失败 8 忽略；`cargo test -p ar-host --lib chat` 58 过（含新增的 runner 图片测试）；
 `node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
 **未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
-其中经 runner 的插话只有代码没有端到端测试，图片只在 Mac 上用 Unix 套接字测过（Windows 命名管道没测）；全屏修复在真实 App
-原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
+其中经 runner 的插话只有代码没有端到端测试；全屏修复在真实 App
+原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装。
+（2026-10-22 补测：~~图片走 Windows 命名管道~~、~~chat-input 在 Windows WebView2 下的输入界面~~，见下一节。）
+
+## Windows 补测：新输入框在 WebView2 下、图片走命名管道（2026-10-22，分支 `test/win-chat-input`，基于 main 8eeabb6）
+
+集成说明里标为未测的两件，在 win-dev（Windows 11，5120×2160，WebView2，debug 构建，独立检出 `%USERPROFILE%\ai-remote-wininput`）上补测。
+测试用的被控端、控制端都是隔离目录、安静网络模式；真实被控端（服务和 launchd）没碰。
+
+**新输入框（WebView2）**：`tools/desktop-chat-e2e.py` 经 zremote 在交互会话里跑（窗口在屏幕外，PrintWindow 截图）。
+- 替身智能体 67 项 ×3 次全过：一行输入框（+ / 文字 / 发送）、`/` 弹出（说明、技能分组、Tab 选中）、`@` 弹出（被控端列出
+  `src/main.rs`，Windows 上也是正斜杠）、粘贴图片（WebView2 接受构造的 paste 事件）、发出后气泡缩略图且替身收到图片、送达后没有
+  残留的"发送中"、子智能体、⌘F 查找（Highlight API 当前项 / 其余项都画出来了）、引用、用量明细、插话、排队、回放。
+- `tools/desktop-chat-e2e-render.js` 10 项 ×1 次全过：输入法组字时回车不发送、普通回车发送（**合成的** `isComposing` / keyCode 229
+  事件，没有用真实中文输入法打字）、长消息折叠、`content-visibility`、字体。
+- 真实 Claude Code 2.1.293（`claude.cmd`，已登录）：`desktop-chat-e2e-real.js` 扩了 `/` 菜单里的项目命令（工作目录
+  `.claude/commands/pong.md`，Tab 选中后发送，回 SKILLPONG）和粘贴一张红色 PNG（回"红色"）。第 2 次 21 项全过；第 1 次只有
+  "认出图片"一项失败，原因是 Claude 按机器上的全局设置用中文答了"红色"，断言改成 `/red|红/`。插话 2~3 s 进同一轮，数到 5 停下。
+- 截图在 Mac 的 `/tmp/win-chat-input/`（只裁了右侧面板的副本叫 `panel-*.png`；整图里有被控端桌面，不进仓库），看过。
+- 测试脚本的修正（产品代码没改）：Windows 上图标是 Segoe Fluent 字体里的私用区字符（例如 U+E76C 右箭头）作为文字渲染，
+  行的 `textContent.trim()` 去不掉，文件夹行改用 `.fn` 的文本比较（`desktop-chat-e2e.js`、`desktop-chat-preview-e2e.js`）；
+  `CFG.work` 按 `\` 和 `/` 都拆；`desktop-chat-e2e-render.js` 还在用文件夹选择器之前的 `#ag-cwd` 文本框，改为走选择器。
+- **未测**：真实中文输入法；拖文件进输入框、点 + 选文件（只测了粘贴）；高 DPI 缩放；浅色主题。e2e 期间被控端推流有一次
+  `hardware encoding failed; using OpenH264`（同机 zremote 也在用 NVENC，没查），和对话无关。
+
+**图片走 Windows 命名管道**：`chat/runner/tests.rs` 的 `restart` 模块原来只在 Unix 编译（替身是 sh 脚本），现在 Windows 上替身是
+PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\pipe\ai-remote-chat-runner-test-<临时目录名>`，经同一套
+`ar_net::ipc` 和 `ChatManager` 的 runner 后端。win-dev 上 `cargo test -p ar-host --lib chat::runner` 7 项 ×3 次全过，其中
+`an_image_crosses_the_pipe_to_an_agent_in_the_runner`（图片经命名管道到智能体）和
+`an_agent_outlives_its_host_and_its_session_goes_on`（被控端中途死掉、再接回同一个智能体进程）是第一次在 Windows 上跑。
+这走的是 runner 和被控端在**同一进程、同一用户**的测试路径；SYSTEM 被控端以 `CreateProcessAsUserW` 拉起用户会话里的 runner 那一段
+仍按"服务模式"一节的步骤 1~8 要真机服务（管理员终端），没做。
+
+**顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
+`"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
+后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
 
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
@@ -263,7 +297,7 @@
 **实测 / 未测**
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
-- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试用 sh 假智能体，只在 Unix 上跑；Windows 命名管道这一侧走的是同一份 `ar_net::ipc` 代码，但没在 Windows 上端到端跑过。
+- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试原来用 sh 假智能体、只在 Unix 上跑；2026-10-22 起 Windows 上换 PowerShell 替身走命名管道，也通过（见"Windows 补测"一节）。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
 **真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
@@ -591,7 +625,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 未测 / 没做
 
-- Windows 桌面端（WebView2）：Highlight API、粘贴图片、拖入、一行布局都没在 WebView2 里看过。
+- ~~Windows 桌面端（WebView2）：Highlight API、粘贴图片、一行布局~~（2026-10-22 已测，见"Windows 补测"一节）；拖入仍未测。
 - ACP 智能体的图片和命令只有单测和替身；真实 DeepSeek Harness（`images: false`）、OpenCode 没跑。
 - Codex 启动后第一条消息若在 `skills/list` 回来之前发出，消息里的 `$技能` 不会带 skill 输入项（Codex 是否仅凭文字识别没验证）。
 - 发送状态的"15 s 无 ack 判未送达"和"断线判未送达"只有单测，没在真实断网下点过。

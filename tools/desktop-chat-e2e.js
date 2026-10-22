@@ -90,7 +90,7 @@
     pick.click();
     // 1a. The folder: with nothing recent the picker opens on the host's home (files_list over the real
     // channel); a typed path is browsed, a subfolder entered with a click, and the footer takes it.
-    const work = CFG.work.split("/").pop();
+    const work = CFG.work.split(/[\\/]/).pop();
     const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
     await check("with no folder chosen the field asks for one", !!$(".nt-chat-start .nt-folder-lbl.none"), $(".nt-chat-start .nt-folder-btn")?.textContent);
     $(".nt-chat-start .nt-folder-btn").click();
@@ -102,7 +102,8 @@
     setValue(q, above);
     await check("a typed path offers to open it", !!(await until("open row", () => $(".nt-folder-list .row.open"))));
     keyDown(q, "Enter");
-    const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work));
+    // By the name's own span: on Windows the row's chevron is an icon-font glyph in its text.
+    const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => $(".fn", r)?.textContent === work));
     await check("the typed path is browsed and lists the work folder", !!child, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
     await shot("00-folder-browse");
     child.click();

@@ -43,7 +43,7 @@ parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "d
 parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
-                    "panel lists it, e.g. 'Claude Code'): a small file task and a steer; uses its sign-in and quota")
+                    "panel lists it, e.g. 'Claude Code'): a small file task, a / command, an image and a steer; uses its sign-in and quota")
 options = parser.parse_args()
 
 RICH_AGENT = r'''
@@ -210,6 +210,11 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
     (work / "src").mkdir()
     (work / "src" / "main.rs").write_text("fn main() {}\n")
     (work / "export.py").write_text("def quarter_end(year, q):\n    return date(year, q * 3, 31)\n")
+    if options.real:
+        # A project command for the real agent's / menu (tools/desktop-chat-e2e-real.js picks it there).
+        (work / ".claude" / "commands").mkdir(parents=True)
+        (work / ".claude" / "commands" / "pong.md").write_text(
+            "Reply with exactly the word SKILLPONG and nothing else.\n", encoding="utf-8")
     quiet = "[network]\nquiet = true\n"
     (host_home / "host").mkdir(parents=True)
     (host_home / "host" / "ai-remote.toml").write_text(

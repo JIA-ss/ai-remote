@@ -47,10 +47,21 @@
     await until("composer cleared", () => composer().value === "", 5000);
     await idle();
   }
+  // The folder picker (ui/chat/FolderPicker.tsx): a typed path, Enter browses it, the footer takes it.
+  async function typeFolder(path) {
+    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
+    const q = await until("folder search box", () => $("#ag-folder-q"));
+    setValue(q, path);
+    await until("open-path row", () => $(".nt-folder-list .row.open"));
+    q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    const name = path.split(/[\\/]/).filter(Boolean).pop();
+    (await until("folder listed", () => $(".nt-folder-crumbs .cur")?.textContent === name && $(".nt-folder-ft .btn.primary:not(:disabled)")))?.click();
+    await until("picker closed", () => !$(".nt-folder-pop"), 5000);
+  }
   try {
     await until("start form", () => $(".nt-chat-start"), 30000);
     $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
-    setValue($("#ag-cwd"), CFG.work);
+    await typeFolder(CFG.work);
     setValue($("#ag-prompt"), "RICH fix the quarter export");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();

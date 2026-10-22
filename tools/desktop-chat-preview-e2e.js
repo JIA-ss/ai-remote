@@ -71,7 +71,7 @@
     setValue(q, above);
     await until("open row", () => $(".nt-folder-list .row.open"));
     q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.textContent.trim() === work))).click();
+    (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => $(".fn", r)?.textContent === work))).click();
     await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work);
     (await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
     await check("the work folder is chosen", !!(await until("folder chosen", () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title === CFG.work)),
