@@ -317,7 +317,6 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-session .tb { border-bottom: 1px solid var(--stroke-1); }
 .nt-session-body { flex: 1; min-height: 0; display: flex; }
 .nt-stage { position: relative; flex: 1; min-width: 0; background: var(--stage); overflow: hidden; isolation: isolate; cursor: default; }
-.nt-stage.hidecursor { cursor: none; }
 .nt-picture { position: absolute; overflow: hidden; }
 .nt-picture .rd-holder { image-rendering: auto; }
 .nt-picture.desat .rd-holder { filter: grayscale(1) brightness(.62) contrast(.9); }

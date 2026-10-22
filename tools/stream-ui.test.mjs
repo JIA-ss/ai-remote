@@ -110,13 +110,16 @@ test("the pointer is asked for, and its positions and shapes are parsed apart fr
 const jsx = (type, props, key) => ({ type, props, key });
 const jsxRuntime = { jsx, jsxs: jsx, Fragment: Symbol("Fragment") };
 
-function hooksFixture(canvas) {
+function hooksFixture(canvas, pointerCanvas) {
   const hooks = [];
   let cursor = 0, refs = 0;
   const react = {
     useRef(value) {
       const index = cursor++;
-      if (!(index in hooks)) hooks[index] = { current: canvas && refs++ === 0 ? canvas : value };
+      if (!(index in hooks)) {
+        const n = refs++;
+        hooks[index] = { current: canvas && n === 0 ? canvas : pointerCanvas && n === 1 ? pointerCanvas : value };
+      }
       return hooks[index];
     },
     useState(value) {
@@ -157,7 +160,7 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/codec": { preferredCodecs: () => ["hevc", "h264"] },
     "../lib/clock": { createHostClock: () => ({ pong() {}, ping: () => 0, toLocalMs: () => null, errorMs: () => null }),
       startPinging: () => () => {} },
-    "../lib/pointer": { createPointerLayer: () => ({ shape() {}, move() {}, hide() {} }) },
+    "../lib/pointer": { createPointerLayer: () => ({ shape() {}, move: (at) => at.visible, hide() {} }) },
     "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
     "./AgentChat": { AgentChat: () => null },
     "./Decide": { DecisionCard: () => {} },
@@ -184,9 +187,9 @@ function nodes(tree) {
   return [tree, ...(Array.isArray(children) ? children : [children]).flatMap(nodes)];
 }
 
-function streamFixture(kind = "tauri") {
+function streamFixture(kind = "tauri", { pointerCanvas } = {}) {
   const canvas = { width: 1600, height: 1000 };
-  const hooks = hooksFixture(canvas);
+  const hooks = hooksFixture(canvas, pointerCanvas);
   const views = [], decoders = [], errors = [], sizes = [], stats = [], screens = [];
   let resets = 0, hasFrame = false;
   const api = {
@@ -216,6 +219,28 @@ function streamFixture(kind = "tauri") {
     hasFrame: () => hasFrame, resets: () => resets, close: hooks.close,
   };
 }
+
+test("the local cursor hides only while the host's pointer is drawn, not while the host reports it hidden", async () => {
+  const s = streamFixture("tauri", { pointerCanvas: {} });
+  const shown = [];
+  s.update({ onPointerShown: (on) => shown.push(on) });
+  s.render();
+  s.views[0].view.pointer = true;
+  s.views[0].resolve(s.views[0].view); await tick();
+  // Windows suppressing its pointer (touch or pen input) reports it hidden: keep your own cursor.
+  s.views[0].options.onPointer({ x: 10, y: 10, visible: false, shape: 0 });
+  assert.deepEqual(shown, []);
+  s.views[0].options.onPointer({ x: 12, y: 10, visible: true, shape: 1 });
+  assert.deepEqual(shown, [true]);
+  s.views[0].options.onPointer({ x: 14, y: 10, visible: true, shape: 1 });
+  assert.deepEqual(shown, [true], "reported on change only");
+  s.views[0].options.onPointer({ x: 14, y: 10, visible: false, shape: 1 });
+  assert.deepEqual(shown, [true, false]);
+  s.views[0].options.onPointer({ x: 16, y: 10, visible: true, shape: 1 });
+  s.views[0].options.onEnded("transport interrupted");
+  assert.deepEqual(shown, [true, false, true, false], "an ended stream gives the cursor back");
+  s.close();
+});
 
 test("zero FPS on a static screen does not invent a disconnected stream", async () => {
   const s = streamFixture();
@@ -359,6 +384,8 @@ test("a human driver keeps a tab that brings the hidden bars back, under the rai
   assert.equal(typeof handleOf(tree).props.onClick, "function");
   assert.equal(typeof handleOf(tree).props.onMouseEnter, "function");
   assert.equal(bottomOf(tree).props.className, "nt-anchor bottom raised");
+  // Nothing hides the local cursor on the stage (black edges, the tab, "video ended").
+  assert.ok(nodes(tree).every((node) => !String(node.props?.className ?? "").includes("hidecursor")));
   c.feed.driver = { state: "agent" }; tree = hooks.render(SessionPage, props);
   assert.ok(!handleOf(tree), "no tab when you are not driving");
   assert.equal(bottomOf(tree).props.className, "nt-anchor bottom");
