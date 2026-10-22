@@ -141,11 +141,13 @@ export function requester(send: (command: Record<string, unknown>) => Promise<vo
 }
 
 /** What a line from the chat channel is: the end of the chat, a numbered event, or a reply. */
-export function chatLineKind(m: unknown): "closed" | "event" | "reply" | "notice" | null {
+export function chatLineKind(m: unknown): "closed" | "event" | "commands" | "reply" | "notice" | null {
   if (!m || typeof m !== "object") return null;
   const e = m as { t?: unknown; seq?: unknown; input_id?: unknown; rid?: unknown };
   if (e.t === "closed" || e.t === "bye") return "closed";
   if (typeof e.seq === "number") return "event";
+  // The agent's commands as last known, sent right after the reply (not numbered).
+  if (e.t === "commands") return "commands";
   if (e.t === "ack" || e.rid !== undefined || (e.t === "error" && typeof e.input_id === "string")) return "reply";
   if (e.t === "error") return "notice";
   return null;
@@ -257,6 +259,10 @@ function newTurn(n: number): Turn {
 
 /** Folds one event into the chat; returns a new chat object (blocks are copied on write). */
 export function reduceChat(prev: Chat, e: ChatEvent): Chat {
+  if (e.seq < 0 && e.t === "commands") {
+    // The list the host knew when the chat opened; a numbered `commands` event is newer.
+    return prev.commands === null ? { ...prev, commands: e.commands ?? [] } : prev;
+  }
   if (e.seq < 0) {
     // Not part of the conversation (a refused command): shown, never numbered.
     if (e.t !== "notice") return prev;

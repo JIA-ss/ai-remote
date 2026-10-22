@@ -278,6 +278,8 @@ export const demoBackend: Backend = {
     const log = demoLogs.get(s.id) ?? [];
     const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name }, cwd: s.cwd, state: s.state,
       seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host };
+    const commands = s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))];
+    onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "commands", commands });
     for (const e of log) if (e.seq > since) onEvent(e);
     const listener = (e: ChatEvent) => onEvent(e);
     const set = demoChatListeners.get(s.id) ?? new Set();
@@ -289,7 +291,7 @@ export const demoBackend: Backend = {
     };
     const req = requester(send);
     return {
-      hello: { ...hello, acks: true, commands: s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))] },
+      hello: { ...hello, acks: true },
       send,
       ask: (name, args) => req.ask(name, args),
       close: () => {

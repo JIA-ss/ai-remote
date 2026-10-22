@@ -905,8 +905,19 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-atts .att .rm { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%;
   background: var(--c-strong); color: var(--raised); opacity: 0; transition: opacity .12s; }
 .nt-atts .att:hover .rm, .nt-atts .att .rm:focus-visible { opacity: 1; }
-.nt-compose .bar .attach.no { opacity: .4; cursor: not-allowed; }
-.nt-compose .bar .hint.warn { color: var(--danger); }
+/* One row (Claude's composer): + on the left, the text, Stop / Send on the right; hints and the
+   context ring below the box. */
+.nt-compose { padding: 6px 6px 6px 4px; }
+.nt-compose .line { display: flex; align-items: flex-end; gap: 4px; }
+.nt-compose .line textarea { flex: 1; min-width: 0; align-self: center; padding: 4px 2px; }
+.nt-plus { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--c-faint); }
+.nt-plus:hover { background: var(--c-hover); color: var(--c-strong); }
+.nt-plus.no { opacity: .4; cursor: not-allowed; }
+.nt-compose-ft { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; padding: 0 4px 0 10px; }
+.nt-compose-ft .hint-l { min-width: 0; flex: 1; display: flex; }
+.nt-compose-ft .hint { font-size: 11px; color: var(--c-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-compose-ft .hint.warn { color: var(--danger); }
+.nt-compose-ft .nt-usage { bottom: calc(100% + 6px); }
 .nt-transcript .nt-findbar { position: absolute; top: 6px; right: 10px; z-index: 15; display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 8px;
   border-radius: 8px; background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 6px 20px rgb(0 0 0 / .16); }
 .nt-findbar input { width: 180px; height: 24px; border: 0; outline: 0; background: transparent; font-size: 12.5px; color: var(--c-strong); }

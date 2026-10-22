@@ -600,7 +600,7 @@ env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
 
 **对话通道**：
 
-- 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`、`acks`、`commands`（最后一次的命令列表；没有时用同一智能体在同一目录的其他会话的列表）、`images`），之后收到 `N` 之后的事件和所有新事件。
+- 控制端先写 `{"open":{"ticket":"..","since":N}}`，读一行应答（`ok`、`session`、`role`、`runtime`、`cwd`、`state`、`seq`、`caps`、`acks`、`images`），接着一行不编号的 `{"t":"commands","commands":[..]}`（最后一次的命令列表；没有时用同一智能体在同一目录的其他会话的列表；单独一行是因为长列表放不进 64 KiB 的应答行），之后收到 `N` 之后的事件和所有新事件。
 - 命令每条一行：
   - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer","attachments":[...]}}`：同一个 `id` 发两次只执行一次；会话收下后回 `{"t":"ack","input_id":".."}`，拒绝时回 `{"t":"error","code":..,"input_id":"..","text":".."}`；
     - 附件是 `{"name":"..","mime":"image/png","data":"<base64>"}`：PNG、JPEG、GIF 或 WebP，每条最多 4 张，每张解码后最多 3.75 MiB（base64 后 5 MiB），因此一条命令最长 24 MiB；

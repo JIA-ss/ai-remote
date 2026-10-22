@@ -690,9 +690,10 @@ description (the first `init` says which are skills); Codex lists its skills wit
 `available_commands_update`. Tool input and output are cut to 8 KiB, each side of a diff to 64 KiB.
 
 **On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
-line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`, `acks`, `commands`: the last
-known list, or what the same agent offered in the same folder in another session; `images`), then the
-events after `N` and every new one. Commands, one line each:
+line (`ok`, `session`, `role`, `runtime`, `cwd`, `state`, `seq`, `caps`, `acks`, `images`), then one
+unnumbered `{"t":"commands","commands":[..]}` line (the last known list, or what the same agent
+offered in the same folder in another session; a line of its own because a long list would not fit
+the 64 KiB reply line), then the events after `N` and every new one. Commands, one line each:
 `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer","attachments":[...]}}` (an `id`
 sent twice runs once; answered `{"t":"ack","input_id":".."}` once the session has it, or
 `{"t":"error","code":..,"input_id":"..","text":".."}` when refused), `{"interrupt":{}}`,

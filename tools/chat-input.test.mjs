@@ -133,6 +133,11 @@ test("the agent's command list folds into the chat", () => {
   assert.equal(c.commands[0].insert, "/review");
   assert.equal(c.turns.length, 0);
   assert.equal(chat.emptyChat().commands, null);
+  // The list sent right after the reply (unnumbered) fills in only what no event has said.
+  const opened = chat.reduceChat(chat.emptyChat(), { seq: -1, ts: 0, turn: 0, t: "commands", commands: [{ name: "a", kind: "command", insert: "/a" }] });
+  assert.equal(opened.commands[0].name, "a");
+  assert.equal(chat.reduceChat(c, { seq: -1, ts: 0, turn: 0, t: "commands", commands: [] }).commands[0].insert, "/review");
+  assert.equal(chat.chatLineKind({ t: "commands", commands: [] }), "commands");
 });
 
 // ---------------------------------------------------------------------------------------------

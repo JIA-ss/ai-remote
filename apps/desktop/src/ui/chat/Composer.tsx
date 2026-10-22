@@ -7,7 +7,7 @@
 // under the text, a round send button that turns into Stop), NativeChatQueuedMessageCard /
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
-import { ArrowUp, FileText, ImagePlus, ListEnd, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, FileText, ListEnd, Plus, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
 import {
@@ -465,95 +465,90 @@ export function Composer(p: ComposerProps) {
             ))}
           </div>
         )}
-        <textarea
-          ref={area}
-          rows={1}
-          value={text}
-          disabled={!!p.disabled}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          onChange={(e) => {
-            setText(e.target.value);
-            setCaret(e.target.selectionStart ?? e.target.value.length);
-            setClosedAt(null);
-            setAt(p.history.length);
-          }}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
-          onPaste={(e) => {
-            const files = imageFiles(e.clipboardData?.files);
-            if (!files.length) return;
-            // Pasted text still goes in; the images become attachments.
-            if (!e.clipboardData.getData("text/plain")) e.preventDefault();
-            void attach(files);
-          }}
-          onBlur={() => setClosedAt(ac?.start ?? null)}
-          onFocus={() => setClosedAt(null)}
-          onKeyDown={(e) => {
-            const el = e.currentTarget;
-            // The menu takes ↑ / ↓, Enter / Tab and Esc while it is open.
-            if (ac && !e.nativeEvent.isComposing) {
-              if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
-                e.preventDefault();
-                setActive((a) => moveActive(a, items.length, e.key === "ArrowUp" ? -1 : 1));
-                return;
-              }
-              if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && items.length) {
-                e.preventDefault();
-                choose(items[Math.min(active, items.length - 1)]);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setClosedAt(ac.start);
-                return;
-              }
-            }
-            // ↑ / ↓ walk through sent messages when the caret is at the edge of the text.
-            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
-              const up = e.key === "ArrowUp";
-              const atEdge = up ? el.selectionStart === 0 && el.selectionEnd === 0 : el.selectionStart === text.length;
-              if (atEdge && (text === "" || at < p.history.length || !text.includes("\n"))) {
-                if (at === p.history.length) draft.current = text;
-                const next = browseHistory(p.history, at, up ? -1 : 1, draft.current);
-                if (next) {
+        <div className="line">
+          {!p.disabled && (
+            <>
+              <button type="button" className={cx("nt-plus", !canAttach && "no")} aria-disabled={!canAttach}
+                aria-label={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : t("hc_img_add")}
+                title={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : undefined}
+                onClick={(e) => { e.stopPropagation(); if (canAttach) picker.current?.click(); else void attach([]); }}>
+                <Plus size={17} />
+              </button>
+              <input ref={picker} type="file" accept={IMAGE_TYPES.join(",")} multiple hidden
+                onChange={(e) => { void attach(imageFiles(e.target.files)); e.target.value = ""; }} />
+            </>
+          )}
+          <textarea
+            ref={area}
+            rows={1}
+            value={text}
+            disabled={!!p.disabled}
+            placeholder={placeholder}
+            aria-label={placeholder}
+            onChange={(e) => {
+              setText(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+              setClosedAt(null);
+              setAt(p.history.length);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+            onPaste={(e) => {
+              const files = imageFiles(e.clipboardData?.files);
+              if (!files.length) return;
+              // Pasted text still goes in; the images become attachments.
+              if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+              void attach(files);
+            }}
+            onBlur={() => setClosedAt(ac?.start ?? null)}
+            onFocus={() => setClosedAt(null)}
+            onKeyDown={(e) => {
+              const el = e.currentTarget;
+              // The menu takes ↑ / ↓, Enter / Tab and Esc while it is open.
+              if (ac && !e.nativeEvent.isComposing) {
+                if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
                   e.preventDefault();
-                  setAt(next.at);
-                  setText(next.text);
-                  requestAnimationFrame(() => el.setSelectionRange(next.text.length, next.text.length));
+                  setActive((a) => moveActive(a, items.length, e.key === "ArrowUp" ? -1 : 1));
+                  return;
                 }
+                if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && items.length) {
+                  e.preventDefault();
+                  choose(items[Math.min(active, items.length - 1)]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setClosedAt(ac.start);
+                  return;
+                }
+              }
+              // ↑ / ↓ walk through sent messages when the caret is at the edge of the text.
+              if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
+                const up = e.key === "ArrowUp";
+                const atEdge = up ? el.selectionStart === 0 && el.selectionEnd === 0 : el.selectionStart === text.length;
+                if (atEdge && (text === "" || at < p.history.length || !text.includes("\n"))) {
+                  if (at === p.history.length) draft.current = text;
+                  const next = browseHistory(p.history, at, up ? -1 : 1, draft.current);
+                  if (next) {
+                    e.preventDefault();
+                    setAt(next.at);
+                    setText(next.text);
+                    requestAnimationFrame(() => el.setSelectionRange(next.text.length, next.text.length));
+                  }
+                  return;
+                }
+              }
+              if (e.key === "Escape" && p.running && !text) {
+                e.preventDefault();
+                p.onStop();
                 return;
               }
-            }
-            if (e.key === "Escape" && p.running && !text) {
+              // An input method's Enter confirms the composition; it must not send.
+              if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
               e.preventDefault();
-              p.onStop();
-              return;
-            }
-            // An input method's Enter confirms the composition; it must not send.
-            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-            e.preventDefault();
-            submit(e.altKey);
-          }}
-        />
-        <div className="bar">
-          <div className="left">
-            {!p.disabled && (
-              <>
-                <button type="button" className={cx("nt-ib attach", !canAttach && "no")} aria-disabled={!canAttach}
-                  aria-label={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : t("hc_img_add")}
-                  title={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : undefined}
-                  onClick={(e) => { e.stopPropagation(); if (canAttach) picker.current?.click(); else void attach([]); }}>
-                  <ImagePlus size={14} />
-                </button>
-                <input ref={picker} type="file" accept={IMAGE_TYPES.join(",")} multiple hidden
-                  onChange={(e) => { void attach(imageFiles(e.target.files)); e.target.value = ""; }} />
-              </>
-            )}
-            {imageNote && <span className="hint warn">{imageNote}</span>}
-            {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
-          </div>
+              submit(e.altKey);
+            }}
+          />
           <div className="right">
-            {p.context && <ContextRing used={p.context.used} window={p.context.window} usage={p.usage} />}
             {p.running && !p.disabled && (
               <button type="button" className="round stop" onClick={(e) => { e.stopPropagation(); p.onStop(); }} aria-label={t("hc_stop")} title={t("hc_stop_k")}>
                 <Square size={12} fill="currentColor" />
@@ -567,6 +562,15 @@ export function Composer(p: ComposerProps) {
           </div>
         </div>
       </div>
+      {(imageNote || (p.running && ready && !p.disabled) || p.context) && (
+        <div className="nt-compose-ft">
+          <span className="hint-l">
+            {imageNote && <span className="hint warn">{imageNote}</span>}
+            {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
+          </span>
+          {p.context && <ContextRing used={p.context.used} window={p.context.window} usage={p.usage} />}
+        </div>
+      )}
     </div>
   );
 }

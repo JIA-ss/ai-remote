@@ -230,7 +230,10 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
             let since = issued["seq"].as_u64().unwrap_or(0);
             let mut chat = Conversation::open(profile, &target, &issued, since).await?;
-            let commands = chat.hello["commands"].clone();
+            // The line right after the reply (hosts before it send none).
+            let first =
+                tokio::time::timeout(std::time::Duration::from_secs(5), chat.next()).await.ok().transpose()?.flatten();
+            let commands = first.filter(|v| v["t"] == "commands").map(|v| v["commands"].clone()).unwrap_or(json!([]));
             chat.send(json!({"bye": {}})).await;
             if json_out {
                 print_json(&json!({"commands": commands, "images": chat.hello["images"]}));

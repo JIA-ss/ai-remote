@@ -434,6 +434,9 @@ const tauriBackend: Backend = {
         case "event":
           onEvent(m as ChatEvent);
           break;
+        case "commands":
+          onEvent({ ...(m as ChatEvent), seq: -1, ts: Date.now(), turn: 0 } as ChatEvent);
+          break;
         case "reply":
           if (!req.reply(m as ChatReply)) onReply?.(m as ChatReply);
           break;

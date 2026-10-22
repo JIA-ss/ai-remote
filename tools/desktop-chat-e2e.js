@@ -154,6 +154,9 @@
     // messages on their way) and a sub-agent's own steps. Screenshots go to /tmp/chat-input too.
     const ta = composer();
     await check("one send button: no add-to-turn or queue switch", !$(".nt-compose .chip") && $$(".nt-compose .round.send").length === 1);
+    const line = $(".nt-compose .line");
+    await check("one row: + at the left, the field, then send", !!line && line.firstElementChild?.classList.contains("nt-plus")
+      && line.lastElementChild?.classList.contains("right"), line?.innerHTML.slice(0, 120));
     ta.focus();
     setValue(ta, "/re");
     const slash = await until("slash menu", () => $(".nt-ac[data-mode=slash]"));

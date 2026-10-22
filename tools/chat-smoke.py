@@ -111,6 +111,10 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     (work / "node_modules" / "x").mkdir(parents=True)
     (work / "node_modules" / "x" / "main.js").write_text("")
     (work / "red.png").write_bytes(png((220, 20, 20)))
+    # Its own work tree (the temporary folder may sit inside another one, e.g. a home kept in git),
+    # where git ignores the build output.
+    (work / ".gitignore").write_text("node_modules/\n")
+    subprocess.run(["git", "init", "-q"], cwd=work, capture_output=True)
     # A skill in the folder, for Codex's `/` list ($name) and a real run of it.
     (work / ".codex" / "skills" / "pong-skill").mkdir(parents=True)
     (work / ".codex" / "skills" / "pong-skill" / "SKILL.md").write_text(
@@ -282,7 +286,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         r = cli("--json", "chat", "files", sid, "main")
         found = json.loads(r.stdout) if r.returncode == 0 else {}
         check("chat files lists the folder's files, without build output", found.get("files") == ["src/main.rs"]
-              and found.get("source") == "walk", json.dumps(found)[:300] or r.stderr[-200:])
+              and found.get("source") in ("git", "walk"), json.dumps(found)[:300] or r.stderr[-200:])
         r = cli("--json", "chat", "files", sid, "release notes")
         found = json.loads(r.stdout) if r.returncode == 0 else {}
         check("chat files matches every word of the query", found.get("files") == ["docs/release notes.md"], json.dumps(found)[:200])

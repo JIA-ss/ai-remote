@@ -3,8 +3,10 @@
 //!
 //! The controller opens a bi-stream and writes one JSON line, `{"open":{"ticket":"..","since":N}}`,
 //! with a ticket from `chat_start` or `chat_attach`. The host answers with one line,
-//! `{"ok":true,"session":"..","role":"rw"|"ro",...}` or `{"ok":false,"error":".."}`, then sends the
-//! session's events after `since` (from its transcript) and every new one, one JSON line each.
+//! `{"ok":true,"session":"..","role":"rw"|"ro",...}` or `{"ok":false,"error":".."}`, then one
+//! unnumbered `{"t":"commands","commands":[..]}` line (the agent's slash commands and skills as last
+//! known), then the session's events after `since` (from its transcript) and every new one, one
+//! JSON line each.
 //!
 //! The controller sends one JSON line per command, any time:
 //!
@@ -214,12 +216,17 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
         "cwd": meta.cwd, "state": meta.state, "seq": upto, "caps": caps, "by": meta.by,
         // Every input is answered with an `ack` (or an `error` naming it).
         "acks": true,
-        // The agent's commands and skills, for the `/` menu (later changes come as `commands` events).
-        "commands": host.chat().commands_for(&chat),
         // Whether this agent takes images with a message (`agent` events update it).
         "images": host.chat().takes_images(&chat),
     });
     if !write_line(&mut send, &hello.to_string()).await {
+        return;
+    }
+    // The agent's commands and skills for the `/` menu, on a line of their own: a long list would
+    // not fit the reply line older controllers read (64 KiB). Later changes come as numbered
+    // `commands` events.
+    let commands = json!({"t": "commands", "commands": host.chat().commands_for(&chat)});
+    if !write_line(&mut send, &commands.to_string()).await {
         return;
     }
     host.audit().event(json!({"kind": "chat_session", "action": "attach", "chat": chat.id, "peer": peer.name, "principal": peer.principal, "role": role}));
