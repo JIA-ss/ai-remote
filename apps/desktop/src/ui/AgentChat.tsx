@@ -18,6 +18,11 @@ import {
   tildeFolder,
   inputCommand,
   markAnswered,
+  outgoingDisconnected,
+  outgoingReply,
+  retryOutgoing,
+  settleOutgoing,
+  type Outgoing,
   phase,
   reduceChat,
   rememberCwd,
@@ -249,6 +254,8 @@ function useConversation(host: string, target: ChatTarget | null) {
   const conn = useRef<ChatConnection | null>(null);
   const chatRef = useRef(chat);
   chatRef.current = chat;
+  /** Messages this device sent that the conversation does not show yet. */
+  const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
   useEffect(() => {
     if (!target) return;
     let live = true;
@@ -283,8 +290,11 @@ function useConversation(host: string, target: ChatTarget | null) {
         }, () => {
           if (!live) return;
           setConnected(false);
+          setOutgoing(outgoingDisconnected);
           conn.current = null;
           retry = setTimeout(() => void open(), 3000);
+        }, (m) => {
+          if (live) setOutgoing((o) => outgoingReply(o, m));
         });
         ticket = undefined;
         if (!live) {
@@ -327,7 +337,31 @@ function useConversation(host: string, target: ChatTarget | null) {
     }
     void conn.current.send(command).catch((e) => setError(String(e)));
   };
-  return { chat, setChat, hello, error, connected, gone, send };
+  // Delivered messages leave the list; unanswered ones fail after a while.
+  const acks = !!hello?.acks;
+  useEffect(() => setOutgoing((o) => settleOutgoing(o, chat, Date.now(), acks)), [chat, acks]);
+  const anySending = outgoing.some((o) => o.state === "sending");
+  useEffect(() => {
+    if (!anySending) return;
+    const id = setInterval(() => setOutgoing((o) => settleOutgoing(o, chatRef.current, Date.now(), acks)), 1000);
+    return () => clearInterval(id);
+  }, [anySending, acks]);
+  /** Sends a message and shows it as on its way until the conversation has it. */
+  const sendInput = (o: Outgoing) => {
+    setOutgoing((list) => [...list.filter((x) => x.id !== o.id), o]);
+    const fail = (error: string) => setOutgoing((list) => list.map((x) => (x.id === o.id ? { ...x, state: "failed" as const, error } : x)));
+    if (!conn.current) {
+      fail("disconnected");
+      return;
+    }
+    conn.current.send(inputCommand(o.id, o.text, o.mode)).catch((e) => fail(e instanceof Error ? e.message : String(e)));
+  };
+  const retry = (o: Outgoing) => {
+    setOutgoing((list) => list.filter((x) => x.id !== o.id));
+    sendInput(retryOutgoing(o, newId(), Date.now()));
+  };
+  const discard = (id: string) => setOutgoing((list) => list.filter((x) => x.id !== id));
+  return { chat, setChat, hello, error, connected, gone, send, conn, outgoing, sendInput, retry, discard };
 }
 
 /** The chat tab of the session page. */
@@ -420,7 +454,7 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 const sentBySession = new Map<string, string[]>();
 
 function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
-  const { chat, setChat, hello, error, connected, gone, send } = useConversation(host, target);
+  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard } = useConversation(host, target);
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {
     if (gone) onLeave(true);
@@ -446,7 +480,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
     });
   };
   const sendText = (text: string, mode: InputMode | undefined) => {
-    send(inputCommand(newId(), text, mode));
+    sendInput({ id: newId(), text, mode, at: Date.now(), state: "sending" });
     remember(text);
     setFollow((n) => n + 1);
   };
@@ -513,6 +547,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         empty={t("hc_empty", { agent })}
         workingLabel={working}
         follow={follow}
+        outgoing={outgoing}
+        onRetry={retry}
+        onDiscard={discard}
         onAnswer={onAnswer}
         onContinue={onContinue}
       />

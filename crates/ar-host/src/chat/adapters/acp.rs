@@ -174,7 +174,7 @@ pub async fn run(
                     }
                 }
                 Some(LiveCmd::Answer { .. }) => {
-                    report(&out, Out::Ev(Ev::Notice { level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
+                    report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
                 }
                 Some(LiveCmd::Steer { id, .. }) => {
                     // ACP has no way to add to a running prompt turn.
@@ -262,6 +262,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                     }
                     Some(_) => {
                         outs.push(Out::Ev(Ev::Notice {
+                            input_id: None,
                             level: "warn",
                             code: "context_lost",
                             text: format!("{name} cannot continue an earlier conversation; a new one starts"),
@@ -297,6 +298,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                         Ok(w) => writes.push(w),
                         Err(why) if why.is_empty() => {}
                         Err(why) => outs.push(Out::Ev(Ev::Notice {
+                            input_id: None,
                             level: "warn",
                             code: "model",
                             text: format!("{name} has no model '{model}' ({why}); it uses its own"),
@@ -313,6 +315,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 st.loading = false;
                 st.session = None;
                 outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "context_lost",
                     text: format!("{name} could not continue the earlier conversation ({e}); a new one starts"),
@@ -339,7 +342,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 outs.push(Out::TurnEnd { status, final_text, reason });
             }
             (Some(Pending::Other), Err(e)) => {
-                outs.push(Out::Ev(Ev::Notice { level: "warn", code: "rpc_error", text: e }))
+                outs.push(Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "rpc_error", text: e }))
             }
             _ => {}
         },

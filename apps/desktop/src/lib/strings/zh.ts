@@ -854,6 +854,15 @@ export const zh: Record<keyof typeof en, string> = {
   hc_continue_prompt: "从刚才停下的地方继续。先确认上一步有没有做完。",
   hc_working: "工作中",
   hc_jump: "跳到最新消息",
+  // Composer: sending, commands, files, images, find (ui/chat/Composer.tsx, Transcript.tsx).
+  hc_out_sending: "发送中…",
+  hc_out_failed: "未送达",
+  hc_out_timeout: "未送达：被控端没有响应",
+  hc_out_disconnected: "未送达：连接断开了",
+  hc_out_refused: "未送达：{why}",
+  hc_out_retry: "重新发送",
+  hc_out_discard: "丢弃",
+  // (end of composer strings)
   hc_earlier: "显示更早的 {n} 轮",
   hc_hint_alt: "⌥Enter 停止本轮并立即发送",
   hc_ph_steer: "它工作时也可以继续发消息",

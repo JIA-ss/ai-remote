@@ -149,7 +149,7 @@ pub async fn run(
                     let _ = proc.write_line(line.to_string()).await;
                 }
                 Some(LiveCmd::Answer { .. }) => {
-                    report(&out, Out::Ev(Ev::Notice { level: "warn", code: "no_question", text: "Claude Code is not waiting for an answer".into() })).await;
+                    report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: "Claude Code is not waiting for an answer".into() })).await;
                 }
                 Some(LiveCmd::Shutdown { done }) => {
                     proc.shutdown(std::time::Duration::from_secs(3)).await;
@@ -193,6 +193,7 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 let err = v["error"].as_str().unwrap_or("error");
                 let status = v["error_status"].as_u64().map(|s| format!(" ({s})")).unwrap_or_default();
                 outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "api_retry",
                     text: format!("the model API failed{status}: {err}; retrying"),

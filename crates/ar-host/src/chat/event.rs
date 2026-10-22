@@ -155,8 +155,11 @@ pub enum Ev {
         state: super::State,
         queued: Vec<Queued>,
     },
-    /// Something the user should know that is not part of the conversation.
+    /// Something the user should know that is not part of the conversation. `input_id` names the
+    /// message it is about when it is about one (a message dropped because the queue was full).
     Notice {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_id: Option<String>,
         level: &'static str,
         code: &'static str,
         text: String,

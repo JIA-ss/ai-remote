@@ -269,6 +269,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             }
             (Some(Pending::Thread { resumed: true }), Err(e)) => {
                 outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "context_lost",
                     text: format!("Codex could not continue the earlier conversation ({e}); a new one starts"),
@@ -299,7 +300,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::Steer { id }), Ok(_)) => outs.push(Out::Steered { id }),
             (Some(Pending::Steer { id }), Err(e)) => outs.push(Out::SteerRejected { id, reason: e }),
             (Some(Pending::Other), Err(e)) => {
-                outs.push(Out::Ev(Ev::Notice { level: "warn", code: "rpc_error", text: e }))
+                outs.push(Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "rpc_error", text: e }))
             }
             _ => {}
         },
@@ -411,6 +412,7 @@ fn notification(st: &mut State, method: &str, p: &Value, outs: &mut Vec<Out>) {
             }
         }
         "thread/compacted" => outs.push(Out::Ev(Ev::Notice {
+            input_id: None,
             level: "info",
             code: "compacted",
             text: "Codex summarized the conversation so far to make room in its context".into(),

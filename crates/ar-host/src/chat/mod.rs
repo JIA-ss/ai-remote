@@ -440,6 +440,7 @@ impl ChatManager {
                 if matches!(chat.state(), State::Running | State::Starting) {
                     chat.send(Cmd::Interrupt { then: None });
                     chat.emit(Ev::Notice {
+                        input_id: None,
                         level: "warn",
                         code: "paused",
                         text: format!("{by} paused this computer; the turn was stopped"),
@@ -774,7 +775,7 @@ impl Driver {
                 } else {
                     "the agent is not reachable now; the message waits for the next turn".to_string()
                 };
-                self.chat.emit(Ev::Notice { level: "info", code: "steer_queued", text });
+                self.chat.emit(Ev::Notice { input_id: None, level: "info", code: "steer_queued", text });
                 self.enqueue(input).await;
             }
             Cmd::Interrupt { then } => {
@@ -801,6 +802,7 @@ impl Driver {
                     let _ = l.tx.send(LiveCmd::Answer { qid, text }).await;
                 }
                 None => self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "no_question",
                     text: "nothing is waiting for an answer".into(),
@@ -838,6 +840,7 @@ impl Driver {
     async fn enqueue(&mut self, input: Input) {
         if self.queue.len() >= MAX_QUEUE {
             self.chat.emit(Ev::Notice {
+                input_id: Some(input.id.clone()),
                 level: "warn",
                 code: "queue_full",
                 text: format!("{MAX_QUEUE} messages are already waiting; this one was dropped"),
@@ -884,6 +887,7 @@ impl Driver {
             }
             Out::SteerLate { .. } => {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "info",
                     code: "steer_queued",
                     text: "the agent finished this turn before it read the message; the message runs as the next turn"
@@ -895,6 +899,7 @@ impl Driver {
             }
             Out::SteerRejected { reason, .. } => {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "info",
                     code: "steer_queued",
                     text: format!(
@@ -925,6 +930,7 @@ impl Driver {
         let Some(manager) = self.manager() else { return };
         if let Some(by) = manager.0.paused.lock().unwrap().clone() {
             self.chat.emit(Ev::Notice {
+                input_id: None,
                 level: "warn",
                 code: "paused",
                 text: format!("{by} paused this computer; messages wait until it resumes"),
@@ -938,6 +944,7 @@ impl Driver {
         if self.live.is_none() {
             if manager.live_count() >= MAX_LIVE {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "too_many",
                     text: format!("{MAX_LIVE} agents are already running here; the message waits until one stops"),
@@ -945,7 +952,7 @@ impl Driver {
                 return;
             }
             if let Err(e) = self.launch(&manager) {
-                self.chat.emit(Ev::Notice { level: "error", code: "start_failed", text: format!("{e:#}") });
+                self.chat.emit(Ev::Notice { input_id: None, level: "error", code: "start_failed", text: format!("{e:#}") });
                 self.chat.set_state(State::Parked, &self.queue);
                 // The message stays queued; it goes out with the next attempt.
                 return;
@@ -999,6 +1006,7 @@ impl Driver {
         });
         if meta.proto_session.is_some() {
             self.chat.emit(Ev::Notice {
+                input_id: None,
                 level: "info",
                 code: "resumed",
                 text: format!("{} restarted and resumes the conversation", meta.name),
@@ -1164,7 +1172,7 @@ impl Driver {
             let status = if interrupted { TurnStatus::Interrupted } else { TurnStatus::Failed };
             self.end_turn(status, None, Some(why)).await;
         } else {
-            self.chat.emit(Ev::Notice { level: "info", code: "stopped", text: why });
+            self.chat.emit(Ev::Notice { input_id: None, level: "info", code: "stopped", text: why });
             self.chat.set_state(State::Parked, &self.queue);
         }
     }
@@ -1196,6 +1204,7 @@ impl Driver {
         if let Some(t) = &self.turn {
             if t.interrupt_deadline.is_some_and(|d| now >= d) {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "killed",
                     text: "the agent did not stop in time; its process was ended".into(),
@@ -1205,6 +1214,7 @@ impl Driver {
             }
             if t.interrupt_deadline.is_none() && t.last_event.elapsed() >= QUIET_TURN {
                 self.chat.emit(Ev::Notice {
+                    input_id: None,
                     level: "warn",
                     code: "quiet",
                     text: format!("no event for {} minutes; the turn is stopped", QUIET_TURN.as_secs() / 60),

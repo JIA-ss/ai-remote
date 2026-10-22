@@ -2,7 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
-import type { ChatEvent, ChatHello, ChatState, RuntimesReport, SessionInfo } from "./chat";
+import { requester, type ChatEvent, type ChatHello, type ChatReply, type ChatState, type RuntimesReport, type SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
   Driver,
@@ -269,7 +269,7 @@ export const demoBackend: Backend = {
     await wait(150);
     demoChatEnabled = on;
   },
-  async openChat(host, ticket, since, onEvent, onClosed) {
+  async openChat(host, ticket, since, onEvent, onClosed, onReply) {
     reachable(host);
     await wait(200);
     const s = demoSessions.find((x) => demoTickets.get(ticket) === x.id);
@@ -283,10 +283,17 @@ export const demoBackend: Backend = {
     const set = demoChatListeners.get(s.id) ?? new Set();
     set.add(listener);
     demoChatListeners.set(s.id, set);
+    const send = async (command: Record<string, unknown>) => {
+      const reply = await demoChatCommand(s, command);
+      if (reply && !req.reply(reply)) onReply?.(reply);
+    };
+    const req = requester(send);
     return {
-      hello,
-      send: async (command) => demoChatCommand(s, command),
+      hello: { ...hello, acks: true },
+      send,
+      ask: (name, args) => req.ask(name, args),
       close: () => {
+        req.close();
         set.delete(listener);
         onClosed();
       },
@@ -778,7 +785,7 @@ async function demoReply(s: SessionInfo, text: string, inputId: string) {
   if (next) void demoReply(s, next.text, next.id);
 }
 
-async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
+async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Promise<ChatReply | null> {
   const input = c.input as { id?: string; text?: string; mode?: string } | undefined;
   const run = demoRuns.get(s.id);
   if (input?.text) {
@@ -807,6 +814,7 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>) {
   if (ans?.text && run?.answer) run.answer(ans.text);
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");
+  return input?.text ? { t: "ack", input_id: input.id } : null;
 }
 
 async function demoStop(s: SessionInfo, run: DemoRun) {

@@ -11,7 +11,11 @@
 //! - `{"input":{"id":"..","text":"..","mode":"queue"|"interrupt"|"steer"}}`: a message for the
 //!   agent; with `interrupt` the running turn stops and this message goes first; with `steer` it
 //!   joins the running turn (a `user` event with `"steer":true`, numbered with that turn) when the
-//!   agent can take it (`caps.steer`), and is queued with a `steer_queued` notice otherwise;
+//!   agent can take it (`caps.steer`), and is queued with a `steer_queued` notice otherwise. The
+//!   host answers `{"t":"ack","input_id":".."}` once the session has it, or
+//!   `{"t":"error","code":..,"input_id":"..","text":".."}` when it refuses it (the hello says
+//!   `"acks":true`); a message later dropped because the queue is full gets a `queue_full` notice
+//!   with its `input_id`;
 //! - `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`;
 //! - `{"end":{}}`: end the session (its agent process stops);
 //! - `{"bye":{}}`: stop watching (the session goes on); `{"ping":N}` is answered with `{"pong":N}`.
@@ -183,6 +187,8 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
     let hello = json!({
         "ok": true, "session": chat.id, "role": role, "runtime": {"id": meta.runtime, "name": meta.name},
         "cwd": meta.cwd, "state": meta.state, "seq": upto, "caps": caps, "by": meta.by,
+        // Every input is answered with an `ack` (or an `error` naming it).
+        "acks": true,
     });
     if !write_line(&mut send, &hello.to_string()).await {
         return;
@@ -283,17 +289,19 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
         return Ok(Some(json!({"t": "error", "text": format!("{e:#}")})));
     }
     let by = By { device: peer.name.clone(), principal: peer.principal.clone() };
+    let mut input_id = None;
     let sent = match cmd {
         Command::Input { id, text, mode } => {
+            let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
+            // A refusal names the message, so the controller can show it as not sent.
+            let refuse = |text: String| Ok(Some(json!({"t": "error", "code": "refused", "input_id": id, "text": text})));
             if text.trim().is_empty() {
-                return Ok(Some(json!({"t": "error", "text": "empty message"})));
+                return refuse("empty message".into());
             }
             if text.len() > MAX_INPUT {
-                return Ok(Some(
-                    json!({"t": "error", "text": format!("the message is longer than {MAX_INPUT} bytes")}),
-                ));
+                return refuse(format!("the message is longer than {MAX_INPUT} bytes"));
             }
-            let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
+            input_id = Some(id.clone());
             let input = Input { id, text, by };
             match mode.as_deref() {
                 Some("interrupt") => chat.send(Cmd::Interrupt { then: Some(input) }),
@@ -308,9 +316,10 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
         Command::Bye {} | Command::Ping(_) => unreachable!(),
     };
     if !sent {
-        return Ok(Some(json!({"t": "error", "code": "ended", "text": "this session has ended"})));
+        return Ok(Some(json!({"t": "error", "code": "ended", "input_id": input_id, "text": "this session has ended"})));
     }
-    Ok(None)
+    // The session has the message (it may still wait in the queue or for the agent to take it).
+    Ok(input_id.map(|id| json!({"t": "ack", "input_id": id})))
 }
 
 /// Every few seconds: ends sessions whose device lost level admin, and stops running turns while

@@ -80,8 +80,69 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
-  | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string }
+  | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
 );
+
+/**
+ * A line from the host that is not part of the conversation: `ack` (a message reached the host),
+ * `error` (a refused command; `input_id` names the message it refused), and answers to requests
+ * carrying a `rid` (see `files`).
+ */
+export type ChatReply = { t: string; input_id?: string; rid?: string; code?: string; text?: string; [k: string]: unknown };
+
+/**
+ * Requests that the host answers with a reply carrying the same `rid` (`{"files":{...}}`): `ask`
+ * sends `{[name]: {...args, rid}}` and resolves with the reply; `reply` feeds replies in and says
+ * whether one was a request's answer.
+ */
+export function requester(send: (command: Record<string, unknown>) => Promise<void>, timeoutMs = 10_000) {
+  let next = 0;
+  const waiting = new Map<string, { ok: (r: ChatReply) => void; fail: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  return {
+    ask(name: string, args: Record<string, unknown>): Promise<ChatReply> {
+      const rid = `r${++next}`;
+      return new Promise<ChatReply>((ok, fail) => {
+        const timer = setTimeout(() => {
+          waiting.delete(rid);
+          fail(new Error("no answer from the host"));
+        }, timeoutMs);
+        waiting.set(rid, { ok, fail, timer });
+        send({ [name]: { ...args, rid } }).catch((e) => {
+          clearTimeout(timer);
+          waiting.delete(rid);
+          fail(e instanceof Error ? e : new Error(String(e)));
+        });
+      });
+    },
+    reply(m: ChatReply): boolean {
+      const w = typeof m.rid === "string" ? waiting.get(m.rid) : undefined;
+      if (!w) return false;
+      clearTimeout(w.timer);
+      waiting.delete(m.rid as string);
+      if (m.t === "error") w.fail(new Error(m.text ?? "refused"));
+      else w.ok(m);
+      return true;
+    },
+    close() {
+      for (const w of waiting.values()) {
+        clearTimeout(w.timer);
+        w.fail(new Error("the chat closed"));
+      }
+      waiting.clear();
+    },
+  };
+}
+
+/** What a line from the chat channel is: the end of the chat, a numbered event, or a reply. */
+export function chatLineKind(m: unknown): "closed" | "event" | "reply" | "notice" | null {
+  if (!m || typeof m !== "object") return null;
+  const e = m as { t?: unknown; seq?: unknown; input_id?: unknown; rid?: unknown };
+  if (e.t === "closed" || e.t === "bye") return "closed";
+  if (typeof e.seq === "number") return "event";
+  if (e.t === "ack" || e.rid !== undefined || (e.t === "error" && typeof e.input_id === "string")) return "reply";
+  if (e.t === "error") return "notice";
+  return null;
+}
 
 /** What the host answered when the chat channel opened. */
 export interface ChatHello {
@@ -94,6 +155,8 @@ export interface ChatHello {
   caps: Caps | null;
   by?: { device: string };
   host?: string;
+  /** The host answers every input with an `ack` (or a refusal naming it). */
+  acks?: boolean;
 }
 
 export interface ToolItem {
@@ -155,9 +218,13 @@ export interface Chat {
   notices: Array<{ level: string; code: string; text: string; ts: number }>;
   /** How full the agent's context window is, from its last report that had both numbers. */
   context: { used: number; window: number } | null;
+  /** Ids of the latest messages the host accepted into the conversation (`user` events). */
+  inputs: string[];
+  /** Messages the host dropped after accepting them (the queue was full), with why. */
+  dropped: Array<{ id: string; text: string }>;
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [] });
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -195,6 +262,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       c.queued = e.queued ?? [];
       return c;
     case "user": {
+      if (e.input_id) c.inputs = [...c.inputs.slice(-99), e.input_id];
       if (e.steer) {
         // Added to a running turn: shown where it landed, inside that turn. The host numbers it with
         // the running turn; an older host may number it as the next one, so the running turn wins.
@@ -212,6 +280,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       touch(e.turn).startedTs = e.ts;
       return c;
     case "notice":
+      if (e.input_id) c.dropped = [...c.dropped.slice(-19), { id: e.input_id, text: e.text }];
       if (e.level === "debug") return c;
       if (e.turn > 0 && c.turns.some((t) => t.n === e.turn && t.status === "running")) {
         touch(e.turn).blocks.push({ kind: "notice", level: e.level, code: e.code, text: e.text });
@@ -623,6 +692,79 @@ export function inputCommand(id: string, text: string, mode?: InputMode): { inpu
  */
 export function editQueued(queuedId: string, newId: string, text: string): Array<Record<string, unknown>> {
   return [{ dequeue: { id: queuedId } }, inputCommand(newId, text, "queue")];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Messages on their way: shown at the end of the conversation until the host has them.
+
+/**
+ * A message this device sent and the conversation does not show yet. `sending` until the host
+ * acknowledges it (`acked`), then until it appears as a `user` event or in the queue; `failed` when
+ * the host refused it, the connection dropped before the ack, or no ack came in time.
+ */
+export interface Outgoing {
+  id: string;
+  text: string;
+  mode?: InputMode;
+  at: number;
+  state: "sending" | "acked" | "failed";
+  error?: string;
+  /** The host refused this id: a retry needs a new one (the host may remember this one). */
+  refused?: boolean;
+  /** Images sent with it, as data URLs for the bubble (the host keeps only their names). */
+  images?: Array<{ name: string; url: string }>;
+}
+
+/** An unacknowledged message counts as not sent after this long (hosts that acknowledge only). */
+export const SEND_TIMEOUT_MS = 15_000;
+
+/**
+ * Updates messages on their way against the conversation: delivered ones (a `user` event or a
+ * queued entry with their id) leave, dropped ones fail, and unacknowledged ones fail after
+ * [`SEND_TIMEOUT_MS`] when the host acknowledges messages at all.
+ */
+export function settleOutgoing(out: Outgoing[], chat: Chat, now: number, hostAcks: boolean): Outgoing[] {
+  let changed = false;
+  const next: Outgoing[] = [];
+  for (const o of out) {
+    if (chat.inputs.includes(o.id) || chat.queued.some((q) => q.id === o.id) || (o.state === "acked" && chat.state === "ended")) {
+      changed = true;
+      continue;
+    }
+    const dropped = chat.dropped.find((d) => d.id === o.id);
+    if (dropped && o.state !== "failed") {
+      next.push({ ...o, state: "failed", error: dropped.text, refused: true });
+      changed = true;
+    } else if (hostAcks && o.state === "sending" && now - o.at > SEND_TIMEOUT_MS) {
+      next.push({ ...o, state: "failed", error: "timeout" });
+      changed = true;
+    } else next.push(o);
+  }
+  return changed ? next : out;
+}
+
+/** Applies a reply from the host to messages on their way (an `ack`, or a refusal naming one). */
+export function outgoingReply(out: Outgoing[], m: ChatReply): Outgoing[] {
+  if (!m.input_id) return out;
+  const i = out.findIndex((o) => o.id === m.input_id);
+  if (i < 0) return out;
+  const next = out.slice();
+  if (m.t === "ack") {
+    if (next[i].state === "sending") next[i] = { ...next[i], state: "acked" };
+  } else if (m.t === "error") {
+    next[i] = { ...next[i], state: "failed", error: m.text ?? m.code ?? "refused", refused: true };
+  }
+  return next;
+}
+
+/** The connection dropped: what the host had not acknowledged is not sent. */
+export function outgoingDisconnected(out: Outgoing[]): Outgoing[] {
+  return out.some((o) => o.state === "sending") ? out.map((o) => (o.state === "sending" ? { ...o, state: "failed" as const, error: "disconnected" } : o)) : out;
+}
+
+/** Sending a failed message again: the same id when the host may have it (it ignores repeats), a new one after a refusal. */
+export function retryOutgoing(o: Outgoing, newId: string, now: number): Outgoing {
+  return { ...o, id: o.refused ? newId : o.id, state: "sending", error: undefined, refused: undefined, at: now };
 }
 
 /** Sent messages, newest last, for ↑ / ↓ in the composer. */

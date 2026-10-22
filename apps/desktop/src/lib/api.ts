@@ -3,7 +3,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { commands } from "../bindings";
-import type { ChatEvent, ChatHello } from "./chat";
+import { chatLineKind, requester, type ChatEvent, type ChatHello, type ChatReply } from "./chat";
 import type { VideoCodec } from "./codec";
 import { demoBackend } from "./demo";
 import { hop } from "./hops";
@@ -178,6 +178,8 @@ export interface Backend {
     since: number,
     onEvent: (e: ChatEvent) => void,
     onClosed: () => void,
+    /** Lines that are not events: `ack`s and refusals of messages (see `ChatReply`). */
+    onReply?: (m: ChatReply) => void,
   ): Promise<ChatConnection>;
   /**
    * Starts a live view: raw frames (header + H.264) go to `onFrame`. Returns the host's monitors,
@@ -240,6 +242,8 @@ export function parsePointerShape(bytes: Uint8Array): PointerShape | null {
 export interface ChatConnection {
   hello: ChatHello;
   send(command: Record<string, unknown>): Promise<void>;
+  /** A command the host answers (`files`): resolves with its reply. */
+  ask(name: string, args: Record<string, unknown>): Promise<ChatReply>;
   close(): void;
 }
 
@@ -414,25 +418,43 @@ const tauriBackend: Backend = {
   async setLocalChat(on) {
     unwrap(await commands.setLocalHostChat(on));
   },
-  async openChat(host, ticket, since, onEvent, onClosed) {
+  async openChat(host, ticket, since, onEvent, onClosed, onReply) {
     const channel = new Channel<unknown>();
-    channel.onmessage = (m) => {
-      const e = m as { t?: string };
-      if (!e || typeof e !== "object") return;
-      if (e.t === "closed" || e.t === "bye") onClosed();
-      else if (e.t === "error") {
-        // A command the host refused (not numbered: it is not part of the conversation).
-        const err = e as { code?: string; text?: string };
-        onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "notice", level: "error", code: err.code ?? "error", text: err.text ?? "" });
-      } else if (typeof (e as { seq?: unknown }).seq === "number") onEvent(e as ChatEvent);
+    let id = -1;
+    const send = async (command: Record<string, unknown>) => {
+      unwrap(await commands.chatSend(id, command));
     };
-    const [id, hello] = unwrap(await commands.openChat(host, { ticket, since }, channel)) as [number, ChatHello];
+    const req = requester(send);
+    channel.onmessage = (m) => {
+      switch (chatLineKind(m)) {
+        case "closed":
+          req.close();
+          onClosed();
+          break;
+        case "event":
+          onEvent(m as ChatEvent);
+          break;
+        case "reply":
+          if (!req.reply(m as ChatReply)) onReply?.(m as ChatReply);
+          break;
+        case "notice": {
+          // A command the host refused (not numbered: it is not part of the conversation).
+          const err = m as { code?: string; text?: string };
+          onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "notice", level: "error", code: err.code ?? "error", text: err.text ?? "" });
+          break;
+        }
+      }
+    };
+    const opened = unwrap(await commands.openChat(host, { ticket, since }, channel)) as [number, ChatHello];
+    id = opened[0];
     return {
-      hello,
-      send: async (command) => {
-        unwrap(await commands.chatSend(id, command));
+      hello: opened[1],
+      send,
+      ask: (name, args) => req.ask(name, args),
+      close: () => {
+        req.close();
+        void commands.closeChat(id);
       },
-      close: () => void commands.closeChat(id),
     };
   },
   async openInput(host, request, onLine) {

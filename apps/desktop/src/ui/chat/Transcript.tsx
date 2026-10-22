@@ -7,9 +7,9 @@
 // request), finished turns skip layout and paint while off screen (`content-visibility`), and a turn
 // re-renders only when its own events arrive (each turn is memoized on its object).
 
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, RotateCcw, X } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { phase, stoppedTurn, turnRows, type Block, type Chat, type Turn } from "../../lib/chat";
+import { phase, stoppedTurn, turnRows, type Block, type Chat, type Outgoing, type Turn } from "../../lib/chat";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { NoticeRow, RowView, TurnFoot, WorkingRow } from "./Rows";
@@ -44,8 +44,52 @@ const TurnView = memo(function TurnView({ turn, now, readonly, stopped, far, onA
   );
 });
 
-export function Transcript({ chat, now, readonly, empty, workingLabel, follow, onAnswer, onContinue }: {
+/** Why a message was not sent, in words. */
+function failure(error: string | undefined): string {
+  if (error === "timeout") return t("hc_out_timeout");
+  if (error === "disconnected") return t("hc_out_disconnected");
+  return error ? t("hc_out_refused", { why: error }) : t("hc_out_failed");
+}
+
+/**
+ * A message on its way (Orca's NativeChatMessageList unsent message): "Sending…" until the host
+ * has it, then shown like a sent message until the conversation does; "Not sent" with Retry when
+ * it did not get there.
+ */
+function OutgoingRow({ o, onRetry, onDiscard }: { o: Outgoing; onRetry: (o: Outgoing) => void; onDiscard: (id: string) => void }) {
+  return (
+    <div className={cx("nt-user nt-out", o.state)} data-out={o.state}>
+      <div className="bubble">
+        {o.images && o.images.length > 0 && (
+          <div className="imgs">
+            {o.images.map((im, i) => <img key={i} src={im.url} alt={im.name} title={im.name} />)}
+          </div>
+        )}
+        {o.text && <div className="txt">{o.text}</div>}
+      </div>
+      <div className="meta">
+        {o.state === "sending" && <span className="st">{t("hc_out_sending")}</span>}
+        {o.state === "failed" && (
+          <>
+            <span className="st bad" title={o.error}>{failure(o.error)}</span>
+            <button type="button" className="nt-ib" onClick={() => onRetry(o)} aria-label={t("hc_out_retry")} title={t("hc_out_retry")}>
+              <RotateCcw size={12} />
+            </button>
+            <button type="button" className="nt-ib" onClick={() => onDiscard(o.id)} aria-label={t("hc_out_discard")} title={t("hc_out_discard")}>
+              <X size={12} />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue }: {
   chat: Chat;
+  outgoing?: Outgoing[];
+  onRetry?: (o: Outgoing) => void;
+  onDiscard?: (id: string) => void;
   /** Changes when this device sends something: the list jumps back to the end to follow it. */
   follow: number;
   now: number;
@@ -116,7 +160,7 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
           {chat.notices.map((n, i) => (
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
-          {chat.turns.length === 0 && !running && <div className="nt-chat-empty">{empty}</div>}
+          {chat.turns.length === 0 && !running && outgoing.length === 0 && <div className="nt-chat-empty">{empty}</div>}
           {visible.map((turn, i) => (
             <TurnView
               key={turn.n}
@@ -128,6 +172,9 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
               onContinue={onContinue}
               far={i < visible.length - 2}
             />
+          ))}
+          {outgoing.map((o) => (
+            <OutgoingRow key={o.id} o={o} onRetry={(x) => onRetry?.(x)} onDiscard={(id) => onDiscard?.(id)} />
           ))}
           {running && <WorkingRow label={workingLabel} since={ph.since} now={now} />}
         </div>

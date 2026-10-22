@@ -865,6 +865,15 @@ export const en = {
   hc_continue_prompt: "Continue where you stopped. First check whether your last step finished.",
   hc_working: "Working",
   hc_jump: "Jump to latest",
+  // Composer: sending, commands, files, images, find (ui/chat/Composer.tsx, Transcript.tsx).
+  hc_out_sending: "Sending…",
+  hc_out_failed: "Not sent",
+  hc_out_timeout: "Not sent: the host did not answer",
+  hc_out_disconnected: "Not sent: the connection dropped",
+  hc_out_refused: "Not sent: {why}",
+  hc_out_retry: "Send again",
+  hc_out_discard: "Discard",
+  // (end of composer strings)
   hc_earlier: "Show {n} earlier turns",
   hc_hint_alt: "⌥Enter stops the turn and sends",
   hc_ph_steer: "Message it while it works",
