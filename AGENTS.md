@@ -1015,7 +1015,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - **实测**：替身流程 35 项 ×3 次全过（Mac 的 36 项里有 1 项是"同一会话面板被重挂载"的诊断，Windows 上没触发，不计入）；真实 Claude Code 2.1.293 13 项 ×1 次全过：首轮 30 s，插话 3 s 内作为普通用户消息进同一轮，最终跑 5 条命令停下，上下文环 132k / 1.0M。截图在 Mac 的 `/tmp/win-chat-ui/`、`/tmp/win-chat-real/`、`/tmp/win-chat-render/`（没进仓库）。
 - **新增 `tools/desktop-chat-e2e-render.js`**（`E2E_SCRIPT=tools/desktop-chat-e2e-render.js python tools/desktop-chat-e2e.py`）：查主流程没覆盖的渲染项。WebView2 上 10 项 ×2 次全过：
   - 长消息（40 行）折叠，`mask-image` 生效（计算值 `linear-gradient(rgb(0,0,0) 65%, transparent)`），可见高度 202 px / 全文 806 px，截图里末行渐隐；
-  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件，**没有用真实中文输入法打过字**；
+  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件；真实输入法见下面"真实中文输入法"；
   - 6 轮时前 4 轮 `content-visibility: auto`、后 2 轮 `visible`，滚到顶后第 1 轮正常绘制（高 574 px）；
   - 发送后列表停在底部（距底 < 40 px）；
   - 字体：正文是 `Segoe UI Variable Text` → `Microsoft YaHei UI`，代码是打包进来的 Geist Mono。
@@ -1041,7 +1041,28 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 未测 / 下一步
 
-- 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
+- 高 DPI 缩放、浅色主题的 Windows 截图。
+
+### 真实中文输入法（2026-10-22，分支 `claude/ime-e2e`，基于 main 9933900）
+
+- **做法**：`E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --visible`。页面脚本发
+  `(action) input {...}` 行，脚本用 `tools/win_input.py`（ctypes `SendInput`）在真实桌面上点输入框、把焦点窗口的键盘布局切到
+  0804、逐键敲 `nihao`、空格、回车，按键和人打字一样经过微软拼音。`--visible` 让调试版窗口显示并可聚焦（`lib.rs` 的 smoke 模式
+  原来一律 `set_focusable(false)`，现在只在屏幕外时这样）。它会动那台电脑的鼠标、改焦点窗口的键盘布局（结束时切回 0409），
+  开着的大写锁定会先关掉、结束时恢复。
+- **实测**（win-dev，Windows 11，微软拼音，WebView2，debug 构建）：3 次全过，每次 9 项：
+  - 输入框拿到键盘焦点，敲 `nihao` 开始组字（输入框里是带下划线的 `ni'hao`，下面是"1 你好 2 … 3 泥嚎"候选框，整屏截图看到）；
+  - 组字中按回车：输入法把字母 `nihao` 落进输入框，**没有发送**（用户消息数不变）；
+  - 再敲 `nihao` + 空格：输入框是"你好"；回车：发出"你好"，输入框清空，替身智能体回"you said: 你好"。
+  - WebView2 里被输入法吃掉的那次回车**根本不发 keydown 给页面**（3/3 次 0 个），所以 `Composer.tsx` 的 `isComposing` /
+    keyCode 229 判断在这条路径上没被用到；Chrome 等会发 229，那条路径由合成事件测试覆盖。
+- **踩过的坑**（都只是测试驱动的问题，界面本身没改）：
+  - 驱动脚本所在的 Python 进程没声明 DPI 感知时，`ClientToScreen` 给的是虚拟化坐标，点击落到桌面上；改为 Per-Monitor V2。
+  - 键盘布局按线程算：`WM_INPUTLANGCHANGEREQUEST` 要发给真正有焦点的窗口（WebView2 进程里的 `Chrome_WidgetWin_1`），发给应用的
+    顶层窗口不管用。
+  - win-dev 的大写锁定开着时，微软拼音直接出大写英文、不组字。
+  - 新输入上下文里第一次组字要 1 s 以上才开始，固定等 1.2 s 不够，改成最多等 5 s。
+  - 文件夹选择器要等进入目标文件夹（路径栏 `.cur` 变成它）再点"使用"，否则选不上，后面的"启动"会点到"使用"按钮。
 - 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
 - ~~被控端在 Codex 打断后是否该替它收掉还在跑的命令~~：已做，见下一小节。
 
