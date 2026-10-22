@@ -213,6 +213,16 @@ macOS 被控端多屏（这台 Mac 没接外屏）；Windows 控制端（WebView
 合并后 `tsc --noEmit` 过，前端 10 个测试文件 119 项 117 过 2 跳过。远端光标移出当前屏时叠加层隐藏（本分支）、本地鼠标随之重新出现（#34 的
 `onPointerShown`）。
 
+**和 PR #38（`fix/dda-shared-viewers`，同一块屏多个观看者共用一个 DDA 复制）**：#38 先合进了 main；本分支合并 main 37a4fcc 时 `dda.rs` 冲突，
+照 #38 那一节写的办法解：导入取两边的并集；`run` 用 #38 的结构（`while !source.stopping()`），解构成 `(output, dup, rotation)`，
+把 `*rotation` 传给 `Viewer::deliver`；`deliver` 里用 `upright(rotation, input)` 算转角和转正后的尺寸，`SizedConverter` 带上转角比较，
+建转换器用 `Converter::rotated`。也就是说每个观看者各自转正（各自的尺寸、各自的转换器）。两边各加的 `#[cfg(test)] mod tests` 合成一个；
+git 把我的 `mod tests` 插到了 #38 给 `bench` 写的文档注释和 `mod bench` 中间，已挪开，注释回到 `bench` 上。`bench` 里的两个手动测试
+（`every_monitor_comes_out_upright`、`two_viewers_of_one_monitor_both_get_frames`）都保留。合并结果在 win-dev 上单独的目录里
+（`%USERPROFILE%\ai-remote-mm-check`，git bundle 送过去，没碰服务）：`cargo fmt --check` 过，`cargo clippy -p ar-host --all-targets
+-- -D warnings` 无警告，`cargo test -p ar-host --lib stream::` 31 过 0 失败 11 忽略（含 `rotated_outputs_are_turned_upright` 和 #38 的共享复制测试）。本机 Rust 全量 410 过 0 失败 8 忽略。合并后的竖屏转正
+和多观看者没在真机上一起跑过（推导：两条改动只在 `deliver` 里相遇，各管各的）。
+
 ## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
 
 桌面端经 #24 合进 main 的对话功能，iPhone 端这次补齐。被控端和协议都没改，只用已有的 `chat_file`、`files_list`、chat/1 的
