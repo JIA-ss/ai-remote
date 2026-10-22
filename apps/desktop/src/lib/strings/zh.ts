@@ -914,7 +914,7 @@ export const zh: Record<keyof typeof en, string> = {
   hc_ac_skills: "技能",
   hc_ac_files: "文件",
   hc_ac_no_match: "没有匹配的",
-  hc_ac_no_commands_yet: "智能体启动后才会列出它的命令，先发一条消息。",
+  hc_ac_no_commands_yet: "这个智能体还没有列出命令：启动后才会列出，有的智能体不提供命令。",
   hc_ac_no_files: "这台被控端不能列出文件。",
   hc_ac_files_error: "无法列出文件：{error}",
   hc_ac_loading: "正在列出文件…",
