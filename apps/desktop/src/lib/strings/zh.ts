@@ -52,6 +52,7 @@ export const zh: Record<keyof typeof en, string> = {
   monitor_landscape: "屏幕",
   monitor_portrait: "竖屏",
   monitor_n: "屏幕 {n}",
+  monitor_n_portrait: "竖屏 {n}",
   monitor_gone: "上次选的显示器已不在，改为显示主屏。",
   stream_requested_limits: "请求：{edge} 像素 · {fps} 帧 · {mbps} Mbps",
   stream_requested_note: "以上为请求的编码上限，实际分辨率、帧率和码率取决于被控端与连接。",

@@ -405,10 +405,12 @@ test("monitors are named by where they stand next to the primary one and listed 
   ];
   const names = m.monitorNames(stacked, catalogT("zh"));
   assert.deepEqual([0, 1, 2, 3].map((i) => names.get(i)), ["主屏", "上方屏幕", "右侧屏幕 2", "右侧屏幕 1"]);
-  // A host from before positions: numbers, the primary still named.
-  const old = [{ index: 0, width: 1920, height: 1080, primary: false }, { index: 1, width: 2560, height: 1440, primary: true }];
-  assert.deepEqual([0, 1].map((i) => m.monitorNames(old, catalogT("en")).get(i)), ["Display 1", "Main display"]);
-  assert.deepEqual(plain(m.pickerOrder(old).map((x) => x.index)), [0, 1]);
+  // A host from before positions: numbers (portrait ones said so), the primary still named.
+  const old = [{ index: 0, width: 1920, height: 1080, primary: false }, { index: 1, width: 2560, height: 1440, primary: true },
+    { index: 2, width: 1440, height: 2560, primary: false }];
+  assert.deepEqual([0, 1, 2].map((i) => m.monitorNames(old, catalogT("en")).get(i)), ["Display 1", "Main display", "Portrait display 3"]);
+  assert.equal(m.monitorNames(old, catalogT("zh")).get(2), "竖屏 3");
+  assert.deepEqual(plain(m.pickerOrder(old).map((x) => x.index)), [0, 1, 2]);
 });
 
 test("the monitor picked is remembered per computer, and a host's refusal of a gone monitor is recognised", () => {

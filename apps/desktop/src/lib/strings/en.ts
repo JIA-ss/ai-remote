@@ -50,6 +50,7 @@ export const en = {
   monitor_landscape: "display",
   monitor_portrait: "portrait display",
   monitor_n: "Display {n}",
+  monitor_n_portrait: "Portrait display {n}",
   monitor_gone: "The display picked last is no longer there; showing the main display.",
   stream_requested_limits: "Requested: {edge} px · {fps} fps · {mbps} Mbps",
   stream_requested_note: "Requested encoder limits. Actual resolution, frame rate and bitrate depend on the host and connection.",

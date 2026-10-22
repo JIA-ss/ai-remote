@@ -49,15 +49,24 @@ type T = (key: Key, vars?: Record<string, string | number>) => string;
 
 /**
  * Each monitor's name in the picker, by index: "Main display", "Left portrait display", ...; a
- * number tells apart two on the same side, and "Display 3" is for a host that gives no positions.
+ * number tells apart two on the same side, and "Display 3" / "Portrait display 2" are for a host
+ * that gives no positions.
  */
 export function monitorNames(list: RemoteMonitor[], t: T): Map<number, string> {
   const primary = primaryOf(list);
   const names = new Map<number, string>();
   for (const m of pickerOrder(list)) {
     const side = m === primary ? null : primary && sideOf(m, primary);
-    const kind = t(m.height > m.width ? "monitor_portrait" : "monitor_landscape");
-    names.set(m.index, m === primary ? t("monitor_primary") : side ? t(`monitor_${side}`, { kind }) : t("monitor_n", { n: m.index + 1 }));
+    const portrait = m.height > m.width;
+    const kind = t(portrait ? "monitor_portrait" : "monitor_landscape");
+    names.set(
+      m.index,
+      m === primary
+        ? t("monitor_primary")
+        : side
+          ? t(`monitor_${side}`, { kind })
+          : t(portrait ? "monitor_n_portrait" : "monitor_n", { n: m.index + 1 }),
+    );
   }
   // Two on the same side: number them in picker order.
   const counts = new Map<string, number>();
