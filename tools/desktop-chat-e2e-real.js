@@ -1,5 +1,5 @@
 // The desktop chat panel with a real agent (tools/desktop-chat-e2e.py --real <name>): a small file task,
-// then a steer while it works. Same hooks as desktop-chat-e2e.js.
+// a project command picked from the / menu, a pasted image, then a steer while it works. Same hooks as desktop-chat-e2e.js.
 (async () => {
   const CFG = __CONFIG__;
   // The test window is off screen (the page is hidden, requestAnimationFrame never fires); the app
@@ -69,7 +69,7 @@
     await check(`${CFG.agent} is offered`, !!pick, $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
     pick.click();
     await typeFolder(CFG.work);
-    await check("the folder picker takes a typed path", folderShown() === CFG.work.split("/").pop(), folderShown());
+    await check("the folder picker takes a typed path", folderShown() === CFG.work.split(/[\\/]/).pop(), folderShown());
     setValue($("#ag-prompt"), "Create a file named hello.txt containing the single line: hi from ai-remote. Then run `cat hello.txt` in the shell. Answer with one short sentence.");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
@@ -83,6 +83,47 @@
     await check("there is an answer", $$(".nt-reply", t1).length > 0);
     await check("context usage shows", !!$(".nt-ring"), $(".nt-ring")?.getAttribute("aria-label"));
     await shot("r1-first-turn");
+
+    // A project command (.claude/commands/pong.md in the work folder), picked from the / menu.
+    const ta = $(".nt-compose textarea");
+    ta.focus();
+    setValue(ta, "/pon");
+    const pong = await until("/pong in the menu", () => $$(".nt-ac[data-mode=slash] .it .nm").find((x) => x.textContent === "/pong"), 30000);
+    await check("the / menu lists the agent's commands, the project's own among them", !!pong, $(".nt-ac")?.textContent.slice(0, 300));
+    await shot("r3-slash-menu");
+    ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    await check("Tab puts the command in the message", !!(await until("chosen", () => ta.value === "/pong ", 3000)), ta.value);
+    $(".nt-compose .round.send").click();
+    const before = $$(".nt-turn").length;
+    await until("a new turn", () => $$(".nt-turn").length > before, 30000);
+    await idle(180000);
+    await check("the agent ran the command", /SKILLPONG/.test(lastTurn()?.textContent ?? ""), lastTurn()?.textContent.slice(-200));
+
+    // An image, pasted into the composer (or picked, where the web view will not take a constructed paste).
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 256;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#e01010"; g.fillRect(0, 0, 256, 256);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], "red.png", { type: "image/png" }));
+    let how = "paste";
+    try { ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); } catch {}
+    if (!(await until("pasted chip", () => $(".nt-atts img"), 2000))) {
+      how = "file picker";
+      const picker = $(".nt-compose input[type=file]");
+      picker.files = dt.files;
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await check(`the image becomes a chip (${how})`, !!(await until("chip", () => $(".nt-atts img"))));
+    setValue(ta, "What single colour fills this image? Answer with one word.");
+    await sleep(100);
+    $(".nt-compose .round.send").click();
+    await check("the sent message shows its image", !!(await until("bubble", () => $$(".nt-user:not(.nt-sending)").find((u) => $(".imgs img", u)), 30000)));
+    await idle(180000);
+    await check("the agent saw the image", /red|红/i.test($$(".nt-reply", lastTurn()).map((r) => r.textContent).join(" ")), lastTurn()?.textContent.slice(-200));
+    await check("nothing is left on its way", !$(".nt-sending"), $(".nt-sending")?.textContent);
+    await shot("r4-image");
 
     // Steer: a long task, changed while it runs.
     await send("Count from 1 to 20 slowly: for each number N run the shell command `sleep 2 && echo N` on its own, wait for it to finish, then run the next one. Never batch or parallelize them. Then say done.");

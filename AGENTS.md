@@ -54,7 +54,57 @@
 `node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
 **未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
 经 runner 的插话、图片、重启续接后来补了测试，在 Mac（Unix 套接字）和 Windows（命名管道）上都过了，见该节；全屏修复在真实 App
-原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
+原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装。
+（2026-10-22 补测：~~chat-input 在 Windows WebView2 下的输入界面~~、图片走 Windows 命名管道，见下一节。）
+
+## Windows 补测：新输入框在 WebView2 下、图片走命名管道（2026-10-22，分支 `test/win-chat-input`，基于 main 8eeabb6）
+
+集成说明里标为未测的两件，在 win-dev（Windows 11，5120×2160，WebView2，debug 构建，独立检出 `%USERPROFILE%\ai-remote-wininput`）上补测。
+测试用的被控端、控制端都是隔离目录、安静网络模式；真实被控端（服务和 launchd）没碰。
+
+**新输入框（WebView2）**：`tools/desktop-chat-e2e.py` 经 zremote 在交互会话里跑（窗口在屏幕外，PrintWindow 截图）。
+- 替身智能体 67 项 ×3 次全过：一行输入框（+ / 文字 / 发送）、`/` 弹出（说明、技能分组、Tab 选中）、`@` 弹出（被控端列出
+  `src/main.rs`，Windows 上也是正斜杠）、粘贴图片（WebView2 接受构造的 paste 事件）、发出后气泡缩略图且替身收到图片、送达后没有
+  残留的"发送中"、子智能体、⌘F 查找（Highlight API 当前项 / 其余项都画出来了）、引用、用量明细、插话、排队、回放。
+- `tools/desktop-chat-e2e-render.js` 10 项 ×1 次全过：输入法组字时回车不发送、普通回车发送（**合成的** `isComposing` / keyCode 229
+  事件，没有用真实中文输入法打字）、长消息折叠、`content-visibility`、字体。
+- 真实 Claude Code 2.1.293（`claude.cmd`，已登录）：`desktop-chat-e2e-real.js` 扩了 `/` 菜单里的项目命令（工作目录
+  `.claude/commands/pong.md`，Tab 选中后发送，回 SKILLPONG）和粘贴一张红色 PNG（回"红色"）。第 2 次 21 项全过；第 1 次只有
+  "认出图片"一项失败，原因是 Claude 按机器上的全局设置用中文答了"红色"，断言改成 `/red|红/`。插话 2~3 s 进同一轮，数到 5 停下。
+- 截图在 Mac 的 `/tmp/win-chat-input/`（只裁了右侧面板的副本叫 `panel-*.png`；整图里有被控端桌面，不进仓库），看过。
+- 测试脚本的修正（产品代码没改）：Windows 上图标是 Segoe Fluent 字体里的私用区字符（例如 U+E76C 右箭头）作为文字渲染，
+  行的 `textContent.trim()` 去不掉，文件夹行改用 `.fn` 的文本比较（`desktop-chat-e2e.js`、`desktop-chat-preview-e2e.js`）；
+  `CFG.work` 按 `\` 和 `/` 都拆；`desktop-chat-e2e-render.js` 还在用文件夹选择器之前的 `#ag-cwd` 文本框，改为走选择器。
+- **未测**：真实中文输入法；拖文件进输入框、点 + 选文件（只测了粘贴）；高 DPI 缩放；浅色主题。e2e 期间被控端推流有一次
+  `hardware encoding failed; using OpenH264`（同机 zremote 也在用 NVENC，没查），和对话无关。
+
+**图片走 Windows 命名管道**（`chore/runner-verify`〔PR #27〕同一天也做了同样的移植，合 main 时以它的版本为准，它多了经管道插话的用例）：`chat/runner/tests.rs` 的 `restart` 模块原来只在 Unix 编译（替身是 sh 脚本），现在 Windows 上替身是
+PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\pipe\ai-remote-chat-runner-test-<临时目录名>`，经同一套
+`ar_net::ipc` 和 `ChatManager` 的 runner 后端。win-dev 上 `cargo test -p ar-host --lib chat::runner` 7 项 ×3 次全过，其中
+`an_image_crosses_the_pipe_to_an_agent_in_the_runner`（图片经命名管道到智能体）和
+`an_agent_outlives_its_host_and_its_session_goes_on`（被控端中途死掉、再接回同一个智能体进程）是第一次在 Windows 上跑。
+这走的是 runner 和被控端在**同一进程、同一用户**的测试路径；SYSTEM 被控端以 `CreateProcessAsUserW` 拉起用户会话里的 runner 那一段
+当时没做；同一天用户授权更新 win-dev 的真实服务后，步骤 1~2 有了真机结果（见下）。
+
+**win-dev 真实服务更新（2026-10-22，用户授权）**：服务 `ai-remote-host-cc166525` 原来跑 `feat/lan-direct` 检出的 release 包，
+没有编程智能体（控制端报 `unknown tool 'chat_runtimes'`）。用本分支（main 8eeabb6 + `which` 修复）出 release 包，复制到
+`%USERPROFILE%\ai-remote-svc-bin`（不指向构建目录，免得重编时覆盖正在跑的程序），经 zremote 提权会话 `host install --service`
+重装、`sc start` 启动。结果：被控端和监护进程是 SYSTEM，`--chat-runner` 进程是登录用户（`CreateProcessAsUserW` 拉起，真机第一次）；
+`doctor` 全 ok（安静模式、仅局域网 `:47800`、chat）；Mac 控制端 `ai-remote call --host win-dev chat_runtimes` 返回 `can_start: true`，
+Claude Code 2.1.293（已登录，`D:\nodejs\node_global\claude.cmd`，用户 PATH 里找到的）、Codex 0.162.1 等。
+服务模式步骤 3~8（真实对话、锁屏续接、stop-host、安全检查、卸载）仍未做。
+
+**接回时丢请求（真实竞态，CI 撞出来的）**：PR 的 macOS CI 上 `an_agent_outlives_its_host_and_its_session_goes_on` 失败一次，
+本机同一测试 10 次失败 2 次（这条 Unix 路径本分支没改，是原有问题）。加日志后不再复现，改用只记阶段的探针才抓到：
+重启后的被控端发出了 `lives` 请求，runner 一侧从没收到。原因是被控端握手最后写 `{"ok":true}`，接回流程紧接着就发 `lives`，
+runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io.into_inner()` 把缓冲连同 `lives` 一起丢了，被控端干等
+60 s（`LOOKUP`）。真实服务模式下被控端重启（例如锁屏切会话）后接回智能体，走的正是这一步。修法：两侧 `serve` 都保留握手的
+`BufReader`。新单测 `a_request_right_after_the_handshake_is_answered`：没有修复时 3/3 失败，修复后通过；接回测试修复后本机 40/40 过。
+注意：win-dev 真实服务跑的是修复前的包（见上），服务模式步骤 4（锁屏续接）要等换上含这处修复的包再测。
+
+**顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
+`"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
+后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
 
 ## 被控端多屏：会话页切换显示器（2026-10-22，分支 `feat/multi-monitor`，worktree `../ai-remote-monitors`）
 
@@ -412,7 +462,7 @@ Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询
 **实测 / 未测**
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
-- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试用 sh 假智能体，只在 Unix 上跑；Windows 命名管道这一侧走的是同一份 `ar_net::ipc` 代码，但没在 Windows 上端到端跑过。
+- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试原来用 sh 假智能体、只在 Unix 上跑（2026-10-22 起两平台都跑，见下一条和"Windows 补测"一节）。
 - 2026-10-22 补（分支 `chore/runner-verify`）：runner 的端到端测试改为两平台都跑——Windows 上替身是 PowerShell 脚本、端点是真的命名管道；
   新增"运行中插话经管道送达并并入当前轮次"（替身像 Claude Code 一样回显两行，走 `Steered`，`turns` 仍是 1）。Mac 连跑 2 次、
   win-dev 连跑 3 次，6 项全过（握手、密钥、重启续接、插话、图片、runner 不在）；win-dev 上 clippy `-D warnings` 无警告。
@@ -776,7 +826,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 未测 / 没做
 
-- Windows 桌面端（WebView2）：Highlight API、粘贴图片、拖入、一行布局，由用户在 win-dev 上验证（见下一条记录，若已补）。
+- ~~Windows 桌面端（WebView2）：Highlight API、粘贴图片、一行布局~~（2026-10-22 已测，见"Windows 补测"一节）；拖入仍未测。
 - ACP 智能体的图片只有单测和替身（DeepSeek Harness 不收图片；收图片的 ACP 智能体没跑过）；OpenCode 没跑。
 - Codex 启动后第一条消息若在 `skills/list` 回来之前发出，消息里的 `$技能` 不会带 skill 输入项（Codex 是否仅凭文字识别没验证）。
 - 发送状态的"15 s 无 ack 判未送达"只有单测（断线判未送达已补测，见上）。
@@ -883,10 +933,36 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 ### 没做 / 下一步
 
 - [x] Windows（WebView2）上看一遍：`sandbox=""`、srcdoc 里的 CSP、`bdi` 都正常（见上面 Windows 实测）。
-- [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
-- [ ] iPhone 端的预览。
-- [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
-- [ ] 会话头部工作目录的 rtl 斜杠错位（`AgentChat.tsx`）。
+- [x] 跨机器真实智能体：见下一小节。
+- [x] iPhone 端的预览：#32 已在 main。
+- [x] "允许脚本"：见下一小节。"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）没做。
+- [x] 会话头部工作目录的 rtl 斜杠错位：main 上目录选择那边已改成 `FolderLabel` + `<bdi>`，演示页实测正常（`<bdi>` 不写 dir 时按规范没有强字符就是 ltr，`/2026/10` 也对）。
+
+### 服务模式下的读取身份、签票即读、运行脚本的独立窗口（2026-10-22，分支 `feat/chat-preview-scripts`，基于 main a7df1d3）
+
+**发现的问题（读代码确认，没有真机复现）**：`chat_file` 在被控端进程里读文件，兑换票据时还会按路径重新打开。
+- Windows 服务模式下被控端是 SYSTEM，智能体经 chat-runner 以用户身份运行。"默认允许"的理由（"智能体本来就能把文件打印出来"）在这里不成立：管理员设备让智能体在回答里**提到**任意路径（别的用户的图片、Markdown），`chat_file` 就以 SYSTEM 读出来，绕过了 `files_pull` 的审批。
+- 签票时检查、兑换时重开：2 分钟内文件可以换成指向别处的链接（扩展名和范围检查被绕过；用户态下智能体本来也能读，但范围限制失效）。
+
+**改法**：
+- 签票时就读字节（`chat::preview::read_file`：重新解析后必须仍是检查过的那个路径、扩展名、≤16 MiB），票据带着字节（`Direction::Bytes`，所有票据合计最多 128 MiB，超出丢最旧的），文件通道直接发这份字节（`deliver_bytes`）。
+- 读的身份：本地后端由被控端进程自己读；runner 后端（SYSTEM 被控端）走 runner 新加的 `read` 请求，由用户会话里的 runner 以用户令牌读，base64 过管道（单行上限 40 MiB，16 MiB 编码后约 21 MiB）。
+
+**运行脚本**（`apps/desktop/src-tauri/src/preview_window.rs`，Tauri 命令 `open_preview_window`）：
+- 读 Tauri 2.12 源码（`webview/mod.rs` 的 `is_local_url` / `on_message`）的结论：**应用自己注册的自定义协议算"本地来源"，本地来源在没有应用 ACL 清单时可以调全部应用命令**，所以不能用自定义协议开这个窗口。非本地来源要过 ACL，capability 只给了 `main`，所以应用命令和插件命令都被拒；Channel 数据按 webview 标签分开存（`ipc/channel.rs`），另一个窗口读不到主窗口的。
+- 做法：应用内一个只听 `127.0.0.1`、端口随机的极简 HTTP 服务，每个页面一个随机路径，别的路径 404；响应头带 CSP（内联脚本 + jsDelivr / unpkg / cdnjs / esm.sh / Google Fonts 的脚本和样式，`connect-src` / `frame-src` / `form-action` / `base-uri` 全 `none`，图片只许同源、`data:`、`blob:`）、`no-store`、`nosniff`、`no-referrer`。窗口 `incognito`、只能停在自己的页面（`on_navigation`）、不许开新窗口（`on_new_window` → Deny），关窗即丢弃页面。debug 的 smoke 模式下窗口放到屏幕外。
+- `preview_server_requests` 命令返回最近 64 个被请求的路径（只有路径），给 e2e 判断页面做了什么。
+
+**实测（本机 macOS，debug，2026-10-22）**：
+- `cargo test -p ar-host --lib chat` 62 过（新增 `a_preview_is_read_by_the_runner`、`a_file_swapped_for_a_link_after_the_check_is_not_read`）；第一次整跑时 `an_image_crosses_the_pipe_to_an_agent_in_the_runner` 超时 1 次，单独跑和随后整跑都过（机器繁忙，未再现）。`cargo clippy --workspace --all-targets -D warnings` 无警告；`node --test tools/*.test.mjs` 115 过；`tsc` 过；debug 构建重新生成的 `bindings.ts` 与手写一致。
+- 预览 e2e（替身智能体、本机隔离被控端，安静模式）：连续 4 次全过（每次 32 项）。"运行脚本"的三项：页面在独立窗口里跑了脚本（服务收到 `ran`）；页面里 `window.__TAURI_INTERNALS__` 存在但 `invoke` 不是函数（`ipc-threw`），调不到应用；`fetch("https://example.com/")` 被拦（`fetch-blocked`）。此前 2 次运行在第 137 行报"找不到源码按钮"：截图里那时弹层已经不在了；加了诊断（弹层消失时记录面板是否被换、最近的按键）后 4 次都没再出现，每次弹层消失前都是脚本自己的 Esc。**原因没查清**，诊断留在脚本里。
+- #30 加的"长路径从左侧截断"检查在 WebKit 下失败，截图显示截断是对的（`…c4mmn/outside/named.md`）：WebKit 把被省略的第一个字符位置报在省略号之后，检查改为"内容比框宽 + 框是 rtl + 最后一个字符完整在框内"。
+- **跨机器、真实智能体**（`tools/desktop-chat-preview-remote.py` + `tools/desktop-chat-preview-real.js`；win-dev 上本分支 debug 版的**用户态**测试被控端、隔离目录、安静模式；Mac 上 debug 桌面包、隔离控制端目录、安静模式；Claude Code 2.1.293，1 次）：一轮 19.4 s 写了 report.html / notes.md / chart.svg，三张内联卡片全部加载（截图里中文页面、表格、SVG 都对）；冷取（每次新票据 + 字节过 QUIC）：642 B 32~41 ms、147 B 31~44 ms、715 B 37~43 ms、4.2 MB PNG 275~349 ms（约 12~15 MB/s），各 5 次；"运行脚本"页面被独立窗口取走。线路是直连还是中继没记录。
+
+**未测**：
+- **服务模式（runner）的真机读取**：要把 win-dev 服务 `ai-remote-host-cc166525` 换成本分支的 release 构建，等于重启真实被控端，需要用户点头；本分支只有替身 runner 的单测。步骤：win-dev 上 `cargo build --release -p ai-remote` → 停服务 → 把 `ai-remote-hostw.exe` 等复制到 `$HOME/ai-remote-svc-bin`（服务的 binPath）→ 起服务 → Mac 上用桌面包对 win-dev 开一个会话，让智能体写一个 html，再让它在回答里提到一个只有管理员能读的文件（如 `C:\Windows\System32\config\systemprofile` 下的某个 `.md`）→ 预期前者能看、后者报"cannot read"。
+- 真实窗口里"运行脚本"窗口的观感（e2e 里窗口在屏幕外）；Windows（WebView2）下的独立窗口；依赖 CDN 的真实页面（例如 Chart.js）能否画出来。
+- 弹层偶发自己消失的原因（见上）。
 
 ## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4be9e12）
 
@@ -1223,7 +1299,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
   （dry-run 在 win-dev 的 Windows PowerShell 5 和 pwsh 上都试过，CI 上有 `tools/test_windows_packaging.py`）；真正出一次安装包、在干净的 Windows 上点"开启"没做。
   UAC 通路：第一版 `Start-Process cmd /c` 遇到带空格的路径被拆成 `C:\Program`（win-dev 实测），改成提权 PowerShell + `-EncodedCommand` 后，带空格路径的输出和退出码
   都对（win-dev 上 agent 已提权，所以没弹 UAC 框本身）。
-- macOS 授权在每次重编后失效（见上面坑 2），需要固定身份签名。
+- macOS 授权在每次重编后失效（见上面坑 2）：已有做法——用自签名代码签名证书 `ai-remote local signing` 编（`APPLE_SIGNING_IDENTITY`，见 `docs/macos.md`），2026-10-22 本机已建证书、release 包三个程序都用它签名并通过 `codesign --verify --deep --strict`；装进 `/Applications` 后授权、重编后授权仍在，这两步还没验证（要替换真实被控端，等用户确认）。
 - 从零开始（未安装）点按钮装服务形态 + 两项授权 + doctor 全绿，要用户本人在这台 Mac 上走一遍（输管理员密码、点系统授权框）。
 
 - 没有系统通知（控制端连上、审批等待时弹一条）；审批本身已有自己的弹窗。
@@ -1471,7 +1547,20 @@ Edge 页面，每次刷新把本机毫秒时钟画成 40 个黑白块（32 位 +
   Windows 任务栏）。计时到点时 `.nt-anchor:hover` 或 `.nt-anchor select:focus` 还在就续期，选完画质 `blur()` 释放；
   全屏下提示 / 报错条挪到 `top: 60px`。实测：Chromium headless shell + CDP 真实鼠标事件（`:hover` 生效），静止 3.6 s 收起、
   悬停把手出现、停在上 / 下浮条 4.5 s 不收、移回中间 3.6 s 收起；camofox 无头拿不到 `:hover`，只测了 select 焦点续期。
-  **未测**：真实 app（WKWebView）原生全屏里 Dock / 菜单栏滑出时的遮挡、Windows 控制端。
+  **真机（2026-10-22）**：用户在 macOS debug 包（main 8eeabb6 + 下面两处鼠标修复）里接管 win-dev、原生全屏，手动走完清单：
+  静止后浮条收起、把手常驻；悬停把手唤出两条浮条；画质下拉打开时浮条不收、选完后收起；推到屏幕底边 / 顶边时 Dock、
+  菜单栏没有挡住浮条或把手；从底部浮条交还控制、把手随之消失，各 1 次，全部正常。**未测**：Windows 控制端（WebView2）。
+- **全屏接管时鼠标消失（2026-10-22，上面那轮真机测试里发现）**：鼠标移到远端画面上就消失，黑边上能看到。两层原因：
+  ①舞台在"全屏 + 接管 + 浮条收起"时整个 `cursor: none`（`.nt-stage.hidecursor`），黑边、把手、"视频已断开"层上都没有鼠标——
+  已删，舞台上一律显示本地鼠标；②画面上远程输入层只要被控端单独发光标（`cursor: "client"`）就 `cursor: none`，不管远端光标
+  画没画出来。临时诊断日志实测：win-dev 发来的 99 次位置全是 `visible: false`、`shape: 0`（位置照常变化），远端光标层一直
+  `display: none`；在 win-dev 用户会话里 `GetCursorInfo` 得到 `flags=2`（`CURSOR_SUPPRESSED`：Windows 认为最近的输入来自
+  触摸 / 笔，自己屏幕上也不画鼠标），所以被控端如实报告"不可见"。改法：`PointerLayer.move()` 返回这次画没画，`Stream`
+  只在变化时通过 `onPointerShown` 上报，断流 / 卸载时报 false；`RemoteInput` 的 `remotePointer` 改成"远端光标正画在画面上"，
+  只有这时才隐藏本地鼠标。win-dev 为什么一直处于被抑制状态没查（可能是别的会话注入过触摸 / 笔输入）。
+  测试配方：debug 包不设 `AI_REMOTE_HOME`，直接复用正在跑的真实控制端（已是安静模式、已和 win-dev 配对），`AI_REMOTE_CLI`
+  指向安装版的 `ai-remote`，这样不起任何新的被控端或控制端；`localStorage["ai-remote.video-trace"]="1"` 时每秒的 stats 行
+  会写进 app 的 stdout。
 - 动效只有浮条进出场（motion `AnimatePresence`，180 ms，8 px 位移）。
 
 ### 踩过的坑

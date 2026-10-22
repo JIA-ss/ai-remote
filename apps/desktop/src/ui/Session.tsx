@@ -56,7 +56,7 @@ export function Stream({
   onStats,
   onRestart,
   onError,
-  onPointerFeed,
+  onPointerShown,
 }: {
   host: string;
   /** The host's monitor to show (an index of its list); null: the primary one. */
@@ -66,8 +66,10 @@ export function Stream({
   /** The host refused `monitor` as one it does not have (unplugged since it was picked). */
   onMonitorMissing?: () => void;
   onFrame?: () => void;
-  /** Whether the host sends its pointer separately (drawn here, so the local cursor can hide). */
-  onPointerFeed?: (on: boolean) => void;
+  /** Whether the host's pointer is drawn over the picture now (only then may the local cursor hide:
+   *  a host that reports its pointer hidden, e.g. Windows suppressing it after touch or pen input,
+   *  would otherwise leave you with no pointer at all). */
+  onPointerShown?: (on: boolean) => void;
   onSize?: (w: number, h: number) => void;
   /** Where the streamed monitor is in screen coordinates (for your input while you drive). */
   onScreen?: (r: ScreenRect | null) => void;
@@ -84,8 +86,8 @@ export function Stream({
   const pointerCanvas = useRef<HTMLCanvasElement>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const callbacks = useRef({ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerFeed });
-  callbacks.current = { onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerFeed };
+  const callbacks = useRef({ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown });
+  callbacks.current = { onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown };
   useEffect(() => {
     callbacks.current.onRestart?.();
     callbacks.current.onScreen?.(null);
@@ -107,9 +109,16 @@ export function Stream({
     let pointerAt: PointerPosition | null = null;
     const pointerLayer = () =>
       (pointer ??= pointerCanvas.current && canvas.current ? createPointerLayer(pointerCanvas.current, canvas.current) : null);
-    const movePointer = () => {
-      if (!stopped && pointerAt && view?.screen) pointerLayer()?.move(pointerAt, view.screen);
+    let pointerShown = false;
+    const showPointer = (shown: boolean) => {
+      if (shown === pointerShown) return;
+      pointerShown = shown;
+      callbacks.current.onPointerShown?.(shown);
     };
+    const movePointer = () => {
+      if (!stopped && pointerAt && view?.screen) showPointer(pointerLayer()?.move(pointerAt, view.screen) ?? false);
+    };
+
     // A per-second line of receiver metrics, for measurement runs (tools/stream-e2e.py sets it).
     const trace = localStorage.getItem("ai-remote.video-trace") === "1";
     const started = performance.now();
@@ -149,6 +158,7 @@ export function Stream({
       stopped = true;
       stopPinging();
       pointer?.hide();
+      showPointer(false);
       view?.stop();
       decoder.close();
       if (canvas.current) {
@@ -181,7 +191,6 @@ export function Stream({
           view = v;
           if (v) callbacks.current.onMonitors?.(v.monitors, v.monitor ?? monitor);
           callbacks.current.onScreen?.(v?.screen ?? null);
-          callbacks.current.onPointerFeed?.(v?.pointer ?? false);
           if (v) stopPinging = startPinging(clock, (n) => v.ping(n));
           movePointer();
         }
@@ -198,6 +207,7 @@ export function Stream({
       stopped = true;
       stopPinging();
       pointer?.hide();
+      showPointer(false);
       view?.stop();
       decoder.close();
       callbacks.current.onScreen?.(null);
@@ -531,7 +541,7 @@ export function SessionPage({
   const [actionError, setActionError] = useState<string | null>(null);
   // A passing note from live input (paused, a refused chord) and file transfers.
   const [notice, setNotice] = useState<string | null>(null);
-  const [pointerFeed, setPointerFeed] = useState(false);
+  const [pointerShown, setPointerShown] = useState(false);
   // Files on the host's clipboard (paths there) and on this computer's.
   const [remoteFiles, setRemoteFiles] = useState<string[]>([]);
   const [localFiles, setLocalFiles] = useState<string[]>([]);
@@ -807,8 +817,11 @@ export function SessionPage({
         }
       />
       <div className="nt-session-body">
+        {/* The local cursor always shows on the stage; over the picture the input layer hides it only
+            while the host's own pointer is drawn. Hiding it on the whole stage lost it on the black
+            edges, on the tab and over "video ended" while you drove in full screen. */}
         <section
-          className={cx("nt-stage", immersive && !chrome && driving && "hidecursor")}
+          className="nt-stage"
           ref={stageRef}
           onMouseMove={touch}
           onMouseDown={() => immersive && !driving && touch()}
@@ -836,7 +849,7 @@ export function SessionPage({
                 onStats={setStats}
                 onRestart={resetVideo}
                 onError={setActionError}
-                onPointerFeed={setPointerFeed}
+                onPointerShown={setPointerShown}
               />
             )}
             {driving && hasFrame && screen !== null && (
@@ -844,7 +857,7 @@ export function SessionPage({
                 host={host}
                 screen={screen}
                 mac={c.os === "mac"}
-                remotePointer={pointerFeed}
+                remotePointer={pointerShown}
                 onHandBack={() => void act("hand_back")}
                 onError={setActionError}
                 onNotice={setNotice}

@@ -24,6 +24,8 @@ ar-controller.workspace = true
 ar-net.workspace = true
 anyhow.workspace = true
 data-encoding.workspace = true
+# Random paths for the pages of the preview window (preview_window.rs).
+getrandom.workspace = true
 # The clipboard of this computer, synced with the host's while you drive.
 arboard.workspace = true
 image.workspace = true

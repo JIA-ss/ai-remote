@@ -21,6 +21,27 @@ async fn the_handshake_needs_the_same_key_on_both_sides() {
     assert!(h.is_err() && r.is_err(), "{h:?} {r:?}");
 }
 
+/// A host that came back asks for the live agents right after the handshake; that request may
+/// arrive with the handshake's last line and must not be lost with the handshake's read buffer.
+#[tokio::test]
+async fn a_request_right_after_the_handshake_is_answered() {
+    let key = new_key();
+    let (a, b) = tokio::io::duplex(1 << 16);
+    let runner = tokio::spawn(async move {
+        let mut wire = Wire::new(b);
+        handshake_runner(&mut wire, &key).await.unwrap();
+        Arc::new(Runner::default()).serve(wire).await
+    });
+    let mut host = Wire::new(a);
+    handshake_host(&mut host, &key).await.unwrap();
+    host.write(&json!({"id": 1, "op": "lives"})).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), host.read()).await.expect("an answer").unwrap().unwrap();
+    assert_eq!(reply["id"], 1, "{reply}");
+    assert_eq!(reply["ok"], json!([]), "{reply}");
+    drop(host);
+    runner.await.unwrap();
+}
+
 #[test]
 fn keys_are_kept_for_the_next_host() {
     let dir = tempfile::tempdir().unwrap();
@@ -341,6 +362,24 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         }));
         let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
         assert_eq!(end["final_text"], "image", "{end}");
+        m.close().await;
+        drop((chat, m));
+        rt.shutdown_background();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_preview_is_read_by_the_runner() {
+        let f = fixture();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
+        let found = chat.previewable("report.html").unwrap();
+        assert_eq!(m.read_preview(&found.path).await.unwrap(), b"<h1>hi</h1>");
+        // The runner checks again: a file that is gone is not read.
+        std::fs::remove_file(f.work.join("report.html")).unwrap();
+        assert!(m.read_preview(&found.path).await.is_err());
         m.close().await;
         drop((chat, m));
         rt.shutdown_background();

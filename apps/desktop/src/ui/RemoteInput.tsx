@@ -54,7 +54,7 @@ export function RemoteInput({
   screen: ScreenRect | null;
   /** The remote is a Mac (the command key is `cmd` there). */
   mac: boolean;
-  /** The host draws its pointer on this side, so the local cursor is hidden over the picture. */
+  /** The host's pointer is drawn over the picture now, so the local cursor hides there. */
   remotePointer?: boolean;
   onHandBack: () => void;
   onError?: (message: string | null) => void;

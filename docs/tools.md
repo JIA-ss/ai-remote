@@ -622,9 +622,16 @@ conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and comman
 `chat_file` runs without asking because it adds no reach: the device already has level admin and can
 ask the agent, which runs as the user without asking, to print any file. It is kept to the files the
 conversation is about so a default-allowed tool reads no more than that; a `[[rule]]` for `chat_file`
-can still ask or deny. The desktop app shows HTML without running its scripts (a frame with
-`sandbox=""` and a policy that loads nothing from the network), Markdown with the chat's own renderer,
-and images from memory; nothing is written to the controller's disk.
+can still ask or deny. The file is read when the ticket is issued, with the rights of the user the agent
+runs as (by the agent runner in the user's session when the host is a Windows service running as
+SYSTEM), and the ticket carries those bytes: a preview never reads a file the agent could not, and a file
+swapped for a link after the check is not read. The desktop app shows HTML without running its scripts
+(a frame with `sandbox=""` and a policy that loads nothing from the network), Markdown with the chat's
+own renderer, and images from memory; nothing is written to the controller's disk. **Run scripts** in
+the preview of an HTML page opens it in a window of its own, served from `127.0.0.1` at a random path:
+that window has no access to the app (to Tauri its page is a remote origin with no capability), and its
+policy lets the page run inline scripts and scripts and styles from a few public CDNs (jsDelivr, unpkg,
+cdnjs, esm.sh, Google Fonts) but request nothing else.
 
 **Finding agents.** Each command name is looked up on the host's own `PATH`, then (Unix) through the
 user's login shell once (`$SHELL -ilc`, aliases and functions of the same name removed; its `PATH` is

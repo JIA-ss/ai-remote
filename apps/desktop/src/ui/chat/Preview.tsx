@@ -10,7 +10,7 @@
 // frame could reach the native message handler behind Tauri's IPC, so agent code never runs here
 // (the app's own policy refuses inline scripts as well). Static HTML and CSS still render.
 
-import { Eye, FileCode2, FileText, Image as ImageIcon, RotateCw, X } from "lucide-react";
+import { Eye, FileCode2, FileText, Image as ImageIcon, Play, RotateCw, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../../lib/api";
@@ -40,11 +40,12 @@ export function PreviewProvider({ host, session, children }: { host: string; ses
       }
       return got;
     },
+    runScripts: (p) => api.openPreviewWindow(host, session, p),
   }), [host, session]);
   return (
     <PreviewContext.Provider value={value}>
       {children}
-      {path && <PreviewDialog load={value.load} path={path} onClose={() => setPath(null)} />}
+      {path && <PreviewDialog load={value.load} run={value.runScripts} path={path} onClose={() => setPath(null)} />}
     </PreviewContext.Provider>
   );
 }
@@ -73,7 +74,8 @@ const KIND_ICON: Record<PreviewKind, typeof FileText> = { html: FileCode2, markd
 
 type Loaded = { state: "loading" } | { state: "error"; error: string } | { state: "ready"; bytes: Uint8Array };
 
-function PreviewDialog({ load, path, onClose }: { load: PreviewApi["load"]; path: string; onClose: () => void }) {
+function PreviewDialog({ load, run, path, onClose }: { load: PreviewApi["load"]; run: PreviewApi["runScripts"]; path: string; onClose: () => void }) {
+  const [running, setRunning] = useState<"idle" | "opening" | { error: string }>("idle");
   const kind = previewKind(path) as PreviewKind;
   const [round, setRound] = useState(0);
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -164,6 +166,16 @@ function PreviewDialog({ load, path, onClose }: { load: PreviewApi["load"]; path
               </button>
             </div>
           )}
+          {kind === "html" && (
+            <button type="button" className="btn sm nt-pv-run" disabled={running === "opening"} title={t("hc_preview_run_tip")}
+              onClick={() => {
+                setRunning("opening");
+                run(path).then(() => setRunning("idle"), (e) => setRunning({ error: String((e as Error)?.message ?? e) }));
+              }}>
+              <Play size={12} aria-hidden />
+              {t("hc_preview_run")}
+            </button>
+          )}
           <CopyButton text={path} label={t("hc_preview_copy_path")} />
           <button type="button" className="nt-ib" aria-label={t("hc_preview_reload")} title={t("hc_preview_reload")} onClick={() => setRound((n) => n + 1)}>
             <RotateCw size={13} />
@@ -173,6 +185,7 @@ function PreviewDialog({ load, path, onClose }: { load: PreviewApi["load"]; path
           </button>
         </div>
         {text?.cut && <div className="nt-pv-note">{t("hc_preview_cut")}</div>}
+        {typeof running === "object" && <div className="nt-pv-note err">{running.error}</div>}
         {kind === "html" && !source && loaded.state === "ready" && <div className="nt-pv-note">{t("hc_preview_static")}</div>}
         <div className="nt-pv-bd">{body}</div>
       </div>

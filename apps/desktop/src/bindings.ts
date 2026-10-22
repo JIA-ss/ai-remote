@@ -235,6 +235,17 @@ export const commands = {
 	 */
 	previewFile: (host: string, session: string, path: string) => typedError<Frame, string>(__TAURI_INVOKE("preview_file", { host, session, path })),
 	/**
+	 *  Opens an HTML file of coding-agent session `session` on `host` with its scripts running, in a
+	 *  window of its own that cannot reach the app (see `preview_window`). The file is fetched again
+	 *  (the host checks it as for `preview_file`).
+	 */
+	openPreviewWindow: (host: string, session: string, path: string) => typedError<null, string>(__TAURI_INVOKE("open_preview_window", { host, session, path })),
+	/**
+	 *  The last paths the preview server was asked for (the end-to-end test checks what a page did;
+	 *  paths only, the pages' random parts included, nothing else).
+	 */
+	previewServerRequests: () => __TAURI_INVOKE<string[]>("preview_server_requests"),
+	/**
 	 *  Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 	 *  webview show up where the app's own messages go.
 	 */
