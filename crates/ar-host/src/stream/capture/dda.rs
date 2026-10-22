@@ -386,18 +386,6 @@ fn desktop_name(desktop: HDESK) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..len]))
 }
 
-/// Desktop Duplication + GPU conversion + hardware encoding of the real primary screen, 120 frames
-/// per codec. A small window in the top-left corner changes colour every few milliseconds so the
-/// screen keeps presenting (Desktop Duplication delivers nothing while the screen is still); the
-/// rest of the screen is whatever is on it, so this is the common small-change case, not the
-/// full-screen scroll of `gpu_encode_throughput`. Nothing leaves this machine. Run by hand:
-///
-/// `cargo test -p ar-host --release --lib dda_encode_throughput -- --ignored --nocapture`
-///
-/// `AR_CODECS` (`hevc,av1,h264`), `AR_FPS` (120), `AR_KBPS` (80000), `AR_FRAMES` (120), `AR_EDGE`
-/// (8192: native size). "capture->encoded" runs from the moment `AcquireNextFrame` returned to the
-/// moment `encode_raw` returned (GPU conversion, the hand-off through the slot, encoder submit);
-/// "encode" is the `encode_raw` call alone.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +403,18 @@ mod tests {
     }
 }
 
+/// Desktop Duplication + GPU conversion + hardware encoding of the real primary screen, 120 frames
+/// per codec. A small window in the top-left corner changes colour every few milliseconds so the
+/// screen keeps presenting (Desktop Duplication delivers nothing while the screen is still); the
+/// rest of the screen is whatever is on it, so this is the common small-change case, not the
+/// full-screen scroll of `gpu_encode_throughput`. Nothing leaves this machine. Run by hand:
+///
+/// `cargo test -p ar-host --release --lib dda_encode_throughput -- --ignored --nocapture`
+///
+/// `AR_CODECS` (`hevc,av1,h264`), `AR_FPS` (120), `AR_KBPS` (80000), `AR_FRAMES` (120), `AR_EDGE`
+/// (8192: native size). "capture->encoded" runs from the moment `AcquireNextFrame` returned to the
+/// moment `encode_raw` returned (GPU conversion, the hand-off through the slot, encoder submit);
+/// "encode" is the `encode_raw` call alone.
 #[cfg(test)]
 mod bench {
     use windows::{
