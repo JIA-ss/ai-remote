@@ -712,6 +712,103 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
 - 被控端在 Codex 打断后是否该替它收掉还在跑的命令：现在不收（会误杀它的 MCP 服务等长期子进程），要做得先能区分"这一轮拉起的工具进程"。
 
+## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
+
+范围：会话列表、打开会话按轮显示、输入框和停止按钮、最小"新对话"表单（选智能体 + 文件夹 + 可选第一条消息）；
+**不做** diff / 工具输出渲染。
+
+- `ar-mobile`：`watch_chat(host, ticket, since, listener)` 走 `EmbeddedController::open_stream({"op":"chat"})`，
+  回复（hello 行）放在 `MobileView.reply_json`，之后每个事件一行经 `MobileStream::event`；`chat_send(subscription, json)`
+  把一个 JSON 对象重新编码成一行（保证单行），经有界队列按顺序写出，订阅已关时报错而不是静默丢弃。`request` 对
+  `chat_start` 放宽到 330 s（要等机主在电脑上同意，`approval_timeout_secs` 默认 60），其他调用仍是 30 s。
+- Swift：`PhoneChatModel.swift`（纯折叠，对应桌面端 `reduceChat`：用户行、正文 delta 合并、工具行只留状态和标题、
+  思考折叠并显示秒数、`turn_end` 的结束原因、`seq` 去重；另有 `PhoneChatRuntime`）、`PhoneChatStore.swift`
+  （`chat_sessions` → `chat_attach` 取票据 → 开通道；事件经 `AsyncStream` 串行进 MainActor，不用一事件一个 Task，否则
+  delta 可能乱序；断开后 `resume()` 用 `since = log.seq` 续上；`start()` 调 `chat_start`，用返回的票据直接开通道，
+  票据用不了再 `chat_attach`；被拒时把被控端原话显示出来）、`PhoneChatView.swift`（会话页工具栏"智能体"按钮弹出 sheet，
+  列表右上角 + 打开新对话表单，启动中显示"如果电脑要求确认，请在电脑上允许"）。
+- 输入法：iOS 上输入框是 `UITextView`，`markedTextRange != nil`（组字中）时发送按钮禁用、回车交给输入法；
+  不在组字时回车即发送。
+- 读写权限：`feat/host-chat` 的 7647923 起，任何管理员设备 `chat_attach` 都拿读写票据。旧被控端只给启动会话的设备
+  读写，手机端保留"由 X 启动，这台 iPhone 只能查看"的分支，停止按钮在只读时改走 `chat_interrupt` 工具。
+
+- **2026-10-21 晚 跟进桌面端新版对话界面**（桌面分支 `claude/desktop-chat-ui-f97e8c` 76139b2，照 Orca native chat 重做）：
+  - 转换层照搬成 Swift（`PhoneChatModel.swift`）：`reduceChat`（steer 用户消息放进正在跑的轮、`usage.context_window/context_used`、
+    被停止的工具记 `stopped`）、`phoneTurnRows`（user / text / run / edit / agent / thought / plan / question / notice）、
+    `phoneRunSummary` / `phoneRunOutcome` / `phoneRunSentence`（文案同桌面 `hc_run_*` / `hc_live_*`）、`phoneDiffRows`（LCS 逐行 diff、
+    3 行上下文、折叠 gap）、`stoppedTurn`、`phoneSendMode` / `phoneInputCommand`（queue 时不带 mode）/ `phoneEditQueued`。
+    改桌面 `lib/chat.ts` 时同步改这里；`tools/PhoneChatModelTests.swift` 用的是桌面 `tools/chat-state.test.mjs` 的同一批用例。
+  - 界面（`PhoneChatRows.swift` 对应桌面 `ui/chat/Rows.tsx`，`PhoneChatView.swift` 是对话流和输入区）：工具运行组一句话摘要
+    （可展开到每条工具，命令 + 输出末 14 行）、diff 卡片（+N −M，展开逐行着色、gap 行）、思考折叠（"思考了 4.2 秒"）、计划卡、
+    提问卡（编号选项 + 自由回答，回答后显示"已回答：x"）、"你停止了这一轮 [继续]"、上下文用量环、
+    排队消息卡片（编辑=dequeue+重新排队、移出）、长按发送按钮"停止本轮并立即发送"（`mode: interrupt`）。
+  - **2026-10-22 去掉单独的插话操作**（用户要求，照 Claude / Codex 原生 App 的做法）：只有一个发送按钮，没有插话 / 排队 chip，
+    也没有"插话"标记和排队卡片上的"现在插进这一轮"。运行中发送时 `hello.caps.steer` 为 true 就带 `mode: "steer"`，否则排队
+    （不带 mode）；智能体收下的插话（`user` 事件 `steer: true`）在当前轮里显示成普通的用户消息。不支持插话时消息照旧显示在
+    输入框上方，可编辑、可移出；`steer_queued` 提示的文案改为"智能体这一轮结束后会收到这条消息。"。停止按钮保留。
+  - Markdown 只渲染行内（`AttributedString(markdown:)`，不渲染 HTML），``` 围起来的代码块单独等宽显示。
+  - 同步到桌面 8d7900c（Orca 实机对照后）：编辑并进运行组（行里没有 edit 了，组展开后编辑是 diff 卡片，组标题后加总的
+    +N −M，`phoneRunDiffStat`）；一句话最后一项用" 和 "连接、编辑类文案"编辑了 N 个文件"；diff 开头 / 结尾不再放 gap；命令行只显示
+    命令本身；失败数灰色"· N 个失败"；diff 行自动换行、复制按钮常显。
+  - 没搬：↑/↓ 浏览发送历史、最近文件夹记忆（桌面端键盘 / localStorage 功能）、代码高亮；运行组箭头"悬停才显示"（手机没有悬停）。
+
+### 验证
+
+- `python3 tools/phone-chat-smoke.py`（只在 Mac）：`ios.sh mac-core` 把 `apps/ios/Sources` 全部编成 macOS 动态库，
+  `tools/PhoneChatSmoke.swift` 用和 App 相同的 `PhoneClient` / `PhoneChatStore` 连隔离被控端（`chat-smoke.py` 里的替身
+  智能体）：配对、`chat_runtimes` 与表单默认选中、不存在的文件夹被拒并显示原话、表单启动并直接开通道、列会话、
+  命令行启动的会话也可写并回放、delta 合并、发送、忙时排队、停止得到 interrupted、排队消息接着跑、断开后续传不重复。
+  2026-10-21 本机 22 项全过（第一版无表单时 18 项）。
+- iOS CI：第一版曾推到 origin 跑过一次 workflow_dispatch 并通过；之后用户要求 `feat/host-chat` 相关改动先不进公开仓库，
+  远端分支已删，**不要再推这个分支跑 CI**，iOS 编译和模拟器验证改在本机（xcodebuild / Claude 的 iOS 模拟器工具）。
+  带新对话表单的这一版没有过 iOS 编译。
+- 模拟器（2026-10-21，本机 Xcode 27.1，iOS 27.1 模拟器"iPhone Duo"）：`-ui-chat-fixture` 启动参数（仅 DEBUG）用演示事件
+  打开对话视图，不连被控端（当时有"别起被控端"的要求）。手动在实时面板里点过：思考折叠展开；中文拼音键盘组字时
+  （字母带下划线、有候选条）发送按钮是灰的、点了不发，回车把组字确认进输入框而不是发送，确认后发送按钮变蓝；发送后出现
+  用户行、运行中的工具、"工作中"和红色停止按钮；停止后工具变失败、显示"已停止 · 1.2 秒"、回到空闲；返回看到会话列表；
+  + 打开新对话表单（默认选中可用的智能体，未登录 / 未安装有标注，未安装的不能选），启动被拒时弹出原话。
+  `apps/ios/Tests/PhoneChatUITests.swift` 自动走一遍发送、停止、回车发送、列表和表单，本机通过（21 s）；同一次 `xcodebuild test`
+  第一次拉起 runner 时崩了一次（设备在 24A94425 运行时、SDK 是 24A94232），所以整体报 TEST FAILED，但用例本身 passed。
+- 模拟器连真实被控端（2026-10-21，同一台 Mac；本分支 cherry-pick 了安静模式 55e2725）：隔离被控端和命令行控制端的
+  `host/`、`controller/` 下都写了 `[network] quiet = true`（`doctor` 的 network 检查确认安静模式），模拟器里 App 的配置目录
+  （`simctl get_app_container … data` 下的 `Library/Application Support/ai-remote`）首次启动前也放了同样两份。在实时面板里：
+  粘贴票据配对 → 会话页"智能体" → 列出命令行启动的会话并回放 → 发消息得到回答 → 命令行发的慢任务实时出现在手机上、
+  手机点停止得到"已停止 · 4.4 秒" → 新对话表单列出被控端真实检测结果（Claude Code、Codex 可用，其余未安装），选替身智能体
+  启动后直接打开会话，命令行往这个会话发的消息实时显示。测试完被控端、控制端、模拟器 App 都已停掉。
+- 没测：真机；连真实被控端时从手机输入大写英文（拼音键盘会把字母变成候选，这是键盘行为，改用命令行发的慢任务测的停止）。
+
+- 2026-10-21 晚（新版界面）：`tools/test-phone-chat-model.sh`（Swift 6、warnings as errors，macOS 上跑）17 项全过；
+  `python3 tools/phone-chat-smoke.py`（安静模式）24 项全过，新增排队消息编辑、移出；iOS 模拟器 `PhoneChatUITests`（演示数据）
+  走行展示、diff 展开、编号选项回答、发送、插话标记、chip 切排队、排队卡片移出、停止后"继续"、会话列表、新对话表单。
+  **没测**：真实被控端上的插话（当时本分支的被控端还没有 `caps.steer`；2026-10-22 已补，见下一条）、真实的计划 / 提问 / diff
+  事件（替身智能体不发这些）、上下文用量环的真实数据。
+- 2026-10-22（去掉单独的插话操作后）：`tools/test-phone-chat-model.sh` 17 项全过；`python3 tools/phone-chat-smoke.py`（安静模式）
+  30 项全过，新增**真实被控端上的插话**：替身智能体 `caps.steer=true`，SLOW 轮次运行中 `sendMode` 自动为 steer，发出的消息作为
+  用户行出现在同一轮、智能体在同一轮答 `steered: …`、队列为空；随后把 `caps.steer` 置 false 模拟 ACP 智能体，运行中发送进队列、
+  编辑、移出、停止后排队消息接着跑。iOS 模拟器（iPhone Duo，iOS 27.1）`PhoneChatUITests` 两个用例都过（30 s / 12 s）：
+  运行中发送的消息直接出现在对话里、没有 chip、没有"插话"标记、没有排队卡片；`-ui-chat-no-steer` 启动参数下运行中发送
+  出现排队卡片、能编辑、没有"现在插进这一轮"、移出后卡片消失。**没测**：真机；真实 Claude / Codex 的插话（被控端那边
+  已经在 Mac 和 win-dev 实测过，见"运行中插话"一节，手机端只连过替身）。
+
+### 踩过的坑
+
+1. macOS 上跑 debug 版 `libar_mobile` 会在 Swift 协作线程上栈溢出（`tracing::Instrument` 处 EXC_BAD_ACCESS）：debug 的
+   Rust future 太大。手机用的是 release 框架；冒烟脚本用 `DYLD_LIBRARY_PATH=target/release` 换成 release 库。
+2. 同一台机器上两个控制端（命令行和"手机"）昵称都取主机名，第二个配对会被拒（nickname already taken）；冒烟脚本给
+   手机进程设 `HOSTNAME=smoke-iphone`。
+
+3. 主机端的设计：没带第一条消息启动的会话是 parked（收到第一条消息才拉起智能体进程）。手机上原来显示"已休眠"容易误解，
+   现在没有轮次的 parked 会话显示"等待第一条消息"。
+4. 模拟器的 iOS 运行时要和 Xcode 的 SDK build 一致（本机 SDK 24A94232，`-downloadPlatform` 先下的是 24A94425，能列出但
+   起不了设备）；`xcodebuild -downloadPlatform iOS -buildVersion 24A94232` 下对应版本后才能 boot。
+
+### 下一步
+
+- [ ] 手机控制端的设备名：iOS 上 `machine_name()` 取不到主机名，被控端把手机记成 `unknown`（对话里用户行下面显示
+      "unknown"）。应由 App 传入设备名（`UIDevice.current.name` 或用户设置）给内嵌控制端。
+- [ ] 等待机主同意（`chat_start` 走 ask）时的界面没在真实被控端上看过（测试被控端规则放行了 `chat_*`）。
+- [ ] 问题（`question`）目前只显示，没有回答按钮（`{"answer":...}` 已有通道，`PhoneClient.chatSend` 可直接发）。
+
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
 
 用户的痛点：被控端只有命令行，权限（屏幕录制 / 辅助功能）要靠 doctor 提示再手动去系统设置加；希望"做成软件托盘之类的，

@@ -8,9 +8,9 @@ on:
         type: string
   push:
     branches: [main]
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", ".github/workflows/ios.yml"]
   pull_request:
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", ".github/workflows/ios.yml"]
 permissions:
   contents: read
 concurrency:
@@ -60,6 +60,8 @@ jobs:
         run: python3 tools/test_package_ios_ipa.py
       - name: Verify viewport geometry and input mapping
         run: tools/test-phone-viewport.sh
+      - name: Verify the chat model (same cases as the desktop's chat-state tests)
+        run: tools/test-phone-chat-model.sh
       - uses: actions/cache/restore@v4
         id: rust-cache
         with:

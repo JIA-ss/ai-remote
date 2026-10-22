@@ -1,0 +1,115 @@
+import XCTest
+
+/// The chat view over the `-ui-chat-fixture` demo events (no host): the rows (run, diff card, plan,
+/// question, context ring), sending, steering, queueing, stopping and continuing, the session list and
+/// the new-chat form.
+final class PhoneChatUITests: XCTestCase {
+    func testChatRowsSteerQueueStopListAndNewChatForm() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-chat-fixture"]
+        app.launch()
+        defer { app.terminate() }
+
+        // Rows: the user's message, the run summarized in one sentence, the diff card, the plan, the question.
+        XCTAssertTrue(app.staticTexts["看一下 README 里构建步骤还对不对"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["读了 2 个文件，运行了 1 条命令 和 编辑了 1 个文件"].exists, "the run's sentence, edits included")
+        XCTAssertTrue(app.staticTexts["· 1 个失败"].exists, "the run counts its failed call")
+        XCTAssertTrue(app.staticTexts["完成 2/3"].exists, "the plan's progress")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-context"].exists, "the context ring")
+        attach(app, "rows")
+
+        app.buttons["chat-option-1"].tap()
+        XCTAssertTrue(app.staticTexts["已回答：要"].waitForExistence(timeout: 5), "a numbered option answers the question")
+
+        // The edit sits in the run: open the run, then its diff card.
+        app.buttons["chat-run"].tap()
+        let diff = app.buttons["chat-diff"]
+        XCTAssertTrue(diff.waitForExistence(timeout: 5))
+        diff.tap()
+        XCTAssertTrue(app.staticTexts["Run rustup target add aarch64-apple-ios aarch64-apple-ios-sim."].waitForExistence(timeout: 5), "the diff opens")
+        attach(app, "diff")
+        diff.tap()
+        app.buttons["chat-run"].tap()
+
+        // Sending starts a turn; while it runs, a message joins it (the agent can steer), shown like any other.
+        let input = app.textViews["chat-input"]
+        input.tap()
+        input.typeText("再跑一次测试")
+        app.buttons["chat-send"].tap()
+        XCTAssertTrue(app.staticTexts["再跑一次测试"].waitForExistence(timeout: 5))
+        let stop = app.buttons["chat-stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5), "a running turn shows the stop button")
+        XCTAssertFalse(app.buttons["chat-mode"].exists, "no steer / queue switch")
+        input.tap()
+        input.typeText("用 release 配置")
+        app.buttons["chat-send"].tap()
+        XCTAssertTrue(app.staticTexts["用 release 配置"].waitForExistence(timeout: 5), "the message joins the running turn")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-queue"].exists, "it is not queued")
+        XCTAssertFalse(app.staticTexts["插话"].exists, "and not flagged")
+        attach(app, "steer")
+
+        // Stop, then continue.
+        stop.tap()
+        let resume = app.buttons["chat-continue"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 5), "a stopped turn offers to continue")
+        attach(app, "stopped")
+        resume.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 5), "continuing starts a turn")
+        stop.tap()
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+
+        // Back to the list, then the new-chat form.
+        app.buttons["chat-back"].tap()
+        XCTAssertTrue(app.buttons["chat-session-fixture-1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chat-session-fixture-2"].exists)
+        app.buttons["chat-new"].tap()
+        XCTAssertTrue(app.navigationBars["新对话"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chat-new-start"].isEnabled, "a usable agent and the home folder are preselected")
+        attach(app, "new chat")
+        app.buttons["chat-new-start"].tap()
+        XCTAssertTrue(app.alerts["没能启动"].waitForExistence(timeout: 5), "a refused start says why")
+        app.alerts["没能启动"].buttons.firstMatch.tap()
+    }
+
+    /// An agent that cannot steer: a message sent while it works waits above the composer.
+    func testQueueWhenTheAgentCannotSteer() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-chat-fixture", "-ui-chat-no-steer"]
+        app.launch()
+        defer { app.terminate() }
+        let input = app.textViews["chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 15))
+        input.tap()
+        input.typeText("先跑测试")
+        app.buttons["chat-send"].tap()
+        XCTAssertTrue(app.buttons["chat-stop"].waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText("跑完再看文档")
+        app.buttons["chat-send"].tap()
+        let card = app.descendants(matching: .any)["chat-queue"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "the queued message shows above the composer")
+        XCTAssertTrue(card.staticTexts["跑完再看文档"].exists)
+        XCTAssertTrue(app.buttons["chat-queued-edit"].exists, "edit")
+        XCTAssertFalse(app.buttons["chat-queued-steer"].exists, "no separate steer")
+        attach(app, "queued")
+        app.buttons["chat-queued-remove"].tap()
+        waitFor("queue emptied") { !card.exists }
+    }
+
+    private func waitFor(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTFail("timed out waiting for \(what)")
+    }
+
+    private func attach(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name; shot.lifetime = .keepAlways
+        add(shot)
+    }
+}
