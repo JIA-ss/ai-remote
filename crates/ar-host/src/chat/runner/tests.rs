@@ -21,6 +21,27 @@ async fn the_handshake_needs_the_same_key_on_both_sides() {
     assert!(h.is_err() && r.is_err(), "{h:?} {r:?}");
 }
 
+/// A host that came back asks for the live agents right after the handshake; that request may
+/// arrive with the handshake's last line and must not be lost with the handshake's read buffer.
+#[tokio::test]
+async fn a_request_right_after_the_handshake_is_answered() {
+    let key = new_key();
+    let (a, b) = tokio::io::duplex(1 << 16);
+    let runner = tokio::spawn(async move {
+        let mut wire = Wire::new(b);
+        handshake_runner(&mut wire, &key).await.unwrap();
+        Arc::new(Runner::default()).serve(wire).await
+    });
+    let mut host = Wire::new(a);
+    handshake_host(&mut host, &key).await.unwrap();
+    host.write(&json!({"id": 1, "op": "lives"})).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), host.read()).await.expect("an answer").unwrap().unwrap();
+    assert_eq!(reply["id"], 1, "{reply}");
+    assert_eq!(reply["ok"], json!([]), "{reply}");
+    drop(host);
+    runner.await.unwrap();
+}
+
 #[test]
 fn keys_are_kept_for_the_next_host() {
     let dir = tempfile::tempdir().unwrap();

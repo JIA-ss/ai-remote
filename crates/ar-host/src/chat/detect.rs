@@ -243,6 +243,10 @@ fn which(name: &str, path: Option<OsString>) -> Option<PathBuf> {
         // A native program first: an npm `.cmd` shim re-parses its arguments through cmd.exe.
         let mut v: Vec<String> = pathext.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect();
         v.sort_by_key(|e| if e == ".exe" { 0 } else { 1 });
+        // A name that already ends in one (`powershell.exe`, `claude.cmd`) is looked up as it is.
+        if v.iter().any(|e| name.to_ascii_lowercase().ends_with(e.as_str())) {
+            v.insert(0, String::new());
+        }
         v
     } else {
         vec![String::new()]
@@ -595,6 +599,22 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(which("fake-agent", Some(dir.path().as_os_str().to_owned())), Some(p));
         assert!(which("nope", Some(dir.path().as_os_str().to_owned())).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn programs_are_found_on_a_path_with_or_without_their_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Some(dir.path().as_os_str().to_owned());
+        let exe = dir.path().join("fake-agent.exe");
+        std::fs::write(&exe, "").unwrap();
+        let shim = dir.path().join("other.cmd");
+        std::fs::write(&shim, "").unwrap();
+        assert_eq!(which("fake-agent", path.clone()), Some(exe.clone()));
+        assert_eq!(which("fake-agent.exe", path.clone()), Some(exe));
+        assert_eq!(which("other.cmd", path.clone()), Some(shim.clone()));
+        assert_eq!(which("other", path.clone()), Some(shim));
+        assert!(which("nope.exe", path).is_none());
     }
 
     #[cfg(unix)]

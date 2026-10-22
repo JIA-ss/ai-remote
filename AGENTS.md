@@ -54,7 +54,57 @@
 `node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
 **未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
 经 runner 的插话、图片、重启续接后来补了测试，在 Mac（Unix 套接字）和 Windows（命名管道）上都过了，见该节；全屏修复在真实 App
-原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
+原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装。
+（2026-10-22 补测：~~chat-input 在 Windows WebView2 下的输入界面~~、图片走 Windows 命名管道，见下一节。）
+
+## Windows 补测：新输入框在 WebView2 下、图片走命名管道（2026-10-22，分支 `test/win-chat-input`，基于 main 8eeabb6）
+
+集成说明里标为未测的两件，在 win-dev（Windows 11，5120×2160，WebView2，debug 构建，独立检出 `%USERPROFILE%\ai-remote-wininput`）上补测。
+测试用的被控端、控制端都是隔离目录、安静网络模式；真实被控端（服务和 launchd）没碰。
+
+**新输入框（WebView2）**：`tools/desktop-chat-e2e.py` 经 zremote 在交互会话里跑（窗口在屏幕外，PrintWindow 截图）。
+- 替身智能体 67 项 ×3 次全过：一行输入框（+ / 文字 / 发送）、`/` 弹出（说明、技能分组、Tab 选中）、`@` 弹出（被控端列出
+  `src/main.rs`，Windows 上也是正斜杠）、粘贴图片（WebView2 接受构造的 paste 事件）、发出后气泡缩略图且替身收到图片、送达后没有
+  残留的"发送中"、子智能体、⌘F 查找（Highlight API 当前项 / 其余项都画出来了）、引用、用量明细、插话、排队、回放。
+- `tools/desktop-chat-e2e-render.js` 10 项 ×1 次全过：输入法组字时回车不发送、普通回车发送（**合成的** `isComposing` / keyCode 229
+  事件，没有用真实中文输入法打字）、长消息折叠、`content-visibility`、字体。
+- 真实 Claude Code 2.1.293（`claude.cmd`，已登录）：`desktop-chat-e2e-real.js` 扩了 `/` 菜单里的项目命令（工作目录
+  `.claude/commands/pong.md`，Tab 选中后发送，回 SKILLPONG）和粘贴一张红色 PNG（回"红色"）。第 2 次 21 项全过；第 1 次只有
+  "认出图片"一项失败，原因是 Claude 按机器上的全局设置用中文答了"红色"，断言改成 `/red|红/`。插话 2~3 s 进同一轮，数到 5 停下。
+- 截图在 Mac 的 `/tmp/win-chat-input/`（只裁了右侧面板的副本叫 `panel-*.png`；整图里有被控端桌面，不进仓库），看过。
+- 测试脚本的修正（产品代码没改）：Windows 上图标是 Segoe Fluent 字体里的私用区字符（例如 U+E76C 右箭头）作为文字渲染，
+  行的 `textContent.trim()` 去不掉，文件夹行改用 `.fn` 的文本比较（`desktop-chat-e2e.js`、`desktop-chat-preview-e2e.js`）；
+  `CFG.work` 按 `\` 和 `/` 都拆；`desktop-chat-e2e-render.js` 还在用文件夹选择器之前的 `#ag-cwd` 文本框，改为走选择器。
+- **未测**：真实中文输入法；拖文件进输入框、点 + 选文件（只测了粘贴）；高 DPI 缩放；浅色主题。e2e 期间被控端推流有一次
+  `hardware encoding failed; using OpenH264`（同机 zremote 也在用 NVENC，没查），和对话无关。
+
+**图片走 Windows 命名管道**（`chore/runner-verify`〔PR #27〕同一天也做了同样的移植，合 main 时以它的版本为准，它多了经管道插话的用例）：`chat/runner/tests.rs` 的 `restart` 模块原来只在 Unix 编译（替身是 sh 脚本），现在 Windows 上替身是
+PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\pipe\ai-remote-chat-runner-test-<临时目录名>`，经同一套
+`ar_net::ipc` 和 `ChatManager` 的 runner 后端。win-dev 上 `cargo test -p ar-host --lib chat::runner` 7 项 ×3 次全过，其中
+`an_image_crosses_the_pipe_to_an_agent_in_the_runner`（图片经命名管道到智能体）和
+`an_agent_outlives_its_host_and_its_session_goes_on`（被控端中途死掉、再接回同一个智能体进程）是第一次在 Windows 上跑。
+这走的是 runner 和被控端在**同一进程、同一用户**的测试路径；SYSTEM 被控端以 `CreateProcessAsUserW` 拉起用户会话里的 runner 那一段
+当时没做；同一天用户授权更新 win-dev 的真实服务后，步骤 1~2 有了真机结果（见下）。
+
+**win-dev 真实服务更新（2026-10-22，用户授权）**：服务 `ai-remote-host-cc166525` 原来跑 `feat/lan-direct` 检出的 release 包，
+没有编程智能体（控制端报 `unknown tool 'chat_runtimes'`）。用本分支（main 8eeabb6 + `which` 修复）出 release 包，复制到
+`%USERPROFILE%\ai-remote-svc-bin`（不指向构建目录，免得重编时覆盖正在跑的程序），经 zremote 提权会话 `host install --service`
+重装、`sc start` 启动。结果：被控端和监护进程是 SYSTEM，`--chat-runner` 进程是登录用户（`CreateProcessAsUserW` 拉起，真机第一次）；
+`doctor` 全 ok（安静模式、仅局域网 `:47800`、chat）；Mac 控制端 `ai-remote call --host win-dev chat_runtimes` 返回 `can_start: true`，
+Claude Code 2.1.293（已登录，`D:\nodejs\node_global\claude.cmd`，用户 PATH 里找到的）、Codex 0.162.1 等。
+服务模式步骤 3~8（真实对话、锁屏续接、stop-host、安全检查、卸载）仍未做。
+
+**接回时丢请求（真实竞态，CI 撞出来的）**：PR 的 macOS CI 上 `an_agent_outlives_its_host_and_its_session_goes_on` 失败一次，
+本机同一测试 10 次失败 2 次（这条 Unix 路径本分支没改，是原有问题）。加日志后不再复现，改用只记阶段的探针才抓到：
+重启后的被控端发出了 `lives` 请求，runner 一侧从没收到。原因是被控端握手最后写 `{"ok":true}`，接回流程紧接着就发 `lives`，
+runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io.into_inner()` 把缓冲连同 `lives` 一起丢了，被控端干等
+60 s（`LOOKUP`）。真实服务模式下被控端重启（例如锁屏切会话）后接回智能体，走的正是这一步。修法：两侧 `serve` 都保留握手的
+`BufReader`。新单测 `a_request_right_after_the_handshake_is_answered`：没有修复时 3/3 失败，修复后通过；接回测试修复后本机 40/40 过。
+注意：win-dev 真实服务跑的是修复前的包（见上），服务模式步骤 4（锁屏续接）要等换上含这处修复的包再测。
+
+**顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
+`"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
+后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
 
 ## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
 
@@ -305,7 +355,7 @@ Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询
 **实测 / 未测**
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
-- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试用 sh 假智能体，只在 Unix 上跑；Windows 命名管道这一侧走的是同一份 `ar_net::ipc` 代码，但没在 Windows 上端到端跑过。
+- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试原来用 sh 假智能体、只在 Unix 上跑（2026-10-22 起两平台都跑，见下一条和"Windows 补测"一节）。
 - 2026-10-22 补（分支 `chore/runner-verify`）：runner 的端到端测试改为两平台都跑——Windows 上替身是 PowerShell 脚本、端点是真的命名管道；
   新增"运行中插话经管道送达并并入当前轮次"（替身像 Claude Code 一样回显两行，走 `Steered`，`turns` 仍是 1）。Mac 连跑 2 次、
   win-dev 连跑 3 次，6 项全过（握手、密钥、重启续接、插话、图片、runner 不在）；win-dev 上 clippy `-D warnings` 无警告。
@@ -669,7 +719,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 未测 / 没做
 
-- Windows 桌面端（WebView2）：Highlight API、粘贴图片、拖入、一行布局，由用户在 win-dev 上验证（见下一条记录，若已补）。
+- ~~Windows 桌面端（WebView2）：Highlight API、粘贴图片、一行布局~~（2026-10-22 已测，见"Windows 补测"一节）；拖入仍未测。
 - ACP 智能体的图片只有单测和替身（DeepSeek Harness 不收图片；收图片的 ACP 智能体没跑过）；OpenCode 没跑。
 - Codex 启动后第一条消息若在 `skills/list` 回来之前发出，消息里的 `$技能` 不会带 skill 输入项（Codex 是否仅凭文字识别没验证）。
 - 发送状态的"15 s 无 ack 判未送达"只有单测（断线判未送达已补测，见上）。

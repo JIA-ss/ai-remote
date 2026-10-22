@@ -90,7 +90,7 @@
     pick.click();
     // 1a. The folder: with nothing recent the picker opens on the host's home (files_list over the real
     // channel); a typed path is browsed, a subfolder entered with a click, and the footer takes it.
-    const work = CFG.work.split("/").pop();
+    const work = CFG.work.split(/[\\/]/).pop();
     const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
     await check("with no folder chosen the field asks for one", !!$(".nt-chat-start .nt-folder-lbl.none"), $(".nt-chat-start .nt-folder-btn")?.textContent);
     $(".nt-chat-start .nt-folder-btn").click();
