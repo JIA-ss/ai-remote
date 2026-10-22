@@ -4,10 +4,14 @@
 //! process allowed to open it. This thread follows the input desktop and rebuilds the duplication
 //! whenever DXGI reports it lost (desktop switch, mode change, a full-screen app taking the output).
 //!
-//! Not the default yet: `AI_REMOTE_CAPTURE=dda` selects it (see `capture::start`). The pointer is not
-//! in the picture (Desktop Duplication reports it separately).
+//! Chosen in service mode and on a secure desktop, or with `AI_REMOTE_CAPTURE=dda` (see
+//! `capture::start`). The pointer is not in the picture (Desktop Duplication reports it separately).
 //! TODO: draw the pointer from `DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`.
 //! TODO: rotated outputs arrive unrotated; rotate in the video processor.
+//!
+//! A process may duplicate an output only once, so every viewer of a monitor shares one duplication
+//! (`capture/shared.rs`): its thread converts each frame once per viewer, into that viewer's own size
+//! and texture pool, and puts it in that viewer's slot.
 //!
 //! Follows RustDesk's `libs/scrap/src/dxgi/mod.rs` (acquire / release, access lost) and
 //! `src/server/video_service.rs` with `platform/windows.cc` (`inputDesktopSelected` /
@@ -16,21 +20,21 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicU32, Ordering},
         mpsc,
     },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow};
 use windows::{
     Win32::{
-        Foundation::{GENERIC_WRITE, HANDLE},
+        Foundation::{E_ACCESSDENIED, E_INVALIDARG, GENERIC_WRITE, HANDLE},
         Graphics::{
             Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D},
             Dxgi::{
                 Common::{DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED},
+                DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_UNSUPPORTED,
                 DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication,
                 IDXGIResource,
             },
@@ -45,11 +49,12 @@ use windows::{
             Threading::GetCurrentThreadId,
         },
     },
-    core::Interface,
+    core::{HRESULT, Interface},
 };
 
 use super::{
     Raw, Slot,
+    shared::{Member, Source, Sources},
     win::{Converter, Gpu},
 };
 
@@ -59,65 +64,121 @@ const DESKTOP_CHECK: Duration = Duration::from_millis(100);
 /// this process may not open it).
 const RETRY: Duration = Duration::from_millis(500);
 
-/// A running Desktop Duplication capture; stops when dropped.
+/// Every Desktop Duplication of this process: one per monitor, keyed by its `HMONITOR`.
+static DUPLICATIONS: Sources<isize, Viewer> = Sources::new();
+
+/// One viewer's share of a monitor's Desktop Duplication; leaves when dropped, and the last one out
+/// stops the duplication.
 pub(super) struct DdaCapture {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    _member: Member<isize, Viewer>,
 }
 
-impl Drop for DdaCapture {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+/// What one viewer of a duplicated monitor gets: frames at its own size limit, through its own
+/// converter (and texture pool), into its own slot.
+struct Viewer {
+    fps: u32,
+    max_long_edge: Arc<AtomicU32>,
+    slot: Arc<Slot>,
+    converter: Option<SizedConverter>,
+    /// No converter could be built for this viewer: its slot is closed and nothing more is converted.
+    failed: bool,
 }
 
-/// Starts duplicating `monitor`. Fails when the first duplication fails; later losses (desktop
-/// switches, mode changes) are retried on the capture thread until the capture is dropped.
-/// Every frame Desktop Duplication delivers is converted (at most one per refresh); the encode
-/// loop's pacer keeps the requested rate. Dropping frames here would lose the last change before
-/// the screen goes still, since a still screen delivers nothing more.
+/// Starts duplicating `monitor`, or joins the duplication of it another viewer started. A new
+/// duplication fails when its first `DuplicateOutput` fails; later losses (desktop switches, mode
+/// changes) are retried on the capture thread until the last viewer leaves. Every frame Desktop
+/// Duplication delivers is converted for every viewer (at most one per refresh); each viewer's
+/// encode loop paces its own rate. Dropping frames here would lose the last change before the screen
+/// goes still, since a still screen delivers nothing more.
 pub(super) fn start(
     monitor: HMONITOR,
     max_fps: u32,
     max_long_edge: Arc<AtomicU32>,
     slot: Arc<Slot>,
 ) -> Result<DdaCapture> {
-    let gpu = Gpu::for_monitor(monitor)?;
-    let fps = max_fps.clamp(1, 240);
-    let stop = Arc::new(AtomicBool::new(false));
-    let (first_tx, first_rx) = mpsc::channel();
+    let viewer = Viewer { fps: max_fps.clamp(1, 240), max_long_edge, slot, converter: None, failed: false };
     // HMONITOR is a plain handle value; it crosses the thread boundary as an integer.
     let raw_monitor = monitor.0 as isize;
-    let thread = {
-        let stop = stop.clone();
-        std::thread::Builder::new().name("ai-remote-dda".into()).spawn(move || {
-            let monitor = HMONITOR(raw_monitor as *mut _);
-            run(&gpu, monitor, fps, &max_long_edge, &slot, &stop, first_tx);
-        })?
-    };
-    let capture = DdaCapture { stop, thread: Some(thread) };
-    match first_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(capture),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(anyhow!("Desktop Duplication did not start")),
+    let member = DUPLICATIONS.join(raw_monitor, viewer, |source| {
+        let gpu = Gpu::for_monitor(monitor)?;
+        let (first_tx, first_rx) = mpsc::channel();
+        let thread = {
+            let source = source.clone();
+            std::thread::Builder::new().name("ai-remote-dda".into()).spawn(move || {
+                run(&gpu, HMONITOR(raw_monitor as *mut _), &source, first_tx);
+            })?
+        };
+        match first_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(thread),
+            result => {
+                source.stop();
+                let _ = thread.join();
+                Err(match result {
+                    Ok(Err(e)) => e,
+                    _ => anyhow!("Desktop Duplication did not start"),
+                })
+            }
+        }
+    })?;
+    let viewers = member.viewers();
+    if viewers > 1 {
+        tracing::info!(viewers, "another viewer joined this monitor's Desktop Duplication");
     }
+    Ok(DdaCapture { _member: member })
 }
 
 /// A converter and the (input, output) sizes it was built for.
 type SizedConverter = (Converter, (u32, u32), (u32, u32));
 
-fn run(
-    gpu: &Arc<Gpu>,
-    monitor: HMONITOR,
-    fps: u32,
-    max_long_edge: &AtomicU32,
-    slot: &Slot,
-    stop: &AtomicBool,
-    first: mpsc::Sender<Result<()>>,
-) {
+impl Viewer {
+    /// Converts the desktop image `texture` (of size `input`) for this viewer and puts the result in
+    /// its slot.
+    fn deliver(&mut self, gpu: &Arc<Gpu>, texture: &ID3D11Texture2D, input: (u32, u32), captured: Instant) {
+        if self.failed {
+            return;
+        }
+        let output = crate::stream::encode::stream_size(input.0, input.1, self.max_long_edge.load(Ordering::Relaxed));
+        if self.converter.as_ref().is_none_or(|(_, i, o)| (*i, *o) != (input, output)) {
+            // Cleared first: a converter that cannot be built for this size ends this viewer's stream.
+            self.converter = None;
+            match Converter::new(gpu.clone(), input, output, self.fps) {
+                Ok(c) => self.converter = Some((c, input, output)),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "GPU frame conversion unavailable");
+                    self.slot.close();
+                    self.failed = true;
+                    return;
+                }
+            }
+        }
+        let Some((converter, _, _)) = self.converter.as_mut() else { return };
+        match converter.convert(texture) {
+            Ok(Some(frame)) => self.slot.put(Raw {
+                bgra: Vec::new(),
+                width: frame.width,
+                height: frame.height,
+                captured,
+                gpu: Some(frame),
+            }),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "live view frame conversion"),
+        }
+    }
+}
+
+/// Sleeps for `total`, or less when the last viewer leaves meanwhile (it waits for this thread).
+fn pause(source: &Source<Viewer>, total: Duration) {
+    let until = Instant::now() + total;
+    while !source.stopping() {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(20)));
+    }
+}
+
+fn run(gpu: &Arc<Gpu>, monitor: HMONITOR, source: &Source<Viewer>, first: mpsc::Sender<Result<()>>) {
     let mut desktop = InputDesktop::default();
     desktop.follow();
     let mut duplication = match duplicate(gpu, monitor) {
@@ -130,10 +191,9 @@ fn run(
             return;
         }
     };
-    let mut converter: Option<SizedConverter> = None;
     let mut failing = false;
     let mut desktop_checked = Instant::now();
-    while !stop.load(Ordering::Relaxed) {
+    while !source.stopping() {
         let Some((output, dup)) = duplication.as_ref() else {
             desktop.follow();
             match duplicate(gpu, monitor) {
@@ -147,7 +207,7 @@ fn run(
                         tracing::warn!(error = %format!("{e:#}"), "Desktop Duplication unavailable; retrying");
                         failing = true;
                     }
-                    std::thread::sleep(RETRY);
+                    pause(source, RETRY);
                 }
             }
             continue;
@@ -185,42 +245,23 @@ fn run(
         }
         let captured = Instant::now();
         // LastPresentTime 0: only the pointer moved, the desktop image is unchanged.
-        let converted = if info.LastPresentTime == 0 {
-            Ok(None)
-        } else {
-            resource.as_ref().context("no desktop image").and_then(|r| {
-                let texture: ID3D11Texture2D = r.cast()?;
-                let mut desc = D3D11_TEXTURE2D_DESC::default();
-                // SAFETY: a descriptor query on a live texture.
-                unsafe { texture.GetDesc(&mut desc) };
-                let input = (desc.Width, desc.Height);
-                let output =
-                    crate::stream::encode::stream_size(input.0, input.1, max_long_edge.load(Ordering::Relaxed));
-                if converter.as_ref().is_none_or(|(_, i, o)| (*i, *o) != (input, output)) {
-                    // Cleared first: a converter that cannot be built for this size stops the capture.
-                    converter = None;
-                    converter = Some((Converter::new(gpu.clone(), input, output, fps)?, input, output));
+        if info.LastPresentTime != 0 {
+            match resource.as_ref().context("no desktop image").and_then(|r| Ok(r.cast::<ID3D11Texture2D>()?)) {
+                Ok(texture) => {
+                    let mut desc = D3D11_TEXTURE2D_DESC::default();
+                    // SAFETY: a descriptor query on a live texture.
+                    unsafe { texture.GetDesc(&mut desc) };
+                    let input = (desc.Width, desc.Height);
+                    source.each(|viewer| viewer.deliver(gpu, &texture, input, captured));
                 }
-                converter.as_mut().map_or(Ok(None), |(c, _, _)| c.convert(&texture))
-            })
-        };
+                Err(e) => tracing::warn!(error = %format!("{e:#}"), "live view frame conversion"),
+            }
+        }
         drop(resource);
-        // SAFETY: the frame acquired above; the conversion is already queued on the same device, and
-        // releasing is ordered after it.
+        // SAFETY: the frame acquired above; every viewer's conversion is already queued on the same
+        // device, and releasing is ordered after it.
         if unsafe { dup.ReleaseFrame() }.is_err() {
             duplication = None;
-        }
-        match converted {
-            Ok(Some(frame)) => {
-                slot.put(Raw { bgra: Vec::new(), width: frame.width, height: frame.height, captured, gpu: Some(frame) })
-            }
-            Ok(None) => {}
-            Err(e) if converter.is_none() => {
-                tracing::warn!(error = %format!("{e:#}"), "GPU frame conversion unavailable");
-                slot.close();
-                return;
-            }
-            Err(e) => tracing::warn!(error = %format!("{e:#}"), "live view frame conversion"),
         }
     }
 }
@@ -234,7 +275,7 @@ fn duplicate(gpu: &Gpu, monitor: HMONITOR) -> Result<(IDXGIOutput1, IDXGIOutputD
             let output = adapter.EnumOutputs(i).context("the monitor is not driven by the capture GPU")?;
             if output.GetDesc().is_ok_and(|d| d.Monitor == monitor) {
                 let output = output.cast::<IDXGIOutput1>()?;
-                let duplication = output.DuplicateOutput(&gpu.device).context("duplicate the output")?;
+                let duplication = output.DuplicateOutput(&gpu.device).map_err(refused)?;
                 let rotation = duplication.GetDesc().Rotation;
                 if rotation != DXGI_MODE_ROTATION_IDENTITY && rotation != DXGI_MODE_ROTATION_UNSPECIFIED {
                     tracing::warn!(?rotation, "rotated display: Desktop Duplication frames are not rotated yet");
@@ -244,6 +285,28 @@ fn duplicate(gpu: &Gpu, monitor: HMONITOR) -> Result<(IDXGIOutput1, IDXGIOutputD
         }
         unreachable!()
     }
+}
+
+/// A failed `DuplicateOutput`, with the reason its code documents, in words a viewer can act on.
+fn refused(error: windows::core::Error) -> anyhow::Error {
+    let why = why_refused(error.code()).unwrap_or("duplicate the output");
+    anyhow::Error::new(error).context(why)
+}
+
+/// What `DuplicateOutput`'s reference documents for `code`.
+fn why_refused(code: HRESULT) -> Option<&'static str> {
+    Some(match code {
+        // Of the documented causes, the one that applies: this process already duplicates the
+        // output. Viewers of a monitor share one duplication, so an earlier one is still letting go.
+        E_INVALIDARG => "this monitor's Desktop Duplication is already in use in this host (another viewer of it)",
+        DXGI_ERROR_NOT_CURRENTLY_AVAILABLE => {
+            "too many programs are capturing this monitor with Desktop Duplication (Windows allows four at a time)"
+        }
+        E_ACCESSDENIED => "this process may not read the desktop now on this monitor (a secure desktop)",
+        DXGI_ERROR_UNSUPPORTED => "the display driver offers no Desktop Duplication in this monitor's current mode",
+        DXGI_ERROR_SESSION_DISCONNECTED => "the session is disconnected, so there is no screen to duplicate",
+        _ => return None,
+    })
 }
 
 /// Keeps the capture thread on the desktop that receives input (`Default`, or `Winlogon` for the
@@ -323,6 +386,23 @@ fn desktop_name(desktop: HDESK) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..len]))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refusals_say_why_in_words() {
+        // What the second viewer of a monitor got on 2026-10-22: 0x80070057.
+        let text = format!("{:#}", refused(windows::core::Error::from(E_INVALIDARG)));
+        assert!(text.starts_with("this monitor's Desktop Duplication is already in use in this host"), "{text}");
+        assert!(text.contains("0x80070057"), "{text}");
+        assert!(why_refused(DXGI_ERROR_NOT_CURRENTLY_AVAILABLE).unwrap().contains("four"));
+        assert!(why_refused(E_ACCESSDENIED).is_some());
+        let other = format!("{:#}", refused(windows::core::Error::from(DXGI_ERROR_WAIT_TIMEOUT)));
+        assert!(other.starts_with("duplicate the output: "), "{other}");
+    }
+}
+
 /// Desktop Duplication + GPU conversion + hardware encoding of the real primary screen, 120 frames
 /// per codec. A small window in the top-left corner changes colour every few milliseconds so the
 /// screen keeps presenting (Desktop Duplication delivers nothing while the screen is still); the
@@ -350,6 +430,8 @@ mod bench {
         },
         core::w,
     };
+
+    use std::{sync::atomic::AtomicBool, thread::JoinHandle};
 
     use super::*;
     use crate::stream::encode::{Codec, FrameEncoder};
@@ -593,5 +675,56 @@ mod bench {
         );
         assert!(!closed, "capture closed on its own before the recording ended");
         assert!(frames > 0, "Desktop Duplication delivered no frames");
+    }
+
+    /// Two viewers of the primary monitor at once, as two connections to one host ask for it: both
+    /// get frames at their own size, the one left goes on getting frames when the other leaves, and a
+    /// viewer that comes right after the last one left starts a new duplication. Before viewers shared
+    /// one, the second `start` failed with E_INVALIDARG (`DuplicateOutput` in a process that already
+    /// duplicates the output). Nothing leaves this machine. Run by hand:
+    ///
+    /// `cargo test -p ar-host --lib two_viewers_of_one_monitor -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn two_viewers_of_one_monitor_both_get_frames() {
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "info")).with_test_writer().try_init();
+        let stop = Arc::new(AtomicBool::new(false));
+        let animation = animate(stop.clone());
+        // SAFETY: a plain query for the primary monitor's handle.
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let viewer = |edge: u32| {
+            let slot = Arc::new(Slot::default());
+            start(monitor, 30, Arc::new(AtomicU32::new(edge)), slot.clone()).map(|capture| (capture, slot))
+        };
+        // A frame captured after `since`.
+        let frame = |slot: &Slot, since: Instant| {
+            (0..100)
+                .find_map(|_| slot.take(Duration::from_millis(100)).flatten().filter(|raw| raw.captured > since))
+                .expect("no frame within 10 s")
+        };
+        let begin = Instant::now();
+        let (first, first_slot) = viewer(1280).unwrap();
+        let (second, second_slot) = viewer(640).expect("a second viewer of the same monitor");
+        let (a, b) = (frame(&first_slot, begin), frame(&second_slot, begin));
+        println!("first viewer {}x{}, second viewer {}x{}", a.width, a.height, b.width, b.height);
+        assert!(a.width.max(a.height) <= 1280 && b.width.max(b.height) <= 640);
+        assert!(a.width > b.width, "each viewer gets its own size");
+
+        drop(first);
+        let left = Instant::now();
+        let c = frame(&second_slot, left);
+        println!("after the first left, the second still gets {}x{}", c.width, c.height);
+
+        drop(second);
+        let again = Instant::now();
+        let (third, third_slot) = viewer(640).expect("a viewer right after the last one left");
+        frame(&third_slot, again);
+        println!(
+            "a viewer that came right after the last one left had its first frame {:.0} ms later",
+            again.elapsed().as_secs_f64() * 1000.0
+        );
+        drop(third);
+        stop.store(true, Ordering::Relaxed);
+        animation.join().unwrap();
     }
 }

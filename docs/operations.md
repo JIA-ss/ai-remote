@@ -219,7 +219,8 @@ the sign-in screen, that host can neither see nor operate anything until someone
 keyboard. `--service` registers a Windows service instead (RustDesk takes the same route): the
 service runs as LocalSystem, starts automatically, and keeps `ai-remote-hostw` running **as SYSTEM
 inside the console session**. A SYSTEM process in that session may open the secure desktop, so the
-live view (Desktop Duplication is chosen automatically in service mode), screenshots and input
+live view (Desktop Duplication is chosen automatically in service mode; everyone watching the same
+monitor shares one duplication, so up to three viewers can watch it at once), screenshots and input
 follow the lock screen, UAC prompts and the sign-in screen after a reboot; a controller can type a
 password at the lock screen or press `ctrl+alt+del` (the host asks the service to send it, since
 the keys themselves are ignored). The service follows the console session across log-offs and
