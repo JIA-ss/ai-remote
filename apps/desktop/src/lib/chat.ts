@@ -7,6 +7,8 @@
 // (edits included: they open to diff cards), reasoning folded behind "Thought for 4 s". `turnRows`
 // is that projection.
 
+import type { SlashCommand } from "./chat-input";
+
 export type ChatState = "starting" | "idle" | "running" | "interrupting" | "parked" | "ended";
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -81,6 +83,7 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
+  | { t: "commands"; commands: SlashCommand[] }
 );
 
 /**
@@ -157,6 +160,8 @@ export interface ChatHello {
   host?: string;
   /** The host answers every input with an `ack` (or a refusal naming it). */
   acks?: boolean;
+  /** The agent's commands and skills as last known (`commands` events replace them). */
+  commands?: SlashCommand[];
 }
 
 export interface ToolItem {
@@ -222,9 +227,11 @@ export interface Chat {
   inputs: string[];
   /** Messages the host dropped after accepting them (the queue was full), with why. */
   dropped: Array<{ id: string; text: string }>;
+  /** The agent's commands and skills from its last `commands` event (null: none came). */
+  commands: SlashCommand[] | null;
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [] });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null });
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -260,6 +267,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
     case "state":
       c.state = e.state;
       c.queued = e.queued ?? [];
+      return c;
+    case "commands":
+      c.commands = e.commands ?? [];
       return c;
     case "user": {
       if (e.input_id) c.inputs = [...c.inputs.slice(-99), e.input_id];

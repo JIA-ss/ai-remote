@@ -20,6 +20,9 @@
 //!   piece of text each, up to [`PREVIEW`] per command); file changes carry unified diffs, shown
 //!   one diff per hunk; `thread/tokenUsage/updated` gives the context window and how much of it
 //!   the last request used.
+//! - Skills: `skills/list` once the thread is up; they go to the `/` menu as `$name`, which is how
+//!   Codex names a skill in a message, and a message naming one carries it as a `skill` input
+//!   item (its name and path) beside the text, as Codex's own clients send it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -29,7 +32,8 @@ use tokio::sync::mpsc;
 use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
+        preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
@@ -52,6 +56,7 @@ enum Pending {
     Thread { resumed: bool },
     TurnStart,
     Steer { id: String },
+    Skills,
     Other,
 }
 
@@ -76,6 +81,30 @@ struct State {
     output: HashMap<String, usize>,
     /// File changes whose diff was shown.
     diffed: HashSet<String>,
+    /// The skills Codex offers: name and path.
+    skills: Vec<(String, String)>,
+}
+
+/// The input items of a message: its text, and every skill it names as `$name`.
+fn input_items(st: &State, text: &str) -> Value {
+    let mut items = vec![json!({"type": "text", "text": text, "text_elements": []})];
+    for (name, path) in &st.skills {
+        if names_skill(text, name) {
+            items.push(json!({"type": "skill", "name": name, "path": path}));
+        }
+    }
+    Value::Array(items)
+}
+
+/// Whether `text` has `$name` as a word of its own.
+fn names_skill(text: &str, name: &str) -> bool {
+    let token = format!("${name}");
+    text.match_indices(&token).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + token.len()..].chars().next();
+        before.is_none_or(char::is_whitespace)
+            && after.is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_' || c == ':'))
+    })
 }
 
 impl State {
@@ -202,7 +231,7 @@ fn steer(st: &mut State, id: String, text: String) -> Result<Option<String>, Box
             "turn/steer",
             json!({
                 "threadId": thread, "expectedTurnId": turn, "clientUserMessageId": id,
-                "input": [{"type": "text", "text": text, "text_elements": []}],
+                "input": input_items(st, &text),
             }),
             Pending::Steer { id },
         ))),
@@ -220,11 +249,7 @@ fn turn_start(st: &mut State, text: &str) -> String {
     st.last_error = None;
     st.streamed.clear();
     let thread = st.thread.clone().unwrap_or_default();
-    st.request(
-        "turn/start",
-        json!({"threadId": thread, "input": [{"type": "text", "text": text, "text_elements": []}]}),
-        Pending::TurnStart,
-    )
+    st.request("turn/start", json!({"threadId": thread, "input": input_items(st, text)}), Pending::TurnStart)
 }
 
 fn thread_start(st: &mut State, opts: &Opts) -> String {
@@ -263,6 +288,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     while let Some(text) = st.waiting.pop_front() {
                         writes.push(turn_start(st, &text));
                     }
+                    writes.push(st.request("skills/list", json!({"cwds": [opts.cwd]}), Pending::Skills));
                 } else {
                     outs.push(Out::Exited("Codex did not return a thread".into()));
                 }
@@ -296,6 +322,32 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     outs.push(Out::SteerRejected { id, reason: "the turn did not start".into() });
                 }
                 outs.push(Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(e) })
+            }
+            (Some(Pending::Skills), Ok(r)) => {
+                let skills: Vec<&Value> = r["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|e| e["skills"].as_array().into_iter().flatten())
+                    .filter(|k| k["enabled"].as_bool() != Some(false))
+                    .collect();
+                st.skills = skills
+                    .iter()
+                    .filter_map(|k| Some((k["name"].as_str()?.to_string(), k["path"].as_str()?.to_string())))
+                    .collect();
+                let commands = skills
+                    .iter()
+                    .filter_map(|k| {
+                        let name = k["name"].as_str()?;
+                        let about = k["interface"]["shortDescription"]
+                            .as_str()
+                            .or(k["shortDescription"].as_str())
+                            .or(k["description"].as_str())
+                            .unwrap_or("");
+                        Some(SlashCommand::new("skill", name, format!("${name}"), about, None))
+                    })
+                    .collect();
+                outs.push(Out::Ev(Ev::Commands { commands }));
             }
             (Some(Pending::Steer { id }), Ok(_)) => outs.push(Out::Steered { id }),
             (Some(Pending::Steer { id }), Err(e)) => outs.push(Out::SteerRejected { id, reason: e }),
@@ -886,5 +938,32 @@ mod tests {
         assert!(matches!(&outs[4], Out::Ev(Ev::ToolUpdate { content, .. }) if content.is_empty()), "{shown:?}");
         assert!(matches!(&outs[5], Out::Ev(Ev::Usage { context_window: Some(475000), context_used: Some(100), .. })));
         assert!(matches!(&outs[6], Out::Ev(Ev::Message { text, delta: false, .. }) if text == "1. do it"));
+    }
+
+    #[test]
+    fn skills_are_listed_and_a_message_naming_one_carries_it() {
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        handle(&mut st, r#"{"id":1,"result":{}}"#, &opts(None));
+        let (w, _) = handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"th"}}}"#, &opts(None));
+        let list: Value = serde_json::from_str(w.last().unwrap()).unwrap();
+        assert_eq!((list["method"].as_str(), list["params"]["cwds"][0].as_str()), (Some("skills/list"), Some("/w")));
+        let (_, outs) = handle(
+            &mut st,
+            r#"{"id":3,"result":{"data":[{"cwd":"/w","errors":[],"skills":[
+                {"name":"tidy","description":"Long text","shortDescription":"Tidy up","enabled":true,"path":"/s/tidy/SKILL.md","scope":"user"},
+                {"name":"off","description":"x","enabled":false,"path":"/s/off/SKILL.md","scope":"user"}]}]}}"#,
+            &opts(None),
+        );
+        let Some(Out::Ev(Ev::Commands { commands })) = outs.first() else { panic!("{outs:?}") };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            (commands[0].insert.as_str(), commands[0].description.as_str(), commands[0].kind.as_str()),
+            ("$tidy", "Tidy up", "skill")
+        );
+        let start: Value = serde_json::from_str(&turn_start(&mut st, "please $tidy the module")).unwrap();
+        assert_eq!(start["params"]["input"][1], json!({"type": "skill", "name": "tidy", "path": "/s/tidy/SKILL.md"}));
+        let plain: Value = serde_json::from_str(&turn_start(&mut st, "pay $tidyness or a$tidy")).unwrap();
+        assert_eq!(plain["params"]["input"].as_array().unwrap().len(), 1);
     }
 }

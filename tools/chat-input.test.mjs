@@ -85,3 +85,52 @@ test("requests are answered by the reply with their rid; lines are told apart", 
   assert.equal(chat.chatLineKind({ t: "bye" }), "closed");
   assert.equal(chat.chatLineKind({ pong: 3 }), null);
 });
+
+// ---------------------------------------------------------------------------------------------
+// The / and @ menus
+
+const input = load("chat-input.ts");
+
+test("the caret's word opens the / menu at the start of the message and @ anywhere", () => {
+  assert.deepEqual(plain(input.autocompleteAt("/rev", 4)), { mode: "slash", query: "rev", start: 0, end: 4 });
+  assert.deepEqual(plain(input.autocompleteAt("  /", 3)), { mode: "slash", query: "", start: 2, end: 3 });
+  // Not mid-message, and not a path.
+  assert.equal(input.autocompleteAt("see /rev", 8), null);
+  assert.equal(input.autocompleteAt("/usr/bin", 8), null);
+  assert.deepEqual(plain(input.autocompleteAt("look at @src/ma and", 15)), { mode: "mention", query: "src/ma", start: 8, end: 15 });
+  assert.equal(input.autocompleteAt("mail a@b", 8)?.mode, undefined);
+  assert.equal(input.autocompleteAt("plain text", 5), null);
+});
+
+test("commands match by name first, then by description; choosing replaces the word", () => {
+  const cmds = [
+    { name: "compact", description: "Clear history but keep a summary", kind: "command", insert: "/compact" },
+    { name: "review", description: "Review the changes", kind: "command", insert: "/review" },
+    { name: "pr-comments", description: "Get the review comments", kind: "command", insert: "/pr-comments" },
+    { name: "tidy", description: "a skill", kind: "skill", insert: "$tidy" },
+  ];
+  assert.deepEqual(plain(input.matchCommands(cmds, "re")).map((c) => c.name), ["review", "pr-comments"]);
+  assert.deepEqual(plain(input.matchCommands(cmds, "")).length, 4);
+  assert.deepEqual(plain(input.matchCommands(cmds, "zzz")), []);
+  const ac = input.autocompleteAt("/re more", 3);
+  assert.deepEqual(plain(input.applyChoice("/re more", ac, "/review")), { text: "/review more", caret: 8 });
+  const at = input.autocompleteAt("fix @ma", 7);
+  assert.deepEqual(plain(input.applyChoice("fix @ma", at, input.mentionText("src/main.rs"))), { text: "fix @src/main.rs ", caret: 17 });
+  assert.equal(input.mentionText("docs/a b.md"), '@"docs/a b.md"');
+});
+
+test("files whose name matches come first; the menu wraps around", () => {
+  assert.deepEqual(plain(input.rankFiles(["src/lib/main.rs", "docs/domain.md", "main.rs", "tests/x_main.rs"], "main")),
+    ["main.rs", "src/lib/main.rs", "docs/domain.md", "tests/x_main.rs"]);
+  assert.equal(input.moveActive(0, 3, -1), 2);
+  assert.equal(input.moveActive(2, 3, 1), 0);
+  assert.equal(input.moveActive(0, 0, 1), 0);
+});
+
+test("the agent's command list folds into the chat", () => {
+  seq = 0;
+  const c = fold([ev(0, { t: "commands", commands: [{ name: "review", kind: "command", insert: "/review" }] })]);
+  assert.equal(c.commands[0].insert, "/review");
+  assert.equal(c.turns.length, 0);
+  assert.equal(chat.emptyChat().commands, null);
+});

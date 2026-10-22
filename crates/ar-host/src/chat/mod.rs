@@ -51,7 +51,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use self::{
     adapters::{Launch, LiveCmd, LiveHandle},
-    event::{By, Ev, Out, Queued, ToolContent, TurnStatus},
+    event::{By, Ev, Out, Queued, SlashCommand, ToolContent, TurnStatus},
     runtimes::{ChatConfig, Protocol},
 };
 
@@ -124,6 +124,9 @@ pub struct Meta {
     #[serde(default)]
     pub end_reason: Option<String>,
     pub last_activity: u64,
+    /// The commands and skills the agent offered last (see [`Ev::Commands`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<SlashCommand>,
 }
 
 /// A message on its way to the agent.
@@ -194,6 +197,9 @@ struct Inner {
     audit: mpsc::UnboundedSender<Value>,
     /// Paused by the person at a controller: no turn may run.
     paused: Mutex<Option<String>>,
+    /// The commands an agent offered last, by agent and folder: what a new session shows in its `/`
+    /// menu before its own agent process has started.
+    commands: Mutex<HashMap<(String, String), Vec<SlashCommand>>>,
 }
 
 /// One chat session.
@@ -238,6 +244,7 @@ impl ChatManager {
             tickets: Mutex::new(HashMap::new()),
             audit,
             paused: Mutex::new(None),
+            commands: Mutex::new(HashMap::new()),
         });
         let manager = Self(inner);
         manager.load();
@@ -360,6 +367,7 @@ impl ChatManager {
             ended_at: None,
             end_reason: None,
             last_activity: now_ms(),
+            commands: Vec::new(),
         };
         let chat = self.insert(meta, creator, &dir)?;
         self.audit(json!({
@@ -466,6 +474,27 @@ impl ChatManager {
         let _ = self.0.audit.send(v);
     }
 
+    /// The commands to offer for `chat` now: its own agent's last list, or what the same agent offered
+    /// in the same folder (or, failing that, anywhere) in another session.
+    pub fn commands_for(&self, chat: &Chat) -> Vec<SlashCommand> {
+        let m = chat.meta();
+        if !m.commands.is_empty() {
+            return m.commands;
+        }
+        let cache = self.0.commands.lock().unwrap();
+        cache
+            .get(&(m.runtime.clone(), m.cwd.clone()))
+            .or_else(|| cache.iter().find(|((r, _), _)| *r == m.runtime).map(|(_, v)| v))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn remember_commands(&self, meta: &Meta) {
+        if !meta.commands.is_empty() {
+            self.0.commands.lock().unwrap().insert((meta.runtime.clone(), meta.cwd.clone()), meta.commands.clone());
+        }
+    }
+
     /// Loads the sessions on disk. A session whose agent was running when the host stopped is
     /// parked, and the processes it left are stopped (on Windows the Job Object already did).
     fn load(&self) {
@@ -493,6 +522,7 @@ impl ChatManager {
                 level: None,
                 revoked: false,
             };
+            self.remember_commands(&meta);
             match self.insert(meta, creator, &dir) {
                 Ok(chat) if was_running => {
                     chat.emit(Ev::TurnEnd {
@@ -952,7 +982,12 @@ impl Driver {
                 return;
             }
             if let Err(e) = self.launch(&manager) {
-                self.chat.emit(Ev::Notice { input_id: None, level: "error", code: "start_failed", text: format!("{e:#}") });
+                self.chat.emit(Ev::Notice {
+                    input_id: None,
+                    level: "error",
+                    code: "start_failed",
+                    text: format!("{e:#}"),
+                });
                 self.chat.set_state(State::Parked, &self.queue);
                 // The message stays queued; it goes out with the next attempt.
                 return;
@@ -1037,6 +1072,17 @@ impl Driver {
             t.last_event = Instant::now();
         }
         match out {
+            Out::Ev(Ev::Commands { mut commands }) => {
+                // Only a list that changed goes into the transcript (an agent sends it at every start).
+                commands.truncate(event::MAX_COMMANDS);
+                if self.chat.meta().commands != commands {
+                    self.chat.set_meta(|m| m.commands = commands.clone());
+                    if let Some(m) = self.manager() {
+                        m.remember_commands(&self.chat.meta());
+                    }
+                    self.chat.emit(Ev::Commands { commands });
+                }
+            }
             Out::Ev(ev) => {
                 if let (Ev::ToolCall { kind, .. }, Some(t)) = (&ev, self.turn.as_mut()) {
                     let k = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(kind_name)).unwrap_or("other");

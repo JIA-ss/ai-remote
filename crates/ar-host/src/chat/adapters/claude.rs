@@ -20,8 +20,14 @@
 //!   it (`isReplay: true`), which tells the two apart: echoed before the `result`, the message
 //!   joined the turn ([`Out::Steered`]); still unechoed at the `result`, it runs next
 //!   ([`Out::SteerLate`]). Measured with Claude Code 2.1.293, see AGENTS.md.
+//! - Commands: a `control_request` of subtype `initialize`, written at start, is answered with
+//!   every slash command and skill with its description (`commands`), before any message; the
+//!   first turn's `system` `init` then says which of them are skills (`skills`). Agents too old to
+//!   answer it still list the names in `init` (`slash_commands`).
 
 use std::collections::{HashSet, VecDeque};
+
+use crate::chat::event::SlashCommand;
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -81,6 +87,34 @@ struct State {
     /// The last model request of the turn: its model and how many tokens it took in and out.
     last_model: Option<String>,
     last_context: Option<u64>,
+    /// The commands `initialize` listed (name, description, argument hint), and which are skills.
+    commands: Vec<(String, String, String)>,
+    skills: HashSet<String>,
+    /// An `init` said which commands are skills: the list goes out from then on (before that, every
+    /// start would send it twice, once without its skills).
+    skills_known: bool,
+}
+
+/// The request id of the `initialize` written at start.
+const INIT_REQUEST: &str = "ar-init";
+
+/// The `initialize` request that lists the agent's commands.
+pub fn initialize_line() -> String {
+    json!({"type": "control_request", "request_id": INIT_REQUEST, "request": {"subtype": "initialize"}}).to_string()
+}
+
+impl State {
+    fn command_list(&self) -> Out {
+        let commands = self
+            .commands
+            .iter()
+            .map(|(name, description, hint)| {
+                let kind = if self.skills.contains(name) { "skill" } else { "command" };
+                SlashCommand::new(kind, name, format!("/{name}"), description, Some(hint.as_str()))
+            })
+            .collect();
+        Out::Ev(Ev::Commands { commands })
+    }
 }
 
 struct Written {
@@ -97,6 +131,7 @@ pub async fn run(
     name: String,
 ) {
     let mut st = State::default();
+    let _ = proc.write_line(initialize_line()).await;
     loop {
         tokio::select! {
             line = lines.recv() => match line {
@@ -186,6 +221,29 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 {
                     st.session = Some(id.to_string());
                     outs.push(Out::Session(id.to_string()));
+                }
+                let skills: HashSet<String> = v["skills"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect();
+                let first = !std::mem::replace(&mut st.skills_known, true);
+                if st.commands.is_empty() {
+                    // No answer to `initialize`: the names alone.
+                    st.commands = v["slash_commands"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|n| n.as_str().map(|n| (n.to_string(), String::new(), String::new())))
+                        .collect();
+                    st.skills = skills;
+                    if !st.commands.is_empty() {
+                        outs.push(st.command_list());
+                    }
+                } else if first || skills != st.skills {
+                    st.skills = skills;
+                    outs.push(st.command_list());
                 }
             }
             "api_retry" if !st.retried => {
@@ -332,6 +390,21 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             st.interrupting = false;
             st.streamed.clear();
             outs.push(Out::TurnEnd { status, final_text: if failed { None } else { text }, reason });
+        }
+        "control_response" if v["response"]["request_id"] == INIT_REQUEST => {
+            let r = &v["response"]["response"];
+            st.commands = r["commands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+                    c["name"].as_str().map(|n| (n.to_string(), s("description"), s("argumentHint")))
+                })
+                .collect();
+            if st.skills_known && !st.commands.is_empty() {
+                outs.push(st.command_list());
+            }
         }
         "control_request" => {
             let id = v["request_id"].clone();
@@ -580,5 +653,40 @@ mod tests {
             run_lines(&mut st, &[json!({"type": "system", "subtype": "init", "session_id": "s"}), replay()]);
         assert!(!outs.iter().any(|o| matches!(o, Out::Steered { .. })));
         assert!(st.written.is_empty());
+    }
+
+    #[test]
+    fn commands_come_from_initialize_and_skills_from_init() {
+        let mut st = State::default();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": "ar-init", "response": {"commands": [
+                    {"name": "compact", "description": "Clear history but keep a summary", "argumentHint": "<instructions>"},
+                    {"name": "gpu-debug", "description": "Attribute a rendering problem (user)", "argumentHint": ""},
+                ]}}}),
+            ],
+        );
+        // Held until an `init` says which are skills.
+        assert!(outs.is_empty());
+        let (_, outs) = run_lines(
+            &mut st,
+            &[json!({"type": "system", "subtype": "init", "session_id": "s", "skills": ["gpu-debug"]})],
+        );
+        let Some(Out::Ev(Ev::Commands { commands })) = outs.last() else { panic!("{outs:?}") };
+        assert_eq!(
+            (commands[0].kind.as_str(), commands[0].insert.as_str(), commands[0].hint.as_deref()),
+            ("command", "/compact", Some("<instructions>"))
+        );
+        assert_eq!((commands[1].kind.as_str(), commands[1].hint.as_deref()), ("skill", None));
+        // An agent that does not answer `initialize` still names its commands in `init`.
+        let mut old = State::default();
+        let (_, outs) = run_lines(
+            &mut old,
+            &[json!({"type": "system", "subtype": "init", "session_id": "s", "slash_commands": ["clear", "review"]})],
+        );
+        assert!(
+            matches!(outs.last(), Some(Out::Ev(Ev::Commands { commands })) if commands.len() == 2 && commands[1].insert == "/review")
+        );
     }
 }

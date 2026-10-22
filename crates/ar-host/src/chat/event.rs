@@ -8,7 +8,7 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Most text kept of a tool's input or output in an event; the rest is cut (`truncated: true`).
@@ -52,6 +52,44 @@ pub struct PlanEntry {
     pub content: String,
     /// pending | in_progress | completed
     pub status: String,
+}
+
+/// A slash command or skill the agent offers, for the composer's `/` menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// `command` or `skill`.
+    pub kind: String,
+    /// What choosing it puts in the message: `/name` for commands, how the agent names a skill
+    /// otherwise (`$name` for Codex). The message goes to the agent as typed.
+    pub insert: String,
+    /// What the command takes, when the agent says (`<file>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// Most characters of a command's description kept.
+pub const COMMAND_DESCRIPTION: usize = 240;
+/// Most commands kept in a list.
+pub const MAX_COMMANDS: usize = 400;
+
+impl SlashCommand {
+    pub fn new(kind: &str, name: &str, insert: String, description: &str, hint: Option<&str>) -> Self {
+        let description = description.trim();
+        let description = match description.char_indices().nth(COMMAND_DESCRIPTION) {
+            Some((at, _)) => format!("{}…", &description[..at]),
+            None => description.to_string(),
+        };
+        Self {
+            name: name.to_string(),
+            description,
+            kind: kind.to_string(),
+            insert,
+            hint: hint.map(str::trim).filter(|h| !h.is_empty()).map(str::to_string),
+        }
+    }
 }
 
 /// How a turn ended.
@@ -154,6 +192,10 @@ pub enum Ev {
     State {
         state: super::State,
         queued: Vec<Queued>,
+    },
+    /// The commands and skills the agent offers now (all of them; the list replaces the last one).
+    Commands {
+        commands: Vec<SlashCommand>,
     },
     /// Something the user should know that is not part of the conversation. `input_id` names the
     /// message it is about when it is about one (a message dropped because the queue was full).

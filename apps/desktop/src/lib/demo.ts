@@ -289,7 +289,7 @@ export const demoBackend: Backend = {
     };
     const req = requester(send);
     return {
-      hello: { ...hello, acks: true },
+      hello: { ...hello, acks: true, commands: s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))] },
       send,
       ask: (name, args) => req.ask(name, args),
       close: () => {
@@ -784,6 +784,16 @@ async function demoReply(s: SessionInfo, text: string, inputId: string) {
   setState(s, "idle");
   if (next) void demoReply(s, next.text, next.id);
 }
+
+const DEMO_COMMANDS = [
+  { name: "review", description: "Review the changes on this branch", kind: "command", insert: "/review", hint: "<pr>" },
+  { name: "compact", description: "Clear the conversation but keep a summary in context", kind: "command", insert: "/compact", hint: "<instructions>" },
+  { name: "init", description: "Write a CLAUDE.md with notes about this codebase", kind: "command", insert: "/init" },
+];
+const DEMO_SKILLS = [
+  { name: "release-notes", description: "Draft release notes from the commits since the last tag", kind: "skill", insert: "$release-notes" },
+  { name: "tidy", description: "Tidy imports and formatting", kind: "skill", insert: "$tidy" },
+];
 
 async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Promise<ChatReply | null> {
   const input = c.input as { id?: string; text?: string; mode?: string } | undefined;

@@ -569,6 +569,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         onEditQueued={(id, text) => {
           for (const c of editQueued(id, newId(), text)) send(c);
         }}
+        commands={chat.commands ?? hello?.commands ?? null}
         onSteerQueued={(id, text) => {
           send({ dequeue: { id } });
           send(inputCommand(newId(), text, "steer"));

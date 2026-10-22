@@ -130,6 +130,12 @@ def files():
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "initialize":
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"commands": [
+            {"name": "review", "description": "Review the changes on this branch", "argumentHint": "<pr>"},
+            {"name": "release-notes", "description": "Draft release notes from the commits"},
+            {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
+        continue
     if msg.get("type") == "control_request":
         if slow:
             slow.set(); slow = None

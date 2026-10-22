@@ -887,3 +887,15 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-user .bubble .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .nt-user .bubble .imgs img { height: 64px; max-width: 160px; object-fit: cover; border-radius: 6px; border: 1px solid var(--c-line); }
 .nt-user .bubble .imgs .att { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--c-hover); font-size: 11.5px; color: var(--c-faint); }
+.nt-compose-wrap { position: relative; }
+.nt-ac { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; max-height: 300px; overflow-y: auto; padding: 4px;
+  border-radius: 10px; background: var(--raised); border: 1px solid var(--c-line); box-shadow: 0 8px 28px rgb(0 0 0 / .18); }
+.nt-ac .gh { padding: 6px 8px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--c-faint); }
+.nt-ac .it { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px 8px; border-radius: 6px; text-align: left; font-size: 12.5px; color: var(--c-strong); min-width: 0; }
+.nt-ac .it.on { background: var(--c-hover); }
+.nt-ac .it .ic { flex: none; align-self: center; color: var(--c-faint); }
+.nt-ac .it .nm { flex: none; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-ac[data-mode="mention"] .it .nm { flex: 1; max-width: none; direction: rtl; text-align: left; }
+.nt-ac .it .hint { flex: none; font-size: 11.5px; color: var(--c-faint); font-family: var(--font-mono, ui-monospace, monospace); }
+.nt-ac .it .ds { flex: 1; min-width: 0; font-size: 11.5px; color: var(--c-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-ac .st { padding: 6px 8px; font-size: 12px; color: var(--c-faint); }

@@ -7,9 +7,19 @@
 // under the text, a round send button that turns into Stop), NativeChatQueuedMessageCard /
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
-import { ArrowUp, ListEnd, Pencil, Square, Trash2 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowUp, FileText, ListEnd, Package, Pencil, Slash, Square, Trash2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
+import {
+  applyChoice,
+  autocompleteAt,
+  matchCommands,
+  mentionText,
+  moveActive,
+  rankFiles,
+  type Autocomplete,
+  type SlashCommand,
+} from "../../lib/chat-input";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 
@@ -107,6 +117,55 @@ function QueuedCard({ q, canSteer, onEdit, onRemove, onSteer, readonly }: {
   );
 }
 
+/** One row of the `/` or `@` menu. */
+type MenuItem = { key: string; kind: "command" | "skill" | "file"; label: string; hint?: string; detail?: string; insert: string };
+
+/**
+ * The `/` and `@` menu above the field (Orca's NativeChatPickerMenu / mention menu): commands, then
+ * skills, or files; the highlighted row follows ↑ / ↓ and the mouse.
+ */
+function Menu({ ac, items, active, status, onChoose, onHover }: {
+  ac: Autocomplete;
+  items: MenuItem[];
+  active: number;
+  status: string | null;
+  onChoose: (item: MenuItem) => void;
+  onHover: (i: number) => void;
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    list.current?.querySelector<HTMLElement>(`[data-i="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [active, items]);
+  const grouped = ac.mode === "slash" && items.some((i) => i.kind === "command") && items.some((i) => i.kind === "skill");
+  return (
+    <div className="nt-ac" role="listbox" aria-label={ac.mode === "slash" ? t("hc_ac_commands") : t("hc_ac_files")} ref={list} data-mode={ac.mode}>
+      {items.map((item, i) => (
+        <div key={item.key}>
+          {grouped && (i === 0 || items[i - 1].kind !== item.kind) && (
+            <div className="gh">{item.kind === "skill" ? t("hc_ac_skills") : t("hc_ac_commands")}</div>
+          )}
+          <button
+            type="button"
+            role="option"
+            data-i={i}
+            aria-selected={i === active}
+            className={cx("it", i === active && "on")}
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseEnter={() => onHover(i)}
+            onClick={() => onChoose(item)}
+          >
+            {item.kind === "file" ? <FileText size={13} className="ic" /> : item.kind === "skill" ? <Package size={13} className="ic" /> : <Slash size={13} className="ic" />}
+            <span className="nm"><bdi dir="ltr">{item.label}</bdi></span>
+            {item.hint && <span className="hint">{item.hint}</span>}
+            {item.detail && <span className="ds">{item.detail}</span>}
+          </button>
+        </div>
+      ))}
+      {status && <div className="st">{status}</div>}
+    </div>
+  );
+}
+
 export interface ComposerProps {
   agent: string;
   host: string;
@@ -122,6 +181,10 @@ export interface ComposerProps {
   onDequeue: (id: string) => void;
   onEditQueued: (id: string, text: string) => void;
   onSteerQueued: (id: string, text: string) => void;
+  /** The agent's commands and skills, for the `/` menu (null: it has not said yet). */
+  commands?: SlashCommand[] | null;
+  /** Files in the session's folder matching a query, for the `@` menu. */
+  listFiles?: (query: string) => Promise<{ files: string[]; truncated?: boolean }>;
 }
 
 export function Composer(p: ComposerProps) {
@@ -134,6 +197,59 @@ export function Composer(p: ComposerProps) {
   const mode: InputMode | undefined = sendMode(p.running, { steer: p.canSteer } as Caps);
 
   useEffect(() => setAt(p.history.length), [p.history.length]);
+
+  // The `/` and `@` menus: what the caret is in, unless Esc closed it for that word.
+  const [caret, setCaret] = useState(0);
+  const [closedAt, setClosedAt] = useState<number | null>(null);
+  const [active, setActive] = useState(0);
+  const [files, setFiles] = useState<{ query: string; files: string[]; truncated?: boolean; error?: string } | null>(null);
+  const found = autocompleteAt(text, caret);
+  const ac = found && found.start !== closedAt && !p.disabled ? found : null;
+  const mentionQuery = ac?.mode === "mention" ? ac.query : null;
+  useEffect(() => {
+    if (mentionQuery === null || !p.listFiles) return;
+    let live = true;
+    // A short pause so typing a name does not ask the host per key.
+    const timer = setTimeout(() => {
+      p.listFiles!(mentionQuery).then(
+        (r) => live && setFiles({ query: mentionQuery, files: r.files, truncated: r.truncated }),
+        (e) => live && setFiles({ query: mentionQuery, files: [], error: e instanceof Error ? e.message : String(e) }),
+      );
+    }, files ? 120 : 0);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [mentionQuery]);
+  const items: MenuItem[] = useMemo(() => {
+    if (!ac) return [];
+    if (ac.mode === "slash") {
+      const list = matchCommands(p.commands ?? [], ac.query);
+      // Commands first, then skills, each in the agent's order.
+      return [...list.filter((c) => c.kind !== "skill"), ...list.filter((c) => c.kind === "skill")].map((c) => ({
+        key: `${c.kind}:${c.name}`, kind: c.kind === "skill" ? "skill" : "command", label: c.insert, hint: c.hint, detail: c.description, insert: c.insert,
+      }));
+    }
+    return rankFiles(files?.files ?? [], ac.query).map((f) => ({ key: `f:${f}`, kind: "file" as const, label: f, insert: mentionText(f) }));
+  }, [ac?.mode, ac?.query, p.commands, files]);
+  useEffect(() => setActive(0), [ac?.mode, ac?.query]);
+  const menuStatus = !ac ? null
+    : ac.mode === "slash" ? (p.commands == null ? t("hc_ac_no_commands_yet") : items.length ? null : t("hc_ac_no_match"))
+      : !p.listFiles ? t("hc_ac_no_files")
+        : files?.error ? t("hc_ac_files_error", { error: files.error })
+          : files?.query !== ac.query && !items.length ? t("hc_ac_loading")
+            : !items.length ? t("hc_ac_no_match")
+              : files?.truncated ? t("hc_ac_more") : null;
+  const choose = (item: MenuItem) => {
+    if (!ac) return;
+    const next = applyChoice(text, ac, item.insert);
+    setText(next.text);
+    setCaret(next.caret);
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(next.caret, next.caret);
+    });
+  };
   // The field grows with its text up to a limit, then scrolls.
   useLayoutEffect(() => {
     const el = area.current;
@@ -159,6 +275,9 @@ export function Composer(p: ComposerProps) {
 
   return (
     <div className="nt-compose-wrap">
+      {ac && (items.length > 0 || menuStatus) && (
+        <Menu ac={ac} items={items} active={Math.min(active, Math.max(0, items.length - 1))} status={menuStatus} onChoose={choose} onHover={setActive} />
+      )}
       {p.queued.length > 0 && (
         <div className="nt-queue" aria-label={t("hc_queued")}>
           {p.queued.map((q) => (
@@ -177,10 +296,33 @@ export function Composer(p: ComposerProps) {
           aria-label={placeholder}
           onChange={(e) => {
             setText(e.target.value);
+            setCaret(e.target.selectionStart ?? e.target.value.length);
+            setClosedAt(null);
             setAt(p.history.length);
           }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+          onBlur={() => setClosedAt(ac?.start ?? null)}
+          onFocus={() => setClosedAt(null)}
           onKeyDown={(e) => {
             const el = e.currentTarget;
+            // The menu takes ↑ / ↓, Enter / Tab and Esc while it is open.
+            if (ac && !e.nativeEvent.isComposing) {
+              if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+                e.preventDefault();
+                setActive((a) => moveActive(a, items.length, e.key === "ArrowUp" ? -1 : 1));
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && items.length) {
+                e.preventDefault();
+                choose(items[Math.min(active, items.length - 1)]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setClosedAt(ac.start);
+                return;
+              }
+            }
             // ↑ / ↓ walk through sent messages when the caret is at the edge of the text.
             if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
               const up = e.key === "ArrowUp";

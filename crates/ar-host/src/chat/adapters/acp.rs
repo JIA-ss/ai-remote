@@ -16,6 +16,8 @@
 //!   `session/resume` (DeepSeek Harness) continues without replaying and is preferred.
 //! - A model is chosen with the session's `model` config option when the agent lists one
 //!   (`session/set_config_option`, matched by value or name), otherwise with `session/set_model`.
+//! - The agent's commands (`available_commands_update`) go to the `/` menu; choosing one sends
+//!   `/name …` as the prompt, which is how ACP runs them.
 //! - Text after a tool call is a new message (or each `messageId` its own), so a turn reads as the
 //!   agent wrote it; the turn's final text is its last message.
 //!
@@ -29,7 +31,8 @@ use tokio::sync::mpsc;
 use super::{LiveCmd, content_text, exit_reason, report};
 use crate::chat::{
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
+        preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
@@ -369,7 +372,11 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
             other => writes.push(jsonrpc::unsupported(&id, other)),
         },
         Incoming::Notification { method, params } => {
-            if method == "session/update" && !st.loading && params["sessionId"].as_str() == st.session.as_deref() {
+            let commands = params["update"]["sessionUpdate"] == "available_commands_update";
+            if method == "session/update"
+                && (!st.loading || commands)
+                && params["sessionId"].as_str() == st.session.as_deref()
+            {
                 update(st, &params["update"], &mut outs);
             }
         }
@@ -435,6 +442,25 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
                 })
                 .collect();
             outs.push(Out::Ev(Ev::Plan { entries }));
+        }
+        "available_commands_update" => {
+            // Run as typed: the agent reads a prompt that starts with `/name`.
+            let commands = u["availableCommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    let name = c["name"].as_str()?.trim_start_matches('/');
+                    Some(SlashCommand::new(
+                        "command",
+                        name,
+                        format!("/{name}"),
+                        c["description"].as_str().unwrap_or(""),
+                        c["input"]["hint"].as_str(),
+                    ))
+                })
+                .collect();
+            outs.push(Out::Ev(Ev::Commands { commands }));
         }
         "usage_update" => outs.push(Out::Ev(Ev::Usage {
             input_tokens: None,
@@ -693,5 +719,19 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert!(matches!(&out[0], Out::Ev(Ev::Notice { code: "model", text, .. }) if text.contains("offered: a")));
         assert!(matches!(&out[1], Out::Session(s) if s == "n1"));
+    }
+
+    #[test]
+    fn the_agents_commands_reach_the_menu_even_while_loading() {
+        let mut st = State { session: Some("s".into()), loading: true, ..Default::default() };
+        let (_, outs) = handle(
+            &mut st,
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"init","description":"Create AGENTS.md"},{"name":"review","description":"Review","input":{"hint":"branch"}}]}}}"#,
+            &opts(None),
+            "A",
+        );
+        let Some(Out::Ev(Ev::Commands { commands })) = outs.first() else { panic!("{outs:?}") };
+        assert_eq!(commands.len(), 2);
+        assert_eq!((commands[1].insert.as_str(), commands[1].hint.as_deref()), ("/review", Some("branch")));
     }
 }
