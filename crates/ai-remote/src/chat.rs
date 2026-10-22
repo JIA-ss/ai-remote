@@ -415,7 +415,8 @@ impl Conversation {
             return Ok(None);
         }
         loop {
-            let Some(v) = self.next().await? else { return Err(anyhow!("the host ended the chat")) };
+            // From the stream itself: lines kept back for the caller are not read again here.
+            let Some(v) = self.read().await? else { return Err(anyhow!("the host ended the chat")) };
             if v["input_id"] == id {
                 return Ok(match v["t"].as_str() {
                     Some("ack") => None,
@@ -431,6 +432,11 @@ impl Conversation {
         if let Some(v) = self.pending.pop_front() {
             return Ok(Some(v));
         }
+        self.read().await
+    }
+
+    /// The next line from the stream.
+    async fn read(&mut self) -> Result<Option<Value>> {
         let mut line = String::new();
         if self.reader.read_line(&mut line).await? == 0 {
             return Ok(None);

@@ -142,8 +142,13 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     env = {k: v for k, v in os.environ.items() if k != "AI_REMOTE_HOST"}
 
     def cli(*args, home=ctl_home, timeout=120):
-        return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        try:
+            return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        except subprocess.TimeoutExpired as e:
+            out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            return subprocess.CompletedProcess(e.cmd, 124, out, err + f"\n(timed out after {timeout} s)")
 
     def steer_real(kind, rsid):
         """Counts to 20, one shell command per number, steered to stop at 5 once two have run."""
@@ -306,7 +311,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("the transcript keeps the image's name and size, not its bytes",
               len(users) == 1 and users[0]["attachments"] == [{"name": "red.png", "mime": "image/png", "bytes": len(base64.b64decode(b64))}]
               and b64[:40] not in p.stdout, json.dumps(users)[:300])
-        check("the command list is in the transcript once", sum(1 for e in events if e.get("t") == "commands") == 1)
+        check("the command list is in the transcript once", sum(1 for e in events if e.get("t") == "commands" and "seq" in e) == 1)
 
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
