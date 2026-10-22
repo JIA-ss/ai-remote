@@ -19,6 +19,11 @@ import AIRemoteCore
     public var pairedHost: String?
     public var loading = false
     public var pairSheet = false
+    public var networkSheet = false
+    /// This phone's network settings; `nil` until read.
+    public var network: PhoneNetwork?
+    /// A network change is being saved and the core restarted with it.
+    public var applyingNetwork = false
     public var showActivity = false
     public var connected = false
     public var image: CGImage?
@@ -68,6 +73,7 @@ import AIRemoteCore
             try await client.start()
             let status = try await client.request(["op": .string("status")])
             device = status["device"].string ?? ""
+            network = try? PhoneNetwork(await client.readNetwork())
             try await refresh()
         } catch is CancellationError {
             // An older startup may finish after a background transition.
@@ -76,6 +82,35 @@ import AIRemoteCore
     public func refresh() async throws {
         let result = try await client.request(["op": .string("hosts")])
         hosts = result.array.map(PhoneHost.init)
+    }
+    /// Reads this phone's network settings for the Network sheet and the pairing sheet.
+    public func loadNetwork() async {
+        do { network = PhoneNetwork(try await client.readNetwork()) }
+        catch { self.error = error.localizedDescription }
+    }
+    /// Changes the network settings (`nil` keeps one) and restarts the connection core so they apply
+    /// now; a session in progress ends first.
+    public func changeNetwork(mode: String? = nil, lanDiscovery: Bool? = nil, portMapping: Bool? = nil) async {
+        if selected != nil { await leaveSession() }
+        applyingNetwork = true; defer { applyingNetwork = false }
+        do {
+            network = PhoneNetwork(try await client.saveNetwork(mode: mode, lanDiscovery: lanDiscovery, portMapping: portMapping))
+            try await refresh()
+        } catch is CancellationError {
+            // The app went to the background while the core restarted; `resume` starts it again.
+            await loadNetwork()
+        } catch {
+            self.error = error.localizedDescription
+            await loadNetwork()
+        }
+    }
+    /// Sets where this phone dials `host` (`ip`, `ip:port`, several separated by commas); returns the
+    /// addresses kept. The next connection uses them.
+    public func setAddress(_ text: String, for host: PhoneHost) async throws -> [String] {
+        try await client.start()
+        let result = try await client.request(["op": .string("set_host_address"), "host": .string(host.name), "address": .string(text)])
+        try await refresh()
+        return result["addresses"].array.compactMap(\.string)
     }
     /// Pairs with the host showing `pairingCode` (its eight digits, typed or scanned) or, when
     /// `useTicket` is set, with the full ticket in `pairingTicket`.
@@ -98,7 +133,7 @@ import AIRemoteCore
             pairedHost = result["peer"].string
             pairingCode = ""; pairingTicket = ""
             try await refresh()
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = PhoneNetwork.explain(error.localizedDescription) }
     }
     /// Opens the pairing sheet on a code from a link (`ai-remote://pair?code=...`, the host's QR
     /// code read by the system camera) and pairs right away.
@@ -166,7 +201,7 @@ import AIRemoteCore
             screen = ScreenGeometry(try JSONValue.parse(view.replyJson)["screen"])
             if keyframePending { await requestVideoKeyframe(token: token) }
             watchRoute(host: host.name, token: token)
-        } catch { if token == generation { self.error = error.localizedDescription } }
+        } catch { if token == generation { self.error = PhoneNetwork.explain(error.localizedDescription, lan: network?.lan == true) } }
     }
     /// Re-reads the route while the session lasts: iroh may move a relayed connection to a direct path
     /// (or back) at any time, and the person should know when P2P failed.

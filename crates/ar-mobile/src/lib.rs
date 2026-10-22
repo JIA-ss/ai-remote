@@ -1,7 +1,10 @@
 //! iPhone controller: the same controller agent, inside the app, with no child processes.
 //! No filesystem socket is needed. All remote operations still pass the host's gate.
 
-use ar_core::Profile;
+use ar_core::{
+    Profile, Role,
+    config::{self, ControllerConfig},
+};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -76,7 +79,10 @@ impl MobileController {
     /// The native UI calls the canonical agent API. This never starts a CLI executable.
     pub async fn request(&self, request_json: String) -> Result<String> {
         let request: Value = serde_json::from_str(&request_json).map_err(failure)?;
-        if !matches!(request["op"].as_str(), Some("status" | "hosts" | "pair" | "unpair" | "call" | "channel")) {
+        if !matches!(
+            request["op"].as_str(),
+            Some("status" | "hosts" | "pair" | "unpair" | "set_host_address" | "call" | "channel")
+        ) {
             return Err(failure("unsupported mobile controller request"));
         }
         self.ready()?;
@@ -200,6 +206,59 @@ impl MobileController {
         }
         let _ = self.backend.close().await;
     }
+}
+
+/// This phone's network settings, from `[network]` in the controller's `ai-remote.toml` under
+/// `directory` (the same directory [`MobileController::connect`] takes), as JSON: `mode` (`auto`, or
+/// `lan`: direct on the local network only, no relay and no address lookup), `lan_discovery`
+/// (finds computers on the local network), `port_mapping` (asks the router for a port), `locked`
+/// (`quiet = true` keeps those two off whatever they say), `pair_code` (whether a pair code can be
+/// found at all; in LAN mode only local discovery finds one) and `lan_port` (the port a computer
+/// listens on in LAN mode). No file means the quiet defaults: automatic, both extras off.
+#[uniffi::export]
+pub fn network_settings(directory: String) -> Result<String> {
+    let profile = Profile::at(directory).map_err(failure)?;
+    let path = profile.controller_config_path().map_err(failure)?;
+    let section = ControllerConfig::load(&path).map_err(failure)?.network;
+    let net = ar_net::NetworkOptions::from_config(&section, Role::Controller).map_err(|e| failure(format!("{e:#}")))?;
+    let discovery = net.lan != ar_net::LanDiscovery::Off;
+    Ok(json!({
+        "mode": if net.lan_direct { "lan" } else { "auto" },
+        "lan_discovery": discovery,
+        "port_mapping": net.port_mapping,
+        "locked": net.quiet,
+        "pair_code": !net.lan_direct || discovery,
+        "lan_port": config::LAN_HOST_PORT,
+    })
+    .to_string())
+}
+
+/// Changes this phone's network settings; each `None` stays as it is. Turning local discovery on
+/// writes `resolve`: a controller only looks for computers and never announces itself. Turning
+/// discovery or port mapping on is refused while `quiet = true`. Takes effect the next time the
+/// controller connects: close the running one and connect again. Returns [`network_settings`].
+#[uniffi::export]
+pub fn update_network(
+    directory: String,
+    mode: Option<String>,
+    lan_discovery: Option<bool>,
+    port_mapping: Option<bool>,
+) -> Result<String> {
+    let profile = Profile::at(directory.clone()).map_err(failure)?;
+    let path = profile.controller_config_path().map_err(failure)?;
+    if lan_discovery == Some(true) || port_mapping == Some(true) {
+        config::ensure_not_quiet(&[&path]).map_err(failure)?;
+    }
+    if let Some(mode) = mode {
+        config::set_network_mode(&path, &mode).map_err(failure)?;
+    }
+    if let Some(on) = lan_discovery {
+        config::set_lan_discovery(&path, if on { "resolve" } else { "off" }).map_err(failure)?;
+    }
+    if let Some(on) = port_mapping {
+        config::set_port_mapping(&path, on).map_err(failure)?;
+    }
+    network_settings(directory)
 }
 
 impl MobileController {

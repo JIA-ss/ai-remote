@@ -32,6 +32,24 @@ the production session view with an explicitly labelled static image; they valid
 safe-area fit, zoom and pointer callbacks. Those fixtures exist only in Debug builds. Real text
 delivery, handback and physical-phone acceptance are verified separately.
 
+## Network
+
+The computer list's **Network** button sets how the phone reaches computers, like the desktop app's
+Settings > Network (`docs/operations.md` section 12). A new phone is quiet: automatic connections
+(address lookup, hole punching, relays), no local-network discovery and no router port mapping. Choose
+**Local network only** in an office that should see no traffic beyond the connections: no relay and no
+address lookup; the phone dials each computer at the address it stored (from the ticket, refreshed by
+every live connection), which the same page lets you change (`192.168.1.20`, no port: 47800). Select
+Local network only on the computers too. A change restarts the embedded core at once. The settings live
+in `<app data>/controller/ai-remote.toml`; `quiet = true` there locks both extras off.
+
+Local network only with discovery off cannot find a pair code: pair with the full ticket, which carries
+the computer's addresses. Discovery uses raw mDNS multicast; on a physical iPhone that needs Apple's
+multicast networking entitlement (`com.apple.developer.networking.multicast`) according to Apple's
+documentation, which this project does not request. It is untested on a physical phone and likely
+fails there; pair with the ticket instead. Direct connections to stored addresses need only the Local
+Network permission.
+
 ## Build
 
 Install full Xcode with the iOS platform, Rust via rustup, and XcodeGen (`brew install xcodegen`).

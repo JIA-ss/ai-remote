@@ -43,10 +43,14 @@ public struct PhoneHost: Identifiable, Sendable, Equatable {
     public let relayN0: Bool
     /// While relayed, what likely kept the connection from going direct.
     public let p2pObstacle: String?
+    /// Where this phone dials the computer first (`ip:port`): stored at pairing, refreshed by every
+    /// live connection, and the only way to reach it on the local network only.
+    public let addresses: [String]
     public init(_ v: JSONValue) {
         name = v["name"].string ?? ""; level = v["level_at_pairing"].string; path = v["path"].string
         relay = v["relay"].string.flatMap(Self.relayHost); relayN0 = v["relay_n0"] == .bool(true)
         p2pObstacle = v["p2p_obstacle"].string
+        addresses = v["addresses"].array.compactMap(\.string)
     }
 
     /// Short name of the route, or nil while it is not known.
