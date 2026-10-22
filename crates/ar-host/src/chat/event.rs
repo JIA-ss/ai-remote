@@ -148,6 +148,10 @@ pub enum Ev {
     },
     ToolCall {
         call_id: String,
+        /// The tool call of the sub-agent that made this one (Claude Code's `Agent` / `Task`
+        /// tool): shown inside that sub-agent's row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
         title: String,
         kind: ToolKind,
         status: ToolStatus,

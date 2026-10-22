@@ -420,24 +420,32 @@ export function PlanRow({ entries }: { entries: PlanEntry[] }) {
   );
 }
 
-export const AgentRow = memo(function AgentRow({ tool, now }: { tool: ToolItem; now: number }) {
+export const AgentRow = memo(function AgentRow({ tool, children = [], now }: { tool: ToolItem; children?: ToolItem[]; now: number }) {
   const [open, setOpen] = useState(false);
   const running = runRunning(tool);
   const took = (tool.endedTs ?? now) - tool.startedTs;
   const out = toolOutput(tool);
+  // Orca's subagent sections: the sub-agent's own steps, then what it reported back.
+  const openable = !!out || children.length > 0;
   return (
     <div className={cx("nt-sub", open && "open", running && "is-live")}>
-      <button type="button" className="rh" onClick={() => out && setOpen((v) => !v)} aria-expanded={out ? open : undefined}>
+      <button type="button" className="rh" onClick={() => openable && setOpen((v) => !v)} aria-expanded={openable ? open : undefined}>
         <Bot size={14} className="ic" aria-hidden />
         <span className="verb">{t("hc_subagent")}</span>
         <span className="obj">{toolLabel(tool).target || tool.title}</span>
         <span className="end">
+          {children.length > 0 && <span className="steps tnum">{plural("hc_sub_steps", children.length)}</span>}
           {(running || took >= 1000) && <span className="tm tnum">{secs(took)}</span>}
           {running ? <Spinner /> : tool.status === "failed" ? <X size={13} className="bad" /> : <Check size={12} className="ok" />}
-          {out && <Chevron open={open} />}
+          {openable && <Chevron open={open} />}
         </span>
       </button>
-      {open && <Markdown text={out} className="nt-sub-bd" />}
+      {open && children.length > 0 && (
+        <div className="nt-sub-steps">
+          {children.map((c) => <ToolLine key={c.callId} x={c} now={now} />)}
+        </div>
+      )}
+      {open && out && <Markdown text={out} className="nt-sub-bd" />}
     </div>
   );
 });
@@ -589,7 +597,7 @@ export function RowView({ row, now, readonly, onAnswer }: { row: Row; now: numbe
     case "run":
       return <ToolRun row={row} now={now} />;
     case "agent":
-      return <AgentRow tool={row.tool} now={now} />;
+      return <AgentRow tool={row.tool} children={row.children} now={now} />;
     case "plan":
       return <PlanRow entries={row.entries} />;
     case "question":

@@ -77,7 +77,7 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "turn_start" }
   | { t: "message"; id: string; text: string; delta: boolean }
   | { t: "thought"; id: string; text: string; delta: boolean }
-  | { t: "tool_call"; call_id: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
+  | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
   | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean }
   | { t: "plan"; entries: PlanEntry[] }
   | { t: "question"; qid: string; prompt: string; options?: string[] }
@@ -184,6 +184,8 @@ export interface ToolItem {
   endedTs: number | null;
   /** Cut short because the turn was stopped: not a failure of the tool. */
   stopped?: boolean;
+  /** The sub-agent call that made this one (shown inside that sub-agent's row). */
+  parent?: string;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
@@ -338,7 +340,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       break;
     }
     case "tool_call":
-      b.push({ kind: "tool", callId: e.call_id, title: e.title, tool: e.kind, status: e.status, input: e.input,
+      b.push({ kind: "tool", callId: e.call_id, ...(e.parent ? { parent: e.parent } : {}), title: e.title, tool: e.kind, status: e.status, input: e.input,
         locations: e.locations ?? [], content: e.content ?? [], truncated: false, startedTs: e.ts,
         endedTs: e.status === "completed" || e.status === "failed" ? e.ts : null });
       break;
@@ -421,7 +423,8 @@ export type Row =
   | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** Tool calls in a row (with the reasoning between them), summarized in one sentence. */
   | { kind: "run"; key: string; members: Array<ToolItem | ThoughtBlock>; tools: ToolItem[]; live: boolean }
-  | { kind: "agent"; key: string; tool: ToolItem }
+  /** A sub-agent, with the tool calls it made (`children`, in order). */
+  | { kind: "agent"; key: string; tool: ToolItem; children: ToolItem[] }
   | { kind: "plan"; key: string; entries: PlanEntry[] }
   | { kind: "question"; key: string; block: QuestionBlock }
   | { kind: "notice"; key: string; level: string; code: string; text: string };
@@ -437,9 +440,16 @@ export function turnRows(turn: Turn): Row[] {
       inputId: turn.user.inputId, attachments: turn.user.attachments });
   }
   const b = turn.blocks;
+  // A sub-agent's own calls go inside its row, not in the turn's runs.
+  const agents = new Set(b.filter((x): x is ToolItem => x.kind === "tool" && isSubagent(x)).map((x) => x.callId));
+  const children = new Map<string, ToolItem[]>();
+  for (const x of b) {
+    if (x.kind === "tool" && x.parent && agents.has(x.parent)) children.set(x.parent, [...(children.get(x.parent) ?? []), x]);
+  }
   let run: Extract<Row, { kind: "run" }> | null = null;
   for (let i = 0; i < b.length; i++) {
     const x = b[i];
+    if (x.kind === "tool" && x.parent && agents.has(x.parent)) continue;
     if (joinsRun(x)) {
       const tool = x as ToolItem;
       if (!run) {
@@ -468,7 +478,7 @@ export function turnRows(turn: Turn): Row[] {
         if (x.text.trim()) rows.push({ kind: "text", key: `m${turn.n}:${x.id}`, text: x.text, streaming: false });
         break;
       case "tool":
-        rows.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x });
+        rows.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x, children: children.get(x.callId) ?? [] });
         break;
       case "plan":
         rows.push({ kind: "plan", key: `p${turn.n}`, entries: x.entries });

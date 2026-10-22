@@ -906,6 +906,8 @@ export const en = {
   hc_find_close: "Close (Esc)",
   hc_find_open: "Find (⌘F)",
   hc_quote: "Quote",
+  hc_sub_steps_one: "1 step",
+  hc_sub_steps_many: "{n} steps",
   // (end of composer strings)
   hc_earlier: "Show {n} earlier turns",
   hc_hint_alt: "⌥Enter stops the turn and sends",

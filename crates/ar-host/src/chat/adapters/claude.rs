@@ -95,6 +95,9 @@ struct State {
     skills_known: bool,
 }
 
+/// Most tool calls of a session followed (results of others are not shown).
+const MAX_CALLS: usize = 100_000;
+
 /// The request id of the `initialize` written at start.
 const INIT_REQUEST: &str = "ar-init";
 
@@ -219,8 +222,8 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
     let mut writes = Vec::new();
     let mut outs = Vec::new();
     let Ok(v) = serde_json::from_str::<Value>(line) else { return (writes, outs) };
-    // Events of sub-agents (the Task tool) carry their parent's tool id; only the summary the
-    // parent receives is shown.
+    // Events of sub-agents (the Agent / Task tool) carry their parent's tool id: their tool calls
+    // are shown inside the sub-agent's row (with `parent`), their streamed text is not.
     let nested = v.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
     match v["type"].as_str().unwrap_or("") {
         "system" => match v["subtype"].as_str().unwrap_or("") {
@@ -326,11 +329,23 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                         delta: false,
                     })),
                     "tool_use" => {
-                        if let Some(o) = tool_call(st, block) {
+                        if let Some(o) = tool_call(st, block, None) {
                             outs.push(o);
                         }
                     }
                     _ => {}
+                }
+            }
+        }
+        "assistant" => {
+            // A sub-agent's own tool calls, shown inside its row; its text stays in its summary.
+            let parent = v["parent_tool_use_id"].as_str();
+            for block in v["message"]["content"].as_array().into_iter().flatten() {
+                if block["type"] == "tool_use"
+                    && st.calls.len() < MAX_CALLS
+                    && let Some(o) = tool_call(st, block, parent)
+                {
+                    outs.push(o);
                 }
             }
         }
@@ -346,7 +361,7 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             }
             st.echoed = true;
         }
-        "user" if !nested => {
+        "user" if v["isReplay"].as_bool() != Some(true) => {
             for block in v["message"]["content"].as_array().into_iter().flatten() {
                 if block["type"] != "tool_result" {
                     continue;
@@ -453,11 +468,11 @@ fn context_window(usage: &Value, model: Option<&str>) -> Option<u64> {
 }
 
 /// A `tool_use` block as a tool call (or, for the to-do list, a plan).
-fn tool_call(st: &mut State, block: &Value) -> Option<Out> {
+fn tool_call(st: &mut State, block: &Value, parent: Option<&str>) -> Option<Out> {
     let call_id = block["id"].as_str()?.to_string();
     let name = block["name"].as_str().unwrap_or("tool");
     let input = &block["input"];
-    if name == "TodoWrite" {
+    if name == "TodoWrite" && parent.is_none() {
         let entries = input["todos"]
             .as_array()
             .into_iter()
@@ -509,6 +524,7 @@ fn tool_call(st: &mut State, block: &Value) -> Option<Out> {
     let shown_input = if content.is_empty() { Some(preview_value(input)) } else { None };
     Some(Out::Ev(Ev::ToolCall {
         call_id,
+        parent: parent.map(str::to_string),
         title,
         kind,
         status: ToolStatus::InProgress,
@@ -713,5 +729,33 @@ mod tests {
         let img = crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
         let line: Value = serde_json::from_str(&user_line("", &[img])).unwrap();
         assert_eq!(line["message"]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_sub_agents_tool_calls_come_with_their_parent() {
+        let mut st = State::default();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "assistant", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "a1", "name": "Agent", "input": {"description": "Find the date code", "prompt": "..."}}]}}),
+                json!({"type": "assistant", "parent_tool_use_id": "a1", "message": {"id": "s1", "content": [
+                    {"type": "text", "text": "Looking."},
+                    {"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "monthrange"}}]}}),
+                json!({"type": "user", "parent_tool_use_id": "a1", "message": {"content": [{"type": "tool_result", "tool_use_id": "g1", "content": "export.py:2"}]}}),
+                json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a1", "content": [{"type": "text", "text": "It is in export.py"}]}]}}),
+            ],
+        );
+        assert!(
+            matches!(&outs[0], Out::Ev(Ev::ToolCall { call_id, parent: None, kind: ToolKind::Think, .. }) if call_id == "a1")
+        );
+        assert!(
+            matches!(&outs[1], Out::Ev(Ev::ToolCall { call_id, parent: Some(p), kind: ToolKind::Search, .. }) if call_id == "g1" && p == "a1")
+        );
+        assert!(
+            matches!(&outs[2], Out::Ev(Ev::ToolUpdate { call_id, status: Some(ToolStatus::Completed), .. }) if call_id == "g1")
+        );
+        assert!(matches!(&outs[3], Out::Ev(Ev::ToolUpdate { call_id, .. }) if call_id == "a1"));
+        // The sub-agent's own text is not shown as the agent's.
+        assert_eq!(outs.len(), 4, "{outs:?}");
     }
 }

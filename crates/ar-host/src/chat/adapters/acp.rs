@@ -446,6 +446,7 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
             let (title, kind, locations) = describe_call(u);
             outs.push(Out::Ev(Ev::ToolCall {
                 call_id: u["toolCallId"].as_str().unwrap_or("").to_string(),
+                parent: None,
                 title,
                 kind,
                 status: status(u["status"].as_str()).unwrap_or(ToolStatus::Pending),

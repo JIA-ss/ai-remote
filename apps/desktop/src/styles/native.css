@@ -929,3 +929,5 @@ button.nt-ring:hover, button.nt-ring[aria-expanded="true"] { background: var(--c
 .nt-usage .row.sub dt { padding-left: 12px; color: var(--c-faint); }
 .nt-usage dt { margin: 0; } .nt-usage dd { margin: 0; color: var(--c-strong); }
 .nt-usage .note { margin-top: 8px; font-size: 11px; color: var(--c-faint); }
+.nt-sub .rh .steps { font-size: 11.5px; color: var(--c-faint); }
+.nt-sub-steps { margin: 2px 0 4px 7px; padding-left: 12px; border-left: 1px solid var(--c-line); display: flex; flex-direction: column; gap: 1px; }

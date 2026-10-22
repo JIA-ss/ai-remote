@@ -195,3 +195,26 @@ test("the usage breakdown lists only what the agent reported", () => {
   const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "usage", input_tokens: 10, output_tokens: 2, cache_read_tokens: 8, reasoning_tokens: 1 })]);
   assert.deepEqual(plain(c.usage), { input: 10, output: 2, cacheRead: 8, reasoning: 1 });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Sub-agents
+
+test("a sub-agent's own tool calls fold into its row instead of the turn's runs", () => {
+  seq = 0;
+  const c = fold([
+    ev(0, { t: "user", input_id: "u1", by: { device: "d" }, text: "go" }),
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "r1", title: "Read a.py", kind: "read", status: "completed" }),
+    ev(1, { t: "tool_call", call_id: "a1", title: "Agent Find the date code", kind: "think", status: "in_progress" }),
+    ev(1, { t: "tool_call", call_id: "g1", parent: "a1", title: "Grep monthrange", kind: "search", status: "in_progress" }),
+    ev(1, { t: "tool_call", call_id: "b1", parent: "a1", title: "Bash ls", kind: "execute", status: "in_progress" }),
+    ev(1, { t: "tool_update", call_id: "g1", status: "completed" }),
+    ev(1, { t: "tool_call", call_id: "x9", parent: "nobody", title: "Bash pwd", kind: "execute", status: "completed" }),
+  ]);
+  const rows = plain(chat.turnRows(c.turns[0]));
+  assert.deepEqual(rows.map((r) => r.kind), ["user", "run", "agent", "run"]);
+  const agent = rows[2];
+  assert.deepEqual(agent.children.map((x) => [x.callId, x.status]), [["g1", "completed"], ["b1", "in_progress"]]);
+  // A call naming a parent that is not a sub-agent of this turn stays in the turn.
+  assert.deepEqual(rows[3].tools.map((x) => x.callId), ["x9"]);
+});

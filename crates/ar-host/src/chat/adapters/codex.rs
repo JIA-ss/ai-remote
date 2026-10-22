@@ -582,6 +582,7 @@ fn item_started(item: &Value) -> Option<Ev> {
         .collect();
     Some(Ev::ToolCall {
         call_id,
+        parent: None,
         title: cut(&title, 400).0,
         kind,
         status: ToolStatus::InProgress,

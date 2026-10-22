@@ -388,6 +388,7 @@ async fn previews_read_only_files_the_session_is_about() {
     // Once the agent wrote it (a tool call's location), it can be previewed.
     chat.emit(Ev::ToolCall {
         call_id: "w".into(),
+        parent: None,
         title: "Write".into(),
         kind: event::ToolKind::Edit,
         status: event::ToolStatus::Completed,

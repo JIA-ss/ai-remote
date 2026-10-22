@@ -895,6 +895,8 @@ export const zh: Record<keyof typeof en, string> = {
   hc_find_close: "关闭（Esc）",
   hc_find_open: "查找（⌘F）",
   hc_quote: "引用",
+  hc_sub_steps_one: "1 步",
+  hc_sub_steps_many: "{n} 步",
   // (end of composer strings)
   hc_earlier: "显示更早的 {n} 轮",
   hc_hint_alt: "⌥Enter 停止本轮并立即发送",
