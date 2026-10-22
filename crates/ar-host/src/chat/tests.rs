@@ -115,7 +115,7 @@ async fn wait_for(rx: &mut broadcast::Receiver<Arc<str>>, pred: impl Fn(&Value) 
 async fn a_session_runs_turns_queues_interrupts_and_ends() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("hello"));
     let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
@@ -177,7 +177,7 @@ async fn a_session_runs_turns_queues_interrupts_and_ends() {
 async fn a_stopped_process_parks_and_the_next_message_resumes() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     chat.send(Cmd::Park { reason: "idle".into() });
@@ -194,12 +194,12 @@ async fn a_stopped_process_parks_and_the_next_message_resumes() {
 async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None).is_err());
-    assert!(m.start(creator(), "fake", "relative", None, false, None).is_err());
-    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None).is_err());
-    assert!(m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None).is_err());
+    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None).await.is_err());
+    assert!(m.start(creator(), "fake", "relative", None, false, None).await.is_err());
+    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None).await.is_err());
+    assert!(m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None).await.is_err());
     m.set_enabled(false).unwrap();
-    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).err().expect("refused");
+    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
     assert!(e.to_string().contains("switched off"), "{e}");
     // Persisted for the next host.
     let (m2, _) = manager(&f);
@@ -210,7 +210,7 @@ async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
 async fn devices_that_lose_admin_lose_their_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into())).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into())).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     m.enforce(|_| true);
@@ -254,7 +254,7 @@ async fn a_broken_settings_file_switches_agents_off() {
         .unwrap();
     let (m, _audit) = manager(&f);
     assert!(!m.enabled());
-    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).err().expect("refused");
+    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
     assert!(e.to_string().contains("chat.toml"), "{e}");
     assert!(m.runtimes(false).await["host"]["config_error"].as_str().is_some_and(|s| s.contains("built-in")));
     // Not overwritten by a switch.
@@ -266,7 +266,7 @@ async fn a_broken_settings_file_switches_agents_off() {
 async fn a_steer_joins_the_running_turn() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     let start = wait_for(&mut rx, |v| v["t"] == "turn_start").await;
@@ -291,7 +291,7 @@ async fn a_steer_joins_the_running_turn() {
 async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("LATE"));
     wait_for(&mut rx, |v| v["t"] == "message").await;
@@ -314,7 +314,7 @@ async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
 async fn a_steer_with_no_turn_running_starts_one() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(steer("hello"));
     let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
@@ -336,7 +336,7 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
         (Some(true), Some(false))
     );
     assert_eq!(row("opencode")["caps"]["steer"], false);
-    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     wait_for(&mut rx, |v| v["t"] == "tool_call").await;
@@ -358,7 +358,7 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
 async fn previews_read_only_files_the_session_is_about() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
     std::fs::write(f.work.join("notes.txt"), "x").unwrap();
     let outside = f.root.join("elsewhere");
@@ -407,7 +407,7 @@ async fn previews_read_only_files_the_session_is_about() {
 async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     // `initialize` lists the commands; the first `init` says which are skills.
     let ev = wait_for(&mut rx, |v| v["t"] == "commands" && v["commands"][1]["kind"] == "skill").await;
@@ -431,7 +431,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     }
     assert_eq!(lists, 0);
     // A new session in the same folder offers them before its agent has started.
-    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     assert_eq!(m.commands_for(&other).len(), 2);
     assert!(m.commands_for(&chat).iter().any(|c| c.name == "tidy" && c.kind == "skill"));
 }
@@ -440,7 +440,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
 async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
     assert!(m.takes_images(&chat));
     let (_, _, mut rx) = chat.follow(0);
     let mut msg = message("look");

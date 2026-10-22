@@ -130,6 +130,30 @@ impl Profile {
         Ok(self.role_dir(Role::Host)?.join("chat.toml"))
     }
 
+    /// Host: the key of the coding-agent runner the host starts in the user's session when it runs
+    /// as SYSTEM (see `ar_host::chat::runner`).
+    pub fn chat_runner_key_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Host)?.join("chat-runner.key"))
+    }
+
+    /// Host: the log of that runner (it runs as the user, the host log is SYSTEM's).
+    pub fn chat_runner_log_path(&self) -> Result<PathBuf> {
+        Ok(self.role_dir(Role::Host)?.join("chat-runner.log"))
+    }
+
+    /// Host: the endpoint the runner connects to: a named pipe on Windows, a 0600 Unix socket
+    /// elsewhere (where only tests use it).
+    pub fn chat_runner_endpoint(&self) -> Result<PathBuf> {
+        #[cfg(windows)]
+        {
+            Ok(PathBuf::from(format!(r"\\.\pipe\ai-remote-chat-runner-{}", self.instance_id())))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(self.role_dir(Role::Host)?.join("chat-runner.sock"))
+        }
+    }
+
     /// Host: downloaded mount binaries (versioned).
     pub fn mounts_dir(&self) -> Result<PathBuf> {
         let dir = self.role_dir(Role::Host)?.join("mounts");

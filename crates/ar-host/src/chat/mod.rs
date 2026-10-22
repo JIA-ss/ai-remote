@@ -24,6 +24,13 @@
 //! The agents run with the user's rights and without asking: anything the user may do on this
 //! computer, they may do, including changing this host's own settings. That is the point of the
 //! feature and the reason starting one needs level admin and, by default, the owner's approval.
+//!
+//! **Where the agents run** ([`Backend`]): a host that runs as the user runs them itself. A host
+//! that runs as SYSTEM (Windows service mode) never executes anything of the user's: a runner it
+//! starts in the user's session with the user's token finds and runs them ([`runner`]), and the
+//! sessions here drive them over a local pipe. That runner outlives a host restart (Windows 11
+//! ends the host when the screen locks); the restarted host takes the running agents back
+//! ([`ChatManager::adopt_all`]) and their sessions go on.
 
 pub mod adapters;
 pub mod detect;
@@ -32,6 +39,9 @@ pub mod files;
 mod jsonrpc;
 pub mod preview;
 pub mod proc;
+pub mod runner;
+#[cfg(windows)]
+pub mod runner_win;
 pub mod runtimes;
 
 use std::{
@@ -131,6 +141,26 @@ pub struct Meta {
     /// Whether the agent said it takes images (see [`Ev::Agent`]); its kind's caps until it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<bool>,
+    /// The turn running now, to account for it (and go on with it) after a host restart.
+    #[serde(default)]
+    pub turn: Option<TurnMeta>,
+    /// The runner's id of the agent process (an agent in a runner, see [`runner`]).
+    #[serde(default)]
+    pub runner_live: Option<String>,
+    /// The runner's number of the last output of that agent recorded here.
+    #[serde(default)]
+    pub runner_seq: Option<u64>,
+}
+
+/// The running turn as `meta.json` keeps it: who sent the message and a hash of it, never the text
+/// (the transcript has that).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnMeta {
+    pub input_id: String,
+    pub by: By,
+    pub input_sha256: String,
+    pub input_chars: usize,
+    pub started_at: u64,
 }
 
 /// A message on its way to the agent.
@@ -214,6 +244,31 @@ pub enum Cmd {
     Park {
         reason: String,
     },
+    /// After a host restart: the agent still running in the runner, taken back, or `None` when it
+    /// is gone (see [`ChatManager::adopt_all`]).
+    Adopted(Option<Adoption>),
+}
+
+/// An agent process that outlived the host, ready for its session to drive again.
+pub struct Adoption {
+    pub handle: LiveHandle,
+    pub out: mpsc::Receiver<Out>,
+    /// Whether the turn the session thinks runs can still end (see [`runner::RunnerLink::adopt`]).
+    pub turn_can_end: bool,
+}
+
+impl std::fmt::Debug for Adoption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Adoption").field("pid", &self.handle.pid).finish()
+    }
+}
+
+/// Where the agent processes run.
+pub enum Backend {
+    /// In this process, as the user this host runs as.
+    Local(detect::Detector),
+    /// In a runner in the user's session (this host runs as SYSTEM).
+    Runner(runner::RunnerLink),
 }
 
 /// Whether a ticket lets its holder send messages or only watch.
@@ -242,7 +297,7 @@ struct Inner {
     config: Mutex<ChatConfig>,
     /// Why `chat.toml` could not be read, if it could not (agents are off then).
     config_error: Option<String>,
-    detector: detect::Detector,
+    backend: Backend,
     chats: Mutex<BTreeMap<String, Arc<Chat>>>,
     tickets: Mutex<HashMap<String, Ticket>>,
     audit: mpsc::UnboundedSender<Value>,
@@ -278,6 +333,16 @@ impl ChatManager {
     /// Opens the sessions under `dir`, stopping agent processes a previous host left running.
     /// Returns the manager and the audit lines it produces (to be written to the audit log).
     pub fn new(dir: PathBuf, config_path: PathBuf) -> (Self, mpsc::UnboundedReceiver<Value>) {
+        Self::with_backend(dir, config_path, Backend::Local(detect::Detector::default()))
+    }
+
+    /// [`new`](Self::new) with the agents running where `backend` says. With a runner, sessions
+    /// whose agent was running are taken back from it in the background ([`Self::adopt_all`]).
+    pub fn with_backend(
+        dir: PathBuf,
+        config_path: PathBuf,
+        backend: Backend,
+    ) -> (Self, mpsc::UnboundedReceiver<Value>) {
         // A file that does not parse may have said `enabled = false`: switched off until fixed.
         let (config, config_error) = match ChatConfig::load(&config_path) {
             Ok(c) => (c, None),
@@ -292,7 +357,7 @@ impl ChatManager {
             config_path,
             config: Mutex::new(config),
             config_error,
-            detector: detect::Detector::default(),
+            backend,
             chats: Mutex::new(BTreeMap::new()),
             tickets: Mutex::new(HashMap::new()),
             audit,
@@ -300,8 +365,27 @@ impl ChatManager {
             commands: Mutex::new(HashMap::new()),
         });
         let manager = Self(inner);
-        manager.load();
+        let pending = manager.load();
+        if !pending.is_empty() {
+            let m = manager.clone();
+            tokio::spawn(async move { m.adopt_all(pending).await });
+        }
         (manager, audit_rx)
+    }
+
+    /// Why agents cannot start on this host, if they cannot.
+    pub fn blocked(&self) -> Option<String> {
+        match &self.0.backend {
+            Backend::Local(_) => detect::blocked(),
+            Backend::Runner(_) => None,
+        }
+    }
+
+    /// Before the host stops cleanly: a runner stops its agents and exits with it.
+    pub async fn close(&self) {
+        if let Backend::Runner(link) = &self.0.backend {
+            link.close().await;
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -336,7 +420,13 @@ impl ChatManager {
     /// The installed agents.
     pub async fn runtimes(&self, refresh: bool) -> Value {
         let custom = self.custom();
-        let mut v = self.0.detector.report(&custom, refresh).await;
+        let mut v = match &self.0.backend {
+            Backend::Local(d) => d.report(&custom, refresh).await,
+            Backend::Runner(link) => match link.runtimes(&custom, refresh).await {
+                Ok(v) => v,
+                Err(e) => json!({"host": {"can_start": false, "reason": format!("{e:#}")}, "runtimes": []}),
+            },
+        };
         v["host"]["enabled"] = json!(self.enabled());
         v["host"]["max_live"] = json!(MAX_LIVE);
         v["host"]["config_error"] = json!(self.0.config_error);
@@ -367,7 +457,7 @@ impl ChatManager {
     /// Starts a session for `creator`: checks what can be checked now (switched on, agent
     /// installed, folder exists, room for another process) and returns it; the agent process
     /// starts with its first message.
-    pub fn start(
+    pub async fn start(
         &self,
         creator: Peer,
         runtime: &str,
@@ -382,14 +472,26 @@ impl ChatManager {
         if !self.enabled() {
             bail!("coding agents are switched off on this host (someone at it can run: ai-remote chat enable)");
         }
-        let resolved = self.0.detector.resolve(runtime, &self.custom())?;
-        let cwd_path = PathBuf::from(detect::expand_home(cwd.trim()));
-        if !cwd_path.is_absolute() {
-            bail!("the working folder must be an absolute path, not '{cwd}'");
-        }
-        if !cwd_path.is_dir() {
-            bail!("the working folder {} does not exist on this host", cwd_path.display());
-        }
+        // The folder is checked (and `~` expanded) by whoever runs the agent: as SYSTEM, `~` would
+        // be SYSTEM's profile.
+        let (rid, rname, program, cwd) = match &self.0.backend {
+            Backend::Local(d) => {
+                let resolved = d.resolve(runtime, &self.custom())?;
+                let cwd_path = PathBuf::from(detect::expand_home(cwd.trim()));
+                if !cwd_path.is_absolute() {
+                    bail!("the working folder must be an absolute path, not '{cwd}'");
+                }
+                if !cwd_path.is_dir() {
+                    bail!("the working folder {} does not exist on this host", cwd_path.display());
+                }
+                let cwd = dunce::simplified(&cwd_path).display().to_string();
+                (resolved.id, resolved.name, resolved.program.display().to_string(), cwd)
+            }
+            Backend::Runner(link) => {
+                let p = link.prepare(runtime, &self.custom(), cwd).await?;
+                (p.id, p.name, p.program, p.cwd)
+            }
+        };
         if let Some(m) = &model
             && !valid_token(m)
         {
@@ -404,10 +506,10 @@ impl ChatManager {
         let by = By { device: creator.name.clone(), principal: creator.principal.clone() };
         let meta = Meta {
             id: id.clone(),
-            runtime: resolved.id.clone(),
-            name: resolved.name.clone(),
+            runtime: rid.clone(),
+            name: rname,
             version: None,
-            cwd: dunce::simplified(&cwd_path).display().to_string(),
+            cwd,
             model,
             hardened,
             by: by.clone(),
@@ -422,11 +524,14 @@ impl ChatManager {
             last_activity: now_ms(),
             commands: Vec::new(),
             images: None,
+            turn: None,
+            runner_live: None,
+            runner_seq: None,
         };
-        let chat = self.insert(meta, creator, &dir)?;
+        let chat = self.insert(meta, creator, &dir, false)?;
         self.audit(json!({
-            "kind": "chat_session", "action": "start", "chat": id, "runtime": resolved.id,
-            "program": resolved.program.display().to_string(), "cwd": chat.meta().cwd, "by": by.device,
+            "kind": "chat_session", "action": "start", "chat": id, "runtime": rid,
+            "program": program, "cwd": chat.meta().cwd, "by": by.device,
             "principal": by.principal, "hardened": hardened,
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
@@ -436,7 +541,9 @@ impl ChatManager {
         Ok(chat)
     }
 
-    fn insert(&self, meta: Meta, creator: Peer, dir: &Path) -> Result<Arc<Chat>> {
+    /// Registers a session and starts its driver. `adopting`: its agent may still run in the
+    /// runner; the driver waits for [`Cmd::Adopted`] before it starts anything.
+    fn insert(&self, meta: Meta, creator: Peer, dir: &Path, adopting: bool) -> Result<Arc<Chat>> {
         let (seq, turn, bytes) = scan_log(&dir.join("events.jsonl"));
         let file = (meta.state != State::Ended)
             .then(|| OpenOptions::new().create(true).append(true).open(dir.join("events.jsonl")))
@@ -455,12 +562,12 @@ impl ChatManager {
             cmd: tx,
             creator,
             dir: dir.to_path_buf(),
-            files: files::FileCache::default(),
+            files: files::FileCache::new(matches!(self.0.backend, Backend::Local(_))),
         });
         chat.save();
         self.0.chats.lock().unwrap().insert(chat.id.clone(), chat.clone());
         if !ended {
-            tokio::spawn(drive(chat.clone(), Arc::downgrade(&self.0), rx));
+            tokio::spawn(drive(chat.clone(), Arc::downgrade(&self.0), rx, adopting));
         }
         Ok(chat)
     }
@@ -550,7 +657,7 @@ impl ChatManager {
         if let Some(i) = m.images {
             return i;
         }
-        self.0.detector.resolve(&m.runtime, &self.custom()).map(|r| r.caps.images).unwrap_or(false)
+        runtimes::caps_of(&m.runtime, &self.custom()).is_some_and(|c| c.images)
     }
 
     fn remember_commands(&self, meta: &Meta) {
@@ -560,14 +667,35 @@ impl ChatManager {
     }
 
     /// Loads the sessions on disk. A session whose agent was running when the host stopped is
-    /// parked, and the processes it left are stopped (on Windows the Job Object already did).
-    fn load(&self) {
-        let Ok(rd) = std::fs::read_dir(&self.0.dir) else { return };
+    /// parked, and the processes it left are stopped (on Windows the Job Object already did) —
+    /// unless the agent ran in a runner, which may still run it: those sessions are returned, to be
+    /// taken back by [`Self::adopt_all`].
+    fn load(&self) -> Vec<Arc<Chat>> {
+        let mut pending = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&self.0.dir) else { return pending };
+        let runner = matches!(self.0.backend, Backend::Runner(_));
         for entry in rd.flatten() {
             let dir = entry.path();
             let Ok(text) = std::fs::read_to_string(dir.join("meta.json")) else { continue };
             let Ok(mut meta) = serde_json::from_str::<Meta>(&text) else { continue };
+            if runner && meta.state != State::Ended && meta.runner_live.is_some() && meta.pid.is_some() {
+                let creator = Peer {
+                    name: meta.by.device.clone(),
+                    principal: meta.by.principal.clone(),
+                    user_id: None,
+                    level: None,
+                    revoked: false,
+                };
+                match self.insert(meta, creator, &dir, true) {
+                    Ok(chat) => pending.push(chat),
+                    Err(e) => tracing::warn!("cannot load chat session {}: {e:#}", dir.display()),
+                }
+                continue;
+            }
             let was_running = matches!(meta.state, State::Running | State::Interrupting | State::Starting);
+            meta.turn = None;
+            meta.runner_live = None;
+            meta.runner_seq = None;
             if let (Some(pid), Some(start)) = (meta.pid.take(), meta.pid_start.take()) {
                 let reaped = reap(pid, start);
                 if reaped > 0 {
@@ -587,7 +715,7 @@ impl ChatManager {
                 revoked: false,
             };
             self.remember_commands(&meta);
-            match self.insert(meta, creator, &dir) {
+            match self.insert(meta, creator, &dir, false) {
                 Ok(chat) if was_running => {
                     chat.emit(Ev::TurnEnd {
                         status: TurnStatus::Failed,
@@ -600,6 +728,52 @@ impl ChatManager {
                 Ok(_) => {}
                 Err(e) => tracing::warn!("cannot load chat session {}: {e:#}", dir.display()),
             }
+        }
+        pending
+    }
+
+    /// Takes back the agents of `pending` sessions that still run in the runner (the host
+    /// restarted while they ran); the others' processes are stopped and their sessions parked.
+    /// Agents in the runner no session claims are stopped.
+    async fn adopt_all(&self, pending: Vec<Arc<Chat>>) {
+        let Backend::Runner(link) = &self.0.backend else { return };
+        let mut lives = link.lives().await;
+        for chat in pending {
+            let meta = chat.meta();
+            let found = meta
+                .runner_live
+                .as_deref()
+                .and_then(|l| lives.iter().position(|i| i.live == l))
+                .map(|i| lives.swap_remove(i));
+            let adoption = match found {
+                Some(info) => match link.adopt(info, meta.runner_seq.unwrap_or(0)).await {
+                    Ok((handle, out, turn_can_end)) => Some(Adoption { handle, out, turn_can_end }),
+                    Err(e) => {
+                        tracing::warn!(chat = chat.id, "cannot take the agent back from the runner: {e:#}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            if adoption.is_none()
+                && let (Some(pid), Some(start)) = (meta.pid, meta.pid_start)
+            {
+                // Stopping is not running: SYSTEM may end what the user's agent left.
+                let reaped = reap(pid, start);
+                if reaped > 0 {
+                    self.audit(
+                        json!({"kind": "chat_admin", "action": "orphan_reaped", "chat": chat.id, "processes": reaped}),
+                    );
+                }
+            }
+            if adoption.is_some() {
+                self.audit(json!({"kind": "chat_admin", "action": "reattached", "chat": chat.id}));
+            }
+            chat.send(Cmd::Adopted(adoption));
+        }
+        for left in lives {
+            tracing::info!(live = left.live, "stopping an agent in the runner that no session claims");
+            link.stop(&left.live).await;
         }
     }
 
@@ -754,7 +928,7 @@ fn reap(pid: u32, start: u64) -> usize {
 
 /// The commands of a running session, applied by one task per session so its state changes in
 /// order: messages, the agent's events, interrupts and timers.
-async fn drive(chat: Arc<Chat>, manager: Weak<Inner>, mut rx: mpsc::UnboundedReceiver<Cmd>) {
+async fn drive(chat: Arc<Chat>, manager: Weak<Inner>, mut rx: mpsc::UnboundedReceiver<Cmd>, adopting: bool) {
     let mut d = Driver {
         chat,
         manager,
@@ -767,6 +941,7 @@ async fn drive(chat: Arc<Chat>, manager: Weak<Inner>, mut rx: mpsc::UnboundedRec
         steer: false,
         steering: Vec::new(),
         delivered: HashSet::new(),
+        adopting,
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -789,7 +964,7 @@ async fn next_out(out: &mut Option<mpsc::Receiver<Out>>) -> Option<Out> {
 }
 
 struct Turn {
-    input: Input,
+    info: TurnMeta,
     started: Instant,
     last_event: Instant,
     interrupt_deadline: Option<Instant>,
@@ -818,6 +993,8 @@ struct Driver {
     /// Queued messages the agent already has: it runs them as a turn of its own (a steer that came
     /// too late for the turn it was meant for), so they are not sent again.
     delivered: HashSet<String>,
+    /// Waiting to learn whether the runner still runs this session's agent: nothing starts.
+    adopting: bool,
 }
 
 /// Message ids remembered for [`Driver::seen`].
@@ -918,7 +1095,9 @@ impl Driver {
                     self.stop_process(&reason).await;
                 }
             }
+            Cmd::Adopted(a) => self.adopted(a).await,
             Cmd::End { reason } => {
+                self.adopting = false;
                 self.stop_process(&reason).await;
                 self.queue.clear();
                 self.chat.set_meta(|m| {
@@ -1032,7 +1211,7 @@ impl Driver {
 
     /// Starts the next waiting message when nothing runs.
     async fn next_turn(&mut self) {
-        if self.turn.is_some() || self.queue.is_empty() {
+        if self.turn.is_some() || self.queue.is_empty() || self.adopting {
             return;
         }
         let Some(manager) = self.manager() else { return };
@@ -1059,7 +1238,7 @@ impl Driver {
                 });
                 return;
             }
-            if let Err(e) = self.launch(&manager) {
+            if let Err(e) = self.launch(&manager).await {
                 self.chat.emit(Ev::Notice {
                     input_id: None,
                     level: "error",
@@ -1088,12 +1267,20 @@ impl Driver {
             attachments: input.images.iter().map(Image::meta).collect(),
         });
         self.chat.emit(Ev::TurnStart {});
+        let info = TurnMeta {
+            input_id: input.id.clone(),
+            by: input.by.clone(),
+            input_sha256: data_encoding::HEXLOWER.encode(&Sha256::digest(input.text.as_bytes())),
+            input_chars: input.text.chars().count(),
+            started_at: now_ms(),
+        };
         self.chat.set_meta(|m| {
             m.turns += 1;
             m.last_activity = now_ms();
+            m.turn = Some(info.clone());
         });
         self.turn = Some(Turn {
-            input,
+            info,
             started: Instant::now(),
             last_event: Instant::now(),
             interrupt_deadline: None,
@@ -1104,19 +1291,42 @@ impl Driver {
         self.chat.set_state(State::Running, &self.queue);
     }
 
-    fn launch(&mut self, manager: &ChatManager) -> Result<()> {
+    async fn launch(&mut self, manager: &ChatManager) -> Result<()> {
         let meta = self.chat.meta();
-        let resolved = manager.0.detector.resolve(&meta.runtime, &manager.custom())?;
-        let (handle, out) = adapters::launch(Launch {
-            resolved: &resolved,
-            cwd: Path::new(&meta.cwd),
-            model: meta.model.as_deref(),
-            hardened: meta.hardened,
-            resume: meta.proto_session.as_deref(),
-        })?;
+        let (handle, out, live, steer) = match &manager.0.backend {
+            Backend::Local(d) => {
+                let resolved = d.resolve(&meta.runtime, &manager.custom())?;
+                let (handle, out) = adapters::launch(Launch {
+                    resolved: &resolved,
+                    cwd: Path::new(&meta.cwd),
+                    model: meta.model.as_deref(),
+                    hardened: meta.hardened,
+                    resume: meta.proto_session.as_deref(),
+                })?;
+                (handle, out, None, resolved.caps.steer)
+            }
+            Backend::Runner(link) => {
+                let live = format!("{}-{}", meta.id, &random_hex()[..8]);
+                let (handle, out) = link
+                    .launch(
+                        &live,
+                        &meta.runtime,
+                        &manager.custom(),
+                        &meta.cwd,
+                        meta.model.as_deref(),
+                        meta.hardened,
+                        meta.proto_session.as_deref(),
+                    )
+                    .await?;
+                let steer = runtimes::caps_of(&meta.runtime, &manager.custom()).is_some_and(|c| c.steer);
+                (handle, out, Some(live), steer)
+            }
+        };
         self.chat.set_meta(|m| {
             m.pid = Some(handle.pid);
             m.pid_start = Some(handle.start);
+            m.runner_live = live;
+            m.runner_seq = None;
         });
         if meta.proto_session.is_some() {
             self.chat.emit(Ev::Notice {
@@ -1126,7 +1336,7 @@ impl Driver {
                 text: format!("{} restarted and resumes the conversation", meta.name),
             });
         }
-        self.steer = resolved.caps.steer;
+        self.steer = steer;
         self.live = Some(handle);
         self.out = Some(out);
         self.chat.set_state(State::Starting, &self.queue);
@@ -1200,8 +1410,84 @@ impl Driver {
             }
             Out::TurnEnd { status, final_text, reason } => self.end_turn(status, final_text, reason).await,
             Out::Exited(why) => self.process_gone(why).await,
+            Out::Mark(n) => {
+                // Recorded first, then acknowledged: the runner forgets only what is on disk here.
+                self.chat.set_meta(|m| m.runner_seq = Some(n));
+                if let Some(ack) = self.live.as_ref().and_then(|l| l.ack.as_ref()) {
+                    let _ = ack.send(n);
+                }
+            }
         }
         None
+    }
+
+    /// The answer to whether the agent outlived the host (see [`ChatManager::adopt_all`]).
+    async fn adopted(&mut self, a: Option<Adoption>) {
+        if !self.adopting {
+            return; // ended meanwhile; dropping the handle stops the agent
+        }
+        self.adopting = false;
+        let meta = self.chat.meta();
+        match a {
+            Some(a) => {
+                self.live = Some(a.handle);
+                self.out = Some(a.out);
+                self.idle_since = Instant::now();
+                self.steer = self
+                    .manager()
+                    .is_some_and(|m| runtimes::caps_of(&meta.runtime, &m.custom()).is_some_and(|c| c.steer));
+                self.chat.emit(Ev::Notice {
+                    input_id: None,
+                    level: "info",
+                    code: "reattached",
+                    text: format!("the host restarted; {} kept running and is connected again", meta.name),
+                });
+                if meta.turn.is_some() && !a.turn_can_end {
+                    // The host died while handing the message over; the agent never got it.
+                    self.chat.emit(Ev::TurnEnd {
+                        status: TurnStatus::Failed,
+                        final_text: None,
+                        duration_ms: 0,
+                        reason: Some("the host restarted before the message reached the agent; send it again".into()),
+                    });
+                    self.chat.set_meta(|m| m.turn = None);
+                } else if let Some(info) = meta.turn {
+                    // The turn goes on; what it reported meanwhile follows from the runner.
+                    let ago = Duration::from_millis(now_ms().saturating_sub(info.started_at));
+                    let started = Instant::now().checked_sub(ago).unwrap_or_else(Instant::now);
+                    self.turn = Some(Turn {
+                        info,
+                        started,
+                        last_event: Instant::now(),
+                        interrupt_deadline: None,
+                        then: None,
+                        tools: BTreeMap::new(),
+                        steers: 0,
+                    });
+                }
+                let state = if self.turn.is_some() { State::Running } else { State::Idle };
+                self.chat.set_state(state, &self.queue);
+            }
+            None => {
+                self.chat.set_meta(|m| {
+                    m.pid = None;
+                    m.pid_start = None;
+                    m.runner_live = None;
+                    m.runner_seq = None;
+                });
+                if meta.turn.is_some() {
+                    self.chat.emit(Ev::TurnEnd {
+                        status: TurnStatus::Failed,
+                        final_text: None,
+                        duration_ms: 0,
+                        reason: Some("the host restarted during this turn".into()),
+                    });
+                    self.chat.set_meta(|m| m.turn = None);
+                }
+                self.chat.set_state(State::Parked, &self.queue);
+            }
+        }
+        self.next_turn().await;
     }
 
     /// Joins deltas of the same message that are already waiting, so a fast agent does not turn
@@ -1270,13 +1556,16 @@ impl Driver {
         };
         let duration_ms = turn.started.elapsed().as_millis() as u64;
         self.chat.emit(Ev::TurnEnd { status, final_text, duration_ms, reason: reason.clone() });
-        self.chat.set_meta(|m| m.last_activity = now_ms());
+        self.chat.set_meta(|m| {
+            m.last_activity = now_ms();
+            m.turn = None;
+        });
         if let Some(m) = self.manager() {
-            let hash = data_encoding::HEXLOWER.encode(&Sha256::digest(turn.input.text.as_bytes()));
+            let info = &turn.info;
             m.audit(json!({
                 "kind": "chat_turn", "chat": self.chat.id, "runtime": self.chat.meta().runtime,
-                "turn": self.chat.log.lock().unwrap().turn, "by": turn.input.by.device, "principal": turn.input.by.principal,
-                "input_sha256": hash, "input_chars": turn.input.text.chars().count(), "outcome": status,
+                "turn": self.chat.log.lock().unwrap().turn, "by": info.by.device, "principal": info.by.principal,
+                "input_sha256": info.input_sha256, "input_chars": info.input_chars, "outcome": status,
                 "duration_ms": duration_ms, "tools": turn.tools, "steers": turn.steers, "reason": reason,
             }));
         }
@@ -1297,6 +1586,7 @@ impl Driver {
         self.chat.set_meta(|m| {
             m.pid = None;
             m.pid_start = None;
+            m.runner_live = None;
         });
         if self.turn.is_some() {
             let interrupted = self.turn.as_ref().is_some_and(|t| t.interrupt_deadline.is_some());
@@ -1321,6 +1611,7 @@ impl Driver {
         self.chat.set_meta(|m| {
             m.pid = None;
             m.pid_start = None;
+            m.runner_live = None;
         });
         if self.turn.is_some() {
             self.end_turn(TurnStatus::Interrupted, None, Some(reason.to_string())).await;

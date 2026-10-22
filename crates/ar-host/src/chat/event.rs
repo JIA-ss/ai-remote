@@ -8,7 +8,7 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Most text kept of a tool's input or output in an event; the rest is cut (`truncated: true`).
@@ -17,7 +17,7 @@ pub const PREVIEW: usize = 8 * 1024;
 pub const DIFF_SIDE: usize = 64 * 1024;
 
 /// What a tool does, for the icon and the summary line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
     Read,
@@ -31,7 +31,7 @@ pub enum ToolKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatus {
     Pending,
@@ -40,14 +40,14 @@ pub enum ToolStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolContent {
     Text { text: String },
     Diff { path: String, old: Option<String>, new: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanEntry {
     pub content: String,
     /// pending | in_progress | completed
@@ -93,7 +93,7 @@ impl SlashCommand {
 }
 
 /// What a transcript keeps of an image sent with a message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
     pub mime: String,
@@ -101,7 +101,7 @@ pub struct Attachment {
 }
 
 /// How a turn ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnStatus {
     Completed,
@@ -110,7 +110,7 @@ pub enum TurnStatus {
 }
 
 /// Who sent a message: a device and, when a person typed it, that it was a person.
-#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct By {
     pub device: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,7 +118,7 @@ pub struct By {
 }
 
 /// One event of a chat.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Ev {
     /// A message for the agent, as accepted. With `steer` it joined the running turn (its
@@ -157,18 +157,18 @@ pub enum Ev {
         status: ToolStatus,
         #[serde(skip_serializing_if = "Option::is_none")]
         input: Option<Value>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         locations: Vec<String>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<ToolContent>,
     },
     ToolUpdate {
         call_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<ToolStatus>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<ToolContent>,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
     },
     Plan {
@@ -178,7 +178,7 @@ pub enum Ev {
     Question {
         qid: String,
         prompt: String,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
     },
     Usage {
@@ -230,20 +230,24 @@ pub enum Ev {
     Notice {
         #[serde(skip_serializing_if = "Option::is_none")]
         input_id: Option<String>,
-        level: &'static str,
-        code: &'static str,
+        #[serde(deserialize_with = "static_str")]
+        level: Word,
+        #[serde(deserialize_with = "static_str")]
+        code: Word,
         text: String,
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Queued {
     pub id: String,
     pub text: String,
 }
 
-/// What an adapter reports while it drives its agent.
-#[derive(Debug)]
+/// What an adapter reports while it drives its agent. Serialized when the agent runs in a separate
+/// runner process (see [`super::runner`]).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "o", content = "v", rename_all = "snake_case")]
 pub enum Out {
     Ev(Ev),
     /// The agent's own conversation id, for resuming in a new process.
@@ -270,6 +274,46 @@ pub enum Out {
     },
     /// The agent process ended or its protocol broke; the adapter is done.
     Exited(String),
+    /// The runner's number of the last output passed on before this one: the session records it
+    /// and acknowledges it, so a host that restarts asks the runner only for what came after.
+    /// Made by [`super::runner`], never by an adapter.
+    Mark(u64),
+}
+
+/// A notice's level or code. An alias, so that deriving `Deserialize` does not tie the
+/// deserializer's lifetime to `'static` (the words are mapped by [`static_str`] instead).
+pub type Word = &'static str;
+
+/// The levels and codes notices use. A notice that arrives from a runner process is mapped back to
+/// one of these (the field is a `&'static str`); an unknown one becomes "other".
+const NOTICE_WORDS: &[&str] = &[
+    "info",
+    "warn",
+    "error",
+    "api_retry",
+    "context_lost",
+    "killed",
+    "no_question",
+    "paused",
+    "queue_full",
+    "quiet",
+    "resumed",
+    "rpc_error",
+    "start_failed",
+    "stopped",
+    "too_many",
+    "reattached",
+    "runner",
+    "compacted",
+    "model",
+    "no_images",
+    "other",
+    "steer_queued",
+];
+
+fn static_str<'de, D: Deserializer<'de>>(d: D) -> Result<&'static str, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(NOTICE_WORDS.iter().find(|w| **w == s).copied().unwrap_or("other"))
 }
 
 /// `s` cut to at most `max` bytes on a character boundary, and whether it was cut.
@@ -311,6 +355,35 @@ mod tests {
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"t":"tool_update","call_id":"k","status":"failed"})
         );
+    }
+
+    #[test]
+    fn outputs_round_trip_through_json() {
+        let outs = [
+            Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "api_retry", text: "x".into() }),
+            Out::Ev(Ev::ToolCall {
+                call_id: "c".into(),
+                parent: None,
+                title: "ls".into(),
+                kind: ToolKind::Execute,
+                status: ToolStatus::InProgress,
+                input: None,
+                locations: vec![],
+                content: vec![ToolContent::Diff { path: "a".into(), old: None, new: "b".into() }],
+            }),
+            Out::Session("s".into()),
+            Out::TurnEnd { status: TurnStatus::Completed, final_text: Some("ok".into()), reason: None },
+            Out::Exited("gone".into()),
+        ];
+        for o in outs {
+            let text = serde_json::to_string(&o).unwrap();
+            let back: Out = serde_json::from_str(&text).unwrap();
+            assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        }
+        let odd: Out =
+            serde_json::from_str(r#"{"o":"ev","v":{"t":"notice","level":"loud","code":"new_code","text":"t"}}"#)
+                .unwrap();
+        assert!(matches!(odd, Out::Ev(Ev::Notice { level: "other", code: "other", .. })));
     }
 
     #[test]

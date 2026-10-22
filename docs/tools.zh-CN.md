@@ -554,7 +554,7 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 2. （Unix）用户的登录 shell，只运行一次 `$SHELL -ilc`，先去掉同名的别名和函数。这个 shell 的 `PATH` 也会用来启动智能体，所以 launchd 下由 Node.js shim 安装的 CLI 也能运行；
 3. 安装器常用的位置。
 
-版本取自 `--version`，登录态取自 `claude auth status` / `codex login status`。DeepSeek Harness 没有查询登录态的命令：它的环境里有 `DEEPSEEK_API_KEY`，或 `$DSH_HOME/.credentials.yaml`（也可能是 DeepSeek 账号登录）、`$DSH_HOME/.env` 里有（`$DSH_HOME` 默认 `~/.dsh`），就算已登录，只看有没有、不读值；连这个目录都没有算未登录；其余情况报 unknown。结果缓存一分钟，传 `refresh: true` 会重新查找。被控端以 SYSTEM（Windows 服务模式）或 root 身份运行时什么都不执行，返回 `can_start: false`，因为智能体必须以用户身份运行。
+版本取自 `--version`，登录态取自 `claude auth status` / `codex login status`。DeepSeek Harness 没有查询登录态的命令：它的环境里有 `DEEPSEEK_API_KEY`，或 `$DSH_HOME/.credentials.yaml`（也可能是 DeepSeek 账号登录）、`$DSH_HOME/.env` 里有（`$DSH_HOME` 默认 `~/.dsh`），就算已登录，只看有没有、不读值；连这个目录都没有算未登录；其余情况报 unknown。结果缓存一分钟，传 `refresh: true` 会重新查找。被控端以 SYSTEM 身份运行（Windows 服务模式）时，自己不执行用户的任何程序：它在安装者的会话里用该用户自己的令牌拉起一个 runner，由 runner 查找和运行智能体；被控端重启（Windows 11 锁屏时会重启它）时智能体继续跑，会话接着用。安装者必须已登录（断开的会话也算）。以 root 身份运行（macOS 登录窗口）时什么都不执行，返回 `can_start: false`。
 
 **自定义智能体**写在 `<配置目录>/host/chat.toml`，不写进 `ai-remote.toml`：
 

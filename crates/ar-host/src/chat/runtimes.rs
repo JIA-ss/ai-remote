@@ -272,6 +272,15 @@ pub struct CustomAgent {
     pub steer: Option<bool>,
 }
 
+/// The caps of agent `id` (a built-in or a `chat.toml` entry), without looking for its program: a
+/// host whose agents run in a runner knows them all the same.
+pub fn caps_of(id: &str, custom: &[CustomAgent]) -> Option<Caps> {
+    match custom.iter().find(|c| c.id == id) {
+        Some(c) => builtin(&c.base).map(|b| c.caps(b)),
+        None => builtin(id).map(|r| r.caps),
+    }
+}
+
 impl CustomAgent {
     /// The base agent's caps as this entry narrows them.
     pub fn caps(&self, base: &Runtime) -> Caps {

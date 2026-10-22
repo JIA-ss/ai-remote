@@ -28,9 +28,8 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Folders the walk does not enter (besides hidden ones).
 const SKIP: &[&str] = &["node_modules", "target", "dist", "build", "__pycache__", "venv", "Library", "Temp", "obj"];
 
-/// One session's last listing.
-#[derive(Default)]
-pub struct FileCache(Mutex<Option<Listing>>);
+/// One session's last listing, and whether `git` may be asked for it.
+pub struct FileCache(Mutex<Option<Listing>>, bool);
 
 struct Listing {
     at: Instant,
@@ -50,6 +49,13 @@ pub struct Matches {
 }
 
 impl FileCache {
+    /// `git`: whether this host may run `git` in the folder. A host running as SYSTEM may not: the
+    /// folder's repository is the user's, and its config can make git run programs (an fsmonitor
+    /// hook, for one), which would then run as SYSTEM; it walks the folder instead.
+    pub fn new(git: bool) -> Self {
+        Self(Mutex::new(None), git)
+    }
+
     /// The files under `cwd` whose relative path contains every word of `query` (case-insensitive),
     /// shortest paths first, at most `limit`.
     pub async fn matches(&self, cwd: &Path, query: &str, limit: usize) -> Result<Matches> {
@@ -78,7 +84,8 @@ impl FileCache {
         {
             return Ok((l.files.clone(), l.source, l.files.len() >= MAX_LISTED));
         }
-        let (files, source) = match git_files(cwd).await {
+        let git = if self.1 { git_files(cwd).await } else { None };
+        let (files, source) = match git {
             Some(f) => (f, "git"),
             None => {
                 let dir = cwd.to_path_buf();
@@ -160,7 +167,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
         }
-        let cache = FileCache::default();
+        let cache = FileCache::new(true);
         let m = cache.matches(root, "", 50).await.unwrap();
         assert_eq!(m.source, "walk");
         assert_eq!(m.files.len(), 4, "{m:?}");
@@ -184,8 +191,12 @@ mod tests {
         std::fs::create_dir_all(root.join("out")).unwrap();
         std::fs::write(root.join("out/big.bin"), "").unwrap();
         std::fs::write(root.join("kept.rs"), "").unwrap();
-        let m = FileCache::default().matches(root, "", 50).await.unwrap();
+        let m = FileCache::new(true).matches(root, "", 50).await.unwrap();
         assert_eq!(m.source, "git");
         assert_eq!(m.files, ["kept.rs", ".gitignore"]);
+        // A host that may not run git (one running as SYSTEM) walks the same work tree.
+        let m = FileCache::new(false).matches(root, "", 50).await.unwrap();
+        assert_eq!(m.source, "walk");
+        assert!(m.files.iter().any(|f| f == "kept.rs"), "{m:?}");
     }
 }

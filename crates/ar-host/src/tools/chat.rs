@@ -160,7 +160,7 @@ impl Tool for Start {
         let p: StartParams = parse(args)?;
         let _ = p.intent;
         let chat =
-            ctx.host.chat().start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt)?;
+            ctx.host.chat().start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt).await?;
         let ticket = ctx.host.chat().issue_ticket(&chat.id, ctx.session.peer.principal.clone(), Role::Rw);
         let mut v = chat.describe();
         v["session"] = json!(chat.id);

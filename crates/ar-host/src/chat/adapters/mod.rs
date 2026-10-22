@@ -52,6 +52,9 @@ pub struct LiveHandle {
     pub start: u64,
     /// How long an interrupt may take before the process is ended instead.
     pub interrupt_grace: Duration,
+    /// For an agent in a runner process: where the session acknowledges what it recorded (see
+    /// [`Out::Mark`]). `None` for an agent this process runs.
+    pub ack: Option<mpsc::UnboundedSender<u64>>,
 }
 
 /// Starts the agent and its adapter task.
@@ -66,7 +69,8 @@ pub fn launch(l: Launch<'_>) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
     let (proc, lines) = AgentProc::spawn(&l.resolved.program, &args, l.cwd, &l.resolved.env)?;
     let (tx, cmds) = mpsc::channel(32);
     let (out_tx, out) = mpsc::channel(1024);
-    let handle = LiveHandle { tx, pid: proc.pid, start: proc.start, interrupt_grace: interrupt_grace(protocol) };
+    let handle =
+        LiveHandle { tx, pid: proc.pid, start: proc.start, interrupt_grace: interrupt_grace(protocol), ack: None };
     let name = l.resolved.name.clone();
     match protocol {
         Protocol::ClaudeStreamJson => {

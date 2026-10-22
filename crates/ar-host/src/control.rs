@@ -424,8 +424,8 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             "enabled": host.chat().enabled(),
             "sessions": host.chat().list(),
             "live": host.chat().live_count(),
-            "can_start": crate::chat::detect::blocked().is_none(),
-            "reason": crate::chat::detect::blocked(),
+            "can_start": host.chat().blocked().is_none(),
+            "reason": host.chat().blocked(),
         }),
         HostRequest::SetChatEnabled { on } => {
             let changed = host.chat().enabled() != on;
