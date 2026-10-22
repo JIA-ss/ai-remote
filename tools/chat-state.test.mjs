@@ -268,3 +268,9 @@ test("long output shows its tail; tool labels split verb from target", () => {
   assert.equal(chat.toolCommand(x), "npm test -- --watch");
   assert.equal(chat.baseName("D:\\work\\export.py"), "export.py");
 });
+
+test("a session the host no longer has is recognized, other errors are not", () => {
+  assert.equal(chat.sessionGone("no chat session 'c3f9' on this host"), true);
+  assert.equal(chat.sessionGone("'chat_attach' requires level 'admin'"), false);
+  assert.equal(chat.sessionGone("connection lost"), false);
+});

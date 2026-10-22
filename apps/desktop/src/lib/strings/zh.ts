@@ -802,6 +802,7 @@ export const zh: Record<keyof typeof en, string> = {
   hc_done: "已完成",
   hc_todo: "待办",
   hc_live_lead: "正在",
+  hc_session_gone: "那个会话已经不在这台电脑上了（被控端可能重启过）。打开别的会话，或新建一个。",
   hc_list_and: " 和 ",
   hc_list_sep: "，",
   hc_run_command_one: "运行了 1 条命令",

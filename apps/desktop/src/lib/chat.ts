@@ -597,6 +597,11 @@ export function baseName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
+/** The host no longer has the session (it was restarted, or the session ended and was cleaned up). */
+export function sessionGone(error: string): boolean {
+  return /no chat session/i.test(error);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The composer
 

@@ -813,6 +813,7 @@ export const en = {
   hc_done: "Done",
   hc_todo: "To do",
   hc_live_lead: "",
+  hc_session_gone: "That session is no longer on the computer (it may have restarted). Open another one or start a new one.",
   hc_list_and: " and ",
   hc_list_sep: ", ",
   hc_run_command_one: "ran 1 command",

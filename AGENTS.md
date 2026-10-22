@@ -351,8 +351,10 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 
 ### 下一步
 
-- [ ] 和插话会话的分支合流后，跑真实 Claude / Codex 的端到端，确认 `steer: true` 的 `user` 事件用的是哪个 `turn` 编号，以及 `steer_queued` 何时会发。
-- [ ] 在真实 Tauri 应用（WKWebView / WebView2）里看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
+- [x] 真实 Tauri 端到端（2026-10-22，另一会话在 `claude/desktop-chat-e2e` 333ff9f 做的，`feat/host-chat` 4c655ce + 调试版 + 本机隔离被控端安静模式）：替身智能体 36 项 ×2 次全过；真实 Claude Code 2.1.307 13 项 ×1 次全过，插话 2 s 内带标记进同一轮。真实 Codex 账号对 gpt-5.5 报 400，提问卡片没在真实连接上测过。截图在 `/tmp/desktop-chat-e2e*/`。
+  - 它报的问题已修：记住的会话在被控端不存在（被控端重启过）时，面板停在报错和发不出去的输入框 → 现在清掉记忆、回到会话列表并说明原因（`sessionGone`）；从记住的会话进来再点"其他会话"时父组件的 target 本来就是 null，原来不会重新渲染，现在由面板自己的状态驱动。
+  - 窗口不可见时 rAF 不触发，事件会积到窗口可见才显示 → 加了 100 ms 定时器兜底；运行计时一直显示 "0 ms" → 计时器在轮次开始时就取当前时间，不再等第一次 1 s 的跳动。这两处没有在不可见窗口里复测。
+- [ ] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
 ## 被控端托盘与“本设备”页（2026-10-21，分支 `feat/host-tray`，worktree `../ai-remote-tray`）
