@@ -27,7 +27,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::chat::event::SlashCommand;
+use crate::chat::{Image, event::SlashCommand};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -162,16 +162,16 @@ pub async fn run(
                 }
             },
             cmd = cmds.recv() => match cmd {
-                Some(LiveCmd::Prompt { text }) => {
+                Some(LiveCmd::Prompt { text, images }) => {
                     st.retried = false;
-                    match proc.write_line(user_line(&text)).await {
+                    match proc.write_line(user_line(&text, &images)).await {
                         Ok(()) => st.written.push_back(Written { steer: None, late: false }),
                         Err(e) => {
                             report(&out, Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(format!("{e:#}")) }).await;
                         }
                     }
                 }
-                Some(LiveCmd::Steer { id, text }) => match proc.write_line(user_line(&text)).await {
+                Some(LiveCmd::Steer { id, text, images }) => match proc.write_line(user_line(&text, &images)).await {
                     Ok(()) => st.written.push_back(Written { steer: Some(id), late: false }),
                     Err(e) => {
                         report(&out, Out::SteerRejected { id, reason: format!("{e:#}") }).await;
@@ -200,8 +200,17 @@ pub async fn run(
     }
 }
 
-fn user_line(text: &str) -> String {
-    json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string()
+/// A user message: its images (as base64 image blocks, the way the Messages API takes them),
+/// then its text.
+fn user_line(text: &str, images: &[Image]) -> String {
+    let mut content: Vec<Value> = images
+        .iter()
+        .map(|i| json!({"type": "image", "source": {"type": "base64", "media_type": i.mime, "data": &*i.data}}))
+        .collect();
+    if !text.trim().is_empty() || content.is_empty() {
+        content.push(json!({"type": "text", "text": text}));
+    }
+    json!({"type": "user", "message": {"role": "user", "content": content}}).to_string()
 }
 
 /// Translates one line of Claude Code's output; returns lines to write back and messages for the
@@ -688,5 +697,18 @@ mod tests {
         assert!(
             matches!(outs.last(), Some(Out::Ev(Ev::Commands { commands })) if commands.len() == 2 && commands[1].insert == "/review")
         );
+    }
+
+    #[test]
+    fn images_go_first_as_base64_blocks() {
+        let img = crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
+        let line: Value = serde_json::from_str(&user_line("what is this", &[img])).unwrap();
+        let content = &line["message"]["content"];
+        assert_eq!(content[0]["source"], json!({"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}));
+        assert_eq!(content[1]["text"], "what is this");
+        // An image alone: no empty text block.
+        let img = crate::chat::Image::parse("a.png", "image/png", "iVBORw0KGgo=").unwrap();
+        let line: Value = serde_json::from_str(&user_line("", &[img])).unwrap();
+        assert_eq!(line["message"]["content"].as_array().unwrap().len(), 1);
     }
 }

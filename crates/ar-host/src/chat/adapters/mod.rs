@@ -12,20 +12,20 @@ use std::{path::Path, time::Duration};
 use anyhow::Result;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{detect::Resolved, event::Out, interrupt_grace, proc::AgentProc, runtimes::Protocol};
+use super::{Image, detect::Resolved, event::Out, interrupt_grace, proc::AgentProc, runtimes::Protocol};
 
 /// What a session asks of its adapter.
 #[derive(Debug)]
 pub enum LiveCmd {
     /// Start a turn with this message.
-    Prompt { text: String },
+    Prompt { text: String, images: Vec<Image> },
     /// Add this message to the running turn; answered with [`Out::Steered`], [`Out::SteerLate`] or
     /// [`Out::SteerRejected`] (sent only to agents whose caps have `steer`).
     ///
     /// [`Out::Steered`]: super::event::Out::Steered
     /// [`Out::SteerLate`]: super::event::Out::SteerLate
     /// [`Out::SteerRejected`]: super::event::Out::SteerRejected
-    Steer { id: String, text: String },
+    Steer { id: String, text: String, images: Vec<Image> },
     /// Stop the current turn; the adapter answers with a turn end.
     Interrupt,
     /// The answer to a question the agent asked.

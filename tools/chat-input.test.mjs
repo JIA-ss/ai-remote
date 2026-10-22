@@ -134,3 +134,35 @@ test("the agent's command list folds into the chat", () => {
   assert.equal(c.turns.length, 0);
   assert.equal(chat.emptyChat().commands, null);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Images
+
+test("images are checked against the host's limits and scaled to a long edge of 2048", () => {
+  assert.equal(input.imageProblem("image/png", 1000, 0), null);
+  assert.equal(input.imageProblem("image/svg+xml", 1000, 0), "type");
+  assert.equal(input.imageProblem("image/jpeg", input.MAX_IMAGE_BYTES + 1, 0), "size");
+  assert.equal(input.imageProblem("image/png", 10, input.MAX_IMAGES), "count");
+  assert.deepEqual(plain(input.fitWithin(4000, 1000)), { width: 2048, height: 512, scaled: true });
+  assert.deepEqual(plain(input.fitWithin(800, 600)), { width: 800, height: 600, scaled: false });
+  assert.equal(input.base64Bytes("iVBORw0KGgo="), 8);
+  assert.equal(input.base64Bytes("YWJj"), 3);
+});
+
+test("an input carries its images; the conversation keeps their names; this device keeps their pictures", () => {
+  const img = { name: "a.png", mime: "image/png", data: "iVBORw0KGgo=" };
+  assert.deepEqual(plain(chat.inputCommand("u1", "", undefined, [img])), { input: { id: "u1", text: "", attachments: [img] } });
+  assert.deepEqual(plain(chat.inputCommand("u1", "hi", "queue", [])), { input: { id: "u1", text: "hi" } });
+  seq = 0;
+  const c = fold([
+    ev(0, { t: "user", input_id: "u1", by: { device: "d" }, text: "", attachments: [{ name: "a.png", mime: "image/png", bytes: 8 }] }),
+    ev(1, { t: "turn_start" }),
+    ev(0, { t: "agent", images: false }),
+  ]);
+  const [row] = plain(chat.turnRows(c.turns[0]));
+  assert.deepEqual([row.kind, row.inputId, row.attachments[0].name], ["user", "u1", "a.png"]);
+  assert.equal(c.images, false);
+  input.rememberImages("u1", [{ name: "a.png", url: "data:image/png;base64,iVBORw0KGgo=" }]);
+  assert.equal(input.imagesOf("u1")[0].name, "a.png");
+  assert.deepEqual(plain(input.imagesOf("nope")), []);
+});

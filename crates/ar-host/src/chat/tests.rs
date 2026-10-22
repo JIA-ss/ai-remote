@@ -83,7 +83,12 @@ fn creator() -> Peer {
 }
 
 fn message(text: &str) -> Input {
-    Input { id: format!("u-{text}"), text: text.into(), by: By { device: "laptop".into(), principal: None } }
+    Input {
+        id: format!("u-{text}"),
+        text: text.into(),
+        by: By { device: "laptop".into(), principal: None },
+        images: Vec::new(),
+    }
 }
 
 fn input(text: &str) -> Cmd {
@@ -373,6 +378,7 @@ async fn previews_read_only_files_the_session_is_about() {
     assert!(chat.previewable("link.md").unwrap_err().to_string().contains("outside"));
     // A person naming it does not make it the agent's.
     chat.emit(Ev::User {
+        attachments: vec![],
         input_id: "u".into(),
         by: By { device: "laptop".into(), principal: None },
         text: chart.clone(),
@@ -427,4 +433,21 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
     assert_eq!(m.commands_for(&other).len(), 2);
     assert!(m.commands_for(&chat).iter().any(|c| c.name == "tidy" && c.kind == "skill"));
+}
+
+#[tokio::test]
+async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).unwrap();
+    assert!(m.takes_images(&chat));
+    let (_, _, mut rx) = chat.follow(0);
+    let mut msg = message("look");
+    msg.images.push(Image::parse("shot.png", "image/png", "iVBORw0KGgo=").unwrap());
+    chat.send(Cmd::Input(msg));
+    let user = wait_for(&mut rx, |v| v["t"] == "user").await;
+    assert_eq!(user["attachments"], json!([{"name": "shot.png", "mime": "image/png", "bytes": 8}]));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let (lines, _, _) = chat.follow(0);
+    assert!(!lines.iter().any(|l| l.contains("iVBORw0KGgo")), "the image's bytes stay out of the transcript");
 }

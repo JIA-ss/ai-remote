@@ -92,6 +92,14 @@ impl SlashCommand {
     }
 }
 
+/// What a transcript keeps of an image sent with a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub mime: String,
+    pub bytes: usize,
+}
+
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -121,6 +129,9 @@ pub enum Ev {
         text: String,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         steer: bool,
+        /// The images sent with it (their bytes are not kept).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     TurnStart {},
     /// Text from the agent. With `delta` it continues the message `id`.
@@ -192,6 +203,11 @@ pub enum Ev {
     State {
         state: super::State,
         queued: Vec<Queued>,
+    },
+    /// What the running agent says it can do, where that differs from what its kind was assumed to
+    /// (an ACP agent that takes no images).
+    Agent {
+        images: bool,
     },
     /// The commands and skills the agent offers now (all of them; the list replaces the last one).
     Commands {

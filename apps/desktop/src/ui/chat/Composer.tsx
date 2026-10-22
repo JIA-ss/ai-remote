@@ -7,12 +7,19 @@
 // under the text, a round send button that turns into Stop), NativeChatQueuedMessageCard /
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
-import { ArrowUp, FileText, ListEnd, Package, Pencil, Slash, Square, Trash2 } from "lucide-react";
+import { ArrowUp, FileText, ImagePlus, ListEnd, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
 import {
   applyChoice,
   autocompleteAt,
+  base64Bytes,
+  fitWithin,
+  imageProblem,
+  IMAGE_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES,
+  type AttachmentPayload,
   matchCommands,
   mentionText,
   moveActive,
@@ -117,6 +124,63 @@ function QueuedCard({ q, canSteer, onEdit, onRemove, onSteer, readonly }: {
   );
 }
 
+/** An image waiting in the composer: what goes to the host, and a picture for the chip. */
+export interface ComposerImage {
+  payload: AttachmentPayload;
+  url: string;
+}
+
+function dataUrlOf(blob: Blob): Promise<string> {
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result));
+    r.onerror = () => fail(r.error ?? new Error("cannot read the image"));
+    r.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Reads a pasted or dropped image for sending: scaled down to a long edge of 2048 px (re-encoded
+ * as JPEG, or PNG when it may be transparent) when it is larger or over the host's limit, as it is
+ * otherwise. Errors are an i18n key.
+ */
+type ImageError = "hc_img_count" | "hc_img_type" | "hc_img_size" | "hc_img_unreadable";
+
+async function readImage(file: File, have: number): Promise<ComposerImage | { error: ImageError }> {
+  const problem = imageProblem(file.type || "application/octet-stream", 0, have);
+  if (problem === "count") return { error: "hc_img_count" };
+  if (problem === "type") return { error: "hc_img_type" };
+  const name = file.name || `image.${file.type.split("/")[1] ?? "png"}`;
+  let blob: Blob = file;
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const fit = fitWithin(img.naturalWidth, img.naturalHeight);
+    if (fit.scaled || file.size > MAX_IMAGE_BYTES) {
+      const canvas = document.createElement("canvas");
+      canvas.width = fit.width;
+      canvas.height = fit.height;
+      canvas.getContext("2d")?.drawImage(img, 0, 0, fit.width, fit.height);
+      const type = file.type === "image/png" || file.type === "image/gif" || file.type === "image/webp" ? "image/png" : "image/jpeg";
+      blob = (await new Promise<Blob | null>((ok) => canvas.toBlob(ok, type, 0.88))) ?? file;
+      if (blob.size > MAX_IMAGE_BYTES && type === "image/png") {
+        blob = (await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/jpeg", 0.85))) ?? blob;
+      }
+    }
+  } catch {
+    return { error: "hc_img_unreadable" };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  const dataUrl = await dataUrlOf(blob);
+  const data = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  const mime = blob.type || file.type;
+  if (imageProblem(mime, base64Bytes(data), have) === "size") return { error: "hc_img_size" };
+  return { payload: { name, mime, data }, url: dataUrl };
+}
+
 /** One row of the `/` or `@` menu. */
 type MenuItem = { key: string; kind: "command" | "skill" | "file"; label: string; hint?: string; detail?: string; insert: string };
 
@@ -176,7 +240,9 @@ export interface ComposerProps {
   context: { used: number; window: number } | null;
   queued: Array<{ id: string; text: string }>;
   history: string[];
-  onSend: (text: string, mode: InputMode | undefined) => void;
+  onSend: (text: string, mode: InputMode | undefined, images: ComposerImage[]) => void;
+  /** Images may go with a message; otherwise why not (shown on the disabled button). */
+  images?: { ok: true } | { ok: false; why: string };
   onStop: () => void;
   onDequeue: (id: string) => void;
   onEditQueued: (id: string, text: string) => void;
@@ -258,13 +324,40 @@ export function Composer(p: ComposerProps) {
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [text]);
 
+  // Images to send with the message.
+  const [images, setImages] = useState<ComposerImage[]>([]);
+  const [imageNote, setImageNote] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const canAttach = !p.disabled && p.images?.ok !== false;
+  const attach = async (files: File[]) => {
+    if (!canAttach) {
+      setImageNote(p.images && !p.images.ok ? p.images.why : null);
+      return;
+    }
+    let have = images.length;
+    for (const f of files) {
+      const r = await readImage(f, have);
+      if ("error" in r) {
+        setImageNote(t(r.error, { n: MAX_IMAGES, mb: (MAX_IMAGE_BYTES / 1048576).toFixed(2) }));
+        continue;
+      }
+      have++;
+      setImageNote(null);
+      setImages((list) => (list.length < MAX_IMAGES ? [...list, r] : list));
+    }
+  };
+  const imageFiles = (list: FileList | null | undefined) => [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
+
   const submit = (interrupt = false) => {
     const v = text.trim();
-    if (!v || p.disabled) return;
-    p.onSend(v, interrupt && p.running ? "interrupt" : mode);
+    if ((!v && !images.length) || p.disabled) return;
+    p.onSend(v, interrupt && p.running ? "interrupt" : mode, images);
     setText("");
+    setImages([]);
+    setImageNote(null);
     draft.current = "";
   };
+  const ready = !!text.trim() || images.length > 0;
 
   const placeholder =
     p.disabled === "ended" ? t("hc_ph_ended")
@@ -286,7 +379,38 @@ export function Composer(p: ComposerProps) {
           ))}
         </div>
       )}
-      <div className={cx("nt-compose", p.disabled && "off")} onClick={() => area.current?.focus()}>
+      <div
+        className={cx("nt-compose", p.disabled && "off")}
+        onClick={() => area.current?.focus()}
+        onDragOver={(e) => {
+          if (![...e.dataTransfer.items].some((i) => i.kind === "file")) return;
+          // Dropped here, a file goes to the agent, not to the host's desktop (the stage's drop).
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = canAttach ? "copy" : "none";
+        }}
+        onDrop={(e) => {
+          const files = imageFiles(e.dataTransfer.files);
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (files.length) void attach(files);
+          else setImageNote(t("hc_img_type"));
+        }}
+      >
+        {images.length > 0 && (
+          <div className="nt-atts">
+            {images.map((im, i) => (
+              <span key={i} className="att" title={im.payload.name}>
+                <img src={im.url} alt={im.payload.name} />
+                <button type="button" className="rm" aria-label={t("hc_img_remove", { name: im.payload.name })}
+                  onClick={(e) => { e.stopPropagation(); setImages((list) => list.filter((_, j) => j !== i)); }}>
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={area}
           rows={1}
@@ -301,6 +425,13 @@ export function Composer(p: ComposerProps) {
             setAt(p.history.length);
           }}
           onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+          onPaste={(e) => {
+            const files = imageFiles(e.clipboardData?.files);
+            if (!files.length) return;
+            // Pasted text still goes in; the images become attachments.
+            if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+            void attach(files);
+          }}
           onBlur={() => setClosedAt(ac?.start ?? null)}
           onFocus={() => setClosedAt(null)}
           onKeyDown={(e) => {
@@ -352,7 +483,20 @@ export function Composer(p: ComposerProps) {
         />
         <div className="bar">
           <div className="left">
-            {p.running && text.trim() && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
+            {!p.disabled && (
+              <>
+                <button type="button" className={cx("nt-ib attach", !canAttach && "no")} aria-disabled={!canAttach}
+                  aria-label={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : t("hc_img_add")}
+                  title={canAttach ? t("hc_img_add") : p.images && !p.images.ok ? p.images.why : undefined}
+                  onClick={(e) => { e.stopPropagation(); if (canAttach) picker.current?.click(); else void attach([]); }}>
+                  <ImagePlus size={14} />
+                </button>
+                <input ref={picker} type="file" accept={IMAGE_TYPES.join(",")} multiple hidden
+                  onChange={(e) => { void attach(imageFiles(e.target.files)); e.target.value = ""; }} />
+              </>
+            )}
+            {imageNote && <span className="hint warn">{imageNote}</span>}
+            {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
           </div>
           <div className="right">
             {p.context && <ContextRing used={p.context.used} window={p.context.window} />}
@@ -361,8 +505,8 @@ export function Composer(p: ComposerProps) {
                 <Square size={12} fill="currentColor" />
               </button>
             )}
-            {(!p.running || text.trim()) && (
-              <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!text.trim() || !!p.disabled}>
+            {(!p.running || ready) && (
+              <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!ready || !!p.disabled}>
                 <ArrowUp size={15} />
               </button>
             )}

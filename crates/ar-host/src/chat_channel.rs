@@ -53,11 +53,12 @@ use tokio::{
 
 use crate::{
     HostState,
-    chat::{Chat, Cmd, Input, MAX_INPUT, Role, event::By, line_seq, random_hex},
+    chat::{Chat, Cmd, Image, Input, MAX_IMAGES, MAX_INPUT, Role, event::By, line_seq, random_hex},
 };
 
-/// Longest command line accepted from a controller.
-const MAX_LINE: usize = 1024 * 1024;
+/// Longest command line accepted from a controller: a message with its images (each at most 5 MiB
+/// in base64).
+const MAX_LINE: usize = 24 * 1024 * 1024;
 /// The opening line must arrive within this.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -73,14 +74,26 @@ struct OpenArgs {
     since: u64,
 }
 
+/// An image sent with a message: `{"name":"..","mime":"image/png","data":"<base64>"}`.
+#[derive(Debug, Deserialize)]
+struct AttachmentIn {
+    #[serde(default)]
+    name: String,
+    mime: String,
+    data: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Command {
     Input {
         id: Option<String>,
+        #[serde(default)]
         text: String,
         #[serde(default)]
         mode: Option<String>,
+        #[serde(default)]
+        attachments: Vec<AttachmentIn>,
     },
     Interrupt {},
     Answer {
@@ -203,6 +216,8 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
         "acks": true,
         // The agent's commands and skills, for the `/` menu (later changes come as `commands` events).
         "commands": host.chat().commands_for(&chat),
+        // Whether this agent takes images with a message (`agent` events update it).
+        "images": host.chat().takes_images(&chat),
     });
     if !write_line(&mut send, &hello.to_string()).await {
         return;
@@ -313,19 +328,32 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
     let by = By { device: peer.name.clone(), principal: peer.principal.clone() };
     let mut input_id = None;
     let sent = match cmd {
-        Command::Input { id, text, mode } => {
+        Command::Input { id, text, mode, attachments } => {
             let id = id.filter(|i| crate::chat::valid_token(i)).unwrap_or_else(|| format!("u{}", &random_hex()[..8]));
             // A refusal names the message, so the controller can show it as not sent.
             let refuse =
                 |text: String| Ok(Some(json!({"t": "error", "code": "refused", "input_id": id, "text": text})));
-            if text.trim().is_empty() {
+            if text.trim().is_empty() && attachments.is_empty() {
                 return refuse("empty message".into());
             }
             if text.len() > MAX_INPUT {
                 return refuse(format!("the message is longer than {MAX_INPUT} bytes"));
             }
+            if attachments.len() > MAX_IMAGES {
+                return refuse(format!("a message takes at most {MAX_IMAGES} images"));
+            }
+            let mut images = Vec::new();
+            for a in &attachments {
+                match Image::parse(&a.name, &a.mime, &a.data) {
+                    Ok(i) => images.push(i),
+                    Err(e) => return refuse(format!("{e:#}")),
+                }
+            }
+            if !images.is_empty() && !host.chat().takes_images(chat) {
+                return refuse(format!("{} takes no images", chat.meta().name));
+            }
             input_id = Some(id.clone());
-            let input = Input { id, text, by };
+            let input = Input { id, text, by, images };
             match mode.as_deref() {
                 Some("interrupt") => chat.send(Cmd::Interrupt { then: Some(input) }),
                 Some("steer") => chat.send(Cmd::Steer(input)),

@@ -91,3 +91,64 @@ export function moveActive(active: number, count: number, dir: -1 | 1): number {
   if (count <= 0) return 0;
   return (active + dir + count) % count;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Images
+
+/** What the conversation keeps of an image sent with a message (its bytes stay with the sender). */
+export interface Attachment {
+  name: string;
+  mime: string;
+  bytes: number;
+}
+
+/** An image as the `input` command carries it. */
+export interface AttachmentPayload {
+  name: string;
+  mime: string;
+  /** Base64, no `data:` prefix. */
+  data: string;
+}
+
+/** The host's limits (chat/mod.rs): types every agent reads, how many, how big decoded. */
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+export const MAX_IMAGES = 4;
+export const MAX_IMAGE_BYTES = 3_932_160;
+/** Images are scaled down to this long edge before sending (larger ones cost the agent more and gain little). */
+export const IMAGE_EDGE = 2048;
+
+/** Why an image cannot be attached as it is, or null. */
+export function imageProblem(mime: string, bytes: number, have: number): "type" | "count" | "size" | null {
+  if (have >= MAX_IMAGES) return "count";
+  if (!IMAGE_TYPES.includes(mime.toLowerCase())) return "type";
+  if (bytes > MAX_IMAGE_BYTES) return "size";
+  return null;
+}
+
+/** The size an image is scaled to so its long edge is at most `edge` (never scaled up). */
+export function fitWithin(width: number, height: number, edge = IMAGE_EDGE): { width: number; height: number; scaled: boolean } {
+  const long = Math.max(width, height);
+  if (long <= edge || long === 0) return { width, height, scaled: false };
+  const k = edge / long;
+  return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)), scaled: true };
+}
+
+/** Bytes a base64 string decodes to. */
+export function base64Bytes(b64: string): number {
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return Math.floor((b64.length * 3) / 4) - pad;
+}
+
+/** Thumbnails of images this device sent, by message id, for its own bubbles (kept for this run only). */
+const sentImages = new Map<string, Array<{ name: string; url: string }>>();
+
+export function rememberImages(inputId: string, images: Array<{ name: string; url: string }>) {
+  if (!images.length) return;
+  sentImages.set(inputId, images);
+  // A long conversation keeps the latest ones only.
+  while (sentImages.size > 100) sentImages.delete(sentImages.keys().next().value as string);
+}
+
+export function imagesOf(inputId: string | undefined): Array<{ name: string; url: string }> {
+  return (inputId && sentImages.get(inputId)) || [];
+}

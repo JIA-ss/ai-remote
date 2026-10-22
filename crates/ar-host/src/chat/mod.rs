@@ -128,6 +128,9 @@ pub struct Meta {
     /// The commands and skills the agent offered last (see [`Ev::Commands`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<SlashCommand>,
+    /// Whether the agent said it takes images (see [`Ev::Agent`]); its kind's caps until it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 
 /// A message on its way to the agent.
@@ -136,6 +139,53 @@ pub struct Input {
     pub id: String,
     pub text: String,
     pub by: By,
+    /// Images sent with it (kept in memory only: the transcript records their names and sizes).
+    pub images: Vec<Image>,
+}
+
+/// An image sent with a message.
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub name: String,
+    /// One of [`IMAGE_TYPES`].
+    pub mime: String,
+    /// The image, base64 (standard alphabet, padded).
+    pub data: Arc<str>,
+    /// Its size decoded.
+    pub bytes: usize,
+}
+
+/// Images a message may carry.
+pub const MAX_IMAGES: usize = 4;
+/// Largest image accepted, decoded: 3.75 MiB, which is 5 MiB in base64 (the most Anthropic's API
+/// takes per image).
+pub const MAX_IMAGE_BYTES: usize = 3_932_160;
+/// The image types every agent here reads.
+pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+impl Image {
+    /// Checks one image of an `input` command: a type agents read, base64 that decodes, not too big.
+    pub fn parse(name: &str, mime: &str, data: &str) -> Result<Self> {
+        use base64::Engine as _;
+        let mime = mime.trim().to_ascii_lowercase();
+        if !IMAGE_TYPES.contains(&mime.as_str()) {
+            bail!("'{mime}' is not an image type agents read (PNG, JPEG, GIF or WebP)");
+        }
+        if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+            bail!("the image '{name}' is larger than {} MiB", MAX_IMAGE_BYTES as f64 / 1048576.0);
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| anyhow!("the image '{name}' is not valid base64: {e}"))?
+            .len();
+        let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+        Ok(Self { name, mime, data: data.trim().into(), bytes })
+    }
+
+    /// What the transcript records of it.
+    pub fn meta(&self) -> event::Attachment {
+        event::Attachment { name: self.name.clone(), mime: self.mime.clone(), bytes: self.bytes }
+    }
 }
 
 /// A command for a session's driver.
@@ -371,6 +421,7 @@ impl ChatManager {
             end_reason: None,
             last_activity: now_ms(),
             commands: Vec::new(),
+            images: None,
         };
         let chat = self.insert(meta, creator, &dir)?;
         self.audit(json!({
@@ -379,7 +430,7 @@ impl ChatManager {
             "principal": by.principal, "hardened": hardened,
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
-            chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by }));
+            chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by, images: Vec::new() }));
         }
         self.prune();
         Ok(chat)
@@ -491,6 +542,15 @@ impl ChatManager {
             .or_else(|| cache.iter().find(|((r, _), _)| *r == m.runtime).map(|(_, v)| v))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Whether `chat`'s agent takes images: what it said, or what its kind is known to do.
+    pub fn takes_images(&self, chat: &Chat) -> bool {
+        let m = chat.meta();
+        if let Some(i) = m.images {
+            return i;
+        }
+        self.0.detector.resolve(&m.runtime, &self.custom()).map(|r| r.caps.images).unwrap_or(false)
     }
 
     fn remember_commands(&self, meta: &Meta) {
@@ -797,7 +857,14 @@ impl Driver {
                 if running
                     && self.steer
                     && let Some(l) = &self.live
-                    && l.tx.send(LiveCmd::Steer { id: input.id.clone(), text: input.text.clone() }).await.is_ok()
+                    && l.tx
+                        .send(LiveCmd::Steer {
+                            id: input.id.clone(),
+                            text: input.text.clone(),
+                            images: input.images.clone(),
+                        })
+                        .await
+                        .is_ok()
                 {
                     self.steering.push(input);
                     return false;
@@ -912,7 +979,14 @@ impl Driver {
         };
         match out {
             Out::Steered { .. } => {
-                self.chat.emit(Ev::User { input_id: input.id, by: input.by, text: input.text, steer: true });
+                let attachments = input.images.iter().map(Image::meta).collect();
+                self.chat.emit(Ev::User {
+                    input_id: input.id,
+                    by: input.by,
+                    text: input.text,
+                    steer: true,
+                    attachments,
+                });
                 if let Some(t) = self.turn.as_mut() {
                     t.steers += 1;
                 }
@@ -1001,7 +1075,7 @@ impl Driver {
         let Some(live) = &self.live else { return };
         // A message the agent already has starts its turn by itself.
         if !self.delivered.remove(&input.id)
-            && live.tx.send(LiveCmd::Prompt { text: input.text.clone() }).await.is_err()
+            && live.tx.send(LiveCmd::Prompt { text: input.text.clone(), images: input.images.clone() }).await.is_err()
         {
             self.queue.push_front(input);
             return;
@@ -1011,6 +1085,7 @@ impl Driver {
             by: input.by.clone(),
             text: input.text.clone(),
             steer: false,
+            attachments: input.images.iter().map(Image::meta).collect(),
         });
         self.chat.emit(Ev::TurnStart {});
         self.chat.set_meta(|m| {
@@ -1076,6 +1151,12 @@ impl Driver {
             t.last_event = Instant::now();
         }
         match out {
+            Out::Ev(Ev::Agent { images }) => {
+                if self.chat.meta().images != Some(images) {
+                    self.chat.set_meta(|m| m.images = Some(images));
+                    self.chat.emit(Ev::Agent { images });
+                }
+            }
             Out::Ev(Ev::Commands { mut commands }) => {
                 // Only a list that changed goes into the transcript (an agent sends it at every start).
                 commands.truncate(event::MAX_COMMANDS);
@@ -1325,3 +1406,22 @@ pub fn interrupt_grace(p: Protocol) -> Duration {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn images_must_be_a_type_agents_read_valid_and_small_enough() {
+        let ok = Image::parse("shot.PNG", "IMAGE/PNG", "iVBORw0KGgo=").unwrap();
+        assert_eq!((ok.mime.as_str(), ok.bytes), ("image/png", 8));
+        assert!(Image::parse("a.svg", "image/svg+xml", "PHN2Zz4=").is_err());
+        assert!(Image::parse("a.png", "image/png", "not base64!").is_err());
+        let big = "A".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4);
+        assert!(Image::parse("a.png", "image/png", &big).unwrap_err().to_string().contains("larger"));
+        assert_eq!(
+            serde_json::to_value(ok.meta()).unwrap(),
+            json!({"name": "shot.PNG", "mime": "image/png", "bytes": 8})
+        );
+    }
+}

@@ -736,11 +736,11 @@ async function step(s: SessionInfo, run: DemoRun, ms: number) {
   return !run.stopped;
 }
 
-async function demoReply(s: SessionInfo, text: string, inputId: string) {
+async function demoReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
   const run: DemoRun = { stopped: false, steers: [], answer: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
-  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text });
+  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
   s.turns += 1;
   const started = Date.now();
   push(s, { t: "turn_start" });
@@ -796,13 +796,15 @@ const DEMO_SKILLS = [
 ];
 
 async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Promise<ChatReply | null> {
-  const input = c.input as { id?: string; text?: string; mode?: string } | undefined;
+  const input = c.input as { id?: string; text?: string; mode?: string; attachments?: Array<{ name: string; mime: string; data: string }> } | undefined;
   const run = demoRuns.get(s.id);
-  if (input?.text) {
+  const atts = input?.attachments?.map((a) => ({ name: a.name, mime: a.mime, bytes: Math.floor((a.data.length * 3) / 4) }));
+  if (input && (input.text || atts?.length)) {
+    input.text = input.text ?? "";
     const id = input.id ?? `u${s.seq}`;
     const canSteer = !!demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps.steer;
     if (!run) {
-      void demoReply(s, input.text, id);
+      void demoReply(s, input.text, id, atts);
     } else if (input.mode === "interrupt") {
       await demoStop(s, run);
       void demoReply(s, input.text, id);
@@ -831,7 +833,7 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Prom
     await wait(60);
     return { t: "files", rid: files.rid, files: hits.slice(0, 50), truncated: hits.length > 50, source: "git" };
   }
-  return input?.text ? { t: "ack", input_id: input.id } : null;
+  return input && (input.text || atts?.length) ? { t: "ack", input_id: input.id } : null;
 }
 
 const DEMO_FILES = ["export.py", "README.md", "tests/test_export.py", "report/quarter.py", "report/templates/summary.html", "docs/usage.md", "pyproject.toml"];

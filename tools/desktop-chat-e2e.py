@@ -143,7 +143,12 @@ for line in sys.stdin:
         continue
     if msg.get("type") != "user":
         continue
-    text = msg["message"]["content"][0]["text"]
+    content = msg["message"]["content"]
+    text = next((b["text"] for b in content if b.get("type") == "text"), "")
+    images = [b for b in content if b.get("type") == "image"]
+    if images:
+        # Says what it got, so a test can check the image arrived whole.
+        text += " [images: " + ", ".join(b["source"]["media_type"] + " " + str(len(b["source"]["data"])) for b in images) + "]"
     out({"type": "user", "isReplay": True, "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
     if slow:
         slow.set(); slow = None

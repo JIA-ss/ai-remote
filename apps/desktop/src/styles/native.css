@@ -899,3 +899,11 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-ac .it .hint { flex: none; font-size: 11.5px; color: var(--c-faint); font-family: var(--font-mono, ui-monospace, monospace); }
 .nt-ac .it .ds { flex: 1; min-width: 0; font-size: 11.5px; color: var(--c-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nt-ac .st { padding: 6px 8px; font-size: 12px; color: var(--c-faint); }
+.nt-atts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
+.nt-atts .att { position: relative; display: block; }
+.nt-atts .att img { display: block; height: 52px; max-width: 120px; object-fit: cover; border-radius: 6px; border: 1px solid var(--c-line); }
+.nt-atts .att .rm { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%;
+  background: var(--c-strong); color: var(--raised); opacity: 0; transition: opacity .12s; }
+.nt-atts .att:hover .rm, .nt-atts .att .rm:focus-visible { opacity: 1; }
+.nt-compose .bar .attach.no { opacity: .4; cursor: not-allowed; }
+.nt-compose .bar .hint.warn { color: var(--danger); }

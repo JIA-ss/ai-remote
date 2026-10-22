@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 
 use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
+    Image,
     event::{
         DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
         preview_value,
@@ -67,7 +68,7 @@ struct State {
     thread: Option<String>,
     turn: Option<String>,
     ready: bool,
-    waiting: VecDeque<String>,
+    waiting: VecDeque<(String, Vec<Image>)>,
     streamed: HashSet<String>,
     final_text: Option<String>,
     last_error: Option<String>,
@@ -76,7 +77,7 @@ struct State {
     /// A turn was asked for and has no id yet.
     starting: bool,
     /// Steers waiting for that id.
-    steer_wait: Vec<(String, String)>,
+    steer_wait: Vec<(String, String, Vec<Image>)>,
     /// Bytes of output streamed per command.
     output: HashMap<String, usize>,
     /// File changes whose diff was shown.
@@ -85,9 +86,13 @@ struct State {
     skills: Vec<(String, String)>,
 }
 
-/// The input items of a message: its text, and every skill it names as `$name`.
-fn input_items(st: &State, text: &str) -> Value {
+/// The input items of a message: its text, every skill it names as `$name`, and its images (as
+/// data URLs).
+fn input_items(st: &State, text: &str, images: &[Image]) -> Value {
     let mut items = vec![json!({"type": "text", "text": text, "text_elements": []})];
+    for i in images {
+        items.push(json!({"type": "image", "url": format!("data:{};base64,{}", i.mime, i.data)}));
+    }
     for (name, path) in &st.skills {
         if names_skill(text, name) {
             items.push(json!({"type": "skill", "name": name, "path": path}));
@@ -163,16 +168,16 @@ pub async fn run(
                 }
             },
             cmd = cmds.recv() => match cmd {
-                Some(LiveCmd::Prompt { text }) => {
+                Some(LiveCmd::Prompt { text, images }) => {
                     if st.ready {
-                        let line = turn_start(&mut st, &text);
+                        let line = turn_start(&mut st, &text, &images);
                         let _ = proc.write_line(line).await;
                     } else {
                         st.starting = true;
-                        st.waiting.push_back(text);
+                        st.waiting.push_back((text, images));
                     }
                 }
-                Some(LiveCmd::Steer { id, text }) => match steer(&mut st, id, text) {
+                Some(LiveCmd::Steer { id, text, images }) => match steer(&mut st, id, text, images) {
                     Ok(Some(line)) => {
                         let _ = proc.write_line(line).await;
                     }
@@ -225,31 +230,31 @@ pub async fn run(
 
 /// A steer for the running turn: the request to write, nothing yet (waiting for the turn id), or
 /// (with no turn running) the refusal to report.
-fn steer(st: &mut State, id: String, text: String) -> Result<Option<String>, Box<Out>> {
+fn steer(st: &mut State, id: String, text: String, images: Vec<Image>) -> Result<Option<String>, Box<Out>> {
     match (st.thread.clone(), st.turn.clone()) {
         (Some(thread), Some(turn)) => Ok(Some(st.request(
             "turn/steer",
             json!({
                 "threadId": thread, "expectedTurnId": turn, "clientUserMessageId": id,
-                "input": input_items(st, &text),
+                "input": input_items(st, &text, &images),
             }),
             Pending::Steer { id },
         ))),
         _ if st.starting => {
-            st.steer_wait.push((id, text));
+            st.steer_wait.push((id, text, images));
             Ok(None)
         }
         _ => Err(Box::new(Out::SteerRejected { id, reason: "no turn is running".into() })),
     }
 }
 
-fn turn_start(st: &mut State, text: &str) -> String {
+fn turn_start(st: &mut State, text: &str, images: &[Image]) -> String {
     st.starting = true;
     st.final_text = None;
     st.last_error = None;
     st.streamed.clear();
     let thread = st.thread.clone().unwrap_or_default();
-    st.request("turn/start", json!({"threadId": thread, "input": input_items(st, text)}), Pending::TurnStart)
+    st.request("turn/start", json!({"threadId": thread, "input": input_items(st, text, images)}), Pending::TurnStart)
 }
 
 fn thread_start(st: &mut State, opts: &Opts) -> String {
@@ -285,8 +290,8 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     st.thread = Some(id.to_string());
                     st.ready = true;
                     outs.push(Out::Session(id.to_string()));
-                    while let Some(text) = st.waiting.pop_front() {
-                        writes.push(turn_start(st, &text));
+                    while let Some((text, images)) = st.waiting.pop_front() {
+                        writes.push(turn_start(st, &text, &images));
                     }
                     writes.push(st.request("skills/list", json!({"cwds": [opts.cwd]}), Pending::Skills));
                 } else {
@@ -308,8 +313,8 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::TurnStart), Ok(r)) => {
                 st.starting = false;
                 st.turn = r["turn"]["id"].as_str().map(str::to_string);
-                for (id, text) in std::mem::take(&mut st.steer_wait) {
-                    match steer(st, id, text) {
+                for (id, text, images) in std::mem::take(&mut st.steer_wait) {
+                    match steer(st, id, text, images) {
                         Ok(Some(line)) => writes.push(line),
                         Ok(None) => {}
                         Err(o) => outs.push(*o),
@@ -318,7 +323,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             }
             (Some(Pending::TurnStart), Err(e)) => {
                 st.starting = false;
-                for (id, _) in std::mem::take(&mut st.steer_wait) {
+                for (id, _, _) in std::mem::take(&mut st.steer_wait) {
                     outs.push(Out::SteerRejected { id, reason: "the turn did not start".into() });
                 }
                 outs.push(Out::TurnEnd { status: TurnStatus::Failed, final_text: None, reason: Some(e) })
@@ -774,7 +779,7 @@ mod tests {
     fn handshake_starts_a_bypassed_thread_and_flushes_waiting_messages() {
         let mut st = State::default();
         let _ = st.request("initialize", json!({}), Pending::Initialize);
-        st.waiting.push_back("hi".into());
+        st.waiting.push_back(("hi".into(), vec![]));
         let (w, _) = handle(&mut st, r#"{"id":1,"result":{}}"#, &opts(None));
         assert!(w[0].contains("\"initialized\""));
         let start: Value = serde_json::from_str(&w[1]).unwrap();
@@ -876,11 +881,11 @@ mod tests {
         let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
         // No turn: refused.
         assert!(
-            matches!(steer(&mut st, "s0".into(), "x".into()), Err(o) if matches!(*o, Out::SteerRejected { ref id, .. } if id == "s0"))
+            matches!(steer(&mut st, "s0".into(), "x".into(), vec![]), Err(o) if matches!(*o, Out::SteerRejected { ref id, .. } if id == "s0"))
         );
         // Asked for, no id yet: waits, then goes out with the id.
-        let _ = turn_start(&mut st, "count");
-        assert!(matches!(steer(&mut st, "s1".into(), "stop at 5".into()), Ok(None)));
+        let _ = turn_start(&mut st, "count", &[]);
+        assert!(matches!(steer(&mut st, "s1".into(), "stop at 5".into(), vec![]), Ok(None)));
         let id = st.next;
         let (w, _) = handle(&mut st, &format!(r#"{{"id":{id},"result":{{"turn":{{"id":"tu"}}}}}}"#), &opts(None));
         let req: Value = serde_json::from_str(&w[0]).unwrap();
@@ -890,7 +895,7 @@ mod tests {
         let (_, o) = handle(&mut st, &format!(r#"{{"id":{},"result":{{"turnId":"tu"}}}}"#, req["id"]), &opts(None));
         assert!(matches!(&o[0], Out::Steered { id } if id == "s1"));
         // The turn ended meanwhile: refused, so it is queued.
-        let line = steer(&mut st, "s2".into(), "more".into()).unwrap().unwrap();
+        let line = steer(&mut st, "s2".into(), "more".into(), vec![]).unwrap().unwrap();
         let req: Value = serde_json::from_str(&line).unwrap();
         let (_, o) = handle(
             &mut st,
@@ -961,9 +966,17 @@ mod tests {
             (commands[0].insert.as_str(), commands[0].description.as_str(), commands[0].kind.as_str()),
             ("$tidy", "Tidy up", "skill")
         );
-        let start: Value = serde_json::from_str(&turn_start(&mut st, "please $tidy the module")).unwrap();
+        let start: Value = serde_json::from_str(&turn_start(&mut st, "please $tidy the module", &[])).unwrap();
         assert_eq!(start["params"]["input"][1], json!({"type": "skill", "name": "tidy", "path": "/s/tidy/SKILL.md"}));
-        let plain: Value = serde_json::from_str(&turn_start(&mut st, "pay $tidyness or a$tidy")).unwrap();
+        let plain: Value = serde_json::from_str(&turn_start(&mut st, "pay $tidyness or a$tidy", &[])).unwrap();
         assert_eq!(plain["params"]["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn images_go_as_data_urls() {
+        let mut st = State::default();
+        let img = crate::chat::Image::parse("s.jpg", "image/jpeg", "/9j/4AAQ").unwrap();
+        let start: Value = serde_json::from_str(&turn_start(&mut st, "look", &[img])).unwrap();
+        assert_eq!(start["params"]["input"][1], json!({"type": "image", "url": "data:image/jpeg;base64,/9j/4AAQ"}));
     }
 }

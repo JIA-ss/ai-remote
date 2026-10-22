@@ -871,6 +871,13 @@ export const zh: Record<keyof typeof en, string> = {
   hc_ac_files_error: "无法列出文件：{error}",
   hc_ac_loading: "正在列出文件…",
   hc_ac_more: "还有更多匹配的文件，继续输入可以缩小范围。",
+  hc_img_add: "添加图片（也可以粘贴或拖进来）",
+  hc_img_remove: "移除 {name}",
+  hc_img_unsupported: "{agent} 不支持图片",
+  hc_img_type: "只能发送 PNG、JPEG、GIF、WebP 图片",
+  hc_img_count: "每条消息最多 {n} 张图片",
+  hc_img_size: "图片缩小后仍超过 {mb} MB",
+  hc_img_unreadable: "无法读取这张图片",
   // (end of composer strings)
   hc_earlier: "显示更早的 {n} 轮",
   hc_hint_alt: "⌥Enter 停止本轮并立即发送",

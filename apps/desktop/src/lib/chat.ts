@@ -7,7 +7,7 @@
 // (edits included: they open to diff cards), reasoning folded behind "Thought for 4 s". `turnRows`
 // is that projection.
 
-import type { SlashCommand } from "./chat-input";
+import type { Attachment, AttachmentPayload, SlashCommand } from "./chat-input";
 
 export type ChatState = "starting" | "idle" | "running" | "interrupting" | "parked" | "ended";
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
@@ -24,6 +24,8 @@ export interface Caps {
   questions: boolean;
   /** A message can be added to the running turn (`mode: "steer"`); hosts without it queue. */
   steer?: boolean;
+  /** May take images with a message (for ACP agents, until the agent says otherwise). */
+  images?: boolean;
 }
 
 /** An agent installed on a host, as `chat_runtimes` reports it. */
@@ -71,7 +73,7 @@ export interface PlanEntry {
 
 /** One event of a chat (see the host's chat/event.rs). */
 export type ChatEvent = { seq: number; ts: number; turn: number } & (
-  | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean }
+  | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean; attachments?: Attachment[] }
   | { t: "turn_start" }
   | { t: "message"; id: string; text: string; delta: boolean }
   | { t: "thought"; id: string; text: string; delta: boolean }
@@ -84,6 +86,7 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
   | { t: "commands"; commands: SlashCommand[] }
+  | { t: "agent"; images?: boolean }
 );
 
 /**
@@ -162,6 +165,8 @@ export interface ChatHello {
   acks?: boolean;
   /** The agent's commands and skills as last known (`commands` events replace them). */
   commands?: SlashCommand[];
+  /** Whether the agent takes images with a message (`agent` events update it). */
+  images?: boolean;
 }
 
 export interface ToolItem {
@@ -192,7 +197,7 @@ export type Block =
   | QuestionBlock
   | { kind: "notice"; level: string; code: string; text: string }
   /** A message added to the running turn (`steer`). */
-  | { kind: "user"; text: string; by: string; ts: number; steer: true };
+  | { kind: "user"; text: string; by: string; ts: number; steer: true; inputId?: string; attachments?: Attachment[] };
 
 export interface Usage {
   input?: number;
@@ -204,7 +209,7 @@ export interface Usage {
 
 export interface Turn {
   n: number;
-  user: { text: string; by: string; ts: number } | null;
+  user: { text: string; by: string; ts: number; inputId?: string; attachments?: Attachment[] } | null;
   blocks: Block[];
   status: TurnStatus | "running";
   startedTs: number | null;
@@ -229,9 +234,11 @@ export interface Chat {
   dropped: Array<{ id: string; text: string }>;
   /** The agent's commands and skills from its last `commands` event (null: none came). */
   commands: SlashCommand[] | null;
+  /** Whether the agent takes images, from its last `agent` event (null: it did not say). */
+  images: boolean | null;
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null });
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -271,6 +278,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
     case "commands":
       c.commands = e.commands ?? [];
       return c;
+    case "agent":
+      if (typeof e.images === "boolean") c.images = e.images;
+      return c;
     case "user": {
       if (e.input_id) c.inputs = [...c.inputs.slice(-99), e.input_id];
       if (e.steer) {
@@ -278,12 +288,12 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
         // the running turn; an older host may number it as the next one, so the running turn wins.
         const running = [...c.turns].reverse().find((t) => t.status === "running");
         const target = running ? running.n : c.turns.some((t) => t.n === e.turn) ? e.turn : e.turn + 1;
-        touch(target).blocks.push({ kind: "user", text: e.text, by: e.by?.device ?? "", ts: e.ts, steer: true });
+        touch(target).blocks.push({ kind: "user", text: e.text, by: e.by?.device ?? "", ts: e.ts, steer: true, inputId: e.input_id, attachments: e.attachments });
         return c;
       }
       // The user line comes right before its turn starts (whose number is one more).
       const turn = touch(e.turn + 1);
-      turn.user = { text: e.text, by: e.by?.device ?? "", ts: e.ts };
+      turn.user = { text: e.text, by: e.by?.device ?? "", ts: e.ts, inputId: e.input_id, attachments: e.attachments };
       return c;
     }
     case "turn_start":
@@ -398,7 +408,7 @@ export function isEdit(x: ToolItem): boolean {
 }
 
 export type Row =
-  | { kind: "user"; key: string; text: string; by: string; ts: number; steer: boolean }
+  | { kind: "user"; key: string; text: string; by: string; ts: number; steer: boolean; inputId?: string; attachments?: Attachment[] }
   | { kind: "text"; key: string; text: string; streaming: boolean }
   | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** Tool calls in a row (with the reasoning between them), summarized in one sentence. */
@@ -414,7 +424,10 @@ const joinsRun = (x: Block) => x.kind === "tool" && !isSubagent(x);
 export function turnRows(turn: Turn): Row[] {
   const rows: Row[] = [];
   const running = turn.status === "running";
-  if (turn.user) rows.push({ kind: "user", key: `u${turn.n}`, text: turn.user.text, by: turn.user.by, ts: turn.user.ts, steer: false });
+  if (turn.user) {
+    rows.push({ kind: "user", key: `u${turn.n}`, text: turn.user.text, by: turn.user.by, ts: turn.user.ts, steer: false,
+      inputId: turn.user.inputId, attachments: turn.user.attachments });
+  }
   const b = turn.blocks;
   let run: Extract<Row, { kind: "run" }> | null = null;
   for (let i = 0; i < b.length; i++) {
@@ -459,7 +472,7 @@ export function turnRows(turn: Turn): Row[] {
         rows.push({ kind: "notice", key: `n${turn.n}:${i}`, level: x.level, code: x.code, text: x.text });
         break;
       case "user":
-        rows.push({ kind: "user", key: `s${turn.n}:${i}`, text: x.text, by: x.by, ts: x.ts, steer: true });
+        rows.push({ kind: "user", key: `s${turn.n}:${i}`, text: x.text, by: x.by, ts: x.ts, steer: true, inputId: x.inputId, attachments: x.attachments });
         break;
     }
   }
@@ -692,8 +705,10 @@ export function sendMode(running: boolean, caps: Caps | null | undefined, interr
 }
 
 /** The input command for the host (see chat/1 in docs/architecture.md). */
-export function inputCommand(id: string, text: string, mode?: InputMode): { input: { id: string; text: string; mode?: InputMode } } {
-  return { input: { id, text, ...(mode && mode !== "queue" ? { mode } : {}) } };
+export function inputCommand(id: string, text: string, mode?: InputMode, attachments?: AttachmentPayload[]): {
+  input: { id: string; text: string; mode?: InputMode; attachments?: AttachmentPayload[] };
+} {
+  return { input: { id, text, ...(mode && mode !== "queue" ? { mode } : {}), ...(attachments?.length ? { attachments } : {}) } };
 }
 
 /**
@@ -723,6 +738,8 @@ export interface Outgoing {
   refused?: boolean;
   /** Images sent with it, as data URLs for the bubble (the host keeps only their names). */
   images?: Array<{ name: string; url: string }>;
+  /** The images as sent, for a retry. */
+  attachments?: AttachmentPayload[];
 }
 
 /** An unacknowledged message counts as not sent after this long (hosts that acknowledge only). */

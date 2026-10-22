@@ -882,6 +882,13 @@ export const en = {
   hc_ac_files_error: "Cannot list files: {error}",
   hc_ac_loading: "Listing files…",
   hc_ac_more: "More files match; keep typing to narrow them down.",
+  hc_img_add: "Add an image (or paste or drop one)",
+  hc_img_remove: "Remove {name}",
+  hc_img_unsupported: "{agent} takes no images",
+  hc_img_type: "Only PNG, JPEG, GIF and WebP images can go to the agent",
+  hc_img_count: "At most {n} images per message",
+  hc_img_size: "The image is larger than {mb} MB even scaled down",
+  hc_img_unreadable: "This image cannot be read",
   // (end of composer strings)
   hc_earlier: "Show {n} earlier turns",
   hc_hint_alt: "⌥Enter stops the turn and sends",

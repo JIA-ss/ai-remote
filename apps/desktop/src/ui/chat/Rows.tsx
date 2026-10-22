@@ -57,6 +57,7 @@ import {
   type ToolKind,
   type Turn,
 } from "../../lib/chat";
+import { imagesOf } from "../../lib/chat-input";
 import { t, type Key } from "../../lib/i18n";
 import { inlineText, parseInline } from "../../lib/markdown";
 import { cx } from "../util";
@@ -109,6 +110,19 @@ const CAT_ICON: Record<RunCategory, typeof Wrench> = {
 /** Sent messages longer than this many lines fold behind "Show more". */
 const FOLD_LINES = 12;
 
+/** Images sent with a message: their pictures where this device sent them, their names otherwise. */
+function Attachments({ row }: { row: Extract<Row, { kind: "user" }> }) {
+  if (!row.attachments?.length) return null;
+  const mine = imagesOf(row.inputId);
+  return (
+    <div className="imgs">
+      {row.attachments.map((a, i) =>
+        mine[i] ? <img key={i} src={mine[i].url} alt={a.name} title={a.name} /> : <span key={i} className="att" title={a.mime}>{a.name}</span>,
+      )}
+    </div>
+  );
+}
+
 export function UserRow({ row }: { row: Extract<Row, { kind: "user" }> }) {
   const long = row.text.split("\n").length > FOLD_LINES || row.text.length > 1200;
   const [open, setOpen] = useState(false);
@@ -117,7 +131,8 @@ export function UserRow({ row }: { row: Extract<Row, { kind: "user" }> }) {
     // shows it. It stays where it landed, inside the turn.
     <div className="nt-user" data-steer={row.steer ? "1" : undefined}>
       <div className={cx("bubble", long && !open && "folded")}>
-        <div className="txt">{row.text}</div>
+        <Attachments row={row} />
+        {row.text && <div className="txt">{row.text}</div>}
         {long && (
           <button type="button" className="fold" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
             {open ? t("hc_show_less") : t("hc_show_more")}

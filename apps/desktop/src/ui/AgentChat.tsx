@@ -38,7 +38,8 @@ import {
   type SessionInfo,
 } from "../lib/chat";
 import { t } from "../lib/i18n";
-import { Composer } from "./chat/Composer";
+import { rememberImages } from "../lib/chat-input";
+import { Composer, type ComposerImage } from "./chat/Composer";
 import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/FolderPicker";
 import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
@@ -354,11 +355,13 @@ function useConversation(host: string, target: ChatTarget | null) {
       fail("disconnected");
       return;
     }
-    conn.current.send(inputCommand(o.id, o.text, o.mode)).catch((e) => fail(e instanceof Error ? e.message : String(e)));
+    conn.current.send(inputCommand(o.id, o.text, o.mode, o.attachments)).catch((e) => fail(e instanceof Error ? e.message : String(e)));
   };
   const retry = (o: Outgoing) => {
     setOutgoing((list) => list.filter((x) => x.id !== o.id));
-    sendInput(retryOutgoing(o, newId(), Date.now()));
+    const again = retryOutgoing(o, newId(), Date.now());
+    rememberImages(again.id, again.images ?? []);
+    sendInput(again);
   };
   const discard = (id: string) => setOutgoing((list) => list.filter((x) => x.id !== id));
   /** Files in the session's folder matching `query` (the `@` menu). */
@@ -485,9 +488,12 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
       return next;
     });
   };
-  const sendText = (text: string, mode: InputMode | undefined) => {
-    sendInput({ id: newId(), text, mode, at: Date.now(), state: "sending" });
-    remember(text);
+  const sendText = (text: string, mode: InputMode | undefined, images: ComposerImage[] = []) => {
+    const id = newId();
+    const shown = images.map((i) => ({ name: i.payload.name, url: i.url }));
+    rememberImages(id, shown);
+    sendInput({ id, text, mode, at: Date.now(), state: "sending", images: shown, attachments: images.map((i) => i.payload) });
+    if (text) remember(text);
     setFollow((n) => n + 1);
   };
   const onAnswer = useCallback((qid: string, value: string) => {
@@ -577,6 +583,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         }}
         commands={chat.commands ?? hello?.commands ?? null}
         listFiles={readonly ? undefined : listFiles}
+        images={(chat.images ?? hello?.images ?? hello?.caps?.images ?? true) ? { ok: true } : { ok: false, why: t("hc_img_unsupported", { agent }) }}
         onSteerQueued={(id, text) => {
           send({ dequeue: { id } });
           send(inputCommand(newId(), text, "steer"));
