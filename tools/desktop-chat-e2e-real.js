@@ -45,6 +45,20 @@
     for (const s of $$(".nt-run .sent", turn)) for (const m of s.textContent.matchAll(/(?:运行了?|[Rr]an|[Rr]unning) ?(\d+) ?(?:条命令|commands?)/g)) n += Number(m[1]);
     return n + $$(".nt-tl.execute, .nt-tl", turn).filter((x) => !x.closest(".nt-run") && $(".mono", x)).length;
   };
+  // The folder picker (ui/chat/FolderPicker.tsx): open it, type a path, Enter browses it, the footer takes it.
+  const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  async function typeFolder(path) {
+    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
+    const q = await until("folder search box", () => $("#ag-folder-q"));
+    setValue(q, path);
+    await until("open-path row", () => $(".nt-folder-list .row.open"));
+    keyDown(q, "Enter");
+    const name = path.split(/[\\/]/).filter(Boolean).pop();
+    const use = await until("folder listed", () => $(".nt-folder-crumbs .cur")?.textContent === name && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    use?.click();
+    await until("picker closed", () => !$(".nt-folder-pop"), 5000);
+  }
   async function send(text) {
     const ta = await until("composer", () => $(".nt-compose textarea"));
     setValue(ta, text);
@@ -58,7 +72,8 @@
     const pick = $$(".nt-chat-pick .opt").find((b) => b.querySelector(".nm")?.textContent === CFG.agent);
     await check(`${CFG.agent} is offered`, !!pick, $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
     pick.click();
-    setValue($("#ag-cwd"), CFG.work);
+    await typeFolder(CFG.work);
+    await check("the folder picker takes a typed path", folderShown() === CFG.work.split("/").pop(), folderShown());
     setValue($("#ag-prompt"), "Create a file named hello.txt containing the single line: hi from ai-remote. Then run `cat hello.txt` in the shell. Answer with one short sentence.");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
@@ -89,7 +104,7 @@
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }
-  for (const key of ["ai-remote.chat.last", "ai-remote.chat.cwd"]) {
+  for (const key of ["ai-remote.chat.last", "ai-remote.chat.cwd", "ai-remote.chat.home"]) {
     try {
       const all = JSON.parse(localStorage.getItem(key) ?? "{}");
       for (const h of Object.keys(all)) if (h === CFG.host || /^e2e-/.test(h)) delete all[h];

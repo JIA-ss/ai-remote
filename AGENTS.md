@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-folder.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -356,6 +356,44 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
   - 窗口不可见时 rAF 不触发，事件会积到窗口可见才显示 → 加了 100 ms 定时器兜底；运行计时一直显示 "0 ms" → 计时器在轮次开始时就取当前时间，不再等第一次 1 s 的跳动。这两处没有在不可见窗口里复测。
 - [ ] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
+
+## 对话侧栏：选工作目录、按项目列会话（2026-10-22，分支 `claude/chat-folder-5ebe7f`，基于 `feat/host-chat` b68fac3）
+
+用户要求"选择工作目录"和"显示已选目录"照 Codex 桌面版做，并参考 Orca；第一版出来后用户嫌项目和会话列表丑，要求照人家的设计。
+
+### 调研
+
+- **Codex 桌面版**（本机没装，依据官方文档 developers.openai.com/codex/app，未实机）：新对话先选"项目"（一个本地文件夹），用过的项目都会出现在选择器里，没有的就"添加项目"选文件夹；侧栏按项目列线程。
+- **Orca 1.4.237**（`/tmp/orca-app` 解包 + 之前的 CDP 截图 `/tmp/orca-cdp/r4.png`）：左栏"项目"按项目分组，组头是文件夹图标 + 项目名，组内每个工作区 / 会话一张卡（状态点 + 名字，下一行灰色元信息：智能体 · 多久前）；右栏会话历史按项目分组带数量。远端主机上的项目只有一个路径输入框（`/path/to/project/on/host`），**没有远端目录浏览器**。native chat 本身不管选目录。
+- 结论：选择器 = Codex 的"项目 chip + 下拉（最近项目 + 浏览 / 添加）"，会话列表 = Orca 的"项目分组 + 会话卡"。远端浏览 Orca 没有，我们用被控端现成的 `files_list` 补上。
+
+### 做了什么（只改桌面端，被控端没动）
+
+- `ui/chat/FolderPicker.tsx`（新）：
+  - `FolderPicker`：一个 chip（文件夹图标 + 项目名 + 灰色的上级路径，家目录缩成 `~`），点开是下拉：搜索框（搜最近的文件夹，或输入路径）、"最近"（本机记的 + 被控端上开着的会话的目录，去重）、"浏览这台电脑上的文件夹…"。浏览模式有面包屑、`..`、子文件夹（隐藏 `.xxx`，输入 `.` 开头才显示），底部"使用「名字」"。输入路径回车就浏览那个路径；列不出来（策略拒绝、不存在）时显示原因，并给"仍然使用这个路径"（`chat_start` 会再校验）。键盘：↑↓、回车（进入 / 选中）、⌘/Ctrl+回车（选当前浏览的文件夹）、空输入时退格回上级、Esc（先回最近列表，再关闭）。没有最近目录时一打开就浏览 `~`。
+  - `FolderLabel`：会话头部、会话列表、chip 共用；悬停显示完整路径。
+  - 浏览用 `files_list`（admin 级、默认放行、只读，和 `chat_start` 同为 admin，所以能启动智能体的设备就能浏览）。只取第一页（500 项，文件夹排在前面），文件夹超过一页时提示"输入名字缩小范围"。`files_list` 返回的 `path` 是展开后的，列 `~` 时顺便记下被控端的家目录（localStorage `ai-remote.chat.home`），之后显示路径时缩成 `~`。
+- `lib/chat.ts`：路径纯函数 `looksLikePath / trimFolder / folderParts / folderName / parentFolder / childFolder / folderCrumbs / sameFolder / tildeFolder / folderChoices / matchFolders / listedFolders / sessionsByFolder / agoParts`，以及 `knownHome / rememberHome`。Windows（`D:\work`、`D:/work`、`\\server\share`、大小写不敏感）和 Unix、`~` 都覆盖。
+- `AgentChat.tsx`：`StartForm` 的文本框 + datalist 换成 `FolderPicker`（新增可选 `folders` 参数，`Picker` 传开着的会话目录；`ComputerTabs` 不传，照旧可用）；`Picker` 的会话列表改为"项目"分组（组头：图标 + 名字 + 上级路径 + 数量；会话卡：状态点 + 智能体（· 模型）+ 多久前，下一行"就绪 / 运行中 / 已暂停 · N 轮 · 发起设备"）；`Conversation` 只改了头部那个显示 cwd 的 span。
+- 文案：`hc_folder_*` 一段，加在 en.ts / zh.ts 末尾。样式：`native.css` 末尾两节。`hc_cwd_ph` 已不用，没删（避免和别的会话冲突）。
+
+### 踩过的坑
+
+1. **全局短类名会撞**：第一版高亮行用 `.act`，`v2-pages.css` 里 `.act` 是活动页的 `position:absolute; inset:0`，高亮行被拽到选择器顶上；"未选择"状态用 `.empty`，全局 `.empty` 是竖排居中的空态布局，图标和文字上下叠。改成 `.on` / `.none`。新组件里的类名先在 `styles/*.css` 里搜一下有没有顶层规则。
+2. 路径的灰色部分用 `direction: rtl` 让开头省略，内容要包一层 `<bdi>`，否则 `/`、`~` 这类中性字符会被重排到另一头。
+
+### 实测（2026-10-22，本机 macOS，debug 包，隔离被控端 `[network] quiet = true`）
+
+- `node --test tools/*.test.mjs` 92 过 / 0 失败 / 2 跳过，其中新增 `tools/chat-folder.test.mjs` 8 项（路径解析、两种平台、`~` 缩写、去重、筛选、按项目分组、多久前）。`npx tsc --noEmit -p apps/desktop` 通过。
+- `tools/desktop-chat-e2e.py`（替身智能体）**全部通过，共跑 3 次**（后两次是改样式后的重跑）。新增的检查：未选时 chip 提示选择；打开后经真实通道列出被控端家目录（46 个文件夹，隐藏的不显示）；输入路径出现"打开 …"、回车浏览、点子文件夹面包屑更新、底部"使用「work」"、chip 显示 `work` 且悬停是完整路径；会话头部显示项目名 + 上级路径；第二次启动默认选上次的文件夹、打开是最近列表且当前项打勾、会话列表按项目分组。截图 `/tmp/chat-folder-e2e/`（`00-folder-browse`、`04b-folder-recent`、`01-first-turn`）。
+- `tools/desktop-chat-e2e-real.js` 的启动步骤也改成了用选择器（输入路径 → 回车 → 使用），**没有跑**（真实智能体花额度，改动只在选目录这一步）。
+
+### 未测 / 没做
+
+- Windows 被控端（`D:\` 路径、盘符根、UNC）只有单测，没在 win-dev 上点过；被控端无法列出盘符清单，要换盘只能输入 `E:\`。
+- `files_list` 被机主改成 ask / deny 时：ask 会每进一个目录弹一次审批，deny 时只能输入路径；只按代码推导，没实测。
+- 演示模式（`lib/demo.ts`）没有 `files_list`，浏览会显示"无法列出"。
+- 和发起会话的约定：本分支的 e2e 仍含插话步骤；去掉插话的分支合进来时要一并改 e2e。
 
 ## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4c655ce）
 
