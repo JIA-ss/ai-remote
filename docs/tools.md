@@ -597,11 +597,12 @@ Each transfer writes a `transfer` line to the audit log (`tool`, `path`, `outcom
 ### 5.15 Coding agents
 
 Coding agents installed on the host (Claude Code, Codex, and agents that speak the Agent Client
-Protocol: Gemini CLI, OpenCode, Qwen Code, Copilot CLI, Cursor Agent, Kimi, Goose) can be started from
-a controller and talked to while they work. The agent runs on the host as the signed-in user and
-**does not ask before it acts** (Claude Code `--permission-mode bypassPermissions`, Codex
-`approvalPolicy: never` with `sandbox: danger-full-access`, ACP agents' auto mode plus "allow once"
-answers from the host): anything that user may do, it may do, including changing this host's own
+Protocol: DeepSeek Harness (`dsh --profile acp`), Gemini CLI, OpenCode, Qwen Code, Copilot CLI, Cursor
+Agent, Kimi, Goose) can be started from a controller and talked to while they work. The agent runs on
+the host as the signed-in user and **does not ask before it acts** (Claude Code
+`--permission-mode bypassPermissions`, Codex `approvalPolicy: never` with
+`sandbox: danger-full-access`, ACP agents' auto mode plus "allow once" answers from the host):
+anything that user may do, it may do, including changing this host's own
 settings. Hence every tool here needs admin level, and starting asks the owner by default.
 
 | Tool | Default | What it does |
@@ -620,7 +621,10 @@ conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and comman
 **Finding agents.** Each command name is looked up on the host's own `PATH`, then (Unix) through the
 user's login shell once (`$SHELL -ilc`, aliases and functions of the same name removed; its `PATH` is
 also used to run the agent, so Node.js shims work under launchd), then in installers' usual places.
-`--version` gives the version; `claude auth status` / `codex login status` the sign-in. Answers are
+`--version` gives the version; `claude auth status` / `codex login status` the sign-in. DeepSeek
+Harness has no status command: a `DEEPSEEK_API_KEY` in its environment, `$DSH_HOME/.credentials.yaml`
+(also a DeepSeek account sign-in) or `$DSH_HOME/.env` (`~/.dsh` by default) counts as signed in (only
+whether it is there is read); no harness home at all as signed out; anything else as unknown. Answers are
 cached for a minute (`refresh: true` looks again). A host running as SYSTEM (Windows service mode) or
 root runs nothing and reports `can_start: false`: agents must run as the user.
 
@@ -647,8 +651,13 @@ turn's last request runs as the next turn. Otherwise, or with no turn running, i
 `steer_queued` notice says why. The process stops when the session ends, after 20 minutes
 without a turn, when an interrupt does not land within its grace (Claude 10 s, Codex 3 s, ACP 5 s), or
 when the host stops; the session is then **parked**, and the next message starts a new process that
-resumes the agent's own conversation (`--resume`, `thread/resume`, `session/load`). At most 4 agent
-processes run at a time.
+resumes the agent's own conversation (`--resume`, `thread/resume`, `session/resume` or `session/load`).
+At most 4 agent processes run at a time.
+
+A `model` is passed as `--model` (Claude Code), on the thread (Codex), or for ACP agents
+as the session's `model` config option when the agent lists one (DeepSeek Harness: the model's name,
+e.g. `deepseek-v4-pro`; a notice lists what it offers if the name is not among them), otherwise
+`session/set_model`.
 
 **Events** are numbered per session and written to `<profile>/host/chat/<id>/events.jsonl` before
 they go out, so a viewer that reconnects asks for what came after the last one it saw. One JSON line

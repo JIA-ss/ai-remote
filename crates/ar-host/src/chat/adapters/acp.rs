@@ -1,7 +1,8 @@
 //! Agents that speak the Agent Client Protocol (Gemini CLI, OpenCode, Qwen Code, Copilot CLI and
-//! others; see [`crate::chat::runtimes`]): `initialize`, `session/new` (or `session/load` to
-//! continue), then one `session/prompt` per message, whose answer ends the turn. The agent reports
-//! progress with `session/update` notifications, which already use this host's event vocabulary.
+//! others; see [`crate::chat::runtimes`]): `initialize`, `session/new` (or, to continue,
+//! `session/resume` or `session/load`, whichever the agent offers), then one `session/prompt` per
+//! message, whose answer ends the turn. The agent reports progress with `session/update`
+//! notifications, which already use this host's event vocabulary.
 //!
 //! - Bypass: the session switches to the agent's auto mode when it offers one ([`Runtime::auto_mode`]),
 //!   and every `session/request_permission` is answered by the client: an "allow once" option if
@@ -12,6 +13,11 @@
 //! - Cancelling sends `session/cancel` and answers waiting permission requests with `cancelled`,
 //!   as the protocol requires; the prompt then answers with stop reason `cancelled`.
 //! - While `session/load` replays an earlier conversation, its updates are not shown again.
+//!   `session/resume` (DeepSeek Harness) continues without replaying and is preferred.
+//! - A model is chosen with the session's `model` config option when the agent lists one
+//!   (`session/set_config_option`, matched by value or name), otherwise with `session/set_model`.
+//! - Text after a tool call is a new message (or each `messageId` its own), so a turn reads as the
+//!   agent wrote it; the turn's final text is its last message.
 //!
 //! [`Runtime::auto_mode`]: crate::chat::runtimes::Runtime::auto_mode
 
@@ -43,7 +49,10 @@ pub fn args(l: &super::Launch<'_>) -> Vec<String> {
 #[derive(Debug)]
 enum Pending {
     Initialize,
-    Session { loading: bool },
+    /// `continuing`: `session/resume` or `session/load` of [`Opts::resume`].
+    Session {
+        continuing: bool,
+    },
     Prompt,
     Other,
 }
@@ -53,12 +62,16 @@ struct State {
     next: u64,
     pending: HashMap<u64, Pending>,
     session: Option<String>,
-    can_load: bool,
     loading: bool,
     ready: bool,
     waiting: VecDeque<String>,
     turn: u32,
+    /// Text of the current message, the turn's final text if no other follows.
     text: String,
+    /// Id of the current message within the turn.
+    message: Option<String>,
+    /// Bumped by a tool call: text after it is a new message.
+    segment: u32,
     cancelling: bool,
     permissions: Vec<Value>,
 }
@@ -73,6 +86,8 @@ impl State {
     fn prompt(&mut self, text: &str) -> String {
         self.turn += 1;
         self.text.clear();
+        self.message = None;
+        self.segment = 0;
         self.cancelling = false;
         let session = self.session.clone().unwrap_or_default();
         self.request(
@@ -180,7 +195,47 @@ pub async fn run(
 }
 
 fn session_new(st: &mut State, opts: &Opts) -> String {
-    st.request("session/new", json!({"cwd": opts.cwd, "mcpServers": []}), Pending::Session { loading: false })
+    st.request("session/new", json!({"cwd": opts.cwd, "mcpServers": []}), Pending::Session { continuing: false })
+}
+
+/// The request that selects `model`: the `model` config option's matching value when the agent
+/// lists config options, `session/set_model` when it lists none. `Err` names what was offered.
+fn select_model(st: &mut State, session: &str, r: &Value, model: &str) -> Result<String, String> {
+    let Some(options) = r["configOptions"].as_array() else {
+        return Ok(st.request("session/set_model", json!({"sessionId": session, "modelId": model}), Pending::Other));
+    };
+    let Some(opt) = options.iter().find(|o| o["category"] == "model" || o["id"] == "model") else {
+        return Err("the agent offers no model choice".into());
+    };
+    // Options are flat or in groups; a value may be opaque (DeepSeek Harness: `["provider","model"]`).
+    let choices: Vec<&Value> = opt["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|o| match o["options"].as_array() {
+            Some(group) => group.iter().collect::<Vec<_>>(),
+            None => vec![o],
+        })
+        .collect();
+    let matches = |c: &&&Value| {
+        let value = c["value"].as_str().unwrap_or("");
+        value == model
+            || c["name"] == model
+            || serde_json::from_str::<Vec<String>>(value).is_ok_and(|v| v.last().is_some_and(|m| m == model))
+    };
+    match choices.iter().find(matches).and_then(|c| c["value"].as_str()) {
+        Some(value) if opt["currentValue"] == value => Err(String::new()),
+        Some(value) => Ok(st.request(
+            "session/set_config_option",
+            json!({"sessionId": session, "configId": opt["id"], "value": value}),
+            Pending::Other,
+        )),
+        None => {
+            let names: Vec<&str> =
+                choices.iter().filter_map(|c| c["name"].as_str().or(c["value"].as_str())).take(12).collect();
+            Err(format!("offered: {}", names.join(", ")))
+        }
+    }
 }
 
 fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, Vec<Out>) {
@@ -189,15 +244,20 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
     match msg {
         Incoming::Response { id, result } => match (st.pending.remove(&id), result) {
             (Some(Pending::Initialize), Ok(r)) => {
-                st.can_load = r["agentCapabilities"]["loadSession"].as_bool() == Some(true);
+                let caps = &r["agentCapabilities"];
+                let can_resume = caps["sessionCapabilities"]["resume"].is_object();
+                let can_load = caps["loadSession"].as_bool() == Some(true);
                 match opts.resume.clone() {
-                    Some(s) if st.can_load => {
-                        st.loading = true;
+                    Some(s) if can_resume || can_load => {
+                        // `session/load` replays the conversation (hidden while `loading`);
+                        // `session/resume` does not.
+                        st.loading = !can_resume;
                         st.session = Some(s.clone());
+                        let method = if can_resume { "session/resume" } else { "session/load" };
                         writes.push(st.request(
-                            "session/load",
+                            method,
                             json!({"sessionId": s, "cwd": opts.cwd, "mcpServers": []}),
-                            Pending::Session { loading: true },
+                            Pending::Session { continuing: true },
                         ));
                     }
                     Some(_) => {
@@ -212,9 +272,9 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 }
             }
             (Some(Pending::Initialize), Err(e)) => outs.push(Out::Exited(format!("{name} refused to start: {e}"))),
-            (Some(Pending::Session { loading }), Ok(r)) => {
+            (Some(Pending::Session { continuing }), Ok(r)) => {
                 st.loading = false;
-                if !loading {
+                if !continuing {
                     st.session = r["sessionId"].as_str().map(str::to_string);
                 }
                 let Some(session) = st.session.clone() else {
@@ -233,11 +293,15 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                     }
                 }
                 if let Some(model) = &opts.model {
-                    writes.push(st.request(
-                        "session/set_model",
-                        json!({"sessionId": session, "modelId": model}),
-                        Pending::Other,
-                    ));
+                    match select_model(st, &session, &r, model) {
+                        Ok(w) => writes.push(w),
+                        Err(why) if why.is_empty() => {}
+                        Err(why) => outs.push(Out::Ev(Ev::Notice {
+                            level: "warn",
+                            code: "model",
+                            text: format!("{name} has no model '{model}' ({why}); it uses its own"),
+                        })),
+                    }
                 }
                 st.ready = true;
                 outs.push(Out::Session(session));
@@ -245,7 +309,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                     writes.push(st.prompt(&text));
                 }
             }
-            (Some(Pending::Session { loading: true }), Err(e)) => {
+            (Some(Pending::Session { continuing: true }), Err(e)) => {
                 st.loading = false;
                 st.session = None;
                 outs.push(Out::Ev(Ev::Notice {
@@ -255,7 +319,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 }));
                 writes.push(session_new(st, opts));
             }
-            (Some(Pending::Session { loading: false }), Err(e)) => {
+            (Some(Pending::Session { continuing: false }), Err(e)) => {
                 outs.push(Out::Exited(format!("{name} could not start a session: {e}")))
             }
             (Some(Pending::Prompt), r) => {
@@ -314,25 +378,39 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
     match u["sessionUpdate"].as_str().unwrap_or("") {
         "agent_message_chunk" => {
             let text = chunk_text(&u["content"]);
+            let id = match u["messageId"].as_str() {
+                Some(m) => format!("t{}:{m}", st.turn),
+                None => format!("t{}.{}", st.turn, st.segment),
+            };
+            if st.message.as_ref() != Some(&id) {
+                st.message = Some(id.clone());
+                st.text.clear();
+            }
             st.text.push_str(&text);
-            outs.push(Out::Ev(Ev::Message { id: format!("t{}", st.turn), text, delta: true }));
+            outs.push(Out::Ev(Ev::Message { id, text, delta: true }));
         }
         "agent_thought_chunk" => {
             outs.push(Out::Ev(Ev::Thought {
-                id: format!("t{}r", st.turn),
+                id: match u["messageId"].as_str() {
+                    Some(m) => format!("t{}:{m}r", st.turn),
+                    None => format!("t{}.{}r", st.turn, st.segment),
+                },
                 text: chunk_text(&u["content"]),
                 delta: true,
             }));
         }
-        "tool_call" => outs.push(Out::Ev(Ev::ToolCall {
-            call_id: u["toolCallId"].as_str().unwrap_or("").to_string(),
-            title: cut(u["title"].as_str().unwrap_or("tool"), 400).0,
-            kind: kind(u["kind"].as_str()),
-            status: status(u["status"].as_str()).unwrap_or(ToolStatus::Pending),
-            input: u.get("rawInput").filter(|v| !v.is_null()).map(preview_value),
-            locations: locations(u),
-            content: contents(&u["content"]).0,
-        })),
+        "tool_call" => {
+            st.segment += 1;
+            outs.push(Out::Ev(Ev::ToolCall {
+                call_id: u["toolCallId"].as_str().unwrap_or("").to_string(),
+                title: cut(u["title"].as_str().unwrap_or("tool"), 400).0,
+                kind: kind(u["kind"].as_str()),
+                status: status(u["status"].as_str()).unwrap_or(ToolStatus::Pending),
+                input: u.get("rawInput").filter(|v| !v.is_null()).map(preview_value),
+                locations: locations(u),
+                content: contents(&u["content"]).0,
+            }))
+        }
         "tool_call_update" => {
             let (content, truncated) = contents(&u["content"]);
             outs.push(Out::Ev(Ev::ToolUpdate {
@@ -354,6 +432,13 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
                 .collect();
             outs.push(Out::Ev(Ev::Plan { entries }));
         }
+        "usage_update" => outs.push(Out::Ev(Ev::Usage {
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: u["cost"]["amount"].as_f64().filter(|_| u["cost"]["currency"] == "USD"),
+            context_window: u["size"].as_u64(),
+            context_used: u["used"].as_u64(),
+        })),
         _ => {}
     }
 }
@@ -465,6 +550,10 @@ mod tests {
             outs.extend(handle(&mut st, l, &opts(None), "A").1);
         }
         assert!(matches!(&outs[1], Out::Ev(Ev::ToolCall { kind: ToolKind::Execute, status: ToolStatus::Pending, .. })));
+        // Text after a tool call is a new message.
+        assert!(
+            matches!((&outs[0], &outs[3]), (Out::Ev(Ev::Message { id: a, .. }), Out::Ev(Ev::Message { id: b, .. })) if a != b)
+        );
         assert!(matches!(&outs[2], Out::Ev(Ev::ToolUpdate { content, .. }) if content.len() == 2));
         let perm = r#"{"id":"p1","method":"session/request_permission","params":{"sessionId":"s","options":[{"optionId":"aa","kind":"allow_always"},{"optionId":"ao","kind":"allow_once"},{"optionId":"r","kind":"reject_once"}]}}"#;
         let (w, _) = handle(&mut st, perm, &opts(None), "A");
@@ -475,10 +564,83 @@ mod tests {
         let answer = format!(r#"{{"id":{},"result":{{"stopReason":"end_turn"}}}}"#, st.next);
         let (_, o) = handle(&mut st, &answer, &opts(None), "A");
         assert!(
-            matches!(&o[0], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "Done"),
+            matches!(&o[0], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "ne"),
             "{o:?}"
         );
         let (w, _) = handle(&mut st, r#"{"id":"f","method":"fs/read_text_file","params":{}}"#, &opts(None), "A");
         assert!(w[0].contains("-32601"));
+    }
+
+    /// DeepSeek Harness (`dsh --profile acp`): `session/resume` instead of `session/load`, models as
+    /// an opaque config option, whole messages with ids, context usage. Lines as its server sends them.
+    #[test]
+    fn deepseek_harness_resumes_selects_its_model_and_reports_context() {
+        let o = Opts {
+            cwd: "/w".into(),
+            resume: Some("u1".into()),
+            auto_mode: None,
+            model: Some("deepseek-v4-flash".into()),
+        };
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        let init = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"deepseek-harness-acp","version":"0.0.1"},"agentCapabilities":{"mcpCapabilities":{"http":true},"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false},"sessionCapabilities":{"close":{},"list":{},"resume":{}}},"authMethods":[]}}"#;
+        let (w, _) = handle(&mut st, init, &o, "DeepSeek Harness");
+        assert!(w[0].contains("session/resume") && w[0].contains("\"u1\""), "{}", w[0]);
+        assert!(!st.loading, "resume does not replay");
+        let resumed = r#"{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"[\"deepseek-official\",\"deepseek-v4-pro\"]","options":[{"group":"deepseek-official","name":"DeepSeek","options":[{"value":"[\"deepseek-official\",\"deepseek-v4-pro\"]","name":"deepseek-v4-pro"},{"value":"[\"deepseek-official\",\"deepseek-v4-flash\"]","name":"deepseek-v4-flash"}]}]},{"id":"reasoning_effort","name":"Reasoning effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"high","name":"High"}]}]}}"#;
+        let (w, out) = handle(&mut st, resumed, &o, "DeepSeek Harness");
+        assert!(matches!(&out[0], Out::Session(s) if s == "u1"));
+        assert!(w[0].contains("session/set_config_option") && w[0].contains(r#"\"deepseek-v4-flash\"]"#), "{}", w[0]);
+        assert!(!w.iter().any(|l| l.contains("session/set_model")));
+
+        let p = st.prompt("go");
+        assert!(p.contains("\"u1\""));
+        let lines = [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_thought_chunk","messageId":"m1","content":{"type":"text","text":"Look first."}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"Listing."}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"usage_update","used":18234,"size":131072}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"bash","kind":"other","status":"in_progress","rawInput":{"command":"ls"}}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"failed","content":[{"type":"content","content":{"type":"text","text":"ls: no such dir"}}]}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"u1","update":{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"It is empty."}}}}"#,
+        ];
+        let mut outs = Vec::new();
+        for l in lines {
+            outs.extend(handle(&mut st, l, &o, "DeepSeek Harness").1);
+        }
+        assert!(matches!(&outs[0], Out::Ev(Ev::Thought { id, .. }) if id == "t1:m1r"));
+        assert!(matches!(&outs[1], Out::Ev(Ev::Message { id, .. }) if id == "t1:m1"));
+        assert!(matches!(&outs[2], Out::Ev(Ev::Usage { context_used: Some(18234), context_window: Some(131072), .. })));
+        assert!(matches!(&outs[3], Out::Ev(Ev::ToolCall { status: ToolStatus::InProgress, input: Some(_), .. })));
+        assert!(matches!(&outs[4], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), .. })));
+        assert!(matches!(&outs[5], Out::Ev(Ev::Message { id, .. }) if id == "t1:m2"));
+        let done = format!(r#"{{"jsonrpc":"2.0","id":{},"result":{{"stopReason":"end_turn"}}}}"#, st.next);
+        let (_, end) = handle(&mut st, &done, &o, "DeepSeek Harness");
+        assert!(
+            matches!(&end[0], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "It is empty."),
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_resume_starts_a_new_session_and_an_unknown_model_is_reported() {
+        let o = Opts { cwd: "/w".into(), resume: Some("gone".into()), auto_mode: None, model: Some("nope".into()) };
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        let (w, _) = handle(
+            &mut st,
+            r#"{"id":1,"result":{"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}"#,
+            &o,
+            "D",
+        );
+        assert!(w[0].contains("session/resume"));
+        let (w, out) =
+            handle(&mut st, r#"{"id":2,"error":{"code":-32602,"message":"session is not resumable: gone"}}"#, &o, "D");
+        assert!(matches!(&out[0], Out::Ev(Ev::Notice { code: "context_lost", .. })));
+        assert!(w[0].contains("session/new"));
+        let new = r#"{"id":3,"result":{"sessionId":"n1","configOptions":[{"id":"model","category":"model","currentValue":"[\"p\",\"a\"]","options":[{"value":"[\"p\",\"a\"]","name":"a"}]}]}}"#;
+        let (w, out) = handle(&mut st, new, &o, "D");
+        assert!(w.is_empty(), "{w:?}");
+        assert!(matches!(&out[0], Out::Ev(Ev::Notice { code: "model", text, .. }) if text.contains("offered: a")));
+        assert!(matches!(&out[1], Out::Session(s) if s == "n1"));
     }
 }

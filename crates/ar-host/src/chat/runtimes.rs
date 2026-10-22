@@ -28,6 +28,17 @@ pub enum Protocol {
     Acp,
 }
 
+/// How the host tells whether an agent is signed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Login {
+    /// Not checked; nothing is reported.
+    NotChecked,
+    /// A command (these arguments) that exits 0 when the agent is signed in.
+    Command(&'static [&'static str]),
+    /// DeepSeek Harness: a DeepSeek API key or account in its environment or credential files.
+    DeepSeek,
+}
+
 /// What an agent's adapter can do; shown to controllers so they offer only what works.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Caps {
@@ -55,8 +66,7 @@ pub struct Runtime {
     pub protocol: Protocol,
     /// Arguments that start the agent's protocol mode (ACP agents).
     pub args: &'static [&'static str],
-    /// Arguments of a command that exits 0 when the agent is signed in.
-    pub login: Option<&'static [&'static str]>,
+    pub login: Login,
     /// Oldest version known to speak the protocol as used here.
     pub min_version: Option<&'static str>,
     /// ACP: the session mode that runs without asking, selected when the agent offers it.
@@ -75,7 +85,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["claude"],
         protocol: Protocol::ClaudeStreamJson,
         args: &[],
-        login: Some(&["auth", "status"]),
+        login: Login::Command(&["auth", "status"]),
         min_version: Some("2.0.0"),
         auto_mode: None,
         caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: true },
@@ -86,10 +96,22 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["codex"],
         protocol: Protocol::CodexAppServer,
         args: &[],
-        login: Some(&["login", "status"]),
+        login: Login::Command(&["login", "status"]),
         min_version: Some("0.100.0"),
         auto_mode: None,
         caps: Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: true, steer: true },
+    },
+    Runtime {
+        id: "deepseek",
+        name: "DeepSeek Harness",
+        commands: &["dsh"],
+        protocol: Protocol::Acp,
+        args: &["--profile", "acp"],
+        login: Login::DeepSeek,
+        min_version: None,
+        auto_mode: None,
+        // `session/resume`, `usage_update`; whole messages rather than streamed text, no plans.
+        caps: Caps { interrupt: true, resume: true, partial: false, thinking: true, questions: false, steer: false },
     },
     Runtime {
         id: "gemini",
@@ -97,7 +119,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["gemini"],
         protocol: Protocol::Acp,
         args: &["--experimental-acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: Some("yolo"),
         caps: ACP_CAPS,
@@ -108,7 +130,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["opencode"],
         protocol: Protocol::Acp,
         args: &["acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: None,
         caps: ACP_CAPS,
@@ -119,7 +141,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["qwen"],
         protocol: Protocol::Acp,
         args: &["--acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: Some("yolo"),
         caps: ACP_CAPS,
@@ -130,7 +152,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["copilot"],
         protocol: Protocol::Acp,
         args: &["--acp", "--stdio"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: None,
         caps: ACP_CAPS,
@@ -141,7 +163,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["cursor-agent", "agent"],
         protocol: Protocol::Acp,
         args: &["acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: None,
         caps: ACP_CAPS,
@@ -152,7 +174,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["kimi"],
         protocol: Protocol::Acp,
         args: &["acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: None,
         caps: ACP_CAPS,
@@ -163,7 +185,7 @@ pub const RUNTIMES: &[Runtime] = &[
         commands: &["goose"],
         protocol: Protocol::Acp,
         args: &["acp"],
-        login: None,
+        login: Login::NotChecked,
         min_version: None,
         auto_mode: None,
         caps: ACP_CAPS,
