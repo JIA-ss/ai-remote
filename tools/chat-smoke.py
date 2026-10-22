@@ -431,15 +431,25 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             # An image, and a command or skill from the agent's own list.
+            takes_images = json.loads(cli("--json", "chat", "commands", rsid).stdout or "{}").get("images", True)
             r = cli("chat", "send", rsid, "What colour is this image? Reply with one word.", "--image", work / "red.png",
                     "--wait", timeout=300)
-            check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
-                  f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            if takes_images:
+                check(f"real {kind}: sees an image", r.returncode == 0 and "RED" in r.stdout.upper(),
+                      f"{r.stdout[-200:]} {r.stderr[-200:]}")
+            else:
+                # The agent said it takes none: the host refuses the message and says why.
+                check(f"real {kind}: an image is refused, with the reason", r.returncode == 2 and "takes no images" in r.stderr,
+                      f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
             r = cli("--json", "chat", "commands", rsid)
             cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
             print(f"      {len(cmds)} commands: {', '.join(c['insert'] for c in cmds[:12])}")
             pong = next((c for c in cmds if c["name"] in ("pong-skill", "pong")), None)
-            check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and pong is not None, r.stderr[-200:])
+            # Claude and Codex read the folder's command / skill; an ACP agent lists its own.
+            acp = rows.get(f"real-{kind}", {}).get("protocol") == "acp"
+            # An ACP agent may offer none (DeepSeek Harness sends no available_commands_update).
+            if not acp or cmds:
+                check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and (pong is not None or acp), r.stderr[-200:])
             if pong:
                 t0 = time.time()
                 r = cli("chat", "send", rsid, f"{pong['insert']} please", "--wait", timeout=300)
