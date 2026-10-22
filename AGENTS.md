@@ -267,6 +267,8 @@
 - 2026-10-22 补（分支 `chore/runner-verify`）：runner 的端到端测试改为两平台都跑——Windows 上替身是 PowerShell 脚本、端点是真的命名管道；
   新增"运行中插话经管道送达并并入当前轮次"（替身像 Claude Code 一样回显两行，走 `Steered`，`turns` 仍是 1）。Mac 连跑 2 次、
   win-dev 连跑 3 次，6 项全过（握手、密钥、重启续接、插话、图片、runner 不在）；win-dev 上 clippy `-D warnings` 无警告。
+  新测试在 macOS CI 上抓到一个真 bug：runner 对每个请求都 `tokio::spawn`，同一智能体的提示词和插话可能乱序写进智能体
+  （慢机上插话先到，被当成下一轮）。现在 `cmd` / `ack` 在读循环里按序处理，只有探测、启动、关闭这类慢请求并发。修后 Mac 连跑 15 次全过。
   这些仍是用户态进程内的测试，SYSTEM 拉起 runner 那一段只能真机验证。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
