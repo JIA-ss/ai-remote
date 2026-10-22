@@ -357,6 +357,21 @@ swarm-discovery 0.6.4；本机只用 `lsof` 看了一次 socket，没有 sudo �
 - [ ] Windows（WebView2）上看一遍：字体、滚动跟随、`content-visibility`、`mask-image`。
 - [ ] iPhone 端照桌面端跟进。转换层（`turnRows`、`runSummary`、`diffRows`）是纯函数，Swift 可以照着移植。
 
+## 去掉单独的"插话"操作，按智能体原生的方式发送（2026-10-22，分支 `claude/desktop-chat-e2e`）
+
+用户："不需要有插话这个操作吧？就用原生 agent 的概念就行了。"Claude Code、Codex 自己就是这样：智能体工作时你照常发消息，
+它在下一步把消息并进正在做的这一轮。所以界面不再给"插话 / 排队"两种选择：
+
+- 输入框只有一个发送。运行中发送的方式由智能体决定（`sendMode`）：`caps.steer` 为真（Claude Code、Codex）发
+  `mode: "steer"`，否则不带 mode（排队，本轮结束后发）。去掉芯片、`hc_mode_*` 文案和样式。占位文字分别是
+  "它工作时也可以继续发消息" / "本轮结束后它会收到这条消息"。
+- 并进当前轮的消息（`user` 带 `steer: true`）显示成普通用户消息，仍在这一轮里，不加标签（保留 `data-steer` 供测试用）。
+- 排队的消息照旧显示在输入框上方，可编辑、撤回；"现在插进这一轮"按钮改叫"立即发给它"。`steer_queued` 提示改成中性的
+  "智能体这一轮结束后会收到这条消息。"
+- 协议没变（`caps.steer`、`input.mode`、`user.steer`、`steer_queued` 都还在）；iOS 端同样的改动交给 PR #22 的会话。
+- 验证（2026-10-22，本机，debug 包）：`tsc` 过，前端测试 84 过；e2e 替身流程 3 次全过（排队 / 撤回改在不支持插话的
+  智能体上测），真实 Claude Code 1 次 13 项全过：第 2 条命令后发的消息作为普通用户消息进了同一轮，Claude 数到 5 停下。
+
 ## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4c655ce）
 
 `feat/host-chat` 合入桌面新界面、被控端插话之后的第一次端到端：真实的 debug 桌面应用，经 Tauri → 控制端代理 → QUIC →

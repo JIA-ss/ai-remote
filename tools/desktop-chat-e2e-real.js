@@ -75,9 +75,9 @@
     const twoEchoes = await until("two commands", () => commands(lastTurn()) >= 2, 180000);
     await check("the long task runs commands", !!twoEchoes);
     await check("it is still running after two numbers", running(), `running ${running()}, commands so far ${commands(lastTurn())}`);
-    await check("the composer defaults to steering", !!$(".nt-compose .chip.steer"), $(".nt-compose .chip")?.className);
+    await check("one send, no switch; the field says it can be messaged while it works", !$(".nt-compose .chip") && /工作时也可以继续发消息|while it works/.test($(".nt-compose textarea").placeholder), $(".nt-compose textarea").placeholder);
     await send("Change of plan: stop at 5 instead of 20.");
-    await check("the steer joins the running turn, marked", !!(await until("steer row", () => $$(".nt-user.steer", lastTurn()).some((u) => u.textContent.includes("stop at 5")), 60000)));
+    await check("the message joins the running turn as a plain user message", !!(await until("steer row", () => $$(".nt-user[data-steer]", lastTurn()).some((u) => u.textContent.includes("stop at 5") && !u.querySelector(".tag")), 60000)));
     await idle(180000);
     const ran = commands(lastTurn());
     await check("the agent stopped near 5, not 20", ran >= 2 && ran <= 8, `${ran} commands; ${lastTurn()?.textContent.slice(-200)}`);

@@ -17,7 +17,6 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDot,
-  CornerDownRight,
   FileMinus2,
   FilePen,
   FilePlus2,
@@ -112,13 +111,9 @@ export function UserRow({ row }: { row: Extract<Row, { kind: "user" }> }) {
   const long = row.text.split("\n").length > FOLD_LINES || row.text.length > 1200;
   const [open, setOpen] = useState(false);
   return (
-    <div className={cx("nt-user", row.steer && "steer")}>
-      {row.steer && (
-        <span className="tag">
-          <CornerDownRight size={11} aria-hidden />
-          {t("hc_steer_tag")}
-        </span>
-      )}
+    // A message the agent took into its running turn looks like any other: that is how the agent itself
+    // shows it. It stays where it landed, inside the turn.
+    <div className="nt-user" data-steer={row.steer ? "1" : undefined}>
       <div className={cx("bubble", long && !open && "folded")}>
         <div className="txt">{row.text}</div>
         {long && (

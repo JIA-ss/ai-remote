@@ -123,38 +123,29 @@
     await sleep(2500);
     const tm = $(".nt-working .tm")?.textContent ?? "";
     await check("the working line's timer counts while hidden", /^\d+(\.\d+)? s$/.test(tm.trim()) && parseFloat(tm) >= 1, tm);
-    await check("an agent that can steer defaults to steering", !!$(".nt-compose .chip.steer"), $(".nt-compose .chip")?.className);
+    await check("there is one send, no add-to-turn / queue switch", !$(".nt-compose .chip") && /工作时也可以继续发消息|while it works/.test(composer().placeholder), composer().placeholder);
     await send("change of plan");
-    await check("the steer joins the running turn, marked", !!(await until("steer row", () => $$(".nt-user.steer", lastTurn()).some((u) => u.textContent.includes("change of plan")))));
+    const steered = await until("steer row", () => $$(".nt-user", lastTurn()).find((u) => u.textContent.includes("change of plan")));
+    await check("the message joins the running turn, unmarked like any user message", !!steered && steered.dataset.steer === "1" && !$(".tag", steered), steered?.outerHTML.slice(0, 120));
     await check("the steered turn ends with the agent's answer", !!(await until("steered answer", () => lastTurn().textContent.includes("steered: change of plan"))));
     await idle();
-    await check("a steer adds no turn of its own", turns().length === before + 1, `${turns().length} vs ${before + 1}`);
+    await check("it adds no turn of its own", turns().length === before + 1, `${turns().length} vs ${before + 1}`);
     await shot("02-steer");
 
-    // 4. Queue, take it back, stop, continue.
+    // 4. Stop and continue.
     await send("SLOW again");
     await until("running", running);
-    $(".nt-compose .chip.steer").click();
-    await check("the chip switches to queueing", !!(await until("queue chip", () => $(".nt-compose .chip.queue"))));
-    await send("take me back");
-    const queued = await until("queued", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back")));
-    await check("the queued message shows above the composer", !!queued);
-    await shot("03-queued");
-    $$(".nt-ib", queued).at(-1).click();
-    await check("dequeue takes it back", !!(await until("dequeued", () => !$$(".nt-qd").some((q) => q.textContent.includes("take me back")))));
     $(".nt-compose .round.stop").click();
     const stopped = await until("stopped", () => $(".nt-stopped", lastTurn()));
     await check("stop ends the turn and offers to continue", !!stopped);
-    await sleep(800);
-    await check("the taken-back message never ran", !$$(".nt-user").some((u) => u.textContent.includes("take me back")));
     await shot("04-stopped");
     const cont = await until("continue button", () => $(".nt-stopped .btn"));
-    await check("the continue button is still there after the screenshot", !!cont);
     cont.click();
     await check("continue sends a new turn", !!(await until("continue turn", () => !$(".nt-stopped") && lastTurn().querySelector(".nt-user"))));
     await idle();
 
-    // 5. An agent that cannot steer: Send only queues; the queued message runs after Stop.
+    // 5. An agent that cannot take a message mid-turn: Send waits for the turn to end; a waiting
+    // message can be taken back.
     $(".nt-chat-hd .ico").click();
     (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
     await until("picker", () => $(".nt-chat-start"));
@@ -165,12 +156,20 @@
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
     await check("the second agent starts and runs", !!(await until("running", running, 30000)));
-    await check("an agent without steering only queues", !!$(".nt-compose .chip.queue.static") && !$(".nt-compose .chip.steer"), $(".nt-compose .chip")?.className);
+    await check("its composer says the message waits for the turn, no switch", !$(".nt-compose .chip") && /本轮结束后|current turn ends/.test(composer().placeholder), composer().placeholder);
+    await send("take me back");
+    const queued = await until("queued", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back")));
+    await check("the waiting message shows above the composer", !!queued);
+    await shot("03-queued");
+    const remove = await until("remove button", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back"))?.querySelectorAll(".nt-ib")[1]);
+    remove.click();
+    await check("it can be taken back", !!(await until("dequeued", () => !$$(".nt-qd").some((q) => q.textContent.includes("take me back")))));
     await send("late message");
-    await check("its message waits in the queue", !!(await until("queued", () => $$(".nt-qd").some((q) => q.textContent.includes("late message")))));
+    await check("another waits in the queue", !!(await until("queued", () => $$(".nt-qd").some((q) => q.textContent.includes("late message")))));
     $(".nt-compose .round.stop").click();
-    await check("after stop the queued message runs as the next turn", !!(await until("queued turn", () => lastTurn().textContent.includes("you said: late message"), 20000)));
+    await check("after stop the waiting message runs as the next turn", !!(await until("queued turn", () => lastTurn().textContent.includes("you said: late message"), 20000)));
     await idle();
+    await check("the taken-back message never ran", !$$(".nt-user").some((u) => u.textContent.includes("take me back")));
     await shot("05-no-steer");
 
     // 6. Back to the first session: the transcript replays.

@@ -1,5 +1,5 @@
-// The chat's composer: typing while the agent works (added to the running turn when the agent can
-// take that, else queued for after it), the queued messages (edit, take back, send now), ↑ / ↓
+// The chat's composer: typing while the agent works (the agent takes it the way it does natively:
+// into the running turn for Claude Code and Codex, after the turn for the others), the queued messages (edit, take back, send now), ↑ / ↓
 // through what was sent, Stop, and how full the agent's context window is.
 //
 // Ported from Orca's native chat (stablyai/orca, MIT License, Copyright (c) 2026 Lovecast Inc.):
@@ -7,9 +7,9 @@
 // under the text, a round send button that turns into Stop), NativeChatQueuedMessageCard /
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
-import { ArrowUp, CornerDownRight, ListEnd, Pencil, Square, Trash2 } from "lucide-react";
+import { ArrowUp, ListEnd, Pencil, Square, Trash2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { browseHistory, type InputMode } from "../../lib/chat";
+import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 
@@ -92,7 +92,7 @@ function QueuedCard({ q, canSteer, onEdit, onRemove, onSteer, readonly }: {
         <span className="acts">
           {canSteer && (
             <button type="button" className="nt-ib" aria-label={t("hc_send_now")} title={t("hc_send_now")} onClick={onSteer}>
-              <CornerDownRight size={13} />
+              <ArrowUp size={13} />
             </button>
           )}
           <button type="button" className="nt-ib" aria-label={t("hc_edit_queued")} title={t("hc_edit_queued")} onClick={() => { setText(q.text); setEditing(true); }}>
@@ -126,12 +126,12 @@ export interface ComposerProps {
 
 export function Composer(p: ComposerProps) {
   const [text, setText] = useState("");
-  // Steering is the default where the agent supports it; the chip under the text switches it.
-  const [steer, setSteer] = useState(true);
   const [at, setAt] = useState(p.history.length);
   const draft = useRef("");
   const area = useRef<HTMLTextAreaElement>(null);
-  const mode: InputMode | undefined = p.running ? (p.canSteer && steer ? "steer" : "queue") : undefined;
+  // As the agent itself does it: Claude Code and Codex take a message into the turn they are working
+  // on; agents that cannot are sent it after the turn. There is no separate "add to this turn" action.
+  const mode: InputMode | undefined = sendMode(p.running, { steer: p.canSteer } as Caps);
 
   useEffect(() => setAt(p.history.length), [p.history.length]);
   // The field grows with its text up to a limit, then scrolls.
@@ -210,20 +210,6 @@ export function Composer(p: ComposerProps) {
         />
         <div className="bar">
           <div className="left">
-            {p.running && !p.disabled && (
-              p.canSteer ? (
-                <button type="button" className={cx("chip", mode)} onClick={(e) => { e.stopPropagation(); setSteer((v) => !v); }}
-                  title={mode === "steer" ? t("hc_mode_steer_d") : t("hc_mode_queue_d")} aria-pressed={mode === "steer"}>
-                  {mode === "steer" ? <CornerDownRight size={12} aria-hidden /> : <ListEnd size={12} aria-hidden />}
-                  {mode === "steer" ? t("hc_mode_steer") : t("hc_mode_queue")}
-                </button>
-              ) : (
-                <span className="chip queue static" title={t("hc_mode_queue_d")}>
-                  <ListEnd size={12} aria-hidden />
-                  {t("hc_mode_queue")}
-                </span>
-              )
-            )}
             {p.running && text.trim() && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
           </div>
           <div className="right">
