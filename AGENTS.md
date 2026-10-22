@@ -84,7 +84,15 @@ PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\
 `an_image_crosses_the_pipe_to_an_agent_in_the_runner`（图片经命名管道到智能体）和
 `an_agent_outlives_its_host_and_its_session_goes_on`（被控端中途死掉、再接回同一个智能体进程）是第一次在 Windows 上跑。
 这走的是 runner 和被控端在**同一进程、同一用户**的测试路径；SYSTEM 被控端以 `CreateProcessAsUserW` 拉起用户会话里的 runner 那一段
-仍按"服务模式"一节的步骤 1~8 要真机服务（管理员终端），没做。
+当时没做；同一天用户授权更新 win-dev 的真实服务后，步骤 1~2 有了真机结果（见下）。
+
+**win-dev 真实服务更新（2026-10-22，用户授权）**：服务 `ai-remote-host-cc166525` 原来跑 `feat/lan-direct` 检出的 release 包，
+没有编程智能体（控制端报 `unknown tool 'chat_runtimes'`）。用本分支（main 8eeabb6 + `which` 修复）出 release 包，复制到
+`%USERPROFILE%\ai-remote-svc-bin`（不指向构建目录，免得重编时覆盖正在跑的程序），经 zremote 提权会话 `host install --service`
+重装、`sc start` 启动。结果：被控端和监护进程是 SYSTEM，`--chat-runner` 进程是登录用户（`CreateProcessAsUserW` 拉起，真机第一次）；
+`doctor` 全 ok（安静模式、仅局域网 `:47800`、chat）；Mac 控制端 `ai-remote call --host win-dev chat_runtimes` 返回 `can_start: true`，
+Claude Code 2.1.293（已登录，`D:\nodejs\node_global\claude.cmd`，用户 PATH 里找到的）、Codex 0.162.1 等。
+服务模式步骤 3~8（真实对话、锁屏续接、stop-host、安全检查、卸载）仍未做。
 
 **顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
 `"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
