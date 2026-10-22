@@ -1249,7 +1249,20 @@ Edge 页面，每次刷新把本机毫秒时钟画成 40 个黑白块（32 位 +
   Windows 任务栏）。计时到点时 `.nt-anchor:hover` 或 `.nt-anchor select:focus` 还在就续期，选完画质 `blur()` 释放；
   全屏下提示 / 报错条挪到 `top: 60px`。实测：Chromium headless shell + CDP 真实鼠标事件（`:hover` 生效），静止 3.6 s 收起、
   悬停把手出现、停在上 / 下浮条 4.5 s 不收、移回中间 3.6 s 收起；camofox 无头拿不到 `:hover`，只测了 select 焦点续期。
-  **未测**：真实 app（WKWebView）原生全屏里 Dock / 菜单栏滑出时的遮挡、Windows 控制端。
+  **真机（2026-10-22）**：用户在 macOS debug 包（main 8eeabb6 + 下面两处鼠标修复）里接管 win-dev、原生全屏，手动走完清单：
+  静止后浮条收起、把手常驻；悬停把手唤出两条浮条；画质下拉打开时浮条不收、选完后收起；推到屏幕底边 / 顶边时 Dock、
+  菜单栏没有挡住浮条或把手；从底部浮条交还控制、把手随之消失，各 1 次，全部正常。**未测**：Windows 控制端（WebView2）。
+- **全屏接管时鼠标消失（2026-10-22，上面那轮真机测试里发现）**：鼠标移到远端画面上就消失，黑边上能看到。两层原因：
+  ①舞台在"全屏 + 接管 + 浮条收起"时整个 `cursor: none`（`.nt-stage.hidecursor`），黑边、把手、"视频已断开"层上都没有鼠标——
+  已删，舞台上一律显示本地鼠标；②画面上远程输入层只要被控端单独发光标（`cursor: "client"`）就 `cursor: none`，不管远端光标
+  画没画出来。临时诊断日志实测：win-dev 发来的 99 次位置全是 `visible: false`、`shape: 0`（位置照常变化），远端光标层一直
+  `display: none`；在 win-dev 用户会话里 `GetCursorInfo` 得到 `flags=2`（`CURSOR_SUPPRESSED`：Windows 认为最近的输入来自
+  触摸 / 笔，自己屏幕上也不画鼠标），所以被控端如实报告"不可见"。改法：`PointerLayer.move()` 返回这次画没画，`Stream`
+  只在变化时通过 `onPointerShown` 上报，断流 / 卸载时报 false；`RemoteInput` 的 `remotePointer` 改成"远端光标正画在画面上"，
+  只有这时才隐藏本地鼠标。win-dev 为什么一直处于被抑制状态没查（可能是别的会话注入过触摸 / 笔输入）。
+  测试配方：debug 包不设 `AI_REMOTE_HOME`，直接复用正在跑的真实控制端（已是安静模式、已和 win-dev 配对），`AI_REMOTE_CLI`
+  指向安装版的 `ai-remote`，这样不起任何新的被控端或控制端；`localStorage["ai-remote.video-trace"]="1"` 时每秒的 stats 行
+  会写进 app 的 stdout。
 - 动效只有浮条进出场（motion `AnimatePresence`，180 ms，8 px 位移）。
 
 ### 踩过的坑

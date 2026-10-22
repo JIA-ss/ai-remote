@@ -7,8 +7,9 @@ import type { PointerPosition, PointerShape } from "./api";
 
 export interface PointerLayer {
   shape(shape: PointerShape): void;
-  /** `screen` is the streamed monitor's size in the units of `at`. */
-  move(at: PointerPosition, screen: { width: number; height: number }): void;
+  /** `screen` is the streamed monitor's size in the units of `at`. Returns whether the pointer is
+   *  drawn now (false while the host reports it hidden or off this monitor). */
+  move(at: PointerPosition, screen: { width: number; height: number }): boolean;
   hide(): void;
 }
 
@@ -52,7 +53,7 @@ export function createPointerLayer(layer: HTMLCanvasElement, video: HTMLElement)
     move(at, screen) {
       if (!at.visible || at.x < 0 || at.y < 0 || at.x >= screen.width || at.y >= screen.height || !ctx) {
         hide();
-        return;
+        return false;
       }
       const picture = pictures.get(at.shape) ?? ARROW;
       if (picture !== drawn) {
@@ -72,6 +73,7 @@ export function createPointerLayer(layer: HTMLCanvasElement, video: HTMLElement)
       layer.style.transform =
         `translate(${video.offsetLeft + at.x * scale - picture.hotX * size}px, ${video.offsetTop + at.y * scale - picture.hotY * size}px)`;
       layer.style.display = "block";
+      return true;
     },
     hide,
   };
