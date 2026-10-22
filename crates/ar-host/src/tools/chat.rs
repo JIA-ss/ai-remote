@@ -23,7 +23,7 @@ use super::{NoParams, Tool, ToolSpec, json, parse};
 use crate::{
     chat::{Role, TICKET_TTL},
     session::ToolCtx,
-    tools::files::{Direction, TICKET_TTL as FILE_TICKET_TTL},
+    tools::files::{Direction, Held, TICKET_TTL as FILE_TICKET_TTL},
 };
 
 pub fn tools() -> Vec<Arc<dyn Tool>> {
@@ -322,12 +322,15 @@ impl Tool for FilePreview {
             .await
             .map_err(|e| anyhow::anyhow!("file worker failed: {e}"))??;
         let shown = dunce::simplified(&found.path).display().to_string();
-        let ticket = ctx.host.transfers().issue(ctx, "chat_file", found.path, Direction::Pull);
+        // Read now, with the agent's user's rights; the ticket carries these bytes.
+        let bytes = ctx.host.chat().read_preview(&found.path).await?;
+        let size = bytes.len();
+        let ticket = ctx.host.transfers().issue(ctx, "chat_file", found.path, Direction::Bytes(Held(Arc::new(bytes))));
         // One line, as the file tools answer: the app reads the ticket from the first line.
         let value = json!({
             "ticket": ticket,
             "path": shown,
-            "size": found.size,
+            "size": size,
             "kind": found.kind,
             "expires_in_secs": FILE_TICKET_TTL.as_secs(),
         });

@@ -993,5 +993,7 @@ export const zh: Record<keyof typeof en, string> = {
   hc_preview_close: "关闭（Esc）",
   hc_preview_cut: "文件太长，只显示前 2 MB。",
   hc_preview_static: "预览不运行页面里的脚本，也不从网络加载任何内容。",
+  hc_preview_run: "运行脚本",
+  hc_preview_run_tip: "在单独的窗口里打开这个页面并运行它的脚本。那个窗口碰不到本应用；页面只能从几个公共 CDN 加载脚本和样式，别的什么都不能请求。",
   hc_host_old: "{host} 上的被控端版本较旧，还不支持编程智能体。把那台电脑上的 ai-remote 更新到最新版后再试。",
 };

@@ -189,6 +189,7 @@ async fn transfer<R: AsyncRead + Unpin>(ticket: &Ticket, send: &mut SendStream, 
     match &ticket.direction {
         Direction::Push { size, sha256, overwrite } => receive(ticket, *size, sha256, *overwrite, send, reader).await,
         Direction::Pull => deliver(&ticket.path, send).await,
+        Direction::Bytes(b) => deliver_bytes(&b.0, send).await,
     }
 }
 
@@ -265,6 +266,28 @@ async fn receive<R: AsyncRead + Unpin>(
     })?;
     guard.0 = None;
     Ok(Moved { bytes: got, reply: Some(json!({"ok": true, "bytes": got, "sha256": digest, "path": display(target)})) })
+}
+
+/// Sends bytes read when the ticket was issued, the same way [`deliver`] sends a file.
+async fn deliver_bytes(bytes: &[u8], send: &mut SendStream) -> Result<Moved> {
+    let size = bytes.len() as u64;
+    if !reply(send, json!({"ok": true, "op": "pull", "size": size})).await {
+        bail!("the controller went away");
+    }
+    let mut sent = 0u64;
+    for chunk in bytes.chunks(CHUNK) {
+        match tokio::time::timeout(IDLE, send.write_all(chunk)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => bail!("the download broke off after {sent} of {size} bytes: {e}"),
+            Err(_) => bail!("the controller took nothing for {} s", IDLE.as_secs()),
+        }
+        sent += chunk.len() as u64;
+    }
+    let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(bytes));
+    if !reply(send, json!({"sha256": digest})).await {
+        bail!("the controller went away");
+    }
+    Ok(Moved { bytes: sent, reply: None })
 }
 
 async fn deliver(path: &Path, send: &mut SendStream) -> Result<Moved> {

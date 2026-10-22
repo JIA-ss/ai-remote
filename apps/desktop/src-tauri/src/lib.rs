@@ -27,6 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 mod elevate;
 mod host_local;
 mod login_item;
+mod preview_window;
 mod transfer;
 mod tray;
 
@@ -1136,6 +1137,32 @@ async fn preview_file(
     transfer::preview(&state.profile, &state.cli, &host, &session, &path).await.map(Frame).map_err(text)
 }
 
+/// Opens an HTML file of coding-agent session `session` on `host` with its scripts running, in a
+/// window of its own that cannot reach the app (see `preview_window`). The file is fetched again
+/// (the host checks it as for `preview_file`).
+#[tauri::command]
+#[specta::specta]
+async fn open_preview_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    host: String,
+    session: String,
+    path: String,
+) -> Result<(), String> {
+    preview_window::check_kind(&path).map_err(text)?;
+    let bytes = transfer::preview(&state.profile, &state.cli, &host, &session, &path).await.map_err(text)?;
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+    preview_window::open(&app, &name, bytes).await.map_err(text)
+}
+
+/// The last paths the preview server was asked for (the end-to-end test checks what a page did;
+/// paths only, the pages' random parts included, nothing else).
+#[tauri::command]
+#[specta::specta]
+fn preview_server_requests() -> Vec<String> {
+    preview_window::requests()
+}
+
 /// Writes a message from the page (an error, a warning) to the app's log, so problems inside the
 /// webview show up where the app's own messages go.
 #[tauri::command]
@@ -1231,6 +1258,8 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         push_file,
         pull_file,
         preview_file,
+        open_preview_window,
+        preview_server_requests,
         log_from_page,
         local_host_chat,
         set_local_host_chat,

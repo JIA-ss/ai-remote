@@ -520,6 +520,9 @@ export const demoBackend: Backend = {
   async pullFile() {
     throw new Error("file transfers need the app");
   },
+  async openPreviewWindow() {
+    throw new Error("running a page's scripts needs the app");
+  },
   async previewFile(host, _session, path) {
     reachable(host);
     await wait(250);
