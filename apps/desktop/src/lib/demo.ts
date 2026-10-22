@@ -2,6 +2,7 @@
 // sample computers and a scripted session that matches the design's sample content.
 
 import type { Backend, ToolResult } from "./api";
+import type { RemoteMonitor } from "./monitors";
 import { requester, type ChatEvent, type ChatHello, type ChatReply, type ChatState, type RuntimesReport, type SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
@@ -530,6 +531,14 @@ export const demoBackend: Backend = {
 };
 
 /** The demo's stand-in for a live view: a still picture of office-pc's screen. */
+/** The preview computer's monitors: the picture's own size as the primary one, a portrait one to
+ *  its left (a negative origin, as on Windows) and a landscape one to its right. */
+export const demoMonitors: RemoteMonitor[] = [
+  { index: 0, x: 0, y: 0, width: 1600, height: 1000, primary: true },
+  { index: 1, x: -1080, y: -200, width: 1080, height: 1920, primary: false },
+  { index: 2, x: 1600, y: 0, width: 1920, height: 1080, primary: false },
+];
+
 export function demoScreenUrl() {
   return `data:image/svg+xml;base64,${btoa(demoScreen())}`;
 }

@@ -56,6 +56,53 @@
 其中经 runner 的插话只有代码没有端到端测试，图片只在 Mac 上用 Unix 套接字测过（Windows 命名管道没测）；全屏修复在真实 App
 原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装；chat-input 在 Windows WebView2 下的输入界面。
 
+## 被控端多屏：会话页切换显示器（2026-10-22，分支 `feat/multi-monitor`，worktree `../ai-remote-monitors`）
+
+起因：用户说"被控端的多屏幕记得适配一下"。win-dev 的 `system_info`（2026-10-22 读到）：序号 0 是右侧竖屏 1440×2560 @ (5120, -9)，
+1 是左侧竖屏 1440×2560 @ (-1440, -9)，2 才是主屏 5120×2160 @ (0, 0)；主屏缩放 1.75，两块竖屏 1.25（混合 DPI）。
+
+**原来的样子（读代码）**：会话页从不传 `monitor`，永远推主屏，没有切屏入口。`screen/1` 本来就收 `monitor`（`system_info.monitors`
+的序号），回复的 `monitors` 只有 index / width / height / primary，没有原点，也不说推的是哪块。被控端其余部分对非主屏本来就对：
+- Windows 上 `monitors()`（windows_capture）、`geometry()`（xcap）和截屏用的 `win::monitor`（windows_capture `from_index`）都是同一个
+  `EnumDisplayMonitors` 顺序，宽高都是 `dmPelsWidth`、原点是 `dmPosition`；被控端进程是 PerMonitorV2，所以都是物理像素。
+  DDA 按 `HMONITOR` 找对应的 DXGI 输出。macOS 都用 xcap 同一列表、`CGDisplayBounds` 点坐标。
+- 光标：`GetCursorInfo` 是物理像素，`PointerFeed` 减去推流那块屏的原点；前端 `PointerLayer.move` 在 `0..width` / `0..height` 之外就隐藏。
+- 输入：前端 `RemoteInput.toScreen` 用回复的 `screen` 矩形换算（负原点照样对），滚轮先 move 再 wheel；被控端注入走
+  `MOUSEEVENTF_VIRTUALDESK` 再用 `SetCursorPos` 校正，`virtualdesk_*` 单测早就用 win-dev 的 (-1440, -9, 8000, 2560) 布局。
+
+**改了什么**：
+- 被控端 `stream/capture.rs`：`monitors()` 两个平台都用 xcap，返回 `MonitorInfo`（index、x、y、width、height、primary），和
+  `system_info` 是同一个列表。`stream/protocol.rs`：回复的 `monitors` 每项带 `x` / `y`；新增 `monitor`（实际推的那块：请求的那块，
+  没指定就是主屏，没有标主屏时取第一块）；请求了不存在的序号，两个平台统一回 `there is no monitor <n> on this computer: it has N (0 to N-1)`；
+  审计 `view_start` / `view_end` 的 `monitor` 记实际那块（以前没指定时是 null）。光标相对坐标抽成 `relative()`。单测 3 个。
+- 桌面端 `lib/monitors.ts`：按和主屏的相对位置起名（主屏 / 左侧竖屏 / 右侧屏幕 / 上方 / 下方；同一侧多块按从左到右编号；
+  旧被控端没有原点时叫"屏幕 N"）；下拉按桌面上从左到右排；按电脑记在 `localStorage["ai-remote.stream-monitor"]`；
+  `isMissingMonitor` 认三种说法（新被控端、旧 Windows 的 `no such monitor`、旧 macOS 的 `monitor not found`）。
+- `Session.tsx`：`Stream` 加 `monitor` / `onMonitors` / `onMonitorMissing`，`monitor` 进 effect 依赖，切屏就是重开一条流（和换画质
+  一样：清画面、清 `screen`，接管时的输入层先卸掉，新流的第一帧和几何到了再装上，不会把输入按旧屏的矩形发出去）。
+  标题条和全屏顶栏在画质下拉左边加"显示器"下拉，用同一套 `nt-select-wrap` / `nt-select`，被控端只有一块屏时不出现。
+  记住的那块屏不在了：回到主屏、忘掉这台电脑的选择、提示 `monitor_gone`。演示后端给了三块屏（主屏 1600×1000、左侧竖屏、右侧屏），
+  浏览器预览里能看到下拉。
+- 文档：`docs/architecture*.md` 的 `screen/1`、`docs/desktop-design.md` 的会话页顶栏。
+
+**实测（本机 macOS，2026-10-22，各 1 次）**：
+- `cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -- -D warnings` 无警告；`cargo test --workspace --locked`
+  400 过 0 失败 8 忽略（集成时是 397，多的 3 个是上面的单测）。
+- 前端：本文件开头列出的 10 个 `node --test` 文件 116 项 114 过 2 跳过（`stream-ui.test.mjs` 新增 6 项：命名与排序、记住选择与识别
+  "屏不在了"、请求带 `monitor` 与回复解析、切屏重开流与回退主屏、标题条和全屏顶栏都有下拉、光标层在负原点竖屏上的位置与移出隐藏；
+  `manual-input.test.mjs` 新增 1 项：负原点竖屏上的移动、滚轮和点击落点）；`tsc --noEmit` 过。
+- 浏览器预览（`vite --port 1437` + Camofox，演示后端）：标题条出现"主屏 · 1600×1000"，选项依次是"左侧竖屏 · 1080×1920 / 主屏 ·
+  1600×1000 / 右侧屏幕 · 1920×1080"；切到左侧竖屏后画面变成竖的、居中；全屏顶栏里同样有这个下拉，和画质下拉同款；刷新后仍是左侧
+  竖屏；英文文案也核对过。这是 Firefox 内核里的原生 select，不是 Tauri 的 WKWebView / WebView2。
+
+**推导（没有真机数据）**：切到 win-dev 左侧竖屏后 `screen` 应为 {-1440, -9, 1440, 2560}，画面四角落在 (-1440, -9) 和 (-1, 2550)
+（单测用同样的数算过）；远端光标到主屏（x ≥ 0）时相对 x ≥ 1440，叠加层隐藏。
+
+**未测**：真机上的切换、接管时点击 / 拖动 / 滚轮 / 键盘、光标叠加层在侧屏上的位置和移出时隐藏；竖屏 1440×2560 走硬件编码能否起来；
+混合 DPI 下侧屏光标形状的大小；服务模式（SYSTEM 走 DDA）切非主屏、锁屏后切屏；macOS 被控端多屏（这台 Mac 没接外屏）；
+Windows 控制端（WebView2）里下拉的样子。win-dev 的服务还是 main 8eeabb6 的构建，回复里没有 `x` / `y` / `monitor`：用它测前端时下拉
+显示"主屏 / 屏幕 1 / 屏幕 2"，切换和输入路径照样能测；位置命名和新报错要换新被控端才看得到。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
