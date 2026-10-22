@@ -154,7 +154,8 @@ ai-remote pull "C:\work\out.log" ./out.log               # host to local; --forc
 
 ## 7b. Coding agents on a host
 
-A host may have Claude Code, Codex or ACP agents (Gemini CLI, OpenCode, Qwen Code, ...) installed. A
+A host may have Claude Code, Codex or ACP agents (DeepSeek Harness `dsh`, Gemini CLI, OpenCode, Qwen
+Code, ...) installed (`chat list` shows their ids, e.g. `deepseek` for DeepSeek Harness). A
 person can start one there and talk to it beside the live view (desktop app, Chat tab), and the
 command line can too. MCP clients do not get `chat_start`: driving another agent is for people and
 scripts. What you may use:

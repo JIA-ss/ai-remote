@@ -7,6 +7,8 @@ the host's on/off switch, the audit and a lowered level.
 
   python tools/chat-smoke.py [--cli target/debug/ai-remote] [--quiet] [--real codex=/path/to/codex --model M]
 
+--real takes the built-in agent's id: claude, codex, opencode, deepseek (DeepSeek Harness, `dsh`), ...
+
 --real adds one real agent as a custom entry (same protocol as the built-in one) and hands it a small
 task; it uses the agent's own sign-in and spends a little of its quota. An agent that can steer is also
 told to count to 20, one shell command per number, and steered to stop at 5 once it has started.
@@ -164,6 +166,8 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         check("caps say who can steer", rows.get("fake", {}).get("caps", {}).get("steer") is True
               and rows.get("codex", {}).get("caps", {}).get("steer") is True
               and rows.get("opencode", {}).get("caps", {}).get("steer") is False)
+        check("DeepSeek Harness is listed as an ACP agent", rows.get("deepseek", {}).get("protocol") == "acp"
+              and rows["deepseek"].get("caps", {}).get("steer") is False, json.dumps(rows.get("deepseek"))[:300])
 
         r = cli("chat", "run", "fake", "hello there", "--cwd", work)
         check("chat run prints the answer and exits 0", r.returncode == 0 and "you said: hello there" in r.stdout,

@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use super::runtimes::{Caps, CustomAgent, Protocol, RUNTIMES, Runtime, builtin};
+use super::runtimes::{Caps, CustomAgent, Login, Protocol, RUNTIMES, Runtime, builtin};
 use crate::platform;
 
 /// How long one probe (`--version`, a sign-in check) may take.
@@ -453,7 +453,11 @@ async fn probe(r: &Resolved, args: &[&str]) -> Probe {
 
 /// Whether the agent is signed in, as far as it says.
 async fn login_state(r: &Resolved) -> Value {
-    let Some(args) = r.runtime.login else { return Value::Null };
+    let args = match r.runtime.login {
+        Login::NotChecked => return Value::Null,
+        Login::DeepSeek => return deepseek_login(r),
+        Login::Command(args) => args,
+    };
     if r.runtime.protocol == Protocol::ClaudeStreamJson {
         let mut a = args.to_vec();
         a.push("--json");
@@ -480,6 +484,49 @@ async fn login_state(r: &Resolved) -> Value {
         Probe::Ran { .. } => json!({"state": "logged_out"}),
         Probe::Failed(_) => json!({"state": "unknown"}),
     }
+}
+
+/// DeepSeek Harness has no status command. It reads `DEEPSEEK_API_KEY` from its environment, its
+/// credential file (`$DSH_HOME/.credentials.yaml`, `~/.dsh` by default, which also holds a
+/// DeepSeek account sign-in) and `$DSH_HOME/.env`. Only whether a key or account is there is
+/// looked at, never its value. Nothing there but a harness home: another provider may be set up,
+/// so unknown.
+fn deepseek_login(r: &Resolved) -> Value {
+    let var = |k: &str| r.env.get(k).cloned().or_else(|| std::env::var(k).ok()).filter(|v| !v.trim().is_empty());
+    if var("DEEPSEEK_API_KEY").is_some() {
+        return json!({"state": "logged_in", "method": "api_key"});
+    }
+    let dsh_home = match var("DSH_HOME") {
+        Some(h) => PathBuf::from(expand_home(&h)),
+        None => match home() {
+            Some(h) => h.join(".dsh"),
+            None => return json!({"state": "unknown"}),
+        },
+    };
+    deepseek_files(&dsh_home)
+}
+
+fn deepseek_files(dsh_home: &Path) -> Value {
+    if !dsh_home.is_dir() {
+        return json!({"state": "logged_out"});
+    }
+    let read = |f: &str| std::fs::read_to_string(dsh_home.join(f)).unwrap_or_default();
+    let credentials = read(".credentials.yaml");
+    if credentials.contains("deepseek-account") {
+        return json!({"state": "logged_in", "method": "account"});
+    }
+    let has_key = |text: &str, sep: char| {
+        text.lines().any(|l| {
+            let l = l.trim().trim_start_matches("export ");
+            l.strip_prefix("DEEPSEEK_API_KEY")
+                .and_then(|rest| rest.trim_start().strip_prefix(sep))
+                .is_some_and(|v| !v.trim().trim_matches(['"', '\'']).is_empty())
+        })
+    };
+    if has_key(&credentials, ':') || has_key(&read(".env"), '=') {
+        return json!({"state": "logged_in", "method": "api_key"});
+    }
+    json!({"state": "unknown"})
 }
 
 /// The first `major.minor.patch` in `text`.
@@ -509,6 +556,23 @@ mod tests {
         assert_eq!(parse_version("Active code page: 65001\nv1.2.3-beta"), Some("1.2.3".into()));
         assert_eq!(parse_version("version 1.2"), None);
         assert!(older("0.99.9", "0.100.0") && !older("0.100.0", "0.100.0") && !older("2.1.174", "2.0.0"));
+    }
+
+    #[test]
+    fn deepseek_keys_and_accounts_are_found_without_reading_values_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = dir.path().join(".dsh");
+        assert_eq!(deepseek_files(&h)["state"], "logged_out", "no harness home: never set up");
+        std::fs::create_dir(&h).unwrap();
+        assert_eq!(deepseek_files(&h)["state"], "unknown");
+        std::fs::write(h.join(".credentials.yaml"), "refs:\n  DEEPSEEK_API_KEY: ''\n").unwrap();
+        assert_eq!(deepseek_files(&h)["state"], "unknown", "an empty key is no key");
+        std::fs::write(h.join(".env"), "export DEEPSEEK_API_KEY=sk-x\n").unwrap();
+        let v = deepseek_files(&h);
+        assert_eq!((v["state"].as_str(), v["method"].as_str()), (Some("logged_in"), Some("api_key")));
+        assert!(!v.to_string().contains("sk-x"));
+        std::fs::write(h.join(".credentials.yaml"), "records:\n  deepseek-account/default:\n    grant: {}\n").unwrap();
+        assert_eq!(deepseek_files(&h)["method"], "account");
     }
 
     #[test]
