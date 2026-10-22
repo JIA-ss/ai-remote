@@ -694,6 +694,7 @@ export const zh: Record<keyof typeof en, string> = {
   // 会话页的标题条、浮动工具条和 HUD（2026-10-21 桌面端重做）。
   fs_enter: "进入全屏",
   fs_exit: "退出全屏",
+  show_controls: "显示控制栏",
   fs_hint: "全屏：⌃⌘F。只在观看时，Esc 也能退出。",
   hud_latency: "延迟",
   hud_fps: "fps",

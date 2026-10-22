@@ -341,3 +341,25 @@ test("manual input mounts only for a human driver with a decoded frame and scree
   assert.ok(!nodes(tree).some((node) => node.type === RemoteInput), "an agent driver never mounts human input");
   hooks.close();
 });
+
+test("a human driver keeps a tab that brings the hidden bars back, under the raised bottom bar", () => {
+  const hooks = hooksFixture();
+  const { SessionPage } = sessionModule(hooks, { kind: "tauri" }, () => assert.fail("nested Stream should not execute in the page fixture"));
+  const c = { host: { name: "test-host", path: "direct" }, os: "windows", online: true, feed: {
+    agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null,
+    driver: { state: "person", device: "test-device", since_ms: 1000, agent_may_watch: false },
+  } };
+  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {} };
+  const handleOf = (tree) => nodes(tree).find((node) => node.props?.className === "nt-handle");
+  const bottomOf = (tree) => nodes(tree).find((node) => String(node.props?.className).startsWith("nt-anchor bottom"));
+  let tree = hooks.render(SessionPage, props);
+  // The tab never leaves while you drive, so a click aimed at it cannot fall through to the remote.
+  assert.ok(handleOf(tree), "the tab is there while the bars show");
+  assert.equal(typeof handleOf(tree).props.onClick, "function");
+  assert.equal(typeof handleOf(tree).props.onMouseEnter, "function");
+  assert.equal(bottomOf(tree).props.className, "nt-anchor bottom raised");
+  c.feed.driver = { state: "agent" }; tree = hooks.render(SessionPage, props);
+  assert.ok(!handleOf(tree), "no tab when you are not driving");
+  assert.equal(bottomOf(tree).props.className, "nt-anchor bottom");
+  hooks.close();
+});
