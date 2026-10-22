@@ -442,6 +442,24 @@ worktree 里按这个办法试合并过：没有冲突标记、`cargo fmt --chec
   这些仍是用户态进程内的测试，SYSTEM 拉起 runner 那一段只能真机验证。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
+**真机结果（2026-10-22，Windows 11 开发机，服务 `ai-remote-host-cc166525` 跑 main 8eeabb6 + PR #29 的 release，
+Mac 控制端 CLI，Mac 对它开着 bypass）**：没有换服务程序（另一个会话当天已换成带 runner 的构建），第 1、8 步免了。
+- 第 2 步：会话 3 里 SYSTEM 被控端 + 用户 `LILITHGAMES\sunjiashuai` 的 runner（`--chat-runner`），`chat-runner.log` 有
+  `connected to the host`，`host.log` 有 `started the agent runner in the user's session session=3`；`chat list` 里 claude 2.1.293 /
+  codex 0.162.1 显示已登录、路径是用户 npm 目录下的 `.cmd`（SYSTEM 看不到这些登录态）。
+- 第 3 步：`chat run codex "Run whoami"` → `lilithgames\sunjiashuai`，13.8 s；runner 下整棵进程树（cmd → node → codex.exe → 它拉起的
+  pwsh / python / node_repl / MCP 服务）都属于该用户，`MainWindowHandle` 全是 0。
+- 第 4 步（锁屏续接）：这台机器的策略禁用了"锁定"（Ctrl+Alt+Del 菜单里没有，SYSTEM 调 `LockWorkStation` 也无效），改用菜单里的
+  "切换用户"：控制台 3 → 4，用户会话 3 变"断开"，服务在会话 4 重拉被控端，runner pid 不变，会话出 `reattached`（那一轮已在切换前
+  18 s 结束，所以是空闲时接回）。**轮次进行中**：第 3 轮执行 `Start-Sleep -Seconds 90` 时用提权 agent 结束会话 4 里的被控端
+  （Win11 锁屏时服务也是这样结束它的；提权 SSH 会话 `taskkill` 结束不了 SYSTEM 进程，拒绝访问）：1 s 后新被控端出 `reattached`，
+  sleep 跑满 90 s，轮次 `completed`（"finished"），seq 43~57 连续，没有"host restarted during this turn"。各 1 次。
+- 第 7 步：同一用户不带密钥连 runner 管道，在证明这一步得到 `{"ok":false}`，`host.log` 记
+  `refused a connection to the agent runner endpoint: the runner did not prove it holds the key`；真 runner 不受影响。另一个本机用户的
+  ACL 拒绝**没测**（要新建账号）。
+- **没做**：第 6 步（`stop-host` 后 runner 随之退出，要人在管理员终端 `sc start` 拉回服务）；第 5 步只看了没有挂住的轮次。
+  做完第 4 步控制台停在会话 4 的登录界面，要人解锁（skill win-dev-unlock）。
+
 **真机验证步骤**（Windows 开发机。标"人"的步骤要用户在场或在管理员终端里做，agent 不代做；`<host>` 是 Mac 上已配对的这台开发机）：
 
 0. 现状与前提（2026-10-22 查）：开发机上已经有一个真实服务 `ai-remote-host-cc166525` 在跑，配置目录
