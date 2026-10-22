@@ -105,6 +105,7 @@ dependencies = [
  "ar-net",
  "arboard",
  "block2",
+ "data-encoding",
  "directories",
  "image",
  "objc2",

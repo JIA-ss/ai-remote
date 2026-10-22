@@ -141,6 +141,10 @@ ai-remote host
 
 ### 3.2 后台运行：安装与登录自启
 
+**在桌面端里**（不用终端）：设置 → 本设备 →“开启远程控制”。应用先列出会做的改动，然后由系统要求管理员授权（macOS 输密码，Windows
+UAC），包内的 `ai-remote` 安装随应用附带的被控端。“关闭”以同样方式移除；macOS 上缺哪项权限，就有对应的“授权”按钮弹出系统自己的请求。
+下面的命令是在终端里做同样的事。
+
 ```sh
 ai-remote host install --dry-run   # 列出每一处改动，但什么都不改
 ai-remote host install

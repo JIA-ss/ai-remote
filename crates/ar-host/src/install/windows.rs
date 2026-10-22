@@ -667,6 +667,7 @@ pub fn status(profile: &Profile) -> Result<InstallStatus> {
     let service = service_name(profile);
     if let Some(qc) = query_service_config(&service) {
         st.kind = "Windows service".into();
+        st.service = true;
         st.name = service.clone();
         st.installed = true;
         st.running = service_running(&service);

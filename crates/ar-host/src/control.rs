@@ -70,6 +70,15 @@ pub enum HostRequest {
     Pause {
         on: bool,
     },
+    /// Shows macOS's own request for `permission` (`screen_recording` or `accessibility`) for this
+    /// host, at this computer: the desktop app's "Grant" button. Never reachable from a controller
+    /// (this channel is the owner's only), so no remote call ever raises a privacy prompt.
+    RequestPermission {
+        permission: String,
+    },
+    /// What macOS grants this host, read by a fresh copy of it (a running host keeps an old Screen
+    /// Recording answer until it restarts) and by the host itself.
+    Permissions,
     /// The latest audit lines (newest last, at most `limit`), for a "recent activity" view at this
     /// computer. Decision lines carry `args_preview` (the arguments as shown to the owner, about 400
     /// characters at most, secrets by size only), like the audit log itself.
@@ -93,6 +102,89 @@ pub enum HostRequest {
         on: bool,
     },
     Shutdown,
+}
+
+#[cfg(target_os = "macos")]
+async fn request_permission(permission: &str) -> Result<Value> {
+    use crate::platform::tcc;
+    let granted = match permission {
+        "screen_recording" => tokio::task::spawn_blocking(tcc::request_screen_recording).await?,
+        "accessibility" => tokio::task::spawn_blocking(tcc::request_accessibility).await?,
+        other => return Err(anyhow!("unknown permission {other:?} (screen_recording or accessibility)")),
+    };
+    tracing::info!(permission, granted, "the owner asked macOS for a permission from this computer");
+    Ok(json!({"permission": permission, "granted": granted}))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn request_permission(permission: &str) -> Result<Value> {
+    Err(anyhow!("{permission}: this system has no such permission to grant"))
+}
+
+#[cfg(target_os = "macos")]
+async fn permissions() -> Result<Value> {
+    use crate::platform::tcc;
+    let (fresh, probed) = tokio::task::spawn_blocking(tcc::fresh_grants).await?;
+    Ok(json!({"fresh": fresh, "probed": probed, "running": tcc::grants()}))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn permissions() -> Result<Value> {
+    Ok(json!({"fresh": null, "probed": false, "running": null}))
+}
+
+impl HostRequest {
+    /// Every request this host understands, as `status` reports them (`ops`), so a newer desktop
+    /// app can tell an older host from a failed call and offer an update instead of an error.
+    pub const OPS: &'static [&'static str] = &[
+        "status",
+        "pair_code",
+        "withdraw_code",
+        "peers",
+        "set_level",
+        "revoke",
+        "unrevoke",
+        "forget",
+        "approvers",
+        "add_approver",
+        "remove_approver",
+        "doctor",
+        "pause",
+        "request_permission",
+        "permissions",
+        "recent",
+        "bypass",
+        "set_bypass",
+        "set_bypass_default",
+        "shutdown",
+    ];
+
+    /// The request's wire name. Exhaustive on purpose: a new request must be named here, and the
+    /// test below keeps [`Self::OPS`] in step.
+    pub fn op(&self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::PairCode { .. } => "pair_code",
+            Self::WithdrawCode => "withdraw_code",
+            Self::Peers => "peers",
+            Self::SetLevel { .. } => "set_level",
+            Self::Revoke { .. } => "revoke",
+            Self::Unrevoke { .. } => "unrevoke",
+            Self::Forget { .. } => "forget",
+            Self::Approvers => "approvers",
+            Self::AddApprover { .. } => "add_approver",
+            Self::RemoveApprover { .. } => "remove_approver",
+            Self::Doctor => "doctor",
+            Self::Pause { .. } => "pause",
+            Self::RequestPermission { .. } => "request_permission",
+            Self::Permissions => "permissions",
+            Self::Recent { .. } => "recent",
+            Self::Bypass => "bypass",
+            Self::SetBypass { .. } => "set_bypass",
+            Self::SetBypassDefault { .. } => "set_bypass_default",
+            Self::Shutdown => "shutdown",
+        }
+    }
 }
 
 pub async fn serve(host: Arc<HostState>, mut conn: Conn, shutdown: CancellationToken) {
@@ -188,6 +280,8 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
                 "last_call": presence.last_call(),
                 "driver": host.turns().driver(),
                 "prompt_blocker": crate::platform::prompt_blocker(),
+                // What this host understands; a desktop app newer than the host checks it.
+                "ops": HostRequest::OPS,
                 // Windows service mode: started as SYSTEM; starting it again takes an administrator.
                 "system": crate::platform::runs_as_system(),
                 "tools": host.registry().iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>(),
@@ -212,6 +306,8 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
             }
             json!({"driver": driver})
         }
+        HostRequest::RequestPermission { permission } => request_permission(&permission).await?,
+        HostRequest::Permissions => permissions().await?,
         HostRequest::Recent { limit } => {
             let (lines, _) = host.audit().subscribe();
             let limit = limit.unwrap_or(50).min(lines.len());
@@ -450,6 +546,43 @@ mod tests {
     }
 
     #[test]
+    fn ops_lists_every_request_by_its_wire_name() {
+        let samples = [
+            HostRequest::Status,
+            HostRequest::PairCode { level: Level::Control, name: None },
+            HostRequest::WithdrawCode,
+            HostRequest::Peers,
+            HostRequest::SetLevel { peer: "p".into(), level: None },
+            HostRequest::Revoke { peer: "p".into() },
+            HostRequest::Unrevoke { peer: "p".into() },
+            HostRequest::Forget { peer: "p".into() },
+            HostRequest::Approvers,
+            HostRequest::AddApprover {
+                peer: "p".into(),
+                alg: KeyAlg::EcdsaP256Sha256,
+                key: String::new(),
+                label: None,
+            },
+            HostRequest::RemoveApprover { peer: "p".into(), fingerprint: None },
+            HostRequest::Doctor,
+            HostRequest::Pause { on: true },
+            HostRequest::RequestPermission { permission: "accessibility".into() },
+            HostRequest::Permissions,
+            HostRequest::Recent { limit: None },
+            HostRequest::Bypass,
+            HostRequest::SetBypass { peer: "p".into(), on: false, for_secs: None },
+            HostRequest::SetBypassDefault { on: false },
+            HostRequest::Shutdown,
+        ];
+        assert_eq!(samples.len(), HostRequest::OPS.len());
+        for r in &samples {
+            let wire = serde_json::to_value(r).unwrap();
+            assert_eq!(wire["op"], r.op());
+            assert!(HostRequest::OPS.contains(&r.op()), "{} is missing from OPS", r.op());
+        }
+    }
+
+    #[test]
     fn tray_requests() {
         assert!(matches!(
             serde_json::from_value(json!({"op": "pause", "on": true})).unwrap(),
@@ -463,5 +596,10 @@ mod tests {
             serde_json::from_value(json!({"op": "recent", "limit": 5})).unwrap(),
             HostRequest::Recent { limit: Some(5) }
         ));
+        assert!(matches!(
+            serde_json::from_value(json!({"op": "request_permission", "permission": "accessibility"})).unwrap(),
+            HostRequest::RequestPermission { .. }
+        ));
+        assert!(matches!(serde_json::from_value(json!({"op": "permissions"})).unwrap(), HostRequest::Permissions));
     }
 }

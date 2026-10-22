@@ -32,10 +32,21 @@ pub async fn connect(profile: &Profile) -> Result<Option<Conn>> {
     }
 }
 
+/// The start of the error for a request the running host does not understand: it is older than
+/// this app. The page turns it into "update the host" (any request, present or future).
+pub const OUTDATED: &str = "host-outdated";
+
 /// One request to the running host; `Ok(None)` when no host runs.
 pub async fn request(profile: &Profile, req: Value) -> Result<Option<Value>> {
     let Some(mut conn) = connect(profile).await? else { return Ok(None) };
-    conn.request(&req).await.map(Some)
+    let op = req["op"].as_str().unwrap_or("?").to_string();
+    conn.request(&req).await.map(Some).map_err(|e| outdated(&op, e))
+}
+
+/// An older host answers a request it does not know with serde's "unknown variant".
+fn outdated(op: &str, e: anyhow::Error) -> anyhow::Error {
+    let text = format!("{e:#}");
+    if text.contains("unknown variant") { anyhow!("{OUTDATED}: {op}") } else { e }
 }
 
 /// Like [`request`], but "no host" is an error for the page.
@@ -143,6 +154,36 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// Marks that the owner stopped the host from this app (button or tray), so the app does not start
+/// it again by itself; cleared when they start or enable it. A host that ends for another reason
+/// (macOS's "Quit & Reopen" after a Screen Recording grant ends every process of the app, the host
+/// inside it included, and launchd only restarts it after a crash) is started again by the app.
+pub fn set_owner_stopped(profile: &Profile, stopped: bool) {
+    let path = profile.root().join("desktop-host-stopped");
+    if stopped {
+        let _ = std::fs::write(&path, b"stopped by the owner from the desktop app\n");
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+pub fn owner_stopped(profile: &Profile) -> bool {
+    profile.root().join("desktop-host-stopped").exists()
+}
+
+/// Starts the installed host when it is not running and the owner did not stop it from here.
+/// Whether it started one.
+pub async fn start_if_expected(profile: &Profile, cli: &Path) -> bool {
+    if owner_stopped(profile) || !matches!(probe(profile).await, Probe::Stopped) {
+        return false;
+    }
+    // Not when launchd has it disabled: that is the Login Items switch, the owner's to turn back on
+    // (the page offers it); starting would quietly undo their choice.
+    let status = cli_json(cli, &["host", "status"]).await.ok();
+    let ready = status.is_some_and(|v| v["autostart"]["installed"] == true && v["autostart"]["disabled"] != true);
+    ready && cli_json(cli, &["host", "start"]).await.is_ok()
+}
+
 /// Runs `ai-remote --json <args>` without a console window and parses its output. Used where the
 /// host's own installation knowledge is needed: `host start`, and `doctor` while no host runs.
 pub async fn cli_json(cli: &Path, args: &[&str]) -> Result<Value> {
@@ -172,6 +213,24 @@ pub async fn cli_json(cli: &Path, args: &[&str]) -> Result<Value> {
     serde_json::from_slice(&output.stdout).with_context(|| format!("ai-remote {} printed no JSON", args.join(" ")))
 }
 
+/// Runs `ai-remote <args>` as this user without a console window; its output (stdout and stderr).
+pub async fn cli_text(cli: &Path, args: &[String]) -> Result<String> {
+    let mut cmd = tokio::process::Command::new(cli);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = tokio::time::timeout(Duration::from_secs(90), cmd.output())
+        .await
+        .map_err(|_| anyhow!("ai-remote {} did not finish within 90 s", args.join(" ")))?
+        .with_context(|| format!("run {}", cli.display()))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("failed");
+        return Err(anyhow!("{}", last.trim_start_matches("Error: ")));
+    }
+    Ok(text)
+}
+
 /// The System Settings pane the "This device" page may open (macOS only: Windows has no page for
 /// the host's permissions or its task / service). Only these; the app never changes a setting.
 fn pane_url(pane: &str) -> Option<&'static str> {
@@ -190,6 +249,28 @@ fn pane_url(pane: &str) -> Option<&'static str> {
 pub fn open_settings_pane(pane: &str) -> Result<()> {
     let url = pane_url(pane).ok_or_else(|| anyhow!("no settings pane for {pane} on this system"))?;
     std::process::Command::new("open").arg(url).spawn().context("open System Settings")?;
+    Ok(())
+}
+
+/// Clears macOS's earlier answers for this app (`tccutil reset`, for its own bundle id only), so the
+/// next request shows the system's dialog again. Needed after an ad-hoc signed build: the old entry
+/// still shows as on in System Settings but no longer matches the app, and macOS does not ask again.
+pub fn reset_permission(bundle_id: &str, permission: &str) -> Result<()> {
+    let service = match permission {
+        "screen_recording" => "ScreenCapture",
+        "accessibility" => "Accessibility",
+        other => return Err(anyhow!("unknown permission {other:?}")),
+    };
+    if !cfg!(target_os = "macos") {
+        return Err(anyhow!("no such permission on this system"));
+    }
+    let out = std::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", service, bundle_id])
+        .output()
+        .context("run tccutil")?;
+    if !out.status.success() {
+        return Err(anyhow!("tccutil reset {service}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
     Ok(())
 }
 
@@ -241,6 +322,13 @@ mod tests {
         let unknown = Summary::from_probe(&Probe::Unknown("refused".into()), 0);
         assert!(unknown.running && unknown.unknown.is_some(), "a host that cannot be read is not reported stopped");
         assert_eq!(Summary::from_probe(&Probe::Stopped, 0), Summary::STOPPED);
+    }
+
+    #[test]
+    fn an_older_host_is_named_as_such_whatever_the_request() {
+        let old = anyhow!("bad request: unknown variant `request_permission`, expected one of `status`, `peers`");
+        assert_eq!(outdated("request_permission", old).to_string(), "host-outdated: request_permission");
+        assert_eq!(outdated("peers", anyhow!("no such peer")).to_string(), "no such peer");
     }
 
     #[test]

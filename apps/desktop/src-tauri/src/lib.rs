@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use tauri::{Manager, State, ipc::Channel};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
+mod elevate;
 mod host_local;
 mod login_item;
 mod transfer;
@@ -290,12 +291,24 @@ async fn local_host(state: State<'_, AppState>, doctor: bool) -> Result<Json, St
         host_local::Probe::Stopped => (None, None),
         host_local::Probe::Unknown(why) => (None, Some(why)),
     };
-    let doctor = match (&status, doctor) {
-        (_, false) => None,
-        (Some(_), true) => host_local::request(&state.profile, json!({"op": "doctor"})).await.ok().flatten(),
-        (None, true) => host_local::cli_json(&state.cli, &["doctor"]).await.ok(),
+    let (doctor, install) = if doctor {
+        let report = match &status {
+            Some(_) => host_local::request(&state.profile, json!({"op": "doctor"})).await.ok().flatten(),
+            None => host_local::cli_json(&state.cli, &["doctor"]).await.ok(),
+        };
+        let install = host_local::cli_json(&state.cli, &["host", "status"]).await.ok().map(|v| v["autostart"].clone());
+        (report, install)
+    } else {
+        (None, None)
     };
-    Ok(Json(json!({"host": status, "unknown": unknown, "doctor": doctor, "profile": state.profile.root()})))
+    Ok(Json(json!({
+        "host": status,
+        "unknown": unknown,
+        "doctor": doctor,
+        "install": install,
+        "profile": state.profile.root(),
+        "cli": state.cli,
+    })))
 }
 
 /// A one-time pairing ticket from the host here, at `level`, and the pair code (with its QR code) that
@@ -331,6 +344,7 @@ async fn local_host_pause(app: tauri::AppHandle, state: State<'_, AppState>, on:
 #[tauri::command]
 #[specta::specta]
 async fn local_host_stop(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::set_owner_stopped(&state.profile, true);
     let r = host_local::require(&state.profile, json!({"op": "shutdown"})).await.map(Json).map_err(text);
     refresh_tray(&app);
     r
@@ -340,6 +354,7 @@ async fn local_host_stop(app: tauri::AppHandle, state: State<'_, AppState>) -> R
 #[tauri::command]
 #[specta::specta]
 async fn local_host_start(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::set_owner_stopped(&state.profile, false);
     let r = host_local::cli_json(&state.cli, &["host", "start"]).await.map(Json).map_err(text);
     refresh_tray(&app);
     r
@@ -367,6 +382,124 @@ fn open_system_settings(pane: String) -> Result<(), String> {
 fn reveal_profile(state: State<'_, AppState>) -> Result<(), String> {
     let file = state.profile.host_config_path().map_err(text)?;
     host_local::reveal(&file).map_err(text)
+}
+
+/// What `host install` would do (`service`: with the login window / lock screen), as the page shows
+/// it before asking for an administrator.
+#[tauri::command]
+#[specta::specta]
+async fn host_install_plan(state: State<'_, AppState>, service: bool) -> Result<Json, String> {
+    let home = state.profile.root().to_string_lossy().into_owned();
+    let mut args = vec!["--home", home.as_str(), "host", "install", "--dry-run"];
+    if service {
+        args.push("--service");
+    }
+    host_local::cli_json(&state.cli, &args).await.map(Json).map_err(text)
+}
+
+/// Installs (`install: true`) or removes the background host with this app's bundled command, so
+/// the autostart entry runs the host inside this app. Whatever needs an administrator (the service
+/// form, and everything on Windows) runs after the system's own prompt, which shows `prompt`
+/// (macOS). Returns the command's output; `"cancelled"` when the prompt was dismissed.
+#[tauri::command]
+#[specta::specta]
+async fn host_setup(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    install: bool,
+    service: bool,
+    prompt: String,
+) -> Result<Json, String> {
+    let mut args = vec!["--home".to_string(), state.profile.root().to_string_lossy().into_owned(), "host".into()];
+    args.push(if install { "install" } else { "uninstall" }.into());
+    // Removing: the service form needs the same rights it took to install.
+    let service = if install {
+        service
+    } else {
+        host_local::cli_json(&state.cli, &["host", "status"])
+            .await
+            .ok()
+            .is_some_and(|v| v["autostart"]["service"] == true)
+    };
+    if install && service {
+        args.push("--service".into());
+    }
+    let elevated = cfg!(windows) || service;
+    host_local::set_owner_stopped(&state.profile, !install);
+    if elevated && install {
+        // The profile's folders must exist as this user's before root touches the profile (a root-
+        // owned host folder would lock the host out of its own audit log).
+        let home = state.profile.root().to_string_lossy().into_owned();
+        let _ = host_local::cli_json(&state.cli, &["--home", &home, "host", "install", "--dry-run"]).await;
+    }
+    let result = if elevated {
+        elevate::run(&state.cli, &args, &prompt).await
+    } else {
+        host_local::cli_text(&state.cli, &args).await
+    };
+    // launchd may load the agent without starting it (seen after replacing a running copy): start
+    // it as this user, as the tray would.
+    if install && result.is_ok() {
+        for _ in 0..12 {
+            if !matches!(host_local::probe(&state.profile).await, host_local::Probe::Stopped) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let _ = host_local::start_if_expected(&state.profile, &state.cli).await;
+    }
+    refresh_tray(&app);
+    match result {
+        Ok(output) => Ok(Json(json!({"output": output, "elevated": elevated}))),
+        Err(e) if e.to_string() == elevate::CANCELLED => Err(elevate::CANCELLED.into()),
+        Err(e) => Err(text(e)),
+    }
+}
+
+/// Shows macOS's request for Screen Recording or Accessibility for the host running here: asked by
+/// the host itself over its owner-only channel, so the grant is the host's (inside this app).
+#[tauri::command]
+#[specta::specta]
+async fn request_permission(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    permission: String,
+) -> Result<Json, String> {
+    // A fresh start: earlier answers for this app (often for an earlier build, which no longer
+    // match) would keep macOS from asking. Only this app's own entries; the person then answers the
+    // system's dialog.
+    if let Err(e) = host_local::reset_permission(&app.config().identifier, &permission) {
+        eprintln!("[permissions] {e:#}");
+    }
+    host_local::require(&state.profile, json!({"op": "request_permission", "permission": permission}))
+        .await
+        .map(Json)
+        .map_err(text)
+}
+
+/// What macOS grants the host here: `fresh` (a new copy of it) and `running` (the host itself;
+/// Screen Recording reaches it only after a restart).
+#[tauri::command]
+#[specta::specta]
+async fn host_permissions(state: State<'_, AppState>) -> Result<Json, String> {
+    host_local::require(&state.profile, json!({"op": "permissions"})).await.map(Json).map_err(text)
+}
+
+/// Restarts the background host (after a permission was granted): stops it, waits until it is gone,
+/// starts the installed one again.
+#[tauri::command]
+#[specta::specta]
+async fn local_host_restart(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Json, String> {
+    let _ = host_local::require(&state.profile, json!({"op": "shutdown"})).await;
+    for _ in 0..40 {
+        if matches!(host_local::probe(&state.profile).await, host_local::Probe::Stopped) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let r = host_local::cli_json(&state.cli, &["host", "start"]).await.map(Json).map_err(text);
+    refresh_tray(&app);
+    r
 }
 
 /// Removes a controller's pairing here (`ai-remote forget`), e.g. when its safety code did not match.
@@ -939,6 +1072,11 @@ fn builder() -> tauri_specta::Builder<tauri::Wry> {
         local_host_recent,
         local_host_forget,
         protect_window,
+        host_install_plan,
+        host_setup,
+        request_permission,
+        host_permissions,
+        local_host_restart,
         open_system_settings,
         reveal_profile,
         set_ui_language,

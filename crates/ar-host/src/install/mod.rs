@@ -242,6 +242,14 @@ pub struct InstallStatus {
     /// Task name or plist path.
     pub name: String,
     pub installed: bool,
+    /// The service form: the Windows service, or the macOS system LaunchAgent that serves the login
+    /// window too (`host install --service`).
+    #[serde(default)]
+    pub service: bool,
+    /// macOS: launchd has the agent disabled (System Settings > Login Items > Allow in the
+    /// Background); it does not start at login until allowed again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     /// The command line the entry runs, when installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launches: Option<String>,

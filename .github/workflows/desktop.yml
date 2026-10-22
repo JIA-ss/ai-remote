@@ -66,6 +66,9 @@ jobs:
       - name: macOS bundle signature regression
         if: runner.os == 'macOS'
         run: python3 tools/test_macos_packaging.py
+      - name: Windows packaging plan
+        if: runner.os == 'Windows'
+        run: python tools/test_windows_packaging.py
       - name: Windows command transport diagnostics
         if: runner.os == 'Windows'
         run: pwsh -NoProfile -File tools/windows-cmd-probe.ps1

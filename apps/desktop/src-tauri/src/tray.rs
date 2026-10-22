@@ -233,7 +233,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, profile: Profile, cli: std::path:
         .context("create the tray icon")?;
     let (wake, woken) = mpsc::channel();
     let tray = Tray { icon, items, lang: Mutex::new(lang), last: Mutex::new(None), wake };
-    poll(app.clone(), profile.clone(), woken);
+    poll(app.clone(), profile.clone(), cli.clone(), woken);
     let handle = app.clone();
     app.on_menu_event(move |_, event| on_menu(&handle, &profile, &cli, event));
     Ok(tray)
@@ -302,11 +302,16 @@ impl<R: Runtime> Tray<R> {
 }
 
 /// Asks the host for its status every few seconds (sooner when woken) and redraws on change.
-fn poll<R: Runtime>(app: AppHandle<R>, profile: Profile, woken: mpsc::Receiver<()>) {
+fn poll<R: Runtime>(app: AppHandle<R>, profile: Profile, cli: std::path::PathBuf, woken: mpsc::Receiver<()>) {
     std::thread::Builder::new()
         .name("tray-poll".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tray runtime");
+            // An installed host that is not running although nobody stopped it from here (macOS's
+            // "Quit & Reopen" after a Screen Recording grant ends it with the app): start it.
+            if rt.block_on(host_local::start_if_expected(&profile, &cli)) {
+                eprintln!("[tray] started the installed host, which was not running");
+            }
             loop {
                 let probe = rt.block_on(host_local::probe(&profile));
                 if let Some(tray) = app.try_state::<Tray<R>>() {
@@ -342,12 +347,25 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, profile: &Profile, cli: &std::path::P
                     show_main(&app, json!({"view": "settings", "sec": "device", "action": "confirm_stop"}));
                     return;
                 }
+                // Nothing installed yet: the page walks through enabling remote control.
+                if id == STOP && !last.as_ref().is_some_and(|s| s.running) {
+                    let installed = host_local::cli_json(&cli, &["host", "status"])
+                        .await
+                        .ok()
+                        .is_some_and(|v| v["autostart"]["installed"] == true);
+                    if !installed {
+                        show_main(&app, json!({"view": "settings", "sec": "device", "action": "enable"}));
+                        return;
+                    }
+                }
                 let result = if id == PAUSE {
                     let paused = last.as_ref().is_some_and(|s| s.driver == DriverState::Paused);
                     host_local::require(&profile, json!({"op": "pause", "on": !paused})).await.map(|_| ())
                 } else if last.as_ref().is_some_and(|s| s.running) {
+                    host_local::set_owner_stopped(&profile, true);
                     host_local::require(&profile, json!({"op": "shutdown"})).await.map(|_| ())
                 } else {
+                    host_local::set_owner_stopped(&profile, false);
                     host_local::cli_json(&cli, &["host", "start"]).await.map(|_| ())
                 };
                 if let Err(e) = result {

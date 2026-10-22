@@ -40,6 +40,22 @@ pub struct InstallFlags {
     pub force: bool,
     /// Windows: a service running the host as SYSTEM in the console session (lock screen, UAC).
     pub service: bool,
+    /// With `dry_run`: print the plan as JSON (the desktop app shows it before it asks for an
+    /// administrator).
+    pub json: bool,
+}
+
+/// A plan as the desktop app shows it.
+fn plan_json(plan: &Plan) -> Value {
+    let steps: Vec<Value> =
+        plan.actions.iter().map(|a| json!({"text": a.describe(), "admin": a.needs_admin()})).collect();
+    json!({
+        "summary": plan.summary,
+        "notes": plan.notes,
+        "steps": steps,
+        "needs_elevation": plan.needs_elevation,
+        "blocker": plan.blocker,
+    })
 }
 
 pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> {
@@ -47,6 +63,10 @@ pub async fn host_install(profile: &Profile, flags: InstallFlags) -> Result<()> 
     let p = profile.clone();
     let service = flags.service;
     let plan = tokio::task::spawn_blocking(move || install::install_plan(&p, scope, service)).await??;
+    if flags.dry_run && flags.json {
+        println!("{}", serde_json::to_string_pretty(&plan_json(&plan))?);
+        return Ok(());
+    }
     print_plan(&plan, flags.dry_run, flags.service);
     if let Some(blocker) = &plan.blocker {
         if !flags.dry_run && !flags.force {

@@ -508,7 +508,7 @@ async fn run(cli: Cli) -> Result<()> {
             action: Some(HostAction::Install { dry_run, no_start, firewall_only, force, service }),
             ..
         } => {
-            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force, service };
+            let flags = hostops::InstallFlags { dry_run, no_start, firewall_only, force, service, json: json_out };
             hostops::host_install(&profile, flags).await
         }
         Command::Host { action: Some(HostAction::Uninstall { dry_run, firewall_only }), .. } => {

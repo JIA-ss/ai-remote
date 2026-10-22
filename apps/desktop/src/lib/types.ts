@@ -97,6 +97,8 @@ export interface LocalHostStatus {
   driver?: Driver;
   /** Why approval prompts cannot be shown now (locked desktop, ...), or `null`. */
   prompt_blocker?: string | null;
+  /** The local requests this host understands; missing from hosts older than the list itself. */
+  ops?: string[];
   /** Windows service mode (SYSTEM): starting it again after a stop takes an administrator. */
   system?: boolean;
   pid: number;
@@ -121,6 +123,29 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+/** The autostart entry of this profile's host (`ai-remote host status`). */
+export interface InstallInfo {
+  kind: string;
+  name: string;
+  installed: boolean;
+  /** The service form: the macOS system LaunchAgent (login window too) or the Windows service. */
+  service?: boolean;
+  /** macOS: turned off under Login Items ("Allow in the Background"); it does not start until allowed. */
+  disabled?: boolean;
+  /** Whether it runs this app's host with this profile (`false`: another copy, e.g. a build folder). */
+  current?: boolean | null;
+  launches?: string | null;
+}
+
+/** What `host install` would do, shown before the system asks for an administrator. */
+export interface InstallPlan {
+  summary: string;
+  notes: string[];
+  steps: Array<{ text: string; admin: boolean }>;
+  needs_elevation: boolean;
+  blocker: string | null;
+}
+
 /** This computer as a host: the running host (`null` when none), the checks and the profile directory. */
 export interface LocalHost {
   host: LocalHostStatus | null;
@@ -128,6 +153,8 @@ export interface LocalHost {
   unknown?: string | null;
   /** Only when asked for (`localHost(true)`). */
   doctor: DoctorReport | null;
+  /** Only when asked for (`localHost(true)`). */
+  install?: InstallInfo | null;
   profile: string;
 }
 
