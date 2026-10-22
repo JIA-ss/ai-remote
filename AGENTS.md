@@ -103,6 +103,11 @@
 Windows 控制端（WebView2）里下拉的样子。win-dev 的服务还是 main 8eeabb6 的构建，回复里没有 `x` / `y` / `monitor`：用它测前端时下拉
 显示"主屏 / 屏幕 1 / 屏幕 2"，切换和输入路径照样能测；位置命名和新报错要换新被控端才看得到。
 
+**和 PR #34（`fix/fullscreen-cursor`）**：两边都改了 `Session.tsx`。试合并（`git merge-tree`，再在临时 worktree 里合）只有 `Stream`
+的 `callbacks` 那两行冲突，取并集：`{ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown }`；
+合并后 `tsc --noEmit` 过，`stream-ui` + `manual-input` 33 项全过。远端光标移出当前屏时，本分支只保证叠加层隐藏；本地鼠标随之重新出现
+靠 #34 的 `onPointerShown`。
+
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
 起因：2026-10-22 在 Mac 上抓包，模拟器里的 iPhone 版一直在连 n0 公共中继（UDP 7842 探测约 2.7 包/秒、4 台中继 TCP 443、
