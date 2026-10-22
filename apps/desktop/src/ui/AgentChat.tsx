@@ -8,7 +8,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatConnection } from "../lib/api";
 import {
   editQueued,
+  agoParts,
   emptyChat,
+  folderChoices,
+  folderName,
+  knownHome,
+  parentFolder,
+  sessionsByFolder,
+  tildeFolder,
   inputCommand,
   markAnswered,
   phase,
@@ -27,6 +34,7 @@ import {
 } from "../lib/chat";
 import { t } from "../lib/i18n";
 import { Composer } from "./chat/Composer";
+import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/FolderPicker";
 import { secs } from "./chat/Rows";
 import { Transcript } from "./chat/Transcript";
 import { Icon } from "./Icon";
@@ -113,17 +121,20 @@ export function StartForm({
   host,
   report,
   compact,
+  folders,
   onStarted,
 }: {
   host: string;
   report: RuntimesReport;
   compact?: boolean;
+  /** Folders of the host's open sessions, offered after the recent ones. */
+  folders?: string[];
   onStarted: (target: ChatTarget) => void;
 }) {
   const ready = report.runtimes.filter((r) => r.verdict === "ok");
   const [runtime, setRuntime] = useState(ready[0]?.id ?? "");
-  const recents = recentCwds(host);
-  const [cwd, setCwd] = useState(recents[0] ?? "");
+  const choices = folderChoices(recentCwds(host), folders);
+  const [cwd, setCwd] = useState(choices[0] ?? "");
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("");
   const [hardened, setHardened] = useState(false);
@@ -169,15 +180,17 @@ export function StartForm({
           </button>
         ))}
       </div>
-      <label className="lbl" htmlFor="ag-cwd">
-        {t("hc_cwd")}
-      </label>
-      <input id="ag-cwd" className="ta-input mono" list="ag-cwd-recent" value={cwd} placeholder={t("hc_cwd_ph")} onChange={(e) => setCwd(e.target.value)} spellCheck={false} />
-      <datalist id="ag-cwd-recent">
-        {recents.map((r) => (
-          <option key={r} value={r} />
-        ))}
-      </datalist>
+      <label className="lbl">{t("hc_cwd")}</label>
+      <FolderPicker
+        host={host}
+        value={cwd}
+        folders={choices}
+        browse={(path) => call<Listing>(host, "files_list", { path })}
+        onChange={(path) => {
+          setCwd(path);
+          setError(null);
+        }}
+      />
       <label className="lbl" htmlFor="ag-prompt">
         {t("hc_first")}
       </label>
@@ -337,6 +350,19 @@ export function AgentChat({ host, target, onTarget }: { host: string; target: Ch
   );
 }
 
+/** "3 min ago" for a session's last activity. */
+function ago(then: number): string {
+  const a = agoParts(then, Date.now());
+  return a.unit === "now" ? t("hc_folder_ago_now") : t(`hc_folder_ago_${a.unit}`, { n: a.n });
+}
+
+/** A session's state in a word, for the session list. */
+function sessionState(state: SessionInfo["state"]): string {
+  if (state === "running" || state === "starting" || state === "interrupting") return t("hc_folder_st_running");
+  if (state === "parked") return t("hc_folder_st_parked");
+  return t("hc_st_idle");
+}
+
 /** No session open: the sessions on the host, and starting a new one. */
 function Picker({ host, note, onPick }: { host: string; note: string | null; onPick: (t: ChatTarget) => void }) {
   const { report, error } = useRuntimes(host);
@@ -351,21 +377,37 @@ function Picker({ host, note, onPick }: { host: string; note: string | null; onP
       {note && <div className="nt-chat-note warn">{note}</div>}
       {open.length > 0 && (
         <>
-          <div className="grp-h">{t("hc_sessions")}</div>
+          <div className="grp-h">{t("hc_folder_projects")}</div>
           <div className="nt-sessions">
-            {open.map((s) => (
-              <button key={s.id} type="button" className="sess" onClick={() => pick({ session: s.id })}>
-                <i className={cx("dot", s.state)} />
-                <span className="nm">{s.name}</span>
-                <span className="cwd mono">{s.cwd}</span>
-                <span className="n">{t("hc_turns", { n: s.turns })}</span>
-              </button>
+            {sessionsByFolder(open).map((g) => (
+              <div key={g.folder} className="nt-proj">
+                <div className="nt-proj-hd" title={g.folder}>
+                  <FolderGlyph size={14} />
+                  <span className="fn">{folderName(g.folder)}</span>
+                  {parentFolder(g.folder) && (
+                    <span className="fp mono">
+                      <bdi>{tildeFolder(parentFolder(g.folder) as string, knownHome(host))}</bdi>
+                    </span>
+                  )}
+                  <span className="n tnum">{g.sessions.length}</span>
+                </div>
+                {g.sessions.map((s) => (
+                  <button key={s.id} type="button" className="sess" onClick={() => pick({ session: s.id })}>
+                    <i className={cx("dot", s.state)} />
+                    <span className="nm">{s.model ? `${s.name} · ${s.model}` : s.name}</span>
+                    <span className="tm">{ago(s.last_activity)}</span>
+                    <span className="meta">
+                      {[sessionState(s.state), t("hc_turns", { n: s.turns }), s.by?.device].filter(Boolean).join(" · ")}
+                    </span>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </>
       )}
       <div className="grp-h">{t("hc_new")}</div>
-      {error ? <div className="nt-chat-note err">{error}</div> : report ? <StartForm host={host} report={report} compact onStarted={pick} /> : <div className="nt-chat-note">{t("hc_looking", { host })}</div>}
+      {error ? <div className="nt-chat-note err">{error}</div> : report ? <StartForm host={host} report={report} compact folders={open.map((s) => s.cwd)} onStarted={pick} /> : <div className="nt-chat-note">{t("hc_looking", { host })}</div>}
     </div>
   );
 }
@@ -441,9 +483,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         <i className={cx("dot", connected ? chat.state : "off")} />
         <div className="who">
           <span className="nm">{agent}</span>
-          <span className="cwd mono" title={hello?.cwd}>
-            {hello?.cwd ?? ""}
-          </span>
+          {hello?.cwd ? <FolderLabel host={host} path={hello.cwd} className="cwd" /> : <span className="cwd" />}
         </div>
         {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
