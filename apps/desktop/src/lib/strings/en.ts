@@ -752,6 +752,7 @@ export const en = {
   // The session's title strip, floating bars and HUD (desktop redesign, 2026-10-21).
   fs_enter: "Enter full screen",
   fs_exit: "Exit full screen",
+  show_controls: "Show controls",
   fs_hint: "Full screen: ⌃⌘F. Esc leaves it while you are only watching.",
   hud_latency: "latency",
   hud_fps: "fps",

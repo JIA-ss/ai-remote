@@ -335,6 +335,12 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-anchor { position: absolute; left: 50%; z-index: 8; width: max-content; max-width: calc(100% - 32px); }
 .nt-anchor.bottom { bottom: 16px; }
 .nt-anchor.top { top: 12px; }
+/* while you drive: a small tab at the bottom, always there, with the bottom bar raised above it */
+.nt-anchor.bottom.raised { bottom: 26px; }
+.nt-anchor.handle { bottom: 4px; transform: translateX(-50%); }
+.nt-handle { display: grid; place-items: center; width: 48px; height: 16px; border-radius: 8px; cursor: default; color: #A6A6AD;
+  background: rgb(28 28 30 / .55); box-shadow: 0 0 0 .5px rgb(255 255 255 / .12); opacity: .7; transition: opacity .15s, background .15s; }
+.nt-handle:hover { opacity: 1; background: rgb(28 28 30 / .9); color: #F2F2F3; }
 .nt-bar { position: relative; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 6px 0 12px; border-radius: var(--r-float); white-space: nowrap;
   background: rgb(28 28 30 / .82); box-shadow: var(--shadow-float);
   --text-1: #F2F2F3; --text-2: #A6A6AD; --text-3: #7C7C85; --fill-1: rgb(255 255 255 / .1); --fill-2: rgb(255 255 255 / .16); --stroke-2: rgb(255 255 255 / .18); color: var(--text-1); }
@@ -393,8 +399,10 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-rail .lr.n-wait .r i, .nt-rail .lr.n-waithead .r i { background: var(--canvas); box-shadow: 0 0 0 3px var(--canvas), inset 0 0 0 2px var(--you-stroke); }
 .nt-rail .lr.n-sys .r i { background: var(--canvas); box-shadow: 0 0 0 3px var(--canvas), inset 0 0 0 1.5px var(--text-3); }
 .stage-note { font-size: 12px; }
-/* immersive: only the stage */
+/* immersive: only the stage; notes and errors go under the top bar, where they cannot cover the quality menu */
 .nt-session.immersive .tb, .nt-session.immersive .nt-rail { display: none; }
+.nt-session.immersive .session-error, .nt-session.immersive .nt-notice { top: 60px; }
+.nt-session.immersive .nt-notice.below-error { top: 104px; }
 
 /* ======================================================================================
    7. Fallbacks and small windows

@@ -2,6 +2,7 @@
 // past 1:1 device pixels. A floating bar says who drives and holds the actions, a corner HUD shows
 // what arrives, the rail is a running document of steps with the one pending decision lifted above
 // it. Full screen (⌃⌘F) keeps only the stage; the bars come back on movement and leave after 3 s.
+// While you drive, only the top and bottom edges, or the small tab under the bottom bar, bring them back.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
@@ -555,6 +556,15 @@ export function SessionPage({
   }, [immersive, driving]);
   // Leaving the page while full screen gives the window back.
   useEffect(() => () => void setFullscreen(false).catch(() => {}), []);
+  // The bars leave after 3 s of quiet, but not while the pointer rests on one or its quality menu is
+  // open (the open menu sends the page no movement).
+  const hideSoon = () => {
+    if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
+    chromeTimer.current = window.setTimeout(() => {
+      if (stageRef.current?.querySelector(".nt-anchor:hover, .nt-anchor select:focus")) hideSoon();
+      else setChrome(false);
+    }, 3000);
+  };
   const touch = (e?: React.MouseEvent) => {
     // While you drive, only the edges bring the bars back (they cover remote pixels).
     if (driving && e) {
@@ -563,8 +573,7 @@ export function SessionPage({
       if (y > 56 && y < r.height - 72) return;
     }
     setChrome(true);
-    if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
-    chromeTimer.current = window.setTimeout(() => setChrome(false), 3000);
+    hideSoon();
   };
   useEffect(() => {
     touch();
@@ -690,6 +699,8 @@ export function SessionPage({
         value={quality.id}
         title={`${t("stream_requested_limits", { edge: limits.maxLongEdge, fps: limits.maxFps, mbps: limits.bitrateKbps / 1000 })}\n${t("stream_requested_note")}`}
         onChange={(e) => {
+          // Let go of the focus, or the bar it sits on would stay up.
+          e.currentTarget.blur();
           const next = streamQuality(e.target.value);
           if (next.id === quality.id) return;
           resetVideo();
@@ -835,11 +846,22 @@ export function SessionPage({
               </motion.div>
             )}
             {showBars && (
-              <motion.div key="bar" {...fade} className="nt-anchor bottom">
+              <motion.div key="bar" {...fade} className={cx("nt-anchor bottom", driving && "raised")}>
                     <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} ownerPaused={c.feed.driver.state === "paused" && !!c.feed.driver.owner} />
               </motion.div>
             )}
           </AnimatePresence>
+          {/* While you drive, a small tab stays under the bottom bar: moving over the middle of the
+              picture is remote input, and in full screen the screen's own edges also bring up the Dock
+              and the menu bar. It only ever shows the bars, and it never moves, so a click aimed at it
+              while the bars slide in cannot land on the remote screen. */}
+          {driving && (
+            <div className="nt-anchor handle">
+              <button className="nt-handle" onMouseEnter={() => touch()} onClick={() => touch()} aria-label={t("show_controls")} title={t("show_controls")}>
+                <Icon name="chevU" size={12} />
+              </button>
+            </div>
+          )}
           {bar === "connecting" && !actionError && (
             <div className="nt-stagecard">
               <div className="hd2">{t("conn_title", { host })}</div>
