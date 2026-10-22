@@ -763,10 +763,36 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 ### 没做 / 下一步
 
 - [x] Windows（WebView2）上看一遍：`sandbox=""`、srcdoc 里的 CSP、`bdi` 都正常（见上面 Windows 实测）。
-- [ ] 跨机器（win-dev 被控端）真实智能体产出文件的预览、冷取时延。
-- [ ] iPhone 端的预览。
-- [ ] 可选：给 HTML 预览一个"允许脚本"的开关（需要独立的 webview 或独立 origin，才能保证碰不到 IPC）；"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）。
-- [ ] 会话头部工作目录的 rtl 斜杠错位（`AgentChat.tsx`）。
+- [x] 跨机器真实智能体：见下一小节。
+- [x] iPhone 端的预览：#32 已在 main。
+- [x] "允许脚本"：见下一小节。"保存到下载"按钮（复用 `pull_file`，会走 `files_pull` 的审批）没做。
+- [x] 会话头部工作目录的 rtl 斜杠错位：main 上目录选择那边已改成 `FolderLabel` + `<bdi>`，演示页实测正常（`<bdi>` 不写 dir 时按规范没有强字符就是 ltr，`/2026/10` 也对）。
+
+### 服务模式下的读取身份、签票即读、运行脚本的独立窗口（2026-10-22，分支 `feat/chat-preview-scripts`，基于 main a7df1d3）
+
+**发现的问题（读代码确认，没有真机复现）**：`chat_file` 在被控端进程里读文件，兑换票据时还会按路径重新打开。
+- Windows 服务模式下被控端是 SYSTEM，智能体经 chat-runner 以用户身份运行。"默认允许"的理由（"智能体本来就能把文件打印出来"）在这里不成立：管理员设备让智能体在回答里**提到**任意路径（别的用户的图片、Markdown），`chat_file` 就以 SYSTEM 读出来，绕过了 `files_pull` 的审批。
+- 签票时检查、兑换时重开：2 分钟内文件可以换成指向别处的链接（扩展名和范围检查被绕过；用户态下智能体本来也能读，但范围限制失效）。
+
+**改法**：
+- 签票时就读字节（`chat::preview::read_file`：重新解析后必须仍是检查过的那个路径、扩展名、≤16 MiB），票据带着字节（`Direction::Bytes`，所有票据合计最多 128 MiB，超出丢最旧的），文件通道直接发这份字节（`deliver_bytes`）。
+- 读的身份：本地后端由被控端进程自己读；runner 后端（SYSTEM 被控端）走 runner 新加的 `read` 请求，由用户会话里的 runner 以用户令牌读，base64 过管道（单行上限 40 MiB，16 MiB 编码后约 21 MiB）。
+
+**运行脚本**（`apps/desktop/src-tauri/src/preview_window.rs`，Tauri 命令 `open_preview_window`）：
+- 读 Tauri 2.12 源码（`webview/mod.rs` 的 `is_local_url` / `on_message`）的结论：**应用自己注册的自定义协议算"本地来源"，本地来源在没有应用 ACL 清单时可以调全部应用命令**，所以不能用自定义协议开这个窗口。非本地来源要过 ACL，capability 只给了 `main`，所以应用命令和插件命令都被拒；Channel 数据按 webview 标签分开存（`ipc/channel.rs`），另一个窗口读不到主窗口的。
+- 做法：应用内一个只听 `127.0.0.1`、端口随机的极简 HTTP 服务，每个页面一个随机路径，别的路径 404；响应头带 CSP（内联脚本 + jsDelivr / unpkg / cdnjs / esm.sh / Google Fonts 的脚本和样式，`connect-src` / `frame-src` / `form-action` / `base-uri` 全 `none`，图片只许同源、`data:`、`blob:`）、`no-store`、`nosniff`、`no-referrer`。窗口 `incognito`、只能停在自己的页面（`on_navigation`）、不许开新窗口（`on_new_window` → Deny），关窗即丢弃页面。debug 的 smoke 模式下窗口放到屏幕外。
+- `preview_server_requests` 命令返回最近 64 个被请求的路径（只有路径），给 e2e 判断页面做了什么。
+
+**实测（本机 macOS，debug，2026-10-22）**：
+- `cargo test -p ar-host --lib chat` 62 过（新增 `a_preview_is_read_by_the_runner`、`a_file_swapped_for_a_link_after_the_check_is_not_read`）；第一次整跑时 `an_image_crosses_the_pipe_to_an_agent_in_the_runner` 超时 1 次，单独跑和随后整跑都过（机器繁忙，未再现）。`cargo clippy --workspace --all-targets -D warnings` 无警告；`node --test tools/*.test.mjs` 115 过；`tsc` 过；debug 构建重新生成的 `bindings.ts` 与手写一致。
+- 预览 e2e（替身智能体、本机隔离被控端，安静模式）：连续 4 次全过（每次 32 项）。"运行脚本"的三项：页面在独立窗口里跑了脚本（服务收到 `ran`）；页面里 `window.__TAURI_INTERNALS__` 存在但 `invoke` 不是函数（`ipc-threw`），调不到应用；`fetch("https://example.com/")` 被拦（`fetch-blocked`）。此前 2 次运行在第 137 行报"找不到源码按钮"：截图里那时弹层已经不在了；加了诊断（弹层消失时记录面板是否被换、最近的按键）后 4 次都没再出现，每次弹层消失前都是脚本自己的 Esc。**原因没查清**，诊断留在脚本里。
+- #30 加的"长路径从左侧截断"检查在 WebKit 下失败，截图显示截断是对的（`…c4mmn/outside/named.md`）：WebKit 把被省略的第一个字符位置报在省略号之后，检查改为"内容比框宽 + 框是 rtl + 最后一个字符完整在框内"。
+- **跨机器、真实智能体**（`tools/desktop-chat-preview-remote.py` + `tools/desktop-chat-preview-real.js`；win-dev 上本分支 debug 版的**用户态**测试被控端、隔离目录、安静模式；Mac 上 debug 桌面包、隔离控制端目录、安静模式；Claude Code 2.1.293，1 次）：一轮 19.4 s 写了 report.html / notes.md / chart.svg，三张内联卡片全部加载（截图里中文页面、表格、SVG 都对）；冷取（每次新票据 + 字节过 QUIC）：642 B 32~41 ms、147 B 31~44 ms、715 B 37~43 ms、4.2 MB PNG 275~349 ms（约 12~15 MB/s），各 5 次；"运行脚本"页面被独立窗口取走。线路是直连还是中继没记录。
+
+**未测**：
+- **服务模式（runner）的真机读取**：要把 win-dev 服务 `ai-remote-host-cc166525` 换成本分支的 release 构建，等于重启真实被控端，需要用户点头；本分支只有替身 runner 的单测。步骤：win-dev 上 `cargo build --release -p ai-remote` → 停服务 → 把 `ai-remote-hostw.exe` 等复制到 `$HOME/ai-remote-svc-bin`（服务的 binPath）→ 起服务 → Mac 上用桌面包对 win-dev 开一个会话，让智能体写一个 html，再让它在回答里提到一个只有管理员能读的文件（如 `C:\Windows\System32\config\systemprofile` 下的某个 `.md`）→ 预期前者能看、后者报"cannot read"。
+- 真实窗口里"运行脚本"窗口的观感（e2e 里窗口在屏幕外）；Windows（WebView2）下的独立窗口；依赖 CDN 的真实页面（例如 Chart.js）能否画出来。
+- 弹层偶发自己消失的原因（见上）。
 
 ## 桌面端对话侧栏端到端（2026-10-22，分支 `claude/desktop-chat-e2e`，基于 `feat/host-chat` 4be9e12）
 
