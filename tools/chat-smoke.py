@@ -116,6 +116,10 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     (work / ".codex" / "skills" / "pong-skill" / "SKILL.md").write_text(
         "---\nname: pong-skill\ndescription: Answers SKILLPONG. Use when asked to run the pong skill.\n---\n\n"
         "When this skill is used, reply with exactly the word SKILLPONG and nothing else.\n")
+    # And a project command, for Claude Code's `/` list (/pong).
+    (work / ".claude" / "commands").mkdir(parents=True)
+    (work / ".claude" / "commands" / "pong.md").write_text(
+        "---\ndescription: Answers SKILLPONG\n---\n\nReply with exactly the word SKILLPONG and nothing else.\n")
     (host_home / "host").mkdir(parents=True)
     quiet = '[network]\nquiet = true\n\n' if options.quiet else ""
     (host_home / "host" / "ai-remote.toml").write_text(
@@ -379,12 +383,12 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli("--json", "chat", "commands", rsid)
             cmds = json.loads(r.stdout).get("commands", []) if r.returncode == 0 else []
             print(f"      {len(cmds)} commands: {', '.join(c['insert'] for c in cmds[:12])}")
-            pong = next((c for c in cmds if c["name"] == "pong-skill"), None)
-            check(f"real {kind}: lists its commands or skills", len(cmds) > 0, r.stderr[-200:])
+            pong = next((c for c in cmds if c["name"] in ("pong-skill", "pong")), None)
+            check(f"real {kind}: lists its commands or skills", len(cmds) > 0 and pong is not None, r.stderr[-200:])
             if pong:
                 t0 = time.time()
                 r = cli("chat", "send", rsid, f"{pong['insert']} please", "--wait", timeout=300)
-                check(f"real {kind}: runs a skill chosen from its list", r.returncode == 0 and "SKILLPONG" in r.stdout,
+                check(f"real {kind}: runs {pong['insert']} chosen from its list", r.returncode == 0 and "SKILLPONG" in r.stdout,
                       f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
             if rows.get(f"real-{kind}", {}).get("caps", {}).get("steer"):
                 steer_real(kind, rsid)
