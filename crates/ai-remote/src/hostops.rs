@@ -224,6 +224,9 @@ pub async fn host_start(profile: &Profile, json_out: bool) -> Result<()> {
     if !status.installed {
         bail!("no background host is installed for this profile: run `ai-remote host install` first");
     }
+    // Starting is the owner's answer to an earlier `stop-host`: without this the macOS system
+    // agent would find the stop still recorded and exit again at once.
+    clear_stop_marker(profile);
     let start = install::start_action(profile)?;
     // A Windows service starts only for an administrator (its default access rights).
     if start.needs_admin() && ar_host::platform::rights() != ar_host::platform::Rights::Elevated {
