@@ -7,7 +7,8 @@
 //! Not the default yet: `AI_REMOTE_CAPTURE=dda` selects it (see `capture::start`). The pointer is not
 //! in the picture (Desktop Duplication reports it separately).
 //! TODO: draw the pointer from `DXGI_OUTDUPL_FRAME_INFO` / `GetFramePointerShape`.
-//! TODO: rotated outputs arrive unrotated; rotate in the video processor.
+//! A rotated output (a portrait monitor) arrives in the panel's own orientation; the video processor
+//! turns it upright (see [`upright`]), as Windows Graphics Capture does by itself.
 //!
 //! Follows RustDesk's `libs/scrap/src/dxgi/mod.rs` (acquire / release, access lost) and
 //! `src/server/video_service.rs` with `platform/windows.cc` (`inputDesktopSelected` /
@@ -28,9 +29,16 @@ use windows::{
     Win32::{
         Foundation::{GENERIC_WRITE, HANDLE},
         Graphics::{
-            Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D},
+            Direct3D11::{
+                D3D11_TEXTURE2D_DESC, D3D11_VIDEO_PROCESSOR_ROTATION, D3D11_VIDEO_PROCESSOR_ROTATION_90,
+                D3D11_VIDEO_PROCESSOR_ROTATION_180, D3D11_VIDEO_PROCESSOR_ROTATION_270,
+                D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY, ID3D11Texture2D,
+            },
             Dxgi::{
-                Common::{DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED},
+                Common::{
+                    DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180,
+                    DXGI_MODE_ROTATION_ROTATE270,
+                },
                 DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication,
                 IDXGIResource,
             },
@@ -106,8 +114,23 @@ pub(super) fn start(
     }
 }
 
-/// A converter and the (input, output) sizes it was built for.
-type SizedConverter = (Converter, (u32, u32), (u32, u32));
+/// A converter and the (input, output) sizes and rotation it was built for.
+type SizedConverter = (Converter, (u32, u32), (u32, u32), D3D11_VIDEO_PROCESSOR_ROTATION);
+
+/// The clockwise turn that brings a duplicated frame of `size` upright on an output whose rotation is
+/// `rotation`, and the upright size. Desktop Duplication hands over the image as the panel scans it
+/// out: on a monitor turned to portrait it lies on its side. Measured on 2026-10-22 on a portrait
+/// monitor reporting `ROTATE270`: the desktop's top-left corner was the frame's top-right corner and
+/// its rows ran down the frame, so it takes a 270-degree turn; the names match for every rotation
+/// (Microsoft's Desktop Duplication sample maps them the same way).
+fn upright(rotation: DXGI_MODE_ROTATION, (width, height): (u32, u32)) -> (D3D11_VIDEO_PROCESSOR_ROTATION, (u32, u32)) {
+    match rotation {
+        DXGI_MODE_ROTATION_ROTATE90 => (D3D11_VIDEO_PROCESSOR_ROTATION_90, (height, width)),
+        DXGI_MODE_ROTATION_ROTATE180 => (D3D11_VIDEO_PROCESSOR_ROTATION_180, (width, height)),
+        DXGI_MODE_ROTATION_ROTATE270 => (D3D11_VIDEO_PROCESSOR_ROTATION_270, (height, width)),
+        _ => (D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY, (width, height)),
+    }
+}
 
 fn run(
     gpu: &Arc<Gpu>,
@@ -134,7 +157,7 @@ fn run(
     let mut failing = false;
     let mut desktop_checked = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        let Some((output, dup)) = duplication.as_ref() else {
+        let Some((output, dup, rotation)) = duplication.as_ref() else {
             desktop.follow();
             match duplicate(gpu, monitor) {
                 Ok(d) => {
@@ -194,14 +217,14 @@ fn run(
                 // SAFETY: a descriptor query on a live texture.
                 unsafe { texture.GetDesc(&mut desc) };
                 let input = (desc.Width, desc.Height);
-                let output =
-                    crate::stream::encode::stream_size(input.0, input.1, max_long_edge.load(Ordering::Relaxed));
-                if converter.as_ref().is_none_or(|(_, i, o)| (*i, *o) != (input, output)) {
+                let (turn, (width, height)) = upright(*rotation, input);
+                let output = crate::stream::encode::stream_size(width, height, max_long_edge.load(Ordering::Relaxed));
+                if converter.as_ref().is_none_or(|(_, i, o, r)| (*i, *o, *r) != (input, output, turn)) {
                     // Cleared first: a converter that cannot be built for this size stops the capture.
                     converter = None;
-                    converter = Some((Converter::new(gpu.clone(), input, output, fps)?, input, output));
+                    converter = Some((Converter::rotated(gpu.clone(), input, output, fps, turn)?, input, output, turn));
                 }
-                converter.as_mut().map_or(Ok(None), |(c, _, _)| c.convert(&texture))
+                converter.as_mut().map_or(Ok(None), |(c, _, _, _)| c.convert(&texture))
             })
         };
         drop(resource);
@@ -225,8 +248,8 @@ fn run(
     }
 }
 
-/// Duplicates the output that shows `monitor` on the capture device's adapter.
-fn duplicate(gpu: &Gpu, monitor: HMONITOR) -> Result<(IDXGIOutput1, IDXGIOutputDuplication)> {
+/// Duplicates the output that shows `monitor` on the capture device's adapter; with the output's rotation.
+fn duplicate(gpu: &Gpu, monitor: HMONITOR) -> Result<(IDXGIOutput1, IDXGIOutputDuplication, DXGI_MODE_ROTATION)> {
     // SAFETY: DXGI enumeration and duplication with owned COM results only.
     unsafe {
         let adapter = gpu.device.cast::<IDXGIDevice>()?.GetAdapter()?;
@@ -236,10 +259,10 @@ fn duplicate(gpu: &Gpu, monitor: HMONITOR) -> Result<(IDXGIOutput1, IDXGIOutputD
                 let output = output.cast::<IDXGIOutput1>()?;
                 let duplication = output.DuplicateOutput(&gpu.device).context("duplicate the output")?;
                 let rotation = duplication.GetDesc().Rotation;
-                if rotation != DXGI_MODE_ROTATION_IDENTITY && rotation != DXGI_MODE_ROTATION_UNSPECIFIED {
-                    tracing::warn!(?rotation, "rotated display: Desktop Duplication frames are not rotated yet");
+                if upright(rotation, (0, 0)).0 != D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY {
+                    tracing::info!(?rotation, "rotated display: frames are turned upright");
                 }
-                return Ok((output, duplication));
+                return Ok((output, duplication, rotation));
             }
         }
         unreachable!()
@@ -335,6 +358,33 @@ fn desktop_name(desktop: HDESK) -> Option<String> {
 /// (8192: native size). "capture->encoded" runs from the moment `AcquireNextFrame` returned to the
 /// moment `encode_raw` returned (GPU conversion, the hand-off through the slot, encoder submit);
 /// "encode" is the `encode_raw` call alone.
+#[cfg(test)]
+mod tests {
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED};
+
+    use super::*;
+
+    #[test]
+    fn rotated_outputs_are_turned_upright() {
+        // A 1440x2560 portrait monitor arrives as the 2560x1440 panel scans it out.
+        assert_eq!(
+            upright(DXGI_MODE_ROTATION_ROTATE270, (2560, 1440)),
+            (D3D11_VIDEO_PROCESSOR_ROTATION_270, (1440, 2560))
+        );
+        assert_eq!(
+            upright(DXGI_MODE_ROTATION_ROTATE90, (2560, 1440)),
+            (D3D11_VIDEO_PROCESSOR_ROTATION_90, (1440, 2560))
+        );
+        assert_eq!(
+            upright(DXGI_MODE_ROTATION_ROTATE180, (5120, 2160)),
+            (D3D11_VIDEO_PROCESSOR_ROTATION_180, (5120, 2160))
+        );
+        for plain in [DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED] {
+            assert_eq!(upright(plain, (5120, 2160)), (D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY, (5120, 2160)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod bench {
     use windows::{
@@ -593,5 +643,60 @@ mod bench {
         );
         assert!(!closed, "capture closed on its own before the recording ended");
         assert!(frames > 0, "Desktop Duplication delivered no frames");
+    }
+
+    /// Hands-on check on a machine with rotated (portrait) monitors: captures every monitor once
+    /// through Desktop Duplication and once through Windows Graphics Capture (run it as the signed-in
+    /// user: WGC is not available to SYSTEM), checks that each frame has its monitor's orientation,
+    /// and writes the frame's luma as `AR_OUT/<dda|wgc>-<index>.pgm` to look at (an upside-down
+    /// picture has the right orientation too, so look). Put something readable on each monitor first.
+    ///
+    /// `cargo test -p ar-host --lib every_monitor_comes_out_upright -- --ignored --nocapture`
+    ///
+    /// `AR_OUT` (the temp dir's `ar-upright`), `AR_EDGE` (1280).
+    #[test]
+    #[ignore]
+    fn every_monitor_comes_out_upright() {
+        let _ = tracing_subscriber::fmt().with_env_filter(env("RUST_LOG", "info")).with_test_writer().try_init();
+        let out = std::path::PathBuf::from(env("AR_OUT", &std::env::temp_dir().join("ar-upright").to_string_lossy()));
+        std::fs::create_dir_all(&out).unwrap();
+        let edge: u32 = env("AR_EDGE", "1280").parse().unwrap();
+        let mut wrong = Vec::new();
+        for m in crate::stream::capture::monitors().unwrap() {
+            let monitor = super::super::win::monitor(Some(m.index)).unwrap();
+            for path in ["dda", "wgc"] {
+                let slot = Arc::new(Slot::default());
+                let limit = Arc::new(AtomicU32::new(edge));
+                // Kept running until its frame is read back.
+                let _capture: Box<dyn std::any::Any> = match path {
+                    "dda" => Box::new(start(monitor, 30, limit, slot.clone()).unwrap()),
+                    _ => Box::new(super::super::win::start(monitor, 30, limit, slot.clone(), false).unwrap()),
+                };
+                let raw = (0..50).find_map(|_| slot.take(Duration::from_millis(100)).flatten()).expect("no frame");
+                let (y, _) = super::super::win::read_nv12(raw.gpu.as_deref().expect("a GPU frame")).unwrap();
+                let file = out.join(format!("{path}-{}.pgm", m.index));
+                let mut pgm = format!("P5\n{} {}\n255\n", raw.width, raw.height).into_bytes();
+                pgm.extend_from_slice(&y);
+                std::fs::write(&file, pgm).unwrap();
+                let upright = (raw.width > raw.height) == (m.width > m.height);
+                println!(
+                    "monitor {} at ({}, {}) {}x{}{}: {path} frame {}x{} {} -> {}",
+                    m.index,
+                    m.x,
+                    m.y,
+                    m.width,
+                    m.height,
+                    if m.primary { " primary" } else { "" },
+                    raw.width,
+                    raw.height,
+                    if upright { "upright" } else { "ON ITS SIDE" },
+                    file.display()
+                );
+                if !upright {
+                    wrong.push(format!("{path} monitor {}", m.index));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "frames on their side: {wrong:?}");
     }
 }

@@ -149,6 +149,19 @@ unsafe impl Send for Converter {}
 
 impl Converter {
     pub(super) fn new(gpu: Arc<Gpu>, input: (u32, u32), output: (u32, u32), fps: u32) -> Result<Self> {
+        Self::rotated(gpu, input, output, fps, D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY)
+    }
+
+    /// Like [`Converter::new`], and turns every frame clockwise by `rotation` on the way: `input` is
+    /// the source texture's size, `output` the size after turning and scaling (a quarter turn swaps
+    /// width and height). Desktop Duplication delivers a rotated display's image unrotated.
+    pub(super) fn rotated(
+        gpu: Arc<Gpu>,
+        input: (u32, u32),
+        output: (u32, u32),
+        fps: u32,
+        rotation: D3D11_VIDEO_PROCESSOR_ROTATION,
+    ) -> Result<Self> {
         let rate = DXGI_RATIONAL { Numerator: fps, Denominator: 1 };
         let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -179,6 +192,14 @@ impl Converter {
             vc.VideoProcessorSetStreamSourceRect(&processor, 0, true, Some(&src));
             vc.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&dst));
             vc.VideoProcessorSetOutputTargetRect(&processor, true, Some(&dst));
+            if rotation != D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY {
+                let mut caps = D3D11_VIDEO_PROCESSOR_CAPS::default();
+                enumerator.GetVideoProcessorCaps(&mut caps).context("video processor caps")?;
+                if caps.FeatureCaps & D3D11_VIDEO_PROCESSOR_FEATURE_CAPS_ROTATION.0 as u32 == 0 {
+                    bail!("the GPU video processor cannot rotate frames");
+                }
+                vc.VideoProcessorSetStreamRotation(&processor, 0, true, rotation);
+            }
             (enumerator, processor)
         };
         let mut pool = Vec::with_capacity(POOL);
