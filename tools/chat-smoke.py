@@ -416,16 +416,18 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             check(f"real {kind}: runs a shell tool", saw_tool)
             check(f"real {kind}: an interrupt stops the running turn", ends == ["interrupted"], f"{ends}, {stopped_in:.1f} s")
             if options.hostw and os.name == "nt":
-                # Whether the agent stops the command it was running: it is the agent's to do (the host
-                # only takes the whole tree down when the session ends), so this is reported, not checked.
+                # The command the interrupted turn was running must stop too. Claude stops it itself;
+                # Codex leaves it as a background terminal, which the adapter terminates once the turn
+                # ends interrupted (see adapters/codex.rs).
                 t1, gone = time.time(), None
                 while time.time() - t1 < 60:
                     if not any("sleep 45" in c for _, _, c in host_tree()):
                         gone = time.time() - t1
                         break
                     time.sleep(1)
-                print(f"      the interrupted command (sleep 45) left the host's tree "
-                      + (f"{gone:.1f} s after the interrupt" if gone is not None else "not within 60 s"))
+                check(f"real {kind}: the interrupted command (sleep 45) stops within 10 s",
+                      gone is not None and gone < 10,
+                      f"{gone:.1f} s after the interrupt" if gone is not None else "still running after 60 s")
             t0 = time.time()
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),

@@ -53,9 +53,9 @@
 `cargo test --workspace --locked` 397 过 0 失败 8 忽略；`cargo test -p ar-host --lib chat` 58 过（含新增的 runner 图片测试）；
 `node --test tools/*.test.mjs` 115 项 113 过 2 跳过；`tsc --noEmit` 过；`tools/desktop-chat-e2e.py`（debug 桌面包 + 本机隔离被控端，替身智能体）67 项全过（1 次）。CI（macos-15 / windows-2025）见 PR。
 **未测**：#16 的 7 个真机交接场景（要人在这台 Mac 上操作）；#21 服务模式真机（步骤见"服务模式：用户会话里的 chat-runner"），
-其中经 runner 的插话只有代码没有端到端测试；全屏修复在真实 App
+经 runner 的插话、图片、重启续接后来补了测试，在 Mac（Unix 套接字）和 Windows（命名管道）上都过了，见该节；全屏修复在真实 App
 原生全屏和 Windows 控制端；#23 真机 iPhone；#14 Windows 干净机器安装。
-（2026-10-22 补测：~~图片走 Windows 命名管道~~、~~chat-input 在 Windows WebView2 下的输入界面~~，见下一节。）
+（2026-10-22 补测：~~chat-input 在 Windows WebView2 下的输入界面~~、图片走 Windows 命名管道，见下一节。）
 
 ## Windows 补测：新输入框在 WebView2 下、图片走命名管道（2026-10-22，分支 `test/win-chat-input`，基于 main 8eeabb6）
 
@@ -78,7 +78,7 @@
 - **未测**：真实中文输入法；拖文件进输入框、点 + 选文件（只测了粘贴）；高 DPI 缩放；浅色主题。e2e 期间被控端推流有一次
   `hardware encoding failed; using OpenH264`（同机 zremote 也在用 NVENC，没查），和对话无关。
 
-**图片走 Windows 命名管道**：`chat/runner/tests.rs` 的 `restart` 模块原来只在 Unix 编译（替身是 sh 脚本），现在 Windows 上替身是
+**图片走 Windows 命名管道**（`chore/runner-verify`〔PR #27〕同一天也做了同样的移植，合 main 时以它的版本为准，它多了经管道插话的用例）：`chat/runner/tests.rs` 的 `restart` 模块原来只在 Unix 编译（替身是 sh 脚本），现在 Windows 上替身是
 PowerShell 脚本（`powershell.exe -File`，不经 cmd.exe），端点是 `\\.\pipe\ai-remote-chat-runner-test-<临时目录名>`，经同一套
 `ar_net::ipc` 和 `ChatManager` 的 runner 后端。win-dev 上 `cargo test -p ar-host --lib chat::runner` 7 项 ×3 次全过，其中
 `an_image_crosses_the_pipe_to_an_agent_in_the_runner`（图片经命名管道到智能体）和
@@ -105,6 +105,48 @@ runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io
 **顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
 `"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
 后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
+
+## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
+
+桌面端经 #24 合进 main 的对话功能，iPhone 端这次补齐。被控端和协议都没改，只用已有的 `chat_file`、`files_list`、chat/1 的
+`files` / `ack` / `commands` / `attachments`。
+
+- **Rust 核心**（`ar-mobile`）：新增 `preview_file(host, session, path)`：调 `chat_file` 拿票据，经内嵌控制端的 `files` 流读进内存，
+  核对 SHA-256，不写盘；上限 16 MiB、整体 60 s 超时。其余（`files_list`、`chat_file` 调用）走已有的 `request`。
+- **纯逻辑**（`PhoneChatInput.swift`，照 `lib/chat-input.ts`、`lib/chat.ts` 的目录 / 发送状态部分、`lib/preview.ts` 移植，改桌面端时同步改这里）：
+  `/` `@` 菜单（光标位置按 UTF-16，和 `UITextView` 一致）、图片限制、行分类（`phoneChatLineKind`）、发送中 / 未送达
+  （`PhoneOutgoing` 一组函数）、主控端路径规则（Windows / Unix / `~`）、按项目分组、`phoneTurnFiles` / `phoneFileTarget` /
+  `phonePreviewDocument`。`PhoneChatLog` 多了 `inputs`、`dropped`、`commands`、`images`，用户消息带 `input_id` 和附件。
+  `PhoneChatMedia.swift`：ImageIO 处理图片（相册 / 相机的 HEIC 等一律缩到长边 2048 转 JPEG，已合规的 PNG/JPEG/GIF/WebP 原样发）。
+- **Store**：按行分流（事件 / 命令列表 / 带 `rid` 的回复 / ack 与拒绝 / 其他错误）；发送立刻显示为"发送中…"，收到 `user` 事件或进队列后消失，
+  被拒、断线、15 s 无 ack 显示"未送达"，可"重新发送"（断线用原 id，被拒换新 id）或"丢弃"（文字和图片回到输入框）；
+  `@` 文件经 `{"files":{rid,..}}`，10 s 超时；浏览目录用 `files_list`（列 `~` 时记下被控端的家目录，路径缩写成 `~`）；
+  最近文件夹按主机存在 `UserDefaults`；预览按路径缓存，失败不缓存。
+- **界面**：会话列表按项目分组（文件夹名 + 上级路径 + 数量，会话行带"多久前"）；新对话的文件夹是一行，点进 `PhoneFolderPicker`
+  （最近 → 浏览：面包屑、`..`、子文件夹、底部"使用「名字」"；输入路径回车直接打开；列不出时给原因和"仍然使用这个路径"）；
+  已完成的轮次下面显示它写出 / 点名的文件卡片（图片是缩略图），点卡片、diff 卡片上的眼睛、回复里指向文件的链接都打开预览 sheet；
+  输入框一行：左 `+`（从相册选择 / 拍照，智能体不收图片时置灰）、中间文字、右停止 / 发送，上方是待发图片和 `/` `@` 菜单。
+- **HTML 预览的取舍**：用 `WKWebView` 显示，但关掉内容 JavaScript（`allowsContentJavaScript = false`），页面最前面插桌面端同一条
+  CSP（不联网、只收内联样式和 data 图片），`nonPersistent` 数据存储，第一次加载之后的所有导航都拒绝；另有"源码"视图。
+  理由：只看源码对网页报告没用，静态 HTML/CSS 才是要看的；不跑脚本和桌面端规则一致。iPhone 上的网页视图本来就碰不到应用代码
+  （没有注册任何 script message handler），所以这是谨慎而不是堵漏洞，代价是靠脚本画的页面（图表库）只剩静态部分。SVG 也走这个网页视图。
+- Info.plist 的相机说明改成同时覆盖扫码和拍照发给智能体；相册用 `PhotosPicker`（系统进程内选图），不需要相册权限说明。
+
+**实测（2026-10-22，本机 macOS）**：
+- `tools/test-phone-chat-model.sh` 31 项全过（新增 14 项，用例照搬 `chat-input` / `chat-folder` / `chat-preview` / `chat-state` 的 JS 测试）。
+- `$HOME/.local/bin/python3.12 tools/phone-chat-smoke.py`（隔离被控端 + 替身智能体，三个 home 都 `[network] quiet = true`）53 项全过（1 次）。
+  新增：记住最近文件夹、hello `acks`、命令和技能列表、`@` 文件（多词匹配）、发图片后替身收到的 base64 长度与原图一致、发送中列表在对话出现后清空、
+  5 张图被被控端拒绝后显示原话并可丢弃、浏览会话文件夹（隐藏目录不列）、列 `~` 记下家目录、不存在的文件夹报原话、回复点名的三个文件、
+  预览会话目录里的 HTML 逐字节一致、PNG 可解码、目录外但智能体点名的文件可预览、没点名的被拒、`.toml` 被拒。
+- iOS 模拟器（自建 `ios-chat-v3`，iPhone Duo / iOS 27.1，xcodegen 生成工程）`PhoneChatUITests` 3 个用例全过（演示数据，没连被控端）。
+  新用例走：轮次下的三张预览卡片、图片大图、网页（静态内容出现、"脚本没有运行"仍在 = 脚本没跑、外部图片没加载）、源码视图、Markdown 文档、
+  回复里的"报告"链接打开预览、`/re` 弹命令菜单并选中、`@rep` 弹文件菜单并插入路径、第一次发送被拒（`-ui-chat-unacked`）显示未送达后重发成功且气泡带缩略图、
+  会话按项目分组、文件夹选择器从最近进入浏览、逐级进入后"使用"回到表单。截图 `/tmp/ios-chat-v3/01~13`，都看过（没进仓库）。
+- `cargo fmt --check`、`cargo clippy -p ar-mobile --all-targets -D warnings`、`cargo test -p ar-mobile` 过。
+
+**未测**：真机（相册选图、拍照、HEIC 转换只在 Mac 上用 ImageIO 测过 PNG）；模拟器 UI 测试是演示数据，真实被控端上的界面只经过冒烟（同一套 Store 代码在 macOS 上）；
+Windows 被控端路径（`D:\`）只有单测；`files_list` 被机主改成询问 / 拒绝时的浏览体验；超过一页（500 项）的文件夹只提示不翻页；
+粘贴图片（`UITextView` 粘贴）、查找、选中引用、上下文用量明细、子智能体内部步骤这几项桌面端有、这次没做。
 
 ## iPhone 版的网络设置：安静 / 仅限局域网（2026-10-22，分支 `feat/ios-network`，worktree `../ai-remote-ios-net`）
 
@@ -313,21 +355,44 @@ runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io
 **实测 / 未测**
 
 - Mac：`cargo test -p ar-host --lib chat` 32 项，连跑 3 次全过；新增：握手（同钥通过、异钥双向拒绝）、密钥持久化、**真实 Unix socket 上的重启续接**（被控端放在独立 tokio runtime 里，`shutdown_background` 模拟被杀；智能体在被控端不在时作答，新被控端接回后收到这条回答、`seq` 连续不跳号、回答来自同一个进程 pid、之后的轮次仍是同一进程、runner 只被拉起过一次、`close` 后智能体进程退出）、runner 不在时会话变 parked 且不为了"看看"去拉 runner。全工作区 clippy `-D warnings` 无警告、`cargo test --workspace` 无失败。
-- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试原来用 sh 假智能体、只在 Unix 上跑；2026-10-22 起 Windows 上换 PowerShell 替身走命名管道，也通过（见"Windows 补测"一节）。
+- Windows（win-dev，Windows 11，debug，用户态 SSH 会话）：`cargo clippy --workspace --all-targets -D warnings` 无警告，`cargo test --workspace` 全过（ar-host 260 项）。其中 `runner_win` 两项是真 Win32 调用：取本进程令牌的 SID 字符串、`CreateEnvironmentBlock` 后追加变量得到双 NUL 结尾的块；普通用户身份下 `WTSQueryUserToken` 对每个会话都失败，所以找账号会给出"未登录"。重启续接那个端到端测试原来用 sh 假智能体、只在 Unix 上跑（2026-10-22 起两平台都跑，见下一条和"Windows 补测"一节）。
+- 2026-10-22 补（分支 `chore/runner-verify`）：runner 的端到端测试改为两平台都跑——Windows 上替身是 PowerShell 脚本、端点是真的命名管道；
+  新增"运行中插话经管道送达并并入当前轮次"（替身像 Claude Code 一样回显两行，走 `Steered`，`turns` 仍是 1）。Mac 连跑 2 次、
+  win-dev 连跑 3 次，6 项全过（握手、密钥、重启续接、插话、图片、runner 不在）；win-dev 上 clippy `-D warnings` 无警告。
+  新测试在 macOS CI 上抓到一个真 bug：runner 对每个请求都 `tokio::spawn`，同一智能体的提示词和插话可能乱序写进智能体
+  （慢机上插话先到，被当成下一轮）。现在 `cmd` / `ack` 在读循环里按序处理，只有探测、启动、关闭这类慢请求并发。修后 Mac 连跑 15 次全过。
+  这些仍是用户态进程内的测试，SYSTEM 拉起 runner 那一段只能真机验证。
 - **未测（需要维护者在管理员终端操作，agent 不装服务）**：`WTSQueryUserToken` / `CreateProcessAsUserW` 以 SYSTEM 身份真正拉起 runner、breakaway 是否生效、锁屏切会话后续接、真实智能体在 runner 下的表现。
 
-**真机验证步骤**（Windows 开发机，管理员终端；用一个已配对的控制端，下面 `<host>` 是它）：
+**真机验证步骤**（Windows 开发机。标"人"的步骤要用户在场或在管理员终端里做，agent 不代做；`<host>` 是 Mac 上已配对的这台开发机）：
 
-0. 前提：开发机上已经有一个服务在跑（`ai-remote-host-cc166525`，安静模式，`[network] quiet = true`，构建在 `ai-remote-quiet` 目录）。替换或重装它之前先问用户。本分支要先合入 PR #18（`feat/quiet-network`，或 cherry-pick 55e2725），否则读到 `quiet = true` 会启动失败。在公司网络里起任何测试用的被控端或控制端（包括隔离的 `--home`）时，都要在它的 `host/` 和 `controller/` 下各放一份写有 `[network] quiet = true` 的 `ai-remote.toml`。
-
-1. 构建并安装：`cargo build --release -p ai-remote`，管理员终端里 `ai-remote host install --service`（先 `--dry-run` 看计划）。`ai-remote host status` 为 running。
-2. 控制端 `ai-remote chat list --host <host>`：应列出用户装的 codex / claude 等且 `can_start: true`、版本和登录态与用户终端里一致（说明是用户身份探测的）。被控端机器上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"`：应有两个进程，一个用户名 `NT AUTHORITY\SYSTEM`（被控端），一个是登录用户（runner，命令行带 `--chat-runner`）。`host/chat-runner.log` 有 `connected to the host`。
-3. `ai-remote chat run --host <host> codex <某个用户目录> "列出当前目录"`（或桌面端「智能体」标签）：轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，且没有弹控制台窗口。
-4. **锁屏续接**：发一个耗时的任务（例如"sleep 60 后回复 done"），轮次运行中按 Win+L。服务日志应出现 console session 切换和新会话里重拉 host；runner 进程 pid 不变；控制端重新 `chat attach` 后看到 `reattached` 通知，60 s 后收到 done，轮次 completed，没有"host restarted during this turn"。用 win-dev-unlock 解锁后再发一条，仍是同一个智能体进程（`chat sessions` 里 pid 不变）。
-5. **交接丢消息**：难以手动复现，单测已覆盖；真机上只看有没有挂住的轮次。
-6. `ai-remote stop-host`：服务停止，runner 和智能体进程都退出（`chat-runner.log` 有 `told the agent runner to exit`）。`sc start` 后再 `chat list`，会拉起新的 runner。
-7. 安全检查：用另一个本地普通用户（或低完整性进程）连 `\\.\pipe\ai-remote-chat-runner-<id>` 应被 ACL 拒；同一用户下随便连上去（不带密钥）应在 `host.log` 里看到 `refused a connection to the agent runner endpoint`。
-8. 用完 `ai-remote host uninstall`（管理员终端）。
+0. 现状与前提（2026-10-22 查）：开发机上已经有一个真实服务 `ai-remote-host-cc166525` 在跑，配置目录
+   `C:\Users\sunjiashuai\AppData\Local\ai-remote\data`，安静模式，binPath 指向 `ai-remote-lan\target\release` 的构建（属于
+   `feat/lan-direct` 那边）。验证要把这个服务的程序换成含 runner 的构建，**换之前先征得用户同意**，并记下原 binPath，验证完再换回。
+   验证用的构建已经编好：`C:\Users\sunjiashuai\ai-remote-chat-svc\target\release\`（分支 `chore/runner-verify` = main + runner 测试补强，
+   含 PR #18 的安静模式）。在公司网络里另起测试用的被控端或控制端，都要在它的 home 下 `host/`、`controller/` 各放一份写有
+   `[network] quiet = true` 的 `ai-remote.toml`；本流程只换现有服务的程序，不另起实例。
+1. （人，管理员终端）记下原配置后换程序：
+   `sc qc ai-remote-host-cc166525`（记下 BINARY_PATH_NAME），然后
+   `C:\Users\sunjiashuai\ai-remote-chat-svc\target\release\ai-remote.exe --home C:\Users\sunjiashuai\AppData\Local\ai-remote\data host install --service --dry-run`，
+   确认计划只改这一个服务的 binPath 后去掉 `--dry-run` 再执行。`... host status` 应为 running。
+2. 探测以用户身份进行：Mac 上 `ai-remote chat list --host <host>`，应列出开发机上装的 codex / claude 等，`can_start: true`，版本和登录态与用户
+   在自己终端里看到的一致。开发机上 `tasklist /v /fi "imagename eq ai-remote-hostw.exe"` 应有两个进程：`NT AUTHORITY\SYSTEM` 的被控端，
+   和登录用户的 runner（命令行带 `--chat-runner`）。`<配置目录>\host\chat-runner.log` 有 `connected to the host`。
+3. （人：会花真实智能体的额度）`ai-remote chat run --host <host> codex <用户目录下某个文件夹> "列出当前目录"`，或在桌面端「智能体」标签里做：
+   轮次完成；任务管理器里 codex 进程的用户是登录用户、不是 SYSTEM，没有弹出控制台窗口。再发一条带图片的消息（桌面端拖一张图）、
+   一条运行中插话，确认都送达。
+4. （人）**锁屏续接**：发一个耗时的任务（例如"先 sleep 60 再回复 done"），轮次运行中按 Win+L。服务日志（`host\host.log`）应出现 console
+   session 切换和新会话里重拉被控端；runner 的 pid 不变；控制端重新打开对话后看到 `reattached` 通知，60 s 后收到 done，轮次 completed，
+   没有"the host restarted during this turn"。用 skill win-dev-unlock 解锁后再发一条，`chat sessions` 里智能体 pid 不变。
+5. 交接时丢消息：手动难复现，单测已覆盖；真机上只看有没有挂住不结束的轮次。
+6. （人，会停掉真实服务）`ai-remote stop-host`：服务停止，runner 和智能体进程都退出（`chat-runner.log` 有
+   `the host told the agent runner to exit`）。随后 `sc start ai-remote-host-cc166525`，再 `chat list` 会拉起新的 runner。
+7. 安全检查：以另一个本地普通用户连 `\\.\pipe\ai-remote-chat-runner-<配置 id>` 应被 ACL 拒；同一用户下不带密钥连上去，`host.log` 里应有
+   `refused a connection to the agent runner endpoint`。
+8. （人，管理员终端）恢复：用第 1 步记下的原程序路径执行它自己的 `ai-remote.exe ... host install --service`（或经用户同意后
+   `sc config ai-remote-host-cc166525 binPath= "<原值>"`），再 `sc stop` / `sc start` 让原构建跑起来。**不要** `host uninstall`：
+   那会删掉真实服务。
 
 ## 网络设置页重做：普通用户看得懂（2026-10-21，同在 `feat/lan-direct`）
 
@@ -827,14 +892,14 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 后台被控端（hostw）
 
-- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（只报告不判定，那是智能体自己的事）；`chat end` 后检查被控端下面不剩任何进程（判定）。
+- **做法**：`tools/chat-smoke.py --hostw target/debug/ai-remote-hostw.exe`：隔离被控端用 hostw 起（监护进程 + 被控端子进程，日志写 `<home>/host/host.log`），其余同原来的冒烟。Windows 上它还会：打断真实智能体后跟踪那条 `sleep 45` 命令多久离开被控端的进程树（2026-10-22 起是判定项：10 s 内必须离开，见下面「Codex 打断后收掉本轮命令」）；`chat end` 后检查被控端下面不剩任何进程（判定）。
 - **窗口监视** `tools/win-window-watch.ps1`：在交互桌面上用 WinEvent 钩子（`EVENT_OBJECT_SHOW`）记下运行期间出现的**每一个**可见顶层窗口（只闪几毫秒的控制台也抓得到），窗口出现的同时记下属主进程的父进程链；另外每 150 ms 轮询一次被控端下面的进程树，结束 3 s 后报告还活着的。
 - **实测**（真实 Codex 0.162.1 `codex.cmd`、Claude Code 2.1.293 `claude.cmd`，都是 npm 垫片；每次 36 项：替身 27 + 真实智能体 9）：Codex 3 次、Claude 4 次都全过（Codex 第 1 次有 1 项失败：我当时把"打断后 3 s 命令还在"写成了判定项，之后改成只报告）。
   - **控制台窗口**：被控端树里的进程 7 次都**没有**弹过窗口。树里每次 110~200 个进程（conhost 40~70 个——都是隐藏的；node、cmd、git、bash/wsl、MCP 服务、`--version` 探测），全部没有窗口。监视器一共记到 12 个控制台窗口，都不属于被控端：
     - 1 个 Windows PowerShell 是我的测试脚本自己弹的（无控制台的 Python 调 `powershell` 查进程树），加 `CREATE_NO_WINDOW` 后再没出现；
     - 1 个 PowerShell 的父进程链是 `svchost(2832) <- services.exe`，是机器上的计划任务，和测试无关；
     - Claude 第 1 次运行中 1.2 s 内 9 个 `git.exe` 窗口 + 1 个 PowerShell：当时监视器还没记父进程链，归属不明；之后 3 次 Claude 都是 0 个。**这一条没有完全排除**，如果有人在桌面上看到 Claude 会话时闪 git 窗口，先用 `win-window-watch.ps1` 抓父进程链。
-  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端只在会话结束时收整棵树。
+  - **打断**：Claude 被打断后 0.7 s（3/3）那条命令就离开了进程树；**Codex 打断后不杀正在跑的命令**，`sleep 45`（它选的是 WSL 的 `bash.exe`）跑满 45.3~46.6 s 才自己退出（2/2 次有计时；第 1 次只看到 3 s 后还在）。轮次本身 0.1 s 就结束了，下一轮正常。这是 Codex 的行为，被控端当时只在会话结束时收整棵树；已由适配器补上，见下一小节。
   - **结束会话**：`chat end` 后 2 s，被控端下面 0 个进程（7/7 真实智能体 + 7/7 替身）；整个测试结束后监视器报告的残留 0 个（7/7）。
   - 其余数字：一次任务 Codex 5.8~17.2 s、Claude 5.4~5.6 s；打断 0.1~0.2 s 生效；插话 Codex 0.08~0.25 s、Claude 3.96~4.40 s 收到 `steer:true`，Codex 最终 6 条命令、Claude 5 条。
 - **推导**：智能体根进程带 `CREATE_NO_WINDOW`（`chat/proc.rs`），它和它拉起的控制台程序共用一个隐藏控制台；所以只有显式要求新控制台（`CREATE_NEW_CONSOLE`）或用 `DETACHED_PROCESS` 再起控制台程序的子进程才会弹窗。被控端本身有没有控制台对此没有影响。
@@ -843,7 +908,33 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 - 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
 - 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
-- 被控端在 Codex 打断后是否该替它收掉还在跑的命令：现在不收（会误杀它的 MCP 服务等长期子进程），要做得先能区分"这一轮拉起的工具进程"。
+- ~~被控端在 Codex 打断后是否该替它收掉还在跑的命令~~：已做，见下一小节。
+
+### Codex 打断后收掉本轮命令（2026-10-22，分支 `claude/codex-interrupt-kill`）
+
+- **原因（读上游源码，openai/codex main 2026-10-22；不是推测）**：Codex 把 shell 命令跑成"后台终端"（unified exec，
+  `core/src/unified_exec`）。`turn/interrupt` 走 `abort_all_tasks`，只取消这一轮的任务；后台终端只在
+  `thread/backgroundTerminals/clean`、`.../terminate` 或会话关闭（`terminate_all_processes`）时才收。所以**这是 Codex 的
+  设计，和平台无关**：Mac 上同样会留着（按源码推导，没在 Mac 上实测）。被控端的 Job Object 不影响它：命令本来就在被控端的树里，
+  只是没人去杀。另外 Codex 在 Windows 上的进程组清理函数（`utils/pty/src/process_group.rs`）是空实现，Unix 上才真正杀进程组。
+- **做法**（`chat/adapters/codex.rs`）：`initialize` 带 `capabilities.experimentalApi: true`（这两个方法是实验接口，不声明会被拒）；
+  适配器记下本轮 `item/started` 里每个 `commandExecution` 的 id；本轮以 `interrupted` 结束时调
+  `thread/backgroundTerminals/list`，对 `itemId` 属于本轮的逐个 `thread/backgroundTerminals/terminate`。
+  终止由 Codex 自己做（Windows 上它给每个后台终端开了 Job Object），被控端不碰进程树。
+- **取舍**：没有按"进程树里创建时间晚于命令开始"去收——Codex 自己知道哪个进程属于哪条命令，按 `itemId` 匹配不会误杀它的 MCP 服务，
+  也跨平台。只收被打断那一轮开始的命令；之前几轮留下的后台终端（比如用户让它起的开发服务器）不动。被打断那一轮里起的长期进程也会被收，
+  这和"停止这一轮"的意思一致。代价是 `experimentalApi` 打开后 Codex 会多发一些实验字段（适配器忽略未知字段）。
+- **版本**：`list` / `terminate` 在 0.150（ChatGPT.app 内置）、0.162.1（win-dev）都有，0.137 只有 `clean`。没有这两个方法时
+  `list` 报错，适配器只记一条 debug 日志，行为同修改前。没有用 `clean` 兜底：它会连前几轮的后台终端一起收。
+- **测试**：单测 `an_interrupted_turn_stops_only_its_own_background_commands`（前一轮的不收、本轮的收、旧版报错时什么都不做）。
+  `tools/chat-smoke.py --hostw` 的"打断后命令 10 s 内离开进程树"改成判定项。
+- **实测**（win-dev，Windows 11，debug，后台 hostw，真实 Codex 0.162.1 `codex.cmd`，共 2 次；第 2 次全部通过：打断后命令 0.9 s 离开进程树，
+  插话 0.08 s 进同一轮、Codex 跑 5 条命令答 `5`。下面是第 1 次；`tools/chat-smoke.py --quiet --hostw ... --real codex=...`）：
+  打断 0.1 s 生效，被控端日志 `stopping a command of the interrupted turn command="sleep 45 && echo finished"`，那条命令
+  **打断后 1.3 s 离开进程树**（修改前 45.3~46.6 s）；下一轮记得上文、看图、技能、`chat end` 后 0 残留都通过。
+  这次唯一失败的是插话那项："the steer changes what it does"：插话 0.09 s 就进了同一轮，但 Codex 跑满 11 条命令、答 `11`
+  （之前 3 次是 6 条）。改动只在轮次以 interrupted 结束后才发请求，插话这一轮没有被打断，所以判断与本改动无关，是模型没照插话改，
+  第 2 次同样代码插话照常生效，所以按模型偶发记录（`experimentalApi` 是否影响插话没单独对照，2 次里 1 次正常）。Mac 上没跑。
 
 ## iPhone 上的编程智能体对话（2026-10-21，分支 `feat/ios-chat`，基于 `feat/host-chat`）
 

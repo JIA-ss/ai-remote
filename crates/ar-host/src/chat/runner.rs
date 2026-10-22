@@ -711,9 +711,18 @@ impl Runner {
                         reply(&tx, req.id, Ok(Value::Null));
                         break Ended::Exit;
                     }
+                    // An agent's commands (a message, then a steer during its turn) and acks go in
+                    // the order they came: run here, one after the other.
+                    Ok(req) if matches!(req.op.as_str(), "cmd" | "ack") => {
+                        let id = req.id;
+                        let res = self.handle(req).await;
+                        if id.is_some_and(|i| i > 0) {
+                            reply(&tx, id, res);
+                        }
+                    }
                     Ok(req) => {
-                        // Requests run concurrently: detection can take seconds and must not hold
-                        // up the agents' commands.
+                        // Other requests run concurrently: detection can take seconds and must not
+                        // hold up the agents' commands.
                         let me = self.clone();
                         let tx = tx.clone();
                         tokio::spawn(async move {

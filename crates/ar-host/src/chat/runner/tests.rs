@@ -1,6 +1,6 @@
 //! The runner protocol: the handshake, and a host that dies mid-turn while its agent keeps running
-//! in the runner, then comes back and carries on with the same process. The stand-in agent is a
-//! shell script on Unix (over a Unix socket) and a PowerShell script on Windows (over a named pipe).
+//! in the runner, then comes back and carries on with the same process (Unix: the stand-in agent
+//! is a shell script; the transport is the same local socket code as the Windows pipe).
 
 use super::*;
 
@@ -52,6 +52,8 @@ fn keys_are_kept_for_the_next_host() {
     assert!(parse_key("abcd").is_err());
 }
 
+/// The same tests on both transports: a Unix socket, and on Windows the named pipe the service
+/// mode uses (the stand-in agent is a shell script there, a PowerShell script here).
 mod restart {
     use std::sync::atomic::AtomicUsize;
 
@@ -62,8 +64,9 @@ mod restart {
     use crate::chat::{Backend, ChatManager, Cmd, Input, State, event::By};
 
     /// Claude Code's protocol, just enough: LATE answers a second later, a message with an image
-    /// answers "image", anything else answers at once with the process id, so the test can tell
-    /// one process from another.
+    /// answers "image", HOLD takes the next line into the same turn (as Claude Code does with a
+    /// message written during a turn, echoing both), anything else answers at once with the
+    /// process id, so the test can tell one process from another.
     #[cfg(unix)]
     const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
@@ -75,6 +78,11 @@ while IFS= read -r line; do
     *control_request*) echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
     *'"type":"image"'*)
       echo '{"type":"result","subtype":"success","is_error":false,"result":"image"}' ;;
+    *HOLD*)
+      echo '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hold"}]}}'
+      IFS= read -r more
+      echo '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"steered"}' ;;
     *LATE*) sleep 1
       echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
       echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"pid $$\"}" ;;
@@ -85,11 +93,10 @@ while IFS= read -r line; do
 done
 "#;
 
-    /// The same agent in PowerShell (started as `powershell.exe -File`, so no cmd.exe in between).
     #[cfg(windows)]
-    const FAKE: &str = r#"if ($args.Count -gt 0 -and $args[0] -eq '--version') { [Console]::Out.WriteLine('2.1.0 (Claude Code)'); exit 0 }
-$out = [Console]::Out
-function Say($s) { $out.WriteLine($s); $out.Flush() }
+    const FAKE: &str = r#"
+function Say($s) { [Console]::Out.WriteLine($s); [Console]::Out.Flush() }
+if ($args -contains '--version') { Say '2.1.0 (Claude Code)'; exit 0 }
 Say '{"type":"system","subtype":"init","session_id":"fake-session"}'
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ($line -like '*"subtype":"initialize"*') {
@@ -98,6 +105,11 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     Say '{"type":"result","subtype":"error_during_execution","is_error":true}'
   } elseif ($line -like '*"type":"image"*') {
     Say '{"type":"result","subtype":"success","is_error":false,"result":"image"}'
+  } elseif ($line -like '*HOLD*') {
+    Say '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hold"}]}}'
+    $more = [Console]::In.ReadLine()
+    Say '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
+    Say '{"type":"result","subtype":"success","is_error":false,"result":"steered"}'
   } elseif ($line -like '*LATE*') {
     Start-Sleep -Seconds 1
     Say '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
@@ -128,33 +140,26 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cfg = format!("[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{}\"\n", fake.display());
         let endpoint = root.join("ep").join("runner.sock");
-        finish(dir, &cfg, endpoint)
+        finish(dir, cfg, endpoint)
     }
 
     #[cfg(windows)]
     fn fixture() -> Fixture {
-        let dir = tempfile::Builder::new().prefix("ar-runner").tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("fake-claude.ps1");
         std::fs::write(&fake, FAKE).unwrap();
+        // TOML literal strings keep the backslashes of the paths.
         let cfg = format!(
-            "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"powershell.exe\"\nargs = {}\n",
-            serde_json::to_string(&[
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                &fake.to_string_lossy()
-            ])
-            .unwrap()
+            "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = '{}'\nargs = ['-NoProfile', '-NonInteractive', \
+             '-ExecutionPolicy', 'Bypass', '-File', '{}']\n",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            fake.display()
         );
-        // A pipe of its own per test, like a host's `ai-remote-chat-runner-<instance id>`.
-        let name = dir.path().file_name().unwrap().to_string_lossy().into_owned();
-        let endpoint = PathBuf::from(format!(r"\\.\pipe\ai-remote-chat-runner-test-{name}"));
-        finish(dir, &cfg, endpoint)
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\ai-remote-runner-test-{}", &crate::chat::random_hex()[..12]));
+        finish(dir, cfg, endpoint)
     }
 
-    fn finish(dir: tempfile::TempDir, cfg: &str, endpoint: PathBuf) -> Fixture {
+    fn finish(dir: tempfile::TempDir, cfg: String, endpoint: PathBuf) -> Fixture {
         let root = dir.path().to_path_buf();
         std::fs::write(root.join("chat.toml"), cfg).unwrap();
         std::fs::create_dir_all(root.join("chat")).unwrap();
@@ -305,6 +310,34 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         assert!(!alive, "the agent stopped with the runner");
         drop((chat, m2));
         rt2.shutdown_background();
+    }
+
+    /// A message written while a turn runs crosses the pipe as a steer, and the agent's answer that
+    /// it took it into the running turn comes back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_steer_crosses_the_pipe_and_joins_the_running_turn() {
+        let f = fixture();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        let (_, _, mut rx) = chat.follow(0);
+        chat.send(input("HOLD"));
+        wait_for(&mut rx, |v| v["t"] == "state" && v["state"] == "running").await;
+        chat.send(Cmd::Steer(Input {
+            id: "u-more".into(),
+            text: "and this too".into(),
+            by: By { device: "laptop".into(), principal: None },
+            images: Vec::new(),
+        }));
+        let joined = wait_for(&mut rx, |v| v["t"] == "user" && v["input_id"] == "u-more").await;
+        assert_eq!(joined["steer"], true, "{joined}");
+        let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+        assert_eq!(end["final_text"], "steered", "{end}");
+        assert_eq!(chat.meta().turns, 1, "the steer did not start a turn of its own");
+        m.close().await;
+        drop((chat, m));
+        rt.shutdown_background();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
