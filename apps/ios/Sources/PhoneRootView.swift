@@ -3,6 +3,9 @@ import SwiftUI
 public struct PhoneRootView: View {
     @Bindable var store: PhoneStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @PhoneViewState<CGFloat> private var availableWidth = 0
+    @PhoneViewState<Bool> private var chatExpanded = false
     @PhoneViewState<Bool> private var fullscreen = false
     @PhoneViewState<Bool> private var controlsExpanded = true
     @PhoneViewState<Bool> private var showKeyboard = false
@@ -22,48 +25,73 @@ public struct PhoneRootView: View {
     public init(store: PhoneStore) { self.store = store }
 
     public var body: some View {
-        Group {
-            if fullscreen, let host = store.selected {
-                // A full-window session has no navigation container consuming its
-                // layout proposal. It keeps the same store and stream subscription.
-                session(host)
-            } else {
-                NavigationStack {
-                    Group {
-                        if let host = store.selected { session(host) }
-                        else { computers }
-                    }
-                    .background(canvas)
-                    .navigationTitle(store.selected?.name ?? "电脑")
-                    .toolbar {
-                        if store.selected != nil {
-                            ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
-                            ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
-                            ToolbarItem(placement: .primaryAction) {
-                                Button("智能体", systemImage: "bubble.left.and.text.bubble.right") { store.openChat() }
-                                    .accessibilityIdentifier("session-chat")
+        GeometryReader { area in
+            let layout = PhoneAdaptiveLayout(width: area.size.width, regular: horizontalSizeClass == .regular)
+            Group {
+                if chatExpanded, store.showChat, let chat = store.chat {
+                    PhoneChatView(chat: chat) { closeChat() }
+                        .accessibilityIdentifier("ipad-chat-workspace")
+                } else if fullscreen, let host = store.selected {
+                    // A full-window session has no navigation container consuming its
+                    // layout proposal. It keeps the same store and stream subscription.
+                    session(host)
+                } else {
+                    NavigationStack {
+                        HStack(spacing: 0) {
+                            Group {
+                                if let host = store.selected { session(host) }
+                                else { computers(layout) }
                             }
-                        } else {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("网络", systemImage: "network") { store.networkSheet = true }
-                                    .accessibilityIdentifier("open-network")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            if layout.companionChat, store.showChat, let chat = store.chat, store.selected != nil {
+                                Divider()
+                                PhoneChatView(chat: chat, expand: {
+                                    showKeyboard = false; textFocused = false
+                                    chatExpanded = true
+                                }) { closeChat() }
+                                    .frame(width: layout.chatPanelWidth)
+                                    .accessibilityIdentifier("ipad-chat-panel")
                             }
-                            ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                         }
+                        .background(canvas)
+                        .navigationTitle(store.selected?.name ?? "电脑")
+                        .toolbar {
+                            if store.selected != nil {
+                                ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
+                                ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
+                                ToolbarItem(placement: .primaryAction) {
+                                    Button("智能体", systemImage: "bubble.left.and.text.bubble.right") {
+                                        showKeyboard = false; textFocused = false
+                                        store.openChat()
+                                    }
+                                        .accessibilityIdentifier("session-chat")
+                                }
+                            } else {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("网络", systemImage: "network") { store.networkSheet = true }
+                                        .accessibilityIdentifier("open-network")
+                                }
+                                ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
+                            }
+                        }
+                        .modifier(PhoneSessionChrome(fullscreen: false))
                     }
-                    .modifier(PhoneSessionChrome(fullscreen: false))
                 }
             }
+            .onChange(of: area.size.width, initial: true) { _, width in availableWidth = width }
         }
         .sheet(isPresented: $store.pairSheet) { pairing }
         .sheet(isPresented: $store.showActivity) { activity }
         .sheet(isPresented: $store.networkSheet) { PhoneNetworkSheet(store: store) }
-        .sheet(isPresented: $store.showChat) {
-            if let chat = store.chat { PhoneChatView(chat: chat) { store.showChat = false } }
+        .sheet(isPresented: chatSheet) {
+            if let chat = store.chat {
+                PhoneChatView(chat: chat) { closeChat() }
+                    .accessibilityIdentifier("chat-sheet")
+            }
         }
         .modifier(PhoneErrorAlert(store: store, enabled: !store.pairSheet && !store.showActivity && !store.networkSheet && !store.showChat))
         .onChange(of: store.selected?.name) { _, _ in
-            fullscreen = false; showKeyboard = false; textFocused = false
+            fullscreen = false; chatExpanded = false; showKeyboard = false; textFocused = false
             #if DEBUG
             fullscreenChangeReason = "host changed"
             #endif
@@ -74,13 +102,32 @@ public struct PhoneRootView: View {
         .tint(.blue)
     }
 
+    /// The same chat store moves between a companion and a sheet as the window resizes.
+    /// A system dismissal while moving to the companion must not close the user's chat.
+    private var chatSheet: Binding<Bool> {
+        Binding(get: {
+            store.showChat && availableWidth > 0 && !chatExpanded && !fullscreen
+                && !PhoneAdaptiveLayout(width: availableWidth, regular: horizontalSizeClass == .regular).companionChat
+        }, set: { presented in
+            if !presented, !fullscreen, !chatExpanded,
+               !PhoneAdaptiveLayout(width: availableWidth, regular: horizontalSizeClass == .regular).companionChat {
+                closeChat()
+            }
+        })
+    }
+
+    private func closeChat() {
+        store.showChat = false
+        chatExpanded = false
+    }
+
     // Keep the background static: system materials supply depth without decorative motion.
     private var canvas: some View {
         LinearGradient(colors: [PhonePalette.canvas, Color.blue.opacity(colorScheme == .dark ? 0.08 : 0.04), PhonePalette.canvas], startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
     }
 
-    private var computers: some View {
+    private func computers(_ layout: PhoneAdaptiveLayout) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -110,7 +157,7 @@ public struct PhoneRootView: View {
                             .accessibilityHidden(true)
                         VStack(spacing: 8) {
                             Text("连接你的第一台电脑").font(.headline)
-                            Text("在电脑上启动 ai-remote 被控端，生成配对票据，再用这台 iPhone 配对。")
+                            Text("在电脑上启动 ai-remote 被控端，生成配对票据，再用这台设备配对。")
                                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }
                         Button("配对一台电脑", systemImage: "plus") { store.pairSheet = true }
@@ -126,13 +173,15 @@ public struct PhoneRootView: View {
                         }
                         Text("配对保留连接身份；电脑是否可用会在连接时确认。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        ForEach(store.hosts) { host in computerCard(host) }
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: layout.computerColumns), spacing: 16) {
+                            ForEach(store.hosts) { host in computerCard(host) }
+                        }
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
                     Label("连接与控制，由你决定", systemImage: "lock.shield").font(.subheadline.weight(.semibold))
-                    Text("配对身份保存在这台 iPhone。画面和操作通过加密连接传输，你可以随时接管或暂停智能体。退出控制页面会尝试交还控制。")
+                    Text("配对身份保存在这台设备。画面和操作通过加密连接传输，你可以随时接管或暂停智能体。退出控制页面会尝试交还控制。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .padding(20).frame(maxWidth: .infinity, alignment: .leading).modifier(PhoneSurface())
@@ -141,7 +190,7 @@ public struct PhoneRootView: View {
                     ProgressView("正在准备连接…").frame(maxWidth: .infinity).padding(.vertical, 8)
                 }
             }
-            .padding(20).frame(maxWidth: 680).frame(maxWidth: .infinity)
+            .padding(20).frame(maxWidth: layout.regular ? PhoneAdaptiveLayout.computersWidth : 680).frame(maxWidth: .infinity)
         }
         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
     }

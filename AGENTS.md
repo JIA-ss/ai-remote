@@ -17,6 +17,25 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## iPad 12.9 英寸优先适配（2026-10-24，`feat/ipad-12-9`）
+
+- `PhoneAdaptiveLayout` 按窗口可用点数和 size class 决策，不按设备型号：regular 且宽 ≥900 时远程画面旁显示 360–440 点智能体面板；
+  展开智能体后，宽 ≥800 显示 260–300 点会话侧栏。12.9 英寸横屏 1366 点、竖屏 1024 点均满足；窄分屏回单栏 / sheet。
+  正文和输入区最大 820 点，电脑列表宽屏双列；iPad 专属 Info.plist 项启用四向旋转，仍允许系统多任务。
+- 旋转、全屏、sheet / 并排 / 整窗切换共用同一个 `PhoneChatStore`，不因布局变化关闭远程订阅。文本和附件草稿按会话暂存；
+  直接从侧栏切换时恢复各自草稿，并用选择代数 / 连接代数挡住旧 close、attach 的迟到结果。图片预览同时按宽高 fit。
+- Debug 聊天 fixture 可切 Claude / Codex；`-ui-viewport-chat` 在静态远程画面旁打开同一套聊天 fixture；
+  `-ui-viewport-resize` 让竖屏容器约束到 683 点、横屏回全宽，专测 sheet ↔ 并排切换（不是系统 Split View 实测）。
+- 本机实测：布局决策 12 场景、聊天模型 79 项、viewport geometry、前端 267 项（266 过 / 1 跳过）、TypeScript、IPA 打包 9 项和隐私 7 项通过。
+  mac-core 刷新时 `~/.cargo` 符号链接使 Askama 生成路径错误，使用真实 `CARGO_HOME=/Volumes/SSD-2TB/MacData/Development/cargo` 后解决；
+  CLT 6.4 缺失 SwiftUI State 宏插件，原始 mac-core 全模块检查仍受既有 `PhoneNetworkSheet` / `PhonePairing` 的 `@State` 阻断。
+  仅在 target 中复制源码并将这两处既有 @State 包装换成项目的 PhoneViewState 别名后，全模块 macOS typecheck 通过；没有将该兼容变更混入产品。
+- CI 固定 iOS 26.2 的 `iPad Pro (12.9-inch) (6th generation)`（不存在就创建同型号，缺 runtime / device type 明确失败），
+  保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。原生 UI 验收待本分支 CI 执行；物理 iPad、
+  实际系统 Split View / Stage Manager、外接键盘和 VoiceOver 手动遍历未测，不能用 fixture 截图替代。
+- Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），
+  相同代码串行全量重跑 438 过 / 9 忽略 / 0 失败；没有为这次 iPad 布局改动修改 Rust。
+
 ## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
 
 main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口里的路由（`lib/nav.ts` + 历史），本分支的智能体工作区原来挂在旧
