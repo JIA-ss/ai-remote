@@ -1,7 +1,16 @@
 # Disposable Windows Forms UIA fixture; no user application state is modified.
-param([Parameter(Mandatory=$true)][string]$OutputPath)
+param([Parameter(Mandatory=$true)][string]$OutputPath, [string]$ProgressPath)
+$script:fixtureClock = [System.Diagnostics.Stopwatch]::StartNew()
+if (-not $ProgressPath) { $ProgressPath = [System.IO.Path]::ChangeExtension($OutputPath, '.stages.jsonl') }
+function Write-FixtureStage([string]$Stage) {
+    $record = @{stage=$Stage; pid=$PID; elapsed_ms=$script:fixtureClock.ElapsedMilliseconds;
+        apartment=[System.Threading.Thread]::CurrentThread.ApartmentState.ToString()} | ConvertTo-Json -Compress
+    [System.IO.File]::AppendAllText($ProgressPath, $record + "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+Write-FixtureStage 'bootstrap'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Write-FixtureStage 'assemblies_loaded'
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'ai-remote structured UI fixture'
 $form.Size = New-Object System.Drawing.Size(480, 330)
@@ -24,9 +33,15 @@ $check.Location = New-Object System.Drawing.Point(30,190)
 $script:clicks = 0
 $button.Add_Click({ $script:clicks += 1 })
 $form.Controls.AddRange(@($field,$secure,$button,$disabled,$check))
+$form.Add_Shown({ Write-FixtureStage 'form_shown' })
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
+$script:firstFixtureTick = $false
 $timer.Add_Tick({
+    if (-not $script:firstFixtureTick) {
+        $script:firstFixtureTick = $true
+        Write-FixtureStage 'first_tick'
+    }
     $payload = @{pid=$PID; clicks=$script:clicks; text=$field.Text; checked=$check.Checked} | ConvertTo-Json -Compress
     # Reader tolerates an in-progress write; fixture contents contain no user data.
     [System.IO.File]::WriteAllText($OutputPath, $payload, (New-Object System.Text.UTF8Encoding($false)))

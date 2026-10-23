@@ -58,6 +58,20 @@
   portable VM 使用真实只读 descriptor，验证 native 函数未改、业务参数/返回保持，以及 done 前终帧布局与计数完整。
   2 项 Win32 Job 运行探针只在 Windows 执行，本机跳过；未运行 Windows、Tauri、Cargo、浏览器或 Actions，不能据此记 Windows 已通过。
 
+## Windows 原生 fixture 失败诊断（2026-10-24，PR #47）
+
+- 首次 Windows UIA 原生测试在 15.46 秒后仅报 `fixture state verifier timed out`；四个等待点共用文案，原临时目录已删除，
+  所以**根因仍未知**，不能根据总时长认定是启动慢、Timer 或 UIA 动作。`ar-ui` 测试/provider 与 fixture 相比已成功的 `028ccc9` 没有改动。
+- 这次只增加可证伪的诊断：四个 poll 使用 `startup_pid` / `set_value` / `press_apply` / `toggle_option` 静态阶段，记录 elapsed、
+  最后成功解析的受控 fixture 状态、最后解析或 IO 错误及 `child.try_wait` 状态；子进程退出时立即失败。
+  状态、逐阶段 verifier 记录、fixture stdout/stderr 保存于 `target/ui-validation/native-<pid>-<timestamp>/`，不随临时编译目录删除。
+  Windows fixture 另记 bootstrap、assemblies_loaded、form_shown、first_tick；不记录密码框、环境变量或其他应用内容。
+- CI 预先规划同一原生命令连续两轮，每轮写 planned-round 标记并追加日志，第一轮失败立即退出，**两轮都过才通过**；不是失败后重试。
+  保留 15 秒等待、全部业务断言及 provider/Swift 源码。macOS 对诊断提交 `9ee03ec` 的 fmt、全工作区/all-targets Clippy 通过；
+  `cargo test -p ar-ui --locked` 编译通过、0 项执行 / 1 项原生测试按原设置忽略，不能当作 GUI 实测。新增 Windows 两轮采样等待 CI，
+  首次失败的根因仍未知；后续成功也不追认它为已查明。
+  下一步据新 CI 的阶段与留存状态判断具体路径，再决定修复；不单靠扩大超时或重跑消红。
+
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
 从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。
