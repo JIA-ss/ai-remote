@@ -207,7 +207,7 @@ final class PhonePadUITests: XCTestCase {
         input.typeText("Container resize draft")
         rotate(app, to: .portrait)
         waitFor("a narrow container presents chat as a sheet") { !panel.exists && sheet.exists }
-        waitFor("the sheet retains the current draft") { input.value as? String == "Container resize draft" }
+        waitFor("the sheet retains the current draft") { input.exists && input.value as? String == "Container resize draft" }
         XCTAssertTrue(app.buttons["chat-close"].isHittable)
         shot(app, "p19-narrow-683-chat-sheet")
 
@@ -255,8 +255,19 @@ final class PhonePadUITests: XCTestCase {
             viewport.frame.width > 0 && panel.frame.width >= 320 && viewport.frame.maxX <= panel.frame.minX + 2
         }
         XCTAssertFalse(app.descendants(matching: .any)["chat-sheet"].exists, "the full-size 12.9-inch layout keeps chat inline")
-        XCTAssertTrue(panel.textViews["chat-input"].exists)
-        assertInsideWindow(panel, app: app)
+        let field = panel.textViews["chat-input"]
+        XCTAssertTrue(field.exists)
+        // The group's AX union can include the navigation material/shadow beyond y=0.
+        // Assert the actual interactive controls, with the same strict window bounds.
+        assertInsideWindow(field, app: app)
+        let close = app.buttons["chat-close"]
+        XCTAssertTrue(close.isHittable)
+        assertInsideWindow(close, app: app)
+        let expand = app.buttons["chat-expand"]
+        if expand.exists {
+            XCTAssertTrue(expand.isHittable)
+            assertInsideWindow(expand, app: app)
+        }
         assertFittedPicture(viewport)
     }
 

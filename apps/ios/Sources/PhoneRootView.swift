@@ -27,6 +27,7 @@ public struct PhoneRootView: View {
     public var body: some View {
         GeometryReader { area in
             let layout = PhoneAdaptiveLayout(width: area.size.width, regular: horizontalSizeClass == .regular)
+            let showsCompanion = layout.companionChat && store.showChat && store.chat != nil && store.selected != nil
             Group {
                 if chatExpanded, store.showChat, let chat = store.chat {
                     PhoneChatView(chat: chat) { closeChat() }
@@ -37,47 +38,53 @@ public struct PhoneRootView: View {
                     // layout proposal. It keeps the same store and stream subscription.
                     session(host)
                 } else {
-                    NavigationStack {
-                        HStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        // Each pane owns its navigation bar. Nesting the chat's stack inside
+                        // this one merges their toolbars and duplicates the back buttons.
+                        NavigationStack {
                             Group {
                                 if let host = store.selected { session(host) }
                                 else { computers(layout) }
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            if layout.companionChat, store.showChat, let chat = store.chat, store.selected != nil {
-                                Divider()
-                                PhoneChatView(chat: chat, expand: {
-                                    showKeyboard = false; textFocused = false
-                                    chatExpanded = true
-                                }) { closeChat() }
-                                    .frame(width: layout.chatPanelWidth)
-                                    .accessibilityElement(children: .contain)
-                                    .accessibilityIdentifier("ipad-chat-panel")
-                            }
-                        }
-                        .background(canvas)
-                        .navigationTitle(store.selected?.name ?? "电脑")
-                        .toolbar {
-                            if store.selected != nil {
-                                ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
-                                ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
-                                ToolbarItem(placement: .primaryAction) {
-                                    Button("智能体", systemImage: "bubble.left.and.text.bubble.right") {
-                                        showKeyboard = false; textFocused = false
-                                        store.openChat()
+                            .background(canvas)
+                            .navigationTitle(store.selected?.name ?? "电脑")
+                            .toolbar {
+                                if store.selected != nil {
+                                    ToolbarItem(placement: .cancellationAction) { Button("电脑", systemImage: "chevron.left") { Task { await store.leaveSession() } } }
+                                    ToolbarItem(placement: .primaryAction) { Button("活动", systemImage: "list.bullet.rectangle") { store.showActivity = true } }
+                                    if !showsCompanion {
+                                        ToolbarItem(placement: .primaryAction) {
+                                            Button("智能体", systemImage: "bubble.left.and.text.bubble.right") {
+                                                showKeyboard = false; textFocused = false
+                                                store.openChat()
+                                            }
+                                                .accessibilityIdentifier("session-chat")
+                                        }
                                     }
-                                        .accessibilityIdentifier("session-chat")
+                                } else {
+                                    ToolbarItem(placement: .cancellationAction) {
+                                        Button("网络", systemImage: "network") { store.networkSheet = true }
+                                            .accessibilityIdentifier("open-network")
+                                    }
+                                    ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                                 }
-                            } else {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button("网络", systemImage: "network") { store.networkSheet = true }
-                                        .accessibilityIdentifier("open-network")
-                                }
-                                ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                             }
+                            .modifier(PhoneSessionChrome(fullscreen: false))
                         }
-                        .modifier(PhoneSessionChrome(fullscreen: false))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if showsCompanion, let chat = store.chat {
+                            Divider()
+                            PhoneChatView(chat: chat, expand: {
+                                showKeyboard = false; textFocused = false
+                                chatExpanded = true
+                            }) { closeChat() }
+                                .frame(width: layout.chatPanelWidth)
+                                .accessibilityElement(children: .contain)
+                                .accessibilityIdentifier("ipad-chat-panel")
+                        }
                     }
+                    .background(canvas)
                 }
             }
             .onChange(of: area.size.width, initial: true) { _, width in availableWidth = width }

@@ -38,6 +38,8 @@
 - 同步最新 main `028ccc9` 时仅 AGENTS.md 章节插入冲突，保留双方完整记录；在独立 managed worktree 处理，主工作区其他桌面 UI 改动未动。
 - Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），
   相同代码串行全量重跑 438 过 / 9 忽略 / 0 失败；没有为这次 iPad 布局改动修改 Rust。
+- 第二轮 `91ab035` / CI 39992042339：iPad 3 过 / 2 失败，展开重开、预览和侧栏草稿均通过，截图改采 XCUIScreen 后横屏画布正常。剩余一项在键盘弹出后竖屏约束未触发，fixture 改按实际窗口宽度的缩小 / 放大切换 683 点，不依赖 UIDevice 通知；一项是面板 AX 组包围框 y=-9.5，改验实际输入框和导航控件的严格窗口边界。
+  截图另证实嵌套 NavigationStack 合并工具栏；常规布局改为 HStack 中两个兄弟导航容器，左侧 Root 工具栏与右侧聊天各自归属，面板显示时隐藏重复打开入口。
 - 同步 main 后在隔离检出复跑：默认并发 Rust 全量 439 过 / 9 忽略 / 0 失败、fmt / Clippy / TypeScript 通过；指定 16 文件前端共 362 项，361 过 / 1 跳过，布局 12 场景、聊天模型、viewport、打包和隐私复查通过。
   iOS workflow 默认继续两端 UI 回归；手动 `ipad_only` 只跳过已独立验过的 iPhone UI 套件，仍完整构建设备包和 iPad 验收。
 

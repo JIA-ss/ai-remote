@@ -1,7 +1,6 @@
 #if DEBUG && os(iOS)
 import SwiftUI
 import CoreGraphics
-import UIKit
 
 /// Simulator UI acceptance only. Reuses the production session and UIKit viewport,
 /// while replacing transport with an explicit static picture and input observer.
@@ -9,6 +8,8 @@ public struct PhoneViewportFixtureView: View {
     @PhoneViewState<PhoneStore> private var store: PhoneStore
     @PhoneViewState<String> private var lastInput = "none"
     @PhoneViewState<Int> private var inputCount = 0
+    @PhoneViewState private var resizeFixtureNarrow = false
+    @PhoneViewState<CGFloat?> private var lastWindowWidth = nil
 
     public init() {
         let model = PhoneStore()
@@ -31,10 +32,7 @@ public struct PhoneViewportFixtureView: View {
 
     public var body: some View {
         GeometryReader { area in
-            // The software keyboard changes available height, not window orientation.
-            let orientation = UIDevice.current.orientation
-            let portrait = orientation.isPortrait || (!orientation.isLandscape && area.size.width < area.size.height + area.safeAreaInsets.bottom)
-            let resized = ProcessInfo.processInfo.arguments.contains("-ui-viewport-resize") && portrait
+            let resized = ProcessInfo.processInfo.arguments.contains("-ui-viewport-resize") && resizeFixtureNarrow
             PhoneRootView(store: store, fixtureInputObserver: { tool, args in
                 inputCount += 1
                 lastInput = JSONValue.object(["sequence": .number(Double(inputCount)), "tool": .string(tool), "args": .object(args)]).text
@@ -43,6 +41,13 @@ public struct PhoneViewportFixtureView: View {
             // a claim that the simulator entered the system's Split View mode.
             .frame(width: resized ? 683 : nil)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: area.size.width, initial: true) { _, width in
+                // Follow the actual window-width transition. Keyboard height cannot flip
+                // this state, and device-orientation notifications are not required.
+                if let previous = lastWindowWidth, previous != width { resizeFixtureNarrow = width < previous }
+                else if lastWindowWidth == nil { resizeFixtureNarrow = width < area.size.height }
+                lastWindowWidth = width
+            }
         }
         .overlay(alignment: .bottomLeading) {
             Text("UI 测试 · 静态画面")
