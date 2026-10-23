@@ -25,14 +25,17 @@ export function countOf(key: string, n: number, vars: Record<string, string | nu
   return t(k(`${key}_${n === 1 ? "one" : "many"}`), { n, ...vars });
 }
 
-const upper = (s: string) => (currentLang() === "en" && s ? s[0].toUpperCase() + s.slice(1) : s);
+const upper = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /** One tool call as a phrase: "Read export.py", "Ran `git status`", "Running the test suite". */
 export function ToolLabel({ x, st }: { x: ToolItem; st: ToolState }) {
   const tense = tenseOf(st);
   const w = toolWords(x, tense);
+  // A call that was said no to or stopped did not do what it set out to: its own words, not "Ran …".
+  const held = (st === "denied" || st === "stopped") ? toolWords(x, "failed").failedText : undefined;
   let verb: string;
-  if (w.verb) verb = t(k(`cl_t_${w.verb}_${tense}`), { n: w.n ?? 0 });
+  if (held !== undefined) verb = upper(held);
+  else if (w.verb) verb = t(k(`cl_t_${w.verb}_${tense}`), { n: w.n ?? 0 });
   else if (w.failedText !== undefined) verb = currentLang() === "en" ? t("cl_failed_to", { what: w.failedText }) : upper(w.failedText);
   else verb = w.text ?? "";
   let obj: ReactNode = null;

@@ -22,8 +22,8 @@
   --cl-danger: var(--danger);
   --cl-add: #1e9e3c;
   --cl-del: #cd2054;
-  --cl-add-bg: color-mix(in srgb, var(--cl-add) 16%, transparent);
-  --cl-del-bg: color-mix(in srgb, var(--cl-del) 16%, transparent);
+  --cl-add-bg: color-mix(in srgb, var(--cl-add) 12%, transparent);
+  --cl-del-bg: color-mix(in srgb, var(--cl-del) 13%, transparent);
   --cl-bg: var(--canvas);
   --cl-card: var(--card);
   --cl-mono: var(--font-data);
@@ -276,6 +276,7 @@
   .cl-btns .cl-btn { width: 100%; }
   .cl-split { display: flex; }
   .cl-split .cl-btn:first-child { flex: 1; }
+  .cl-split .cl-btn.more { width: auto; flex: none; }
 }
 .cl-ap-cmd { margin: 0; max-height: 30vh; overflow: auto; padding: 8px 12px; border-radius: 5px; background: var(--cl-a1); font-family: var(--cl-mono); font-size: 12px; line-height: 18px;
   white-space: pre-wrap; overflow-wrap: anywhere; color: var(--cl-text-2); user-select: text; }
@@ -348,3 +349,4 @@
 .cl-chip:disabled { opacity: .5; }
 .cl-chip-note { font-size: 11px; color: var(--cl-warn); }
 .cdlg.cl-confirm .ttl { font-size: 15px; font-weight: 600; color: var(--text-1); }
+.cl-root .nt-chat-hd .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

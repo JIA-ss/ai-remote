@@ -106,30 +106,55 @@ function UserBubble({ row }: { row: Extract<ClRow, { kind: "user" }> }) {
 /** A streamed reply shown at a steady pace (TR-24): about 22 characters a step, ~550 ms behind. A page
  *  that is not visible shows everything at once (it has no frames to pace with). */
 function usePaced(text: string, streaming: boolean): string {
-  const [shown, setShown] = useState(() => (streaming ? paceStart(text, false) : text.length));
-  const last = useRef(text.length);
-  const arrived = text.length - last.current;
-  last.current = text.length;
+  const shown = useRef(streaming ? paceStart(text, false) : text.length);
+  const latest = useRef(text);
+  const lastLen = useRef(text.length);
+  const arrived = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [, render] = useState(0);
+  latest.current = text;
   const caught = !streaming || document.hidden;
-  const at = caught ? text.length : Math.min(shown, text.length);
   useEffect(() => {
+    arrived.current += Math.max(0, text.length - lastLen.current);
+    lastLen.current = text.length;
     if (caught) {
-      if (shown !== text.length) setShown(text.length);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+      shown.current = text.length;
       return;
     }
-    const step = paceNext(at, text, arrived);
-    if (step.delay === null) {
-      if (step.next !== shown) setShown(step.next);
-      return;
-    }
-    const id = setTimeout(() => setShown(step.next), step.delay);
-    return () => clearTimeout(id);
-  }, [text, at, caught]);
-  return text.slice(0, at);
+    // One step at a time; text arriving meanwhile does not restart the wait (it comes faster than a step).
+    const next = () => {
+      if (timer.current) return;
+      const step = paceNext(shown.current, latest.current, arrived.current);
+      arrived.current = 0;
+      if (step.delay === null) {
+        if (step.next !== shown.current) {
+          shown.current = step.next;
+          render((n) => n + 1);
+        }
+        return;
+      }
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        shown.current = step.next;
+        render((n) => n + 1);
+        next();
+      }, step.delay);
+    };
+    next();
+  }, [text, caught]);
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+  return caught ? text : text.slice(0, Math.min(shown.current, text.length));
 }
 
 function Prose({ row }: { row: Extract<ClRow, { kind: "text" }> }) {
-  const text = usePaced(row.text, row.streaming);
+  const paced = usePaced(row.text, row.streaming);
+  // A fence that has only opened would flash as an empty code block before its first line comes.
+  const text = row.streaming ? paced.replace(/(^|\n)[ \t>]*(?:`{1,}|~{1,})[\w+-]*[ \t]*$/, "$1") : paced;
+  if (!text) return null;
   return <StreamingMarkdown text={text} streaming={row.streaming} className={cx("cl-md", row.streaming && "streaming")} />;
 }
 

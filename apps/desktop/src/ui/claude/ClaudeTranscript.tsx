@@ -77,6 +77,8 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
       else setGap(distance());
     });
     ro.observe(body);
+    // The view gets shorter when a card or the task list docks above the composer.
+    ro.observe(el);
     return () => ro.disconnect();
   }, []);
 

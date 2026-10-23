@@ -346,7 +346,7 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
             <button key={o.label} type="button" role={multi ? "checkbox" : "radio"} aria-checked={on} className={cx("opt", on && "on")} disabled={readonly}
               onClick={() => {
                 if (window.getSelection()?.toString()) return;
-                setD(qPick(d, parts, i, o.label));
+                setD((cur) => qPick(cur, parts, i, o.label));
               }}>
               <span className={cx("mark", multi ? "check" : "radio")} aria-hidden>{multi && on && <Check size={11} />}</span>
               <span className="lb">
@@ -357,14 +357,15 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
           );
         })}
         <button type="button" role={multi ? "checkbox" : "radio"} aria-checked={other !== null} className={cx("opt", other !== null && "on")} disabled={readonly}
-          onClick={() => setD(qOther(d, parts, i, other === null ? "" : multi ? null : other))}>
+          onClick={() => setD((cur) => qOther(cur, parts, i, cur.other[i] === null ? "" : multi ? null : cur.other[i]))}>
           <span className={cx("mark", multi ? "check" : "radio")} aria-hidden>{multi && other !== null && <Check size={11} />}</span>
           <span className="lb"><span className="nm">{t("cl_q_other")}</span></span>
         </button>
         {other !== null && (
           <textarea className="cl-qc-other" rows={1} autoFocus value={other} placeholder={t("cl_q_other_ph")} disabled={readonly}
             onChange={(e) => {
-              setD(qOther(d, parts, i, e.target.value));
+              const v = e.target.value;
+              setD((cur) => qOther(cur, parts, i, v));
               e.target.style.height = "auto";
               e.target.style.height = `${Math.min(e.target.scrollHeight, 96)}px`;
             }}

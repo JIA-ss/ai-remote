@@ -37,8 +37,8 @@
   }
   const composer = () => $(".nt-compose textarea");
   const running = () => !!$(".nt-compose .round.stop");
-  const turns = () => $$(".nt-turn");
-  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && turns().at(-1)?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const turns = () => $$(".cl-turn");
+  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && turns().at(-1)?.querySelector(".cl-foot, .cl-stopped"), ms);
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);

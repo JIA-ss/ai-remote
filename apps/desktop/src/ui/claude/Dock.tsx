@@ -48,7 +48,7 @@ function phaseWords(s: Status, agent: string): string | null {
       return t(`cl_ph_think${s.tier ?? 0}` as Key);
     case "thought":
       // Reasoning that came in one piece has no duration worth saying.
-      return (s.thoughtMs ?? 0) >= 1000 ? t("cl_ph_thought", { d: dur(s.thoughtMs ?? 0) }) : t("cl_ph_waiting", { agent });
+      return (s.thoughtMs ?? 0) >= 1000 ? t("cl_ph_thought", { d: dur(s.thoughtMs ?? 0) }) : null;
     default:
       return null;
   }
@@ -155,6 +155,10 @@ export function ModePicker({ mode, busy, agent, host, folder, disabled, onPick }
   const [note, setNote] = useState<string | null>(null);
   const box = useRef<HTMLSpanElement>(null);
   const cur = (MODES as readonly string[]).includes(mode ?? "") ? (mode as Mode) : null;
+  // "After this turn" no longer applies once it ended.
+  useEffect(() => {
+    if (!busy) setNote(null);
+  }, [busy]);
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
