@@ -594,6 +594,123 @@ const demoSessions: SessionInfo[] = [
     started_at: t0 - 4 * minute, turns: 2, last_activity: t0 + 60_000, seq: 0 },
 ];
 
+// ---- The agents workspace's session list (docs/agent-workspace.zh-CN.md 1.1): sessions on several
+// computers and folders, in every state the sidebar shows — running, waiting for you (an approval, a
+// question, a plan), failed, unread (one finishes and one appears a few seconds after the first look),
+// pinned, archived — Claude Code and Codex. lab-pc runs an ai-remote from before the workspace: its
+// sessions have none of the new fields and it has no chat_update.
+
+/** The computer of each demo session (the two above are office-pc's). */
+const demoSessionHost = new Map<string, string>();
+/** Computers whose chat tools answer in the demo although this device's level there is lower. */
+const DEMO_AGENT_HOSTS = new Set(["studio-mac", "lab-pc"]);
+/** Computers running an ai-remote from before the workspace. */
+const DEMO_OLD_HOSTS = new Set(["lab-pc"]);
+/** The workspace's fields of each session; `last_seq` comes from its log or `seq` here. */
+interface DemoMeta {
+  title?: string | null;
+  title_source?: "auto" | "agent" | "user";
+  auto_title?: string | null;
+  first_text?: string;
+  last_status?: "completed" | "failed" | "interrupted";
+  last_reason?: string;
+  pending?: "permission" | "question" | "plan";
+  branch?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  permission_mode?: string;
+  seq?: number;
+}
+const demoMeta = new Map<string, DemoMeta>([
+  ["c3f9a1e7b2c4d", { title: "Fix the Q3 export date error", auto_title: "Fix the Q3 export date error", title_source: "agent", branch: "fix/quarter-dates", pinned: true, permission_mode: "bypassPermissions" }],
+  ["x5d0c7e2a9f1b", { title: "Q3 export crash and a regression test", auto_title: "Q3 export crash and a regression test", title_source: "agent", branch: "fix/quarter-dates" }],
+]);
+
+function demoWorkspaceSessions() {
+  const add = (host: string, s: Omit<SessionInfo, "by" | "turns" | "seq"> & { by?: string; turns?: number }, m: DemoMeta) => {
+    demoSessions.push({ by: { device: s.by ?? "home-laptop" }, turns: s.turns ?? 3, seq: 0, ...s } as SessionInfo);
+    demoSessionHost.set(s.id, host);
+    demoMeta.set(s.id, { title_source: "agent", auto_title: m.title ?? null, seq: 20 + s.id.length * 3, ...m });
+  };
+  const ago = (m: number) => Date.now() - m * minute;
+  const bill = "D:\\work\\billing-api";
+  add("office-pc", { id: "w-bill-1", runtime: "claude", name: "Claude Code", cwd: bill, state: "running", started_at: ago(30), last_activity: ago(0.2) },
+    { title: "Retry failed webhooks with backoff", branch: "feat/webhook-retry", first_text: "Retry failed webhook deliveries with exponential backoff, at most 5 tries." });
+  add("office-pc", { id: "w-bill-2", runtime: "claude", name: "Claude Code", cwd: bill, state: "running", started_at: ago(50), last_activity: ago(2) },
+    { title: "Rotate the signing keys", pending: "permission", branch: "chore/rotate-keys", permission_mode: "default" });
+  add("office-pc", { id: "w-bill-3", runtime: "codex", name: "Codex", cwd: bill, state: "idle", started_at: ago(90), last_activity: ago(12) },
+    { title: "Flaky invoice rounding test", last_status: "failed", last_reason: "pytest exited with code 1", branch: "fix/rounding" });
+  add("office-pc", { id: "w-bill-4", runtime: "claude", name: "Claude Code", cwd: bill, state: "idle", started_at: ago(300), last_activity: ago(180) },
+    { title: "Document the refunds API", last_status: "completed", branch: "main" });
+  add("office-pc", { id: "w-bill-5", runtime: "claude", name: "Claude Code", cwd: bill, state: "parked", started_at: ago(1500), last_activity: ago(1400) },
+    { title: "Upgrade to Python 3.13", last_status: "completed" });
+  add("office-pc", { id: "w-bill-6", runtime: "codex", name: "Codex", cwd: bill, state: "ended", started_at: ago(3000), last_activity: ago(2900) },
+    { title: "Split settings per environment", last_status: "completed" });
+  add("office-pc", { id: "w-bill-7", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(4500), last_activity: ago(4400) },
+    { title: "Add request ids to every log line", last_status: "interrupted" });
+  add("office-pc", { id: "w-old-1", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(9000), last_activity: ago(8800) },
+    { title: "Spike: GraphQL gateway", last_status: "completed", archived: true });
+  add("office-pc", { id: "w-game-1", runtime: "claude", name: "Claude Code", cwd: "D:\\games\\client", state: "running", started_at: ago(40), last_activity: ago(4) },
+    { title: "Profile the loading screen hitch", pending: "question", branch: "perf/loading" });
+  add("studio-mac", { id: "m-site-1", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/site", state: "running", started_at: ago(20), last_activity: ago(0.5) },
+    { title: "Redesign the pricing page hero", branch: "design/hero", permission_mode: "acceptEdits" });
+  add("studio-mac", { id: "m-site-2", runtime: "codex", name: "Codex", cwd: "/Users/me/code/site", state: "idle", started_at: ago(200), last_activity: ago(150) },
+    { title: "Fix dark mode contrast in the footer", last_status: "completed", branch: "main" });
+  add("studio-mac", { id: "m-rep-1", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/report-tool", state: "running", started_at: ago(70), last_activity: ago(6) },
+    { title: "Port the export to the mac build", pending: "plan", branch: "mac-export", permission_mode: "plan" });
+  add("lab-pc", { id: "l-bench-1", runtime: "claude", name: "Claude Code", cwd: "C:\\lab\\bench", state: "idle", started_at: ago(400), last_activity: ago(300) }, {});
+  add("lab-pc", { id: "l-bench-2", runtime: "codex", name: "Codex", cwd: "C:\\lab\\bench", state: "running", started_at: ago(25), last_activity: ago(1) }, {});
+}
+demoWorkspaceSessions();
+
+const demoHostOf = (id: string) => demoSessionHost.get(id) ?? "office-pc";
+
+/** A session as `chat_sessions` / `chat_update` report it: with the workspace's fields, except on lab-pc. */
+function demoDescribe(s: SessionInfo, host: string): Record<string, unknown> {
+  if (DEMO_OLD_HOSTS.has(host)) return { ...s };
+  const m = demoMeta.get(s.id) ?? {};
+  const log = demoLogs.get(s.id) ?? [];
+  const lastEnd = [...log].reverse().find((e) => e.t === "turn_end") as { status?: DemoMeta["last_status"] } | undefined;
+  const firstUser = log.find((e) => e.t === "user") as { text?: string } | undefined;
+  return {
+    ...s,
+    title: m.title ?? undefined,
+    title_source: m.title_source,
+    first_text: (m.first_text ?? firstUser?.text)?.slice(0, 200),
+    last_status: lastEnd?.status ?? m.last_status,
+    last_reason: m.last_reason,
+    pending: demoRuns.get(s.id)?.answer ? "question" : m.pending,
+    last_seq: Math.max(s.seq, log.length ? log[log.length - 1].seq : 0, m.seq ?? 0),
+    branch: m.branch,
+    pinned: m.pinned || undefined,
+    archived: m.archived || undefined,
+    permission_mode: m.permission_mode,
+  };
+}
+
+/** After the first look at the list: one running session finishes (unread), another computer gets a new one. */
+let demoTimeline = false;
+function startDemoTimeline() {
+  if (demoTimeline) return;
+  demoTimeline = true;
+  setTimeout(() => {
+    const s = demoSessions.find((x) => x.id === "w-bill-1");
+    const m = demoMeta.get("w-bill-1");
+    if (!s || !m || s.state !== "running") return;
+    s.state = "idle";
+    s.last_activity = Date.now();
+    s.turns += 1;
+    m.last_status = "completed";
+    m.seq = (m.seq ?? 0) + 14;
+  }, 4000);
+  setTimeout(() => {
+    const at = Date.now();
+    demoSessions.push({ id: "m-site-3", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/site", state: "idle", by: { device: "iphone" }, started_at: at - 2 * minute, turns: 1, last_activity: at, seq: 0 });
+    demoSessionHost.set("m-site-3", "studio-mac");
+    demoMeta.set("m-site-3", { title: "Check the sitemap after the redesign", title_source: "agent", last_status: "completed", branch: "design/hero", seq: 9 });
+  }, 7000);
+}
+
 const EXPORT_OLD = [
   "import calendar",
   "from datetime import date",
@@ -1049,7 +1166,7 @@ async function demoStop(s: SessionInfo, run: DemoRun) {
 function demoChatTool(host: string, tool: string, args: Record<string, unknown>): ToolResult | null {
   if (!tool.startsWith("chat_")) return null;
   const level = hosts.find((h) => h.name === host)?.levelAtPairing;
-  if (level !== "admin") {
+  if (level !== "admin" && !DEMO_AGENT_HOSTS.has(host)) {
     return { isError: true, content: [{ type: "text", text: `'${tool}' requires level 'admin', but this device has '${level}'.` }] };
   }
   const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v });
@@ -1061,17 +1178,49 @@ function demoChatTool(host: string, tool: string, args: Record<string, unknown>)
   switch (tool) {
     case "chat_runtimes":
       return ok({ ...demoRuntimes, host: { ...demoRuntimes.host, enabled: demoChatEnabled } });
-    case "chat_sessions":
-      return ok({ sessions: demoSessions, live: demoSessions.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    case "chat_sessions": {
+      startDemoTimeline();
+      const mine = demoSessions.filter((s) => demoHostOf(s.id) === host && (args.archived === true || !demoMeta.get(s.id)?.archived));
+      return ok({ sessions: mine.map((s) => demoDescribe(s, host)), live: mine.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    }
+    case "chat_update": {
+      if (DEMO_OLD_HOSTS.has(host)) return { isError: true, content: [{ type: "text", text: "unknown tool 'chat_update'" }] };
+      const s = demoSessions.find((x) => x.id === args.session && demoHostOf(x.id) === host);
+      if (!s) return { isError: true, content: [{ type: "text", text: `no chat session '${String(args.session)}'` }] };
+      const m = demoMeta.get(s.id) ?? {};
+      if (typeof args.title === "string") {
+        const title = args.title.trim();
+        m.title = title || (m.auto_title ?? null);
+        m.title_source = title ? "user" : "auto";
+      }
+      if (typeof args.pinned === "boolean") m.pinned = args.pinned;
+      if (typeof args.archived === "boolean") m.archived = args.archived;
+      demoMeta.set(s.id, m);
+      return ok(demoDescribe(s, host));
+    }
     case "chat_start": {
       if (!demoChatEnabled) return { isError: true, content: [{ type: "text", text: "coding agents are switched off on this host" }] };
       const rt = demoRuntimes.runtimes.find((r) => r.id === args.runtime);
       const s: SessionInfo = { id: `c${Math.random().toString(16).slice(2, 14)}`, runtime: String(args.runtime), name: rt?.name ?? String(args.runtime),
         cwd: String(args.cwd), state: "idle", by: { device: "home-laptop" }, started_at: Date.now(), turns: 0, last_activity: Date.now(), seq: 0 };
       demoSessions.unshift(s);
+      demoSessionHost.set(s.id, host);
       demoLogs.set(s.id, []);
-      if (typeof args.prompt === "string" && args.prompt) setTimeout(() => void demoReply(s, args.prompt as string, "u1"), 600);
-      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+      const prompt = typeof args.prompt === "string" ? args.prompt : "";
+      // The host names the session after its first message a moment later (a `title` event, design 1.4).
+      const auto = prompt.split(/\s+/).filter(Boolean).slice(0, 7).join(" ").replace(/[.,;:!?。，]+$/, "");
+      demoMeta.set(s.id, { first_text: prompt.slice(0, 200) || undefined, permission_mode: typeof args.permission_mode === "string" ? args.permission_mode : undefined, auto_title: auto || null });
+      if (prompt) {
+        setTimeout(() => void demoReply(s, prompt, "u1"), 600);
+        setTimeout(() => {
+          const m = demoMeta.get(s.id);
+          if (!m || m.title_source === "user" || !auto) return;
+          m.title = auto;
+          m.title_source = "agent";
+          push(s, { t: "title", title: auto, source: "agent" });
+        }, 1500);
+      }
+      return ok({ ...demoDescribe(s, host), session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
     }
     case "chat_attach": {
       const s = demoSessions.find((x) => x.id === args.session);
