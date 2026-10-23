@@ -2,7 +2,8 @@
 // session, or one session — filling the window. The sidebar is 288 px by default, 200–420 by dragging
 // its edge (a click on the edge or ⌘B hides it, a double click resets it), and folds away in a narrow
 // window, where ⌘B or the toggle lays it over the page instead (SB-02 / SB-03). ⌘K searches, ⌘N starts
-// a new session, F2 renames. Back / forward walk this workspace's own history.
+// a new session (⌘⇧N where the open one runs), F2 renames, ⌘⌥P / R / U / A pin, rename, change the read
+// state and archive (SB-39). Back / forward walk this workspace's own history.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../lib/i18n";
@@ -15,7 +16,11 @@ import { Palette } from "./Palette";
 import { Corner, modKey, Toasts, viewWidth, type Toast } from "./parts";
 import { SessionPage } from "./SessionPage";
 import { Sidebar } from "./Sidebar";
-import { useWorkspace } from "./useWorkspace";
+import { archive, markDone, togglePin, toggleRead, unarchive } from "./actions";
+import { useWorkspace, workspace } from "./useWorkspace";
+
+/** The session shortcuts' keys (with ⌘⌥ / Ctrl+Alt). */
+const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA"]);
 
 /** Where the workspace is: a session on a computer, or the new-session page. */
 export interface WsRoute {
@@ -131,6 +136,33 @@ export function Workspace({
       if (e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey && current && !editable(e.target) && !(e.target as HTMLElement | null)?.closest?.(".ws-list")) {
         e.preventDefault();
         setRenamingTitle(true);
+        return;
+      }
+      // SB-39: ⌘⌥P pin, ⌘⌥R rename, ⌘⌥U read / unread (Mark as done when it failed), ⌘⌥A archive — on the
+      // row focused in the sidebar, else the open session. Alt changes `key` on a Mac, so `code` is read.
+      if (modKey(e) && e.altKey && !e.shiftKey && SESSION_KEYS.has(e.code)) {
+        const focused = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>(".ws-list [data-row-key]")?.dataset.rowKey ?? null;
+        const key = focused ?? current;
+        const x = key ? workspace.items().find((i) => i.key === key) : null;
+        if (!x) return;
+        e.preventDefault();
+        const ctx = { toast, onArchived: (k: string) => k === current && newSession() };
+        if (e.code === "KeyP") togglePin(x, ctx);
+        else if (e.code === "KeyU") {
+          if (workspace.dot(x) === "failed") markDone(x, ctx);
+          else toggleRead(x);
+        } else if (e.code === "KeyA") {
+          if (x.meta.archived) unarchive(x, ctx);
+          else archive(x, ctx);
+        } else if (focused) setRenamingRow(focused);
+        else setRenamingTitle(true);
+        return;
+      }
+      // ⌘⇧N: a new session where the open one runs (SB-07).
+      if (modKey(e) && e.shiftKey && !e.altKey && e.code === "KeyN") {
+        e.preventDefault();
+        const x = current ? workspace.items().find((i) => i.key === current) : null;
+        newSession(x ? { host: x.host, cwd: x.meta.cwd } : undefined);
         return;
       }
       if (!modKey(e) || e.altKey || e.shiftKey) return;

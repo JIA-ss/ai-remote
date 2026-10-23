@@ -15,6 +15,7 @@ import { Conversation, type ChatTarget } from "../AgentChat";
 import { CodexConversation, isCodexRuntime } from "../codex/CodexConversation";
 import { Later, PopMenu, type MenuLine, type Toast } from "./parts";
 import { RenameField, titleOf } from "./Sidebar";
+import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { workspace } from "./useWorkspace";
 
 /** SP-45: how long a computer that dropped off counts as reconnecting before the page says it is offline. */
@@ -120,35 +121,24 @@ export function SessionPage({
   }
 
   const menuItems = (x: WsItem): MenuLine[] => {
-    const pinned = workspace.isPinned(x);
+    const ctx: ActionCtx = { toast, onArchived };
     const dot = workspace.dot(x);
     const unread = workspace.unread(x);
+    if (x.meta.archived) {
+      return [
+        { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: t("ws_old_host", { host }), run: () => setRenaming(true) },
+        "sep",
+        { key: "unarchive", label: t("ws_unarchive"), letter: "a", disabled: old, note: t("ws_old_host", { host }), run: () => unarchive(x, ctx) },
+      ];
+    }
     return [
       { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: t("ws_old_host", { host }), run: () => setRenaming(true) },
-      { key: "pin", label: t(pinned ? "ws_unpin" : "ws_pin"), letter: "p", run: () => void workspace.update(host, id, { pinned: !pinned }).catch(fail) },
-      {
-        key: "read",
-        label: t(unread ? "ws_mark_read" : "ws_mark_unread"),
-        letter: "u",
-        disabled: dot === "running" || dot === "awaiting",
-        note: t("ws_read_busy"),
-        run: () => (unread ? workspace.markRead(x.key) : workspace.markUnread(x.key)),
-      },
+      { key: "pin", label: t(workspace.isPinned(x) ? "ws_unpin" : "ws_pin"), letter: "p", run: () => togglePin(x, ctx) },
+      dot === "failed"
+        ? { key: "done", label: t("ws_mark_done"), letter: "u", run: () => markDone(x, ctx) }
+        : { key: "read", label: t(unread ? "ws_mark_read" : "ws_mark_unread"), letter: "u", disabled: readLocked(x), note: t("ws_read_busy"), run: () => toggleRead(x) },
       "sep",
-      {
-        key: "archive",
-        label: t("ws_archive"),
-        letter: "a",
-        disabled: old,
-        note: t("ws_old_host", { host }),
-        run: () => {
-          const known = x.meta;
-          void workspace.update(host, id, { archived: true }).then(() => {
-            onArchived(x.key);
-            toast({ text: t("ws_archived", { title }), action: { label: t("ws_undo"), run: () => void workspace.update(host, id, { archived: false }, known).catch(fail) } });
-          }, fail);
-        },
-      },
+      { key: "archive", label: t("ws_archive"), letter: "a", disabled: old, note: t("ws_old_host", { host }), run: () => archive(x, ctx) },
       ...(x.meta.state === "ended"
         ? []
         : [

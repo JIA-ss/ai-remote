@@ -172,6 +172,24 @@
 .ws-dot[data-kind="failed"] { background: var(--ws-danger); }
 @keyframes ws-blink { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 
+/* "Sessions" over the groups, with "Group and sort" (SB-12): the button sits at 70 % until the sidebar is
+   hovered (VS-30's hover-reveal), and stays blue while a filter is on (SB-11) */
+.ws-list-head { display: flex; align-items: center; height: 24px; margin: 10px 0 2px; padding-left: 8px; }
+.ws-list-head-label { flex: 1; min-width: 0; font-size: 12px; line-height: 16px; color: var(--ws-t3); white-space: nowrap; overflow: hidden; }
+.ws-list-filter { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 6px; color: var(--ws-t3); opacity: .7; transition: opacity 120ms var(--ws-ease), background-color 60ms; }
+.ws-side:hover .ws-list-filter, .ws-list-head[data-open] .ws-list-filter, .ws-list-filter.on { opacity: 1; }
+.ws-list-filter:hover, .ws-list-head[data-open] .ws-list-filter { background: var(--ws-hover); color: var(--ws-t1); }
+.ws-list-filter.on { color: var(--ws-accent-text); }
+.ws-sec-flat { margin-top: 0; }
+/* SB-20: filtered down to nothing — say so, and offer every session again */
+.ws-filter-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px 16px; text-align: center; font-size: 12px; line-height: 16px; color: var(--ws-t3); }
+.ws-filter-empty p { margin: 0; }
+.ws-link { color: var(--ws-t2); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
+.ws-link:hover { color: var(--ws-t1); }
+/* an archived row (listed under "Archived" / "All sessions"), and a computer's mark where no dot is (SB-47) */
+.ws-row[data-archived] .ws-row-title { color: var(--ws-t3); }
+.ws-row-env { display: grid; place-items: center; color: var(--ws-t3); }
+
 .ws-list-note { padding: 10px 8px; font-size: 12px; line-height: 15px; color: var(--ws-t3); }
 .ws-list-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 8px; color: var(--ws-t2); }
 .ws-list-empty p { margin: 0; }

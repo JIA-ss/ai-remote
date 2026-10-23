@@ -1,30 +1,52 @@
 // The workspace's sidebar (clean-room spec SB, flat variant): the 48 px strip with the window corner and
 // the computers / agents switch, a search field that opens the ⌘K panel, "New", then the sessions —
-// pinned ones first, then one group per folder on a computer (five rows each, "Show N more") — and a
-// footer with this device and Settings. Rows are one line: the title fading out at its end, the branch,
-// and the status dot that turns into "…" on hover. A right click or "…" opens the row's menu.
+// pinned ones first, then "Sessions" with its "Group and sort" menu over one group per folder on a
+// computer (or per day, per state, or none; five rows each, "Show N more") — and a footer with this
+// device and Settings. Rows are one line: the title fading out at its end, the branch, and the status
+// dot that turns into "…" on hover. A right click or "…" opens the row's menu; a group header has its
+// own (new session there, copy the path, collapse the others — also Alt+click).
 
-import { ChevronRight, CodeXml, GitBranch, MoreHorizontal, Plus, Search, Settings, SquarePen } from "lucide-react";
+import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { knownHome } from "../../lib/chat";
-import { t } from "../../lib/i18n";
+import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
 import {
   aggregateDot,
-  GROUP_ROWS,
+  dateBuckets,
+  DEFAULT_LIST,
   groupSessions,
+  isAscending,
+  isDefaultList,
+  isFiltered,
+  normalizeList,
+  rowsBeforeMore,
+  shownByStatus,
+  sortSessions,
+  stateBucket,
+  stateBuckets,
   truncateGroup,
+  withAscending,
+  type DayBucket,
+  type GroupBy,
+  type ListPrefs,
   type Place,
+  type SortMode,
+  type StatusFilter,
   type WsItem,
   type WsSnapshot,
 } from "../../lib/workspace";
 import { cx } from "../util";
+import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { ModeSwitch, type AppMode } from "./ModeSwitch";
-import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, type MenuItem, type Toast } from "./parts";
+import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
 import { workspace } from "./useWorkspace";
 
 const COLLAPSED = "ai-remote.ws.collapsed";
+/** How the list groups, sorts and filters (SB-46). */
+const LIST = "ai-remote.ws.list";
 const PINNED_KEY = "pinned";
+const ALL_KEY = "all";
 
 function readCollapsed(): Set<string> {
   try {
@@ -34,10 +56,37 @@ function readCollapsed(): Set<string> {
   }
 }
 
+function readList(): ListPrefs {
+  try {
+    return normalizeList(JSON.parse(localStorage.getItem(LIST) ?? "null"));
+  } catch {
+    return DEFAULT_LIST;
+  }
+}
+
 /** A session's title as shown ("Untitled session" when it has none at all). */
 export function titleOf(x: WsItem): string {
   return workspace.title(x) || t("ws_untitled");
 }
+
+/** One group as the list draws it: a folder on a computer (with its `+`), a day, a state, or everything. */
+interface Shown {
+  key: string;
+  label: string;
+  title?: string;
+  /** A folder group: where `+` starts a session, and whether the computer is this one. */
+  place?: Place & { local: boolean };
+  items: WsItem[];
+}
+
+const dayLabel = (b: DayBucket<WsItem>) =>
+  b.kind === "today"
+    ? t("ws_today")
+    : b.kind === "yesterday"
+      ? t("ws_yesterday")
+      : b.kind === "older"
+        ? t("ws_older")
+        : new Date(b.day).toLocaleDateString(currentLang() === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric" });
 
 export interface SidebarProps {
   snap: WsSnapshot;
@@ -61,31 +110,81 @@ export interface SidebarProps {
 }
 
 export function Sidebar(p: SidebarProps) {
-  const items = useMemo(() => workspace.items(), [p.snap]);
-  const { pinned, groups } = useMemo(
-    () => groupSessions(items, { pinned: (x) => workspace.isPinned(x), title: titleOf, home: knownHome }),
-    [items, p.snap.pins],
-  );
-  const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [opened, setOpened] = useState<Set<string>>(new Set());
-  const [menu, setMenu] = useState<{ key: string; at: { x: number; y: number } } | null>(null);
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const list = useRef<HTMLDivElement>(null);
-  const byKey = useMemo(() => new Map(items.map((x) => [x.key, x])), [items]);
-  const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
-
-  const toggleGroup = (key: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  const [prefs, setPrefsState] = useState(readList);
+  /** Changes the settings from what they are now (two choices in one tick both count). */
+  const setPrefs = (change: Partial<ListPrefs> | ((p: ListPrefs) => ListPrefs)) =>
+    setPrefsState((prev) => {
+      const next = typeof change === "function" ? change(prev) : { ...prev, ...change };
       try {
-        localStorage.setItem(COLLAPSED, JSON.stringify([...next]));
+        localStorage.setItem(LIST, JSON.stringify(next));
       } catch {
         // Kept for this run only.
       }
       return next;
     });
+  // Archived sessions are only asked for while the list shows them (SB-11).
+  useEffect(() => workspace.setArchived(prefs.status !== "active"), [prefs.status]);
+  const all = useMemo(() => workspace.items(), [p.snap]);
+  const items = useMemo(() => all.filter((x) => shownByStatus(x.meta, prefs.status)), [all, prefs.status]);
+  const { pinned, groups } = useMemo(() => {
+    const pinnedOf = (x: WsItem) => workspace.isPinned(x);
+    const g = groupSessions(items, { pinned: pinnedOf, title: titleOf, home: knownHome, sort: prefs.sort, reversed: prefs.reversed });
+    if (prefs.groupBy === "project") {
+      const shown: Shown[] = g.groups.map((x) => ({
+        key: x.key,
+        label: x.label,
+        title: x.local ? x.folder : t("ws_group_where", { host: x.host, path: x.folder }),
+        place: { host: x.host, cwd: x.folder, local: x.local },
+        items: x.items,
+      }));
+      return { pinned: g.pinned, groups: shown };
+    }
+    const rest = sortSessions(
+      items.filter((x) => !pinnedOf(x)),
+      prefs.sort,
+      titleOf,
+      prefs.reversed,
+    );
+    let shown: Shown[];
+    if (prefs.groupBy === "date") {
+      const by = prefs.sort === "created" ? "started_at" : "last_activity";
+      shown = dateBuckets(rest, Date.now(), by, prefs.sort !== "alpha" && isAscending(prefs)).map((b) => ({ key: `date:${b.key}`, label: dayLabel(b), items: b.items }));
+    } else if (prefs.groupBy === "state") {
+      shown = stateBuckets(rest, (x) => stateBucket(x.meta, workspace.dot(x))).map((b) => ({ key: `state:${b.key}`, label: t(`ws_state_${b.key}` as Key), items: b.items }));
+    } else {
+      shown = rest.length ? [{ key: ALL_KEY, label: t("ws_sessions_head"), items: rest }] : [];
+    }
+    return { pinned: g.pinned, groups: shown };
+  }, [items, p.snap.pins, prefs]);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [opened, setOpened] = useState<Set<string>>(new Set());
+  const [menu, setMenu] = useState<{ key: string; at: MenuAt } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ key: string; at: MenuAt } | null>(null);
+  const [listMenu, setListMenu] = useState<MenuAt | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const byKey = useMemo(() => new Map(all.map((x) => [x.key, x])), [all]);
+  const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
+  const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived };
+
+  const saveCollapsed = (next: Set<string>) => {
+    setCollapsed(next);
+    try {
+      localStorage.setItem(COLLAPSED, JSON.stringify([...next]));
+    } catch {
+      // Kept for this run only.
+    }
+  };
+  /** Folds or opens a group; `others` (Alt+click, SB-18) folds every other group and opens this one. */
+  const toggleGroup = (key: string, others = false) => {
+    const next = new Set(collapsed);
+    if (others) {
+      for (const g of groups) if (g.key !== key) next.add(g.key);
+      if (pinned.length && key !== PINNED_KEY) next.add(PINNED_KEY);
+      next.delete(key);
+    } else if (next.has(key)) next.delete(key);
+    else next.add(key);
+    saveCollapsed(next);
   };
 
   // The open session's group opens when it is folded (SB-18), so the row is in view.
@@ -127,54 +226,40 @@ export function Sidebar(p: SidebarProps) {
     for (const x of items) ids.add(`row:${x.key}`);
     return ids;
   }, [items, pinned, groups]);
-  const firstNav = pinned.length ? `group:${PINNED_KEY}` : groups[0] ? `group:${groups[0].key}` : null;
+  const firstRow = groups[0]?.key === ALL_KEY && groups[0].items[0] ? `row:${groups[0].items[0].key}` : null;
+  const firstNav = pinned.length ? `group:${PINNED_KEY}` : groups[0] ? (firstRow ?? `group:${groups[0].key}`) : null;
   const stop = focusId && navIds.has(focusId) ? focusId : firstNav;
   const navIndex = (id: string) => (id === stop ? 0 : -1);
 
-  const menuItems = (x: WsItem): Array<MenuItem | "sep"> => {
+  const menuItems = (x: WsItem): MenuLine[] => {
     const host = p.snap.hosts[x.host];
     const old = host?.update === false;
     const oldNote = t("ws_old_host", { host: x.host });
-    const isPinned = workspace.isPinned(x);
     const dot = workspace.dot(x);
-    const busy = dot === "running" || dot === "awaiting";
     const unread = workspace.unread(x);
-    const fail = (e: unknown) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      p.toast({ text: msg === "unsupported" ? oldNote : t("ws_failed", { error: msg }), tone: "error" });
-    };
+    if (x.meta.archived) {
+      return [
+        { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: oldNote, run: () => p.setRenaming(x.key) },
+        "sep",
+        { key: "unarchive", label: t("ws_unarchive"), letter: "a", disabled: old, note: oldNote, run: () => unarchive(x, ctx) },
+      ];
+    }
+    const read: MenuItem =
+      // SB-26: a failed session can be put aside; it then takes the read letter (it is not running).
+      dot === "failed"
+        ? { key: "done", label: t("ws_mark_done"), letter: "u", run: () => markDone(x, ctx) }
+        : { key: "read", label: t(unread ? "ws_mark_read" : "ws_mark_unread"), letter: "u", disabled: readLocked(x), note: t("ws_read_busy"), run: () => toggleRead(x) };
     return [
+      { key: "pin", label: t(workspace.isPinned(x) ? "ws_unpin" : "ws_pin"), letter: "p", run: () => togglePin(x, ctx) },
+      read,
       { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: oldNote, run: () => p.setRenaming(x.key) },
-      { key: "pin", label: t(isPinned ? "ws_unpin" : "ws_pin"), letter: "p", run: () => void workspace.update(x.host, x.meta.id, { pinned: !isPinned }).catch(fail) },
-      {
-        key: "read",
-        label: t(unread ? "ws_mark_read" : "ws_mark_unread"),
-        letter: "u",
-        disabled: busy,
-        note: t("ws_read_busy"),
-        run: () => (unread ? workspace.markRead(x.key) : workspace.markUnread(x.key)),
-      },
       "sep",
-      {
-        key: "archive",
-        label: t("ws_archive"),
-        letter: "a",
-        disabled: old,
-        note: oldNote,
-        run: () => {
-          const known = x.meta;
-          const title = titleOf(x);
-          void workspace.update(x.host, x.meta.id, { archived: true }).then(() => {
-            p.onArchived(x.key);
-            p.toast({ text: t("ws_archived", { title }), action: { label: t("ws_undo"), run: () => void workspace.update(x.host, known.id, { archived: false }, known).catch(fail) } });
-          }, fail);
-        },
-      },
-      ...(x.meta.state === "ended" ? [] : [endItem(x, fail)]),
+      { key: "archive", label: t("ws_archive"), letter: "a", disabled: old, note: oldNote, run: () => archive(x, ctx) },
+      ...(x.meta.state === "ended" ? [] : [endItem(x)]),
     ];
   };
   const [confirmEnd, setConfirmEnd] = useState<string | null>(null);
-  const endItem = (x: WsItem, fail: (e: unknown) => void): MenuItem => ({
+  const endItem = (x: WsItem): MenuItem => ({
     key: "end",
     label: confirmEnd === x.key ? t("ws_end_confirm") : t("ws_end"),
     danger: true,
@@ -183,17 +268,78 @@ export function Sidebar(p: SidebarProps) {
       if (confirmEnd !== x.key) setConfirmEnd(x.key);
       else {
         setConfirmEnd(null);
-        void workspace.end(x.host, x.meta.id).catch(fail);
+        void workspace.end(x.host, x.meta.id).catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          p.toast({ text: t("ws_failed", { error: msg }), tone: "error" });
+        });
       }
     },
   });
   const menuOf = menu ? byKey.get(menu.key) : null;
 
-  const row = (x: WsItem, opts: { lead?: boolean } = {}) => (
+  // A group header's menu (SB-45): a new session there, copy the folder's path, fold the others.
+  const groupMenuItems = (key: string): MenuLine[] => {
+    const g = groups.find((x) => x.key === key);
+    const lines: MenuLine[] = [];
+    if (g?.place) {
+      const place = g.place;
+      const offline = computer(place.host)?.online !== true;
+      lines.push(
+        { key: "new", label: t("ws_new_in", { folder: g.label }), disabled: offline, note: t("ws_new_offline", { host: place.host }), run: () => p.onNew({ host: place.host, cwd: place.cwd }) },
+        {
+          key: "copy",
+          label: t("ws_copy_path"),
+          run: () => void navigator.clipboard?.writeText(place.cwd).then(() => p.toast({ text: t("ws_copied", { path: place.cwd }) }), () => undefined),
+        },
+        "sep",
+      );
+    }
+    const keys = [...(pinned.length ? [PINNED_KEY] : []), ...groups.map((x) => x.key)];
+    lines.push(
+      { key: "fold", label: t("ws_fold_others"), disabled: keys.every((k) => k === key || collapsed.has(k)), run: () => toggleGroup(key, true) },
+      { key: "unfold", label: t("ws_expand_all"), disabled: !keys.some((k) => collapsed.has(k)), run: () => saveCollapsed(new Set()) },
+    );
+    return lines;
+  };
+
+  // "Group and sort" (SB-12): grouping, order and which sessions show — choices that keep the menu
+  // open; restoring the defaults is off while they are the defaults.
+  const listMenuItems = (): MenuLine[] => {
+    const choice = (key: string, label: string, on: boolean, run: () => void): MenuItem => ({ key, label, checked: on, keep: true, run });
+    const groupBy = (v: GroupBy, k: Key) => choice(`g-${v}`, t(k), prefs.groupBy === v, () => setPrefs({ groupBy: v }));
+    const sortBy = (v: SortMode, k: Key) => choice(`s-${v}`, t(k), prefs.sort === v, () => setPrefs({ sort: v, reversed: false }));
+    const status = (v: StatusFilter, k: Key) => choice(`f-${v}`, t(k), prefs.status === v, () => setPrefs({ status: v }));
+    const asc = isAscending(prefs);
+    return [
+      { heading: t("ws_group_by") },
+      groupBy("project", "ws_group_project"),
+      groupBy("date", "ws_group_date"),
+      groupBy("state", "ws_group_state"),
+      groupBy("none", "ws_group_none"),
+      "sep",
+      { heading: t("ws_sort_by") },
+      sortBy("recency", "ws_sort_recency"),
+      sortBy("created", "ws_sort_created"),
+      sortBy("alpha", "ws_sort_alpha"),
+      "sep",
+      choice("desc", t("ws_order_desc"), !asc, () => setPrefs((q) => withAscending(q, false))),
+      choice("asc", t("ws_order_asc"), asc, () => setPrefs((q) => withAscending(q, true))),
+      "sep",
+      { heading: t("ws_show_status") },
+      status("active", "ws_status_active"),
+      status("archived", "ws_status_archived"),
+      status("all", "ws_status_all"),
+      "sep",
+      { key: "reset", label: t("ws_list_reset"), disabled: isDefaultList(prefs), note: t("ws_list_reset_none"), run: () => setPrefs(() => DEFAULT_LIST) },
+    ];
+  };
+
+  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean } = {}) => (
     <Row
       key={x.key}
       item={x}
       lead={opts.lead}
+      env={opts.env && !x.local ? (computer(x.host) ?? { os: null, online: x.online }) : null}
       selected={x.key === p.current}
       menuOpen={menu?.key === x.key}
       renaming={p.renaming === x.key}
@@ -216,10 +362,14 @@ export function Sidebar(p: SidebarProps) {
   );
 
   const noComputers = p.computers.length === 0;
-  const loading = !items.length && p.computers.some((c) => c.online === true && (!p.snap.hosts[c.host.name] || p.snap.hosts[c.host.name].status === "loading"));
+  const loading = !all.length && p.computers.some((c) => c.online === true && (!p.snap.hosts[c.host.name] || p.snap.hosts[c.host.name].status === "loading"));
   const notes = p.computers
     .map((c) => ({ c, h: p.snap.hosts[c.host.name] }))
     .filter(({ c, h }) => c.online === true && h && (h.status === "denied" || h.status === "unsupported" || (h.status === "error" && !h.sessions.length)));
+  const filtered = isFiltered(prefs);
+  // SB-47: off the folder grouping (where the header names the computer), rows from other computers carry its mark.
+  const envRows = prefs.groupBy !== "project";
+  const listLabel = filtered ? t("ws_group_sort_on") : t("ws_group_sort");
 
   return (
     <nav className="ws-side" aria-label={t("ws_sidebar")}>
@@ -235,9 +385,15 @@ export function Sidebar(p: SidebarProps) {
         <span className="ws-search-label">{t("ws_search")}</span>
         <span className="ws-search-keys">{modLabel}K</span>
       </button>
-      <button type="button" className={cx("ws-nav", p.current === null && "on")} aria-current={p.current === null ? "page" : undefined} onClick={() => p.onNew()}>
+      <button
+        type="button"
+        className={cx("ws-nav", p.current === null && "on")}
+        aria-current={p.current === null ? "page" : undefined}
+        title={`${t("ws_new_session")} (${modLabel}N)`}
+        onClick={() => p.onNew()}
+      >
         <span className="ws-lead">
-          <SquarePen size={15} strokeWidth={1.5} />
+          <Plus size={16} strokeWidth={1.5} />
         </span>
         <span>{t("ws_new")}</span>
       </button>
@@ -254,7 +410,7 @@ export function Sidebar(p: SidebarProps) {
             <i style={{ width: "75%" }} />
             <i style={{ width: "50%" }} />
           </div>
-        ) : !items.length && !notes.length ? (
+        ) : !all.length && !notes.length && !filtered ? (
           <div className="ws-list-note">{t("ws_empty")}</div>
         ) : null}
         {pinned.length > 0 && (
@@ -262,7 +418,8 @@ export function Sidebar(p: SidebarProps) {
             id={PINNED_KEY}
             label={t("ws_pinned")}
             collapsed={collapsed.has(PINNED_KEY)}
-            onToggle={() => toggleGroup(PINNED_KEY)}
+            onToggle={(others) => toggleGroup(PINNED_KEY, others)}
+            onMenu={(at) => setGroupMenu({ key: PINNED_KEY, at })}
             dot={aggregateDot(pinned.map((x) => workspace.dot(x)))}
             tabIndex={navIndex(`group:${PINNED_KEY}`)}
             onFocus={() => setFocusId(`group:${PINNED_KEY}`)}
@@ -270,65 +427,108 @@ export function Sidebar(p: SidebarProps) {
             {(collapsed.has(PINNED_KEY) ? pinned.filter((x) => x.key === p.current) : pinned).map((x) => row(x, { lead: true }))}
           </Section>
         )}
+        {(all.length > 0 || filtered) && !noComputers && (
+          <div className="ws-list-head" data-open={listMenu ? "" : undefined}>
+            <span className="ws-list-head-label">{t("ws_sessions_head")}</span>
+            <button
+              type="button"
+              className={cx("ws-list-filter", filtered && "on")}
+              tabIndex={-1}
+              aria-label={listLabel}
+              title={listLabel}
+              aria-expanded={!!listMenu}
+              onClick={(e) => setListMenu(listMenu ? null : { anchor: e.currentTarget.getBoundingClientRect() })}
+            >
+              <ListFilter size={14} strokeWidth={1.5} />
+            </button>
+          </div>
+        )}
+        {filtered && !groups.length && (
+          <div className="ws-filter-empty">
+            <p>{t("ws_no_match")}</p>
+            <button type="button" className="ws-link" onClick={() => setPrefs({ status: "active" })}>
+              {t("ws_show_all")}
+            </button>
+          </div>
+        )}
         {groups.map((g) => {
           const folded = collapsed.has(g.key);
           const keep = new Set(p.current ? [p.current] : []);
-          const cut = truncateGroup(g.items, GROUP_ROWS, keep, opened.has(g.key), (x) => workspace.dot(x) === "awaiting");
-          const c = computer(g.host);
+          const limit = rowsBeforeMore(prefs.groupBy);
+          const cut = truncateGroup(g.items, limit, keep, opened.has(g.key), (x) => workspace.dot(x) === "awaiting");
+          const place = g.place;
+          const c = place ? computer(place.host) : null;
           const offline = c?.online !== true;
+          const flat = g.key === ALL_KEY;
+          const rows = folded && !flat ? g.items.filter((x) => x.key === p.current) : cut.shown;
+          const more = (flat || !folded) && (cut.hidden.length > 0 || opened.has(g.key)) && g.items.length > limit && (
+            <button
+              type="button"
+              className="ws-more"
+              data-ws-nav
+              tabIndex={navIndex(`more:${g.key}`)}
+              onFocus={() => setFocusId(`more:${g.key}`)}
+              onClick={() =>
+                setOpened((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(g.key)) next.delete(g.key);
+                  else next.add(g.key);
+                  return next;
+                })
+              }
+            >
+              <span>{opened.has(g.key) ? t("ws_show_less") : t(cut.hidden.length === 1 ? "ws_show_more_one" : "ws_show_more_many", { n: cut.hidden.length })}</span>
+              {cut.hiddenNeedsYou && !opened.has(g.key) && <StatusDot kind="awaiting" />}
+            </button>
+          );
+          // Not grouped: the rows sit right under "Sessions", without a header of their own.
+          if (flat) {
+            return (
+              <div key={g.key} className="ws-sec ws-sec-flat" data-group={g.key}>
+                <div className="ws-sec-rows" role="group" aria-label={g.label}>
+                  {rows.map((x) => row(x, { env: envRows }))}
+                  {more}
+                </div>
+              </div>
+            );
+          }
           return (
             <Section
               key={g.key}
               id={g.key}
               label={g.label}
-              title={g.local ? g.folder : t("ws_group_where", { host: g.host, path: g.folder })}
+              title={g.title}
               collapsed={folded}
-              onToggle={() => toggleGroup(g.key)}
+              onToggle={(others) => toggleGroup(g.key, others)}
+              onMenu={(at) => setGroupMenu({ key: g.key, at })}
               dot={aggregateDot(g.items.map((x) => workspace.dot(x)))}
               tabIndex={navIndex(`group:${g.key}`)}
               onFocus={() => setFocusId(`group:${g.key}`)}
               trailing={
-                <>
-                  {!g.local && (
-                    <span className="ws-gh-env" title={t("ws_group_where", { host: g.host, path: g.folder })}>
-                      <ComputerMark os={c?.os ?? null} online={c?.online ?? null} />
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="ws-gh-add"
-                    tabIndex={-1}
-                    disabled={offline}
-                    aria-label={offline ? t("ws_new_offline", { host: g.host }) : t("ws_new_in", { folder: g.label })}
-                    title={offline ? t("ws_new_offline", { host: g.host }) : t("ws_new_in", { folder: g.label })}
-                    onClick={() => p.onNew({ host: g.host, cwd: g.folder })}
-                  >
-                    <Plus size={15} strokeWidth={1.5} />
-                  </button>
-                </>
+                place && (
+                  <>
+                    {!place.local && (
+                      <span className="ws-gh-env" title={g.title}>
+                        <ComputerMark os={c?.os ?? null} online={c?.online ?? null} />
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="ws-gh-add"
+                      tabIndex={-1}
+                      disabled={offline}
+                      aria-label={offline ? t("ws_new_offline", { host: place.host }) : t("ws_new_in", { folder: g.label })}
+                      title={offline ? t("ws_new_offline", { host: place.host }) : t("ws_new_in", { folder: g.label })}
+                      onClick={() => p.onNew({ host: place.host, cwd: place.cwd })}
+                    >
+                      <Plus size={15} strokeWidth={1.5} />
+                    </button>
+                  </>
+                )
               }
             >
-              {folded ? g.items.filter((x) => x.key === p.current).map((x) => row(x)) : cut.shown.map((x) => row(x))}
-              {!folded && (cut.hidden.length > 0 || opened.has(g.key)) && g.items.length > GROUP_ROWS && (
-                <button
-                  type="button"
-                  className="ws-more"
-                  data-ws-nav
-                  tabIndex={navIndex(`more:${g.key}`)}
-                  onFocus={() => setFocusId(`more:${g.key}`)}
-                  onClick={() =>
-                    setOpened((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(g.key)) next.delete(g.key);
-                      else next.add(g.key);
-                      return next;
-                    })
-                  }
-                >
-                  <span>{opened.has(g.key) ? t("ws_show_less") : t(cut.hidden.length === 1 ? "ws_show_more_one" : "ws_show_more_many", { n: cut.hidden.length })}</span>
-                  {cut.hiddenNeedsYou && !opened.has(g.key) && <StatusDot kind="awaiting" />}
-                </button>
-              )}
+              {rows.map((x) => row(x, { env: envRows }))}
+              {more}
             </Section>
           );
         })}
@@ -358,17 +558,30 @@ export function Sidebar(p: SidebarProps) {
       {menu && menuOf && (
         <PopMenu at={menu.at} label={t("ws_session_menu", { title: titleOf(menuOf) })} items={menuItems(menuOf)} onClose={() => setMenu(null)} />
       )}
+      {groupMenu && (
+        <PopMenu
+          at={groupMenu.at}
+          label={t("ws_group_menu", { group: groupMenu.key === PINNED_KEY ? t("ws_pinned") : (groups.find((g) => g.key === groupMenu.key)?.label ?? "") })}
+          items={groupMenuItems(groupMenu.key)}
+          onClose={() => setGroupMenu(null)}
+        />
+      )}
+      {listMenu && <PopMenu at={listMenu} label={listLabel} items={listMenuItems()} onClose={() => setListMenu(null)} />}
     </nav>
   );
 }
 
-/** A section: its header (a fold button, the badge and trailing controls) and its rows (SB-16 / SB-18). */
+/**
+ * A section: its header (a fold button, the badge and trailing controls) and its rows (SB-16 / SB-18).
+ * Alt+click folds the other groups; a right click opens the group's menu (SB-45).
+ */
 function Section({
   id,
   label,
   title,
   collapsed,
   onToggle,
+  onMenu,
   dot,
   trailing,
   tabIndex,
@@ -379,7 +592,8 @@ function Section({
   label: string;
   title?: string;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (others: boolean) => void;
+  onMenu: (at: MenuAt) => void;
   dot: ReturnType<typeof aggregateDot>;
   trailing?: ReactNode;
   tabIndex?: number;
@@ -389,8 +603,24 @@ function Section({
   const ref = useOverflow<HTMLSpanElement>(label);
   return (
     <div className="ws-sec" data-collapsed={collapsed ? "" : undefined} data-group={id}>
-      <div className="ws-gh">
-        <button type="button" className="ws-gh-toggle" data-ws-nav data-group-toggle aria-expanded={!collapsed} title={title} tabIndex={tabIndex} onFocus={onFocus} onClick={onToggle}>
+      <div
+        className="ws-gh"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        <button
+          type="button"
+          className="ws-gh-toggle"
+          data-ws-nav
+          data-group-toggle
+          aria-expanded={!collapsed}
+          title={title}
+          tabIndex={tabIndex}
+          onFocus={onFocus}
+          onClick={(e) => onToggle(e.altKey)}
+        >
           <span className="ws-gh-label" ref={ref}>
             {label}
           </span>
@@ -409,6 +639,7 @@ function Section({
 function Row({
   item,
   lead,
+  env,
   selected,
   menuOpen,
   renaming,
@@ -420,20 +651,23 @@ function Row({
 }: {
   item: WsItem;
   lead?: boolean;
+  /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
+  env: Pick<Computer, "os" | "online"> | null;
   selected: boolean;
   menuOpen: boolean;
   renaming: boolean;
   tabIndex?: number;
   onFocus: () => void;
   onOpen: () => void;
-  onMenu: (at: { x: number; y: number }) => void;
+  onMenu: (at: MenuAt) => void;
   onRenamed: (title: string | null) => void;
 }) {
   const title = titleOf(item);
   const dot = workspace.dot(item);
   const ref = useOverflow<HTMLSpanElement>(title);
   const branch = item.meta.branch?.trim();
-  const decorated = !!dot || !!branch;
+  const mark = !dot && env ? env : null;
+  const decorated = !!dot || !!branch || !!mark;
   return (
     <div
       className="ws-row"
@@ -442,6 +676,7 @@ function Row({
       data-selected={selected ? "" : undefined}
       data-menu-open={menuOpen ? "" : undefined}
       data-decorated={decorated ? "" : undefined}
+      data-archived={item.meta.archived ? "" : undefined}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu({ x: e.clientX, y: e.clientY });
@@ -450,7 +685,16 @@ function Row({
       {renaming ? (
         <RenameField initial={item.meta.title?.trim() || title} onDone={onRenamed} />
       ) : (
-        <button type="button" className="ws-row-main" data-ws-nav tabIndex={tabIndex} onFocus={onFocus} onClick={onOpen} aria-current={selected ? "page" : undefined}>
+        <button
+          type="button"
+          className="ws-row-main"
+          data-ws-nav
+          tabIndex={tabIndex}
+          onFocus={onFocus}
+          onClick={onOpen}
+          aria-current={selected ? "page" : undefined}
+          aria-description={item.meta.archived ? t("ws_archived_row") : undefined}
+        >
           {lead && (
             <span className="ws-row-lead">
               <CodeXml size={14} strokeWidth={1.5} />
@@ -470,16 +714,18 @@ function Row({
       {!renaming && (
         <span className="ws-row-end">
           {dot && <StatusDot kind={dot} className="ws-row-dot" />}
+          {mark && (
+            <span className="ws-row-dot ws-row-env" title={item.host}>
+              <ComputerMark os={mark.os} online={mark.online} size={13} />
+            </span>
+          )}
           <button
             type="button"
             className="ws-row-more"
             tabIndex={-1}
             aria-label={t("ws_session_menu", { title })}
             title={t("ws_more")}
-            onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              onMenu({ x: r.left, y: r.bottom + 4 });
-            }}
+            onClick={(e) => onMenu({ anchor: e.currentTarget.getBoundingClientRect() })}
           >
             <MoreHorizontal size={15} strokeWidth={1.5} />
           </button>

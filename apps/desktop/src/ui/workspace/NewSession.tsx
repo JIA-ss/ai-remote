@@ -111,7 +111,7 @@ export function NewSession({
   onPair: () => void;
   toast: (t: Omit<Toast, "id">) => void;
 }) {
-  const items = useMemo(() => workspace.items(), [snap]);
+  const items = useMemo(() => workspace.items().filter((x) => !x.meta.archived), [snap]);
   const [started] = useState(() => readJson<Started[]>(PLACES, []));
   const computer = (name: string | null) => computers.find((c) => c.host.name === name) ?? null;
   const isLocal = (name: string) => !!snap.computers.find((x) => x.name === name)?.local;
@@ -196,7 +196,7 @@ export function NewSession({
     ...items.filter((x) => x.meta.pending && x.meta.state !== "ended").map((item) => ({ kind: "waiting" as const, item })),
     ...(host && cwd
       ? items
-          .filter((x) => x.host === host && sameFolder(x.meta.cwd, cwd) && x.meta.last_status === "failed" && !isRunning(x.meta) && !x.meta.pending)
+          .filter((x) => x.host === host && sameFolder(x.meta.cwd, cwd) && x.meta.last_status === "failed" && !isRunning(x.meta) && !x.meta.pending && !workspace.acked(x))
           .map((item) => ({ kind: "failed" as const, item }))
       : []),
   ].filter((s) => !dismissed.includes(key(s)));
