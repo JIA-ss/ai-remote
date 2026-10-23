@@ -16,11 +16,12 @@ import { ClaudeTurnView } from "./ClaudeTurn";
 /** Turns mounted at first; "show earlier" adds this many more each time. */
 const WINDOW = 30;
 
-export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing, store, onRetry, onDiscard, onContinue, finding, findFocus, onCloseFind, onQuote, status }: {
+export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, follow, outgoing, store, onRetry, onDiscard, onContinue, finding, findFocus, onCloseFind, onQuote, status }: {
   chat: Chat;
   now: number;
   readonly: boolean;
   empty: ReactNode;
+  loading?: boolean;
   /** Changes when this device sends something: back to the end to follow it. */
   follow: number;
   outgoing: Outgoing[];
@@ -127,7 +128,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
   };
 
   return (
-    <div className="cl-transcript">
+    <div className="nt-transcript cl-transcript">
       {finding && <FindBar root={inner} focus={findFocus} onShow={show} onClose={onCloseFind} />}
       {quote && (
         <button type="button" className="nt-quote" style={{ top: quote.top, left: quote.left }}
@@ -173,7 +174,9 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
           {chat.notices.map((n, i) => (
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
-          {chat.turns.length === 0 && !running && outgoing.length === 0 && <div className="cl-empty">{empty}</div>}
+          {chat.turns.length === 0 && !running && outgoing.length === 0 && (loading
+            ? <div className="cl-loading" role="status" aria-live="polite">{t("ws_loading")}</div>
+            : <div className="cl-empty">{empty}</div>)}
           {visible.map((turn, i) => (
             <ClaudeTurnView
               key={turn.n}
