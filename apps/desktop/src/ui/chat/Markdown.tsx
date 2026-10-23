@@ -10,7 +10,7 @@ import { Check, Copy, WrapText } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { highlight, languageOf } from "../../lib/highlight";
 import { t } from "../../lib/i18n";
-import { holdStreamingTail, parseMarkdown, parseMarkdownStream, safeHref, type Inline, type MdBlock, type MdStream } from "../../lib/markdown";
+import { holdStreamingTail, parseInline, parseMarkdown, parseMarkdownStream, safeHref, type Inline, type MdBlock, type MdStream } from "../../lib/markdown";
 import { fileTarget } from "../../lib/preview";
 import { cx } from "../util";
 import { usePreview } from "./preview-context";
@@ -68,8 +68,12 @@ const LANG_LABEL: Record<string, string> = {
 };
 
 /** A fenced code block: language, wrap and copy; colored when the language is one we know. */
-export function CodeBlock({ code, lang, className }: { code: string; lang?: string; className?: string }) {
-  const [wrap, setWrap] = useState(false);
+type AnsiRenderer = (code: string) => ReactNode;
+export function CodeBlock({ code, lang, className, renderAnsi }: { code: string; lang?: string; className?: string; renderAnsi?: AnsiRenderer }) {
+  const terminal = !!renderAnsi && code.includes("\x1b");
+  const [wrap, setWrap] = useState(terminal);
+  // A streamed fence may receive its first escape only after mounting.
+  useEffect(() => { if (terminal) setWrap(true); }, [terminal]);
   const known = languageOf(lang);
   const actions = (
     <>
@@ -91,13 +95,13 @@ export function CodeBlock({ code, lang, className }: { code: string; lang?: stri
         <span className="acts float">{actions}</span>
       )}
       <pre className={cx(wrap && "wrapped")}>
-        <code>{known ? <Highlighted code={code} lang={lang} /> : code}</code>
+        <code>{terminal ? renderAnsi!(code) : known ? <Highlighted code={code} lang={lang} /> : code}</code>
       </pre>
     </div>
   );
 }
 
-function InlineView({ c }: { c: Inline[] }): ReactNode {
+function InlineView({ c, interactive = true }: { c: Inline[]; interactive?: boolean }): ReactNode {
   const preview = usePreview();
   return c.map((x, i) => {
     switch (x.t) {
@@ -105,7 +109,7 @@ function InlineView({ c }: { c: Inline[] }): ReactNode {
         return x.v;
       case "code": {
         // `out/report.html` in a reply opens its preview.
-        const file = preview && fileTarget(x.v);
+        const file = interactive && preview && fileTarget(x.v);
         if (!file) return <code key={i}>{x.v}</code>;
         return (
           <code key={i} className="md-file" role="button" tabIndex={0} title={t("hc_preview_open", { name: x.v })}
@@ -123,13 +127,14 @@ function InlineView({ c }: { c: Inline[] }): ReactNode {
       case "br":
         return <br key={i} />;
       case "em":
-        return <em key={i}><InlineView c={x.c} /></em>;
+        return <em key={i}><InlineView c={x.c} interactive={interactive} /></em>;
       case "strong":
-        return <strong key={i}><InlineView c={x.c} /></strong>;
+        return <strong key={i}><InlineView c={x.c} interactive={interactive} /></strong>;
       case "del":
-        return <del key={i}><InlineView c={x.c} /></del>;
+        return <del key={i}><InlineView c={x.c} interactive={interactive} /></del>;
       case "link": {
         const href = safeHref(x.href);
+        if (!interactive) return <span key={i} title={href ?? undefined}><InlineView c={x.c} interactive={false} /></span>;
         const file = !href && preview ? fileTarget(x.href) : null;
         if (file && preview) {
           return (
@@ -159,7 +164,13 @@ function InlineView({ c }: { c: Inline[] }): ReactNode {
   });
 }
 
-function BlockView({ b }: { b: MdBlock }): ReactNode {
+/** Inline formatting for control labels. Links and file names remain noninteractive inside buttons. */
+export const InlineMarkdown = memo(function InlineMarkdown({ text }: { text: string }) {
+  const c = useMemo<Inline[]>(() => /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text) ? [{ t: "text", v: text }] : parseInline(text), [text]);
+  return <span className="md-inline"><InlineView c={c} interactive={false} /></span>;
+});
+
+function BlockView({ b, renderAnsi }: { b: MdBlock; renderAnsi?: AnsiRenderer }): ReactNode {
   switch (b.t) {
     case "p":
       return <p><InlineView c={b.c} /></p>;
@@ -168,16 +179,16 @@ function BlockView({ b }: { b: MdBlock }): ReactNode {
       return <H className={`md-h${b.level}`}><InlineView c={b.c} /></H>;
     }
     case "code":
-      return <CodeBlock code={b.text} lang={b.lang || undefined} />;
+      return <CodeBlock code={b.text} lang={b.lang || undefined} renderAnsi={renderAnsi} />;
     case "quote":
-      return <blockquote><Blocks blocks={b.c} /></blockquote>;
+      return <blockquote><Blocks blocks={b.c} renderAnsi={renderAnsi} /></blockquote>;
     case "hr":
       return <hr />;
     case "list": {
       const items = b.items.map((it, i) => (
         <li key={i} className={cx(it.task !== null && "task")}>
           {it.task !== null && <input type="checkbox" checked={it.task} readOnly tabIndex={-1} aria-label={it.task ? t("hc_done") : t("hc_todo")} />}
-          <Blocks blocks={it.c} tight />
+          <Blocks blocks={it.c} tight renderAnsi={renderAnsi} />
         </li>
       ));
       return b.ordered ? <ol start={b.start}>{items}</ol> : <ul>{items}</ul>;
@@ -200,38 +211,38 @@ function BlockView({ b }: { b: MdBlock }): ReactNode {
   }
 }
 
-function Blocks({ blocks, tight }: { blocks: MdBlock[]; tight?: boolean }) {
+function Blocks({ blocks, tight, renderAnsi }: { blocks: MdBlock[]; tight?: boolean; renderAnsi?: AnsiRenderer }) {
   // A tight list item is one paragraph without a <p> margin.
   if (tight && blocks.length >= 1 && blocks[0].t === "p") {
     return (
       <>
         <InlineView c={blocks[0].c} />
-        {blocks.slice(1).map((b, i) => <BlockView key={i} b={b} />)}
+        {blocks.slice(1).map((b, i) => <BlockView key={i} b={b} renderAnsi={renderAnsi} />)}
       </>
     );
   }
-  return <>{blocks.map((b, i) => <BlockView key={i} b={b} />)}</>;
+  return <>{blocks.map((b, i) => <BlockView key={i} b={b} renderAnsi={renderAnsi} />)}</>;
 }
 
 /** An agent's message as markdown. Parsed again only when its text changes. */
-export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
+export const Markdown = memo(function Markdown({ text, className, renderAnsi }: { text: string; className?: string; renderAnsi?: AnsiRenderer }) {
   const blocks = useMemo(() => parseMarkdown(text), [text]);
   return (
     <div className={cx("nt-md", className)}>
-      <Blocks blocks={blocks} />
+      <Blocks blocks={blocks} renderAnsi={renderAnsi} />
     </div>
   );
 });
 
 /** A block of a reply still streaming: the blocks before the last safe cut keep their objects, so they
  *  do not render again as the text grows (lib/markdown.ts `parseMarkdownStream`). */
-const StreamBlock = memo(function StreamBlock({ b }: { b: MdBlock }) {
-  return <BlockView b={b} />;
+const StreamBlock = memo(function StreamBlock({ b, renderAnsi }: { b: MdBlock; renderAnsi?: AnsiRenderer }) {
+  return <BlockView b={b} renderAnsi={renderAnsi} />;
 });
 
 /** An agent's message while it streams: only its tail is parsed again per update, and a last line that
  *  is only a list or heading marker waits for its words. Finished, it renders like `Markdown`. */
-export const StreamingMarkdown = memo(function StreamingMarkdown({ text, streaming, className }: { text: string; streaming: boolean; className?: string }) {
+export const StreamingMarkdown = memo(function StreamingMarkdown({ text, streaming, className, renderAnsi }: { text: string; streaming: boolean; className?: string; renderAnsi?: AnsiRenderer }) {
   const prev = useRef<MdStream | null>(null);
   const blocks = useMemo(() => {
     const next = parseMarkdownStream(prev.current, streaming ? holdStreamingTail(text) : text);
@@ -240,7 +251,7 @@ export const StreamingMarkdown = memo(function StreamingMarkdown({ text, streami
   }, [text, streaming]);
   return (
     <div className={cx("nt-md", className)}>
-      {blocks.map((b, i) => <StreamBlock key={i} b={b} />)}
+      {blocks.map((b, i) => <StreamBlock key={i} b={b} renderAnsi={renderAnsi} />)}
     </div>
   );
 });
