@@ -1482,14 +1482,27 @@ fn smoke(app: &tauri::App) {
             if let Some(w) = handle.get_webview_window("main") {
                 // The page shows its initially hidden window after its first paint. On macOS that
                 // can constrain a pre-show position back onto a screen; move after that show too.
-                if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() != Ok("1") {
-                    let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
+                if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() != Ok("1")
+                    && let Err(error) = place_smoke_offscreen(&w)
+                {
+                    eprintln!("[smoke] cannot place the isolated window off screen: {error}");
+                    handle.exit(1);
+                    return;
                 }
                 eprintln!("[smoke] scripted window position: {:?}, size: {:?}", w.outer_position(), w.outer_size());
                 let screens = w.available_monitors().map(|monitors| {
                     monitors.into_iter().map(|monitor| (*monitor.position(), *monitor.size())).collect::<Vec<_>>()
                 });
                 eprintln!("[smoke] screen bounds: {screens:?}");
+                let window_geometry = w.outer_position().ok().zip(w.outer_size().ok()).map(|(position, size)| {
+                    json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                });
+                let screen_geometry = screens.ok().map(|screens| {
+                    screens.into_iter().map(|(position, size)| {
+                        json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                    }).collect::<Vec<_>>()
+                });
+                eprintln!("[smoke] geometry {}", json!({"window": window_geometry, "screens": screen_geometry}));
                 let _ = w.eval(script);
             }
         });
@@ -1624,6 +1637,33 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
         }
         image::RgbaImage::from_raw(width, height, px).ok_or_else(|| "bad buffer".into())
     }
+}
+
+/// Smoke captures webview content, not platform caption controls. AppKit constrains titled windows
+/// to keep a caption strip on screen, so the default smoke window is untitled before moving it.
+#[cfg(debug_assertions)]
+fn place_smoke_offscreen(w: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindowStyleMask;
+        use objc2_foundation::NSPoint;
+        use objc2_web_kit::WKWebView;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        // with_webview dispatches on AppKit's main thread; the window is retained for this call.
+        w.with_webview(move |webview| unsafe {
+            let view = &*webview.inner().cast::<WKWebView>();
+            let result = view.window().ok_or_else(|| "smoke webview has no window".to_string()).map(|window| {
+                window.setStyleMask(window.styleMask() & !NSWindowStyleMask::Titled);
+                window.setFrameOrigin(NSPoint::new(-8000.0, -8000.0));
+            });
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(|error| error.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    w.set_position(tauri::PhysicalPosition::new(-8000, -8000)).map_err(|error| error.to_string())
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]

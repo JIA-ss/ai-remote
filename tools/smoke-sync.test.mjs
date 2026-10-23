@@ -312,3 +312,28 @@ test("off-screen smoke isolates native activation without blocking injected acti
 test("explicit visible smoke retains the native keyboard and pointer path", () => {
   assert.equal(inputIsolation(true).size, 0);
 });
+
+test("off-screen geometry rejects a visible strip and checks every display", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const code = `import ast,sys
+from pathlib import Path
+source=Path(sys.argv[1]).read_text(encoding='utf-8')
+function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='outside_displays')
+namespace={}
+exec(compile(ast.Module(body=[function],type_ignores=[]),'geometry-fixture','exec'),namespace)
+check=namespace['outside_displays']
+screen={'x':0,'y':0,'width':5120,'height':2160}
+def window(x,y,w=2560,h=1600): return {'x':x,'y':y,'width':w,'height':h}
+assert not check({'window':window(-2480,1906),'screens':[screen]}), 'an 80px strip is still on screen'
+assert check({'window':window(-16000,16560),'screens':[screen]})
+assert check({'window':window(-2560,0),'screens':[screen]}), 'touching an edge is not overlap'
+assert not check({'window':window(-2560,0),'screens':[screen,window(-2560,0)]}), 'check other monitors too'
+assert not check({'window':window(-16000,16560),'screens':[]})
+assert not check({'window':window(-16000,16560,0),'screens':[screen]})
+assert not check({'window':None,'screens':[screen]})
+print('geometry cases passed')`;
+  const output = execFileSync(process.platform === "win32" ? "python" : "python3",
+    ["-c", code, fileURLToPath(new URL("./desktop-chat-e2e.py", import.meta.url))], { encoding: "utf8" });
+  assert.match(output, /geometry cases passed/);
+});

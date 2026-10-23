@@ -56,6 +56,22 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
 TMP = None if os.name == "nt" else "/tmp"
 
+def outside_displays(geometry: dict) -> bool:
+    """A default smoke window must be wholly outside every reported physical display."""
+    window, screens = geometry.get("window"), geometry.get("screens")
+    if not isinstance(window, dict) or not isinstance(screens, list) or not screens:
+        return False
+    for rect in [window, *screens]:
+        if not isinstance(rect, dict) or any(type(rect.get(k)) is not int for k in ("x", "y", "width", "height")):
+            return False
+        if rect["width"] <= 0 or rect["height"] <= 0:
+            return False
+    return all(window["x"] + window["width"] <= screen["x"]
+               or screen["x"] + screen["width"] <= window["x"]
+               or window["y"] + window["height"] <= screen["y"]
+               or screen["y"] + screen["height"] <= window["y"] for screen in screens)
+
+
 SMOKE_INPUT_ISOLATION = r'''
 // Default smoke is driven by injected DOM events. An unrelated native click/key must not drive
 // this throwaway window; explicit --visible runs keep real input for the input-method tests.
@@ -545,12 +561,22 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         watchdog.start()
         passed = None
         isolated_storage = False
+        isolated_placement = options.visible
         for line in app.stderr:
             stderr_log.write(line)
             stderr_log.flush()
             line = line.rstrip()
             if line == "[smoke] isolated nonpersistent webview storage":
                 isolated_storage = True
+            if line.startswith("[smoke] geometry ") and not options.visible:
+                try:
+                    geometry = json.loads(line[len("[smoke] geometry "):])
+                    isolated_placement = outside_displays(geometry)
+                except (ValueError, TypeError, AttributeError):
+                    isolated_placement = False
+                if not isolated_placement:
+                    print("the smoke window is not verified outside every display")
+                    app.terminate()
             if options.verbose:
                 print("  |", line[:400])
             if line.startswith("[page e2e] "):
@@ -582,7 +608,9 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                 print("  " + line)
         app_code = app.wait(timeout=60)
         print(f"  app exited with {app_code}")
-        code = 0 if passed and app_code == 0 and isolated_storage else 1
+        code = 0 if passed and app_code == 0 and isolated_storage and isolated_placement else 1
+        if not isolated_placement:
+            print("the default smoke run has no verified off-screen placement")
         if not isolated_storage:
             print("the debug app did not confirm isolated webview storage; rebuild it before running E2E")
         if passed is None:
