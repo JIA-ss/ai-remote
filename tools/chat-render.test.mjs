@@ -86,6 +86,83 @@ test("code is colored for known languages and left whole otherwise", () => {
   assert.deepEqual(plain(diff.map((t) => t.c ?? null)), ["m", "d", "a"]);
 });
 
+// ---- Streaming: only the tail block is parsed again (parseMarkdownStream), and the result is the
+// whole parse's at every step, however the text arrives.
+
+const STREAMED = [
+  "Fixed: the quarter end was always **day 31**.\n\n### What changed\n- `quarter_end` takes the month's last day.\n- Q2 and Q3 export again.\n\n| Quarter | Before | Now |\n|:--|:--|:--|\n| Q2 | `ValueError` | ok |\n| Q3 | `ValueError` | ok |\n\n```sh\npython export.py --quarter Q3\n```\n\nDone.\n",
+  // Lists that continue past blank lines, nested and lazy lines, a list followed straight by text.
+  "1. first\n\n   still the first item\n2. second\n   - inner a\n\n   - inner b\nlazy line\n\n- other kind\n\nafter the lists\n- [ ] task\n- [x] done\n\n\n\nend",
+  // An open fence, quotes with a list inside, a rule, a heading with closing marks, a table without its separator yet.
+  "> quoted\n> - item\n>\n> more\n\n---\n## Title ##\nText | with a pipe\n|---|---|\n| a | b |\n\n```\nopen fence\n\nstill code",
+  // Line endings of all kinds, and a paragraph that becomes a table head once its next line comes.
+  "head | row\r\n--- | ---\r\nx | y\r\rpara\n\n  - indented\n\n    deep\n\n  - next\n\n#\n# h\n\n***\n",
+];
+
+function chunks(text, seed) {
+  // A small deterministic generator, so a failure names its seed.
+  let s = seed * 2654435761 >>> 0;
+  const rnd = () => ((s = (s * 1103515245 + 12345) >>> 0) / 4294967296);
+  const out = [];
+  for (let i = 0; i < text.length;) {
+    const n = 1 + Math.floor(rnd() * (rnd() < 0.2 ? 60 : 9));
+    out.push(text.slice(i, i + n));
+    i += n;
+  }
+  return out;
+}
+
+test("a streamed reply parses to what the whole text parses to, after every fragment", () => {
+  for (const [d, doc] of STREAMED.entries()) {
+    for (let seed = 1; seed <= 40; seed++) {
+      let st = null;
+      let text = "";
+      for (const piece of chunks(doc, seed)) {
+        text += piece;
+        st = md.parseMarkdownStream(st, text);
+        assert.deepEqual(plain(st.blocks), plain(md.parseMarkdown(text)), `doc ${d}, seed ${seed}, at ${text.length}`);
+      }
+    }
+  }
+});
+
+test("the blocks before the cut stay the same objects while the text grows", () => {
+  const doc = STREAMED[0];
+  let st = md.parseMarkdownStream(null, doc.slice(0, 60));
+  const first = st.blocks[0];
+  assert.ok(st.head >= 1, `the first paragraph is settled once a blank line and a heading follow (head ${st.head})`);
+  st = md.parseMarkdownStream(st, doc.slice(0, 140));
+  st = md.parseMarkdownStream(st, doc);
+  assert.equal(st.blocks[0], first, "reused, not parsed again");
+  assert.ok(st.head > 1);
+  assert.ok(st.cut > 0 && st.cut < st.src.length);
+  // The last block is always parsed again: it is the one still growing.
+  assert.ok(st.head < st.blocks.length);
+});
+
+test("a text changed in place is parsed whole; a list waits for the line after its blank", () => {
+  const a = md.parseMarkdownStream(null, "intro\n\nmore text\n\nlast");
+  const b = md.parseMarkdownStream(a, "INTRO\n\nmore text\n\nlast");
+  assert.deepEqual(plain(b.blocks), plain(md.parseMarkdown("INTRO\n\nmore text\n\nlast")));
+  assert.notEqual(b.blocks[0], a.blocks[0]);
+  // "- a", blank, "x": "x" may still grow into "  x" (part of the item); the list is not settled yet.
+  const l = md.parseMarkdownStream(null, "- a\n\nx");
+  assert.equal(l.head, 0);
+  const l2 = md.parseMarkdownStream(l, "- a\n\nx\n");
+  assert.equal(l2.head, 1);
+  assert.deepEqual(plain(l2.blocks), plain(md.parseMarkdown("- a\n\nx\n")));
+});
+
+test("a streaming reply holds back a last line that is only a list or heading marker", () => {
+  assert.equal(md.holdStreamingTail("Steps:\n- "), "Steps:\n");
+  assert.equal(md.holdStreamingTail("Steps:\n  12."), "Steps:\n");
+  assert.equal(md.holdStreamingTail("Todo:\n- [ ]"), "Todo:\n");
+  assert.equal(md.holdStreamingTail("Next\n##"), "Next\n");
+  assert.equal(md.holdStreamingTail("Next\n## Ti"), "Next\n## Ti");
+  assert.equal(md.holdStreamingTail("- item"), "- item");
+  assert.equal(md.holdStreamingTail("a - b"), "a - b");
+});
+
 test("every counted string has a singular and a plural form, in both languages", () => {
   const counted = new Set();
   for (const k of Object.keys(en)) {
