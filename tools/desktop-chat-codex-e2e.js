@@ -202,7 +202,9 @@
     await check("'Working for' sits at the top of the work", dividerFirst === true, String(dividerFirst));
     await check("the reasoning's title says what the agent is at", titleSeen);
     await check("reasoning is never a line of the work, nor its raw text shown", !thoughtRow && !rawSeen, `${thoughtRow} ${rawSeen}`);
-    await check("the live text catches a sweep of light now and then", sweepSeen);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    await check("the live text respects the system's motion setting", reducedMotion ? !sweepSeen : sweepSeen,
+      `reduced motion: ${reducedMotion}; sweep: ${sweepSeen}`);
     await check("the work folds behind 'Worked for' as soon as the answer streams", foldedWhileStreaming);
     await idle();
     let t1 = turns()[0];

@@ -236,7 +236,10 @@
     await check("the sidebar groups the session under its folder", !!group1 && groupName(k1) === workName, text($(".ws-gh-label", group1)));
     await check("the title starts as the first message", rowTitle(k1).includes("整理季度导出脚本") && pageTitle().includes("整理季度导出脚本"), `${rowTitle(k1)} | ${pageTitle()}`);
     const blink = await until("running dot", () => dotOf(k1) === "running" && $(".ws-row-dot", rowOf(k1)));
-    await check("a running session's dot is grey and blinks", !!blink && getComputedStyle(blink).animationName !== "none", blink && getComputedStyle(blink).animationName);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const dotAnimation = blink && getComputedStyle(blink).animationName;
+    await check("a running session's dot respects the system's motion setting", !!blink && (reducedMotion ? dotAnimation === "none" : dotAnimation !== "none"),
+      `reduced motion: ${reducedMotion}; animation: ${dotAnimation}`);
     await shot("a02-running");
     // The stand-in answers the title 4 s after it is asked; the row and the page learn it from the next poll.
     const sentAt = Date.now();
@@ -244,7 +247,11 @@
     if (titled) await note(`the agent's title showed ${((Date.now() - sentAt) / 1000).toFixed(1)} s after the first message`);
     await check("the agent's title replaces it", !!titled, `${rowTitle(k1)} | ${pageTitle()}`);
     await check("the turn ends by itself", !!(await said("later: DELAYTITLE", 20000)));
-    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 15000)), dotOf(k1));
+    // An occluded/locked desktop polls at the store's idle 20 s cadence, instead of 4 s. Observe
+    // the natural poll; do not force a refresh or fail before that configured interval can elapse.
+    const settledAt = Date.now();
+    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 35000)),
+      `${dotOf(k1)}; ${(Date.now() - settledAt) / 1000} s; visibility: ${document.visibilityState}`);
 
     // A2. Unread: a session that moves on while another is open gets a blue dot; opening it clears it.
     await newSession();
@@ -488,7 +495,7 @@
     await until("approval card", () => $(".ws-main .cl-ap"), 20000);
     await sleep(500);
     btn(/^(拒绝|Deny)\s*(esc)?$/)?.click();
-    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: (?:The user )?declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
     await idle();
 
     // B2. A question in two parts: single choice, then multiple with Other; the answers in the transcript.

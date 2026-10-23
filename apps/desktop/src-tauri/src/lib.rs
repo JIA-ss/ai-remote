@@ -1291,6 +1291,17 @@ fn find_cli() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("cannot find the ai-remote command next to this app or on PATH (set AI_REMOTE_CLI)"))
 }
 
+/// A failed or interrupted smoke run must never leave preferences in the person's normal WebView.
+/// Only the explicitly requested debug run uses a nonpersistent website data store.
+#[cfg(any(debug_assertions, test))]
+fn configure_smoke_storage(config: &mut tauri::Config, smoke: bool) {
+    if smoke {
+        for window in &mut config.app.windows {
+            window.incognito = true;
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -1308,6 +1319,11 @@ pub fn run() {
     });
     let tray_profile = profile.clone();
     let tray_cli = cli.clone();
+    let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let mut context = context;
+    #[cfg(debug_assertions)]
+    configure_smoke_storage(context.config_mut(), std::env::var_os("AI_REMOTE_SMOKE").is_some());
     tauri::Builder::default()
         // Windows: our page draws the 48 px title bar; the plugin adds the caption buttons and the
         // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
@@ -1357,7 +1373,7 @@ pub fn run() {
                 let _ = tauri::Emitter::emit(window, "window-hidden", ());
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the ai-remote app")
         .run(move |app, event| {
             #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -1609,6 +1625,32 @@ fn capture(_: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smoke_windows_use_temporary_storage_without_changing_ordinary_launches() {
+        let original: tauri::Config = serde_json::from_value(serde_json::json!({
+            "identifier": "io.ai-remote.smoke-fixture",
+            "app": { "windows": [
+                { "label": "main", "width": 1280 },
+                { "label": "private", "incognito": true },
+                { "label": "another", "width": 640 }
+            ] }
+        }))
+        .unwrap();
+        let mut ordinary = original.clone();
+        super::configure_smoke_storage(&mut ordinary, false);
+        assert_eq!(ordinary, original, "normal debug launches retain their configured storage");
+
+        let mut smoke = original.clone();
+        super::configure_smoke_storage(&mut smoke, true);
+        assert!(smoke.app.windows.iter().all(|window| window.incognito));
+        assert_eq!(smoke.app.windows.len(), 3);
+        assert_eq!(smoke.identifier, original.identifier);
+        assert_eq!(smoke.app.windows[0].label, "main");
+        assert_eq!(smoke.app.windows[0].width, 1280.0);
+        assert_eq!(smoke.app.windows[2].label, "another");
+        assert_eq!(smoke.app.windows[2].width, 640.0);
+    }
+
     /// Regenerates `src/bindings.ts` (also done at every debug start) and fails if a command's
     /// types cannot be exported.
     #[test]

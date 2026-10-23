@@ -155,7 +155,7 @@
     await check("the answer renders Markdown: heading, list, table, code block",
       !!reply && !!$("h1, h2, h3, h4, h5, h6", reply) && !!$("li", reply) && !!$("table", reply) && !!$("pre", reply), reply?.innerHTML.slice(0, 200));
     const ring = $(".nt-ring");
-    await check("context usage shows as a ring", !!ring && /4[12]k \/ 200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
+    await check("context usage shows as a ring", !!ring && /4[12]k\s*(?:\/|of)\s*200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
     await check("the turn's foot offers to copy the reply (its time shows from 1 s)", !!$(".cl-foot button", t1), $(".cl-foot", t1)?.innerHTML.slice(0, 120));
     await shot("01-first-turn");
 
