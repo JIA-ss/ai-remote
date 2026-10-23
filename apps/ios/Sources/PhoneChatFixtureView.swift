@@ -87,7 +87,9 @@ public struct PhoneChatFixtureView: View {
         chat.hostAcks = true
         // `-ui-chat-unacked`: the first message is refused (not delivered, then sent again).
         chat.fixtureRefuse = arguments.contains("-ui-chat-unacked")
-        for line in codex ? PhoneChatStore.codexFixtureLog(now: now) : lines { chat.fixtureEvent(line) }
+        let history = codex && arguments.contains("-ui-codex-history")
+        let fixtureLog = history ? PhoneChatStore.codexHistoryFixtureLog(now: now) : codex ? PhoneChatStore.codexFixtureLog(now: now) : lines
+        for line in fixtureLog { chat.fixtureEvent(line) }
         if codex {
             chat.fixtureEvent(["t": text("commands"), "turn": .number(2), "commands": .array([
                 .object(["name": text("release-notes"), "description": text("Draft release notes from the commits since the last tag"), "kind": text("skill"), "insert": text("$release-notes")])])])

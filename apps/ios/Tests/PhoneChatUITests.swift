@@ -121,9 +121,7 @@ final class PhoneChatUITests: XCTestCase {
 
         page.tap()
         let web = app.webViews.firstMatch
-        XCTAssertTrue(web.waitForExistence(timeout: 5), "a page opens in a web view")
-        XCTAssertTrue(web.staticTexts["构建报告"].waitForExistence(timeout: 5), "its HTML and CSS render")
-        XCTAssertTrue(web.staticTexts["脚本没有运行"].exists, "its script does not run")
+        assertReportHTML(web)
         shot(app, "03-preview-html")
         app.segmentedControls.buttons["源码"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-preview-source"].waitForExistence(timeout: 5), "the source view")
@@ -138,11 +136,10 @@ final class PhoneChatUITests: XCTestCase {
 
         // A link in a reply that names a file opens its preview.
         let link = app.links["报告"]
-        if link.waitForExistence(timeout: 3) {
-            link.tap()
-            XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 5), "the link opens the page's preview")
-            app.buttons["chat-preview-done"].tap()
-        }
+        XCTAssertTrue(link.waitForExistence(timeout: 3), "the reply exposes its file link")
+        link.tap()
+        assertReportHTML(app.webViews.firstMatch)
+        app.buttons["chat-preview-done"].tap()
 
         // The composer: an image waiting to go, the / menu, the @ menu.
         XCTAssertTrue(app.descendants(matching: .any)["chat-attachments"].exists, "the attached image shows above the field")
@@ -201,6 +198,35 @@ final class PhoneChatUITests: XCTestCase {
         XCTAssertTrue(cwd.waitForExistence(timeout: 5))
         XCTAssertTrue(cwd.label.contains("ai-remote") && cwd.label.contains("~/work"), "the chosen folder, with its parent under it: \(cwd.label)")
         shot(app, "13-folder-chosen")
+    }
+
+    func testHTMLPreviewLoadsAgainFromItsCardLinkAndSourceView() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-chat-fixture"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["把构建结果整理成报告"].waitForExistence(timeout: 15))
+        let card = app.buttons["chat-preview-report.html"]
+        let link = app.links["报告"]
+        for entry in [card, link, card] {
+            XCTAssertTrue(entry.waitForExistence(timeout: 5), "the report can be reopened")
+            entry.tap()
+            assertReportHTML(app.webViews.firstMatch)
+            app.segmentedControls.buttons["源码"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["chat-preview-source"].waitForExistence(timeout: 5))
+            app.segmentedControls.buttons["预览"].tap()
+            assertReportHTML(app.webViews.firstMatch)
+            app.buttons["chat-preview-done"].tap()
+        }
+    }
+
+    private func assertReportHTML(_ web: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(web.waitForExistence(timeout: 5), "a page opens in a web view", file: file, line: line)
+        // A cold iOS 26.2 CI simulator took 34.8 s to launch WebContent (run 39954997454).
+        // Wait for the document, rather than treating the web view's existence as rendered HTML.
+        XCTAssertTrue(web.staticTexts["构建报告"].waitForExistence(timeout: 45), "its HTML and CSS render", file: file, line: line)
+        XCTAssertTrue(web.staticTexts["脚本没有运行"].exists, "its script does not run", file: file, line: line)
     }
 
     private func waitFor(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) {

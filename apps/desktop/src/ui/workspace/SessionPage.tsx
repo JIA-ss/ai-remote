@@ -46,7 +46,7 @@ export function SessionPage({
   corner: ReactNode;
   renaming: boolean;
   setRenaming: (on: boolean) => void;
-  onWatch: (host: string) => void;
+  onWatch: (host: string, session?: string) => void;
   onLeave: () => void;
   onArchived: (key: string) => void;
   onNew: () => void;
@@ -187,7 +187,7 @@ export function SessionPage({
         </div>
         <div className="ws-drag" data-tauri-drag-region />
         <div className="ws-tb-end">
-          <button type="button" className="ws-ib" disabled={c?.online !== true} onClick={() => onWatch(host)} aria-label={t("ws_open_stream", { host })} title={t("ws_open_stream", { host })}>
+          <button type="button" className="ws-ib" disabled={c?.online !== true} onClick={() => onWatch(host, id)} aria-label={t("ws_open_stream", { host })} title={t("ws_open_stream", { host })}>
             <MonitorPlay size={16} strokeWidth={1.5} />
           </button>
           {item && (

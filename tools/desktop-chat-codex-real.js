@@ -73,7 +73,7 @@
   const elementState = (el) => el ? { element: elementLabel(el), connected: el.isConnected, text: el === document.body ? "" : text(el).slice(0, 160),
     ariaExpanded: el.getAttribute("aria-expanded"), disabled: !!el.disabled, inert: elementLabel(el.closest("[inert]")) } : null;
   const menuButton = () => $(".nt-chat.cdx .nt-chat-hd .nt-chat-menu-btn");
-  const navigationState = () => ({
+  const detailedNavigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     url: window.location.href,
     chat: $(".nt-chat")?.className ?? null,
@@ -109,47 +109,72 @@
     }
   }
   async function navigationFailure(reason, evidence = {}) {
-    const scene = navigationState();
+    const scene = detailedNavigationState();
     const hostSessions = await hostSessionsSnapshot();
     await say("e2e", `     navigation failure: ${JSON.stringify({ reason, ...evidence, scene, hostSessions })}`);
   }
-  // The first failure remains a failure even if one recovery click lets replay checks continue.
-  async function leaveSession() {
+  const navigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    chat: $(".nt-chat")?.className ?? null,
+    picker: !!$(".nt-chat-picker"),
+    form: !!$(".nt-chat-start"),
+    sessions: $$(".nt-sessions .sess").length,
+    menu: !!$(".nt-chat-menu"),
+    hidden: document.hidden,
+    focus: document.activeElement?.className ?? null,
+  });
+  // Navigation and picker data load independently. A recovery click never erases the failed first
+  // click; once the picker has opened, wait for its content without clicking the old conversation.
+  // Real-agent runs add connected-action selection and detailed native/host diagnostics.
+  async function leaveSession(what, ready, options = {}) {
+    const state = options.state ?? navigationState;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const before = navigationState();
-      const button = menuButton();
-      if (!button || !button.isConnected) {
-        await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
-        await navigationFailure("the Codex session menu button is missing or disconnected", { attempt, before });
-        throw new Error("cannot leave the original Codex session: its connected menu button is missing");
+      const before = state();
+      const button = options.menuButton ? options.menuButton() : $$(".nt-chat-hd .ico").at(-1);
+      if (!button || button.isConnected === false) {
+        if (options.describe) await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
+        await options.report?.("navigation-failure", { attempt, before, reason: "menu button missing or disconnected" });
+        throw new Error(`${what}: menu button missing or disconnected; ${JSON.stringify({ before })}`);
       }
-      const buttonBeforeClick = elementState(button);
+      const buttonBeforeClick = options.describe?.(button);
       button.click();
-      const items = await until("session menu", () => {
-        const choices = $$(".nt-chat.cdx .nt-chat-menu [role=menuitem]");
-        return choices.length > 0 && choices;
+      const item = await until("session menu", () => {
+        const choices = $$(".nt-chat-menu [role=menuitem]");
+        return options.pickItem ? options.pickItem(choices) : choices[0];
       });
-      const item = items?.find((choice) => /^(Other sessions|其他会话)$/.test(text(choice)));
-      if (!item || !item.isConnected) {
-        await check(`Other sessions is connected on attempt ${attempt}`, false, items?.map(text).join(" | "));
-        await navigationFailure("no connected Other sessions action; no other action was clicked", { attempt, before,
-          buttonBeforeClick, buttonAfterClick: elementState(button), choices: items?.map(elementState) ?? [] });
-        throw new Error("cannot leave the original Codex session: Other sessions was not available");
+      if (!item || item.isConnected === false) {
+        const evidence = { attempt, before, buttonBeforeClick, buttonAfterClick: options.describe?.(button), after: state() };
+        if (options.describe) await check(`Other sessions is connected on attempt ${attempt}`, false, JSON.stringify(evidence));
+        await options.report?.("navigation-failure", { ...evidence, reason: "no connected Other sessions action; no other action was clicked" });
+        throw new Error(`${what}: no connected Other sessions action; ${JSON.stringify(evidence)}`);
       }
-      const itemBeforeClick = elementState(item);
+      const itemBeforeClick = options.describe?.(item);
+      const connected = item.isConnected;
       item.click();
-      const clicked = navigationState();
-      const moved = await until("sessions", () => $$(".nt-sessions .sess").length >= 1, 8000);
-      const evidence = { attempt, before, buttonBeforeClick, itemBeforeClick,
-        buttonAfterClick: elementState(button), itemAfterClick: elementState(item), clicked, after: navigationState() };
-      await say("e2e", `     navigation attempt: ${JSON.stringify(evidence)}`);
-      for (const [phase, value] of Object.entries({ before, clicked, after: evidence.after }))
-        await say("e2e", `     navigation ${attempt} ${phase}: ${JSON.stringify(value)}`);
-      await check(`the session list opens on menu click ${attempt}`, !!moved);
-      if (moved) return;
-      await navigationFailure("Other sessions did not open a populated session list", evidence);
+      const clicked = state();
+      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
+      const evidence = { attempt, connected, before, clicked, after: state(), buttonBeforeClick, itemBeforeClick,
+        buttonAfterClick: options.describe?.(button), itemAfterClick: options.describe?.(item) };
+      await options.report?.("attempt", evidence);
+      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
+      if (!left) {
+        await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("navigation-failure", evidence);
+        continue;
+      }
+      const waiting = state(), started = Date.now();
+      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
+      const loaded = await until(`${what}: picker content ready`, ready, 30000);
+      await check(`${what} content loads after leaving the conversation`, !!loaded);
+      if (!loaded) {
+        const evidence = { elapsedMs: Date.now() - started, waiting, after: state() };
+        await say("e2e", `     picker loading failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("picker-loading-failure", evidence);
+        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+      }
+      return;
     }
-    throw new Error("neither menu click left the original Codex session for its session list");
+    throw new Error(`${what}: neither menu click left the conversation`);
   }
   const running = () => !!$(".nt-compose .round.stop");
   const turns = () => $$(".cdx-turn");
@@ -272,7 +297,17 @@
       await navigationFailure("the original session id is missing before leaving");
       throw new Error("cannot verify reopening the original session: no remembered session id");
     }
-    await leaveSession();
+    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 1, {
+      state: detailedNavigationState, menuButton, describe: elementState,
+      pickItem: (choices) => choices.find((choice) => /^(Other sessions|其他会话)$/.test(text(choice))),
+      report: async (phase, evidence) => {
+        if (phase === "attempt") {
+          await say("e2e", `     navigation attempt: ${JSON.stringify(evidence)}`);
+          for (const [step, value] of Object.entries({ before: evidence.before, clicked: evidence.clicked, after: evidence.after }))
+            await say("e2e", `     navigation ${evidence.attempt} ${step}: ${JSON.stringify(value)}`);
+        } else await navigationFailure(phase, evidence);
+      },
+    });
     const candidates = $$(".nt-sessions .sess").filter((row) => text($(".nm", row)).split(" · ")[0] === CFG.agent);
     if (candidates.length !== 1 || !candidates[0].isConnected) {
       await check("the original agent has one connected session row to reopen", false, `${candidates.length} matches for ${CFG.agent}`);

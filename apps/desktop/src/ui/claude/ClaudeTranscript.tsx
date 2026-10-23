@@ -3,7 +3,7 @@
 // or a key upwards lets go), a round "jump to the latest" button past 200 px and a fade past 8 px, the
 // newest turns mounted (older ones on request), find (⌘F) and quoting a selection as in the chat panel.
 
-import { ArrowDown, Quote } from "lucide-react";
+import { ArrowDown, LoaderCircle, Quote } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { stoppedTurn, type Chat, type Outgoing } from "../../lib/chat";
 import { FOLLOW, scrollKey } from "../../lib/claude";
@@ -21,6 +21,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, 
   now: number;
   readonly: boolean;
   empty: ReactNode;
+  /** The host's hello or the rest of its conversation has not arrived yet. */
   loading?: boolean;
   /** Changes when this device sends something: back to the end to follow it. */
   follow: number;
@@ -142,7 +143,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, 
         className="nt-chat-body cl-scroll"
         ref={scroller}
         role="feed"
-        aria-busy={running}
+        aria-busy={loading || running}
         onMouseUp={() => setTimeout(pickQuote, 0)}
         onKeyUp={(e) => e.shiftKey && pickQuote()}
         onWheel={(e) => {
@@ -153,8 +154,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, 
           if (scrollKey(e.key, e.shiftKey) === "up") stick.current = false;
         }}
         onScroll={(e) => {
-          // Programmatic scrolling (find, layout, smooth scrolling) must not discard a valid
-          // selection. Keep the Quote action attached to it, as in the shared transcript.
+          // A scroll moves a valid selection's Quote button; clearing the selection removes it.
           if (quote) pickQuote();
           const el = e.currentTarget;
           const d = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -174,9 +174,12 @@ export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, 
           {chat.notices.map((n, i) => (
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
-          {chat.turns.length === 0 && !running && outgoing.length === 0 && (loading
-            ? <div className="cl-loading" role="status" aria-live="polite">{t("ws_loading")}</div>
-            : <div className="cl-empty">{empty}</div>)}
+          {chat.turns.length === 0 && !running && outgoing.length === 0 && (loading ? (
+            <div className="cl-loading" role="status" aria-live="polite">
+              <LoaderCircle size={14} className="spin" aria-hidden />
+              <span>{t("cdx_loading")}</span>
+            </div>
+          ) : <div className="cl-empty">{empty}</div>)}
           {visible.map((turn, i) => (
             <ClaudeTurnView
               key={turn.n}

@@ -184,7 +184,7 @@
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const navigationState = () => ({
+  const detailedNavigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     url: window.location.href,
     chat: $(".nt-chat")?.className ?? null,
@@ -197,31 +197,76 @@
       connected: button.isConnected, disabled: button.disabled, className: button.className,
     } : null; })(),
     selectedTabs: $$(".nt-rail .seg [role=tab]").filter((tab) => tab.classList.contains("sel")).map(text),
-    picker: !!$(".nt-chat-start"),
+    picker: !!$(".nt-chat-picker"),
+    form: !!$(".nt-chat-start"),
     sessions: $$(".nt-sessions .sess").length,
     menu: !!$(".nt-chat-menu"),
     hidden: document.hidden,
     focus: document.activeElement?.className ?? null,
   });
-  const sceneError = (reason, detail = {}) => new Error(`${reason}; ${JSON.stringify({ ...detail, scene: navigationState() })}`);
+  const navigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    chat: $(".nt-chat")?.className ?? null,
+    picker: !!$(".nt-chat-picker"),
+    form: !!$(".nt-chat-start"),
+    sessions: $$(".nt-sessions .sess").length,
+    menu: !!$(".nt-chat-menu"),
+    hidden: document.hidden,
+    focus: document.activeElement?.className ?? null,
+  });
+  const sceneError = (reason, detail = {}) => new Error(`${reason}; ${JSON.stringify({ ...detail, scene: detailedNavigationState() })}`);
   const sameConversation = (panel, turn) => !!panel?.isConnected && panel === $(".nt-chat.cdx")
     && !!turn?.isConnected && turn === lastTurn();
-  // A second click only recovers the scene for later checks; the first failure still counts.
-  async function leaveSession(what, ready) {
+  // Navigation and picker data load independently. A recovery click never erases the failed first
+  // click; once the picker has opened, wait for its content without clicking the old conversation.
+  // Real-agent runs add connected-action selection and detailed native/host diagnostics.
+  async function leaveSession(what, ready, options = {}) {
+    const state = options.state ?? navigationState;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const before = navigationState();
-      const button = $$(".nt-chat-hd .ico").at(-1);
-      if (!button) throw new Error(`${what}: menu button missing; ${JSON.stringify({ before })}`);
+      const before = state();
+      const button = options.menuButton ? options.menuButton() : $$(".nt-chat-hd .ico").at(-1);
+      if (!button || button.isConnected === false) {
+        if (options.describe) await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
+        await options.report?.("navigation-failure", { attempt, before, reason: "menu button missing or disconnected" });
+        throw new Error(`${what}: menu button missing or disconnected; ${JSON.stringify({ before })}`);
+      }
+      const buttonBeforeClick = options.describe?.(button);
       button.click();
-      const item = await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]);
-      if (!item) throw new Error(`${what}: menu did not open; ${JSON.stringify({ before, after: navigationState() })}`);
+      const item = await until("session menu", () => {
+        const choices = $$(".nt-chat-menu [role=menuitem]");
+        return options.pickItem ? options.pickItem(choices) : choices[0];
+      });
+      if (!item || item.isConnected === false) {
+        const evidence = { attempt, before, buttonBeforeClick, buttonAfterClick: options.describe?.(button), after: state() };
+        if (options.describe) await check(`Other sessions is connected on attempt ${attempt}`, false, JSON.stringify(evidence));
+        await options.report?.("navigation-failure", { ...evidence, reason: "no connected Other sessions action; no other action was clicked" });
+        throw new Error(`${what}: no connected Other sessions action; ${JSON.stringify(evidence)}`);
+      }
+      const itemBeforeClick = options.describe?.(item);
       const connected = item.isConnected;
       item.click();
-      const clicked = navigationState();
-      const moved = await until(what, ready, 8000);
-      await check(`${what} on menu click ${attempt}`, !!moved);
-      if (moved) return;
-      await say("e2e", `     navigation failure: ${JSON.stringify({ attempt, connected, before, clicked, after: navigationState() })}`);
+      const clicked = state();
+      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
+      const evidence = { attempt, connected, before, clicked, after: state(), buttonBeforeClick, itemBeforeClick,
+        buttonAfterClick: options.describe?.(button), itemAfterClick: options.describe?.(item) };
+      await options.report?.("attempt", evidence);
+      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
+      if (!left) {
+        await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("navigation-failure", evidence);
+        continue;
+      }
+      const waiting = state(), started = Date.now();
+      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
+      const loaded = await until(`${what}: picker content ready`, ready, 30000);
+      await check(`${what} content loads after leaving the conversation`, !!loaded);
+      if (!loaded) {
+        const evidence = { elapsedMs: Date.now() - started, waiting, after: state() };
+        await say("e2e", `     picker loading failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("picker-loading-failure", evidence);
+        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+      }
+      return;
     }
     throw new Error(`${what}: neither menu click left the conversation`);
   }
@@ -307,7 +352,8 @@
     await check("the work folder is chosen", folderShown() === work, folderShown());
     setValue($("#ag-prompt"), "EXPLORE fix the quarter export");
     await sleep(200);
-    // Subscribe before starting: short commands may finish while the conversation is mounting.
+    // Observe before starting: the host can already be running a short command while the form's
+    // start response and the runtime-specific conversation are still mounting.
     const live = new Set();
     const liveWatch = new MutationObserver(() => {
       const turn = lastTurn();
@@ -376,7 +422,9 @@
     await check("'Working for' sits at the top of the work", dividerFirst === true, String(dividerFirst));
     await check("the reasoning's title says what the agent is at", titleSeen);
     await check("reasoning is never a line of the work, nor its raw text shown", !thoughtRow && !rawSeen, `${thoughtRow} ${rawSeen}`);
-    await check("the live text catches a sweep of light now and then", sweepSeen);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    await check("the live text respects the system's motion setting", reducedMotion ? !sweepSeen : sweepSeen,
+      `reduced motion: ${reducedMotion}; sweep: ${sweepSeen}`);
     await check("the work folds behind 'Worked for' as soon as the answer streams", foldedWhileStreaming);
     await idle();
     let t1 = turns()[0];

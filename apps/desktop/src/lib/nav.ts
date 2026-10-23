@@ -37,6 +37,12 @@ export interface History {
   i: number;
 }
 
+/** Opens a computer's screen with the conversation the reader came from. Only the session id
+ *  crosses views: the conversation obtains a fresh attachment ticket from the host. */
+export function screenRoute(host: string, session?: string): Route {
+  return session ? { page: "session", host, chat: { session } } : { page: "session", host };
+}
+
 /** The last settings section and computer tab, so a sidebar click returns to them. */
 export interface Memory {
   sec: Section;

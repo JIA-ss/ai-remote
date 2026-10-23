@@ -28,6 +28,7 @@ import {
   remember,
   replace,
   routeOfNav,
+  screenRoute,
   sidebarState,
   type History,
   type Memory,
@@ -290,7 +291,7 @@ export default function App() {
             back={shell.canBack ? back : null}
             forward={shell.canForward ? forward : null}
             onMode={() => go({ page: "devices" })}
-            onWatch={(host) => go({ page: "session", host })}
+            onWatch={(host, session) => go(screenRoute(host, session))}
             onPair={() => nav("pair")}
             onSettings={() => nav("settings")}
           />

@@ -434,6 +434,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                               encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
     log = open(base / "host.log", "w")
+    stderr_log = open(options.out / "app.stderr.log", "w", encoding="utf-8")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
     app = None
     watchdog = None
@@ -458,7 +459,17 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
 
         script = base / "drive.js"
         source = ROOT / (os.environ.get("E2E_SCRIPT") or ("tools/desktop-chat-e2e-real.js" if options.real else "tools/desktop-chat-e2e.js"))
-        script.write_text(SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
+        metadata = '''(() => {
+  const q = new URLSearchParams(location.search);
+  window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "e2e", message: "(context) " + JSON.stringify({
+    visibility: document.visibilityState, focused: document.hasFocus(),
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    route: { path: location.pathname, view: q.get("view"), panel: q.get("panel"),
+      hasHost: q.has("host"), hasSession: q.has("session") }
+  }) });
+})();
+'''
+        script.write_text(metadata + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
@@ -480,6 +491,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         passed = None
         isolated_storage = False
         for line in app.stderr:
+            stderr_log.write(line)
+            stderr_log.flush()
             line = line.rstrip()
             if line == "[smoke] isolated nonpersistent webview storage":
                 isolated_storage = True
@@ -522,6 +535,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
     finally:
         if watchdog is not None:
             watchdog.cancel()
+        # A stopped script must not leave its test window alive (or writing its test profile).
         if app is not None and app.poll() is None:
             app.terminate()
             try:
@@ -547,6 +561,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             host.kill()
         log.close()
         shutil.copyfile(base / "host.log", options.out / "host.log")
+        stderr_log.close()
         shutil.rmtree(webview, ignore_errors=True)
     if code:
         print((base / "host.log").read_text(encoding="utf-8", errors="replace")[-2000:])
