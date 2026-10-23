@@ -2,7 +2,10 @@
 // diffs with line numbers, and a turn's work folded into units, its answer and its changes. The real
 // modules are transpiled; event shapes follow the host's chat/event.rs and adapters/codex.rs.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "../apps/desktop/node_modules/typescript/lib/typescript.js";
@@ -23,7 +26,7 @@ function load() {
       if (!m) throw new Error(`no dependency ${spec}`);
       return run(m[1]);
     };
-    vm.runInNewContext(compile(name), { exports, require, JSON, Set, Map, Math, Number, String, Array, Object, RegExp }, { filename: `${name}.ts` });
+    vm.runInNewContext(compile(name), { exports, require, JSON, Set, Map, WeakMap, Math, Number, String, Array, Object, RegExp, Intl }, { filename: `${name}.ts` });
     return exports;
   };
   return { chat: run("chat"), codex: run("codex") };
@@ -229,4 +232,141 @@ test("phase and exit codes fold into the chat state", () => {
   assert.equal(m.phase, "commentary");
   assert.equal(k.exitCode, 2);
   assert.equal(k.durationMs, 50);
+});
+
+test("the fallback reading never shows a write, a delete or a hand-off as a read", () => {
+  const unknown = [{ type: "unknown" }];
+  for (const c of [
+    "ls build | xargs rm -rf", "cat a.txt > b.txt", "ls > out.txt", "cat install.sh | bash", "find . -name '*.tmp' -delete",
+    "find . -name x -exec rm {} +", "sed -n -i '1p' x", "cat $(rm -rf x)", "echo hi > f && cat f", "grep -l foo -r . | xargs sed -i 's/a/b/'",
+    "rg foo 2>/dev/null", "cat a | tee b", "sleep 1 &", "fd -x rm",
+  ]) {
+    assert.deepEqual(plain(codex.parseCommand(c)), unknown, c);
+  }
+  // Pipes into filters stay reads and searches.
+  assert.deepEqual(plain(codex.parseCommand("rg --files src | sort | head -20")), [{ type: "list_files", path: "src" }]);
+  assert.deepEqual(plain(codex.parseCommand("cat a.log | grep ERROR | wc -l")), [{ type: "read", path: "a.log", name: "a.log" }]);
+  // A flag's value is not the file.
+  assert.deepEqual(plain(codex.parseCommand("Get-Content -Path src\\app.ts -TotalCount 80")), [{ type: "read", path: "src\\app.ts", name: "app.ts" }]);
+  assert.deepEqual(plain(codex.parseCommand("Get-Content src\\app.ts -Tail 20")), [{ type: "read", path: "src\\app.ts", name: "app.ts" }]);
+  assert.deepEqual(plain(codex.parseCommand("rg -e foo -e bar src")), [{ type: "search", query: "foo", path: "src" }]);
+  assert.deepEqual(plain(codex.parseCommand("Select-String -Pattern TODO -Path *.ts")), [{ type: "search", query: "TODO", path: "*.ts" }]);
+});
+
+test("an added file's content is content even with lines that look like hunk headers", () => {
+  const md = codex.parseUnifiedDiff("# Notes\n@@ not a hunk\n- a list item\n", "add");
+  assert.equal(md.add, 3);
+  assert.equal(md.del, 0);
+  assert.ok(md.lines.every((l) => l.kind === "add"));
+  const del = codex.parseUnifiedDiff("@@ x\nold\n", "delete");
+  assert.deepEqual([del.add, del.del], [0, 2]);
+});
+
+const tool = (over) => ({ kind: "tool", callId: "x", title: "edit", tool: "edit", status: "completed", locations: [], truncated: false, startedTs: 0, endedTs: 1, content: [], ...over });
+
+test("a turn's changes: Codex's own diff when it came, else edits merged with sensible kinds", () => {
+  const files = (list) => ({ files: list });
+  const turn = (blocks, diff) => ({ n: 1, user: null, blocks, status: "completed", startedTs: 0, finalText: null, durationMs: 1, reason: null, usage: null, ...(diff ? { diff } : {}) });
+  const del = tool({ callId: "d", input: files([{ path: "/w/a.txt", kind: "delete", diff: "x\n" }]) });
+  const readd = tool({ callId: "r", input: files([{ path: "/w/a.txt", kind: "add", diff: "y\n" }]) });
+  assert.equal(codex.turnChanges(turn([del, readd]))[0].kind, "update", "deleted then written again changed");
+  const add = tool({ callId: "a", input: files([{ path: "/w/t.txt", kind: "add", diff: "t\n" }]) });
+  const gone = tool({ callId: "g", input: files([{ path: "/w/t.txt", kind: "delete", diff: "t\n" }]) });
+  assert.equal(codex.turnChanges(turn([add, gone])).length, 0, "created then deleted leaves nothing");
+  // Two edits of one file: summed without the turn diff, the net result with it.
+  const e1 = tool({ callId: "e1", input: files([{ path: "/w/m.py", kind: "update", diff: "@@ -1,2 +1,2 @@\n a\n-b\n+B\n" }]) });
+  const e2 = tool({ callId: "e2", input: files([{ path: "/w/m.py", kind: "update", diff: "@@ -1,2 +1,2 @@\n a\n-B\n+b2\n" }]) });
+  const summed = codex.turnChanges(turn([e1, e2]))[0];
+  assert.deepEqual([summed.add, summed.del], [2, 2]);
+  const net = "diff --git a/m.py b/m.py\nindex 1..2 100644\n--- a/m.py\n+++ b/m.py\n@@ -1,2 +1,2 @@\n a\n-b\n+b2\n"
+    + "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
+  const fromDiff = codex.turnChanges(turn([e1, e2], { text: net, truncated: false }), "/w");
+  assert.deepEqual(plain(fromDiff.map((f) => [f.path, f.kind, f.add, f.del])), [["/w/m.py", "update", 1, 1], ["/w/new.txt", "add", 2, 0]]);
+  // A cut turn diff is not trusted.
+  assert.equal(codex.turnChanges(turn([e1, e2], { text: net, truncated: true }))[0].add, 2);
+});
+
+test("a host past its diff budget: the file falls back to the call's content", () => {
+  const x = tool({ input: { files: [{ path: "/w/big.txt", kind: "add", diff: "", truncated: true }] },
+    content: [{ type: "diff", path: "/w/big.txt", old: null, new: "a\nb\n" }] });
+  const [f] = codex.fileChanges(x);
+  assert.equal(f.add, 2);
+  assert.equal(f.truncated, true);
+  assert.equal(codex.filePatch(f, "/w"), null, "no patch from a cut diff");
+});
+
+test("copied patches apply with git", (t) => {
+  let git = true;
+  try { execFileSync("git", ["--version"], { stdio: "ignore" }); } catch { git = false; }
+  if (!git) return t.skip("no git");
+  const dir = mkdtempSync(join(tmpdir(), "cdx-patch-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "m.py"), "a\nb\nc\n");
+    writeFileSync(join(dir, "old.txt"), "bye\n");
+    const files = [
+      ...codex.fileChanges(tool({ callId: "1", input: { files: [{ path: join(dir, "src", "m.py"), kind: "update", diff: "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n" }] } })),
+      ...codex.fileChanges(tool({ callId: "2", input: { files: [{ path: join(dir, "new.md"), kind: "add", diff: "# New\n@@ text\n" }] } })),
+      ...codex.fileChanges(tool({ callId: "3", input: { files: [{ path: join(dir, "old.txt"), kind: "delete", diff: "bye\n" }] } })),
+    ];
+    const patch = files.map((f) => codex.filePatch(f, dir)).join("");
+    writeFileSync(join(dir, "p.diff"), patch);
+    execFileSync("git", ["apply", "--check", "p.diff"], { cwd: dir });
+    execFileSync("git", ["apply", "p.diff"], { cwd: dir });
+    assert.equal(readFileSync(join(dir, "src", "m.py"), "utf8"), "a\nB\nc\n");
+    assert.equal(readFileSync(join(dir, "new.md"), "utf8"), "# New\n@@ text\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // An older host's diffs have no line numbers: nothing to copy as a patch.
+  const old = codex.fileChanges(tool({ content: [{ type: "diff", path: "a.ts", old: "1\n", new: "2\n" }] }))[0];
+  assert.equal(codex.filePatch(old, null), null);
+});
+
+test("a command closed by the end of its turn is not a success; failed edits still have words", () => {
+  seq = 0;
+  const c = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "s", title: "Shell npm run dev", kind: "execute", status: "in_progress", input: { command: "npm run dev", actions: [{ type: "unknown" }] } }),
+    ev(1, { t: "tool_call", call_id: "p", title: "edit a", kind: "edit", status: "in_progress", input: { files: [{ path: "/w/a", kind: "update", diff: "@@ -1 +1 @@\n-x\n+y\n" }] } }),
+    ev(1, { t: "tool_update", call_id: "p", status: "failed" }),
+    ev(1, { t: "turn_end", status: "completed", duration_ms: 10 }),
+  ]);
+  const t1 = c.turns[0];
+  const [run, edit] = t1.blocks;
+  assert.equal(run.endedByTurn, true);
+  assert.equal(codex.execInfo(run).exitCode, null);
+  assert.deepEqual(plain(codex.groupSummary([{ kind: "patch", key: "p", tool: edit, files: codex.fileChanges(edit) }]).parts), [{ part: "failed", n: 1 }]);
+});
+
+test("while it runs: a sub-agent is work, reasoning after the last call stays in its group, and only a completed turn has a guessed answer", () => {
+  seq = 0;
+  const agentRun = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "a", title: "agent spawn", kind: "think", status: "in_progress" }),
+  ]);
+  assert.equal(codex.codexTurn(agentRun.turns[0]).thinking, false);
+  seq = 0;
+  const base = [
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "c1", title: "Shell ls", kind: "execute", status: "completed", input: { command: "ls", actions: [{ type: "listFiles", path: null }] } }),
+    ev(1, { t: "thought", id: "r", text: "**Next**", delta: true }),
+  ];
+  const live = codex.codexTurn(fold(base).turns[0]);
+  assert.deepEqual(plain(live.units.map((u) => u.kind)), ["group"], "the reasoning joins the group while the turn runs");
+  assert.equal(live.units[0].live, true);
+  seq = 0;
+  const failed = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "message", id: "m", text: "Trying the build.", delta: false }),
+    ev(1, { t: "turn_end", status: "failed", reason: "boom", duration_ms: 5 }),
+  ]);
+  assert.equal(codex.codexTurn(failed.turns[0]).answer, null, "a failed turn's last remark is not its answer");
+});
+
+test("turn_diff and the turn-closed flag fold into the chat state", () => {
+  seq = 0;
+  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "turn_diff", diff: "diff --git a/x b/x\n", truncated: true })]);
+  assert.deepEqual(plain(c.turns[0].diff), { text: "diff --git a/x b/x\n", truncated: true });
 });

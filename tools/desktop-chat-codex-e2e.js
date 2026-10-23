@@ -6,7 +6,8 @@
 // streams, the answer, the turn's changes), opening the work (groups, commands without their shell,
 // read / search / list lines, a failed command's shell with its exit code, diffs with line numbers),
 // a question, a steer and Stop / Continue, a provider failure, many files and long output, a host that
-// sends no phases, a compaction, find, Claude's session keeping its own rows, and the replay.
+// sends no phases, a compaction, one file edited twice (the turn's net diff), an edit that does not
+// apply, phases that arrive late, find, Claude's session keeping its own rows, and the replay.
 (async () => {
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -115,6 +116,13 @@
     const live = new Set();
     let workingSeen = false, foldedWhileStreaming = false, thinkingSeen = false;
     const planSeen = new Set();
+    // The answer streams for well under a second: look at every change, not only at each poll (a
+    // window in the background gets its timers slowed down).
+    const foldWatch = new MutationObserver(() => {
+      const t = lastTurn();
+      if (t && $(".cdx-answer.streaming", t) && $(".cdx-worked", t) && !$(".cdx-work", t)) foldedWhileStreaming = true;
+    });
+    foldWatch.observe($(".nt-chat"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
     const watchEnd = Date.now() + 40000;
     while (Date.now() < watchEnd) {
       const t = lastTurn();
@@ -129,6 +137,7 @@
       }
       await sleep(60);
     }
+    foldWatch.disconnect();
     const liveList = [...live];
     await check("a live line names the command running now, without its shell",
       liveList.some((l) => /(Running|正在运行) python3 export\.py --quarter Q3/.test(l)) && !liveList.some((l) => /\/bin\/zsh|-lc/.test(l)), liveList.join(" | "));
@@ -236,8 +245,15 @@
     await check("the agent takes it", !!(await until("noted", () => text(lastTurn()).includes("Noted: stop at three"))));
     await check("no new turn for it", turns().length === before + 1, `${turns().length} vs ${before + 1}`);
     await shot("c05-steer");
+    // "Stopping…" shows from the click until the agent confirms (only a moment with the stand-in).
+    let stoppingSeen = false;
+    const watch = new MutationObserver(() => { if (/Stopping…|正在停止…/.test(text($(".cdx-status", lastTurn())))) stoppingSeen = true; });
+    watch.observe(lastTurn(), { subtree: true, childList: true, characterData: true });
     $(".nt-compose .round.stop").click();
+    if (/Stopping…|正在停止…/.test(text($(".cdx-status", lastTurn())))) stoppingSeen = true;
     const stopped = await until("stopped", () => $(".cdx-divider.x-stop", lastTurn()));
+    watch.disconnect();
+    await check("the status says Stopping… until the agent stops", stoppingSeen);
     await check("Stop ends the turn: 'You stopped after …'", !!stopped && /You stopped after|你在.*后停止了/.test(text(stopped)), text(stopped));
     await check("a stopped turn does not fold its work", !$(".cdx-worked", lastTurn()) && !!$(".cdx-work", lastTurn()));
     await check("the cut-short command says Stopped", $$(".cdx-act", lastTurn()).some((a) => /^(Stopped|停止了) sleep 30/.test(text($(":scope > .x-hd", a)))), lines(lastTurn()).join(" | "));
@@ -291,6 +307,38 @@
     await openWork(lastTurn());
     await check("a compaction shows as a divider", $$(".cdx-divider", lastTurn()).some((d) => /Context automatically compacted|上下文已自动压缩/.test(text(d))), text(lastTurn()).slice(-160));
 
+    // 10b. One file edited twice, a scratch file created then deleted: the changes are the turn's net diff.
+    await sendTurn("REEDIT the readme");
+    await idle();
+    const ch = $(".cdx-changes", lastTurn());
+    await check("edits of one file count once, by the turn's net diff; a scratch file is gone",
+      !!ch && $$(".x-file", ch).length === 1 && text($(".x-file", ch)).includes("README.md") && /\+4/.test(text($(".x-file", ch))) && !/−/.test(text($(".x-file", ch))),
+      ch && text(ch));
+    const wr = await openWork(lastTurn());
+    for (const g of $$(".cdx-act.group", wr)) await openLine(g);
+    const rl = $$(".cdx-act:not(.group) > .x-hd > .x-ln", wr).map(text);
+    await check("the work keeps every edit, the scratch file created and deleted",
+      rl.filter((l) => /^(Edited|编辑了) README\.md/.test(l)).length === 2 && rl.some((l) => /^(Created|创建了) scratch\.txt/.test(l)) && rl.some((l) => /^(Deleted|删除了) scratch\.txt/.test(l)),
+      rl.join(" | "));
+
+    // 10c. An edit that does not apply.
+    await sendTurn("BADPATCH rename");
+    await idle();
+    await check("a failed edit changes nothing", !$(".cdx-changes", lastTurn()));
+    const wb = await openWork(lastTurn());
+    const bad = $$(".cdx-act", wb).find((a) => /^(Failed to edit|未能编辑) export\.py$/.test(text($(":scope > .x-hd > .x-ln", a))));
+    await check("it reads 'Failed to edit', marked, without counts", !!bad && bad.classList.contains("failed"), lines(wb).join(" | "));
+
+    // 10d. Phases that only arrive as the messages complete: the answer is the answer, once.
+    await sendTurn("LATEPHASE readme");
+    await idle();
+    await openWork(lastTurn());
+    const lateAnswer = text($(".cdx-answer", lastTurn()));
+    await check("a late phase still makes the answer, shown once",
+      /LATE ANSWER/.test(lateAnswer) && text(lastTurn()).split("LATE ANSWER").length === 2 && /Checking the README first/.test(text($(".cdx-work", lastTurn()))),
+      text(lastTurn()).slice(-240));
+    const codexTurns = turns().length;
+
     // 11. Find works in the Codex view.
     keyDown($(".nt-chat"), "f", { metaKey: true, ctrlKey: navigator.platform.startsWith("Win") });
     const field = await until("find field", () => $(".nt-findbar input"));
@@ -320,10 +368,13 @@
     (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
     await until("sessions", () => $$(".nt-sessions .sess").length >= 2);
     $$(".nt-sessions .sess").find((s) => s.textContent.includes("Codex fake")).click();
-    const replayed = await until("replay", () => $(".nt-chat.cdx") && turns().length >= 7 && turns()[0].querySelector(".cdx-worked"), 30000);
-    await check("reopening the Codex session replays it in the Codex view", !!replayed, `${turns().length} turns`);
+    const replayed = await until("replay", () => $(".nt-chat.cdx") && turns().length === codexTurns && turns()[0].querySelector(".cdx-worked"), 30000);
+    await check("reopening the Codex session replays every turn in the Codex view", !!replayed, `${turns().length} of ${codexTurns} turns`);
     t1 = turns()[0];
+    await until("first turn folded", () => !$(".cdx-work", t1), 3000);
     await check("the first turn is folded again, with its changes", WORKED.test(text($(".cdx-worked", t1))) && !$(".cdx-work", t1) && !!$(".cdx-changes", t1));
+    const rre = turns().find((t) => /REEDIT/.test(text($(".nt-user", t))));
+    await check("the replayed net diff is the same", !!rre && /\+4/.test(text($(".cdx-changes .x-file", rre))) && $$(".cdx-changes .x-file", rre).length === 1, rre && text($(".cdx-changes", rre)));
     const w1 = await openWork(t1);
     await openLine($$(".cdx-act.group", w1)[0]);
     const again = lines($(".cdx-list", $$(".cdx-act.group", w1)[0]));

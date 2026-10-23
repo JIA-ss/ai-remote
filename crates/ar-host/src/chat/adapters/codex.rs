@@ -40,8 +40,8 @@ use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
     Image,
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
-        preview_value,
+        DIFF_SIDE, DIFF_TOTAL, Ev, Out, PREVIEW, PlanEntry, SlashCommand, TURN_DIFF, ToolContent, ToolKind, ToolStatus,
+        TurnStatus, cut, preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
@@ -103,6 +103,8 @@ struct State {
     commands: HashSet<String>,
     /// Where each agent message belongs (`commentary` or `final_answer`), as its item started.
     phases: HashMap<String, String>,
+    /// The running turn's whole diff as Codex last reported it (`turn/diff/updated`); sent as the turn ends.
+    turn_diff: Option<String>,
 }
 
 /// The input items of a message: its text, every skill it names as `$name`, and its images (as
@@ -532,6 +534,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                 }));
             }
         }
+        "turn/diff/updated" => st.turn_diff = p["diff"].as_str().map(str::to_string),
         "thread/compacted" => outs.push(Out::Ev(Ev::Notice {
             input_id: None,
             level: "info",
@@ -576,6 +579,10 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
             st.output.clear();
             st.diffed.clear();
             st.phases.clear();
+            if let Some(diff) = st.turn_diff.take().filter(|d| !d.trim().is_empty()) {
+                let (diff, truncated) = cut(&diff, TURN_DIFF);
+                outs.push(Out::Ev(Ev::TurnDiff { diff, truncated }));
+            }
             let status = match turn["status"].as_str().unwrap_or("") {
                 "completed" => TurnStatus::Completed,
                 "interrupted" => TurnStatus::Interrupted,
@@ -653,10 +660,7 @@ fn item_started(item: &Value) -> Option<Ev> {
             vec![],
             Some(preview_value(&item["arguments"])),
         ),
-        "webSearch" => {
-            let query = item["query"].as_str().unwrap_or("");
-            (ToolKind::Fetch, format!("search {query}"), vec![], Some(json!({"query": cut(query, 400).0})))
-        }
+        "webSearch" => (ToolKind::Fetch, format!("search {}", item["query"].as_str().unwrap_or("")), vec![], None),
         "imageView" => (ToolKind::Read, format!("view {}", item["path"].as_str().unwrap_or("image")), vec![], None),
         "imageGeneration" => (ToolKind::Other, "generate an image".to_string(), vec![], None),
         "collabAgentToolCall" => (
@@ -691,14 +695,20 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
         "agentMessage" => {
             let text = item["text"].as_str().unwrap_or("").to_string();
             let phase = item["phase"].as_str().map(str::to_string);
-            // A message that streamed without saying where it belongs is sent once more, whole, with
-            // the phase it ended with.
-            let late_phase = st.streamed.contains(&id) && phase.is_some() && !st.phases.contains_key(&id);
-            if (!st.streamed.contains(&id) || late_phase) && !text.is_empty() {
+            if !st.streamed.contains(&id) && !text.is_empty() {
                 outs.push(Out::Ev(Ev::Message {
                     id: id.clone(),
                     text: text.clone(),
                     delta: false,
+                    phase: phase.clone(),
+                }));
+            } else if st.streamed.contains(&id) && phase.is_some() && !st.phases.contains_key(&id) {
+                // It streamed without saying where it belongs: an empty piece carries the phase it ended
+                // with (a viewer that does not know phases appends nothing, and nothing is shown twice).
+                outs.push(Out::Ev(Ev::Message {
+                    id: id.clone(),
+                    text: String::new(),
+                    delta: true,
                     phase: phase.clone(),
                 }));
             }
@@ -816,7 +826,11 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
 /// diffs with the right counts of added and removed lines.
 fn diffs(changes: &Value) -> Vec<ToolContent> {
     let mut out = Vec::new();
+    let mut total = 0;
     for c in changes.as_array().into_iter().flatten() {
+        if total >= DIFF_TOTAL {
+            break;
+        }
         let path = c["path"].as_str().unwrap_or("").to_string();
         let kind = c["kind"]["type"].as_str().unwrap_or("update");
         let diff = c["diff"].as_str().unwrap_or("");
@@ -828,14 +842,17 @@ fn diffs(changes: &Value) -> Vec<ToolContent> {
                 "delete" => (Some(diff.to_string()), String::new()),
                 _ => continue,
             };
-            out.push(ToolContent::Diff { path, old: old.map(|o| cut(&o, DIFF_SIDE).0), new: cut(&new, DIFF_SIDE).0 });
+            let (old, new) = (old.map(|o| cut(&o, DIFF_SIDE).0), cut(&new, DIFF_SIDE).0);
+            total += old.as_ref().map_or(0, String::len) + new.len();
+            out.push(ToolContent::Diff { path, old, new });
         } else {
             for (old, new) in hunks {
-                out.push(ToolContent::Diff {
-                    path: path.clone(),
-                    old: (kind != "add").then(|| cut(&old, DIFF_SIDE).0),
-                    new: cut(&new, DIFF_SIDE).0,
-                });
+                let (old, new) = ((kind != "add").then(|| cut(&old, DIFF_SIDE).0), cut(&new, DIFF_SIDE).0);
+                total += old.as_ref().map_or(0, String::len) + new.len();
+                out.push(ToolContent::Diff { path: path.clone(), old, new });
+                if total >= DIFF_TOTAL {
+                    break;
+                }
             }
         }
         if out.len() >= 40 {
@@ -857,17 +874,27 @@ fn provider_message(m: &str) -> String {
 /// (`add`, `delete`, `update`), where it moved, and its unified diff (an added file's diff is its
 /// content).
 fn files(changes: &Value) -> Vec<Value> {
+    // Every path is listed; the diffs share one budget (they also come, per hunk, as the call's content).
+    let mut budget = FILES_DIFF;
     changes
         .as_array()
         .into_iter()
         .flatten()
-        .take(40)
+        .take(MAX_FILES)
         .map(|c| {
+            let raw = c["diff"].as_str().unwrap_or("");
+            // Past the budget a file keeps its path only (the controller falls back to the content).
+            let (diff, cut_short) =
+                if budget == 0 { (String::new(), !raw.is_empty()) } else { cut(raw, DIFF_SIDE.min(budget)) };
+            budget = budget.saturating_sub(diff.len());
             let mut f = json!({
                 "path": c["path"].as_str().unwrap_or(""),
                 "kind": c["kind"]["type"].as_str().unwrap_or("update"),
-                "diff": cut(c["diff"].as_str().unwrap_or(""), DIFF_SIDE).0,
+                "diff": diff,
             });
+            if cut_short {
+                f["truncated"] = Value::Bool(true);
+            }
             if let Some(to) = c["kind"]["move_path"].as_str() {
                 f["move_path"] = Value::String(to.to_string());
             }
@@ -875,6 +902,10 @@ fn files(changes: &Value) -> Vec<Value> {
         })
         .collect()
 }
+
+/// Most files of one change listed in its input, and how much of their diffs it carries in all.
+const MAX_FILES: usize = 1000;
+const FILES_DIFF: usize = 512 * 1024;
 
 /// A command as the user would type it: Codex runs each one through a shell (`/bin/zsh -lc 'ls -la'`,
 /// `powershell.exe -Command ...`); the wrapper is left out.
@@ -1133,9 +1164,9 @@ mod tests {
         assert!(
             matches!(&outs[2], Out::Ev(Ev::ToolUpdate { status: Some(ToolStatus::Failed), content, exit_code: Some(2), .. }) if matches!(&content[0], ToolContent::Text { text } if text.contains("exit code 2")))
         );
-        // The message streamed before it said where it belongs: sent once more, whole, with its phase.
+        // The message streamed before it said where it belongs: an empty piece carries its phase.
         assert!(
-            matches!(&outs[3], Out::Ev(Ev::Message { text, delta: false, phase: Some(p), .. }) if text == "ONE" && p == "final_answer")
+            matches!(&outs[3], Out::Ev(Ev::Message { text, delta: true, phase: Some(p), .. }) if text.is_empty() && p == "final_answer")
         );
         assert!(
             matches!(&outs[4], Out::TurnEnd { status: TurnStatus::Completed, final_text: Some(t), .. } if t == "ONE")
@@ -1193,7 +1224,8 @@ mod tests {
         assert_eq!(files[1]["kind"], "add");
         assert_eq!(files[2]["move_path"], "/w/d.txt");
         assert_eq!(content.len(), 2, "the moved file has no diff to show");
-        assert!(matches!(&outs[4], Out::Ev(Ev::ToolCall { input: Some(i), .. }) if i["query"] == "rust 1.95"));
+        // A web search's query is its title (an input would show as JSON in older controllers).
+        assert!(matches!(&outs[4], Out::Ev(Ev::ToolCall { title, input: None, .. }) if title == "search rust 1.95"));
     }
 
     #[test]
@@ -1206,6 +1238,54 @@ mod tests {
             matches!(&o[0], Out::TurnEnd { status: TurnStatus::Failed, reason: Some(r), .. } if r == "The 'x' model is not supported"),
             "{o:?}"
         );
+    }
+
+    #[test]
+    fn the_turns_whole_diff_comes_before_its_end_and_big_changes_stay_within_budget() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let turn_diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-x\n+y\n";
+        for l in [
+            json!({"method": "turn/diff/updated", "params": {"threadId": "th", "turnId": "t", "diff": "stale"}}),
+            json!({"method": "turn/diff/updated", "params": {"threadId": "th", "turnId": "t", "diff": turn_diff}}),
+        ] {
+            assert!(handle(&mut st, &l.to_string(), &opts(None)).1.is_empty(), "nothing is sent until the turn ends");
+        }
+        let (_, o) = handle(
+            &mut st,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"t","status":"completed"}}}"#,
+            &opts(None),
+        );
+        assert!(matches!(&o[0], Out::Ev(Ev::TurnDiff { diff, truncated: false }) if diff == turn_diff), "{o:?}");
+        assert!(matches!(&o[1], Out::TurnEnd { .. }));
+        // The next turn starts without it.
+        let (_, o) = handle(
+            &mut st,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"u","status":"completed"}}}"#,
+            &opts(None),
+        );
+        assert!(matches!(&o[0], Out::TurnEnd { .. }));
+
+        // 60 files of 64 KiB: every path is listed, the diffs keep to their budgets.
+        let big = "x\n".repeat(32 * 1024);
+        let changes: Vec<Value> =
+            (0..60).map(|i| json!({"path": format!("/w/f{i}"), "kind": {"type": "add"}, "diff": big})).collect();
+        let item = json!({"method": "item/started", "params": {"threadId": "th", "item": {"type": "fileChange", "id": "f", "status": "inProgress", "changes": changes}}});
+        let (_, o) = handle(&mut st, &item.to_string(), &opts(None));
+        let Out::Ev(ev @ Ev::ToolCall { input: Some(input), content, .. }) = &o[0] else { panic!("{o:?}") };
+        let files = input["files"].as_array().unwrap();
+        assert_eq!(files.len(), 60);
+        let listed: usize = files.iter().map(|f| f["diff"].as_str().unwrap().len()).sum();
+        assert!(listed <= FILES_DIFF + 3, "{listed}");
+        assert_eq!(files[59]["truncated"], true);
+        let carried: usize = content
+            .iter()
+            .map(|c| match c {
+                ToolContent::Diff { new, .. } => new.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(carried <= DIFF_TOTAL + DIFF_SIDE, "{carried}");
+        assert!(serde_json::to_string(ev).unwrap().len() < 4 * 1024 * 1024 - 64 * 1024);
     }
 
     #[test]

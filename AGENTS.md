@@ -31,12 +31,16 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
 文案对照它的英文原文。**只借结构和视觉，不抄代码**（它是专有软件，我们是 AGPL）；拆出来的东西只在 `/tmp`，没进仓库。
 
 **做了什么**：
-- 被控端 Codex 适配器（`adapters/codex.rs`）把 Codex 关于条目的信息带出来，全是可选字段，老控制端忽略、老被控端不发：
+- 被控端 Codex 适配器（`adapters/codex.rs`）把 Codex 关于条目的信息带出来，全是可选字段，老被控端不发：
   命令的 `tool_call.input = {command, cwd, actions}`（去掉 `/bin/zsh -lc '…'` / `powershell.exe -Command …` 外壳的命令、
   Codex 自己对命令的解读：read / listFiles / search / unknown），标题改成 `Shell <命令>`（旧界面也不再显示 `-lc …`）；
-  改文件的 `input.files`（逐文件 path、kind、move_path、统一 diff，新建文件的 diff 就是内容，每个 64 KiB 截断）；网页搜索的
-  `input.query`；`tool_update.exit_code` / `duration_ms`；`message.phase`（commentary / final_answer；流式开始时没说阶段、结束时才说的，
-  结束时整条再发一次）。对话 hello 的 `runtime` 多了 `protocol`。另外修了：轮次自己的错误信息原来把服务商的 JSON 原样显示。
+  改文件的 `input.files`（逐文件 path、kind、move_path、统一 diff，新建文件的 diff 就是内容；整次调用共用 512 KiB、最多 1000 个
+  文件，超出的文件 `diff` 为空、`truncated: true`，桌面端退回用调用的 content）；`tool_update.exit_code` / `duration_ms`；
+  `message.phase`（commentary / final_answer；流式开始时没说阶段、结束时才说的，结束时补一条空的 delta 带上阶段，不重发正文）；
+  新事件 `turn_diff`（Codex 的 `turn/diff/updated`：整轮相对开始时的净改动，git 格式，512 KiB 截断，`turn_end` 之前发），
+  改动卡片优先用它（同一文件改两次只算净变化，建了又删的文件不出现）。网页搜索不再带 `input.query`（标题已经写了查询词，
+  老控制端会把 input 当 JSON 显示）。**老控制端**：`turn_diff` 和 `phase` 忽略；只有移动没改内容的编辑没有 content，老控制端
+  会把 `input.files` 当 JSON 显示一块。对话 hello 的 `runtime` 多了 `protocol`。另外修了：轮次自己的错误信息原来把服务商的 JSON 原样显示。
 - 桌面端：`lib/codex.ts`（纯函数：去外壳、命令解读的兜底解析、带行号的统一 diff、分组 / 最终回答 / 折叠规则、摘要句）、
   `ui/codex/CodexTurn.tsx`（入口 `ui/codex/CodexConversation.tsx` 导出 `CodexConversation`）、`styles/codex.css`（类名全加 `cdx-` / `x-` 前缀：`.live`、`.hd`、`.row` 这些是全局类，第一次截图
   就被 `v2.css` 的 `.live` 串了样式）。`AgentChat` 按 `runtime.protocol`（老被控端退回看 id / 名字）给 Codex 会话加 `.cdx` 并换

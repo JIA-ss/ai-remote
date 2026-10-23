@@ -312,7 +312,9 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
         onMouseUp={() => setTimeout(pickQuote, 0)}
         onKeyUp={(e) => e.shiftKey && pickQuote()}
         onScroll={(e) => {
-          if (quote) setQuote(null);
+          // The Quote button follows its selection (a scroll the page makes itself, e.g. to a find
+          // match, must not take it away).
+          if (quote) pickQuote();
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
           stick.current = atEnd;
@@ -335,6 +337,7 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
                 key={turn.n}
                 turn={turn}
                 session={session}
+                stopping={chat.state === "interrupting" && turn.status === "running"}
                 cwd={cwd}
                 now={turn.status === "running" ? now : 0}
                 readonly={readonly}

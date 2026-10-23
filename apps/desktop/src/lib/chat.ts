@@ -86,6 +86,8 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
       cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
+  /** Everything the turn changed as one unified diff (Codex), sent just before its end. */
+  | { t: "turn_diff"; diff: string; truncated?: boolean }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
   | { t: "commands"; commands: SlashCommand[] }
@@ -193,6 +195,8 @@ export interface ToolItem {
   /** A finished command's exit code and how long the tool ran, when the agent reports them (Codex). */
   exitCode?: number;
   durationMs?: number;
+  /** The agent never said it ended: the end of its turn closed it. */
+  endedByTurn?: boolean;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
@@ -231,6 +235,8 @@ export interface Turn {
   durationMs: number | null;
   reason: string | null;
   usage: Usage | null;
+  /** Everything the turn changed, when the agent reports it as one diff (Codex). */
+  diff?: { text: string; truncated: boolean };
 }
 
 export interface Chat {
@@ -388,6 +394,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       }
       break;
     }
+    case "turn_diff":
+      turn.diff = { text: e.diff, truncated: !!e.truncated };
+      break;
     case "turn_end":
       turn.status = e.status;
       turn.finalText = e.final_text ?? null;
@@ -397,7 +406,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       for (let i = 0; i < b.length; i++) {
         const x = b[i];
         if (x.kind === "tool" && (x.status === "in_progress" || x.status === "pending")) {
-          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, ...(e.status === "interrupted" ? { stopped: true } : {}) };
+          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, endedByTurn: true, ...(e.status === "interrupted" ? { stopped: true } : {}) };
         }
       }
       break;

@@ -15,6 +15,11 @@ use serde_json::Value;
 pub const PREVIEW: usize = 8 * 1024;
 /// Most text kept of either side of a diff.
 pub const DIFF_SIDE: usize = 64 * 1024;
+/// Most text kept of a turn's whole diff.
+pub const TURN_DIFF: usize = 512 * 1024;
+/// Most text all the diffs of one tool call may take together, so one event stays well under what a
+/// controller reads as one line (4 MiB).
+pub const DIFF_TOTAL: usize = 2 * 1024 * 1024;
 
 /// What a tool does, for the icon and the summary line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +235,13 @@ pub enum Ev {
     /// (an ACP agent that takes no images).
     Agent {
         images: bool,
+    },
+    /// Everything the turn changed, as one unified diff over all files, where the agent reports it
+    /// (Codex): repeated edits of a file show as their net result. Cut to [`TURN_DIFF`].
+    TurnDiff {
+        diff: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
     /// The commands and skills the agent offers now (all of them; the list replaces the last one).
     Commands {

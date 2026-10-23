@@ -15,6 +15,7 @@ import {
   elapsed,
   groupSummary,
   planStep,
+  filePatch,
   relPath,
   workedMs,
   type Act,
@@ -46,7 +47,9 @@ function Chevron({ open }: { open: boolean }) {
 
 /** Opens and closes its body with an animation (Codex's activity disclosure); what is open when it
  * first shows (a transcript being loaded) appears without one. */
-function Reveal({ open, children, className }: { open: boolean; children: ReactNode; className?: string }) {
+function Reveal({ open, children, className, quiet }: { open: boolean; children: ReactNode; className?: string;
+  /** Changes not made by the reader (the turn's answer arrived) happen at once, without an animation. */
+  quiet?: boolean }) {
   const [shown, setShown] = useState(open);
   const [moved, setMoved] = useState(false);
   const first = useRef(true);
@@ -55,14 +58,15 @@ function Reveal({ open, children, className }: { open: boolean; children: ReactN
       first.current = false;
       return;
     }
-    setMoved(true);
+    if (!quiet) setMoved(true);
     if (open) setShown(true);
+    else if (quiet) setShown(false);
     else {
       const timer = setTimeout(() => setShown(false), 160);
       return () => clearTimeout(timer);
     }
   }, [open]);
-  if (!open && !shown) return null;
+  if (!open && (!shown || quiet)) return null;
   return <div className={cx("cdx-reveal", open ? moved && "x-in" : "x-out", className)}>{children}</div>;
 }
 
@@ -179,12 +183,12 @@ function fileWords(f: FileChange, x: ToolItem, cwd: string | null): ReactNode {
   const failed = x.status === "failed" && !x.stopped;
   return (
     <>
-      <Verb k={failed ? "cdx_v_failed" : fileVerb(f, done)} />{" "}
+      <Verb k={failed ? "cdx_v_failed_edit" : fileVerb(f, done)} />{" "}
       <Detail>
         <span className="x-path" title={relPath(f.path, cwd)}>{baseName(f.path)}</span>
         {f.movePath && <> {t("cdx_d_to", { p: baseName(f.movePath) })}</>}
       </Detail>{" "}
-      <Stat add={f.add} del={f.del} />
+      {!failed && <Stat add={f.add} del={f.del} />}
     </>
   );
 }
@@ -274,9 +278,11 @@ const DIFF_LINES = 400;
 export function DiffView({ lines }: { lines: DiffLine[] }) {
   const [all, setAll] = useState(false);
   const shown = all ? lines : lines.slice(0, DIFF_LINES);
+  // One width for every line's numbers, so added and removed lines start where the others do.
+  const digits = useMemo(() => String(lines.reduce((m, l) => (l.kind === "hunk" ? m : Math.max(m, l.old ?? 0, l.new ?? 0)), 0)).length, [lines]);
   if (!lines.length) return <div className="cdx-diff x-empty">{t("cdx_too_large")}</div>;
   return (
-    <div className="cdx-diff" tabIndex={0}>
+    <div className="cdx-diff" tabIndex={0} style={{ "--x-nw": `${Math.max(digits, 2)}ch` } as React.CSSProperties}>
       {shown.map((l, i) =>
         l.kind === "hunk" ? (
           // A hunk's header: the code it is in (as git names it), or a gap between two hunks.
@@ -297,12 +303,6 @@ export function DiffView({ lines }: { lines: DiffLine[] }) {
       )}
     </div>
   );
-}
-
-function patchOf(f: FileChange, cwd: string | null): string {
-  const p = relPath(f.path, cwd);
-  const body = f.lines.map((l) => (l.kind === "hunk" ? l.text || "@@" : `${l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}${l.text}`));
-  return [`--- ${f.kind === "add" ? "/dev/null" : `a/${p}`}`, `+++ ${f.kind === "delete" ? "/dev/null" : `b/${f.movePath ? relPath(f.movePath, cwd) : p}`}`, ...body].join("\n");
 }
 
 function ToolDetails({ x }: { x: ToolItem }) {
@@ -353,10 +353,11 @@ function ActRow({ a, cwd }: { a: Act; cwd: string | null }): ReactNode {
 
 function FileButtons({ f, cwd, x }: { f: FileChange; cwd: string | null; x: ToolItem }) {
   if (x.status === "failed" || toolRunning(x)) return null;
+  const patch = filePatch(f, cwd);
   return (
     <span className="x-btns">
       {f.kind !== "delete" && <PreviewButton path={f.movePath ?? f.path} />}
-      {f.lines.length > 0 && <CopyButton text={patchOf(f, cwd)} label={t("cdx_copy_patch")} />}
+      {patch && <CopyButton text={patch} label={t("cdx_copy_patch")} />}
     </span>
   );
 }
@@ -383,7 +384,8 @@ function summarySentence(acts: Act[]): ReactNode {
 /** Tool calls in a row: one line naming what runs now, or what was done; opens to each call. */
 const GroupRow = memo(function GroupRow({ u, cwd }: { u: Extract<Unit, { kind: "group" }>; cwd: string | null }) {
   const acts = u.acts.filter((a) => a.kind !== "thought");
-  if (!u.live && acts.length === 1 && !(acts[0].kind === "patch" && acts[0].files.length > 1)) return <ActRow a={acts[0]} cwd={cwd} />;
+  // A single call is its own line, live or done (the line does not change component while it runs).
+  if (acts.length === 1 && !(acts[0].kind === "patch" && acts[0].files.length > 1)) return <ActRow a={acts[0]} cwd={cwd} />;
   // Live: the call running now; between calls, the reading the agent is in the middle of, or "Thinking".
   const active = u.live ? activeAct(u.acts) : null;
   const label = !u.live
@@ -478,6 +480,7 @@ const FILES_SHOWN = 6;
 
 function ChangesCard({ files, cwd }: { files: FileChange[]; cwd: string | null }) {
   const [more, setMore] = useState(false);
+  const patches = useMemo(() => files.map((f) => filePatch(f, cwd)).filter((p): p is string => p !== null), [files, cwd]);
   const add = files.reduce((n, f) => n + f.add, 0);
   const del = files.reduce((n, f) => n + f.del, 0);
   const shown = more ? files : files.slice(0, FILES_SHOWN);
@@ -488,7 +491,7 @@ function ChangesCard({ files, cwd }: { files: FileChange[]; cwd: string | null }
         <span className="x-ti">{plural("cdx_files_changed", files.length)}</span>
         <Stat add={add} del={del} />
         <span className="x-acts">
-          <CopyButton text={files.map((f) => patchOf(f, cwd)).join("\n")} label={t("cdx_copy_patch")} />
+          {patches.length > 0 && <CopyButton text={patches.join("")} label={t("cdx_copy_patch")} />}
         </span>
       </div>
       {shown.map((f) => <ChangedFile key={f.path} f={f} cwd={cwd} />)}
@@ -505,8 +508,9 @@ function ChangedFile({ f, cwd }: { f: FileChange; cwd: string | null }) {
   return (
     <div className={cx("x-file", open && "open")}>
       <div className="x-row">
-        <button type="button" className="x-ln" onClick={() => f.lines.length && setOpen((v) => !v)} aria-expanded={f.lines.length ? open : undefined}>
-          <Chevron open={open} />
+        <button type="button" className="x-ln" onClick={() => f.lines.length && setOpen((v) => !v)} aria-expanded={f.lines.length ? open : undefined}
+          disabled={!f.lines.length}>
+          {f.lines.length > 0 ? <Chevron open={open} /> : <span className="x-chev-gap" aria-hidden />}
           <span className="x-path" title={rel}>
             <span className="x-dir">{rel.slice(0, rel.length - baseName(rel).length)}</span>
             <span className="x-nm">{baseName(rel)}</span>
@@ -528,19 +532,21 @@ function ChangedFile({ f, cwd }: { f: FileChange; cwd: string | null }) {
 /** Folded turns, by session and turn, so a turn opened once stays open while the panel lives. */
 const opened = new Map<string, boolean>();
 
-export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, readonly, stopped, cwd, far, onAnswer, onContinue }: {
+export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, readonly, stopped, stopping = false, cwd, far, onAnswer, onContinue }: {
   turn: Turn;
   session: string;
   now: number;
   readonly: boolean;
   /** The last turn, stopped: it offers to continue. */
   stopped: boolean;
+  /** Stop was pressed and the turn has not ended yet. */
+  stopping?: boolean;
   cwd: string | null;
   far: boolean;
   onAnswer: (qid: string, text: string) => void;
   onContinue: () => void;
 }) {
-  const v = useMemo(() => codexTurn(turn), [turn]);
+  const v = useMemo(() => codexTurn(turn, cwd), [turn, cwd]);
   const key = `${session}:${turn.n}`;
   const [open, setOpen] = useState<boolean>(() => opened.get(key) ?? false);
   const folded = v.foldable && !open;
@@ -549,7 +555,10 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
   const answerText = v.answer?.block.text ?? "";
   const tokens = turn.usage?.output != null ? Math.round(((turn.usage.input ?? 0) + turn.usage.output) / 100) / 10 : null;
   const work = v.units;
+  // The work folds by itself once the answer starts (at once); the reader's own clicks animate it.
+  const byReader = useRef(false);
   const toggle = () => {
+    byReader.current = true;
     opened.set(key, !open);
     setOpen(!open);
   };
@@ -575,7 +584,7 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
         </div>
       ))}
       {work.length > 0 && (
-        <Reveal open={!folded} className="cdx-work">
+        <Reveal open={!folded} className="cdx-work" quiet={!byReader.current}>
           {work.map((u) => (
             <div key={u.key} className="cdx-unit" data-unit={u.kind}>
               <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
@@ -583,10 +592,10 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
           ))}
         </Reveal>
       )}
-      {v.thinking && <div className="cdx-thinking"><Shimmer on>{t("cdx_thinking")}</Shimmer></div>}
-      {v.status === "working" && !v.answer && (
+      {v.thinking && !stopping && <div className="cdx-thinking"><Shimmer on>{t("cdx_thinking")}</Shimmer></div>}
+      {v.status === "working" && (stopping || !v.answer) && (
         <div className="cdx-status tnum" aria-live="polite">
-          {v.asking ? t("cdx_waiting_answer") : ms >= 1000 ? t("cdx_working_for", { t: time }) : t("cdx_working")}
+          {stopping ? t("hc_st_stopping") : v.asking ? t("cdx_waiting_answer") : ms >= 1000 ? t("cdx_working_for", { t: time }) : t("cdx_working")}
         </div>
       )}
       {v.answer && <Markdown text={answerText} className={cx("cdx-md cdx-answer", v.answer.streaming && "streaming")} />}
