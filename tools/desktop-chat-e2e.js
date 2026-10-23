@@ -85,6 +85,67 @@
   }
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
 
+  const liveSlowLabel = () => $$(".cl-tool[data-state=busy] > .cl-tool-hd > .cl-line.shimmer", lastTurn())
+    .find((line) => /sleep\s+600/.test(line.textContent));
+  function ink(color) {
+    if (!color || color === "transparent") return false;
+    const alpha = color.match(/\/\s*([\d.]+)%?\s*\)$/) ?? color.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/);
+    return !alpha || Number(alpha[1]) > 0;
+  }
+  function toolPaint() {
+    const line = liveSlowLabel();
+    if (!line) return null;
+    const paint = (node) => {
+      const s = getComputedStyle(node), rect = node.getBoundingClientRect();
+      return {
+        text: node.textContent.trim(), color: s.color, fill: s.getPropertyValue("-webkit-text-fill-color"),
+        image: s.backgroundImage, clip: s.backgroundClip, webkitClip: s.getPropertyValue("-webkit-background-clip"),
+        background: s.backgroundColor, animation: s.animationName, duration: s.animationDuration,
+        playState: s.animationPlayState, width: rect.width, height: rect.height,
+      };
+    };
+    return {
+      systemReduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      appReduce: document.documentElement.getAttribute("data-reduce-motion"),
+      line: paint(line), parts: $$(".cl-lbl > .vb, .cl-lbl > .cl-obj", line).map(paint),
+    };
+  }
+  const fallbackPaint = (p) => !!p && p.parts.length >= 2 && p.line.animation === "none" && p.line.image === "none"
+    && ink(p.line.fill) && p.parts.every((x) => x.text && x.width > 0 && x.height > 0
+      && ink(x.color) && ink(x.fill) && x.fill === x.color && x.image === "none");
+  const normalPaint = (p) => !!p && p.parts.length >= 2 && (p.systemReduce || p.appReduce === "true" ? fallbackPaint(p)
+    : p.line.animation.split(", ").includes("cl-sweep") && parseFloat(p.line.duration) > 0 && p.line.playState === "running"
+      && /linear-gradient\(/.test(p.line.image) && (p.line.clip === "text" || p.line.webkitClip === "text")
+      && !ink(p.line.fill) && p.parts.every((x) => x.text && x.width > 0 && x.height > 0 && ink(x.color) && !ink(x.fill)));
+  async function checkLiveToolPaint() {
+    // SLOW stays active until the real steer/stop below. Read its actual CSS and system preference;
+    // do not forge tool state, pause its sweep, or change motion settings for the normal screenshot.
+    if (!(await until("live sleep 600 tool label", liveSlowLabel))) throw new Error("the slow tool label never became active");
+    const normal = toolPaint();
+    await say("e2e", `     (live tool normal paint ${JSON.stringify(normal)})`);
+    await check("the active Claude tool paints text for the actual system motion preference", normalPaint(normal),
+      JSON.stringify({ systemReduce: normal?.systemReduce, appReduce: normal?.appReduce, animation: normal?.line.animation, parts: normal?.parts.map((x) => ({ text: x.text, fill: x.fill })) }));
+    await shot("18-live-sweep");
+
+    const root = document.documentElement, previous = root.getAttribute("data-reduce-motion");
+    try {
+      root.setAttribute("data-reduce-motion", "true");
+      await until("app reduced-motion tool paint", () => fallbackPaint(toolPaint()), 3000);
+      const reduced = toolPaint();
+      await say("e2e", `     (live tool app reduced paint ${JSON.stringify(reduced)})`);
+      await check("app reduced motion keeps Claude tool text colored without gradient or transparent fill", fallbackPaint(reduced)
+        && reduced.parts.every((x, i) => x.text === normal.parts[i]?.text && x.background === normal.parts[i]?.background),
+      JSON.stringify({ systemReduce: reduced?.systemReduce, appReduce: reduced?.appReduce, animation: reduced?.line.animation, image: reduced?.line.image, parts: reduced?.parts.map((x) => ({ text: x.text, fill: x.fill })) }));
+    } finally {
+      if (previous === null) root.removeAttribute("data-reduce-motion");
+      else root.setAttribute("data-reduce-motion", previous);
+    }
+    await until("restored motion tool paint", () => normalPaint(toolPaint()), 3000);
+    const restored = toolPaint();
+    await check("the root motion attribute and live tool paint are restored", root.getAttribute("data-reduce-motion") === previous && normalPaint(restored),
+      JSON.stringify({ systemReduce: restored?.systemReduce, appReduce: restored?.appReduce, animation: restored?.line.animation }));
+  }
+
   // Diagnostics: say when the panel of the same session is replaced (a remount loses the composer's
   // state). Switching tabs or sessions replaces it on purpose and is not counted.
   let panel = null, panelKey = "";
@@ -302,6 +363,7 @@
     const before = turns().length;
     await send("SLOW job");
     await check("a slow turn runs, with stop", !!(await until("running", running)));
+    await checkLiveToolPaint();
     await sleep(2500);
     const tm = $(".cl-status .tm")?.textContent ?? "";
     await check("the status line's timer counts while hidden", /^\d+\s?(s|秒)$/.test(tm.trim()) && parseInt(tm, 10) >= 2, tm);
