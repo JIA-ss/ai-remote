@@ -180,13 +180,21 @@ export function isUnread(m: WsMeta, seen: number | undefined, explicit: boolean,
  * SB-24, with ai-remote's fields: archived → nothing; something waits for you → amber; a turn runs →
  * gray; the last turn failed → red; new since you looked → blue; else nothing.
  */
-export function dotOf(m: WsMeta, unread: boolean): Dot | null {
+export function dotOf(m: WsMeta, unread: boolean, acked = false): Dot | null {
   if (m.archived) return null;
   if (m.pending && m.state !== "ended") return "awaiting";
   if (isRunning(m)) return "running";
-  if (m.last_status === "failed") return "failed";
+  if (m.last_status === "failed" && !acked) return "failed";
   if (unread) return "unread";
   return null;
+}
+
+/**
+ * SB-26: "Mark as done" keeps the event number it was given at; a failure is put aside while nothing
+ * happened since (a later turn that fails shows again).
+ */
+export function isAcked(m: WsMeta, ackedSeq: number | undefined): boolean {
+  return ackedSeq !== undefined && ackedSeq >= lastSeq(m);
 }
 
 /** The dot that stands for several sessions (a folded group): the one first in `DOT_PRIORITY`. */
@@ -252,10 +260,10 @@ export interface WsGroup<T> {
  */
 export function groupSessions<T extends WsItem>(
   items: T[],
-  opts: { pinned: (x: T) => boolean; title: (x: T) => string; home?: (host: string) => string | null; sort?: SortMode },
+  opts: { pinned: (x: T) => boolean; title: (x: T) => string; home?: (host: string) => string | null; sort?: SortMode; reversed?: boolean },
 ): { pinned: T[]; groups: WsGroup<T>[] } {
   const sort = opts.sort ?? "recency";
-  const pinned = sortSessions(items.filter(opts.pinned), sort, opts.title);
+  const pinned = sortSessions(items.filter(opts.pinned), sort, opts.title, opts.reversed);
   const byKey = new Map<string, WsGroup<T>>();
   for (const x of items) {
     if (opts.pinned(x)) continue;
@@ -279,7 +287,7 @@ export function groupSessions<T extends WsItem>(
     const twin = (named.get(name.toLowerCase()) ?? 0) > 1 && above;
     const where = twin ? ` · ${tildeFolder(above as string, opts.home?.(g.host) ?? null)}` : "";
     g.label = `${name}${where}${g.local ? "" : ` · ${g.host}`}`;
-    g.items = sortSessions(g.items, sort, opts.title);
+    g.items = sortSessions(g.items, sort, opts.title, opts.reversed);
   }
   groups.sort((a, b) => compareNames(a.label, b.label) || Number(b.local) - Number(a.local) || compareNames(a.key, b.key));
   return { pinned, groups };
@@ -297,6 +305,115 @@ export function truncateGroup<T extends { key: string }>(items: T[], limit: numb
   const shown = items.filter((x, i) => i < limit || keep.has(x.key));
   const hidden = items.filter((x, i) => i >= limit && !keep.has(x.key));
   return { shown, hidden, hiddenNeedsYou: hidden.some(needsYou) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// How the list groups, sorts and filters (SB-09..SB-14, SB-46)
+
+/** SB-09: by folder on a computer (the default here), by day, by state, or not at all. */
+export type GroupBy = "project" | "date" | "state" | "none";
+/** SB-11: the sessions listed — those not archived (default), the archived ones, or both. */
+export type StatusFilter = "active" | "archived" | "all";
+
+export interface ListPrefs {
+  groupBy: GroupBy;
+  sort: SortMode;
+  /** SB-10 keeps "turned around" rather than a direction: names A→Z and the newest first are not. */
+  reversed: boolean;
+  status: StatusFilter;
+}
+
+export const DEFAULT_LIST: ListPrefs = { groupBy: "project", sort: "recency", reversed: false, status: "active" };
+
+const pick = <V extends string>(v: unknown, ok: readonly V[], fallback: V): V => (ok.includes(v as V) ? (v as V) : fallback);
+
+/** Saved settings as they can be used (anything unknown takes its default). */
+export function normalizeList(raw: unknown): ListPrefs {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    groupBy: pick(o.groupBy, ["project", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
+    sort: pick(o.sort, ["recency", "created", "alpha"] as const, DEFAULT_LIST.sort),
+    reversed: o.reversed === true,
+    status: pick(o.status, ["active", "archived", "all"] as const, DEFAULT_LIST.status),
+  };
+}
+
+export function isDefaultList(p: ListPrefs): boolean {
+  return p.groupBy === DEFAULT_LIST.groupBy && p.sort === DEFAULT_LIST.sort && p.reversed === DEFAULT_LIST.reversed && p.status === DEFAULT_LIST.status;
+}
+
+/** SB-11: the list is filtered while it shows anything but the sessions not archived. */
+export function isFiltered(p: ListPrefs): boolean {
+  return p.status !== "active";
+}
+
+/** Whether the list runs oldest first (A→Z for names): names go up unless turned around, times go down. */
+export function isAscending(p: ListPrefs): boolean {
+  return p.sort === "alpha" ? !p.reversed : p.reversed;
+}
+
+/** The settings with the order going up (`true`) or down, kept as SB-10's "turned around". */
+export function withAscending(p: ListPrefs, ascending: boolean): ListPrefs {
+  return { ...p, reversed: p.sort === "alpha" ? !ascending : ascending };
+}
+
+/** Whether a session belongs in the list under a status filter. */
+export function shownByStatus(m: WsMeta, status: StatusFilter): boolean {
+  return status === "all" || (status === "archived") === !!m.archived;
+}
+
+/** SB-19: rows shown before "Show N more" — five in a group, twenty when the list is not grouped. */
+export function rowsBeforeMore(groupBy: GroupBy): number {
+  return groupBy === "none" ? 20 : GROUP_ROWS;
+}
+
+/** SB-13's buckets: today, yesterday, the five days before (each its own), and older. */
+export type DayKind = "today" | "yesterday" | "day" | "older";
+export interface DayBucket<T> {
+  key: string;
+  kind: DayKind;
+  /** The bucket's day (local midnight, ms); for "older", the start of the first day not in a bucket. */
+  day: number;
+  items: T[];
+}
+
+/**
+ * Sessions by the day they were last active (or started, when sorting by start): today, yesterday,
+ * one bucket for each of the five days before, then older (SB-13). Empty buckets are left out; items
+ * keep their order inside a bucket. `oldestFirst` turns the buckets around (the order going up, not
+ * by name). Days are the local calendar's.
+ */
+export function dateBuckets<T extends { meta: WsMeta }>(items: T[], now: number, by: "last_activity" | "started_at", oldestFirst = false): DayBucket<T>[] {
+  const d = new Date(now);
+  const midnight = (back: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime();
+  const starts = Array.from({ length: 7 }, (_, i) => midnight(i));
+  const buckets: DayBucket<T>[] = starts.map((day, i) => ({ key: i === 0 ? "today" : i === 1 ? "yesterday" : `day${i}`, kind: i === 0 ? "today" : i === 1 ? "yesterday" : "day", day, items: [] }));
+  const older: DayBucket<T> = { key: "older", kind: "older", day: starts[6], items: [] };
+  for (const x of items) {
+    const at = x.meta[by];
+    const i = starts.findIndex((s) => at >= s);
+    (i < 0 ? older : buckets[i]).items.push(x);
+  }
+  const out = [...buckets, older].filter((b) => b.items.length);
+  return oldestFirst ? out.reverse() : out;
+}
+
+/** SB-14's buckets, in this order: needs you (failed too), working, to look at, done, idle. */
+export type StateBucket = "blocked" | "working" | "ready" | "done" | "idle";
+export const STATE_ORDER: readonly StateBucket[] = ["blocked", "working", "ready", "done", "idle"];
+
+/** Which state bucket a session is in, from its dot: archived and ended sessions are done. */
+export function stateBucket(m: WsMeta, dot: Dot | null): StateBucket {
+  if (dot === "awaiting" || dot === "failed") return "blocked";
+  if (dot === "running") return "working";
+  if (dot === "unread") return "ready";
+  if (m.archived || m.state === "ended") return "done";
+  return "idle";
+}
+
+/** Sessions by state bucket, in SB-14's order, without empty buckets; items keep their order. */
+export function stateBuckets<T>(items: T[], bucketOf: (x: T) => StateBucket): Array<{ key: StateBucket; items: T[] }> {
+  return STATE_ORDER.map((key) => ({ key, items: items.filter((x) => bucketOf(x) === key) })).filter((b) => b.items.length);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -461,6 +578,10 @@ export interface WsSnapshot {
   unread: string[];
   /** Pins kept here, for hosts without `chat_update`. */
   pins: string[];
+  /** "Marked as done" (SB-26): the event number each session was put aside at. */
+  acked: Record<string, number>;
+  /** Archived sessions are asked for and kept (the list shows them). */
+  withArchived: boolean;
   /** The first message this device sent to a session, for hosts that do not keep it. */
   first: Record<string, string>;
   /** The session open in the workspace now. */
@@ -491,6 +612,7 @@ const KEYS = {
   pins: "ai-remote.ws.pins",
   first: "ai-remote.ws.first",
   base: "ai-remote.ws.baselined",
+  acked: "ai-remote.ws.acked",
   cache: "ai-remote.ws.cache",
 } as const;
 
@@ -532,6 +654,8 @@ export class WorkspaceStore {
       seen: this.read(KEYS.seen, {}),
       unread: this.read(KEYS.unread, []),
       pins: this.read(KEYS.pins, []),
+      acked: this.read(KEYS.acked, {}),
+      withArchived: false,
       first: this.read(KEYS.first, {}),
       current: null,
       rev: 0,
@@ -571,6 +695,7 @@ export class WorkspaceStore {
     if (next.unread) this.write(KEYS.unread, this.snap.unread);
     if (next.pins) this.write(KEYS.pins, this.snap.pins);
     if (next.first) this.write(KEYS.first, this.snap.first);
+    if (next.acked) this.write(KEYS.acked, this.snap.acked);
     this.listeners.forEach((l) => l());
   }
 
@@ -642,9 +767,11 @@ export class WorkspaceStore {
   private async fetch(host: string) {
     if (!this.snap.hosts[host] || this.snap.hosts[host].status === "cached") this.setHost(host, (h) => ({ ...h, status: h.sessions.length ? h.status : "loading" }));
     try {
-      const v = (await this.deps.call(host, "chat_sessions", {})) as { sessions?: unknown[] };
+      const withArchived = this.snap.withArchived;
+      const v = (await this.deps.call(host, "chat_sessions", withArchived ? { archived: true } : {})) as { sessions?: unknown[] };
       const raw = Array.isArray(v?.sessions) ? v.sessions : [];
-      const sessions = raw.map(normalizeMeta).filter((m): m is WsMeta => !!m && !m.archived);
+      // An answer to a question asked before the list changed its filter keeps what that filter wants.
+      const sessions = raw.map(normalizeMeta).filter((m): m is WsMeta => !!m && (this.snap.withArchived || !m.archived));
       const learned = updatesFrom(raw);
       this.setHost(host, (h) => ({
         status: "ok",
@@ -691,7 +818,7 @@ export class WorkspaceStore {
       const c = this.snap.computers.find((x) => x.name === host);
       // Computers that are no longer paired are not shown.
       if (!c && this.snap.computers.length) continue;
-      for (const meta of h.sessions) out.push({ host, key: sessionKey(host, meta.id), meta, local: !!c?.local, online: c?.online ?? null });
+      for (const meta of h.sessions) if (this.keeps(meta)) out.push({ host, key: sessionKey(host, meta.id), meta, local: !!c?.local, online: c?.online ?? null });
     }
     return out.sort((a, b) => b.meta.last_activity - a.meta.last_activity);
   }
@@ -709,7 +836,46 @@ export class WorkspaceStore {
   }
 
   dot(x: WsItem): Dot | null {
-    return dotOf(x.meta, this.unread(x));
+    return dotOf(x.meta, this.unread(x), this.acked(x));
+  }
+
+  /** Put aside with "Mark as done" since its last event (SB-26). */
+  acked(x: WsItem): boolean {
+    return isAcked(x.meta, this.snap.acked[x.key]);
+  }
+
+  /**
+   * "Mark as done" (SB-26): a failure stops showing and the session counts as read. Returns what puts
+   * it back as it was (the undo of the toast).
+   */
+  markDone(key: string): () => void {
+    const x = this.items().find((i) => i.key === key);
+    if (!x) return () => {};
+    const was = { acked: this.snap.acked[key], unread: this.unread(x), explicit: this.snap.unread.includes(key), seen: this.snap.seen[key] };
+    this.set({ acked: keepLast({ ...this.snap.acked, [key]: lastSeq(x.meta) }, MAX_MARKS) });
+    this.markRead(key);
+    return () => {
+      const acked = { ...this.snap.acked };
+      if (was.acked === undefined) delete acked[key];
+      else acked[key] = was.acked;
+      const seen = { ...this.snap.seen };
+      if (was.seen === undefined) delete seen[key];
+      else seen[key] = was.seen;
+      this.set({ acked, seen, unread: was.explicit ? [...this.snap.unread.filter((k) => k !== key), key] : this.snap.unread });
+    };
+  }
+
+  /** Whether archived sessions are asked for and kept (the list's filter shows them); asks again when it changes. */
+  setArchived(on: boolean) {
+    if (on === this.snap.withArchived) return;
+    const hosts: Record<string, WsHostState> = {};
+    for (const [h, s] of Object.entries(this.snap.hosts)) hosts[h] = on ? s : { ...s, sessions: s.sessions.filter((m) => !m.archived) };
+    this.set({ withArchived: on, hosts });
+    if (on && this.polling) void this.refreshAll();
+  }
+
+  private keeps(m: WsMeta): boolean {
+    return this.snap.withArchived || !m.archived;
   }
 
   title(x: WsItem): string {
@@ -752,7 +918,7 @@ export class WorkspaceStore {
   patchSession(host: string, id: string, patch: Partial<WsMeta>) {
     const h = this.snap.hosts[host];
     if (!h || !h.sessions.some((m) => m.id === id)) return;
-    this.setHost(host, (s) => ({ ...s, sessions: s.sessions.map((m) => (m.id === id ? { ...m, ...patch } : m)).filter((m) => !m.archived) }));
+    this.setHost(host, (s) => ({ ...s, sessions: s.sessions.map((m) => (m.id === id ? { ...m, ...patch } : m)).filter((m) => this.keeps(m)) }));
   }
 
   /**
@@ -799,7 +965,7 @@ export class WorkspaceStore {
           : fresh
             ? [fresh, ...s.sessions]
             : s.sessions
-        ).filter((m) => !m.archived),
+        ).filter((m) => this.keeps(m)),
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

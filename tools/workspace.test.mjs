@@ -391,3 +391,124 @@ test("leaving a session counts what it said meanwhile as seen", async () => {
   store.setCurrent(null);
   assert.equal(store.unread(store.find("new", "n1")), false);
 });
+
+// ---- The list's grouping, sorting and status filter (SB-09..SB-14), "Mark as done" (SB-26) ----
+
+test("list settings: unknown values take the defaults; ascending is kept as 'turned around'", () => {
+  assert.deepEqual(plain(ws.normalizeList({ groupBy: "folder", sort: "alpha", reversed: "yes", status: "archived" })), {
+    groupBy: "project",
+    sort: "alpha",
+    reversed: false,
+    status: "archived",
+  });
+  assert.equal(ws.isDefaultList(ws.normalizeList(null)), true);
+  assert.equal(ws.isFiltered({ ...ws.DEFAULT_LIST, status: "all" }), true);
+  assert.equal(ws.isFiltered({ ...ws.DEFAULT_LIST, groupBy: "date" }), false);
+  // Names go A→Z unless turned around; times go newest first unless turned around.
+  assert.equal(ws.isAscending({ ...ws.DEFAULT_LIST, sort: "alpha" }), true);
+  assert.equal(ws.isAscending(ws.DEFAULT_LIST), false);
+  assert.equal(ws.withAscending({ ...ws.DEFAULT_LIST, sort: "alpha" }, false).reversed, true);
+  assert.equal(ws.withAscending(ws.DEFAULT_LIST, true).reversed, true);
+  assert.equal(ws.rowsBeforeMore("none"), 20);
+  assert.equal(ws.rowsBeforeMore("date"), 5);
+});
+
+test("the status filter lists sessions not archived, archived ones, or both", () => {
+  const live = meta();
+  const gone = meta({ archived: true });
+  assert.deepEqual([live, gone].map((m) => ws.shownByStatus(m, "active")), [true, false]);
+  assert.deepEqual([live, gone].map((m) => ws.shownByStatus(m, "archived")), [false, true]);
+  assert.deepEqual([live, gone].map((m) => ws.shownByStatus(m, "all")), [true, true]);
+});
+
+test("by day: today, yesterday, one bucket per day for five days, then older; empty ones left out", () => {
+  const now = new Date(2026, 9, 23, 15, 0).getTime();
+  const at = (y, m, d, h = 12) => new Date(y, m, d, h).getTime();
+  const xs = [
+    meta({ id: "a", last_activity: at(2026, 9, 23, 1) }),
+    meta({ id: "b", last_activity: at(2026, 9, 22, 23) }),
+    meta({ id: "c", last_activity: at(2026, 9, 21) }),
+    meta({ id: "d", last_activity: at(2026, 9, 17, 0) }),
+    meta({ id: "e", last_activity: at(2026, 9, 16, 23) }),
+    meta({ id: "f", last_activity: at(2025, 0, 1), started_at: at(2026, 9, 23, 2) }),
+  ].map((m) => ({ meta: m }));
+  const b = ws.dateBuckets(xs, now, "last_activity");
+  assert.deepEqual(plain(b.map((x) => [x.key, x.items.map((i) => i.meta.id)])), [
+    ["today", ["a"]],
+    ["yesterday", ["b"]],
+    ["day2", ["c"]],
+    ["day6", ["d"]],
+    ["older", ["e", "f"]],
+  ]);
+  assert.equal(b[2].day, at(2026, 9, 21, 0));
+  // Sorting by start buckets by start; going up turns the buckets around.
+  const byStart = ws.dateBuckets(xs, now, "started_at", true);
+  assert.equal(byStart.at(-1).key, "today");
+  assert.deepEqual(plain(byStart.at(-1).items.map((i) => i.meta.id)), ["f"]);
+});
+
+test("by state: needs you (and failed), working, to look at, done, idle — in that order", () => {
+  const cases = [
+    [meta({ pending: "permission" }), "awaiting", "blocked"],
+    [meta({ last_status: "failed" }), "failed", "blocked"],
+    [meta({ state: "running" }), "running", "working"],
+    [meta({}), "unread", "ready"],
+    [meta({ state: "ended" }), null, "done"],
+    [meta({ archived: true }), null, "done"],
+    [meta({}), null, "idle"],
+  ];
+  for (const [m, dot, want] of cases) assert.equal(ws.stateBucket(m, dot), want);
+  const items = cases.map(([m, dot]) => ({ m, b: ws.stateBucket(m, dot) })).reverse();
+  assert.deepEqual(plain(ws.stateBuckets(items, (x) => x.b).map((g) => [g.key, g.items.length])), [
+    ["blocked", 2],
+    ["working", 1],
+    ["ready", 1],
+    ["done", 2],
+    ["idle", 1],
+  ]);
+});
+
+test("'Mark as done' puts a failure aside until something new happens, and can be undone", async () => {
+  let seq = 7;
+  const { store, storage } = storeWith(
+    { "new chat_sessions": () => ({ sessions: [meta({ id: "n1", last_status: "failed", last_seq: seq })] }) },
+    { computers: [{ name: "new", online: true, local: false }] },
+  );
+  await store.refreshAll();
+  const x = () => store.find("new", "n1");
+  assert.equal(store.dot(x()), "failed");
+  const undo = store.markDone("new/n1");
+  assert.equal(store.dot(x()), null);
+  assert.equal(JSON.parse(storage.store.get("ai-remote.ws.acked"))["new/n1"], 7);
+  undo();
+  assert.equal(store.dot(x()), "failed");
+  store.markDone("new/n1");
+  // A later turn that fails again shows again.
+  seq = 9;
+  await store.refreshAll();
+  assert.equal(store.dot(x()), "failed");
+  assert.equal(ws.isAcked(x().meta, 7), false);
+});
+
+test("archived sessions are asked for and kept only while the list shows them", async () => {
+  const { store, calls } = storeWith(
+    {
+      "new chat_sessions": (args) => ({ sessions: [meta({ id: "n1" }), ...(args.archived ? [meta({ id: "n2", archived: true })] : [])] }),
+      "new chat_update": (args) => ({ ...meta({ id: args.session }), archived: !!args.archived }),
+    },
+    { computers: [{ name: "new", online: true, local: false }] },
+  );
+  await store.refreshAll();
+  assert.deepEqual(plain(store.items().map((x) => x.meta.id)), ["n1"]);
+  store.setArchived(true);
+  await store.refreshAll();
+  assert.deepEqual(plain(calls.at(-1)), ["new", "chat_sessions", { archived: true }]);
+  assert.deepEqual(plain(store.items().map((x) => x.meta.id).sort()), ["n1", "n2"]);
+  // Archiving keeps the session listed (as archived); unarchiving brings it back.
+  await store.update("new", "n1", { archived: true });
+  assert.equal(store.find("new", "n1").meta.archived, true);
+  await store.update("new", "n2", { archived: false });
+  assert.equal(store.find("new", "n2").meta.archived, false);
+  store.setArchived(false);
+  assert.deepEqual(plain(store.items().map((x) => x.meta.id)), ["n2"]);
+});
