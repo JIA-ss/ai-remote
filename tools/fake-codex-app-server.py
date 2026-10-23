@@ -223,6 +223,9 @@ def explore(n):
     cwd = state["cwd"]
     if not reasoning(k("r"), "**Locating the date math**\n\nThe error says the day is out of range, so the quarter end is probably built with a fixed day.\n\n**Reading the export code**"):
         return end("interrupted")
+    # A model takes a moment between its reasoning and what it says next.
+    if not pause(0.8):
+        return end("interrupted")
     if not message(k("m"), "I'll find where the quarter end is computed, then reproduce the crash.", "commentary"):
         return end("interrupted")
     plan(("Reproduce the Q3 crash", "inProgress"), ("Use each month's real last day", "pending"), ("Add a test per quarter", "pending"))

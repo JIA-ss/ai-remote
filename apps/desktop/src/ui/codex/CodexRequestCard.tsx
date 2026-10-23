@@ -60,6 +60,7 @@ export function CodexRequestCard({ req, id, readonly, onSubmit, onDismiss }: {
   const card = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement & HTMLInputElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const moved = useRef(false);
   const n = req.questions.length;
   const q = req.questions[Math.min(d.i, n - 1)];
   const pick = d.picks[q.qid] ?? null;
@@ -90,11 +91,13 @@ export function CodexRequestCard({ req, id, readonly, onSubmit, onDismiss }: {
   };
   /** On to the next question, or (on the last) the answers go. */
   const advance = (x: Draft) => {
+    moved.current = true;
     setOtherOn(false);
     if (x.i < n - 1) setD({ ...x, i: x.i + 1 });
     else submit(x);
   };
   const go = (i: number) => {
+    moved.current = true;
     setOtherOn(false);
     setD((x) => ({ ...x, i: Math.max(0, Math.min(n - 1, i)) }));
   };
@@ -236,7 +239,8 @@ export function CodexRequestCard({ req, id, readonly, onSubmit, onDismiss }: {
           <button type="button" className="x-ib x-close" aria-label={t("cdx_q_close")} title={t("cdx_q_close")} onClick={dismiss}><X size={14} /></button>
         )}
       </div>
-      <div className="x-body" key={q.qid}>
+      {/* A new question fades in; the first one is simply there. */}
+      <div className={cx("x-body", moved.current && "x-in")} key={q.qid}>
         {q.options.length > 0 ? (
           <div className="x-opts" role="radiogroup" aria-label={q.prompt}>
             {q.options.map((o, k) => {
