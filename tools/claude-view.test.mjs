@@ -3,7 +3,10 @@
 // answer an approval card, a question's pages and answers, numbers, diffs and the task list window.
 // The real modules are transpiled; event shapes follow docs/agent-workspace.zh-CN.md §1.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "../apps/desktop/node_modules/typescript/lib/typescript.js";
@@ -27,10 +30,10 @@ function load() {
     vm.runInNewContext(compile(name), { exports, require, JSON, Set, Map, Math, Number, String, Array, Object, RegExp, URL }, { filename: `${name}.ts` });
     return exports;
   };
-  return { chat: run("chat"), cl: run("claude"), input: run("chat-input") };
+  return { chat: run("chat"), cl: run("claude"), input: run("chat-input"), output: run("claude-output") };
 }
 
-const { chat, cl, input } = load();
+const { chat, cl, input, output } = load();
 function workspaceParts(Node, document) {
   const source = readFileSync(new URL("../apps/desktop/src/ui/workspace/parts.tsx", import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: {
@@ -759,4 +762,181 @@ test("the Claude conversation shows loading before hello and until replay catche
   assert.equal(caughtUp.loading, false);
   assert.ok(!nodes(caughtUp.tree).some((n) => n.props?.className === "cl-loading"));
   assert.ok(nodes(caughtUp.tree).some((n) => n.props?.className === "cl-empty"), "a caught-up conversation without turns really is empty");
+});
+
+// ---- Output and the controls that use inline Markdown ----------------------------------------
+
+test("Claude ANSI: standard and bright colors, attributes and their closing codes", () => {
+  const runs = output.ansiOutput("\x1b[31;44;1;2;3;4;9mA\x1b[22;23;24;29;39;49mB\x1b[91;104mC");
+  assert.deepEqual(plain(runs), [
+    { text: "A", fg: "#c82829", bg: "#4271ae", bold: true, dim: true, italic: true, underline: true, strike: true },
+    { text: "B" }, { text: "C", fg: "#f5871f", bg: "#6ca4e0" },
+  ]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[38;5;15mwhite\x1b[48;5;196mred\x1b[38;5;232mgray\x1b[0mplain")), [
+    { text: "white", fg: "#ffffff" }, { text: "red", fg: "#ffffff", bg: "rgb(255 0 0)" },
+    { text: "gray", fg: "rgb(8 8 8)", bg: "rgb(255 0 0)" }, { text: "plain" },
+  ]);
+});
+
+test("Claude ANSI: inverse defaults, true color, partial and non-SGR escapes are safe text", () => {
+  assert.deepEqual(plain(output.ansiOutput("\x1b[7mA\x1b[31mB\x1b[27mC\x1b[0mD")), [
+    { text: "A", fg: "Canvas", bg: "CanvasText" }, { text: "B", fg: "Canvas", bg: "#c82829" },
+    { text: "C", fg: "#c82829" }, { text: "D" },
+  ]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[38;2;1;2;300;48;2;4;5;6mX")), [{ text: "X", fg: "rgb(1 2 255)", bg: "rgb(4 5 6)" }]);
+  assert.equal(output.ansiOutput("\x1b]8;;https://example.com\x07link\x1b]8;;\x1b\\\x1b[2K<script>\x1b[31").map((r) => r.text).join(""), "link<script>");
+});
+
+test("terminal output rewrites CR and backspace without losing the surviving characters' styles", () => {
+  assert.deepEqual(plain(output.ansiOutput("\x1b[31mold\rnew")), [{ text: "new", fg: "#c82829" }]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[31mab\bX")), [{ text: "aX", fg: "#c82829" }]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[31mabc\r\x1b[32mX")), [{ text: "X", fg: "#718c00" }, { text: "bc", fg: "#c82829" }]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[31mab\b\x1b[0mX")), [{ text: "a", fg: "#c82829" }, { text: "X" }]);
+  assert.deepEqual(plain(output.ansiOutput("\x1b[31mone\r\ntwo")), [{ text: "one\ntwo", fg: "#c82829" }]);
+  assert.equal(output.outputRuns("old\rnew", "printf progress").map((r) => r.text).join(""), "new", "plain progress output uses the same cursor rules");
+});
+
+test("incomplete terminal titles never flash their payload, including a split string terminator", () => {
+  for (const text of ["before\x1b]0;title", "before\x1b]0;title\x1b", "before\x1b]0;title\x1b\\"]) {
+    assert.equal(output.ansiOutput(text).map((r) => r.text).join(""), "before");
+  }
+  assert.equal(output.ansiOutput("before\x1b\nafter").map((r) => r.text).join(""), "before\nafter", "an invalid escape does not leak ESC or swallow the newline");
+});
+
+test("Bash diff coloring respects hunk boundaries and declared old/new line counts", () => {
+  const text = "+outside\n@@ -2,2 +2,2 @@\n same\n-old\n+new\n+overflow\n";
+  const runs = output.outputRuns(text, "git diff");
+  assert.equal(runs.map((r) => r.text).join(""), text);
+  assert.deepEqual(plain(runs.filter((r) => r.change)), [
+    { text: "-old\n", change: "del", line: true }, { text: "+new\n", change: "add", line: true },
+  ]);
+  assert.deepEqual(plain(output.outputRuns("@@ -0,0 +1 @@\n+new\n", "git diff").filter((r) => r.change)), [{ text: "+new\n", change: "add", line: true }]);
+});
+
+test("Bash word diffs, missing commands and precedence do not invent changes", () => {
+  const word = "a [-old-]{+new+}\n";
+  assert.deepEqual(plain(output.outputRuns(word, "git diff --word-diff=plain").filter((r) => r.change)), [
+    { text: "[-old-]", change: "del" }, { text: "{+new+}", change: "add" },
+  ]);
+  assert.equal(output.outputRuns(word, "echo example").some((r) => r.change), false);
+  assert.equal(output.outputRuns(word).filter((r) => r.change).length, 2, "unknown command tries the word form when no valid hunks exist");
+  const patch = "@@ -1 +1 @@\n-old\n+new\n";
+  assert.equal(output.outputRuns(patch).filter((r) => r.change).length, 2);
+  assert.equal(output.outputRuns(patch + "--- a/second\n+++ b/second\n" + patch).filter((r) => r.change).length, 4, "file headers do not invalidate complete hunks");
+  assert.equal(output.outputRuns(patch, "git diff", true).some((r) => r.change), false, "errors stay plain");
+  assert.equal(output.outputRuns("\x1b[32m" + patch, "git diff").some((r) => r.change), false, "ANSI wins over a valid patch");
+  assert.equal(output.outputRuns("@@ -1,2 +1,2 @@\n-old\n+new [-x-]{+y+}\n").some((r) => r.line), false, "incomplete unknown-command hunks fall back to words");
+  const many = "{+x+}".repeat(2002);
+  const limited = output.outputRuns(many, "git --color-words");
+  assert.equal(limited.filter((r) => r.change).length, 2000);
+  assert.equal(limited.map((r) => r.text).join(""), many, "the uncolored remainder stays visible");
+});
+
+// Render the real React components. Only the browser's ambient language/OS are supplied; parsing,
+// cards, Markdown and output are the same modules the app builds, without browser or host calls.
+const requireUi = createRequire(new URL("../apps/desktop/package.json", import.meta.url));
+const React = requireUi("react");
+const { renderToStaticMarkup } = requireUi("react-dom/server");
+const uiModules = new Map();
+function ui(name) {
+  const file = resolve(fileURLToPath(new URL("../apps/desktop/src", import.meta.url)), name);
+  const load = (path) => {
+    if (uiModules.has(path)) return uiModules.get(path);
+    const exports = {};
+    uiModules.set(path, exports);
+    const require = (spec) => {
+      if (!spec.startsWith(".")) return requireUi(spec);
+      const base = resolve(dirname(path), spec);
+      const target = [base + ".ts", base + ".tsx"].find(existsSync);
+      if (!target) throw new Error(`missing ${spec} from ${path}`);
+      return load(target);
+    };
+    const compiled = ts.transpileModule(readFileSync(path, "utf8"), { compilerOptions: {
+      module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+    } }).outputText;
+    vm.runInNewContext(compiled, { exports, require, URLSearchParams, location: { search: "?shotlang=en" },
+      navigator: { language: "en", userAgent: "Macintosh" }, document: { documentElement: {} },
+      localStorage: { getItem: () => null }, window: {}, setTimeout, clearTimeout }, { filename: path });
+    return exports;
+  };
+  return load(file);
+}
+
+test("question inline Markdown cannot add nested interactive elements or execute markup", () => {
+  const { InlineMarkdown } = ui("ui/chat/Markdown.tsx");
+  const html = renderToStaticMarkup(React.createElement(InlineMarkdown, {
+    text: "**Choose** *one* `out/report.html` [docs](https://example.com) [bad](javascript:alert) <script> ~~old~~",
+  }));
+  assert.match(html, /<strong>Choose<\/strong>/);
+  assert.match(html, /<code>out\/report\.html<\/code>/);
+  assert.match(html, /<del>old<\/del>/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<a\b|<button\b|role="button"|tabindex=|href=/i);
+  const fence = "```js\nalert('x')\n```";
+  assert.match(renderToStaticMarkup(React.createElement(InlineMarkdown, { text: fence })), /```js/);
+});
+
+test("question cards format their text while answer values and selection controls stay unchanged", () => {
+  const { CardDock } = ui("ui/claude/Cards.tsx");
+  seq = 0;
+  const parts = [{ question: "**Choose** `target`", multi: true,
+    options: [{ label: "**First**", description: "Use [docs](https://example.com) or `out/report.html`" }] },
+  { question: "Second question", options: [{ label: "Next" }] }];
+  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "question", qid: "inline-test", prompt: parts[0].question, questions: parts })]);
+  const html = renderToStaticMarkup(React.createElement(CardDock, { chat: c, agent: "Agent", readonly: false, draft: false,
+    actions: { permit() {}, plan() {}, answer() {} } }));
+  assert.match(html, /aria-label="Choose target"/);
+  assert.match(html, /<strong>First<\/strong>/);
+  assert.match(html, /role="checkbox" aria-checked="false"/);
+  assert.match(html, /1 of 2/);
+  assert.doesNotMatch(html, /<a\b|role="button"|tabindex=|href=/i);
+  const selected = cl.qPick(cl.qInit(2), parts, 0, "**First**");
+  assert.equal(cl.qAnswers(selected, parts)[parts[0].question], "**First**", "formatting never changes protocol values");
+});
+
+test("question clicks ignore unrelated selections, preserve dragged option text and allow keyboard activation", () => {
+  const option = {};
+  const outside = {};
+  const selection = (nodes, extra = {}) => ({ isCollapsed: false, rangeCount: nodes.length, toString: () => "selected text",
+    getRangeAt: (i) => ({ intersectsNode: (node) => node === nodes[i] }), ...extra });
+  assert.equal(cl.questionSelectionBlocks(1, selection([outside]), option), false, "selecting old output does not disable answers");
+  assert.equal(cl.questionSelectionBlocks(1, selection([option]), option), true, "a drag selection in this option does not choose it");
+  assert.equal(cl.questionSelectionBlocks(1, selection([outside, option]), option), true, "all ranges count on multi-range browsers");
+  assert.equal(cl.questionSelectionBlocks(0, selection([option]), option), false, "keyboard and programmatic clicks still choose an option");
+  assert.equal(cl.questionSelectionBlocks(1, selection([option], { isCollapsed: true }), option), false);
+  assert.equal(cl.questionSelectionBlocks(1, selection([option], { getRangeAt: () => { throw new Error("detached range"); } }), option), false);
+});
+
+test("Bash output renders ANSI and a styled tail, with escaped text and no diff on errors", () => {
+  const { ToolBody } = ui("ui/claude/ToolBody.tsx");
+  const render = (text, st = "done") => renderToStaticMarkup(React.createElement(ToolBody, {
+    x: bash("git diff", { content: [{ type: "text", text }] }), st, now: 100,
+  }));
+  const ansi = render("\x1b[31m<script>");
+  assert.match(ansi, /color:#c82829/);
+  assert.match(ansi, /&lt;script&gt;/);
+  assert.doesNotMatch(ansi, /\x1b|cl-out-add|cl-out-del/);
+  const tail = render("\x1b[32m" + Array.from({ length: 45 }, (_, i) => `line ${i + 1}`).join("\n"));
+  assert.match(tail, /color:#718c00/);
+  assert.match(tail, />line 6\n/);
+  assert.doesNotMatch(tail, />line 1\n/);
+  const patch = "@@ -1 +1 @@\n-old\n+new";
+  assert.match(render(patch), /cl-out-add cl-out-line/);
+  assert.doesNotMatch(render(patch, "failed"), /cl-out-add|cl-out-del/);
+});
+
+test("opted-in Markdown code fences render ANSI and start wrapped, with the default view unchanged", () => {
+  const { Markdown, StreamingMarkdown, CodeBlock } = ui("ui/chat/Markdown.tsx");
+  const { renderAnsiText } = ui("ui/chat/Ansi.tsx");
+  const code = "\x1b[31mred\x1b[0m";
+  for (const View of [Markdown, StreamingMarkdown]) {
+    const html = renderToStaticMarkup(React.createElement(View, { text: "```bash\n" + code + "\n```", streaming: false, renderAnsi: renderAnsiText }));
+    assert.match(html, /<pre class="wrapped">/);
+    assert.match(html, /style="color:#c82829">red<\/span>/);
+    assert.doesNotMatch(html, /\x1b|class="hl-/);
+  }
+  const normal = renderToStaticMarkup(React.createElement(CodeBlock, { code, lang: "bash" }));
+  assert.doesNotMatch(normal, /<pre class="wrapped">|color:#c82829/);
+  const escaped = renderToStaticMarkup(React.createElement(CodeBlock, { code: "\x1b[31m<script>\rnew text", lang: "bash", renderAnsi: renderAnsiText }));
+  assert.doesNotMatch(escaped, /<script>|\x1b|\r/);
 });

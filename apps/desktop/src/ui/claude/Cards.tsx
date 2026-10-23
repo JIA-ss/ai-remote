@@ -20,13 +20,16 @@ import {
   qPick,
   qSkip,
   questionParts,
+  questionSelectionBlocks,
   type CardKey,
   type QDraft,
 } from "../../lib/claude";
 import { currentLang, t, type Key } from "../../lib/i18n";
+import { inlineText, parseInline } from "../../lib/markdown";
 import { detectOs } from "../../lib/platform";
 import { cx } from "../util";
-import { Markdown } from "../chat/Markdown";
+import { InlineMarkdown, Markdown } from "../chat/Markdown";
+import { renderAnsiText } from "../chat/Ansi";
 import { DiffView } from "./ToolBody";
 import { workspaceOwnsEvent } from "../workspace/parts";
 
@@ -262,7 +265,7 @@ function PlanCard({ r, box, agent, readonly, draft, armed, actions }: CardProps 
       </div>
       {shown && (
         <div className="cl-card-scroll cl-pl-body">
-          <Markdown text={r.plan} className="cl-md" />
+          <Markdown text={r.plan} className="cl-md" renderAnsi={renderAnsiText} />
         </div>
       )}
       {revising && (
@@ -365,10 +368,11 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
   const other = d.other[i];
   const answered = qAnswered(d, i);
   const open = parts.findIndex((_, k) => !qAnswered(d, k));
+  const questionLabel = inlineText(parseInline(part.question));
   return (
-    <div ref={box} className="cl-card cl-qc" role="group" aria-label={part.question}>
+    <div ref={box} className="cl-card cl-qc" role="group" aria-label={questionLabel}>
       <div className="cl-qc-hd">
-        <span className="q">{part.question}</span>
+        <span className="q"><InlineMarkdown text={part.question} /></span>
         {parts.length > 1 && (
           <span className="pager">
             <button type="button" className="cl-ib" aria-label={t("cl_q_prev")} disabled={i === 0} onClick={() => setD({ ...d, page: i - 1 })}>
@@ -381,19 +385,19 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
           </span>
         )}
       </div>
-      <div className="cl-qc-opts" role={multi ? "group" : "radiogroup"} aria-label={part.question}>
+      <div className="cl-qc-opts" role={multi ? "group" : "radiogroup"} aria-label={questionLabel}>
         {part.options.map((o) => {
           const on = d.picks[i]?.includes(o.label) ?? false;
           return (
             <button key={o.label} type="button" role={multi ? "checkbox" : "radio"} aria-checked={on} className={cx("opt", on && "on")} disabled={readonly}
-              onClick={() => {
-                if (window.getSelection()?.toString()) return;
+              onClick={(e) => {
+                if (questionSelectionBlocks(e.detail, window.getSelection(), e.currentTarget)) return;
                 setD((cur) => qPick(cur, parts, i, o.label));
               }}>
               <span className={cx("mark", multi ? "check" : "radio")} aria-hidden>{multi && on && <Check size={11} />}</span>
               <span className="lb">
-                <span className="nm">{o.label}</span>
-                {o.description && <span className="ds">{o.description}</span>}
+                <span className="nm"><InlineMarkdown text={o.label} /></span>
+                {o.description && <span className="ds"><InlineMarkdown text={o.description} /></span>}
               </span>
             </button>
           );
