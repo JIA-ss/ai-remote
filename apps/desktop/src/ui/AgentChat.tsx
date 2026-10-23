@@ -48,6 +48,7 @@ import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
 import { Icon } from "./Icon";
+import { ClaudeConversation } from "./claude/ClaudeConversation";
 import { cx } from "./util";
 
 /** The session to show, and a ticket when it was just started (a ticket is valid once). */
@@ -240,7 +241,7 @@ export function StartForm({
   );
 }
 
-function useNowTick(active: boolean) {
+export function useNowTick(active: boolean) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!active) return;
@@ -254,7 +255,7 @@ function useNowTick(active: boolean) {
 }
 
 /** The conversation with one session: events from the host, folded, with reconnection. */
-function useConversation(host: string, target: ChatTarget | null) {
+export function useConversation(host: string, target: ChatTarget | null) {
   const [chat, setChat] = useState<Chat>(emptyChat);
   const [hello, setHello] = useState<ChatHello | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -382,6 +383,9 @@ function useConversation(host: string, target: ChatTarget | null) {
   return { chat, setChat, hello, error, connected, gone, send, conn, outgoing, sendInput, retry, discard, listFiles };
 }
 
+/** One session's live conversation (`useConversation`), shared by the views that show it. */
+export type Conv = ReturnType<typeof useConversation>;
+
 /** The chat tab of the session page. */
 export function AgentChat({ host, target, onTarget }: { host: string; target: ChatTarget | null; onTarget: (t: ChatTarget | null) => void }) {
   // Leaving re-renders here even when the parent's target was already null (the panel had opened
@@ -389,8 +393,11 @@ export function AgentChat({ host, target, onTarget }: { host: string; target: Ch
   const [left, setLeft] = useState<{ gone: boolean } | null>(null);
   const current = target ?? (lastSession(host) ? { session: lastSession(host) as string } : null);
   if (!current) return <Picker host={host} note={left?.gone ? t("hc_session_gone") : null} onPick={(p) => { setLeft(null); onTarget(p); }} />;
+  // Claude (and ACP) sessions are shown the way Claude's own app shows them; ClaudeConversation hands a
+  // Codex session to this panel's Codex layout once the host names the agent.
   return (
-    <Conversation
+    <ClaudeConversation
+      variant="rail"
       key={current.session}
       host={host}
       target={current}
@@ -466,17 +473,23 @@ function Picker({ host, note, onPick }: { host: string; note: string | null; onP
 }
 
 
-const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+export const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** Sent messages per session, for ↑ / ↓ (kept for this run of the app). */
-const sentBySession = new Map<string, string[]>();
+export const sentBySession = new Map<string, string[]>();
 
 /**
  * One session's conversation: header, find, the transcript, the composer. Codex sessions lay their turns
  * out the way Codex's own app does (ui/codex); `CodexConversation` is the same panel for them.
  */
 export function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
-  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = useConversation(host, target);
+  const conv = useConversation(host, target);
+  return <ConversationPanel host={host} target={target} onLeave={onLeave} conv={conv} />;
+}
+
+/** The panel for a conversation already open (`conv`). */
+export function ConversationPanel({ host, target, onLeave, conv }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void; conv: Conv }) {
+  const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = conv;
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {
     if (gone) onLeave(true);

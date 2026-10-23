@@ -8,7 +8,7 @@
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
 import { ArrowUp, FileText, ListEnd, Plus, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
 import {
   applyChoice,
@@ -293,6 +293,16 @@ export interface ComposerProps {
   insert?: { text: string; n: number } | null;
   /** Files in the session's folder matching a query, for the `@` menu. */
   listFiles?: (query: string) => Promise<{ files: string[]; truncated?: boolean }>;
+  /** A view's own look (`claude`: the Claude view's composer card, styles/claude.css). */
+  variant?: "claude";
+  /** Shown first in the row under the field (the Claude view's permission mode). */
+  lead?: ReactNode;
+  /** Told whether the field has something to send (a card's ⌘↵ leaves a draft to the composer). */
+  onDraft?: (has: boolean) => void;
+  /** An Enter before this time is the press that answered a card, not a send (`Date.now()` ms). */
+  holdEnter?: { current: number };
+  /** Esc in the field belongs to a card in front of it: it does not stop the turn. */
+  escClaimed?: boolean;
 }
 
 export function Composer(p: ComposerProps) {
@@ -412,6 +422,8 @@ export function Composer(p: ComposerProps) {
     draft.current = "";
   };
   const ready = !!text.trim() || images.length > 0;
+  const onDraft = p.onDraft;
+  useEffect(() => onDraft?.(ready), [ready, onDraft]);
 
   const placeholder =
     p.disabled === "ended" ? t("hc_ph_ended")
@@ -421,7 +433,7 @@ export function Composer(p: ComposerProps) {
             : t("hc_ph", { agent: p.agent, host: p.host });
 
   return (
-    <div className="nt-compose-wrap">
+    <div className={cx("nt-compose-wrap", p.variant === "claude" && "cl-compose")}>
       {ac && (items.length > 0 || menuStatus) && (
         <Menu ac={ac} items={items} active={Math.min(active, Math.max(0, items.length - 1))} status={menuStatus} onChoose={choose} onHover={setActive} />
       )}
@@ -537,7 +549,7 @@ export function Composer(p: ComposerProps) {
                   return;
                 }
               }
-              if (e.key === "Escape" && p.running && !text) {
+              if (e.key === "Escape" && p.running && !text && !p.escClaimed) {
                 e.preventDefault();
                 p.onStop();
                 return;
@@ -545,6 +557,8 @@ export function Composer(p: ComposerProps) {
               // An input method's Enter confirms the composition; it must not send.
               if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
               e.preventDefault();
+              // The same press that answered a card, or a held key's repeat, sends nothing.
+              if (e.repeat || (p.holdEnter && Date.now() < p.holdEnter.current)) return;
               submit(e.altKey);
             }}
           />
@@ -562,8 +576,9 @@ export function Composer(p: ComposerProps) {
           </div>
         </div>
       </div>
-      {(imageNote || (p.running && ready && !p.disabled) || p.context) && (
+      {(imageNote || (p.running && ready && !p.disabled) || p.context || p.lead) && (
         <div className="nt-compose-ft">
+          {p.lead}
           <span className="hint-l">
             {imageNote && <span className="hint warn">{imageNote}</span>}
             {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}

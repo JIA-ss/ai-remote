@@ -10,7 +10,7 @@ import { Check, Copy, WrapText } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { highlight, languageOf } from "../../lib/highlight";
 import { t } from "../../lib/i18n";
-import { parseMarkdown, safeHref, type Inline, type MdBlock } from "../../lib/markdown";
+import { holdStreamingTail, parseMarkdown, parseMarkdownStream, safeHref, type Inline, type MdBlock, type MdStream } from "../../lib/markdown";
 import { fileTarget } from "../../lib/preview";
 import { cx } from "../util";
 import { usePreview } from "./preview-context";
@@ -219,6 +219,28 @@ export const Markdown = memo(function Markdown({ text, className }: { text: stri
   return (
     <div className={cx("nt-md", className)}>
       <Blocks blocks={blocks} />
+    </div>
+  );
+});
+
+/** A block of a reply still streaming: the blocks before the last safe cut keep their objects, so they
+ *  do not render again as the text grows (lib/markdown.ts `parseMarkdownStream`). */
+const StreamBlock = memo(function StreamBlock({ b }: { b: MdBlock }) {
+  return <BlockView b={b} />;
+});
+
+/** An agent's message while it streams: only its tail is parsed again per update, and a last line that
+ *  is only a list or heading marker waits for its words. Finished, it renders like `Markdown`. */
+export const StreamingMarkdown = memo(function StreamingMarkdown({ text, streaming, className }: { text: string; streaming: boolean; className?: string }) {
+  const prev = useRef<MdStream | null>(null);
+  const blocks = useMemo(() => {
+    const next = parseMarkdownStream(prev.current, streaming ? holdStreamingTail(text) : text);
+    prev.current = next;
+    return next.blocks;
+  }, [text, streaming]);
+  return (
+    <div className={cx("nt-md", className)}>
+      {blocks.map((b, i) => <StreamBlock key={i} b={b} />)}
     </div>
   );
 });
