@@ -60,7 +60,7 @@
     const mode = await required("the computers/agents switch", () => $('.ws-modes [data-mode="agents"]'));
     mode.click();
     await required("the workspace new-session form", () => $(".ws-new .ws-composer textarea"));
-    const agent = $(".ws-env-trail .ws-chip");
+    const agent = await required("the enabled agent chip", () => $(".ws-env-trail .ws-chip:not(:disabled)"));
     agent.click();
     const rich = await required("the isolated Rich fake", () => $$(".ws-menu [role=menuitemradio]")
       .find((el) => text($(".ws-menu-label", el)) === "Rich fake"));
@@ -174,7 +174,7 @@
     }
     await shot("n03-navigation-guards");
   } catch (error) {
-    await check("no script errors", false, error?.stack ?? String(error));
+    await check("no script errors", false, `${error?.message ?? String(error)}\n${error?.stack ?? ""}`);
   } finally {
     release();
   }
