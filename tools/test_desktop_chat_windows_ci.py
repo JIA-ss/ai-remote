@@ -115,6 +115,49 @@ vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTE
                     app_exit_codes=[0], isolated_storage=True, isolated_placement=True, reported_check_counts=[12],
                     images=[{'valid': True, 'crop_status': 'saved_test_ui_only'}])
 
+    def motion_line(self, payload):
+        return '     (live tool normal paint ' + json.dumps(payload) + ')'
+
+    def test_motion_preferences_export_only_two_typed_values(self):
+        for system in (True, False):
+            for app in (None, 'true', 'false'):
+                payload = {'systemReduce': system, 'appReduce': app,
+                           'line': {'text': 'private-command', 'color': 'private-color'},
+                           'parts': [{'text': r'C:\Users\Alice\auth.secret'}]}
+                parsed = ci.parse_log(self.motion_line(payload), '')
+                self.assertEqual(parsed['motion_preferences'], [{'systemReduce': system, 'appReduce': app}])
+                for raw in ('private-command', 'private-color', 'Alice', 'auth.secret', 'parts'):
+                    self.assertNotIn(raw, json.dumps(parsed))
+
+    def test_motion_preferences_retain_invalid_records_without_raw_values(self):
+        invalid = [{'systemReduce': value, 'appReduce': None} for value in (None, 0, 1, 'true', 'false', [], {})]
+        invalid += [{'systemReduce': False}, {'systemReduce': True, 'appReduce': 'private-root'},
+                    {'systemReduce': True, 'appReduce': 1}, {'systemReduce': True, 'appReduce': True}]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                parsed = ci.parse_log(self.motion_line(payload), '')
+                self.assertEqual(parsed['motion_preferences'], [None])
+                self.assertNotIn('private-root', json.dumps(parsed))
+        for line in ('     (live tool normal paint {bad})',
+                     '     (live tool normal paint {"systemReduce":true,"appReduce":null}) trailing'):
+            self.assertEqual(ci.parse_log(line, '')['motion_preferences'], [None])
+
+    def test_chat_requires_exactly_one_valid_normal_motion_record(self):
+        valid = {'systemReduce': False, 'appReduce': None}
+        self.assertEqual(ci.parse_log('', '')['motion_preferences'], [])
+        good_chat = {**self.good(), 'suite': 'chat', 'motion_preferences': [valid]}
+        self.assertTrue(ci.accepted(good_chat))
+        for preferences in (None, [], [None], [valid, valid], [valid, None],
+                            [{'systemReduce': 1, 'appReduce': None}],
+                            [{'systemReduce': False, 'appReduce': 'private-root'}]):
+            with self.subTest(preferences=preferences):
+                self.assertFalse(ci.accepted({**good_chat, 'motion_preferences': preferences}))
+        self.assertFalse(ci.accepted({**self.good(), 'suite': 'chat'}))
+        duplicate = ci.parse_log(self.motion_line(valid) + '\n' + self.motion_line(valid), '')
+        self.assertFalse(ci.accepted({**self.good(), 'suite': 'chat', **duplicate}))
+        for suite in ('render', 'offline', 'preview', 'codex', 'workspace'):
+            self.assertTrue(ci.accepted({**self.good(), 'suite': suite}), suite)
+
     def test_success_requires_harness_app_isolation_assertions_and_cleanup(self):
         self.assertTrue(ci.accepted(self.good()))
         for change in ({'harness_exit': 1}, {'app_exit_codes': [0, 0]}, {'app_exit_codes': [1]},

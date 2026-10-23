@@ -70,8 +70,24 @@ def static_names(source):
 def parse_log(raw, source):
     names = static_names(source)
     checks, exits, geometries = [], [], []
+    motion_preferences = []
     all_passed, failed_summaries, reported_checks, storage = 0, [], [], False
     for line in raw.splitlines():
+        if line.startswith("     (live tool normal paint "):
+            # Keep one slot per observed record, including invalid records, so duplicates or
+            # malformed evidence cannot be silently discarded into a successful chat result.
+            preference = None
+            match = re.fullmatch(r"     \(live tool normal paint (\{.*\})\)", line)
+            if match:
+                try:
+                    payload = json.loads(match[1])
+                    app_reduce = payload.get("appReduce")
+                    if (type(payload.get("systemReduce")) is bool and "appReduce" in payload
+                            and (app_reduce is None or type(app_reduce) is str and app_reduce in ("true", "false"))):
+                        preference = {"systemReduce": payload["systemReduce"], "appReduce": app_reduce}
+                except (ValueError, AttributeError):
+                    pass
+            motion_preferences.append(preference)
         passed = line.startswith("ok  ")
         if passed or line.startswith("FAIL"):
             body = line[4:].lstrip()
@@ -97,6 +113,7 @@ def parse_log(raw, source):
     return {"checks": checks, "ok_count": sum(x["passed"] for x in checks),
             "fail_count": sum(not x["passed"] for x in checks), "all_passed_count": all_passed,
             "failed_summary_counts": failed_summaries, "reported_check_counts": reported_checks, "app_exit_codes": exits,
+            "motion_preferences": motion_preferences,
             "isolated_storage": storage, "isolated_placement": bool(geometries) and all(offscreen(x) for x in geometries)}
 
 
@@ -183,6 +200,16 @@ def collect_images(raw_dir, destination):
 
 
 def accepted(record):
+    if record.get("suite") == "chat":
+        preferences = record.get("motion_preferences")
+        if not isinstance(preferences, list) or len(preferences) != 1:
+            return False
+        preference = preferences[0]
+        if (not isinstance(preference, dict) or set(preference) != {"systemReduce", "appReduce"}
+                or type(preference.get("systemReduce")) is not bool
+                or not (preference["appReduce"] is None
+                        or type(preference["appReduce"]) is str and preference["appReduce"] in ("true", "false"))):
+            return False
     return (record.get("harness_exit") == 0 and record.get("cleanup_ok") is True and not record.get("timed_out")
             and record.get("runner_error_stage") is None
             and record.get("all_passed_count") == 1 and record.get("ok_count", 0) > 0 and record.get("fail_count") == 0
