@@ -95,7 +95,8 @@ function PcRow({ c, sel, now, onClick, width }: { c: Computer; sel: boolean; now
   return (
     <button type="button" className={cx("pc", sel && "sel", off && "off")} title={c.host.name} onClick={onClick} aria-current={sel ? "page" : undefined}>
       <span className="tile">
-        {c.os ? <OsGlyph os={c.os} size={16} /> : <Icon name="monitor" size={16} />}
+        {/* the face is masked around the status dot on translucent surfaces (styles/glass) */}
+        <span className="gl-tile-face">{c.os ? <OsGlyph os={c.os} size={16} /> : <Icon name="monitor" size={16} />}</span>
         <i className={cx("pd", (off || c.online === null) && "off")} />
       </span>
       <span className="tx">

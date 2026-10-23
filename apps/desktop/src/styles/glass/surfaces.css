@@ -1,0 +1,109 @@
+/* glass/surfaces.css: today's surfaces re-pointed at the glass tokens, only while the material is on.
+
+   Content layer (page plane, groups, cards, wells, fields, rails): translucent fills over the native
+   material, no CSS blur (the material already blurs the desktop; a CSS blur could only blur the
+   page's own pixels). Functional layer: see material.css.
+
+   Specificity, checked against native.css (glass loads later, so ties go to glass):
+   - `G .gl-win .side` (0,4,0) ties native.css:86 `[data-os][data-transparency][data-theme-choice] :is(.side,.snav)`;
+   - `G .gl-win > .body-row > .page` (0,5,0) beats `.page` (0,1,0);
+   - the `none` rules carry three attributes to beat native.css:61/86, which make body, .win and the
+     sidebar transparent on macOS whenever transparency is on and the theme follows the system: with
+     the material off (higher contrast, say) the window must stay opaque. */
+
+/* ---- the window ---- */
+:root:is([data-material="native"], [data-material="preview"]),
+:root:is([data-material="native"], [data-material="preview"]) body,
+:root:is([data-material="native"], [data-material="preview"]) #root,
+:root:is([data-material="native"], [data-material="preview"]) .gl-win { background: transparent; }
+
+:root[data-material="none"][data-os][data-transparency] body,
+:root[data-material="none"][data-os][data-transparency] .gl-win { background: var(--gl-base); }
+:root[data-material="none"][data-os][data-transparency] .gl-win :is(.side, .snav) { background: var(--gl-side); }
+
+/* The browser preview has no window material: a static stand-in for "the desktop seen through the
+   sidebar material". Low saturation (each colour < 25 %), small brightness steps, no motion, no glow. */
+:root[data-material="preview"][data-theme="dark"] body {
+  background:
+    radial-gradient(1400px 900px at 10% -12%, rgb(62 72 92 / .55), transparent 62%),
+    radial-gradient(1200px 820px at 108% 112%, rgb(74 66 86 / .45), transparent 58%),
+    linear-gradient(160deg, #1B1C20, #141518) fixed;
+}
+:root[data-material="preview"][data-theme="light"] body {
+  background:
+    radial-gradient(1400px 900px at 10% -12%, rgb(200 212 230 / .90), transparent 62%),
+    radial-gradient(1200px 820px at 108% 112%, rgb(226 216 226 / .80), transparent 58%),
+    linear-gradient(160deg, #E9EAEE, #E1E3E8) fixed;
+}
+
+/* ---- sidebar and content plane ---- */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.side, .snav) { background: var(--gl-side); border-right: 0; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win > .body-row > .page {
+  background: var(--gl-content);
+  box-shadow: inset var(--gl-hair) 0 0 var(--gl-side-sep);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win.nt-alone { background: var(--gl-content); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-session { background: transparent; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.side, .snav) :is(.nv.sel, .pc.sel) { background: var(--gl-sel); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.side, .snav) :is(.nv, .pc):not(.sel):hover { background: var(--gl-hover); }
+
+/* ---- cards: one level, on the content plane only ---- */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.grp, .device-card, .devices-empty, .receipts, .mm, .hb, .composer, .nt-folder-pop) {
+  background: var(--gl-card);
+  box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .decide {
+  background: var(--gl-card);
+  box-shadow: inset 3px 0 0 var(--you-stroke), inset 0 0 0 var(--gl-hair) var(--gl-card-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .decide.calm { box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .device-card-actions { border-top-color: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gr.sel { background: var(--gl-sel-list); }
+
+/* ---- wells (code, payloads, tickets) and fields ---- */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.payload, .cmdline, textarea.ta-input, .decide .ta, .hb .ta, .nt-ticket, .nt-code-input, .nt-qr.empty) { background: var(--gl-well); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.field, .dd, .side .search, .device-search) {
+  background: var(--gl-field);
+  box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.side .search, .device-search):focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent) 35%, transparent); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-compose { background: var(--gl-field); border-color: var(--gl-field-edge); }
+
+/* ---- rails beside the content (activity inspector, session rail): the plane shows through ---- */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.insp, .nt-rail) {
+  background: transparent;
+  border-left: 0;
+  box-shadow: inset var(--gl-hair) 0 0 var(--gl-sep);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-session .tb { border-bottom-color: var(--gl-sep); }
+
+/* ---- dialogs and menus (painted by material.css): their inner footer stops painting its own band ---- */
+:root:is([data-material="native"], [data-material="preview"]) .cdlg .f { background: transparent; border-top-color: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .smoke { background: var(--gl-scrim); }
+
+/* ---- knockouts: on a translucent surface a solid ring around a dot is a visible halo, so make a
+   real gap instead (C.5 of the spec) ---- */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win { --tl-bg: transparent; --row-bg: transparent; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.pc, .pc.sel, .mm) { --tl-bg: transparent; --row-bg: transparent; }
+/* status dots on system tiles: the tile face is masked around the dot (Shell.tsx draws .gl-tile-face) */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .tile:has(> .gl-tile-face) { background: transparent; box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .tile > .gl-tile-face {
+  position: absolute; inset: 0; display: grid; place-items: center; border-radius: inherit; background: var(--fill-1);
+  -webkit-mask: radial-gradient(circle at calc(100% - 2px) calc(100% - 2px), transparent 6px, #000 6.5px);
+  mask: radial-gradient(circle at calc(100% - 2px) calc(100% - 2px), transparent 6px, #000 6.5px);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .tile .pd { box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .tile .pd.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+/* log rows: the connecting line stops 2 px short of each node instead of being covered by a ring
+   (rows without a node keep their continuous line) */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr .r:has(> i)::before { height: 12px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr .r:has(> i)::after { top: 17px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.lr.n-live, .lr.n-livey, .lr.n-waithead) .r:has(> i)::before { height: 11px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.lr.n-live, .lr.n-livey, .lr.n-waithead) .r:has(> i)::after { top: 18px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr .r i { box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.lr.n-wait, .lr.n-waithead) .r i { background: transparent; box-shadow: inset 0 0 0 2px var(--you-stroke); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr.n-sys .r i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr.n-live .r i { box-shadow: 0 0 0 4px var(--agent-soft); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .lr.n-livey .r i { box-shadow: 0 0 0 4px var(--you-soft); }
+/* (any material) the tile face only centres the glyph; the mask above applies with the material on */
+.tile > .gl-tile-face { display: grid; place-items: center; }

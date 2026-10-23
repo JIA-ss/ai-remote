@@ -1,0 +1,20 @@
+/* glass/fallbacks.css: when glass has to give way. Loaded last.
+
+   Reduce transparency (Settings > General, or the system's on Windows), higher contrast and Windows
+   10 already switch the whole layer off through data-material="none" (lib/platform.ts). What is
+   left here: an outline for higher contrast, system colours for forced colours, and an opaque
+   floor where backdrop-filter does not exist. */
+
+:root[data-contrast="more"] :is(.gl-glass, .cdlg, .menu, .grp, .device-card, .decide) {
+  outline: 1px solid color-mix(in srgb, var(--text-1) 45%, transparent);
+  outline-offset: -1px;
+}
+
+@media (forced-colors: active) {
+  :is(.gl-glass, .cdlg, .menu) { background: Canvas; color: CanvasText; border: 1px solid CanvasText; }
+  :is(.gl-glass, .cdlg, .menu)::before { display: none; }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .gl-glass, :root:is([data-material="native"], [data-material="preview"]) :is(.cdlg, .menu) { background: rgb(var(--gl-g-rgb) / .96); }
+}

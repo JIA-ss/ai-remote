@@ -103,7 +103,7 @@ export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; 
   };
   const [hd, lede] = heads[sec];
   return (
-    <div className="win swin" style={{ width: "100vw", height: "100vh" }}>
+    <div className="win gl-win swin" style={{ width: "100vw", height: "100vh" }}>
       <div className="body-row">
         <nav className="snav">
           <div className="nt-drag" data-tauri-drag-region />

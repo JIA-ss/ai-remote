@@ -167,7 +167,7 @@ export default function App() {
   // First run: the welcome spread fills the window, without the pane.
   if (!welcomed && snap.ready && !snap.error && snap.computers.length === 0 && (view.kind !== "main" || view.nav === null)) {
     return (
-      <div className="win nt-alone" style={{ width: "100vw", height: "100vh" }}>
+      <div className="win gl-win nt-alone" style={{ width: "100vw", height: "100vh" }}>
         <TitleBar />
         <div className="nt-content">
           <WelcomePage
@@ -182,7 +182,7 @@ export default function App() {
   }
 
   return (
-    <div className="win" style={{ width: "100vw", height: "100vh" }}>
+    <div className="win gl-win" style={{ width: "100vw", height: "100vh" }}>
       <div className="body-row">
         <Sidebar
           computers={snap.computers}
