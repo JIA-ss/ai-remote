@@ -140,8 +140,14 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
     (host_home / "host" / "ai-remote.toml").write_text(
         quiet + '[host]\napproval_prompt = false\n\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
     if options.quiet:
-        (ctl_home / "controller").mkdir(parents=True)
-        (ctl_home / "controller" / "ai-remote.toml").write_text(quiet, encoding="utf-8")
+        # Either role may be initialized under either test home (for example by `doctor`). Keep all
+        # four configs quiet before launching anything, so discovery never falls back to its default.
+        for home in (host_home, ctl_home):
+            for role in ("host", "controller"):
+                (home / role).mkdir(parents=True, exist_ok=True)
+                config = home / role / "ai-remote.toml"
+                if not config.exists():
+                    config.write_text(quiet, encoding="utf-8")
     fake = base / "fake_agent.py"
     fake.write_text(FAKE_AGENT, encoding="utf-8")
     agents = [f'[[agent]]\nid = "fake"\nbase = "claude"\nname = "Fake agent"\ncommand = {json.dumps(sys.executable)}\n'
@@ -150,7 +156,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
         kind, path = real.split("=", 1)
         agents.append(f'[[agent]]\nid = "real-{kind}"\nbase = "{kind}"\ncommand = {json.dumps(path)}\n')
     (host_home / "host" / "chat.toml").write_text("\n".join(agents), encoding="utf-8")
-    env = {k: v for k, v in os.environ.items() if k != "AI_REMOTE_HOST"}
+    env = {k: v for k, v in os.environ.items() if k not in ("AI_REMOTE_HOST", "AI_REMOTE_HOME")}
 
     def cli(*args, home=ctl_home, timeout=120):
         try:
@@ -234,6 +240,10 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
                 break
             time.sleep(0.2)
         assert ticket, "host did not start"
+        if options.quiet:
+            doctor = cli("doctor", home=host_home).stdout
+            network = next((line for line in doctor.splitlines() if line.split()[1:2] == ["network"]), "")
+            assert network.split()[:1] == ["ok"] and "quiet" in network, "the test host is not in quiet mode:\n" + doctor
         r = cli("pair", ticket, "--name", "self")
         check("pair (admin)", r.returncode == 0, r.stderr.strip()[-200:])
 

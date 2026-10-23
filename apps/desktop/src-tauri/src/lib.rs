@@ -1306,6 +1306,20 @@ pub fn run() {
     });
     let tray_profile = profile.clone();
     let tray_cli = cli.clone();
+    let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let context = {
+        let mut context = context;
+        if std::env::var_os("AI_REMOTE_SMOKE").is_some() {
+            // A separate ai-remote home does not isolate WKWebView's default data store. Smoke
+            // windows must never read or change an installed app's cookies or local preferences.
+            for window in &mut context.config_mut().app.windows {
+                window.incognito = true;
+            }
+            eprintln!("[smoke] isolated nonpersistent webview storage");
+        }
+        context
+    };
     tauri::Builder::default()
         // Windows: our page draws the 48 px title bar; the plugin adds the caption buttons and the
         // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
@@ -1355,7 +1369,7 @@ pub fn run() {
                 let _ = tauri::Emitter::emit(window, "window-hidden", ());
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the ai-remote app")
         .run(|app, event| {
             // macOS: a click on the Dock icon brings the hidden window back.

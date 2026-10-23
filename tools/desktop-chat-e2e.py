@@ -44,6 +44,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -369,6 +370,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
 
     log = open(base / "host.log", "w")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
+    app = None
+    watchdog = None
     code = 1
     try:
         for _ in range(100):
@@ -382,8 +385,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         doctor = cli("doctor", home=host_home).stdout
         network = next((l for l in doctor.splitlines() if l.split()[1:2] == ["network"]), "")
         assert network.split()[:1] == ["ok"] and "quiet" in network, "the test host is not in quiet mode:\n" + doctor
-        # A new name each run: the debug app shares the installed app's webview storage (same bundle id),
-        # where the panel remembers the last session per host name.
+        # A new host name also makes each run's session references distinguishable in the logs.
+        # The debug smoke window uses nonpersistent webview storage, separate from installed apps.
         assert cli("pair", ticket, "--name", f"e2e-{os.getpid()}", home=desk).returncode == 0, "the desktop profile did not pair"
         name = json.loads(cli("--json", "hosts", home=desk).stdout)[0]["name"]
         print(f"host {name!r}, desktop profile {desk}")
@@ -404,9 +407,17 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             app_env["AI_REMOTE_SMOKE_VISIBLE"] = "1"
         app = subprocess.Popen([str(options.app)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                encoding="utf-8", errors="replace", env=app_env)
+        # A blocked UI thread can prevent the in-app smoke deadline from exiting. Bound the
+        # external process too, so the harness reports a failure and can clean up its test homes.
+        watchdog = threading.Timer(options.secs + 45, app.kill)
+        watchdog.daemon = True
+        watchdog.start()
         passed = None
+        isolated_storage = False
         for line in app.stderr:
             line = line.rstrip()
+            if line == "[smoke] isolated nonpersistent webview storage":
+                isolated_storage = True
             if options.verbose:
                 print("  |", line[:400])
             if line.startswith("[page e2e] "):
@@ -436,11 +447,23 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                 print("  app:", line[:300])
             elif line.startswith("[smoke]"):
                 print("  " + line)
-        print(f"  app exited with {app.wait(timeout=60)}")
-        code = 0 if passed else 1
+        app_code = app.wait(timeout=60)
+        print(f"  app exited with {app_code}")
+        code = 0 if passed and app_code == 0 and isolated_storage else 1
+        if not isolated_storage:
+            print("the debug app did not confirm isolated webview storage; rebuild it before running E2E")
         if passed is None:
             print("the script did not finish")
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
+        if app is not None and app.poll() is None:
+            app.terminate()
+            try:
+                app.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                app.kill()
+                app.wait(timeout=10)
         cli("stop-agent", home=desk)
         cli("stop-host", home=host_home)
         try:
@@ -448,6 +471,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         except subprocess.TimeoutExpired:
             host.kill()
         log.close()
+        shutil.copyfile(base / "host.log", options.out / "host.log")
         shutil.rmtree(webview, ignore_errors=True)
     if code:
         print((base / "host.log").read_text(encoding="utf-8", errors="replace")[-2000:])
