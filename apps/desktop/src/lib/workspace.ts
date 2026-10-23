@@ -1,0 +1,993 @@
+// The agents workspace's data (docs/agent-workspace.zh-CN.md §2.2): the sessions of every computer,
+// polled with `chat_sessions` and merged into one list, what is unread here, pins / archive / titles
+// through `chat_update` (with what an older host allows instead), and the sidebar's grouping, sorting,
+// search and status dots. The behavior follows the clean-room specs in ~/ar-refs/spec (SB = sidebar,
+// NS = new session page); rule ids are quoted where a number comes from them.
+//
+// Everything here is plain code over plain data, and the only import is lib/chat.ts's path helpers,
+// so tools/workspace.test.mjs runs it in node. The store reaches hosts only through the `call` it is
+// given (ui/workspace/useWorkspace.ts gives it the app's tool call).
+
+import { folderName, parentFolder, sameFolder, tildeFolder, trimFolder, type ChatState } from "./chat";
+
+// ---------------------------------------------------------------------------------------------
+// Session metadata
+
+/** What waits for a person in a session (an approval, a question, a plan to review). */
+export type WsPending = "permission" | "question" | "plan";
+/** How the session's last turn ended. */
+export type WsLastStatus = "completed" | "failed" | "interrupted";
+
+/**
+ * One session as `chat_sessions` reports it. Everything after `seq` came with the workspace and is
+ * missing from older hosts (they are then shown with what they have, see `displayTitle` / `dotOf`).
+ */
+export interface WsMeta {
+  id: string;
+  runtime: string;
+  name: string;
+  cwd: string;
+  model?: string | null;
+  version?: string | null;
+  state: ChatState;
+  by?: { device: string; principal?: string | null };
+  started_at: number;
+  turns: number;
+  last_activity: number;
+  ended_at?: number | null;
+  end_reason?: string | null;
+  /** The last event's number (every host has it; `last_seq` is the same, kept with the metadata). */
+  seq?: number;
+  title?: string | null;
+  title_source?: "auto" | "agent" | "user" | null;
+  first_text?: string | null;
+  last_status?: WsLastStatus | null;
+  last_reason?: string | null;
+  pending?: WsPending | null;
+  last_seq?: number;
+  branch?: string | null;
+  pinned?: boolean;
+  archived?: boolean;
+  permission_mode?: string | null;
+}
+
+/** A session with the computer it is on. */
+export interface WsItem {
+  host: string;
+  /** `host/id`: sessions are only unique per host. */
+  key: string;
+  meta: WsMeta;
+  /** The computer is this one (its host runs here): no computer mark, no "· name". */
+  local: boolean;
+  /** The computer is online (null: not known yet). Sessions of an offline one are the last ones seen. */
+  online: boolean | null;
+}
+
+export const sessionKey = (host: string, id: string) => `${host}/${id}`;
+
+/** A session's metadata as received, with numbers that are numbers (a broken entry is dropped). */
+export function normalizeMeta(raw: unknown): WsMeta | null {
+  if (!raw || typeof raw !== "object") return null;
+  const m = raw as Record<string, unknown>;
+  if (typeof m.id !== "string" || !m.id) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    ...(m as unknown as WsMeta),
+    runtime: typeof m.runtime === "string" ? m.runtime : "",
+    name: typeof m.name === "string" ? m.name : "",
+    cwd: typeof m.cwd === "string" ? m.cwd : "",
+    state: (typeof m.state === "string" ? m.state : "idle") as ChatState,
+    started_at: num(m.started_at),
+    turns: num(m.turns),
+    last_activity: num(m.last_activity) || num(m.started_at),
+  };
+}
+
+/** The session's last event number: `last_seq`, or `seq` from a host that has no `last_seq`. */
+export function lastSeq(m: WsMeta): number {
+  return m.last_seq ?? m.seq ?? 0;
+}
+
+/**
+ * Whether a host's `chat_sessions` answer comes from a host that has `chat_update`: the workspace's
+ * fields came together, so one session carrying `last_seq` says so. No sessions: not known (null).
+ */
+export function updatesFrom(raw: unknown[]): boolean | null {
+  if (!raw.length) return null;
+  return raw.some((s) => !!s && typeof s === "object" && "last_seq" in (s as object));
+}
+
+/** A session that is working now (a turn runs, it starts or it stops). */
+export function isRunning(m: WsMeta): boolean {
+  return m.state === "running" || m.state === "starting" || m.state === "interrupting";
+}
+
+/**
+ * What one chat event (design 1.2) changes in its session's metadata, for a session open here: its
+ * title, state, what waits for a person, how the turn ended, its last event. Null: nothing.
+ */
+export function eventPatch(e: { t: string; seq?: number; ts?: number; [k: string]: unknown }): Partial<WsMeta> | null {
+  const p: Partial<WsMeta> = {};
+  if (typeof e.seq === "number" && e.seq > 0) {
+    p.last_seq = e.seq;
+    if (typeof e.ts === "number") p.last_activity = e.ts;
+  }
+  switch (e.t) {
+    case "title":
+      if (typeof e.title === "string" && e.title.trim()) {
+        p.title = e.title.trim();
+        p.title_source = e.source === "user" || e.source === "auto" ? e.source : "agent";
+      }
+      break;
+    case "state":
+      if (typeof e.state === "string") p.state = e.state as ChatState;
+      break;
+    case "permission":
+      p.pending = "permission";
+      break;
+    case "question":
+      p.pending = "question";
+      break;
+    case "plan_review":
+      p.pending = "plan";
+      break;
+    case "resolved":
+      p.pending = null;
+      break;
+    case "turn_end":
+      p.pending = null;
+      if (e.status === "completed" || e.status === "failed" || e.status === "interrupted") p.last_status = e.status;
+      p.last_reason = typeof e.reason === "string" ? e.reason.slice(0, 300) : null;
+      break;
+    case "mode":
+      if (typeof e.mode === "string") p.permission_mode = e.mode;
+      break;
+  }
+  return Object.keys(p).length ? p : null;
+}
+
+/** First line of a message, at most `max` characters (NS-38: 80), or "" for nothing. */
+export function firstLine(text: string | null | undefined, max = 80): string {
+  const line = (text ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+}
+
+/**
+ * What a session is called: its title; else its first message (the host's `first_text`, or the one
+ * this device sent, for a host that does not keep it); else the agent's name ("" only when even that is
+ * missing: the view says "Untitled").
+ */
+export function displayTitle(m: WsMeta, localFirst?: string | null): string {
+  return m.title?.trim() || firstLine(m.first_text) || firstLine(localFirst) || m.name.trim();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Status dots (SB-23 / SB-24)
+
+/** A row's dot: needs you (amber), failed (red), unread (blue), running (gray, blinking). */
+export type Dot = "awaiting" | "failed" | "unread" | "running";
+
+/** SB-23: the order in which a group's dots stand for it. */
+export const DOT_PRIORITY: Record<Dot, number> = { awaiting: 0, failed: 1, unread: 2, running: 3 };
+
+/** Whether a session has something new since this device last looked (SB-25). */
+export function isUnread(m: WsMeta, seen: number | undefined, explicit: boolean, current: boolean): boolean {
+  if (current || m.archived) return false;
+  return explicit || lastSeq(m) > (seen ?? 0);
+}
+
+/**
+ * SB-24, with ai-remote's fields: archived → nothing; something waits for you → amber; a turn runs →
+ * gray; the last turn failed → red; new since you looked → blue; else nothing.
+ */
+export function dotOf(m: WsMeta, unread: boolean, acked = false): Dot | null {
+  if (m.archived) return null;
+  if (m.pending && m.state !== "ended") return "awaiting";
+  if (isRunning(m)) return "running";
+  if (m.last_status === "failed" && !acked) return "failed";
+  if (unread) return "unread";
+  return null;
+}
+
+/**
+ * SB-26: "Mark as done" keeps the event number it was given at; a failure is put aside while nothing
+ * happened since (a later turn that fails shows again).
+ */
+export function isAcked(m: WsMeta, ackedSeq: number | undefined): boolean {
+  return ackedSeq !== undefined && ackedSeq >= lastSeq(m);
+}
+
+/** The dot that stands for several sessions (a folded group): the one first in `DOT_PRIORITY`. */
+export function aggregateDot(dots: Array<Dot | null>): Dot | null {
+  let best: Dot | null = null;
+  for (const d of dots) if (d && (best === null || DOT_PRIORITY[d] < DOT_PRIORITY[best])) best = d;
+  return best;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sorting (SB-10)
+
+export type SortMode = "recency" | "created" | "alpha";
+
+const collator = new Intl.Collator(undefined, { numeric: true });
+
+/** Names compare as people read them (numbers by value), ties by code point (SB-10). */
+export function compareNames(a: string, b: string): number {
+  return collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
+/**
+ * Sessions in the order of `mode`: last activity (newest first), started (newest first) or title
+ * (A→Z). `reverse` turns it around (SB-10 keeps "is reversed" rather than a direction).
+ */
+export function sortSessions<T extends { meta: WsMeta }>(items: T[], mode: SortMode, title: (x: T) => string, reverse = false): T[] {
+  const by = (a: T, b: T) => {
+    if (mode === "alpha") return compareNames(title(a), title(b));
+    const k = mode === "created" ? "started_at" : "last_activity";
+    return b.meta[k] - a.meta[k] || compareNames(title(a), title(b));
+  };
+  const out = [...items].sort(by);
+  return reverse ? out.reverse() : out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Groups: pinned first, then one per folder on a computer (SB-08 / SB-15)
+
+/** A folder in a form that compares like `sameFolder` (Windows paths without case or slash kind). */
+export function folderKey(p: string): string {
+  const v = trimFolder(p);
+  const windows = /^([A-Za-z]:|\\\\)/.test(v) || (v.includes("\\") && !v.includes("/"));
+  return windows ? v.replace(/\//g, "\\").toLowerCase() : v;
+}
+
+export interface WsGroup<T> {
+  /** `host` + newline + the folder's key: stable, for folding. */
+  key: string;
+  host: string;
+  folder: string;
+  /** The folder's name, with where it is when two groups share a name, and "· computer" off this computer. */
+  label: string;
+  local: boolean;
+  items: T[];
+}
+
+/**
+ * Splits sessions into the pinned section and one group per folder and computer. Inside both,
+ * sessions follow `sort`. Groups are ordered by label (numbers by value), this computer's before
+ * others', then by key (SB-15's default order). A label is the folder's name; when two groups have the
+ * same name it gains the folder above (`~` for the host user's home, when `home` knows it), and a
+ * group on another computer ends with " · <computer>" (SB-15, `sep` U+00B7 with spaces).
+ */
+export function groupSessions<T extends WsItem>(
+  items: T[],
+  opts: { pinned: (x: T) => boolean; title: (x: T) => string; home?: (host: string) => string | null; sort?: SortMode; reversed?: boolean },
+): { pinned: T[]; groups: WsGroup<T>[] } {
+  const sort = opts.sort ?? "recency";
+  const pinned = sortSessions(items.filter(opts.pinned), sort, opts.title, opts.reversed);
+  const byKey = new Map<string, WsGroup<T>>();
+  for (const x of items) {
+    if (opts.pinned(x)) continue;
+    const key = `${x.host}\n${folderKey(x.meta.cwd)}`;
+    const g = byKey.get(key);
+    if (g) g.items.push(x);
+    else byKey.set(key, { key, host: x.host, folder: trimFolder(x.meta.cwd), label: "", local: x.local, items: [x] });
+  }
+  const groups = [...byKey.values()];
+  const named = new Map<string, number>();
+  for (const g of groups) {
+    // The folder as its latest session names it.
+    const latest = g.items.reduce((a, b) => (b.meta.last_activity > a.meta.last_activity ? b : a));
+    g.folder = trimFolder(latest.meta.cwd);
+    const n = folderName(g.folder).toLowerCase();
+    named.set(n, (named.get(n) ?? 0) + 1);
+  }
+  for (const g of groups) {
+    const name = folderName(g.folder) || g.folder;
+    const above = parentFolder(g.folder);
+    const twin = (named.get(name.toLowerCase()) ?? 0) > 1 && above;
+    const where = twin ? ` · ${tildeFolder(above as string, opts.home?.(g.host) ?? null)}` : "";
+    g.label = `${name}${where}${g.local ? "" : ` · ${g.host}`}`;
+    g.items = sortSessions(g.items, sort, opts.title, opts.reversed);
+  }
+  groups.sort((a, b) => compareNames(a.label, b.label) || Number(b.local) - Number(a.local) || compareNames(a.key, b.key));
+  return { pinned, groups };
+}
+
+/** SB-19: rows a group shows before "Show N more" (5 when grouped). */
+export const GROUP_ROWS = 5;
+
+/**
+ * The rows of a group that show: the first `limit` unless opened, plus any of `keep` (the open
+ * session, the focused row) that would be cut; what is left out, and whether any of it needs you.
+ */
+export function truncateGroup<T extends { key: string }>(items: T[], limit: number, keep: Set<string>, open: boolean, needsYou: (x: T) => boolean) {
+  if (open || items.length <= limit) return { shown: items, hidden: [] as T[], hiddenNeedsYou: false };
+  const shown = items.filter((x, i) => i < limit || keep.has(x.key));
+  const hidden = items.filter((x, i) => i >= limit && !keep.has(x.key));
+  return { shown, hidden, hiddenNeedsYou: hidden.some(needsYou) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// How the list groups, sorts and filters (SB-09..SB-14, SB-46)
+
+/** SB-09: by folder on a computer (the default here), by day, by state, or not at all. */
+export type GroupBy = "project" | "date" | "state" | "none";
+/** SB-11: the sessions listed — those not archived (default), the archived ones, or both. */
+export type StatusFilter = "active" | "archived" | "all";
+
+export interface ListPrefs {
+  groupBy: GroupBy;
+  sort: SortMode;
+  /** SB-10 keeps "turned around" rather than a direction: names A→Z and the newest first are not. */
+  reversed: boolean;
+  status: StatusFilter;
+}
+
+export const DEFAULT_LIST: ListPrefs = { groupBy: "project", sort: "recency", reversed: false, status: "active" };
+
+const pick = <V extends string>(v: unknown, ok: readonly V[], fallback: V): V => (ok.includes(v as V) ? (v as V) : fallback);
+
+/** Saved settings as they can be used (anything unknown takes its default). */
+export function normalizeList(raw: unknown): ListPrefs {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    groupBy: pick(o.groupBy, ["project", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
+    sort: pick(o.sort, ["recency", "created", "alpha"] as const, DEFAULT_LIST.sort),
+    reversed: o.reversed === true,
+    status: pick(o.status, ["active", "archived", "all"] as const, DEFAULT_LIST.status),
+  };
+}
+
+export function isDefaultList(p: ListPrefs): boolean {
+  return p.groupBy === DEFAULT_LIST.groupBy && p.sort === DEFAULT_LIST.sort && p.reversed === DEFAULT_LIST.reversed && p.status === DEFAULT_LIST.status;
+}
+
+/** SB-11: the list is filtered while it shows anything but the sessions not archived. */
+export function isFiltered(p: ListPrefs): boolean {
+  return p.status !== "active";
+}
+
+/** Whether the list runs oldest first (A→Z for names): names go up unless turned around, times go down. */
+export function isAscending(p: ListPrefs): boolean {
+  return p.sort === "alpha" ? !p.reversed : p.reversed;
+}
+
+/** The settings with the order going up (`true`) or down, kept as SB-10's "turned around". */
+export function withAscending(p: ListPrefs, ascending: boolean): ListPrefs {
+  return { ...p, reversed: p.sort === "alpha" ? !ascending : ascending };
+}
+
+/** Whether a session belongs in the list under a status filter. */
+export function shownByStatus(m: WsMeta, status: StatusFilter): boolean {
+  return status === "all" || (status === "archived") === !!m.archived;
+}
+
+/** SB-19: rows shown before "Show N more" — five in a group, twenty when the list is not grouped. */
+export function rowsBeforeMore(groupBy: GroupBy): number {
+  return groupBy === "none" ? 20 : GROUP_ROWS;
+}
+
+/** SB-13's buckets: today, yesterday, the five days before (each its own), and older. */
+export type DayKind = "today" | "yesterday" | "day" | "older";
+export interface DayBucket<T> {
+  key: string;
+  kind: DayKind;
+  /** The bucket's day (local midnight, ms); for "older", the start of the first day not in a bucket. */
+  day: number;
+  items: T[];
+}
+
+/**
+ * Sessions by the day they were last active (or started, when sorting by start): today, yesterday,
+ * one bucket for each of the five days before, then older (SB-13). Empty buckets are left out; items
+ * keep their order inside a bucket. `oldestFirst` turns the buckets around (the order going up, not
+ * by name). Days are the local calendar's.
+ */
+export function dateBuckets<T extends { meta: WsMeta }>(items: T[], now: number, by: "last_activity" | "started_at", oldestFirst = false): DayBucket<T>[] {
+  const d = new Date(now);
+  const midnight = (back: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime();
+  const starts = Array.from({ length: 7 }, (_, i) => midnight(i));
+  const buckets: DayBucket<T>[] = starts.map((day, i) => ({ key: i === 0 ? "today" : i === 1 ? "yesterday" : `day${i}`, kind: i === 0 ? "today" : i === 1 ? "yesterday" : "day", day, items: [] }));
+  const older: DayBucket<T> = { key: "older", kind: "older", day: starts[6], items: [] };
+  for (const x of items) {
+    const at = x.meta[by];
+    const i = starts.findIndex((s) => at >= s);
+    (i < 0 ? older : buckets[i]).items.push(x);
+  }
+  const out = [...buckets, older].filter((b) => b.items.length);
+  return oldestFirst ? out.reverse() : out;
+}
+
+/** SB-14's buckets, in this order: needs you (failed too), working, to look at, done, idle. */
+export type StateBucket = "blocked" | "working" | "ready" | "done" | "idle";
+export const STATE_ORDER: readonly StateBucket[] = ["blocked", "working", "ready", "done", "idle"];
+
+/** Which state bucket a session is in, from its dot: archived and ended sessions are done. */
+export function stateBucket(m: WsMeta, dot: Dot | null): StateBucket {
+  if (dot === "awaiting" || dot === "failed") return "blocked";
+  if (dot === "running") return "working";
+  if (dot === "unread") return "ready";
+  if (m.archived || m.state === "ended") return "done";
+  return "idle";
+}
+
+/** Sessions by state bucket, in SB-14's order, without empty buckets; items keep their order. */
+export function stateBuckets<T>(items: T[], bucketOf: (x: T) => StateBucket): Array<{ key: StateBucket; items: T[] }> {
+  return STATE_ORDER.map((key) => ({ key, items: items.filter((x) => bucketOf(x) === key) })).filter((b) => b.items.length);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Search (SB-06)
+
+/**
+ * A query's words: lower case, split at anything that is not a letter or a digit; a query of only
+ * such characters is one word as typed (SB-06).
+ */
+export function searchTokens(query: string): string[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const words = q.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return words.length ? words : [q];
+}
+
+/** The text each search field holds for one session. */
+export interface SearchFields {
+  title: string;
+  folder: string;
+  branch: string;
+  computer: string;
+}
+
+/**
+ * Sessions matching every word (AND). First those whose title holds every word, newest first and at
+ * most 100 (SB-06's main results); then those where every word is in the title, folder, branch or
+ * computer name, appended after them.
+ */
+export function searchSessions<T extends { meta: WsMeta }>(items: T[], query: string, fields: (x: T) => SearchFields): T[] {
+  const words = searchTokens(query);
+  const recent = [...items].sort((a, b) => b.meta.last_activity - a.meta.last_activity);
+  if (!words.length) return recent;
+  const primary: T[] = [];
+  const more: T[] = [];
+  for (const x of recent) {
+    const f = fields(x);
+    const title = f.title.toLowerCase();
+    if (words.every((w) => title.includes(w))) primary.push(x);
+    else {
+      const hay = [title, f.folder.toLowerCase(), f.branch.toLowerCase(), f.computer.toLowerCase()];
+      if (words.every((w) => hay.some((h) => h.includes(w)))) more.push(x);
+    }
+  }
+  return [...primary.slice(0, 100), ...more];
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sidebar's width (SB-02 / SB-03)
+
+export const SIDEBAR = { MIN: 200, MAX: 420, DEFAULT: 288 } as const;
+
+/** The widest the sidebar may be in a window this wide: clamp(innerWidth − 330, 200, 420). */
+export function sidebarMax(windowWidth: number): number {
+  return Math.min(SIDEBAR.MAX, Math.max(SIDEBAR.MIN, Math.floor(windowWidth) - 330));
+}
+
+/** A dragged width within the bounds. */
+export function clampSidebar(width: number, windowWidth: number): number {
+  return Math.min(sidebarMax(windowWidth), Math.max(SIDEBAR.MIN, Math.round(width)));
+}
+
+/** A window at most this wide folds the sidebar away (SB-03: max(700, ⌈width⌉ + 329)). */
+export function narrowAt(sidebarWidth: number): number {
+  return Math.max(700, Math.ceil(sidebarWidth) + 329);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The new-session page: recent projects (NS-04) and next steps (NS-08 / NS-09)
+
+/** A computer and a folder on it. */
+export interface Place {
+  host: string;
+  cwd: string;
+}
+
+/**
+ * The places to offer: every folder of a session and every place a session was started from here,
+ * the most recently used first (a place's time is the later of the two), at most `max` (NS-04: 3);
+ * the selected place is kept in view by taking the last slot.
+ */
+export function recentPlaces(sessions: WsItem[], started: Array<Place & { at: number }>, selected: Place | null, max = 3): Array<Place & { at: number }> {
+  const at = new Map<string, Place & { at: number }>();
+  const add = (p: Place, t: number) => {
+    if (!p.cwd.trim()) return;
+    const k = `${p.host}\n${folderKey(p.cwd)}`;
+    const prev = at.get(k);
+    if (!prev || prev.at < t) at.set(k, { host: p.host, cwd: prev?.cwd ?? trimFolder(p.cwd), at: t });
+  };
+  for (const s of sessions) add({ host: s.host, cwd: s.meta.cwd }, s.meta.last_activity);
+  for (const p of started) add(p, p.at);
+  const list = [...at.values()].sort((a, b) => b.at - a.at);
+  const top = list.slice(0, max);
+  if (selected && selected.cwd && !top.some((p) => p.host === selected.host && sameFolder(p.cwd, selected.cwd))) {
+    const known = list.find((p) => p.host === selected.host && sameFolder(p.cwd, selected.cwd)) ?? { ...selected, at: 0 };
+    return [...top.slice(0, max - 1), known];
+  }
+  return top;
+}
+
+/**
+ * NS-04: while the page stays open, rows already shown keep their order; a new one goes before the
+ * first shown row older than it (rows no longer offered leave).
+ */
+export function keepOrder<T extends Place & { at: number }>(shown: T[], next: T[]): T[] {
+  const same = (a: Place, b: Place) => a.host === b.host && sameFolder(a.cwd, b.cwd);
+  const out = shown.map((s) => next.find((n) => same(n, s))).filter((x): x is T => !!x);
+  for (const n of next) {
+    if (out.some((o) => same(o, n))) continue;
+    const i = out.findIndex((o) => o.at < n.at);
+    if (i < 0) out.push(n);
+    else out.splice(i, 0, n);
+  }
+  return out;
+}
+
+/**
+ * NS-09: up to `seats` places shared by groups of next steps, in priority order. Each group gets one
+ * place, then every free place goes to the first group with more steps than places. A group with
+ * more steps than places shows `places − 1` of them and a summary of the rest in its last place.
+ */
+export function seatSteps<T>(groups: T[][], seats = 3): Array<{ shown: T[]; rest: T[] }> {
+  const live = groups.filter((g) => g.length > 0).slice(0, seats);
+  const n = live.map(() => 1);
+  let free = seats - live.length;
+  while (free > 0) {
+    const i = live.findIndex((g, j) => g.length > n[j]);
+    if (i < 0) break;
+    n[i] += 1;
+    free -= 1;
+  }
+  return live.map((g, i) => (g.length <= n[i] ? { shown: g, rest: [] } : { shown: g.slice(0, n[i] - 1), rest: g.slice(n[i] - 1) }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The store: every computer's sessions, kept fresh while the workspace is open
+
+/** One computer as the workspace sees it. */
+export interface WsComputer {
+  name: string;
+  online: boolean | null;
+  local: boolean;
+}
+
+/** What is known of one computer's sessions. */
+export interface WsHostState {
+  /** `cached`: from the last run (not asked yet); `unsupported`: a host without coding agents; `denied`: this device's level is too low. */
+  status: "cached" | "loading" | "ok" | "unsupported" | "denied" | "error";
+  error: string | null;
+  sessions: WsMeta[];
+  /** The host has `chat_update` (null: not known yet). Without it pins stay here and titles / archive cannot change. */
+  update: boolean | null;
+  fetchedAt: number;
+}
+
+export interface WsSnapshot {
+  computers: WsComputer[];
+  hosts: Record<string, WsHostState>;
+  /** The last event number seen of each session (`host/id`). */
+  seen: Record<string, number>;
+  /** Sessions marked unread by hand (they stay so until opened or marked read). */
+  unread: string[];
+  /** Pins kept here, for hosts without `chat_update`. */
+  pins: string[];
+  /** "Marked as done" (SB-26): the event number each session was put aside at. */
+  acked: Record<string, number>;
+  /** Archived sessions are asked for and kept (the list shows them). */
+  withArchived: boolean;
+  /** The first message this device sent to a session, for hosts that do not keep it. */
+  first: Record<string, string>;
+  /** The session open in the workspace now. */
+  current: string | null;
+  rev: number;
+}
+
+export interface WsDeps {
+  /** A host tool's JSON result; rejects with the host's error text. */
+  call: (host: string, tool: string, args?: Record<string, unknown>) => Promise<unknown>;
+  storage?: Pick<Storage, "getItem" | "setItem"> | null;
+  now?: () => number;
+  /** Polling while the workspace is in view / otherwise (ms). */
+  activeMs?: number;
+  idleMs?: number;
+}
+
+/** Why a chat tool failed, as a status. */
+export function failureStatus(message: string): "unsupported" | "denied" | "error" {
+  if (/unknown tool '?chat_/i.test(message)) return "unsupported";
+  if (/requires level|no longer has access|not paired|revoked/i.test(message)) return "denied";
+  return "error";
+}
+
+const KEYS = {
+  seen: "ai-remote.ws.seen",
+  unread: "ai-remote.ws.unread",
+  pins: "ai-remote.ws.pins",
+  first: "ai-remote.ws.first",
+  base: "ai-remote.ws.baselined",
+  acked: "ai-remote.ws.acked",
+  cache: "ai-remote.ws.cache",
+} as const;
+
+/** Most sessions cached per computer, and remembered first messages / seen marks overall. */
+const CACHE_PER_HOST = 200;
+const MAX_MARKS = 2000;
+
+function keepLast<V>(o: Record<string, V>, max: number): Record<string, V> {
+  const keys = Object.keys(o);
+  if (keys.length <= max) return o;
+  return Object.fromEntries(keys.slice(keys.length - max).map((k) => [k, o[k]]));
+}
+
+/**
+ * The workspace's sessions. `setComputers` says which computers there are and which are online;
+ * `setActive` whether the workspace is in view (polls every 4 s then, else every 20 s). Subscribe for
+ * changes (`useSyncExternalStore`).
+ */
+export class WorkspaceStore {
+  private snap: WsSnapshot;
+  private listeners = new Set<() => void>();
+  private baselined: Set<string>;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private polling = false;
+  private active = false;
+  private inflight = new Map<string, Promise<void>>();
+  private readonly deps: Required<Omit<WsDeps, "storage">> & { storage: WsDeps["storage"] };
+
+  constructor(deps: WsDeps) {
+    this.deps = { activeMs: 4000, idleMs: 20000, now: () => Date.now(), ...deps, storage: deps.storage ?? null };
+    const cache = this.read<Record<string, WsMeta[]>>(KEYS.cache, {});
+    const hosts: Record<string, WsHostState> = {};
+    for (const [h, list] of Object.entries(cache)) {
+      hosts[h] = { status: "cached", error: null, sessions: list.map(normalizeMeta).filter((m): m is WsMeta => !!m), update: null, fetchedAt: 0 };
+    }
+    this.snap = {
+      computers: [],
+      hosts,
+      seen: this.read(KEYS.seen, {}),
+      unread: this.read(KEYS.unread, []),
+      pins: this.read(KEYS.pins, []),
+      acked: this.read(KEYS.acked, {}),
+      withArchived: false,
+      first: this.read(KEYS.first, {}),
+      current: null,
+      rev: 0,
+    };
+    this.baselined = new Set(this.read<string[]>(KEYS.base, []));
+  }
+
+  subscribe = (l: () => void) => {
+    this.listeners.add(l);
+    return () => {
+      this.listeners.delete(l);
+    };
+  };
+
+  get = () => this.snap;
+
+  private read<V>(key: string, fallback: V): V {
+    try {
+      const v = this.deps.storage?.getItem(key);
+      return v ? (JSON.parse(v) as V) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private write(key: string, value: unknown) {
+    try {
+      this.deps.storage?.setItem(key, JSON.stringify(value));
+    } catch {
+      // Storage full or unavailable: it is only remembered for this run.
+    }
+  }
+
+  private set(next: Partial<WsSnapshot>) {
+    this.snap = { ...this.snap, ...next, rev: this.snap.rev + 1 };
+    if (next.seen) this.write(KEYS.seen, this.snap.seen);
+    if (next.unread) this.write(KEYS.unread, this.snap.unread);
+    if (next.pins) this.write(KEYS.pins, this.snap.pins);
+    if (next.first) this.write(KEYS.first, this.snap.first);
+    if (next.acked) this.write(KEYS.acked, this.snap.acked);
+    this.listeners.forEach((l) => l());
+  }
+
+  private setHost(host: string, f: (h: WsHostState) => WsHostState) {
+    const prev = this.snap.hosts[host] ?? { status: "loading", error: null, sessions: [], update: null, fetchedAt: 0 };
+    const next = f(prev);
+    this.set({ hosts: { ...this.snap.hosts, [host]: next } });
+    if (next.sessions !== prev.sessions && next.status === "ok") {
+      const cache: Record<string, WsMeta[]> = {};
+      for (const [h, s] of Object.entries(this.snap.hosts)) if (s.sessions.length) cache[h] = s.sessions.slice(0, CACHE_PER_HOST);
+      this.write(KEYS.cache, cache);
+    }
+  }
+
+  /** The computers to ask; computers that went away are forgotten. */
+  setComputers(computers: WsComputer[]) {
+    const same =
+      computers.length === this.snap.computers.length &&
+      computers.every((c, i) => c.name === this.snap.computers[i].name && c.online === this.snap.computers[i].online && c.local === this.snap.computers[i].local);
+    if (same) return;
+    const cameOnline = computers.filter((c) => c.online === true && !this.snap.computers.some((p) => p.name === c.name && p.online === true));
+    this.set({ computers });
+    for (const c of cameOnline) if (this.polling) void this.refresh(c.name);
+  }
+
+  /** Whether the workspace is in view; starts polling the first time. */
+  setActive(active: boolean) {
+    const was = this.active;
+    this.active = active;
+    if (!this.polling) {
+      this.polling = true;
+      void this.tick();
+    } else if (active && !was) {
+      // Back in view: look now rather than at the end of the slow interval.
+      if (this.timer) clearTimeout(this.timer);
+      void this.tick();
+    }
+  }
+
+  /** Stops polling (the store can start again with `setActive`). */
+  stop() {
+    this.polling = false;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private async tick() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    await this.refreshAll();
+    if (this.polling) this.timer = setTimeout(() => void this.tick(), this.active ? this.deps.activeMs : this.deps.idleMs);
+  }
+
+  /** Asks every online computer that can have sessions. */
+  async refreshAll() {
+    const ask = this.snap.computers.filter((c) => c.online === true && this.snap.hosts[c.name]?.status !== "unsupported");
+    await Promise.all(ask.map((c) => this.refresh(c.name)));
+  }
+
+  /** Asks one computer for its sessions (one request at a time per computer). */
+  refresh(host: string): Promise<void> {
+    const running = this.inflight.get(host);
+    if (running) return running;
+    const p = this.fetch(host).finally(() => this.inflight.delete(host));
+    this.inflight.set(host, p);
+    return p;
+  }
+
+  private async fetch(host: string) {
+    if (!this.snap.hosts[host] || this.snap.hosts[host].status === "cached") this.setHost(host, (h) => ({ ...h, status: h.sessions.length ? h.status : "loading" }));
+    try {
+      const withArchived = this.snap.withArchived;
+      const v = (await this.deps.call(host, "chat_sessions", withArchived ? { archived: true } : {})) as { sessions?: unknown[] };
+      const raw = Array.isArray(v?.sessions) ? v.sessions : [];
+      // An answer to a question asked before the list changed its filter keeps what that filter wants.
+      const sessions = raw.map(normalizeMeta).filter((m): m is WsMeta => !!m && (this.snap.withArchived || !m.archived));
+      const learned = updatesFrom(raw);
+      this.setHost(host, (h) => ({
+        status: "ok",
+        error: null,
+        sessions,
+        // A host once seen with the fields (or answering chat_update) keeps them; one that refused stays refused.
+        update: h.update === false && learned !== true ? false : learned ?? h.update,
+        fetchedAt: this.deps.now(),
+      }));
+      this.markSeen(host, sessions);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.setHost(host, (h) => ({ ...h, status: failureStatus(msg), error: msg, fetchedAt: this.deps.now() }));
+    }
+  }
+
+  /**
+   * The first time a computer answers, everything on it counts as seen (only what happens from then
+   * on is new); the open session is always seen up to its last event.
+   */
+  private markSeen(host: string, sessions: WsMeta[]) {
+    const seen = { ...this.snap.seen };
+    let changed = false;
+    const first = !this.baselined.has(host);
+    for (const m of sessions) {
+      const k = sessionKey(host, m.id);
+      const s = lastSeq(m);
+      if ((first && seen[k] === undefined) || (k === this.snap.current && (seen[k] ?? -1) < s)) {
+        seen[k] = s;
+        changed = true;
+      }
+    }
+    if (first) {
+      this.baselined.add(host);
+      this.write(KEYS.base, [...this.baselined]);
+    }
+    if (changed) this.set({ seen: keepLast(seen, MAX_MARKS) });
+  }
+
+  /** Every session, newest activity first, with its computer. */
+  items(): WsItem[] {
+    const out: WsItem[] = [];
+    for (const [host, h] of Object.entries(this.snap.hosts)) {
+      const c = this.snap.computers.find((x) => x.name === host);
+      // Computers that are no longer paired are not shown.
+      if (!c && this.snap.computers.length) continue;
+      for (const meta of h.sessions) if (this.keeps(meta)) out.push({ host, key: sessionKey(host, meta.id), meta, local: !!c?.local, online: c?.online ?? null });
+    }
+    return out.sort((a, b) => b.meta.last_activity - a.meta.last_activity);
+  }
+
+  find(host: string, id: string): WsItem | null {
+    return this.items().find((x) => x.host === host && x.meta.id === id) ?? null;
+  }
+
+  isPinned(x: WsItem): boolean {
+    return !!x.meta.pinned || this.snap.pins.includes(x.key);
+  }
+
+  unread(x: WsItem): boolean {
+    return isUnread(x.meta, this.snap.seen[x.key], this.snap.unread.includes(x.key), x.key === this.snap.current);
+  }
+
+  dot(x: WsItem): Dot | null {
+    return dotOf(x.meta, this.unread(x), this.acked(x));
+  }
+
+  /** Put aside with "Mark as done" since its last event (SB-26). */
+  acked(x: WsItem): boolean {
+    return isAcked(x.meta, this.snap.acked[x.key]);
+  }
+
+  /**
+   * "Mark as done" (SB-26): a failure stops showing and the session counts as read. Returns what puts
+   * it back as it was (the undo of the toast).
+   */
+  markDone(key: string): () => void {
+    const x = this.items().find((i) => i.key === key);
+    if (!x) return () => {};
+    const was = { acked: this.snap.acked[key], unread: this.unread(x), explicit: this.snap.unread.includes(key), seen: this.snap.seen[key] };
+    this.set({ acked: keepLast({ ...this.snap.acked, [key]: lastSeq(x.meta) }, MAX_MARKS) });
+    this.markRead(key);
+    return () => {
+      const acked = { ...this.snap.acked };
+      if (was.acked === undefined) delete acked[key];
+      else acked[key] = was.acked;
+      const seen = { ...this.snap.seen };
+      if (was.seen === undefined) delete seen[key];
+      else seen[key] = was.seen;
+      this.set({ acked, seen, unread: was.explicit ? [...this.snap.unread.filter((k) => k !== key), key] : this.snap.unread });
+    };
+  }
+
+  /** Whether archived sessions are asked for and kept (the list's filter shows them); asks again when it changes. */
+  setArchived(on: boolean) {
+    if (on === this.snap.withArchived) return;
+    const hosts: Record<string, WsHostState> = {};
+    for (const [h, s] of Object.entries(this.snap.hosts)) hosts[h] = on ? s : { ...s, sessions: s.sessions.filter((m) => !m.archived) };
+    this.set({ withArchived: on, hosts });
+    if (on && this.polling) void this.refreshAll();
+  }
+
+  private keeps(m: WsMeta): boolean {
+    return this.snap.withArchived || !m.archived;
+  }
+
+  title(x: WsItem): string {
+    return displayTitle(x.meta, this.snap.first[x.key]);
+  }
+
+  /** The session open in the workspace (null: none); opening one marks it read, and so does leaving it. */
+  setCurrent(key: string | null) {
+    const was = this.snap.current;
+    if (key === was) return;
+    if (was) this.markRead(was);
+    this.set({ current: key });
+    if (key) this.markRead(key);
+  }
+
+  markRead(key: string) {
+    const x = this.items().find((i) => i.key === key);
+    const seen = x ? { ...this.snap.seen, [key]: lastSeq(x.meta) } : this.snap.seen;
+    this.set({ seen: keepLast(seen, MAX_MARKS), unread: this.snap.unread.filter((k) => k !== key) });
+  }
+
+  markUnread(key: string) {
+    if (!this.snap.unread.includes(key)) this.set({ unread: [...this.snap.unread, key] });
+  }
+
+  /** Remembers the first message sent from here (a title for hosts that do not keep one). */
+  rememberFirst(host: string, id: string, text: string) {
+    const first = keepLast({ ...this.snap.first, [sessionKey(host, id)]: text.slice(0, 200) }, 500);
+    this.set({ first });
+  }
+
+  /** Shows a session right away (just started here), before the host lists it. */
+  addSession(host: string, meta: WsMeta) {
+    this.setHost(host, (h) => ({ ...h, status: h.status === "cached" || h.status === "loading" ? "ok" : h.status, sessions: [meta, ...h.sessions.filter((m) => m.id !== meta.id)] }));
+    const k = sessionKey(host, meta.id);
+    this.set({ seen: { ...this.snap.seen, [k]: lastSeq(meta) } });
+  }
+
+  /** Changes what is known of a session here (an event seen on its open conversation). */
+  patchSession(host: string, id: string, patch: Partial<WsMeta>) {
+    const h = this.snap.hosts[host];
+    if (!h || !h.sessions.some((m) => m.id === id)) return;
+    this.setHost(host, (s) => ({ ...s, sessions: s.sessions.map((m) => (m.id === id ? { ...m, ...patch } : m)).filter((m) => this.keeps(m)) }));
+  }
+
+  /**
+   * Pins, archives or renames a session through `chat_update` (`title: ""` goes back to the automatic
+   * title). Shown at once and put back when the host refuses. A host without `chat_update`: a pin is
+   * kept on this device; renaming and archiving reject with `unsupported`.
+   */
+  async update(host: string, id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, known?: WsMeta): Promise<void> {
+    const key = sessionKey(host, id);
+    const h = this.snap.hosts[host];
+    // `known`: a session no longer listed (archived), so that undoing brings it back at once.
+    const listed = h?.sessions.find((m) => m.id === id) ?? null;
+    const before = listed ?? known ?? null;
+    if (!listed && known && patch.archived === false) this.addSession(host, { ...known, archived: false });
+    const localPin = () => {
+      if (patch.pinned === undefined) return;
+      this.set({ pins: patch.pinned ? [...this.snap.pins.filter((k) => k !== key), key] : this.snap.pins.filter((k) => k !== key) });
+    };
+    if (h?.update === false) {
+      if (patch.title !== undefined || patch.archived !== undefined) throw new Error("unsupported");
+      localPin();
+      return;
+    }
+    // A pin kept here is dropped as soon as the host keeps it.
+    if (patch.pinned === false && this.snap.pins.includes(key)) {
+      this.set({ pins: this.snap.pins.filter((k) => k !== key) });
+      if (!before?.pinned) return;
+    }
+    const optimistic: Partial<WsMeta> = { ...patch };
+    if (patch.title !== undefined) {
+      optimistic.title = patch.title.trim() || null;
+      optimistic.title_source = patch.title.trim() ? "user" : "auto";
+    }
+    if (before) this.patchSession(host, id, optimistic);
+    try {
+      const v = await this.deps.call(host, "chat_update", { session: id, ...patch });
+      const meta = normalizeMeta(v && typeof v === "object" && "meta" in (v as object) ? (v as { meta: unknown }).meta : v);
+      const fresh = meta && meta.id === id ? meta : null;
+      this.setHost(host, (s) => ({
+        ...s,
+        update: true,
+        sessions: (s.sessions.some((m) => m.id === id)
+          ? s.sessions.map((m) => (m.id === id ? { ...m, ...(fresh ?? optimistic) } : m))
+          : fresh
+            ? [fresh, ...s.sessions]
+            : s.sessions
+        ).filter((m) => this.keeps(m)),
+      }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Put back what was shown (an archived session that failed to come back stays away).
+      if (before && !(patch.archived === false && !listed)) {
+        this.setHost(host, (s) => ({ ...s, sessions: s.sessions.some((m) => m.id === id) ? s.sessions.map((m) => (m.id === id ? before : m)) : [before, ...s.sessions] }));
+      } else if (patch.archived === false && !listed) {
+        this.setHost(host, (s) => ({ ...s, sessions: s.sessions.filter((m) => m.id !== id) }));
+      }
+      if (failureStatus(msg) === "unsupported") {
+        this.setHost(host, (s) => ({ ...s, update: false }));
+        if (patch.title !== undefined || patch.archived !== undefined) throw new Error("unsupported");
+        localPin();
+        return;
+      }
+      throw e instanceof Error ? e : new Error(msg);
+    }
+  }
+
+  /** Ends a session on its host (its transcript stays). */
+  async end(host: string, id: string) {
+    await this.deps.call(host, "chat_end", { session: id });
+    this.patchSession(host, id, { state: "ended" });
+  }
+}

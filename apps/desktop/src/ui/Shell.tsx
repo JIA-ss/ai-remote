@@ -10,6 +10,7 @@ import { Glyph, Mark, OsGlyph } from "./glyphs";
 import { Icon } from "./Icon";
 import { TurnLine, turnSpec } from "./TurnLine";
 import { clock, cx, routeLabel } from "./util";
+import { ModeSwitch, type AppMode } from "./workspace/ModeSwitch";
 
 export type Nav = "devices" | "approvals" | "activity" | "pair" | "settings" | { computer: string };
 
@@ -128,6 +129,7 @@ export function Sidebar({
   query,
   onQuery,
   onNav,
+  onMode,
 }: {
   computers: Computer[];
   active: Nav | null;
@@ -136,6 +138,8 @@ export function Sidebar({
   query: string;
   onQuery: (query: string) => void;
   onNav: (n: Nav) => void;
+  /** Switches the window to the agents workspace (the switch at the top). */
+  onMode?: (mode: AppMode) => void;
 }) {
   const width = 240;
   const isActive = (n: Nav) =>
@@ -150,7 +154,9 @@ export function Sidebar({
   return (
     <nav className="side" aria-label={t("main_navigation")}>
       {/* The window's traffic lights (macOS) sit here; the strip drags the window. */}
-      <div className="nt-drag" data-tauri-drag-region />
+      <div className={cx("nt-drag", onMode && "ws-modes-strip")} data-tauri-drag-region>
+        {onMode && <ModeSwitch mode="computers" onMode={onMode} />}
+      </div>
       <div className="search">
         <Icon name="search" size={14} />
         <input type="search" value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("search_computers")} aria-label={t("search_computers")} />
