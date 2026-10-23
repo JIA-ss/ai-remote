@@ -30,8 +30,8 @@ the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s l
 CODEDETAILS emits successful terminal output and an ANSI Markdown fence; ASKDETAILS asks one formatted
 question and echoes its raw answer as JSON (tools/desktop-claude-details-e2e.js).
 
-Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
-screen; screenshots land in --out.
+Every home gets `[network] quiet = true` for the host and controller roles. The default app window
+stays off screen; --visible requests a visible window instead. Screenshots land in --out.
 Screenshots settle finite entrance/exit animations at their terminal state; infinite live indicators
 stay active. This verifies screenshot content, not animation timing or performance.
 
@@ -164,7 +164,7 @@ parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-
 parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "desktop-chat-e2e")
 parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
 parser.add_argument("--visible", action="store_true", help="show the app window and let it take focus (needed by "
-                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js; Windows only)")
+                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js)")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
                     "panel lists it, e.g. 'Claude Code'): a small file task, a / command, an image and a steer; uses its sign-in and quota")

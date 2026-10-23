@@ -268,7 +268,11 @@
     await shot("p5-outside");
     esc();
     await until("closed", () => !dialog(), 3000);
-    const session = JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host];
+    // The workspace owns the current selection; the removed chat rail no longer writes chat.last.
+    if (!$(".ws-row[data-selected]")) $(".ws-corner .ws-ib").click();
+    const selected = await until("selected workspace session", () => $(".ws-row[data-selected]")?.dataset.rowKey);
+    if (!selected?.startsWith(`${CFG.host}/`)) throw new Error("the workspace did not identify this host's selected session");
+    const session = selected.slice(CFG.host.length + 1);
     const secret = CFG.work.replace(/work$/, "outside/secret.md");
     let refused = "";
     try {
