@@ -231,6 +231,8 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
   const leftAt = useRef(-Infinity);
   /** Where the reader has the list (its scrollTop), as of their last scroll or the last resize. */
   const readerTop = useRef(0);
+  /** The list's height as the resize handler last saw it. */
+  const listHeight = useRef(0);
   const jumping = useRef<number | null>(null);
   const touchY = useRef<number | null>(null);
   const letGo = () => {
@@ -264,11 +266,11 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
     const el = scroller.current;
     const inner = el?.firstElementChild;
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
-    let height = el.clientHeight;
+    listHeight.current = el.clientHeight;
     const ro = new ResizeObserver((entries) => {
-      const resized = entries.some((e) => e.target === el) && el.clientHeight !== height;
-      const was = height;
-      height = el.clientHeight;
+      const resized = entries.some((e) => e.target === el) && el.clientHeight !== listHeight.current;
+      const was = listHeight.current;
+      listHeight.current = el.clientHeight;
       if (stick.current) el.scrollTop = el.scrollHeight;
       // The list itself got shorter or taller (the composer, a question card): what was at its bottom
       // edge stays there, counted from where the reader had it (the browser has already clamped the
@@ -367,6 +369,10 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
           // match, must not take it away).
           if (quote) pickQuote();
           const el = e.currentTarget;
+          // The list changed height and the browser clamped the scroll to it before the resize handler
+          // ran: that scroll is not the reader's (taken as one, a reader just short of the end would be
+          // followed again); the resize handler puts them back where they were.
+          if (codexView && el.clientHeight !== listHeight.current) return;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
           readerTop.current = el.scrollTop;
           if (codexView) {

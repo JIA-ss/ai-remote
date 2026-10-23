@@ -537,8 +537,8 @@
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
     await until("claude conversation", () => $(".nt-chat .nt-chat-hd") && /Rich fake/.test(text($(".nt-chat-hd .nm"))), 30000);
-    await until("claude turn", () => $(".nt-turn .nt-foot, .nt-turn .nt-stopped"), 30000);
-    await check("a Claude Code session keeps the panel's own rows, not Codex's", !$(".nt-chat.cdx") && !!$(".nt-turn") && !!$(".nt-run") && !$(".cdx-turn"),
+    await until("claude turn", () => $(".cl-turn .cl-foot, .cl-stopped"), 30000);
+    await check("a Claude Code session keeps its own view (Claude's), not Codex's", !$(".nt-chat.cdx") && !!$(".nt-chat.cl-root .cl-turn") && !$(".cdx-turn"),
       $(".nt-chat")?.className);
     await shot("c09-claude");
 

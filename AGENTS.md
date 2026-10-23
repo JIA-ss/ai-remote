@@ -169,8 +169,11 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
     圆按钮 260 ms 动画，运行中按钮里三个点在动。回放追平之前显示"正在加载对话…"（两种视图都是），不再闪一下"空对话"。
   - 字号颜色：Codex 的种子色（墨色、强调色、增删色，深浅两套），正文 14px、行高 22.75px，段距按字号四分之一的倍数。
   - 时长两种格式（Intl 单位格式，跟随界面语言）：命令行用"12s / 1m 0s / 1h 0m 3s"，计时分隔用"0s / 1m / 1h 5s"。
-- iOS（`apps/ios/Sources/PhoneCodex*.swift`）跟到了 dbfdfbd 的样子（折叠、Shell 卡、diff、改动卡、停止中），**还没跟上**上面的提问卡、
-  推理标题、计时分隔、计划胶囊等。iOS 处理 `question_done`（请求结束就不再显示"等你回答"）；其他新事件忽略。**老版桌面端**不认
+- iOS（`apps/ios/Sources/PhoneCodex*.swift`，分支 `feat/ios-codex-v2` 于 10-23 合进来）跟上了桌面端 060cabd 的样子：推理只作
+  轮末标题、计时分隔"处理中 / 用时"、计划胶囊、提问卡（一次一题、编号选项带说明和推荐标、自填答案、跳过 / 下一题、X 停止本轮、
+  非阻塞提问的倒计时，每题一条 `answer` 命令）、"已询问 N 个问题"一行、改动卡"已编辑 N 个文件"+ 审阅、Shell 输出保留终端颜色；
+  `lib/codex.ts` 的时长、计划步、网页抓取、组摘要、按轮次的请求、合并编辑都照搬并移植了单测。提问结束后的那一行按 `how`
+  说"已回答：… / 已跳过 / 未回答，Codex 已自行继续 / 已停止"（被控端回来的答案为准）。**老版桌面端**不认
   `question_done`：Codex 的非阻塞提问被被控端 120 秒后放行以后，它仍显示提问，这时再答会收到一条 `late_answer` 提醒（"回答到达时
   Codex 已经自己继续"），答案不会送出。
 - 演示后端（`lib/demo.ts`）有一个 Codex 会话和一段 Codex 形状的实时回复，`?view=session&host=office-pc&panel=chat` 打开后在
@@ -206,6 +209,22 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
 - 对这批修复再审查一轮，又确认 4 项（都已修，附测试）：iOS / 老桌面端不认 `question_done`，过期后仍显示提问且之后的回答被悄悄丢掉
   （iOS 补上处理，迟到的回答发 `late_answer` 提醒）；截止前一刻的回答可能输给自己的截止时间（`select!` 改成 `biased`，命令优先）；
   读者往上翻、内容继续流入后列表变矮，视图会往前跳（改成按容器高度差移动）；⋯ 菜单没有 Esc / 点外面关闭，开着时 Esc 停不了。
+- 第三轮审查（合进 main 之后，分支 `feat/codex-followups`）又修 3 项：iOS 提问结束一律显示"已回答"（改成按 `how`）；新请求里
+  有同名问题时没从"已关闭"列表里去掉，回答被误判成迟到（`late_answer` 误报）；列表变高 / 变矮时按读者自己的滚动位置
+  （`readerTop`）算，浏览器在观察回调之前就把 `scrollTop` 夹过了。之后新加的 e2e 检查"列表变高、离底很近时也保持位置"仍然
+  每次都差（视图跟着流式内容走了 91 px）：浏览器夹 `scrollTop` 时派发的 scroll 事件比 ResizeObserver 先到，处理函数看到
+  "已在底部"就重新跟随。现在列表高度变了而 ResizeObserver 还没处理时，忽略这次滚动（`listHeight`），改后 58 对 58。
+- 10-23 合进 main 前（含 #43 智能体工作区）复跑：Codex e2e 第一轮 3 项失败——上面这项、"⋯ → 其他会话"后落到设备页（上面"没查清的偶发"的新表现，
+  第二次起没再出现）、Claude 会话那项的旧选择器（#43 把 Claude 会话换成 Claude 式视图 `cl-root`，`.nt-turn` / `.nt-run` 没了，检查已改）；
+  修完后 **112/112 全过（1 次）**。前端单测 258 项（256 过 2 跳过），`cargo test -p ar-host --lib chat` 90 项，iOS 模型测试全过。
+- iOS UI 测试（本机 iOS 26.2 模拟器，Codex 4 项 + Claude 视图 3 项）：5 过 2 失败。
+  - `PhoneChatUITests.testPreviewsComposerMenusImagesDeliveryProjectsAndFolders`"链接打开页面预览"：iOS 移植之前（a89af8b）
+    同样失败，不是这批改动带来的，原因没查。
+  - `PhoneCodexUITests.testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs`：**iOS 移植带进来的**（移植前 32 秒通过）。点开改动卡里的
+    文件后，XCUITest 查询 `codex-changes` 下的 `codex-diff` 超时（2 分钟）；那时应用主线程 100% CPU，采样全在 SwiftUI
+    `LazyStack` 反复布局里，没有我们自己的代码帧。手动走同样步骤 CPU 一直是 0，所以是**抓无障碍快照时**才进入布局死循环——
+    VoiceOver 用户可能也会碰到，要当真 bug 查。下一步：二分 `PhoneCodexRows.swift` 移植后的改动（`.accessibilityElement`
+    容器、`onAppear` 改状态、`TimelineView`、Shell 输出框的 `defaultScrollAnchor`），看哪一处让快照时布局不收敛。
 
 **没做 / 没验证**（按收益排序，规格里的 Should / Later）：
 - 输入框整体外形（两行布局、"完全访问"标签、上下文环弹层、队列托盘、读图等待、历史）、头部（文件夹按钮 + 标题 + ⋯ 菜单、连接横幅、
