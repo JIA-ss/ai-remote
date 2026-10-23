@@ -91,6 +91,122 @@ test("requests are answered by the reply with their rid; lines are told apart", 
 
 const input = load("chat-input.ts");
 
+// Exercise the real component's event handlers and rendered props without a browser. Effects are
+// deliberately idle: these checks concern draft state and submission, not layout or native focus.
+function viewHarness(file, deps) {
+  let slot = 0;
+  const slots = [];
+  const hooks = {
+    useState(initial) {
+      const i = slot++;
+      if (!(i in slots)) slots[i] = typeof initial === "function" ? initial() : initial;
+      return [slots[i], (value) => { slots[i] = typeof value === "function" ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = slot++;
+      return slots[i] ??= { current: initial };
+    },
+    useMemo: (fn) => fn(), useCallback: (fn) => fn, useEffect() {}, useLayoutEffect() {},
+  };
+  const jsx = (type, props) => ({ type, props });
+  const source = readFileSync(new URL(`../apps/desktop/src/ui/${file}`, import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const exports = {};
+  const require = (name) => {
+    if (name === "react") return hooks;
+    if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
+    if (name === "lucide-react") return {};
+    if (name === "../util" || name === "./util") return { cx: (...parts) => parts.filter(Boolean).join(" ") };
+    if (name === "../../lib/i18n" || name === "../lib/i18n") return { t: (key) => key };
+    if (name in deps) return deps[name];
+    throw new Error(`unexpected view dependency ${name}`);
+  };
+  vm.runInNewContext(compiled, { exports, require, Date, Math, Set, Map, Promise, setTimeout, clearTimeout,
+    document: { documentElement: { dataset: { os: "macos" } } }, navigator: { platform: "MacIntel" },
+  }, { filename: file });
+  return { exports, render(fn, props) { slot = 0; return fn(props); } };
+}
+
+function findView(tree, match) {
+  if (!tree || typeof tree !== "object") return null;
+  if (Array.isArray(tree)) return tree.map((child) => findView(child, match)).find(Boolean) ?? null;
+  return match(tree) ? tree : findView(tree.props?.children, match);
+}
+
+test("before the first connection, the composer keeps a typed draft and blocks both Enter and Send", () => {
+  const h = viewHarness("chat/Composer.tsx", { "../../lib/chat": chat, "../../lib/chat-input": input });
+  const sent = [];
+  const props = { agent: "Claude", host: "test", running: false, canSteer: true, disabled: null,
+    disabledSend: true, context: null, queued: [], history: [], variant: "claude",
+    onSend: (...args) => sent.push(args), onStop() {}, onDequeue() {}, onEditQueued() {}, onSteerQueued() {},
+  };
+  const render = () => h.render(h.exports.Composer, props);
+  const area = (tree) => findView(tree, (el) => el.type === "textarea").props;
+  const send = (tree) => findView(tree, (el) => el.type === "button" && el.props.className === "round send").props;
+  area(render()).onChange({ target: { value: "keep this draft", selectionStart: 15 } });
+  let tree = render();
+  assert.equal(area(tree).disabled, false, "typing stays available while connecting");
+  assert.equal(send(tree).disabled, true);
+  area(tree).onKeyDown({ key: "Enter", nativeEvent: {}, currentTarget: {}, preventDefault() {} });
+  send(tree).onClick({ stopPropagation() {} });
+  assert.equal(sent.length, 0, "both submission paths enforce the gate");
+  assert.equal(area(render()).value, "keep this draft", "a blocked submit cannot clear the draft");
+  props.disabledSend = false;
+  tree = render();
+  assert.equal(send(tree).disabled, false);
+  area(tree).onKeyDown({ key: "Enter", nativeEvent: {}, currentTarget: {}, preventDefault() {} });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0], "keep this draft");
+  assert.equal(area(render()).value, "");
+});
+
+test("Claude gates only the first hello; a later disconnection keeps the undelivered-message path", () => {
+  const Composer = () => null;
+  const conv = { chat: chat.emptyChat(), hello: null, connected: false, error: null, outgoing: [] };
+  const h = viewHarness("claude/ClaudeConversation.tsx", {
+    "../../lib/chat": chat, "../../lib/chat-input": input, "../../lib/codex": { isCodexRuntime: () => false },
+    "../../lib/claude": { STRAY_ENTER_MS: 250 },
+    "../AgentChat": { useConversation: () => conv, sentBySession: new Map(), useNowTick: () => 0 },
+    "../chat/Composer": { Composer }, "../chat/FolderPicker": {}, "../chat/Preview": {}, "../Icon": {},
+    "./Cards": {}, "./ClaudeTurn": { openStore: () => ({}) }, "./ClaudeTranscript": {}, "./Dock": {},
+  });
+  const props = { host: "test", target: { session: "one" }, onLeave() {} };
+  const composerProps = () => {
+    const view = h.render(h.exports.ClaudeConversation, props);
+    return findView(h.render(view.type, view.props), (el) => el.type === Composer).props;
+  };
+  assert.equal(composerProps().disabledSend, true);
+  assert.equal(composerProps().disabled, null);
+  conv.hello = { role: "rw", runtime: { id: "claude", name: "Claude" }, caps: {} };
+  conv.connected = true;
+  assert.equal(composerProps().disabledSend, false);
+  conv.connected = false;
+  assert.equal(composerProps().disabledSend, false, "reconnecting after hello may still create an undelivered message");
+});
+
+test("the shared conversation panel also gates the first hello, including its Codex handoff", () => {
+  const Composer = () => null;
+  const conv = { chat: chat.emptyChat(), hello: null, connected: false, error: null, outgoing: [] };
+  const h = viewHarness("AgentChat.tsx", {
+    "../lib/api": {}, "../lib/chat": chat, "../lib/chat-input": input,
+    "../lib/codex": { isCodexRuntime: (runtime) => runtime?.id === "codex", pendingRequest: () => null },
+    "./chat/Composer": { Composer }, "./chat/FolderPicker": {}, "./chat/Rows": {}, "./chat/Preview": {},
+    "./chat/Transcript": {}, "./codex/CodexLiveStrip": { livePlan: () => null },
+    "./codex/CodexRequestCard": {}, "./Icon": {}, "./claude/ClaudeConversation": {},
+  });
+  const props = { host: "test", target: { session: "one" }, onLeave() {}, conv };
+  const composerProps = () => findView(h.render(h.exports.ConversationPanel, props), (el) => el.type === Composer).props;
+  assert.equal(composerProps().disabledSend, true);
+  conv.hello = { role: "rw", runtime: { id: "codex", name: "Codex" }, caps: {} };
+  conv.connected = true;
+  assert.equal(composerProps().variant, "codex");
+  assert.equal(composerProps().disabledSend, false);
+  conv.connected = false;
+  assert.equal(composerProps().disabledSend, false);
+});
+
 test("the caret's word opens the / menu at the start of the message and @ anywhere", () => {
   assert.deepEqual(plain(input.autocompleteAt("/rev", 4)), { mode: "slash", query: "rev", start: 0, end: 4 });
   assert.deepEqual(plain(input.autocompleteAt("  /", 3)), { mode: "slash", query: "", start: 2, end: 3 });

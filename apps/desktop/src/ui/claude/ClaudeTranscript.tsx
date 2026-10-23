@@ -129,7 +129,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, 
   };
 
   return (
-    <div className="cl-transcript">
+    <div className="nt-transcript cl-transcript">
       {finding && <FindBar root={inner} focus={findFocus} onShow={show} onClose={onCloseFind} />}
       {quote && (
         <button type="button" className="nt-quote" style={{ top: quote.top, left: quote.left }}

@@ -435,7 +435,7 @@ public struct PhoneChatView: View {
             } else if chat.role == "ro" {
                 // Older hosts give write tickets only to the device that started the session.
                 HStack {
-                    Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台 iPhone 只能查看。")
+                    Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台设备 只能查看。")
                         .font(.footnote).foregroundStyle(.secondary)
                     Spacer()
                     if chat.log.busy && chat.connected {

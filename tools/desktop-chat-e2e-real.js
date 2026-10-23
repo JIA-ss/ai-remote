@@ -21,25 +21,69 @@
       try { const v = fn(); if (v) return v; } catch {}
       await sleep(200);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const running = () => !!$(".nt-compose .round.stop");
-  const lastTurn = () => $$(".nt-turn").at(-1);
-  // Commands of a turn: runs fold them into "运行了 5 条命令" / "Ran 5 commands"; single calls are tool lines.
+  const lastTurn = () => $$(".cl-turn").at(-1);
+  // A completed group reports its command count in its sentence. While running, open its rows and
+  // count the actual Bash bodies: descriptions can say "Echoing N" rather than naming the shell.
+  const openGroups = (turn) => {
+    for (const b of $$(".cl-group > .cl-group-hd[aria-expanded=false]", turn)) b.click();
+  };
+  const openTools = (turn) => {
+    for (const b of $$(".cl-tool:not(.cl-thought) > .cl-tool-hd[aria-expanded=false]:not(:disabled)", turn)) b.click();
+  };
   const commands = (turn) => {
     if (!turn) return 0;
+    openGroups(turn);
+    openTools(turn);
     let n = 0;
-    for (const s of $$(".nt-run .sent", turn)) for (const m of s.textContent.matchAll(/(?:运行了?|[Rr]an|[Rr]unning) ?(\d+) ?(?:条命令|commands?)/g)) n += Number(m[1]);
-    return n + $$(".nt-tl.execute, .nt-tl", turn).filter((x) => !x.closest(".nt-run") && $(".mono", x)).length;
+    for (const group of $$(".cl-group", turn)) {
+      const summary = $(".cl-group-hd .cl-sent", group);
+      if (summary) {
+        for (const m of summary.textContent.matchAll(/(?:运行了?|[Rr]an|[Rr]unning) ?(\d+) ?(?:条命令|commands?)/g)) n += Number(m[1]);
+      } else n += $$(".cl-bash", group).length;
+    }
+    return n + $$(".cl-bash", turn).filter((x) => !x.closest(".cl-group")).length;
   };
   // The folder picker (ui/chat/FolderPicker.tsx): open it, type a path, Enter browses it, the footer takes it.
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
@@ -61,7 +105,7 @@
     await sleep(100);
     $(".nt-compose .round.send").click();
   }
-  const idle = (ms) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const idle = (ms) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
 
   try {
     await until("start form", () => $(".nt-chat-start"), 30000);
@@ -76,11 +120,15 @@
     await check("the real agent starts", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 60000)));
     await check("its first turn finishes", !!(await idle(180000)));
     const t1 = lastTurn();
-    await check("the turn completed (not failed)", !$(".nt-notice.error", t1) && !$(".nt-stopped", t1), t1?.textContent.slice(-300));
-    const edit = $(".nt-diff", t1) || $(".nt-run", t1) || $(".nt-tl", t1);
+    openGroups(t1);
+    await until("tool rows", () => $(".cl-tool", t1), 5000);
+    openTools(t1);
+    await until("shell body", () => $(".cl-bash", t1), 5000);
+    await check("the turn completed (not failed)", !$(".nt-notice.error, .cl-fail", t1) && !$(".cl-stopped", t1), t1?.textContent.slice(-300));
+    const edit = $(".cl-diff", t1) || $(".cl-group", t1) || $(".cl-tool", t1);
     await check("the agent's tool calls show (edit card, run or tool line)", !!edit, t1?.textContent.slice(0, 300));
     await check("the shell command shows", /cat hello\.txt/.test(t1?.textContent ?? ""), t1?.textContent.slice(0, 300));
-    await check("there is an answer", $$(".nt-reply", t1).length > 0);
+    await check("there is an answer", $$(":scope > .cl-md", t1).length > 0);
     await check("context usage shows", !!$(".nt-ring"), $(".nt-ring")?.getAttribute("aria-label"));
     await shot("r1-first-turn");
 
@@ -93,9 +141,9 @@
     await shot("r3-slash-menu");
     ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
     await check("Tab puts the command in the message", !!(await until("chosen", () => ta.value === "/pong ", 3000)), ta.value);
+    const before = $$(".cl-turn").length;
     $(".nt-compose .round.send").click();
-    const before = $$(".nt-turn").length;
-    await until("a new turn", () => $$(".nt-turn").length > before, 30000);
+    await until("a new turn", () => $$(".cl-turn").length > before, 30000);
     await idle(180000);
     await check("the agent ran the command", /SKILLPONG/.test(lastTurn()?.textContent ?? ""), lastTurn()?.textContent.slice(-200));
 
@@ -121,7 +169,7 @@
     $(".nt-compose .round.send").click();
     await check("the sent message shows its image", !!(await until("bubble", () => $$(".nt-user:not(.nt-sending)").find((u) => $(".imgs img", u)), 30000)));
     await idle(180000);
-    await check("the agent saw the image", /red|红/i.test($$(".nt-reply", lastTurn()).map((r) => r.textContent).join(" ")), lastTurn()?.textContent.slice(-200));
+    await check("the agent saw the image", /red|红/i.test($$(":scope > .cl-md", lastTurn()).map((r) => r.textContent).join(" ")), lastTurn()?.textContent.slice(-200));
     await check("nothing is left on its way", !$(".nt-sending"), $(".nt-sending")?.textContent);
     await shot("r4-image");
 

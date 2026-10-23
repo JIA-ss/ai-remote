@@ -709,6 +709,7 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
         running={running}
         canSteer={canSteer}
         disabled={ended ? "ended" : readonly ? "readonly" : null}
+        disabledSend={!hello}
         context={chat.context}
         queued={chat.queued}
         history={history}

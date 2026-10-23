@@ -2,6 +2,11 @@ name: iPhone and iPad controller
 on:
   workflow_dispatch:
     inputs:
+      ipad_only:
+        description: "Run only iPad UI acceptance; still build and package both device families"
+        required: false
+        type: boolean
+        default: false
       build_number:
         description: "Optional CFBundleVersion (1-3 numeric components); defaults to run_number.run_attempt"
         required: false
@@ -146,6 +151,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Launch and test on iPhone simulator
+        if: ${{ !inputs.ipad_only }}
         id: iphone-tests
         run: |
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for runtime, group in json.load(sys.stdin)["devices"].items() if runtime.endswith(".iOS-26-2") for d in group if d["name"].startswith("iPhone")))')

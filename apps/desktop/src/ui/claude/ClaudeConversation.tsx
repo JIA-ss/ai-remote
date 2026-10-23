@@ -194,6 +194,7 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
           running={running}
           canSteer={!!hello?.caps?.steer}
           disabled={ended ? "ended" : readonly ? "readonly" : null}
+          disabledSend={!hello}
           context={chat.context}
           queued={chat.queued}
           history={history}

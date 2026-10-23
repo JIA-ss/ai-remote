@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -33,8 +33,63 @@
 - CI 固定 iOS 26.2 的 `iPad Pro (12.9-inch) (6th generation)`（不存在就创建同型号，缺 runtime / device type 明确失败），
   保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。原生 UI 验收待本分支 CI 执行；物理 iPad、
   实际系统 Split View / Stage Manager、外接键盘和 VoiceOver 手动遍历未测，不能用 fixture 截图替代。
+- 同步最新 main `028ccc9` 时仅 AGENTS.md 章节插入冲突，保留双方完整记录；在独立 managed worktree 处理，主工作区其他桌面 UI 改动未动。
 - Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），
   相同代码串行全量重跑 438 过 / 9 忽略 / 0 失败；没有为这次 iPad 布局改动修改 Rust。
+- 同步 main 后在隔离检出复跑：默认并发 Rust 全量 439 过 / 9 忽略 / 0 失败、fmt / Clippy / TypeScript 通过；指定 16 文件前端共 362 项，361 过 / 1 跳过，布局 12 场景、聊天模型、viewport、打包和隐私复查通过。
+  iOS workflow 默认继续两端 UI 回归；手动 `ipad_only` 只跳过已独立验过的 iPhone UI 套件，仍完整构建设备包和 iPad 验收。
+
+## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
+
+从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。
+初次**缺规格**停过，用户补交的 17 份 Markdown 与 2 张参考图已在仓库外就位；只按洁净室规格开发，没有读取官方应用实现。
+规格、截图、运行日志和隔离认证均不进公开仓库；原工作区和其他会话的现场保持原样。
+
+- **环境实测 / 基线**：macOS 27.0.1 arm64，外置盘起始可用约 1.6 TiB，Rust 1.95.0、Node.js 25.5.0、Python 3.14.2、CLT 可用，
+  已完成 `npm ci`。初次 fmt、Clippy 通过，`cargo test --workspace --locked` 退出 101：IPC 旧实例退出后立即重绑偶发失败。
+  所有失败与后续修复日志保留；不是全绿基线。16 GiB 内存的本机后续 Cargo 使用两项编译并发，复用一份 target。
+- **历史 CI 查证**：`3e69f81` 与 #43 的 `4b73551`，两平台 test/native 成功。#43 的 iPhone
+  [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39929694837)被同一 main 后续 push 取代；`3e69f81` 的
+  [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39934119268)先发生 Codex 无障碍快照失败，再在缓存保存时撞 45 分钟上限。
+  同步进来的 `a1efb9f` 已包含另线 iOS 修复及 CI 套件 9/9、折叠三连 3/3 证据；本轮没有在本机运行完整 Xcode/iOS 验收。
+- **产品修复**：Claude 恢复共享文件预览与多文件 diff 入口、有效选区随滚动的引用、查找浮层、排队/未送达可见性及回放加载态；拒绝/停止的工具不再写成成功。
+  Claude/Codex 首次 hello 前仅禁止提交、保留草稿；连接完成后的真实断线仍有未送达与重试。工作区 Codex 输入框增加底部留白。
+  共享转录通知重置舞台浮层残留的定位属性，历史失败留在所属轮次，避免永久盖住后续终端；舞台提示定位不变。
+  IPC 监听器关闭后显式释放锁，64 轮回归覆盖继承描述符仍存活、旧副本关闭不影响新实例互斥；原始偶发是否由 fork 触发未现场观测。
+- **验收修复**：保留两条线的断言并集，适配原生直接会话栏，Watch/Back 核对同一会话 ID；旧 Steps 标签不能再作为测试开关。
+  菜单首击失败仍失败，重试只继续采证；等待真实连接/回放、浏览器尺寸通知和原生截图确认，外部看门狗约束挂起，核对业务结果与应用退出码。
+  Rust HOLD 替身只由下一条 user 消息完成，生成标题等控制请求不能当插话；原失败用例及旧/新协议探针通过。
+  指针图片测试改用同一次原生快照，保留像素断言，避免把两次采样间允许的 None 误当失败。
+- **本机原生条件实测**：每个临时 home 的 host/controller 四份配置均 quiet，非持久 WebView 存储，进程活动/后台节流仅对 debug smoke 生效。
+  新日志抓到脚本外 `isTrusted=true` 激活导致切页；默认测试隔离外部指针/激活/按键，保留脚本合成操作及真实布局/滚动/控件通知，显式 visible 输入路径不变。
+  几何探针发现 AppKit 会把有标题窗口约束回屏边；默认脚本只截图 WK 内容，因此仅该临时窗口移除原生 Titled 样式并移动 frame origin。
+  harness 硬校验窗口与全部报告显示器均无相交，缺几何或仍在屏内立即失败。最终逻辑窗口实测 1280×800、DPR 2，真正离屏后 document.hidden，WK 截图正常。
+  截图仅将白名单有限入场动画推进到终态，无限指示器保留；Claude 状态行按 TC-12 停留，截图等待真实终态，不改产品节拍。
+  **未验 OS caption、物理键鼠、动画性能或帧率**；此前未核对实际几何的通过轮次不作为完全离屏证明，旧失败及旧图均保留。
+- **最终门槛实测（代码基准 `efb0df4`）**：fmt、全工作区/all-targets Clippy、TypeScript、CLI 与 Tauri debug/no-bundle 构建通过。
+  Rust 标准测试 439 过、9 忽略，另 13 项 mounts 集成检查通过；前端 368 项、367 过、1 个平台项跳过。
+  CI 前端名单补齐预览、目录、输入及同步回归；同步回归共 91 项。
+- **最终完全离屏 E2E 实测**：实际调试应用 → 控制端 → QUIC → 本机隔离被控端 → 替身，六套均连续两次通过：
+
+  | 脚本 | 每轮通过项 | 连续轮次 |
+  |---|---:|---:|
+  | workspace | 110 | 2 |
+  | Codex | 120 | 2 |
+  | chat | 72 | 2 |
+  | render | 12 | 2 |
+  | offline | 7 | 2 |
+  | preview | 31 | 2 |
+
+  被控端替身 35 项连续两轮通过；真实 Codex 被控端 44 项通过（在先前本轮运行中验证，host 产品逻辑未变）。
+  最终真实 Codex CLI 0.159.2、模型 `gpt-6-luna` 桌面整段 23 项通过，含真实 apply_patch、命令校验、改动卡、插话、停止、首击离开与按原 ID 重开回放。
+  独立复核生成文件的 2026 年四个季度末日期。模型曾改用 Shell 写文件、没有编辑事件的负例保留，没有伪造编辑卡。
+- **逐图复核**：当前完全离屏产物 132 张替身与 6 张真实 Codex，138/138 张逐张通过；实际文件集合无遗漏/重复，最终 SHA-256 与尺寸全部核对一致。只审测试会话栏或预览主体，不将截图当成物理输入或滚动交互证明。
+- **未测 / 限制**：末次复核 Claude CLI 已安装但未登录，真实 Claude 的审批、问答、计划、标题和断线整段未测；本机 Windows/WebView2、
+  完整 Xcode/iOS、真实键鼠/IME未测。macOS 结果不推导为 Windows 现场结果。早期未抓到输入来源的历史偶发不能全部归为本次外部输入。
+  本轮不安装服务、不修改系统安全设置、真实 CLI 配置或既有应用；最终自有测试进程与临时认证配置均为 0。
+- **装机状态**：另线安装记录留在其对应章节。本批代码基准 `efb0df4` 尚未装到 Mac 和 Windows 开发机；由两台开发机各自会话安装最终合入 main 的版本。
+- **下一步**：PR #45 等 test/native 的 macOS、Windows 必需检查全绿后合 main；随后分别验收并合入 `feat/workspace-stage2-final` 的数字跳转/
+  窄芯片/Claude 输出细节，以及 `feat/workspace-batch-final` 的多选批量。自建分组、拖拽、子会话树、深入搜索等继续列在 not_done，不冒充全部还原完成。
 
 ## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
 

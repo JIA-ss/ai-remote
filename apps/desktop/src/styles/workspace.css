@@ -245,6 +245,8 @@
 .ws-convo { flex: 1; min-height: 0; width: 100%; max-width: calc(768px + 64px); margin: 0 auto; padding: 0 32px; display: flex; flex-direction: column; }
 @container (max-width: 560px) { .ws-convo { padding: 0 16px; } }
 .ws-convo > .nt-chat { margin-top: 0; }
+/* Keep a whole-page Codex composer clear of the window edge, including its rounded bottom. */
+.ws-convo > .nt-chat.cdx { padding-bottom: 16px; }
 
 /* whole-page states (SP-41..45) */
 .ws-state { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 16px 48px; animation: ws-reveal .15s ease-out backwards; }

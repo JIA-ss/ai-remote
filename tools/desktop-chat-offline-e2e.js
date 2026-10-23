@@ -19,12 +19,42 @@
       try { const v = fn(); if (v) return v; } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -46,7 +76,7 @@
     const q = await until("folder field", () => $("#ag-folder-q"));
     setValue(q, CFG.work);
     keyDown(q, "Enter");
-    const work = CFG.work.split("/").pop();
+    const work = CFG.work.split(/[\\/]/).pop();
     (await until("use button", () => $(".nt-folder-crumbs .cur")?.textContent === work && $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
     setValue($("#ag-prompt"), "first");
@@ -61,6 +91,8 @@
     await send("while offline");
     const failed = await until("not sent", () => $(".nt-sending.failed"), 25000);
     await check("a message sent while the host is gone shows as not sent", !!failed, $(".nt-sending")?.textContent);
+    const bubble = $(".bubble", failed);
+    await check("the undelivered message text stays visible", !!bubble && getComputedStyle(bubble).opacity !== "0" && bubble.getBoundingClientRect().height > 0);
     await check("it says why and offers Retry and Discard", !!failed && /连接断开|connection dropped|没有响应|did not answer/.test(failed.textContent)
       && $$(".nt-ib", failed).length === 2, failed?.textContent);
     await say("e2e", `     (not sent after ${((Date.now() - t0) / 1000).toFixed(1)} s)`);

@@ -30,6 +30,8 @@ the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s l
 
 Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
 screen; screenshots land in --out.
+Screenshots settle finite entrance/exit animations at their terminal state; infinite live indicators
+stay active. This verifies screenshot content, not animation timing or performance.
 
   cargo build -p ai-remote && (cd apps/desktop && npx tauri build --debug --no-bundle)
   python3 tools/desktop-chat-e2e.py [--out /tmp/desktop-chat-e2e]
@@ -44,12 +46,116 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
 TMP = None if os.name == "nt" else "/tmp"
+
+def outside_displays(geometry: dict) -> bool:
+    """A default smoke window must be wholly outside every reported physical display."""
+    window, screens = geometry.get("window"), geometry.get("screens")
+    if not isinstance(window, dict) or not isinstance(screens, list) or not screens:
+        return False
+    for rect in [window, *screens]:
+        if not isinstance(rect, dict) or any(type(rect.get(k)) is not int for k in ("x", "y", "width", "height")):
+            return False
+        if rect["width"] <= 0 or rect["height"] <= 0:
+            return False
+    return all(window["x"] + window["width"] <= screen["x"]
+               or screen["x"] + screen["width"] <= window["x"]
+               or window["y"] + window["height"] <= screen["y"]
+               or screen["y"] + screen["height"] <= window["y"] for screen in screens)
+
+
+SMOKE_INPUT_ISOLATION = r'''
+// Default smoke is driven by injected DOM events. An unrelated native click/key must not drive
+// this throwaway window; explicit --visible runs keep real input for the input-method tests.
+(() => {
+  if (__ALLOW_NATIVE_INPUT__) return;
+  const block = (event) => {
+    if (!event.isTrusted) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "smoke",
+      message: `ignored external native input: ${event.type}` }).catch(() => {});
+  };
+  for (const type of ["click", "dblclick", "contextmenu", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "wheel"])
+    document.addEventListener(type, block, { capture: true, passive: false });
+})();
+'''
+
+SMOKE_TRACE_UI = r'''
+(() => {
+  const ids = new WeakMap();
+  let next = 0, previous = "";
+  const id = (el) => { if (!el) return null; if (!ids.has(el)) ids.set(el, ++next); return ids.get(el); };
+  const state = () => ({ route: document.querySelector('.win')?.dataset.route,
+    rail: id(document.querySelector('.nt-rail')), chat: id(document.querySelector('.nt-chat')),
+    tab: document.querySelector('.nt-rail .seg [role=tab].sel')?.textContent.trim(),
+    view: document.querySelector('.nt-chat')?.className, picker: !!document.querySelector('.nt-chat-picker') });
+  const log = (type, value) => window.__TAURI_INTERNALS__.invoke('log_from_page',
+    { level: 'e2e', message: `     ui-trace ${type}: ${JSON.stringify(value)}` }).catch(() => {});
+  document.addEventListener('click', (event) => {
+    const el = event.target instanceof Element ? event.target.closest('.nt-rail .seg [role=tab], .nt-chat-menu [role=menuitem], .nt-chat-menu-btn, .nt-anchor .b, .ws-menu-item, .ws-modes button, .ws-row-more, .ws-tb button') : null;
+    if (el) void log('click', { text: el.textContent.trim(), classes: el.className, trusted: event.isTrusted,
+      state: state(), stack: String(new Error().stack).replace(/\n/g, ' | ').slice(0, 900) });
+  }, true);
+  for (const type of ['keydown', 'mouseup']) document.addEventListener(type, (event) => {
+    if (type === 'keydown' && !(event.metaKey || event.ctrlKey || event.altKey || ['Escape','ArrowLeft','ArrowRight','Enter'].includes(event.key))) return;
+    if (type === 'mouseup' && event.button < 3) return;
+    void log(type, { key: event.key, code: event.code, button: event.button, meta: event.metaKey, ctrl: event.ctrlKey,
+      alt: event.altKey, shift: event.shiftKey, trusted: event.isTrusted, state: state(),
+      target: event.target instanceof Element ? event.target.outerHTML.slice(0, 300) : null });
+  }, true);
+  new MutationObserver(() => {
+    const current = state(), signature = JSON.stringify(current);
+    if (signature !== previous) { previous = signature; void log('state', current); }
+  }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+})();
+'''
+
+SMOKE_PREPARE_SHOT = r'''
+// Screenshot-only terminal state for finite entrance/exit animations, not an animation performance test.
+window.__smokePrepareShot = async (name) => {
+  if (typeof document.getAnimations !== "function") throw new Error("screenshot animation inspection is unavailable");
+  const entrances = new Set(["cdx-in", "cdx-out", "cdx-fade", "cdx-grow", "cl-fade", "cl-card-in", "cl-q-in",
+    "ws-pop", "ws-reveal", "ws-palette-in", "ws-toast-in"]);
+  const value = (v) => Number.isFinite(v) ? v : v == null ? null : String(v);
+  const label = (el) => {
+    if (!el) return null;
+    const classes = typeof el.className === "string" ? el.className : el.className?.baseVal ?? "";
+    return `${el.tagName ?? "element"}${el.id ? `#${el.id}` : ""}${classes ? `.${classes.trim().replace(/\s+/g, ".")}` : ""}`;
+  };
+  const describe = (animation) => {
+    const ancestors = [];
+    for (let el = animation.effect?.target, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+      const style = getComputedStyle(el);
+      if (depth === 0 || style.opacity !== "1" || el.classList?.contains("cdx-reveal")) {
+        ancestors.push({ element: label(el), opacity: style.opacity, transform: style.transform });
+      }
+    }
+    return { animation: animation.animationName ?? animation.id ?? "", currentTime: value(animation.currentTime),
+      endTime: value(animation.effect?.getComputedTiming().endTime), playState: animation.playState, ancestors };
+  };
+  const animations = document.getAnimations();
+  // A finite streaming sweep is not an entrance/exit animation and must keep its real state too.
+  const terminal = animations.filter((animation) => entrances.has(animation.animationName)
+    && Number.isFinite(animation.effect?.getComputedTiming().endTime));
+  const log = (phase, samples, layout) => window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "e2e",
+    message: `     稳定截图的有限动画终态: ${JSON.stringify({ shot: name, phase, samples, layout })}` });
+  await log("before", animations.map((animation) => ({ ...describe(animation), finishForScreenshot: terminal.includes(animation) })));
+  for (const animation of terminal) animation.finish();
+  await Promise.all(terminal.map((animation) => animation.finished));
+  // Force style and layout after finishing, before the caller asks the native webview to capture.
+  const rect = document.documentElement.getBoundingClientRect();
+  const layout = { width: rect.width, height: rect.height, bodyHeight: document.body.offsetHeight };
+  await log("after", terminal.map(describe), layout);
+};
+'''
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
@@ -363,15 +469,16 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         f'[[agent]]\nid = "codexfake"\nbase = "codex"\nname = "Codex fake"\n{codex_entry}{extra}', encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k not in ("AI_REMOTE_HOST", "AI_REMOTE_HOME")}
 
-    def cli(*args, home):
+    def cli(*args, home, timeout=120):
         return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=120, env=env)
+                              encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
     log = open(base / "host.log", "w")
     stderr_log = open(options.out / "app.stderr.log", "w", encoding="utf-8")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
-    code = 1
     app = None
+    watchdog = None
+    code = 1
     try:
         for _ in range(100):
             r = cli("--json", "pair-code", "--level", "admin", home=host_home)
@@ -384,8 +491,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         doctor = cli("doctor", home=host_home).stdout
         network = next((l for l in doctor.splitlines() if l.split()[1:2] == ["network"]), "")
         assert network.split()[:1] == ["ok"] and "quiet" in network, "the test host is not in quiet mode:\n" + doctor
-        # A new name each run also makes the temporary host easy to distinguish in diagnostics.
-        # Debug smoke windows use a nonpersistent WebView store, separate from the installed app.
+        # A new host name also makes each run's session references distinguishable in the logs.
+        # The debug smoke window uses nonpersistent webview storage, separate from installed apps.
         assert cli("pair", ticket, "--name", f"e2e-{os.getpid()}", home=desk).returncode == 0, "the desktop profile did not pair"
         name = json.loads(cli("--json", "hosts", home=desk).stdout)[0]["name"]
         print(f"host {name!r}, desktop profile {desk}")
@@ -402,7 +509,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
   }) });
 })();
 '''
-        script.write_text(metadata + source.read_text(encoding="utf-8")
+        script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.visible))
+                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
@@ -416,11 +524,29 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             app_env["AI_REMOTE_SMOKE_VISIBLE"] = "1"
         app = subprocess.Popen([str(options.app)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                encoding="utf-8", errors="replace", env=app_env)
+        # A blocked UI thread can prevent the in-app smoke deadline from exiting. Bound the
+        # external process too, so the harness reports a failure and can clean up its test homes.
+        watchdog = threading.Timer(options.secs + 45, app.kill)
+        watchdog.daemon = True
+        watchdog.start()
         passed = None
+        isolated_storage = False
+        isolated_placement = options.visible
         for line in app.stderr:
             stderr_log.write(line)
             stderr_log.flush()
             line = line.rstrip()
+            if line == "[smoke] isolated nonpersistent webview storage":
+                isolated_storage = True
+            if line.startswith("[smoke] geometry ") and not options.visible:
+                try:
+                    geometry = json.loads(line[len("[smoke] geometry "):])
+                    isolated_placement = outside_displays(geometry)
+                except (ValueError, TypeError, AttributeError):
+                    isolated_placement = False
+                if not isolated_placement:
+                    print("the smoke window is not verified outside every display")
+                    app.terminate()
             if options.verbose:
                 print("  |", line[:400])
             if line.startswith("[page e2e] "):
@@ -450,11 +576,18 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                 print("  app:", line[:300])
             elif line.startswith("[smoke]"):
                 print("  " + line)
-        print(f"  app exited with {app.wait(timeout=60)}")
-        code = 0 if passed else 1
+        app_code = app.wait(timeout=60)
+        print(f"  app exited with {app_code}")
+        code = 0 if passed and app_code == 0 and isolated_storage and isolated_placement else 1
+        if not isolated_placement:
+            print("the default smoke run has no verified off-screen placement")
+        if not isolated_storage:
+            print("the debug app did not confirm isolated webview storage; rebuild it before running E2E")
         if passed is None:
             print("the script did not finish")
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         # A stopped script must not leave its test window alive (or writing its test profile).
         if app is not None and app.poll() is None:
             app.terminate()
@@ -463,6 +596,16 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             except subprocess.TimeoutExpired:
                 app.kill()
                 app.wait(timeout=10)
+        if app is not None:
+            try:
+                snapshot = cli("--json", "chat", "sessions", home=desk, timeout=10)
+                (options.out / "sessions.json").write_text(json.dumps({"exit": snapshot.returncode,
+                    "stdout": snapshot.stdout, "stderr": snapshot.stderr}, ensure_ascii=False, indent=2), encoding="utf-8")
+            except subprocess.TimeoutExpired:
+                (options.out / "sessions.json").write_text(json.dumps({"error": "session snapshot timed out"}), encoding="utf-8")
+            exported = work / "export.py"
+            if exported.is_file() and not exported.is_symlink() and exported.stat().st_size <= 1024 * 1024:
+                shutil.copyfile(exported, options.out / "work-export.py")
         cli("stop-agent", home=desk)
         cli("stop-host", home=host_home)
         try:
@@ -470,6 +613,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         except subprocess.TimeoutExpired:
             host.kill()
         log.close()
+        shutil.copyfile(base / "host.log", options.out / "host.log")
         stderr_log.close()
         shutil.rmtree(webview, ignore_errors=True)
     if code:

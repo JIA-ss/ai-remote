@@ -31,7 +31,7 @@ public struct PhoneNetwork: Sendable, Equatable {
             return "仅限局域网且没打开“在局域网里自动发现电脑”时，配对码找不到电脑。请改用完整票据，或到 网络 里打开自动发现。"
         }
         if lan, ["did not answer", "timed out", "no address", "unreachable"].contains(where: message.contains) {
-            return "\(message)\n\n仅限局域网：确认电脑和这台 iPhone 在同一网络，电脑上也选了“仅限局域网”，并在 网络 里核对它的地址。"
+            return "\(message)\n\n仅限局域网：确认电脑和这台设备 在同一网络，电脑上也选了“仅限局域网”，并在 网络 里核对它的地址。"
         }
         return message
     }

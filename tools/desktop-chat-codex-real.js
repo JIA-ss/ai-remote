@@ -22,12 +22,42 @@
       try { const v = fn(); if (v) return v; } catch {}
       await sleep(200);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -35,6 +65,54 @@
   }
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const rememberedSession = () => {
+    try { return JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host] ?? null; }
+    catch { return null; }
+  };
+  const elementLabel = (el) => el ? `${el.tagName ?? "element"}${el.id ? `#${el.id}` : ""}${el.className ? `.${String(el.className).trim().replace(/\s+/g, ".")}` : ""}` : null;
+  const elementState = (el) => el ? { element: elementLabel(el), connected: el.isConnected, text: el === document.body ? "" : text(el).slice(0, 160),
+    ariaExpanded: el.getAttribute("aria-expanded"), disabled: !!el.disabled, inert: elementLabel(el.closest("[inert]")) } : null;
+  const menuButton = () => $(".nt-chat.cdx .nt-chat-hd .nt-chat-menu-btn");
+  const detailedNavigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    url: window.location.href,
+    chat: $(".nt-chat")?.className ?? null,
+    chatConnected: $(".nt-chat")?.isConnected ?? false,
+    menuButton: elementState(menuButton()),
+    menu: !!$(".nt-chat.cdx .nt-chat-menu"),
+    menuItems: $$(".nt-chat.cdx .nt-chat-menu [role=menuitem]").map(elementState),
+    picker: !!$(".nt-chat-picker"),
+    startForm: !!$(".nt-chat-start"),
+    pickerText: text($(".nt-chat-picker, .nt-chat-start")).slice(0, 500),
+    sessions: $$(".nt-sessions .sess").length,
+    sessionRows: $$(".nt-sessions .sess").map(elementState),
+    rememberedSession: rememberedSession(),
+    hidden: document.hidden,
+    focused: document.hasFocus(),
+    activeElement: elementState(document.activeElement),
+    dialogs: $$("[role=dialog]").length,
+  });
+  async function hostSessionsSnapshot() {
+    let timer;
+    try {
+      const reply = await Promise.race([
+        invoke("call_tool", { host: CFG.host, tool: "chat_sessions", args: {}, person: true }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("chat_sessions diagnostic timed out after 10000 ms")), 10000); }),
+      ]);
+      const body = reply.content?.find((item) => item.type === "text")?.text ?? "";
+      if (reply.isError) return { error: body || "chat_sessions refused" };
+      return reply.structuredContent ?? JSON.parse(body);
+    } catch (error) {
+      return { error: String(error) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function navigationFailure(reason, evidence = {}) {
+    const scene = detailedNavigationState();
+    const hostSessions = await hostSessionsSnapshot();
+    await say("e2e", `     navigation failure: ${JSON.stringify({ reason, ...evidence, scene, hostSessions })}`);
+  }
   const navigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     chat: $(".nt-chat")?.className ?? null,
@@ -45,31 +123,53 @@
     hidden: document.hidden,
     focus: document.activeElement?.className ?? null,
   });
-  // Navigation and picker data load independently. Retry only a missed navigation, and keep that
-  // first failure counted even if recovery works; a picker waiting for runtimes needs no second click.
-  async function leaveSession(what, ready) {
+  // Navigation and picker data load independently. A recovery click never erases the failed first
+  // click; once the picker has opened, wait for its content without clicking the old conversation.
+  // Real-agent runs add connected-action selection and detailed native/host diagnostics.
+  async function leaveSession(what, ready, options = {}) {
+    const state = options.state ?? navigationState;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const before = navigationState();
-      const button = $$(".nt-chat-hd .ico").at(-1);
-      if (!button) throw new Error(`${what}: menu button missing; ${JSON.stringify({ before })}`);
+      const before = state();
+      const button = options.menuButton ? options.menuButton() : $$(".nt-chat-hd .ico").at(-1);
+      if (!button || button.isConnected === false) {
+        if (options.describe) await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
+        await options.report?.("navigation-failure", { attempt, before, reason: "menu button missing or disconnected" });
+        throw new Error(`${what}: menu button missing or disconnected; ${JSON.stringify({ before })}`);
+      }
+      const buttonBeforeClick = options.describe?.(button);
       button.click();
-      const item = await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]);
-      if (!item) throw new Error(`${what}: menu did not open; ${JSON.stringify({ before, after: navigationState() })}`);
+      const item = await until("session menu", () => {
+        const choices = $$(".nt-chat-menu [role=menuitem]");
+        return options.pickItem ? options.pickItem(choices) : choices[0];
+      });
+      if (!item || item.isConnected === false) {
+        const evidence = { attempt, before, buttonBeforeClick, buttonAfterClick: options.describe?.(button), after: state() };
+        if (options.describe) await check(`Other sessions is connected on attempt ${attempt}`, false, JSON.stringify(evidence));
+        await options.report?.("navigation-failure", { ...evidence, reason: "no connected Other sessions action; no other action was clicked" });
+        throw new Error(`${what}: no connected Other sessions action; ${JSON.stringify(evidence)}`);
+      }
+      const itemBeforeClick = options.describe?.(item);
       const connected = item.isConnected;
       item.click();
-      const clicked = navigationState();
+      const clicked = state();
       const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
+      const evidence = { attempt, connected, before, clicked, after: state(), buttonBeforeClick, itemBeforeClick,
+        buttonAfterClick: options.describe?.(button), itemAfterClick: options.describe?.(item) };
+      await options.report?.("attempt", evidence);
       await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
       if (!left) {
-        await say("e2e", `     navigation failure: ${JSON.stringify({ attempt, connected, before, clicked, after: navigationState() })}`);
+        await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("navigation-failure", evidence);
         continue;
       }
-      const waiting = navigationState(), started = Date.now();
+      const waiting = state(), started = Date.now();
       if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
       const loaded = await until(`${what}: picker content ready`, ready, 30000);
       await check(`${what} content loads after leaving the conversation`, !!loaded);
       if (!loaded) {
-        await say("e2e", `     picker loading failure: ${JSON.stringify({ elapsedMs: Date.now() - started, waiting, after: navigationState() })}`);
+        const evidence = { elapsedMs: Date.now() - started, waiting, after: state() };
+        await say("e2e", `     picker loading failure: ${JSON.stringify(evidence)}`);
+        await options.report?.("picker-loading-failure", evidence);
         throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
       }
       return;
@@ -122,7 +222,7 @@
       if (m) setValue(m, CFG.model);
       await check(`the model is set to ${CFG.model}`, m?.value === CFG.model);
     }
-    setValue($("#ag-prompt"), "Read export.py. Fix quarter_end so it returns the real last day of the quarter's last month, using calendar.monthrange, and add the imports it needs. "
+    setValue($("#ag-prompt"), "Read export.py with the file-reading tool. Use the apply_patch editing tool to fix quarter_end so it returns the real last day of the quarter's last month, using calendar.monthrange, and add the imports it needs. Do not rewrite files with shell or Python commands: this task tests the editing-tool UI. "
       + "Then check it by running exactly: python3 -c \"import export; print([str(export.quarter_end(2026, q)) for q in range(1, 5)])\". Reply in two short sentences.");
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
@@ -192,10 +292,40 @@
     await shot("r04-stopped");
 
     // 4. Reopen: the conversation replays in the Codex view.
-    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 1);
-    $$(".nt-sessions .sess").find((s) => s.textContent.includes(CFG.agent)).click();
-    const back = await until("replay", () => $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
-    await check("reopening replays it in the Codex view", !!back, `${turns().length} turns`);
+    const originalSession = rememberedSession();
+    if (!originalSession) {
+      await navigationFailure("the original session id is missing before leaving");
+      throw new Error("cannot verify reopening the original session: no remembered session id");
+    }
+    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 1, {
+      state: detailedNavigationState, menuButton, describe: elementState,
+      pickItem: (choices) => choices.find((choice) => /^(Other sessions|其他会话)$/.test(text(choice))),
+      report: async (phase, evidence) => {
+        if (phase === "attempt") {
+          await say("e2e", `     navigation attempt: ${JSON.stringify(evidence)}`);
+          for (const [step, value] of Object.entries({ before: evidence.before, clicked: evidence.clicked, after: evidence.after }))
+            await say("e2e", `     navigation ${evidence.attempt} ${step}: ${JSON.stringify(value)}`);
+        } else await navigationFailure(phase, evidence);
+      },
+    });
+    const candidates = $$(".nt-sessions .sess").filter((row) => text($(".nm", row)).split(" · ")[0] === CFG.agent);
+    if (candidates.length !== 1 || !candidates[0].isConnected) {
+      await check("the original agent has one connected session row to reopen", false, `${candidates.length} matches for ${CFG.agent}`);
+      await navigationFailure("the original session row is missing, ambiguous or disconnected", { originalSession,
+        candidates: candidates.map(elementState) });
+      throw new Error("cannot reopen the original session: its session row is missing, ambiguous or disconnected");
+    }
+    const row = candidates[0], rowBeforeClick = elementState(row);
+    row.click();
+    const back = await until("replay of the original session", () => rememberedSession() === originalSession
+      && $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
+    await check("reopening replays it in the Codex view", !!back,
+      `${turns().length} turns; expected session ${originalSession}; actual ${rememberedSession()}`);
+    if (!back) {
+      await navigationFailure("the original session did not reopen and replay", { originalSession, rowBeforeClick,
+        rowAfterClick: elementState(row) });
+      throw new Error("the required original session did not reopen in the Codex view");
+    }
     await shot("r05-replay");
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);

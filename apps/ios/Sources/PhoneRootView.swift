@@ -518,7 +518,7 @@ public struct PhoneRootView: View {
                                     .buttonStyle(.bordered).buttonBorderShape(.capsule)
                             }.padding(.vertical, 6)
                         }
-                        Text("当前 iPhone 版本尚未实现 Face ID 审批签名。允许操作请在被控电脑确认。").font(.footnote).foregroundStyle(.secondary)
+                        Text("当前移动端版本尚未实现 Face ID 审批签名。允许操作请在被控电脑确认。").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 Section("最近活动") {

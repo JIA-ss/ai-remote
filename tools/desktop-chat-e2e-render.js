@@ -24,12 +24,42 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -72,8 +102,8 @@
     await document.fonts.ready;
     const fam = (sel) => { const el = $(sel); return el ? getComputedStyle(el).fontFamily : "(none)"; };
     const loaded = [...document.fonts].filter((f) => f.status === "loaded").map((f) => `${f.family} ${f.weight}`);
-    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".nt-md")} | code: ${fam(".nt-md pre, .nt-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
-    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".nt-md")).fontFamily, "读了文件"));
+    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".cl-md")} | code: ${fam(".cl-md pre, .cl-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
+    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".cl-md")).fontFamily, "读了文件"));
 
     // A long message folds behind a fading mask.
     const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}: 这是一条很长的消息，用来检查折叠 the long message folds`).join("\n");
@@ -89,7 +119,13 @@
     await check("a long message folds", !!bubble && bubble.classList.contains("folded"), bubble?.className);
     await check("the fold fades out with mask-image", /gradient/.test(mask ?? ""), mask);
     await check("the folded text is cut short", !!txt && txt.clientHeight < txt.scrollHeight, `${txt?.clientHeight} < ${txt?.scrollHeight}`);
-    bubble?.scrollIntoView({ block: "center" });
+    const feed = $(".nt-chat-body");
+    feed.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    bubble?.scrollIntoView({ block: "center", behavior: "instant" });
+    await check("the folded message is in the viewport", !!(await until("folded bubble in view", () => {
+      const b = bubble.getBoundingClientRect(), f = feed.getBoundingClientRect();
+      return b.top >= f.top && b.bottom <= f.bottom;
+    })));
     await sleep(300);
     await shot("10-long-folded");
 
@@ -113,7 +149,9 @@
     const body = $(".nt-chat-body");
     await check("the list follows the newest turn", body.scrollHeight - body.scrollTop - body.clientHeight < 40,
       `${body.scrollHeight} - ${body.scrollTop} - ${body.clientHeight}`);
+    body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
     body.scrollTop = 0;
+    await check("the reader reaches the first turn", !!(await until("scrolled to the first turn", () => body.scrollTop < 1)));
     await sleep(300);
     await check("far turns still paint when scrolled to", turns()[0].getBoundingClientRect().height > 50, turns()[0].getBoundingClientRect().height);
     await shot("11-scrolled-top");

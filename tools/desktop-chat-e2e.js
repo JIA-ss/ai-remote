@@ -25,12 +25,42 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   // React-controlled fields: set through the native setter so React sees the change.
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -252,6 +282,10 @@
     $(".nt-chat-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     const qb = await until("quote button", () => $(".nt-quote"));
     await check("a selection offers Quote", !!qb);
+    await check("Quote is positioned over its selection", getComputedStyle(qb).position === "absolute");
+    $(".nt-chat-body").dispatchEvent(new Event("scroll", { bubbles: true }));
+    await sleep(150);
+    await check("scrolling keeps Quote attached to the selected reply", !!$(".nt-quote") && qb.isConnected);
     await shot("16-quote");
     qb.click();
     await check("Quote puts it in the composer as a quote", !!(await until("quoted", () => composer().value.startsWith("> "), 3000)), composer().value.slice(0, 80));
@@ -316,6 +350,7 @@
     await send("take me back");
     const queued = await until("queued", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back")));
     await check("the waiting message shows above the composer", !!queued);
+    await check("the waiting message is visible from its first frame", !!queued && getComputedStyle(queued).opacity === "1" && queued.getBoundingClientRect().height > 0);
     await shot("03-queued");
     const remove = await until("remove button", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back"))?.querySelectorAll(".nt-ib")[1]);
     remove.click();

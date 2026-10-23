@@ -38,16 +38,41 @@
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const running = () => !!$(".nt-compose .round.stop");
-  const lastTurn = () => $$(".nt-turn").at(-1);
-  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const lastTurn = () => $$(".cl-turn").at(-1);
+  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
   const dialog = () => $(".nt-pv-dlg");
   const esc = () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
   const times = [];
@@ -91,8 +116,8 @@
     await check("the files turn finishes", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)) && !!(await idle(30000)));
 
     const turn = lastTurn();
-    const run = $(".nt-run", turn);
-    $(".rh", run).click();
+    const run = $(".cl-group", turn);
+    $(".cl-group-hd", run).click();
     await sleep(200);
     const eyes = () => $$(".nt-pv-btn", turn).map((b) => b.getAttribute("aria-label"));
     await check("written HTML and Markdown get a preview button, the command does not", eyes().length === 3 &&

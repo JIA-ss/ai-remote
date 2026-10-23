@@ -10,7 +10,7 @@ struct PhoneNetworkSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("这台 iPhone 怎样连接你的电脑。连接始终是端到端加密的。")
+                    Text("这台设备 怎样连接你的电脑。连接始终是端到端加密的。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Section("连接方式") {
@@ -20,7 +20,7 @@ struct PhoneNetworkSheet: View {
                 Section {
                     Toggle(isOn: Binding(get: { network?.lanDiscovery ?? false },
                                          set: { on in Task { await store.changeNetwork(lanDiscovery: on) } })) {
-                        option("在局域网里自动发现电脑", "电脑换了 IP 也能自动找到；在“仅限局域网”下，配对码也要靠它。只查找、不广播这台 iPhone，但开着时大约每秒向整个局域网发一次查询，在公共网络里建议关闭。")
+                        option("在局域网里自动发现电脑", "电脑换了 IP 也能自动找到；在“仅限局域网”下，配对码也要靠它。只查找、不广播这台设备，但开着时大约每秒向整个局域网发一次查询，在公共网络里建议关闭。")
                     }
                     .disabled(disabled).accessibilityIdentifier("network-discovery")
                     if network?.lan != true {
@@ -32,7 +32,7 @@ struct PhoneNetworkSheet: View {
                     }
                 } header: { Text("可选功能") } footer: {
                     Text(network?.locked == true
-                         ? "已锁定为关闭：这台 iPhone 的 ai-remote.toml 设置了 quiet = true。"
+                         ? "已锁定为关闭：这台设备 的 ai-remote.toml 设置了 quiet = true。"
                          : "默认关闭，需要时再打开：它们会在你的连接之外往网络上发包。")
                 }
                 if network?.lan == true {
