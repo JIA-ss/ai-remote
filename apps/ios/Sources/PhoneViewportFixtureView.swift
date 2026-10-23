@@ -1,6 +1,7 @@
 #if DEBUG && os(iOS)
 import SwiftUI
 import CoreGraphics
+import UIKit
 
 /// Simulator UI acceptance only. Reuses the production session and UIKit viewport,
 /// while replacing transport with an explicit static picture and input observer.
@@ -30,7 +31,10 @@ public struct PhoneViewportFixtureView: View {
 
     public var body: some View {
         GeometryReader { area in
-            let resized = ProcessInfo.processInfo.arguments.contains("-ui-viewport-resize") && area.size.width < area.size.height
+            // The software keyboard changes available height, not window orientation.
+            let orientation = UIDevice.current.orientation
+            let portrait = orientation.isPortrait || (!orientation.isLandscape && area.size.width < area.size.height + area.safeAreaInsets.bottom)
+            let resized = ProcessInfo.processInfo.arguments.contains("-ui-viewport-resize") && portrait
             PhoneRootView(store: store, fixtureInputObserver: { tool, args in
                 inputCount += 1
                 lastInput = JSONValue.object(["sequence": .number(Double(inputCount)), "tool": .string(tool), "args": .object(args)]).text
