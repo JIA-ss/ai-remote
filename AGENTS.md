@@ -31,7 +31,9 @@
   CLT 6.4 缺失 SwiftUI State 宏插件，原始 mac-core 全模块检查仍受既有 `PhoneNetworkSheet` / `PhonePairing` 的 `@State` 阻断。
   仅在 target 中复制源码并将这两处既有 @State 包装换成项目的 PhoneViewState 别名后，全模块 macOS typecheck 通过；没有将该兼容变更混入产品。
 - CI 固定 iOS 26.2 的 `iPad Pro (12.9-inch) (6th generation)`（不存在就创建同型号，缺 runtime / device type 明确失败），
-  保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。原生 UI 验收待本分支 CI 执行；物理 iPad、
+  保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。首轮代码 `7f993b8` 的 CI 39984998117：iPhone 33 项（1 跳过）无失败；iPad 1 过 / 4 失败。
+  三项失败的原始 AX 树显示外层面板 ID 覆盖了输入框等子项 ID，草稿值仍在；给面板 / 整窗 / sheet 增加 contain 容器隔离标记。另一项使用了 x=0 的 ScrollView AX 容器边界，改用实际 UITextView 全球坐标检验并排。
+  原始日志、6 张已到达截图和 xcresult 保留；下一轮不重跑已通过的 iPhone UI，只跑集成 main 后的完整 iPad 五项。截图改采 XCUIScreen 并附窗口 / 图像方向元数据，不把首轮带黑边的画布当实际方向证明。物理 iPad、
   实际系统 Split View / Stage Manager、外接键盘和 VoiceOver 手动遍历未测，不能用 fixture 截图替代。
 - 同步最新 main `028ccc9` 时仅 AGENTS.md 章节插入冲突，保留双方完整记录；在独立 managed worktree 处理，主工作区其他桌面 UI 改动未动。
 - Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），

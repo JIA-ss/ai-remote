@@ -187,7 +187,7 @@ final class PhonePadUITests: XCTestCase {
         open.tap()
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
         waitFor("the companion reopens the selected Codex session and draft") {
-            panel.textViews["chat-input"].value as? String == "Expanded iPad draft"
+            panel.textViews["chat-input"].exists && panel.textViews["chat-input"].value as? String == "Expanded iPad draft"
                 && app.staticTexts["Does monthrange handle leap years?"].exists
         }
         shot(app, "p18-reopened-companion-same-codex-draft")
@@ -202,6 +202,7 @@ final class PhonePadUITests: XCTestCase {
         let sheet = app.descendants(matching: .any)["chat-sheet"]
         XCTAssertTrue(panel.waitForExistence(timeout: 15))
         let input = app.textViews["chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
         input.typeText("Container resize draft")
         rotate(app, to: .portrait)
@@ -213,7 +214,7 @@ final class PhonePadUITests: XCTestCase {
         rotate(app, to: .landscapeLeft)
         waitFor("widening the container moves the open sheet back inline") { !sheet.exists && panel.exists }
         waitFor("the migration keeps chat open with its draft") {
-            panel.textViews["chat-input"].value as? String == "Container resize draft"
+            panel.textViews["chat-input"].exists && panel.textViews["chat-input"].value as? String == "Container resize draft"
         }
         let viewport = app.descendants(matching: .any)["remote-viewport"]
         assertCompanionPanel(app, viewport: viewport, panel: panel)
@@ -237,11 +238,15 @@ final class PhonePadUITests: XCTestCase {
     }
 
     private func assertSidebarBesideConversation(_ app: XCUIApplication, sidebar: XCUIElement) {
-        let column = app.descendants(matching: .any)["chat-conversation-column"]
+        // UIKit can expose a ScrollView's frame before its split-column content inset.
+        // The actual editable text view gives the visible conversation's global bounds.
+        let column = app.textViews["chat-input"]
         XCTAssertTrue(column.waitForExistence(timeout: 5))
         XCTAssertGreaterThan(sidebar.frame.width, 200)
         XCTAssertLessThanOrEqual(sidebar.frame.maxX, column.frame.minX + 2, "sessions remain beside the conversation")
         XCTAssertGreaterThan(column.frame.width, 400)
+        XCTAssertLessThanOrEqual(column.frame.width, 820)
+        assertInsideWindow(column, app: app)
         assertInsideWindow(sidebar, app: app)
     }
 
@@ -325,7 +330,7 @@ final class PhonePadUITests: XCTestCase {
     }
 
     private func shot(_ app: XCUIApplication, _ name: String) {
-        let image = app.screenshot()
+        let image = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: image)
         attachment.name = name
         attachment.lifetime = .keepAlways
@@ -333,5 +338,16 @@ final class PhonePadUITests: XCTestCase {
         let directory = URL(fileURLWithPath: "/tmp/ios-pad")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? image.pngRepresentation.write(to: directory.appendingPathComponent(name + ".png"))
+        let frame = app.windows.firstMatch.frame
+        let picture = image.image
+        let diagnostics: [String: Any] = [
+            "window": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height],
+            "screenshot": ["width": picture.size.width, "height": picture.size.height,
+                           "orientation": picture.imageOrientation.rawValue],
+            "device_orientation": XCUIDevice.shared.orientation.rawValue,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: diagnostics, options: [.sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent(name + ".json"))
+        }
     }
 }

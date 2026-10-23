@@ -47,6 +47,7 @@ public struct PhoneChatView: View {
                 .accessibilityIdentifier("chat-session-sidebar")
                 .navigationTitle("智能体")
                 .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 300)
+                .toolbar(removing: .sidebarToggle)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) { newChatButton }
                 }

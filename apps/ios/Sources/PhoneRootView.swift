@@ -30,6 +30,7 @@ public struct PhoneRootView: View {
             Group {
                 if chatExpanded, store.showChat, let chat = store.chat {
                     PhoneChatView(chat: chat) { closeChat() }
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("ipad-chat-workspace")
                 } else if fullscreen, let host = store.selected {
                     // A full-window session has no navigation container consuming its
@@ -50,6 +51,7 @@ public struct PhoneRootView: View {
                                     chatExpanded = true
                                 }) { closeChat() }
                                     .frame(width: layout.chatPanelWidth)
+                                    .accessibilityElement(children: .contain)
                                     .accessibilityIdentifier("ipad-chat-panel")
                             }
                         }
@@ -86,6 +88,7 @@ public struct PhoneRootView: View {
         .sheet(isPresented: chatSheet) {
             if let chat = store.chat {
                 PhoneChatView(chat: chat) { closeChat() }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("chat-sheet")
             }
         }
