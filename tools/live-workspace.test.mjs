@@ -11,8 +11,8 @@ const runtime = { jsx, jsxs: jsx, Fragment: Symbol("Fragment") };
 const plain = (x) => JSON.parse(JSON.stringify(x));
 const nodes = (tree) => !tree || typeof tree !== "object" ? [] : [tree, ...[tree.props?.children].flat(10).flatMap(nodes)];
 
-function compiled(path, dependencies, globals = {}) {
-  const source = readFileSync(new URL(`../apps/desktop/src/${path}`, import.meta.url), "utf8");
+function compiled(path, dependencies, globals = {}, expose = "") {
+  const source = readFileSync(new URL(`../apps/desktop/src/${path}`, import.meta.url), "utf8") + expose;
   const text = ts.transpileModule(source, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
   } }).outputText;
@@ -353,4 +353,75 @@ test("an opened workspace conversation stays mounted through offline reports, wh
   assert.ok(!nodes(offlinePage).some((node) => node.type === initiallyOffline.ClaudeConversation));
   assert.ok(nodes(offlinePage).some((node) => node.props?.title === "ws_disconnected"), "opening an already offline computer still explains its offline state");
   initiallyOffline.close();
+});
+
+test("sidebar numeric jumps respect embedded ownership and consumed keys without changing standalone shortcuts", () => {
+  const h = hooks(), listeners = new Map(), timers = new Map(), opened = [];
+  let timerId = 0, embedded = true;
+  const root = new Element(); root.dataset.keyboardActive = "true";
+  const list = new Element(root), inside = new Element(root), remote = new Element();
+  const body = new Element(), html = new Element();
+  const document = { body, documentElement: html, activeElement: inside, hidden: false,
+    addEventListener() {}, removeEventListener() {} };
+  const rows = Array.from({ length: 3 }, (_, index) => {
+    const owner = new Element(list); owner.dataset.rowKey = `test-host/session-${index + 1}`;
+    const button = new Element(owner);
+    button.getClientRects = () => [{}];
+    button.closest = (selector) => selector === "[data-row-key]" ? owner : selector === "[inert], [aria-hidden=true]" && root.inert ? root : null;
+    button.focus = () => { document.activeElement = button; };
+    button.scrollIntoView = () => {};
+    return button;
+  });
+  list.querySelectorAll = () => rows;
+  list.closest = (selector) => selector === '.ws[data-embedded="true"]' && embedded ? root : null;
+  const window = { devicePixelRatio: 2,
+    addEventListener(name, listener) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(listener); },
+    removeEventListener: (name, listener) => listeners.get(name)?.delete(listener),
+    matchMedia: () => ({ addEventListener() {}, removeEventListener() {} }) };
+  const data = compiled("lib/workspace.ts", { "./chat": compiled("lib/chat.ts", {}) });
+  const parts = compiled("ui/workspace/parts.tsx", {
+    react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": {}, "../../lib/platform": { detectOs: () => "mac" },
+    "../util": {}, "lucide-react": {},
+  }, { Node, document, window });
+  const { testSessionJumps } = compiled("ui/workspace/Sidebar.tsx", {
+    react: h.react, "react/jsx-runtime": runtime, "lucide-react": {}, "../../lib/chat": {},
+    "../../lib/i18n": {}, "../../lib/workspace": data, "../util": {}, "./actions": {},
+    "./ModeSwitch": {}, "./parts": parts, "./useWorkspace": {},
+  }, { Node, HTMLElement: Element, window, document,
+    setTimeout: (run) => { timers.set(++timerId, run); return timerId; }, clearTimeout: (id) => timers.delete(id),
+    MutationObserver: class { observe() {} disconnect() {} },
+  }, "\nexport const testSessionJumps = useSessionJumps;\n");
+  const ref = { current: list };
+  const render = () => h.render(() => testSessionJumps(ref, false, (key) => opened.push(key)), {});
+  const press = (target, key, code = key, defaultPrevented = false) => {
+    const event = { target, key, code, defaultPrevented, ctrlKey: true, shiftKey: true, metaKey: false, altKey: false,
+      repeat: false, isComposing: false, preventDefault() { this.defaultPrevented = true; } };
+    for (const listener of listeners.get("keydown") ?? []) listener(event);
+    return event;
+  };
+  const hold = () => { const pending = [...timers.values()]; timers.clear(); for (const run of pending) run(); };
+  render();
+  press(remote, "Shift"); hold();
+  assert.deepEqual(plain(render()), [], "remote modifier holds do not reveal workspace badges");
+  assert.equal(press(remote, "!", "Digit1").defaultPrevented, false);
+  assert.deepEqual(opened, [], "the remote computer keeps Ctrl+Shift+digits");
+  press(inside, "Shift"); hold();
+  assert.deepEqual(plain(render()), ["test-host/session-1", "test-host/session-2", "test-host/session-3"]);
+  press(remote, "@", "Digit2");
+  assert.deepEqual(plain(render()), [], "an external key removes held workspace hints");
+  press(inside, "Shift");
+  press(inside, "Shift", "Shift", true); hold();
+  assert.deepEqual(plain(render()), [], "a consumed key cancels the hold instead of installing hints");
+  assert.equal(press(inside, "@", "Digit2").defaultPrevented, true);
+  assert.deepEqual(opened, ["test-host/session-2"], "an owned quick digit still jumps without waiting for hints");
+  document.activeElement = body;
+  press(body, "!", "Digit1");
+  assert.deepEqual(opened, ["test-host/session-2", "test-host/session-1"], "logical right-pane body ownership also works for jumps");
+  root.inert = true;
+  assert.equal(press(inside, "!", "Digit1").defaultPrevented, false);
+  root.inert = false; embedded = false;
+  assert.equal(press(remote, "#", "Digit3").defaultPrevented, true, "standalone retains its existing window shortcuts");
+  assert.deepEqual(opened, ["test-host/session-2", "test-host/session-1", "test-host/session-3"]);
+  h.close();
+  assert.ok([...listeners.values()].every((set) => set.size === 0));
 });
