@@ -9,7 +9,7 @@
 // project's own, on this app's Markdown and previews.
 
 import { ChevronRight, CircleCheck, FileDiff, MessageCircleQuestion, Play } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { baseName, type QuestionBlock, type ToolItem, type Turn } from "../../lib/chat";
 import {
   activeAct,
@@ -265,14 +265,33 @@ function actWords(a: Act, cwd: string | null): ReactNode {
 // ---------------------------------------------------------------------------------------------
 // Details: a command's shell, an edit's diff, a tool's input and output
 
-/** Lines of output shown before "N more lines". */
-const OUTPUT_LINES = 40;
+/**
+ * A command's output: its end in view (the box keeps its bottom pinned as output arrives, with no
+ * script: a reversed column), the rest a scroll away, long lines scrolling sideways; edges fade where
+ * there is more to scroll to.
+ */
+function OutputBox({ text }: { text: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ up: false, down: false });
+  const measure = () => {
+    const el = box.current;
+    if (!el) return;
+    // In a reversed column the bottom is scrollTop 0 and going up is negative.
+    const fromBottom = Math.abs(el.scrollTop);
+    const room = el.scrollHeight - el.clientHeight;
+    const next = { up: room - fromBottom > 1, down: fromBottom > 1 };
+    setEdges((e) => (e.up === next.up && e.down === next.down ? e : next));
+  };
+  useLayoutEffect(measure, [text]);
+  return (
+    <div ref={box} className="x-out-box" data-up={edges.up || undefined} data-down={edges.down || undefined} onScroll={measure} tabIndex={0}>
+      <pre className="x-out">{text}</pre>
+    </div>
+  );
+}
 
 function ShellCard({ info, x }: { info: ExecInfo; x: ToolItem }) {
-  const [all, setAll] = useState(false);
   const out = info.output.replace(/\n+$/, "");
-  const lines = out ? out.split("\n") : [];
-  const shown = all || lines.length <= OUTPUT_LINES ? out : lines.slice(-OUTPUT_LINES).join("\n");
   const running = toolRunning(x);
   return (
     <div className="cdx-shell">
@@ -285,10 +304,7 @@ function ShellCard({ info, x }: { info: ExecInfo; x: ToolItem }) {
       </div>
       <div className="x-sh-bd">
         <pre className="x-cmd"><span className="x-ps">$ </span><Highlighted code={info.command} lang="sh" /></pre>
-        {!all && lines.length > OUTPUT_LINES && (
-          <button type="button" className="x-more" onClick={() => setAll(true)}>{t("cdx_more_lines", { n: lines.length - OUTPUT_LINES })}</button>
-        )}
-        {out ? <pre className="x-out">{shown}</pre> : !running && <div className="x-none">{t("cdx_no_output")}</div>}
+        {out ? <OutputBox text={out} /> : !running && <div className="x-none">{t("cdx_no_output")}</div>}
         {x.truncated && <div className="x-none">{t("hc_cut")}</div>}
       </div>
       <div className={cx("x-sh-ft", !running && !x.stopped && info.exitCode !== null && info.exitCode !== 0 && "x-bad")}>

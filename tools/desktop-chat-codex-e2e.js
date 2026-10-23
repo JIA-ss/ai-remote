@@ -354,10 +354,21 @@
     await check("the long command is listed in the work", !!bigCmd, lines(wm).join(" | "));
     await openLine(bigCmd);
     const bigShell = await until("big shell", () => $(".cdx-shell", bigCmd), 3000);
-    await check("long output shows its last 40 lines and offers the rest", !!bigShell && /260/.test(text($(".x-more", bigShell))) && /line 300/.test(text($("pre.x-out", bigShell))) && !/line 1:/.test(text($("pre.x-out", bigShell))),
-      bigShell && text($(".x-more", bigShell)));
-    $(".x-more", bigShell)?.click();
-    await check("and all of it on request", !!(await until("all output", () => /line 1:/.test(text($("pre.x-out", bigShell))), 3000)));
+    const box = bigShell && $(".x-out-box", bigShell);
+    // Where the output's last line is drawn, against the box it scrolls in.
+    const lastLineIn = () => {
+      const node = $("pre.x-out", box).firstChild;
+      const i = node.textContent.indexOf("line 300");
+      const r = document.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + 8);
+      const a = r.getBoundingClientRect(), b = box.getBoundingClientRect();
+      return a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
+    };
+    await check("long output shows its end in a box that scrolls, lines unwrapped, nothing cut",
+      !!box && box.scrollHeight > box.clientHeight + 100 && lastLineIn() && getComputedStyle($("pre.x-out", box)).whiteSpace === "pre" && !$(".x-more", bigShell),
+      box && `${box.scrollHeight}/${box.clientHeight} ${getComputedStyle($("pre.x-out", box)).whiteSpace}`);
+    await check("all of it is a scroll away", /line 1:/.test($("pre.x-out", box).textContent) && box.dataset.up !== undefined);
     await shot("c07-many");
 
     // 9. A Codex that sends no phases: the last text of the finished turn is the answer.
@@ -402,6 +413,54 @@
     await check("a late phase still makes the answer, shown once",
       /LATE ANSWER/.test(lateAnswer) && text(lastTurn()).split("LATE ANSWER").length === 2 && /Checking the README first/.test(text($(".cdx-work", lastTurn()))),
       text(lastTurn()).slice(-240));
+
+    // 10e. One round button; Esc twice stops (the first press says "Esc" on it).
+    await sendTurn("SLOW once more");
+    await until("live sleep", () => $$(".cdx-act.is-live", lastTurn()).some((a) => /sleep 30/.test(text(a))));
+    const rounds = () => $$(".nt-compose .round");
+    await check("while it runs, one round button: Stop", rounds().length === 1 && rounds()[0].classList.contains("stop"), rounds().map((r) => r.className).join(" | "));
+    setValue(composer(), "a thought");
+    await sleep(150);
+    await check("with text typed it is the one that sends, as a steer", rounds().length === 1 && /^(Steer|插话)$/.test(rounds()[0].getAttribute("aria-label")),
+      rounds().map((r) => r.getAttribute("aria-label")).join(" | "));
+    setValue(composer(), "");
+    await sleep(150);
+    const esc = () => composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    esc();
+    await sleep(200);
+    await check("Esc once: it still runs, the button says Esc", lastTurn().classList.contains("running") && text(rounds()[0]) === "Esc", text(rounds()[0]));
+    await sleep(2300);
+    await check("the press is forgotten after 2 s", text(rounds()[0]) !== "Esc" && lastTurn().classList.contains("running"));
+    esc();
+    await sleep(300);
+    esc();
+    await check("Esc twice stops the turn", !!(await until("stopped by Esc", () => $(".cdx-worked.x-stop", lastTurn()), 10000)));
+    await idle();
+
+    // 10f. While the answer streams: a message waits for the turn to end; moving up lets go of the end.
+    await sendTurn("DRAWL tell me about it");
+    await until("answer streaming", () => $(".cdx-answer.streaming", lastTurn()), 15000);
+    const nDrawl = turns().length;
+    setValue(composer(), "QUEUED after the answer");
+    await sleep(150);
+    await check("sending while the answer streams queues it", /^(Queue|排队)$/.test(rounds()[0].getAttribute("aria-label")), rounds()[0].getAttribute("aria-label"));
+    rounds()[0].click();
+    await until("composer cleared", () => composer().value === "", 5000);
+    const body = $(".nt-chat-body");
+    const fromEnd = () => body.scrollHeight - body.scrollTop - body.clientHeight;
+    body.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, bubbles: true }));
+    body.scrollTop = Math.max(0, body.scrollTop - 300);
+    await sleep(1500);
+    await check("moving up while it streams lets go of the end", fromEnd() > 100 && $(".nt-jump").dataset.shown === "true" && !!$(".cdx-answer.streaming", lastTurn()),
+      `${Math.round(fromEnd())} px from the end`);
+    await check("the way back is a round button, three dots waving while it works", $$(".nt-jump .x-wave i").length === 3);
+    $(".nt-jump").click();
+    await sleep(600);
+    await check("it goes back to the end and follows again", fromEnd() <= 24 && $(".nt-jump").dataset.shown === "false", `${Math.round(fromEnd())} px`);
+    await idle(30000);
+    const queuedTurn = await until("queued turn", () => turns().length > nDrawl && /QUEUED after the answer/.test(text($(".nt-user", lastTurn()))), 20000);
+    await check("the queued message is the next turn, not a steer", !!queuedTurn && !$$(".nt-user[data-steer='1']", turns()[nDrawl - 1]).length);
+    await idle();
     const codexTurns = turns().length;
 
     // 11. Find works in the Codex view.
@@ -428,13 +487,22 @@
       $(".nt-chat")?.className);
     await shot("c09-claude");
 
-    // 13. Back to the Codex session: it replays the same way.
+    // 13. Back to the Codex session: it replays the same way, loading first, never "empty".
+    let emptySeen = false, loadingSeen = false;
+    const lw = new MutationObserver(() => {
+      if ($(".nt-chat-empty")) emptySeen = true;
+      if ($(".cdx-loading")) loadingSeen = true;
+    });
     $$(".nt-chat-hd .ico").at(-1).click();
     (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
     await until("sessions", () => $$(".nt-sessions .sess").length >= 2);
+    lw.observe(document.body, { subtree: true, childList: true });
     $$(".nt-sessions .sess").find((s) => s.textContent.includes("Codex fake")).click();
     const replayed = await until("replay", () => $(".nt-chat.cdx") && turns().length === codexTurns && turns()[0].querySelector(".cdx-worked"), 30000);
+    lw.disconnect();
     await check("reopening the Codex session replays every turn in the Codex view", !!replayed, `${turns().length} of ${codexTurns} turns`);
+    await check("while it loads it says so, never that the conversation is empty", loadingSeen && !emptySeen, `${loadingSeen} ${emptySeen}`);
+    await check("no question card comes back", !$(".cdx-reqs"));
     t1 = turns()[0];
     await until("first turn folded", () => !$(".cdx-work", t1), 3000);
     await check("the first turn is folded again, with its changes", WORKED.test(text($(".cdx-worked", t1))) && !$(".cdx-work", t1) && !!$(".cdx-changes", t1));

@@ -19,6 +19,7 @@ the host's Codex adapter sends (initialize, thread/start and /resume, skills/lis
            (turn/diff/updated) after each change, as current Codex versions do
   BADPATCH an edit that does not apply (the file change fails), then the answer
   LATEPHASE a remark and the answer whose phase only arrives when they complete
+  DRAWL    a command, then a long answer streamed slowly (about 8 s)
   anything else: a short answer
 
 `--version` and `login status` answer like codex-cli, so the host's detection accepts it.
@@ -424,6 +425,15 @@ def latephase(n):
     end()
 
 
+def drawl(n):
+    if not command(f"c{n}", "ls", [{"type": "listFiles", "command": "ls", "path": None}], "README.md\nexport.py\n", 0, 0.2):
+        return end("interrupted")
+    text = "".join(f"Paragraph {i}: the report tool exports one file per quarter, and each file is checked.\n\n" for i in range(1, 25))
+    if not message(f"a{n}", text, "final_answer", 24, 0.08):
+        return end("interrupted")
+    end()
+
+
 def short(n):
     if not reasoning(f"r{n}", "**Answering directly**"):
         return end("interrupted")
@@ -433,7 +443,7 @@ def short(n):
 
 
 SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact), ("RESOLVED", resolved),
-           ("REEDIT", reedit), ("BADPATCH", badpatch), ("LATEPHASE", latephase)]
+           ("REEDIT", reedit), ("BADPATCH", badpatch), ("LATEPHASE", latephase), ("DRAWL", drawl)]
 
 
 def run_turn(text):

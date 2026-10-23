@@ -38,7 +38,7 @@ import {
   type RuntimesReport,
   type SessionInfo,
 } from "../lib/chat";
-import { isCodexRuntime, pendingRequest } from "../lib/codex";
+import { codexTurn, isCodexRuntime, pendingRequest } from "../lib/codex";
 import { t } from "../lib/i18n";
 import { quoteText, rememberImages } from "../lib/chat-input";
 import { Search } from "lucide-react";
@@ -533,6 +533,33 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
     setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, request ?? undefined), c));
     setFollow((n) => n + 1);
   };
+  // Codex: Esc twice within 2 s stops the turn (the first press shows "Esc" on the Stop button); a
+  // message sent while the answer is already coming waits for the turn to end.
+  const [escArmed, setEscArmed] = useState(false);
+  const escTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const runningTurn = running ? [...chat.turns].reverse().find((x) => x.status === "running") : undefined;
+  const disarm = () => {
+    clearTimeout(escTimer.current);
+    setEscArmed(false);
+  };
+  useEffect(disarm, [runningTurn?.n, running]);
+  const answering = useMemo(() => codex && !!runningTurn && codexTurn(runningTurn).answer !== null, [codex, runningTurn]);
+  const onEsc = (e: React.KeyboardEvent) => {
+    if (!codex || e.key !== "Escape" || e.repeat || !running || readonly || asking || e.nativeEvent.isComposing) return;
+    const at = e.target as HTMLElement;
+    if (document.querySelector(".nt-chat .nt-ac") || at.closest(".nt-findbar, .nt-qd.editing, [role=dialog], [role=menu]")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (escArmed) {
+      disarm();
+      send({ interrupt: {} });
+      (document.querySelector(".nt-chat .nt-compose textarea") as HTMLTextAreaElement | null)?.focus();
+    } else {
+      setEscArmed(true);
+      clearTimeout(escTimer.current);
+      escTimer.current = setTimeout(() => setEscArmed(false), 2000);
+    }
+  };
   const onContinue = useCallback(() => {
     sendRef.current(inputCommand(newId(), t("hc_continue_prompt")));
     setFollow((n) => n + 1);
@@ -560,6 +587,7 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
     <div
       className={cx("nt-chat", codex && "cdx")}
       onKeyDownCapture={(e) => {
+        onEsc(e);
         // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
           e.preventDefault();
@@ -619,6 +647,7 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
         variant={codex ? "codex" : "default"}
         session={target.session}
         cwd={hello?.cwd ?? null}
+        loading={!hello || chat.seq < hello.seq}
       />
       </PreviewProvider>
       {plan && <CodexLiveStrip plan={plan} />}
@@ -642,8 +671,18 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
         context={chat.context}
         queued={chat.queued}
         history={history}
-        onSend={sendText}
-        onStop={() => send({ interrupt: {} })}
+        onSend={(text, mode, images) => {
+          disarm();
+          sendText(text, mode, images);
+        }}
+        onStop={() => {
+          disarm();
+          send({ interrupt: {} });
+        }}
+        variant={codex ? "codex" : "default"}
+        stopping={chat.state === "interrupting"}
+        forceQueue={answering}
+        escArmed={escArmed}
         onDequeue={(id) => send({ dequeue: { id } })}
         onEditQueued={(id, text) => {
           for (const c of editQueued(id, newId(), text)) send(c);
