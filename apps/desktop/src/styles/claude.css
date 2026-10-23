@@ -55,6 +55,7 @@
 .cl-col { box-sizing: border-box; width: 100%; max-width: calc(var(--cl-measure) + 2 * var(--cl-gutter)); margin: 0 auto; padding: 16px var(--cl-gutter) 12px;
   display: flex; flex-direction: column; gap: var(--cl-gap); font-size: var(--cl-body); line-height: var(--cl-line); color: var(--cl-text); }
 .cl-empty { color: var(--cl-muted); font-size: 13px; line-height: 1.55; padding: 28px 12px; text-align: center; }
+.cl-loading { align-self: center; display: inline-flex; align-items: center; gap: 8px; padding: 28px 12px; color: var(--cl-muted); font-size: 13px; }
 .cl-turn { display: flex; flex-direction: column; gap: var(--cl-item-gap); min-width: 0; }
 .cl-turn.far { content-visibility: auto; contain-intrinsic-size: auto 320px; }
 

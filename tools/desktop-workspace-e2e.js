@@ -104,10 +104,14 @@
   const lastTurn = () => turns().at(-1);
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".ws-main .cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
   async function send(t) {
-    const ta = await until("composer", composer);
+    // Opening a row mounts its composer before the new chat attachment has finished connecting.
+    // Sending in that gap deliberately creates an undelivered message instead of reaching the agent.
+    const ta = await until("connected composer", () => !$(".ws-main .nt-chat-status, .ws-main .cl-loading") && composer());
+    if (!ta) throw new Error(`the conversation did not connect: ${text($(".ws-main .nt-chat-status"))}`);
     setValue(ta, t);
-    await sleep(100);
-    $(".ws-main .nt-compose .round.send").click();
+    const button = await until("message ready to send", () => $(".ws-main .nt-compose .round.send:not(:disabled)"));
+    if (!button) throw new Error("the composer never enabled Send");
+    button.click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
   const said = (t, ms = 20000) => until(`reply "${t}"`, () => lastTurn()?.textContent.includes(t), ms);
@@ -235,7 +239,10 @@
     await check("the sidebar groups the session under its folder", !!group1 && groupName(k1) === workName, text($(".ws-gh-label", group1)));
     await check("the title starts as the first message", rowTitle(k1).includes("整理季度导出脚本") && pageTitle().includes("整理季度导出脚本"), `${rowTitle(k1)} | ${pageTitle()}`);
     const blink = await until("running dot", () => dotOf(k1) === "running" && $(".ws-row-dot", rowOf(k1)));
-    await check("a running session's dot is grey and blinks", !!blink && getComputedStyle(blink).animationName !== "none", blink && getComputedStyle(blink).animationName);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const dotAnimation = blink && getComputedStyle(blink).animationName;
+    await check("a running session's dot respects the system's motion setting", !!blink && (reducedMotion ? dotAnimation === "none" : dotAnimation !== "none"),
+      `reduced motion: ${reducedMotion}; animation: ${dotAnimation}`);
     await shot("a02-running");
     // The stand-in answers the title 4 s after it is asked; the row and the page learn it from the next poll.
     const sentAt = Date.now();
@@ -243,24 +250,42 @@
     if (titled) await note(`the agent's title showed ${((Date.now() - sentAt) / 1000).toFixed(1)} s after the first message`);
     await check("the agent's title replaces it", !!titled, `${rowTitle(k1)} | ${pageTitle()}`);
     await check("the turn ends by itself", !!(await said("later: DELAYTITLE", 20000)));
-    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 15000)), dotOf(k1));
+    // An occluded/locked desktop polls at the store's idle 20 s cadence, instead of 4 s. Observe
+    // the natural poll; do not force a refresh or fail before that configured interval can elapse.
+    const settledAt = Date.now();
+    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 35000)),
+      `${dotOf(k1)}; ${(Date.now() - settledAt) / 1000} s; visibility: ${document.visibilityState}`);
 
     // A2. Unread: a session that moves on while another is open gets a blue dot; opening it clears it.
     await newSession();
     await check("New keeps the last place", folderShown() === workName, folderShown());
-    const k2 = await start("LATER8 第二个会话");
+    const k2 = await start("LATER25 第二个会话");
     await check("a second session opens", !!k2 && k2 !== k1, k2);
     await openRow(k1);
     await check("its dot runs while the other is open", dotOf(k2) === "running", dotOf(k2));
-    const unread = await until("unread dot", () => dotOf(k2) === "unread", 30000);
+    const unread = await until("unread dot", () => dotOf(k2) === "unread", 45000);
     await check("it ends while away: blue unread dot", !!unread, dotOf(k2));
     await shot("a03-unread");
     await openRow(k2);
     await check("opening it clears the dot", !!(await until("read", () => dotOf(k2) === null, 10000)), dotOf(k2));
 
     // A3. A failed turn: red dot; Mark as done takes it away.
+    const failedAt = Date.now();
+    const failedSnapshot = async (label) => {
+      const report = await hostCall("chat_sessions");
+      const m = report.sessions.find((x) => x.id === k2.slice(k2.indexOf("/") + 1));
+      await note(`failed-turn ${label} ${JSON.stringify({
+        elapsedMs: Date.now() - failedAt, visibility: document.visibilityState, focused: document.hasFocus(), dot: dotOf(k2),
+        connectionStatus: text($(".ws-main .nt-chat-status")),
+        outgoing: $$(".ws-main [data-out]").map((x) => ({ state: x.dataset.out, error: $(".st.bad", x)?.title ?? null })),
+        host: m ? { state: m.state, turns: m.turns, last_status: m.last_status, seq: m.seq, last_seq: m.last_seq, last_activity: m.last_activity, pending: m.pending } : null
+      })}`);
+    };
+    await failedSnapshot("before-send");
     await send("FAIL 这一轮会失败");
+    await failedSnapshot("sent");
     await check("a failed turn shows a red dot", !!(await until("failed dot", () => dotOf(k2) === "failed", 20000)), dotOf(k2));
+    await failedSnapshot("after-dot-wait");
     await shot("a04-failed");
     await rowMenu(k2);
     const done = byLetter("U");
@@ -317,7 +342,8 @@
     await rowMenu(k2);
     byLetter("A")?.click();
     await check("archiving takes the row out of the list", !!(await until("archived", () => !rowOf(k2), 10000)));
-    await check("with a toast that can undo it", !!$$(".ws-toast").find((x) => $(".ws-toast-act", x)));
+    // The row disappears optimistically; the Undo toast follows the host's completed update.
+    await check("with a toast that can undo it", !!(await until("archive Undo toast", () => $$(".ws-toast").find((x) => $(".ws-toast-act", x)), 10000)));
     const filter = () => $$(".ws-menu [role=menuitemradio]");
     $(".ws-list-filter").click();
     (await until("list menu", () => filter().length >= 12 && filter(), 5000))?.[10].click();
@@ -372,7 +398,8 @@
     const byFolder = await until("folder hit", () => $$(".ws-palette-row").length >= 1 && $$(".ws-palette-row").every((r) => text($(".ws-palette-where", r)).includes("src")) && $$(".ws-palette-row"), 5000);
     await check("it finds a session by its folder", !!byFolder && byFolder.length === 1, $$(".ws-palette-row").map(text).join(" | "));
     keyDown(pq2, "Enter");
-    await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 10000)));
+    await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 30000)),
+      `selected: ${currentKey()}; expected: ${k3}; view: ${$(".ws-main .nt-chat")?.className}`);
 
     // A9. ↑ / ↓ over the list; a row's button opens it (Enter's own action on a focused button).
     $(".ws-row-main", rowOf(k1))?.focus();
@@ -487,7 +514,7 @@
     await until("approval card", () => $(".ws-main .cl-ap"), 20000);
     await sleep(500);
     btn(/^(拒绝|Deny)\s*(esc)?$/)?.click();
-    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: (?:The user )?declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
     await idle();
 
     // B2. A question in two parts: single choice, then multiple with Other; the answers in the transcript.
@@ -588,8 +615,10 @@
       const att = await hostCall("chat_attach", { session: kb.split("/").pop() });
       const cb = window.__TAURI_INTERNALS__.transformCallback((raw) => { if (raw && "message" in raw) other2.events.push(raw.message); });
       const channel = { toJSON: () => `__CHANNEL__:${cb}`, __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cb}` };
-      const [id] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
+      const [id, hello] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
       other2.id = id;
+      // Replayed approvals precede this hello; only answer the new request that this step sends.
+      other2.since = hello.seq;
     } catch (e) {
       other2.error = String(e && e.message || e);
     }
@@ -597,7 +626,7 @@
     if (other2.id !== undefined) {
       await send("PERMIT 另一端来批");
       const card = await until("approval card", () => $(".ws-main .cl-ap"), 20000);
-      const ev = await until("permission event on the second connection", () => other2.events.filter((e) => e && e.t === "permission").at(-1), 10000);
+      const ev = await until("permission event on the second connection", () => other2.events.filter((e) => e && e.t === "permission" && e.seq > other2.since).at(-1), 10000);
       await check("the card shows here and the request on the other connection", !!card && !!ev, ev?.rid);
       await shot("c01-before-other");
       if (ev) await invoke("chat_send", { id: other2.id, command: { permit: { rid: ev.rid, decision: "once" } } });
@@ -664,6 +693,19 @@
     await idle();
     await check("the one taken back never ran", !$$(".ws-main .nt-user").some((u) => u.textContent.includes("撤回我")));
     await shot("b09-after-queue");
+
+    // The live view uses this same conversation. Opening it must carry the session ID, rather than
+    // silently taking an unrelated session remembered by the former side panel.
+    $(".ws-tb-end .ws-ib").click();
+    const rail = await until("this conversation beside the live view", () => {
+      const el = $(".win[data-route=session] .nt-rail .nt-chat");
+      return el && el.textContent.includes("SLOW 排队测试") && el.textContent.includes("you said: 排队一条（已改）") && el;
+    }, 30000);
+    await check("Watch opens the current conversation beside the live view", !!rail && rail.classList.contains("cl-root"));
+    await check("the live view has no old steps or agent-perspective tabs", !$(".nt-rail > .seg"));
+    await shot("c03-watch-current-session");
+    $(".gl-toolbar .back:not(:disabled)").click();
+    await check("Back returns to the same workspace session", !!(await until("workspace session again", () => $(".ws-session") && currentKey() === kq)));
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }

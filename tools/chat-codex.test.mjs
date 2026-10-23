@@ -582,3 +582,96 @@ test("a turn stopped while answering says how long it ran in all", () => {
   ]);
   assert.equal(codex.workedMs(c.turns[0], 0), 62000);
 });
+
+function navigationFixture(file, scenario) {
+  const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+  const start = source.indexOf("  const navigationState = ");
+  const end = source.indexOf(file.includes("-real") ? "  const running = " : "  const lines = ", start);
+  assert.ok(start >= 0 && end > start, "run the script's navigation helper itself");
+  const state = { chat: true, picker: false, form: false, sessions: 0, menu: false, route: "session", time: 0, clicks: 0 };
+  const checks = [], logs = [], waits = [], events = [];
+  const later = (ms, run) => { events.push({ at: state.time + ms, run }); events.sort((a, b) => a.at - b.at); };
+  const trigger = { click: () => { state.menu = true; } };
+  const item = { isConnected: true, click() {
+    state.menu = false;
+    state.clicks++;
+    if (scenario === "recover" && state.clicks === 1) return;
+    later(50, () => {
+      state.chat = false;
+      state.route = scenario === "wrong-route" ? "devices" : "session";
+      state.picker = scenario !== "wrong-route";
+      state.sessions = state.picker ? 1 : 0;
+      state.form = scenario === "recover";
+    });
+    if (scenario === "delayed-form") later(12000, () => { state.form = true; });
+  } };
+  const $ = (sel) => {
+    if (sel === ".win") return { dataset: { route: state.route } };
+    if (sel === ".nt-chat") return state.chat ? { className: "nt-chat cdx" } : null;
+    if (sel === ".nt-chat-picker") return state.picker ? {} : null;
+    if (sel === ".nt-chat-start") return state.form ? {} : null;
+    if (sel === ".nt-chat-menu") return state.menu ? {} : null;
+    throw new Error(`unexpected selector ${sel}`);
+  };
+  const $$ = (sel) => {
+    if (sel === ".nt-chat-hd .ico") return state.chat ? [trigger] : [];
+    if (sel === ".nt-chat-menu [role=menuitem]") return state.menu ? [item] : [];
+    if (sel === ".nt-sessions .sess") return Array(state.sessions).fill({});
+    throw new Error(`unexpected selector ${sel}`);
+  };
+  const context = { $, $$, document: { hidden: false, activeElement: { className: "ico" } },
+    Date: class extends Date { static now() { return state.time; } },
+    check: async (name, ok) => { checks.push({ name, ok }); },
+    say: async (_level, text) => { logs.push(text); },
+    until: async (what, ready, ms = 20000) => {
+      waits.push({ what, ms });
+      const deadline = state.time + ms;
+      let result = ready();
+      if (result) return result;
+      while (events[0]?.at <= deadline) {
+        const event = events.shift(); state.time = event.at; event.run();
+        result = ready();
+        if (result) return result;
+      }
+      state.time = deadline;
+      return null;
+    },
+  };
+  vm.runInNewContext(source.slice(start, end) + "\nglobalThis.leave = leaveSession;", context);
+  return { state, checks, logs, waits, leave: () => context.leave("the start form opens", () => state.form) };
+}
+
+for (const file of ["desktop-chat-codex-e2e.js", "desktop-chat-codex-real.js"]) {
+  test(`e2e navigation (${file}): a picker before its delayed form needs one click`, async () => {
+    const s = navigationFixture(file, "delayed-form");
+    await s.leave();
+    assert.equal(s.state.clicks, 1);
+    assert.equal(s.state.form, true);
+    assert.equal(s.checks.filter((c) => !c.ok).length, 0);
+    assert.ok(s.waits.some((w) => w.ms === 30000), "content has its own 30-second loading budget");
+    assert.ok(s.logs.some((l) => /waiting for.*after leaving/.test(l)));
+    assert.ok(!s.logs.some((l) => l.includes("navigation failure")));
+  });
+  test(`e2e navigation (${file}): a missed first click remains failed after recovery`, async () => {
+    const s = navigationFixture(file, "recover");
+    await s.leave();
+    assert.equal(s.state.clicks, 2);
+    assert.equal(s.checks.filter((c) => !c.ok).length, 1);
+    assert.equal(s.logs.filter((l) => l.includes("navigation failure")).length, 1);
+  });
+  test(`e2e navigation (${file}): content failing to load never clicks the menu again`, async () => {
+    const s = navigationFixture(file, "load-fails");
+    await assert.rejects(s.leave(), /left the conversation but.*did not load/);
+    assert.equal(s.state.clicks, 1);
+    assert.ok(s.checks.some((c) => !c.ok));
+    assert.ok(s.logs.some((l) => l.includes("picker loading failure")));
+    assert.ok(!s.logs.some((l) => l.includes("navigation failure")));
+  });
+  test(`e2e navigation (${file}): reaching the devices page cannot count as leaving to the picker`, async () => {
+    const s = navigationFixture(file, "wrong-route");
+    await assert.rejects(s.leave(), /menu button missing/);
+    assert.equal(s.state.route, "devices");
+    assert.ok(s.checks.some((c) => !c.ok));
+    assert.ok(s.logs.some((l) => l.includes("navigation failure")));
+  });
+}

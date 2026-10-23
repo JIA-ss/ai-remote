@@ -238,6 +238,24 @@ public struct PhoneChatTurn: Identifiable, Equatable, Sendable {
     }
 }
 
+/// The retained turns a bounded transcript renders, and the first turn of its next older page.
+/// This selects a view window only; it never removes events or turns from the chat model.
+public struct PhoneChatTurnWindow: Equatable, Sendable {
+    public let range: Range<Int>
+    public let earlier: Int?
+}
+
+/// Initially show the latest page. Once the reader opens history, keep its first turn by number so
+/// new turns do not push that history out of view. A model that has already dropped an old turn
+/// starts at the next retained one instead.
+public func phoneChatTurnWindow(_ turns: [PhoneChatTurn], first: Int? = nil, pageSize: Int = 30) -> PhoneChatTurnWindow {
+    let page = max(1, pageSize)
+    let start = first.flatMap { wanted in turns.firstIndex { $0.n >= wanted } }
+        ?? (turns.count - min(page, turns.count))
+    let earlier = start > 0 ? turns[start - min(page, start)].n : nil
+    return PhoneChatTurnWindow(range: start..<turns.count, earlier: earlier)
+}
+
 public struct PhoneContextUsage: Equatable, Sendable {
     public let used: Double
     public let window: Double

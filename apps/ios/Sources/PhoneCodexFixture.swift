@@ -155,6 +155,23 @@ extension PhoneChatStore {
         }
     }
 
+    /// More than one UI page, with small turns so the paging test checks mounting and ordering.
+    static func codexHistoryFixtureLog(now: Double) -> [[String: JSONValue]] {
+        var events: [[String: JSONValue]] = []
+        for n in 1...35 {
+            let ts = now - Double(36 - n) * 60_000
+            events += [
+                ["t": .string("user"), "turn": .number(Double(n - 1)), "text": .string("History request \(n)"), "ts": .number(ts)],
+                ["t": .string("turn_start"), "turn": .number(Double(n)), "ts": .number(ts + 1)],
+                ["t": .string("message"), "turn": .number(Double(n)), "id": .string("history-\(n)"),
+                 "text": .string("History response \(n)"), "phase": .string("final_answer"), "ts": .number(ts + 2)],
+                ["t": .string("turn_end"), "turn": .number(Double(n)), "status": .string("completed"), "duration_ms": .number(1), "ts": .number(ts + 3)],
+            ]
+        }
+        events.append(["t": .string("state"), "turn": .number(35), "state": .string("idle"), "queued": .array([])])
+        return events
+    }
+
     /// A Codex turn as a Codex host streams it, up to a command that keeps running (until Stop): thinking,
     /// a remark, a search and a read, a plan update, a web search, then the tests.
     func fixtureCodexTurn(_ n: Double) {

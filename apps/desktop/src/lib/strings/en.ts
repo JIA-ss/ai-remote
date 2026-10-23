@@ -415,6 +415,7 @@ export const en = {
   send: "Send",
 
   // the hand-back note while you drive
+  takeover_options: "Takeover options",
   let_watch: "Let the agent watch",
   what_changed: "What did you change?",
   optional_sent: "Optional. The agent gets it when you hand back.",

@@ -35,6 +35,47 @@
   }
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const navigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    chat: $(".nt-chat")?.className ?? null,
+    picker: !!$(".nt-chat-picker"),
+    form: !!$(".nt-chat-start"),
+    sessions: $$(".nt-sessions .sess").length,
+    menu: !!$(".nt-chat-menu"),
+    hidden: document.hidden,
+    focus: document.activeElement?.className ?? null,
+  });
+  // Navigation and picker data load independently. Retry only a missed navigation, and keep that
+  // first failure counted even if recovery works; a picker waiting for runtimes needs no second click.
+  async function leaveSession(what, ready) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const before = navigationState();
+      const button = $$(".nt-chat-hd .ico").at(-1);
+      if (!button) throw new Error(`${what}: menu button missing; ${JSON.stringify({ before })}`);
+      button.click();
+      const item = await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]);
+      if (!item) throw new Error(`${what}: menu did not open; ${JSON.stringify({ before, after: navigationState() })}`);
+      const connected = item.isConnected;
+      item.click();
+      const clicked = navigationState();
+      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
+      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
+      if (!left) {
+        await say("e2e", `     navigation failure: ${JSON.stringify({ attempt, connected, before, clicked, after: navigationState() })}`);
+        continue;
+      }
+      const waiting = navigationState(), started = Date.now();
+      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
+      const loaded = await until(`${what}: picker content ready`, ready, 30000);
+      await check(`${what} content loads after leaving the conversation`, !!loaded);
+      if (!loaded) {
+        await say("e2e", `     picker loading failure: ${JSON.stringify({ elapsedMs: Date.now() - started, waiting, after: navigationState() })}`);
+        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+      }
+      return;
+    }
+    throw new Error(`${what}: neither menu click left the conversation`);
+  }
   const running = () => !!$(".nt-compose .round.stop");
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
@@ -151,13 +192,7 @@
     await shot("r04-stopped");
 
     // 4. Reopen: the conversation replays in the Codex view.
-    // Leaving the session has, rarely, not taken (seen twice in e2e runs, never in 28 tries made to
-    // provoke it; see AGENTS.md): try once more before calling it a failure.
-    for (let tries = 0; tries < 2 && !$$(".nt-sessions .sess").length; tries++) {
-      $$(".nt-chat-hd .ico").at(-1).click();
-      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]))?.click();
-      await until("sessions", () => $$(".nt-sessions .sess").length >= 1, 8000);
-    }
+    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 1);
     $$(".nt-sessions .sess").find((s) => s.textContent.includes(CFG.agent)).click();
     const back = await until("replay", () => $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
     await check("reopening replays it in the Codex view", !!back, `${turns().length} turns`);
