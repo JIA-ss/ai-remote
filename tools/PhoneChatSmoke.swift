@@ -66,7 +66,7 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             check("the first turn (the start prompt) is answered", await wait("first turn") {
                 chat.log.turns.first?.status == "completed"
             })
-            let answer: String? = chat.log.turns.first?.blocks.compactMap { if case .text(_, let t) = $0 { t } else { nil } }.first
+            let answer: String? = chat.log.turns.first?.blocks.compactMap { if case .text(_, let t, _, _) = $0 { t } else { nil } }.first
             check("streamed deltas fold into one message", answer == "you said: from the phone", answer ?? "nil")
 
             chat.draft = "hello again"

@@ -499,8 +499,14 @@
     await sleep(400);
     const shift = body.scrollTop - top0, shrink = h0 - body.clientHeight;
     await check("a shorter list keeps the reader's place", shrink > 0 && Math.abs(shift - shrink) <= 4 && fromEnd() > 100, `scrolled ${shift} for ${shrink} px shorter`);
+    // Near the end (closer than the list is about to grow, yet not at it): taller again, the same.
+    body.scrollTop = body.scrollHeight - body.clientHeight - 30;
+    await sleep(100);
+    const top1 = body.scrollTop, h1 = body.clientHeight;
     setValue(composer(), "");
-    await sleep(200);
+    await sleep(400);
+    const grow = body.clientHeight - h1, back = top1 - body.scrollTop;
+    await check("a taller list keeps it too, even close to the end", grow > 0 && Math.abs(back - grow) <= 4, `moved ${back} for ${grow} px taller`);
     $(".nt-jump").click();
     await sleep(600);
     await check("it goes back to the end and follows again", fromEnd() <= 24 && $(".nt-jump").dataset.shown === "false", `${Math.round(fromEnd())} px`);
@@ -531,8 +537,8 @@
     await sleep(200);
     $(".nt-chat-start .btn.primary").click();
     await until("claude conversation", () => $(".nt-chat .nt-chat-hd") && /Rich fake/.test(text($(".nt-chat-hd .nm"))), 30000);
-    await until("claude turn", () => $(".nt-turn .nt-foot, .nt-turn .nt-stopped"), 30000);
-    await check("a Claude Code session keeps the panel's own rows, not Codex's", !$(".nt-chat.cdx") && !!$(".nt-turn") && !!$(".nt-run") && !$(".cdx-turn"),
+    await until("claude turn", () => $(".cl-turn .cl-foot, .cl-stopped"), 30000);
+    await check("a Claude Code session keeps its own view (Claude's), not Codex's", !$(".nt-chat.cdx") && !!$(".nt-chat.cl-root .cl-turn") && !$(".cdx-turn"),
       $(".nt-chat")?.className);
     await shot("c09-claude");
 

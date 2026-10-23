@@ -5,7 +5,8 @@ import SwiftUI
 /// host. Sending starts a turn running a slow tool; while it runs, sending joins the turn (steer) or, with
 /// `-ui-chat-no-steer`, queues; stop ends the turn as interrupted and offers 继续. With `-ui-chat-codex`
 /// the open session is a Codex one (PhoneCodexFixture.swift), laid out the way Codex's app shows it;
-/// `-ui-codex-live` also starts a turn that keeps working until Stop.
+/// `-ui-codex-live` also starts a turn that keeps working until Stop; `-ui-codex-ask` one that waits on
+/// two questions (answered as a host would, PhoneCodexFixture.swift).
 public struct PhoneChatFixtureView: View {
     @PhoneViewState<PhoneChatStore> private var chat: PhoneChatStore
 
@@ -92,6 +93,8 @@ public struct PhoneChatFixtureView: View {
                 .object(["name": text("release-notes"), "description": text("Draft release notes from the commits since the last tag"), "kind": text("skill"), "insert": text("$release-notes")])])])
             // `-ui-codex-live`: a message was sent and its turn is working now.
             if arguments.contains("-ui-codex-live") { chat.draft = "Check leap years too."; Task { await chat.send() } }
+            // `-ui-codex-ask`: a turn waits on two questions; something is typed in the composer meanwhile.
+            if arguments.contains("-ui-codex-ask") { chat.fixtureCodexAsk(); chat.draft = "Also check the weekly report." }
         }
         // `-ui-chat-attach`: an image waits in the composer (the simulator has no photos to pick).
         if arguments.contains("-ui-chat-attach"), let image = phonePrepareImage(phoneFixturePNG(width: 640, height: 400), name: "chart") {

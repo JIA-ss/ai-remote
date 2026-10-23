@@ -151,9 +151,13 @@
     await shot("r04-stopped");
 
     // 4. Reopen: the conversation replays in the Codex view.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("sessions", () => $$(".nt-sessions .sess").length >= 1);
+    // Leaving the session has, rarely, not taken (seen twice in e2e runs, never in 28 tries made to
+    // provoke it; see AGENTS.md): try once more before calling it a failure.
+    for (let tries = 0; tries < 2 && !$$(".nt-sessions .sess").length; tries++) {
+      $$(".nt-chat-hd .ico").at(-1).click();
+      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]))?.click();
+      await until("sessions", () => $$(".nt-sessions .sess").length >= 1, 8000);
+    }
     $$(".nt-sessions .sess").find((s) => s.textContent.includes(CFG.agent)).click();
     const back = await until("replay", () => $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
     await check("reopening replays it in the Codex view", !!back, `${turns().length} turns`);

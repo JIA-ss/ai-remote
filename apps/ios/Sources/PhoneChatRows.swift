@@ -537,7 +537,7 @@ struct PhoneQuestionCard: View {
                 Image(systemName: "questionmark.bubble").font(.footnote).foregroundStyle(.secondary)
                 Text(question.prompt).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                 Spacer(minLength: 4)
-                Text(question.answer.map { "已回答：\($0)" } ?? "已回答").font(.caption).foregroundStyle(.secondary)
+                Text(question.outcome).font(.caption).foregroundStyle(.secondary)
             }
         } else {
             VStack(alignment: .leading, spacing: 10) {

@@ -485,7 +485,7 @@ public func phoneTurnFiles(_ blocks: [PhoneChatBlock], max: Int = phoneMaxInline
         for c in x.content { if case .diff(let path, let old, let new) = c, !(new.isEmpty && !(old ?? "").isEmpty) { add(path) } }
         for l in x.locations { add(l) }
     }
-    let reply = blocks.reversed().compactMap { b -> String? in if case .text(_, let t, _) = b { t } else { nil } }.first
+    let reply = blocks.reversed().compactMap { b -> String? in if case .text(_, let t, _, _) = b { t } else { nil } }.first
     if let reply, let re = try? NSRegularExpression(pattern: "\\]\\(([^)\\s]+)\\)|`([^`\\s]+)`") {
         let ns = reply as NSString
         for m in re.matches(in: reply, range: NSRange(location: 0, length: ns.length)) {

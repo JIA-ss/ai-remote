@@ -57,7 +57,7 @@ test("a turn folds into its user message, streamed text, tools and its end") {
     let turn = c.turns[0]
     check(turn.userText == "fix the build", "user text")
     check(turn.status == "completed" && turn.durationMs == 4200, "end")
-    check(turn.blocks.first == .text(id: "m:0", text: "Let me look."), "streamed text")
+    check(turn.blocks.first == .text(id: "m:0", text: "Let me look.", startedMs: 1400), "streamed text, with when it started")
     check(tools(turn).map { [$0.callID, $0.status] } == [["k1", "failed"], ["k2", "completed"]], "tools")
     check(tools(turn)[0].content == [.text("error[E0425]")], "tool output")
 }
@@ -603,28 +603,29 @@ func actKind(_ a: PhoneCodexAct) -> String {
     case .patch: "patch"
     case .web: "web"
     case .tool: "tool"
-    case .thought: "thought"
     }
 }
 
 test("codex: a running turn has one group for its tool calls, the remark before it, nothing folded yet") {
     let v = phoneCodexTurn(fold(codexEvents()).turns[0])
-    check(v.units.map(\.kind) == ["thought", "message", "group"], "\(v.units.map(\.kind))")
-    let g = v.units[2]
+    check(v.units.map(\.kind) == ["message", "group"], "reasoning is not a step: \(v.units.map(\.kind))")
+    let g = v.units[1]
     check(groupLive(g), "the group is live")
-    check(groupActs(g).map(actKind) == ["exec", "exec", "thought", "patch", "exec"], "\(groupActs(g).map(actKind))")
-    check(phoneActiveAct(groupActs(g))?.tool?.callID == "c3", "the running call is named")
+    check(groupActs(g).map(actKind) == ["exec", "exec", "patch", "exec"], "nor does it split the group: \(groupActs(g).map(actKind))")
+    check(v.title == "day 31 is wrong", "its latest title is what the agent is at: \(v.title ?? "nil")")
+    check(phoneActiveAct(groupActs(g))?.tool.callID == "c3", "the running call is named")
     check(v.answer == nil && !v.foldable && v.status == "working", "no answer, not folded, working")
     check(!v.thinking, "the live group says it is working")
     check(v.changes.isEmpty, "changes wait for the end")
     let sum = phoneGroupSummary(groupActs(g))
     check(sum.parts == [PhoneSummaryPart(part: "edited", n: 1), PhoneSummaryPart(part: "read", n: 1), PhoneSummaryPart(part: "ran", n: 1)], "\(sum.parts)")
     check(sum.add == 1 && sum.del == 1, "the group's lines")
-    check(phoneCodexSummarySentence(groupActs(g), lang: .en) == "Edited a file, read files, and ran a command", phoneCodexSummarySentence(groupActs(g), lang: .en))
-    check(phoneCodexSummarySentence(groupActs(g), lang: .zh) == "编辑了文件、读取了文件和运行了命令", phoneCodexSummarySentence(groupActs(g), lang: .zh))
+    check(phoneCodexSummarySentence(groupActs(g), lang: .en) == "Edited a file, read files, ran a command", phoneCodexSummarySentence(groupActs(g), lang: .en))
+    check(phoneCodexSummarySentence(groupActs(g), lang: .zh) == "编辑了文件，读取了文件，运行了命令", phoneCodexSummarySentence(groupActs(g), lang: .zh))
+    check(phoneCodexSummarySentence([], lang: .en) == "Completed", "a group with nothing to name")
     // Before the last call starts, the group is still the live line (the agent is between calls).
     let between = phoneCodexTurn(fold(Array(codexEvents().dropLast())).turns[0])
-    check(groupLive(between.units[2]) && phoneActiveAct(groupActs(between.units[2]))?.tool?.callID == "f1", "between calls")
+    check(groupLive(between.units[1]) && phoneActiveAct(groupActs(between.units[1]))?.tool.callID == "f1", "between calls")
 }
 
 test("codex: a plan update neither shows in the work nor splits a group") {
@@ -638,8 +639,8 @@ test("codex: a plan update neither shows in the work nor splits a group") {
         return .object(o)
     }
     let v = phoneCodexTurn(fold(events).turns[0])
-    check(v.units.map(\.kind) == ["thought", "message", "group"], "\(v.units.map(\.kind))")
-    check(groupActs(v.units[2]).map(actKind) == ["exec", "exec", "thought", "patch", "exec"], "one group: \(groupActs(v.units[2]).map(actKind))")
+    check(v.units.map(\.kind) == ["message", "group"], "\(v.units.map(\.kind))")
+    check(groupActs(v.units[1]).map(actKind) == ["exec", "exec", "patch", "exec"], "one group: \(groupActs(v.units[1]).map(actKind))")
     check(v.plan?.map(\.content) == ["Fix", "Test"], "the plan is the turn's")
     let st = phonePlanStep(v.plan ?? [])
     check(st.step == 1 && st.total == 2 && st.done == 0 && st.current?.content == "Fix", "its step")
@@ -663,13 +664,17 @@ test("codex: the answer folds the work away; the turn's changes close it") {
     check(v.answer?.text == "Fixed: the last day." && v.answer?.streaming == false, "the whole answer")
     check(v.changes.map { "\($0.path) \($0.add) \($0.del)" } == ["/w/export.py 1 1"], "\(v.changes.map(\.path))")
     check(v.changes[0].lines.map(\.kind) == [.hunk, .context, .del, .add], "the change's diff, from the host's list")
-    check(phoneWorkedMs(done.turns[0], now: 0) == 83_000, "worked for the turn's duration")
-    check(phoneCodexDuration(83_000) == "1m 23s" && phoneCodexDuration(83_000, zh: true) == "1 分 23 秒", "durations")
-    check(phoneCodexDuration(8_400) == "8s" && phoneCodexDuration(7_500_000) == "2h 5m", "short and long")
-    check(phoneCodexElapsed(900) == nil && phoneCodexElapsed(2_410) == "2.4s" && phoneCodexElapsed(2_410, zh: true) == "2.4 秒", "a command's time")
-    check(phoneCodexText("cdx_worked_for", ["t": phoneCodexDuration(83_000)], lang: .en) == "Worked for 1m 23s", "en words")
-    check(phoneCodexText("cdx_worked_for", ["t": phoneCodexDuration(83_000, zh: true)], lang: .zh) == "工作了 1 分 23 秒", "zh words")
-    check(phoneCodexPlural("cdx_files_changed", 1, lang: .en) == "1 file changed" && phoneCodexPlural("cdx_files_changed", 2, lang: .en) == "2 files changed", "plurals")
+    // Worked until the answer started, not until the turn ended; held still whatever the time now.
+    let t1 = done.turns[0]
+    let answerAt = t1.blocks.compactMap { b -> Double? in if case .text("m2", _, _, let at) = b { at } else { nil } }.first ?? -1
+    check(answerAt > 0 && v.answer?.startedMs == answerAt, "the answer remembers when it started")
+    check(phoneWorkedMs(t1, now: 0) == answerAt - (t1.startedMs ?? 0), "worked until the answer: \(phoneWorkedMs(t1, now: 0))")
+    check(phoneWorkedMs(fold(events).turns[0], now: 9e12) == answerAt - (t1.startedMs ?? 0), "frozen once the answer streams")
+    check(phoneWorkedMs(fold(codexEvents()).turns[0], now: (t1.startedMs ?? 0) + 5000) == 5000, "counting while it works")
+    check(phoneCodexText("cdx_worked_for", ["t": phoneDurationB(83_000, lang: .en)], lang: .en) == "Worked for 1m 23s", "en words")
+    check(phoneCodexText("cdx_worked_for", ["t": phoneDurationB(83_000, lang: .zh)], lang: .zh) == "用时 1分钟 23秒", "zh words")
+    check(phoneCodexPlural("cdx_q_n", 1, lang: .en) == "1 question" && phoneCodexPlural("cdx_q_n", 2, lang: .en) == "2 questions", "plurals")
+    check(phoneCodexText("cdx_edited_files", ["n": "2"], lang: .zh) == "已编辑 2 个文件", "the changes card's title")
     let patch = phoneFilePatch(v.changes[0], cwd: "/w")
     check(patch == "diff --git a/export.py b/export.py\n--- a/export.py\n+++ b/export.py\n@@ -1,2 +1,2 @@\n def q():\n-    return 31\n+    return last_day()\n",
           patch ?? "nil")
@@ -719,7 +724,7 @@ test("codex: a turn that only thinks so far says so; a question waits; steering 
     if case .steer(_, let text, _, _, let extra) = sv.units[0] { check(text == "use release" && extra.inputID == "u2", "its text and id") }
     let thought = fold(start + [ev(1, ["t": s("thought"), "id": s("r"), "text": s("hmm"), "delta": .bool(true)])])
     let tv = phoneCodexTurn(thought.turns[0])
-    if case .thought(_, _, let live) = tv.units[0] { check(live && !tv.thinking, "the live thought says it") } else { check(false, "a thought unit") }
+    check(tv.units.isEmpty && tv.thinking && tv.title == "hmm", "reasoning says what the agent is at, as the thinking line")
 }
 
 test("codex: the runtime check and paths relative to the work folder") {
@@ -743,7 +748,7 @@ test("codex: phase and exit codes fold into the chat state") {
         ev(1, ["t": s("tool_call"), "call_id": s("k"), "title": s("Shell x"), "kind": s("execute"), "status": s("in_progress")]),
         ev(1, ["t": s("tool_update"), "call_id": s("k"), "status": s("failed"), "exit_code": .number(2), "duration_ms": .number(50)]),
     ])
-    check(c.turns[0].blocks[0] == .text(id: "m", text: "ab", phase: "commentary"), "\(c.turns[0].blocks[0])")
+    check(c.turns[0].blocks[0] == .text(id: "m", text: "ab", phase: "commentary", startedMs: 1100), "\(c.turns[0].blocks[0])")
     check(tools(c.turns[0])[0].exitCode == 2 && tools(c.turns[0])[0].durationMs == 50, "code and time")
     check(PhoneChatSession(.object(["id": s("x"), "runtime": s("codex"), "name": s("Codex")])).runtime == "codex", "a session names its runtime")
 }
@@ -861,7 +866,7 @@ test("codex: a patch git applies, for added files too; none from an older host's
     check(phoneFilePatch(old[0], cwd: nil) == nil, "no line numbers, no patch")
 }
 
-test("codex: a failed or stopped turn without phases has no answer; reasoning after the last call stays in the live group") {
+test("codex: a failed or stopped turn without phases has no answer; reasoning after the last call keeps the group live") {
     seq = 0
     let base = [
         ev(0, ["t": s("user"), "input_id": s("u"), "by": by("d"), "text": s("hi")]),
@@ -877,14 +882,14 @@ test("codex: a failed or stopped turn without phases has no answer; reasoning af
         ev(1, ["t": s("thought"), "id": s("r"), "text": s("next"), "delta": .bool(true)]),
     ])
     let v = phoneCodexTurn(live.turns[0])
-    check(v.units.map(\.kind) == ["group"] && groupActs(v.units[0]).map(actKind) == ["exec", "thought"], "\(v.units.map(\.kind))")
-    check(groupLive(v.units[0]), "and the group is the live line")
+    check(v.units.map(\.kind) == ["group"] && groupActs(v.units[0]).map(actKind) == ["exec"], "\(v.units.map(\.kind))")
+    check(groupLive(v.units[0]) && v.title == "next", "the group is the live line, its words the reasoning's title")
 }
 
 test("codex: edits that failed are said last; a running sub-agent shows the turn busy") {
     let failedEdit = PhoneCodexAct.patch(codexTool("f", "edit", kind: "edit", status: "failed"), [PhoneFileChange(path: "/w/a", movePath: nil, kind: "update", add: 1, del: 0, lines: [])])
     let ran = PhoneCodexAct.exec(codexTool("c", "Shell make"), phoneExecInfo(codexTool("c", "Shell make")))
-    check(phoneCodexSummarySentence([failedEdit, ran], lang: .en) == "Ran a command and failed to edit a file", phoneCodexSummarySentence([failedEdit, ran], lang: .en))
+    check(phoneCodexSummarySentence([failedEdit, ran], lang: .en) == "Ran a command, failed to edit a file", phoneCodexSummarySentence([failedEdit, ran], lang: .en))
     check(phoneCodexSummarySentence([failedEdit], lang: .zh) == "编辑文件失败", phoneCodexSummarySentence([failedEdit], lang: .zh))
     check(phoneGroupSummary([failedEdit]).add == 0, "a failed edit's lines do not count")
     seq = 0
@@ -973,9 +978,269 @@ test("codex: a late phase arrives as an empty delta and only sets the phase") {
     ]
     check(phoneCodexTurn(fold(streamed).turns[0]).answer == nil, "no phase yet, still running: a remark for now")
     let phased = fold(streamed + [ev(1, ["t": s("message"), "id": s("m"), "text": s(""), "delta": .bool(true), "phase": s("final_answer")])])
-    check(phased.turns[0].blocks.last == .text(id: "m", text: "All done.", phase: "final_answer"), "\(String(describing: phased.turns[0].blocks.last))")
+    check(phased.turns[0].blocks.last == .text(id: "m", text: "All done.", phase: "final_answer", startedMs: 1400), "\(String(describing: phased.turns[0].blocks.last))")
     let v = phoneCodexTurn(phased.turns[0])
     check(v.answer?.text == "All done." && v.foldable, "now it is the answer and the work folds")
+}
+
+// The desktop's newer Codex cases (tools/chat-codex.test.mjs): reasoning titles, durations, the plan's
+// step, questions by request, terminal colors, web fetches, message times.
+
+test("codex: durations: a command's run time keeps every unit from its largest; the turn's leaves out zeros") {
+    check(phoneDurationA(999, lang: .en) == nil && phoneDurationA(nil, lang: .en) == nil, "under a second")
+    check(phoneDurationA(12_000, lang: .en) == "12s", phoneDurationA(12_000, lang: .en) ?? "nil")
+    check(phoneDurationA(60_000, lang: .en) == "1m 0s", phoneDurationA(60_000, lang: .en) ?? "nil")
+    check(phoneDurationA(3_603_000, lang: .en) == "1h 0m 3s", phoneDurationA(3_603_000, lang: .en) ?? "nil")
+    check(phoneDurationA(90_061_000, lang: .en) == "1d 1h 1m 1s", phoneDurationA(90_061_000, lang: .en) ?? "nil")
+    check(phoneDurationB(500, lang: .en) == "0s", phoneDurationB(500, lang: .en))
+    check(phoneDurationB(60_000, lang: .en) == "1m", phoneDurationB(60_000, lang: .en))
+    check(phoneDurationB(3_605_000, lang: .en) == "1h 5s", phoneDurationB(3_605_000, lang: .en))
+    check(phoneDurationB(83_000, lang: .zh) == "1分钟 23秒", phoneDurationB(83_000, lang: .zh))
+    check(phoneDurationA(12_000, lang: .zh) == "12秒", phoneDurationA(12_000, lang: .zh) ?? "nil")
+}
+
+test("codex: the plan's step: the one in progress, else the first not done, else the last") {
+    func st(_ xs: String...) -> Int { phonePlanStep(xs.enumerated().map { PhonePlanEntry(content: "\($0.offset)", status: $0.element) }).step }
+    check(st("completed", "pending", "completed") == 2, "first not done")
+    check(st("completed", "completed", "in_progress") == 3, "in progress")
+    check(st("completed", "completed") == 2, "all done: the last")
+    check(st("pending", "pending") == 1, "none started")
+    seq = 0
+    var c = fold([ev(1, ["t": s("turn_start")]), ev(1, ["t": s("plan"), "entries": .array([.object(["content": s("Fix"), "status": s("in_progress")])])])])
+    check(phoneLivePlan(c.turns)?.map(\.content) == ["Fix"], "the running turn's plan goes above the composer")
+    c.apply(ev(1, ["t": s("turn_end"), "status": s("completed"), "duration_ms": .number(1)]))
+    check(phoneLivePlan(c.turns) == nil, "not once the turn ended")
+}
+
+test("codex: reasoning titles: the summary's last line, bold or as plain text, comments left out") {
+    check(phoneReasoningTitle("**Reading the code**\n\nThe error is in export.py.") == "The error is in export.py.", "the last line")
+    check(phoneReasoningTitle("Some text\n\n**Writing the fix**\n") == "Writing the fix", "a bold line")
+    check(phoneReasoningTitle("**Planning**\n<!-- hidden -->") == "Planning", "without comments")
+    check(phoneReasoningTitle("Use `calendar.monthrange` for *every* month") == "Use calendar.monthrange for every month",
+          phoneReasoningTitle("Use `calendar.monthrange` for *every* month") ?? "nil")
+    check(phoneReasoningTitle("  \n ") == nil, "nothing")
+}
+
+test("codex: a compaction alone is not worth folding") {
+    seq = 0
+    let c = fold([
+        ev(1, ["t": s("turn_start")]),
+        ev(1, ["t": s("notice"), "level": s("info"), "code": s("compacted"), "text": s("Codex summarized the conversation")]),
+        ev(1, ["t": s("message"), "id": s("a"), "text": s("Still here."), "delta": .bool(false), "phase": s("final_answer")]),
+        ev(1, ["t": s("turn_end"), "status": s("completed"), "duration_ms": .number(10)]),
+    ])
+    let v = phoneCodexTurn(c.turns[0])
+    check(v.answer?.id == "a" && !v.foldable, "the answer, nothing folded")
+}
+
+func askedQuestions(_ u: PhoneCodexUnit) -> [PhoneQuestion] { if case .asked(_, let qs) = u { qs } else { [] } }
+
+test("codex: questions: the latest request waits in its card, then shows as one 'Asked' line with its answers") {
+    seq = 0
+    func q(_ qid: String, _ request: String, _ extra: [String: JSONValue] = [:]) -> JSONValue {
+        ev(1, ["t": s("question"), "qid": s(qid), "prompt": s("\(qid)?"), "options": .array([s("Yes (Recommended)"), s("No")]), "request": s(request)]
+              .merging(extra) { $1 })
+    }
+    var c = fold([
+        ev(0, ["t": s("user"), "input_id": s("u"), "by": by("d"), "text": s("go")]),
+        ev(1, ["t": s("turn_start")]),
+        q("scope", "8", ["header": s("Scope"), "descriptions": .array([s("Same bug"), s("")]), "other": .bool(true), "blocking": .bool(true)]),
+        q("tests", "8"),
+    ])
+    guard let p = phonePendingRequest(c.turns) else { return check(false, "a pending request") }
+    check(p.request == "8" && p.questions.map(\.qid) == ["scope", "tests"], "\(p)")
+    let first = p.questions[0]
+    check(first.header == "Scope" && first.descriptions == ["Same bug", ""] && first.other && first.blocking == true, "\(first)")
+    var v = phoneCodexTurn(c.turns[0])
+    check(v.units.isEmpty, "a waiting question is not in the transcript: \(v.units.map(\.kind))")
+    check(v.asking && !v.thinking, "asking, not thinking")
+    // A second request asked meanwhile is the one shown.
+    c.apply(q("name", "9"))
+    check(phonePendingRequest(c.turns)?.request == "9", "the latest request")
+    // The answers come back from the host (the first request's second question skipped).
+    c.apply(ev(1, ["t": s("question_done"), "request": s("8"), "answers": .object(["scope": .array([s("Yes (Recommended)")])]), "how": s("answered")]))
+    c.apply(ev(1, ["t": s("question_done"), "request": s("9"), "how": s("dismissed")]))
+    check(phonePendingRequest(c.turns) == nil, "nothing waits")
+    v = phoneCodexTurn(c.turns[0])
+    let got = v.units.map { u in "\(u.kind) " + askedQuestions(u).map { "\($0.qid)=\(($0.answers ?? ["?"]).joined(separator: ","))" }.joined(separator: " ") }
+    check(got == ["asked scope=Yes (Recommended) tests=", "asked name="], "\(got)")
+    let name = c.turns[0].blocks.compactMap { b -> PhoneQuestion? in if case .question(let x) = b, x.qid == "name" { x } else { nil } }.first
+    check(name?.how == "dismissed", "how it ended")
+    // An older host names no request: the turn's open questions are one, answered one by one.
+    seq = 0
+    var old = fold([ev(1, ["t": s("turn_start")]), ev(1, ["t": s("question"), "qid": s("q1"), "prompt": s("A?")]),
+                    ev(1, ["t": s("question"), "qid": s("q2"), "prompt": s("B?")])])
+    check(phonePendingRequest(old.turns)?.questions.map(\.qid) == ["q1", "q2"], "all open questions")
+    old.markAnswered("q1", answer: "a")
+    old.markAnswered("q2", answer: "")
+    check(phonePendingRequest(old.turns) == nil, "answered")
+    old.apply(ev(1, ["t": s("turn_end"), "status": s("completed"), "duration_ms": .number(1)]))
+    check(phoneCodexTurn(old.turns[0]).units.map { askedQuestions($0).count } == [2], "one line for both")
+}
+
+test("codex: an answer marks only its own request's question; the same id in an earlier turn keeps its answer") {
+    seq = 0
+    var c = fold([
+        ev(1, ["t": s("turn_start")]), ev(1, ["t": s("question"), "qid": s("scope"), "prompt": s("?"), "request": s("1")]),
+        ev(1, ["t": s("question_done"), "request": s("1"), "answers": .object(["scope": .array([s("first")])]), "how": s("answered")]),
+        ev(1, ["t": s("turn_end"), "status": s("completed"), "duration_ms": .number(1)]),
+        ev(2, ["t": s("turn_start")]), ev(2, ["t": s("question"), "qid": s("scope"), "prompt": s("?"), "request": s("2")]),
+    ])
+    c.markAnswered("scope", answer: "second", request: "2")
+    if case .question(let a) = c.turns[0].blocks[0] { check(a.answers?.first == "first" && a.answer == "first", "\(a)") } else { check(false, "first") }
+    if case .question(let b) = c.turns[1].blocks[0] { check(b.answered && b.answer == "second", "\(b)") } else { check(false, "second") }
+}
+
+test("codex: an option's (Recommended) mark; a request card's answers") {
+    check(phoneSplitRecommended("Fix it too (Recommended)") == ("Fix it too", true), "marked")
+    check(phoneSplitRecommended("Only export.py") == ("Only export.py", false), "not marked")
+    let qs = [PhoneQuestion(qid: "a", prompt: "A?", options: ["Yes (Recommended)", " No "]), PhoneQuestion(qid: "b", prompt: "B?", options: ["x"]),
+              PhoneQuestion(qid: "c", prompt: "C?", options: [])]
+    var d = PhoneCodexDraft(qs)
+    check(d.answers(qs).map { "\($0.qid)=\($0.text)" } == ["a=Yes (Recommended)", "b=x", "c="], "the first option is chosen from the start")
+    d.picks["a"] = 1
+    d.picks["b"] = nil; d.texts["b"] = "  my own  "
+    check(d.answers(qs).map { "\($0.qid)=\($0.text)" } == ["a=No", "b=my own", "c="], "\(d.answers(qs).map { "\($0.qid)=\($0.text)" })")
+}
+
+test("codex: a message remembers when it started") {
+    seq = 0
+    let c = fold([ev(1, ["t": s("turn_start")]), ev(1, ["t": s("message"), "id": s("m"), "text": s("a"), "delta": .bool(true)]),
+                  ev(1, ["t": s("message"), "id": s("m"), "text": s("b"), "delta": .bool(true)])])
+    check(c.turns[0].blocks[0] == .text(id: "m", text: "ab", startedMs: 1200), "\(c.turns[0].blocks[0])")
+}
+
+test("codex: terminal colors: SGR runs, 256 and true color, carriage returns and backspaces") {
+    check(phoneParseAnsi("\u{1b}[31mred\u{1b}[0m ok") == [PhoneAnsiRun(text: "red", fg: "c1"), PhoneAnsiRun(text: " ok")], "\(phoneParseAnsi("\u{1b}[31mred\u{1b}[0m ok"))")
+    check(phoneParseAnsi("abc\rxy") == [PhoneAnsiRun(text: "xyc")], "\(phoneParseAnsi("abc\rxy"))")
+    check(phoneParseAnsi("ab\u{8}") == [PhoneAnsiRun(text: "a")], "\(phoneParseAnsi("ab\u{8}"))")
+    check(phoneParseAnsi("10%\r100%\nnext") == [PhoneAnsiRun(text: "100%\nnext")], "\(phoneParseAnsi("10%\r100%\nnext"))")
+    check(phoneParseAnsi("\u{1b}[38;5;196mX\u{1b}[48;2;1;2;3mY") == [PhoneAnsiRun(text: "X", fg: "rgb(255 0 0)"), PhoneAnsiRun(text: "Y", fg: "rgb(255 0 0)", bg: "rgb(1 2 3)")],
+          "\(phoneParseAnsi("\u{1b}[38;5;196mX\u{1b}[48;2;1;2;3mY"))")
+    check(phoneParseAnsi("\u{1b}[1;4mB\u{1b}[22mU\u{1b}[0m\u{1b}[92mg") == [PhoneAnsiRun(text: "B", bold: true, underline: true), PhoneAnsiRun(text: "U", underline: true),
+                                                                      PhoneAnsiRun(text: "g", fg: "c2")], "\(phoneParseAnsi("\u{1b}[1;4mB\u{1b}[22mU\u{1b}[0m\u{1b}[92mg"))")
+    check(phoneParseAnsi("\u{1b}]0;title\u{7}plain\u{1b}[2K") == [PhoneAnsiRun(text: "plain")], "other escapes are dropped")
+}
+
+test("codex: web searches: the query with its sites; a curl of a page off the internet counts as one") {
+    check(phoneWebDetail("foo site:www.a.com OR site:b.com") == "foo | a.com · b.com", phoneWebDetail("foo site:www.a.com OR site:b.com"))
+    check(phoneWebDetail("python calendar monthrange") == "python calendar monthrange", "a plain query")
+    func info(_ command: String) -> PhoneExecInfo { PhoneExecInfo(command: command, cwd: nil, actions: [.unknown], explore: false, exitCode: 0, durationMs: nil, output: "") }
+    check(phoneIsWebFetch(info("curl -sL https://example.com/docs")), "a page")
+    check(!phoneIsWebFetch(info("curl http://localhost:3000/api")), "this machine")
+    check(!phoneIsWebFetch(info("curl -X POST https://example.com")), "a request that changes something")
+    check(!phoneIsWebFetch(info("wget https://example.com")), "only curl")
+}
+
+test("codex: a group's sentence names tools, edits, reads, commands, then the web") {
+    func done(_ id: String, _ kind: String, _ title: String = "x") -> PhoneChatTool { codexTool(id, title, kind: kind, status: "completed") }
+    func exec(_ id: String, _ command: String) -> PhoneCodexAct {
+        .exec(done(id, "execute"), PhoneExecInfo(command: command, cwd: nil, actions: [.unknown], explore: false, exitCode: 0, durationMs: nil, output: ""))
+    }
+    let acts: [PhoneCodexAct] = [
+        .web(done("w", "fetch", "search x"), query: "x"),
+        exec("e", "npm test"),
+        exec("c", "curl https://example.com"),
+        .patch(done("p", "edit"), [PhoneFileChange(path: "/a", movePath: nil, kind: "update", add: 1, del: 0, lines: [])]),
+        .tool(done("m", "other", "mcp")),
+    ]
+    check(phoneGroupSummary(acts).parts.map { "\($0.part) \($0.n)" } == ["tools 1", "edited 1", "ran 1", "web 2"], "\(phoneGroupSummary(acts).parts)")
+    check(phoneGroupSummary([]).parts.isEmpty, "nothing")
+}
+
+test("codex: message times: today the time, this week the weekday, else the date") {
+    let cal = Calendar.current
+    func at(_ m: Int, _ d: Int, _ h: Int, _ min: Int) -> Double {
+        (cal.date(from: DateComponents(year: 2026, month: m, day: d, hour: h, minute: min))?.timeIntervalSince1970 ?? 0) * 1000
+    }
+    let now = at(10, 23, 15, 0)
+    let today = phoneFormatMsgTime(at(10, 23, 9, 5), now: now, lang: .en)
+    check(phoneMatches(today, "^9:05\\s?AM$"), today)
+    let week = phoneFormatMsgTime(at(10, 21, 9, 5), now: now, lang: .en)
+    check(phoneMatches(week, "^Wednesday 9:05\\s?AM$"), week)
+    let older = phoneFormatMsgTime(at(9, 30, 14, 2), now: now, lang: .en)
+    check(phoneMatches(older, "^Sep 30 2:02\\s?PM$"), older)
+    check(phoneFormatMsgTime(at(10, 23, 14, 2), now: now, lang: .zh) == "14:02", phoneFormatMsgTime(at(10, 23, 14, 2), now: now, lang: .zh))
+}
+
+// The desktop's review fixes (060cabd): requests scoped to their turn, expiring questions, terminal
+// lines, a stricter web fetch, merged edits, the time of a turn stopped while answering.
+
+test("codex: a request's end touches only the turn that asked it, even when a later process reuses its id") {
+    seq = 0
+    var c = fold([
+        ev(1, ["t": s("turn_start")]), ev(1, ["t": s("question"), "qid": s("scope"), "prompt": s("?"), "request": s("0")]),
+        ev(1, ["t": s("question_done"), "request": s("0"), "answers": .object(["scope": .array([s("Yes")])]), "how": s("answered")]),
+        ev(1, ["t": s("turn_end"), "status": s("completed"), "duration_ms": .number(1)]),
+        ev(2, ["t": s("turn_start")]), ev(2, ["t": s("question"), "qid": s("scope"), "prompt": s("?"), "request": s("0"), "expires_in_ms": .number(120_000)]),
+    ])
+    func q(_ t: Int) -> PhoneQuestion? { if case .question(let x) = c.turns[t].blocks[0] { x } else { nil } }
+    check(q(1)?.expiresAt == 1000 + 6 * 100 + 120_000, "the deadline is the event's time and the wait: \(String(describing: q(1)?.expiresAt))")
+    c.markAnswered("scope", answer: "All", request: "0", turn: 2)
+    c.apply(ev(2, ["t": s("question_done"), "request": s("0"), "how": s("dismissed")]))
+    check(q(0)?.answers == ["Yes"] && q(0)?.how == "answered", "the first turn's request is untouched: \(String(describing: q(0)))")
+    check(q(1)?.how == "dismissed", "the second turn's")
+    // An answer never rewrites a question already answered.
+    c.markAnswered("scope", answer: "Other")
+    check(q(0)?.answers?.first == "Yes" && q(0)?.answer == "Yes", "\(String(describing: q(0)))")
+    check(phoneCodexClock(105_000) == "1:45" && phoneCodexClock(1) == "0:01" && phoneCodexClock(0) == "0:00", "the card's countdown")
+}
+
+test("codex: a request card's draft is restored only for exactly its questions") {
+    let qs = [PhoneQuestion(qid: "a", prompt: "A?", options: ["x", "y"]), PhoneQuestion(qid: "b", prompt: "B?", options: [])]
+    var d = PhoneCodexDraft(qs)
+    d.at = 1; d.picks["a"] = 1; d.texts["b"] = "mine"
+    check(PhoneCodexDraft.restore(d, for: qs) == d, "the same questions")
+    let other = [PhoneQuestion(qid: "a", prompt: "A?", options: ["x", "y"])]
+    check(PhoneCodexDraft.restore(d, for: other) == PhoneCodexDraft(other), "other questions start afresh")
+    check(PhoneCodexDraft.restore(nil, for: qs) == PhoneCodexDraft(qs), "nothing kept")
+}
+
+test("codex: terminal lines: CRLF keeps colors, erase and backspace work around escapes, a cut escape waits") {
+    func got(_ s: String) -> [PhoneAnsiRun] { phoneParseAnsi(s) }
+    check(got("\u{1b}[1;31mFAIL\u{1b}[0m test\r\n\u{1b}[32mPASS\u{1b}[0m\r\n") == [PhoneAnsiRun(text: "FAIL", fg: "c1", bold: true), PhoneAnsiRun(text: " test\n"),
+                                                                                PhoneAnsiRun(text: "PASS", fg: "c2"), PhoneAnsiRun(text: "\n")],
+          "\(got("\u{1b}[1;31mFAIL\u{1b}[0m test\r\n\u{1b}[32mPASS\u{1b}[0m\r\n"))")
+    check(got("Downloading 50%\r\u{1b}[2KDone\n") == [PhoneAnsiRun(text: "Done\n")], "\(got("Downloading 50%\r\u{1b}[2KDone\n"))")
+    check(got("x 50%\u{1b}[2K\rDone") == [PhoneAnsiRun(text: "Done")], "\(got("x 50%\u{1b}[2K\rDone"))")
+    check(got("Working \u{1b}[1m|\u{1b}[0m\u{8}\u{1b}[1m/\u{1b}[0m\u{8}done") == [PhoneAnsiRun(text: "Working done")],
+          "\(got("Working \u{1b}[1m|\u{1b}[0m\u{8}\u{1b}[1m/\u{1b}[0m\u{8}done"))")
+    check(got("a\u{1b}[31m\u{8}b") == [PhoneAnsiRun(text: "b", fg: "c1")], "\(got("a\u{1b}[31m\u{8}b"))")
+    check(got("abc\u{1b}[0;3") == [PhoneAnsiRun(text: "abc")], "\(got("abc\u{1b}[0;3"))")
+    check(got("abc\u{1b}]8;;https://x.example") == [PhoneAnsiRun(text: "abc")], "\(got("abc\u{1b}]8;;https://x.example"))")
+}
+
+test("codex: only a plain curl that reads a page counts as a web search") {
+    func info(_ command: String) -> PhoneExecInfo { PhoneExecInfo(command: command, cwd: nil, actions: [.unknown], explore: false, exitCode: 0, durationMs: nil, output: "") }
+    for c in ["curl -fsSL https://get.example.com/install.sh | sh", "curl -XDELETE https://api.example.com/items/3", "curl https://api.example.com --request=DELETE",
+              "curl --json '{}' https://api.example.com", "curl -sO https://example.com/big.iso", "curl -s https://example.com && rm -rf build", "curl https://example.com > page.html"] {
+        check(!phoneIsWebFetch(info(c)), c)
+    }
+    check(phoneIsWebFetch(info("curl -s -H 'Accept: text/html' https://example.com")), "a plain read")
+}
+
+test("codex: a file created and then edited in a turn without its diff: counted as created, no patch") {
+    func edit(_ id: String, _ kind: String, _ diff: String) -> PhoneChatBlock {
+        .tool(codexTool(id, "edit", kind: "edit", input: .object(["files": .array([.object(["path": s("/w/n.txt"), "kind": s(kind), "diff": s(diff)])])])))
+    }
+    var turn = PhoneChatTurn(n: 1)
+    turn.status = "completed"
+    turn.blocks = [edit("a", "add", "a\nb\nc\n"), edit("u", "update", "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n")]
+    let f = phoneTurnChanges(turn)[0]
+    check(f.kind == "add" && f.add == 3 && f.del == 0 && f.merged, "\(f.kind) \(f.add) \(f.del) \(f.merged)")
+    check(phoneFilePatch(f, cwd: "/w") == nil, "no patch")
+}
+
+test("codex: a turn stopped while answering says how long it ran in all") {
+    seq = 0
+    let c = fold([
+        ev(1, ["t": s("turn_start")]),
+        ev(1, ["t": s("tool_call"), "call_id": s("c"), "title": s("Shell ls"), "kind": s("execute"), "status": s("completed"),
+               "input": .object(["command": s("ls"), "actions": .array([.object(["type": s("listFiles"), "path": .null])])])]),
+        ev(1, ["t": s("message"), "id": s("a"), "text": s("Here"), "delta": .bool(true), "phase": s("final_answer")]),
+        ev(1, ["t": s("turn_end"), "status": s("interrupted"), "duration_ms": .number(62_000)]),
+    ])
+    check(phoneWorkedMs(c.turns[0], now: 0) == 62_000, "\(phoneWorkedMs(c.turns[0], now: 0))")
 }
 
 test("a question request that is over waits no more, whoever ended it") {
@@ -987,10 +1252,12 @@ test("a question request that is over waits no more, whoever ended it") {
     ])
     check(c.phase.what == "asking", "it waits")
     c.apply(ev(1, ["t": s("question_done"), "request": s("7-0"), "how": s("expired")]))
-    if case .question(let q) = c.turns[0].blocks[0] { check(q.answered && q.answer == nil, "expired: over, no answer") } else { check(false, "question") }
+    if case .question(let q) = c.turns[0].blocks[0] {
+        check(q.answered && q.answer == nil && q.outcome == "未回答，Codex 已自行继续", "expired: over, no answer, said so")
+    } else { check(false, "question") }
     if case .question(let q) = c.turns[0].blocks[1] { check(!q.answered, "the other request still waits") } else { check(false, "question") }
     c.apply(ev(1, ["t": s("question_done"), "request": s("7-1"), "answers": .object(["old": .array([s("yes")])]), "how": s("answered")]))
-    if case .question(let q) = c.turns[0].blocks[1] { check(q.answered && q.answer == "yes", "answered elsewhere") } else { check(false, "question") }
+    if case .question(let q) = c.turns[0].blocks[1] { check(q.answered && q.answer == "yes" && q.outcome == "已回答：yes", "answered elsewhere") } else { check(false, "question") }
     check(c.phase.what != "asking", "nothing waits")
     c.markAnswered("old", answer: "no")
     if case .question(let q) = c.turns[0].blocks[1] { check(q.answer == "yes", "an answered question keeps its answer") } else { check(false, "question") }
