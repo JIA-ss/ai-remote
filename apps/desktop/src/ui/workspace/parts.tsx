@@ -134,8 +134,14 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos(place(at, r.width, r.height));
-    (el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
   }, [at]);
+  useLayoutEffect(() => {
+    // The first measurement is hidden. Focus only after the positioned menu is visible,
+    // otherwise browsers keep keys on the row and menu letters never reach this handler.
+    if (!pos) return;
+    const el = box.current;
+    (el?.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+  }, [pos]);
   useEffect(() => {
     const down = (e: Event) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();

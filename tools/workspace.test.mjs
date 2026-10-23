@@ -29,6 +29,7 @@ function load(name, localStorage = makeStorage(), cache = new Map()) {
 }
 
 const ws = load("workspace");
+const batch = load("workspace-batch");
 const plain = (v) => JSON.parse(JSON.stringify(v));
 let n = 0;
 /** A session as a new host reports it. */
@@ -573,4 +574,239 @@ test("archived sessions are asked for and kept only while the list shows them", 
   assert.equal(store.find("new", "n2").meta.archived, false);
   store.setArchived(false);
   assert.deepEqual(plain(store.items().map((x) => x.meta.id)), ["n2"]);
+});
+
+// ---- SB-34's supported batches: transient selection, partial results and field-scoped undo ----
+
+test("selection toggles rows and ranges in the currently drawn order without persisting it", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  let s = batch.selectRow(batch.EMPTY_SELECTION, "b", order, true, false);
+  assert.deepEqual(plain(s), { keys: ["b"], anchor: "b" });
+  s = batch.selectRow(s, "d", order, false, true);
+  assert.deepEqual(plain(s), { keys: ["b", "c", "d"], anchor: "b" });
+  s = batch.selectRow(s, "a", order, true, true);
+  assert.deepEqual(plain(s.keys), ["b", "c", "d", "a"]);
+  s = batch.selectRow(s, "c", order, true, false);
+  assert.deepEqual(plain(s.keys), ["b", "d", "a"]);
+  assert.deepEqual(plain(batch.selectRow(s, "e", order, false, false)), { keys: [], anchor: null });
+  assert.deepEqual(plain(batch.selectRow({ keys: [], anchor: "gone" }, "d", order, false, true).keys), ["d"]);
+});
+
+test("batch read changes one snapshot, writes each legacy key once and leaves busy rows alone", async () => {
+  const storage = makeStorage(), writes = [];
+  const set = storage.setItem;
+  storage.setItem = (key, value) => { writes.push(key); set(key, value); };
+  const { store } = storeWith({ "new chat_sessions": { sessions: [meta({ id: "a" }), meta({ id: "b" }), meta({ id: "run", state: "running" }), meta({ id: "ask", pending: "permission" })] } }, { storage, computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const selected = store.items();
+  writes.length = 0;
+  let notifications = 0;
+  const off = store.subscribe(() => notifications++);
+  const result = await batch.runBatch(store, [...selected, selected[0]], "read", false);
+  assert.equal(notifications, 1);
+  assert.equal(writes.length, 2);
+  assert.equal(new Set(writes).size, 2);
+  assert.deepEqual(plain(result.successes.map((x) => x.item.meta.id).sort()), ["a", "b"]);
+  assert.deepEqual(plain(result.failures.map((x) => x.error)), ["busy_session", "busy_session"]);
+  assert.equal(store.unread(store.find("new", "a")), true);
+  assert.equal(store.unread(store.find("new", "run")), false);
+  // Opening one session is a newer read decision: Undo may restore only the other one.
+  store.markRead("new/a");
+  notifications = 0; writes.length = 0;
+  const undone = await batch.undoBatch(store, result.successes);
+  assert.equal(notifications, 1);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(plain(undone.successes.map((x) => x.item.meta.id)), ["b"]);
+  assert.deepEqual(plain(undone.failures.map((x) => [x.key, x.error])), [["new/a", "state_changed"]]);
+  assert.equal(store.unread(store.find("new", "a")), false);
+  assert.equal(store.unread(store.find("new", "b")), false);
+  off();
+});
+
+test("two batches and undo share the same eight-request remote budget", async () => {
+  let active = 0, peak = 0;
+  const metas = Array.from({ length: 24 }, (_, i) => meta({ id: `q${i}`, pinned: false }));
+  const { store } = storeWith({
+    "new chat_sessions": { sessions: metas },
+    "new chat_update": async (args) => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active--;
+      return { meta: { ...metas.find((m) => m.id === args.session), ...args } };
+    },
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const xs = store.items();
+  const first = await batch.runBatch(store, xs.slice(0, 8), "pin", true);
+  const results = await Promise.all([
+    batch.runBatch(store, xs.slice(8, 16), "pin", true),
+    batch.runBatch(store, xs.slice(16), "pin", true),
+    batch.undoBatch(store, first.successes),
+  ]);
+  assert.equal(peak, 8);
+  assert.equal(active, 0);
+  assert.deepEqual(results.map((r) => r.failures.length), [0, 0, 0]);
+  assert.deepEqual(results.map((r) => r.successes.length), [8, 8, 8]);
+  assert.equal(store.items().filter((x) => store.isPinned(x)).length, 16);
+});
+
+test("partial remote failure is explicit; undo changes only successful fields and respects newer choices", async () => {
+  const metas = [meta({ id: "good", pinned: false }), meta({ id: "bad", pinned: false }), meta({ id: "newer", pinned: false })];
+  const { store, calls } = storeWith({
+    "new chat_sessions": { sessions: metas },
+    "new chat_update": (args) => {
+      if (args.session === "bad") throw new Error("permission denied");
+      return { meta: { ...metas.find((m) => m.id === args.session), ...args } };
+    },
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const result = await batch.runBatch(store, store.items(), "pin", true);
+  assert.equal(result.successes.length, 2);
+  assert.deepEqual(plain(result.failures.map((x) => [x.key, x.error])), [["new/bad", "permission denied"]]);
+  store.patchSession("new", "good", { title: "New title", last_seq: 99, state: "running" });
+  await store.update("new", "newer", { pinned: false });
+  calls.length = 0;
+  const undone = await batch.undoBatch(store, result.successes);
+  assert.deepEqual(plain(undone.successes.map((x) => x.item.meta.id)), ["good"]);
+  assert.deepEqual(plain(undone.failures.map((x) => [x.key, x.error])), [["new/newer", "state_changed"]]);
+  assert.deepEqual(plain(calls), [["new", "chat_update", { session: "good", pinned: false }]]);
+  assert.equal(store.isPinned(store.find("new", "good")), false);
+  assert.equal(store.find("new", "good").meta.title, "New title");
+  assert.equal(store.find("new", "good").meta.last_seq, 99);
+  assert.equal(store.find("new", "good").meta.state, "running");
+  assert.equal(store.isPinned(store.find("new", "bad")), false);
+});
+
+test("failed updates preserve events received while pending and serialize same-row edits", async () => {
+  let rejectFirst, releaseSecond;
+  let updates = 0;
+  const { store, calls } = storeWith({
+    "new chat_sessions": { sessions: [meta({ id: "a", pinned: false, title: "Original" })] },
+    "new chat_update": (args) => {
+      updates++;
+      if (updates === 1) return new Promise((_, reject) => { rejectFirst = reject; });
+      return new Promise((resolve) => { releaseSecond = () => resolve({ meta: meta({ id: "a", ...args }) }); });
+    },
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const pin = store.updateFlag("new", "a", "pinned", true);
+  const title = store.update("new", "a", { title: "Renamed" });
+  assert.equal(calls.filter((x) => x[1] === "chat_update").length, 1);
+  store.patchSession("new", "a", { state: "running", last_seq: 42 });
+  rejectFirst(new Error("offline"));
+  await assert.rejects(pin, /offline/);
+  assert.equal(store.find("new", "a").meta.state, "running");
+  assert.equal(store.find("new", "a").meta.last_seq, 42);
+  assert.equal(store.find("new", "a").meta.pinned, false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.filter((x) => x[1] === "chat_update").length, 2);
+  releaseSecond(); await title;
+  assert.equal(store.find("new", "a").meta.title, "Renamed");
+  assert.equal(store.find("new", "a").meta.state, "running");
+  assert.equal(store.find("new", "a").meta.last_seq, 42);
+});
+
+test("archive undo can restore filtered-out successes and never retries failed rows", async () => {
+  const metas = [meta({ id: "a", archived: false }), meta({ id: "b", archived: false })];
+  const { store, calls } = storeWith({
+    "new chat_sessions": { sessions: metas },
+    "new chat_update": (args) => {
+      if (args.session === "b") throw new Error("offline");
+      return { meta: { ...metas.find((m) => m.id === args.session), ...args } };
+    },
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const result = await batch.runBatch(store, store.items(), "archive", true);
+  assert.equal(result.successes.length, 1); assert.equal(result.failures.length, 1);
+  assert.equal(store.find("new", "a"), null);
+  assert.equal(store.find("new", "b").meta.archived, false);
+  calls.length = 0;
+  const undone = await batch.undoBatch(store, result.successes);
+  assert.equal(undone.successes.length, 1); assert.equal(undone.failures.length, 0);
+  assert.deepEqual(plain(calls), [["new", "chat_update", { session: "a", archived: false }]]);
+  assert.equal(store.find("new", "a").meta.archived, false);
+});
+
+test("old hosts keep batch pins locally while archive failures stay visible", async () => {
+  const { store, calls } = storeWith({ "old chat_sessions": { sessions: [{ id: "a", runtime: "claude", name: "Claude", cwd: "/w", state: "idle", started_at: 1, turns: 1, seq: 1 }] } }, { computers: [{ name: "old", online: true, local: false }] });
+  await store.refreshAll();
+  const xs = store.items();
+  const pinned = await batch.runBatch(store, xs, "pin", true);
+  assert.equal(pinned.successes.length, 1); assert.equal(pinned.failures.length, 0);
+  assert.equal(store.isPinned(store.find("old", "a")), true);
+  assert.equal((await batch.undoBatch(store, pinned.successes)).successes.length, 1);
+  assert.equal(store.isPinned(store.find("old", "a")), false);
+  const archived = await batch.runBatch(store, xs, "archive", true);
+  assert.equal(archived.successes.length, 0);
+  assert.deepEqual(plain(archived.failures.map((x) => x.error)), ["unsupported"]);
+  assert.equal(calls.some((x) => x[1] === "chat_update"), false);
+});
+
+test("remote batches deduplicate rows and reject selections that disappeared before dispatch", async () => {
+  let sessions = [meta({ id: "a", pinned: false })];
+  const { store, calls } = storeWith({
+    "new chat_sessions": () => ({ sessions }),
+    "new chat_update": (args) => ({ meta: { ...sessions[0], ...args } }),
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const a = store.items()[0];
+  const result = await batch.runBatch(store, [a, a, a], "pin", true);
+  assert.equal(result.successes.length, 1);
+  assert.equal(calls.filter((x) => x[1] === "chat_update").length, 1);
+  sessions = [];
+  await store.refresh("new");
+  calls.length = 0;
+  const missing = await batch.runBatch(store, [a], "pin", false);
+  assert.equal(missing.successes.length, 0);
+  assert.deepEqual(plain(missing.failures.map((x) => x.error)), ["missing_session"]);
+  assert.equal(calls.length, 0);
+});
+
+test("overlapping batches on the same session serialize and take receipts at execution time", async () => {
+  let active = 0, peak = 0;
+  let current = meta({ id: "a", pinned: false });
+  const { store, calls } = storeWith({
+    "new chat_sessions": () => ({ sessions: [current] }),
+    "new chat_update": async (args) => {
+      active++; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      current = { ...current, ...args };
+      active--;
+      return { meta: current };
+    },
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const a = store.items()[0];
+  const [pinned, unpinned] = await Promise.all([
+    batch.runBatch(store, [a, a], "pin", true),
+    batch.runBatch(store, [a], "pin", false),
+  ]);
+  assert.equal(peak, 1);
+  assert.deepEqual(plain([pinned, unpinned].map((r) => r.successes.map((c) => [c.before, c.after]))), [[[false, true]], [[true, false]]]);
+  assert.deepEqual(plain(calls.filter((x) => x[1] === "chat_update").map((x) => x[2].pinned)), [true, false]);
+  assert.equal(store.isPinned(store.find("new", "a")), false);
+});
+
+test("archive undo preserves events arriving after its filtered row is restored optimistically", async () => {
+  const original = meta({ id: "a", title: "Original", archived: false });
+  let release;
+  const { store } = storeWith({
+    "new chat_sessions": { sessions: [original] },
+    "new chat_update": (args) => args.archived
+      ? { meta: { ...original, archived: true } }
+      : new Promise((resolve) => { release = () => resolve({ meta: { ...original, archived: false } }); }),
+  }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const archived = await batch.runBatch(store, store.items(), "archive", true);
+  assert.equal(store.find("new", "a"), null);
+  const undoing = batch.undoBatch(store, archived.successes);
+  store.patchSession("new", "a", { title: "New title", state: "running", last_seq: 99 });
+  release();
+  const result = await undoing;
+  assert.equal(result.successes.length, 1);
+  const restored = store.find("new", "a");
+  assert.equal(restored.meta.archived, false);
+  assert.equal(restored.meta.title, "New title");
+  assert.equal(restored.meta.state, "running");
+  assert.equal(restored.meta.last_seq, 99);
 });

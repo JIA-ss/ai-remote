@@ -158,6 +158,7 @@
 .ws-row[data-selected]:hover { background: var(--ws-selected); }
 .ws-row-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; padding-left: 8px; border-radius: 6px; color: inherit; text-align: left; }
 .ws-row-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent), 0 0 6px 0 color-mix(in srgb, var(--ws-accent) 20%, transparent); }
+.ws-row[data-multi-selected] { background: color-mix(in srgb, var(--ws-accent) 14%, var(--ws-side)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ws-accent) 35%, transparent); }
 .ws-row-lead { width: 16px; flex: none; display: grid; place-items: center; color: var(--ws-t3); }
 .ws-jump-key { display: grid; place-items: center; height: 16px; min-width: 16px; padding: 0 2px; border: .5px solid var(--ws-line); border-radius: 3px; font: inherit; font-size: 10px; line-height: 1; color: var(--ws-t1); background: var(--ws-s3); }
 .ws-row[data-selected] .ws-row-lead { color: var(--ws-t1); }

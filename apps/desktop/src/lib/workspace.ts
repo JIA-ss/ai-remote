@@ -659,6 +659,7 @@ export class WorkspaceStore {
   private polling = false;
   private active = false;
   private inflight = new Map<string, Promise<void>>();
+  private mutations = new Map<string, Promise<unknown>>();
   private readonly deps: Required<Omit<WsDeps, "storage">> & { storage: WsDeps["storage"] };
 
   constructor(deps: WsDeps) {
@@ -927,6 +928,47 @@ export class WorkspaceStore {
     if (!this.snap.unread.includes(key)) this.set({ unread: [...this.snap.unread, key] });
   }
 
+  readMark(key: string): { seen: number | undefined; explicit: boolean } {
+    return { seen: this.snap.seen[key], explicit: this.snap.unread.includes(key) };
+  }
+
+  /** SB-34: one snapshot and one write per existing storage key, rather than a write per row. */
+  changeRead(keys: string[], read: boolean) {
+    const seen = { ...this.snap.seen };
+    const unread = new Set(this.snap.unread);
+    const items = new Map(this.items().map((item) => [item.key, item]));
+    const changes: Array<{ key: string; before: ReturnType<WorkspaceStore["readMark"]>; after: ReturnType<WorkspaceStore["readMark"]> }> = [];
+    for (const key of new Set(keys)) {
+      const x = items.get(key);
+      if (!x || isRunning(x.meta) || x.meta.pending) continue;
+      const before = this.readMark(key);
+      if (read) { seen[key] = lastSeq(x.meta); unread.delete(key); }
+      else unread.add(key);
+      changes.push({ key, before, after: { seen: seen[key], explicit: unread.has(key) } });
+    }
+    if (changes.length) this.set({ seen: keepLast(seen, MAX_MARKS), unread: [...unread] });
+    return changes;
+  }
+
+  /** Undo only unchanged marks: opening a session or receiving newer events must win. */
+  restoreRead(changes: ReturnType<WorkspaceStore["changeRead"]>): string[] {
+    const seen = { ...this.snap.seen };
+    const unread = new Set(this.snap.unread);
+    const applied: string[] = [];
+    const items = new Map(this.items().map((item) => [item.key, item]));
+    for (const change of changes) {
+      const current = this.readMark(change.key);
+      const x = items.get(change.key);
+      if (!x || isRunning(x.meta) || x.meta.pending || current.seen !== change.after.seen || current.explicit !== change.after.explicit) continue;
+      if (change.before.seen === undefined) delete seen[change.key];
+      else seen[change.key] = change.before.seen;
+      if (change.before.explicit) unread.add(change.key); else unread.delete(change.key);
+      applied.push(change.key);
+    }
+    if (applied.length) this.set({ seen, unread: [...unread] });
+    return applied;
+  }
+
   /** Remembers the first message sent from here (a title for hosts that do not keep one). */
   rememberFirst(host: string, id: string, text: string) {
     const first = keepLast({ ...this.snap.first, [sessionKey(host, id)]: text.slice(0, 200) }, 500);
@@ -952,7 +994,36 @@ export class WorkspaceStore {
    * title). Shown at once and put back when the host refuses. A host without `chat_update`: a pin is
    * kept on this device; renaming and archiving reject with `unsupported`.
    */
-  async update(host: string, id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, known?: WsMeta): Promise<void> {
+  update(host: string, id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, known?: WsMeta): Promise<void> {
+    return this.mutate(sessionKey(host, id), () => this.updateOne(host, id, patch, known));
+  }
+
+  private mutate<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.mutations.get(key);
+    const next = previous ? previous.catch(() => undefined).then(run) : run();
+    this.mutations.set(key, next);
+    const clear = () => { if (this.mutations.get(key) === next) this.mutations.delete(key); };
+    void next.then(clear, clear);
+    return next;
+  }
+
+  /** A scoped receipt for batch operations and undo; serialized with ordinary edits of this row. */
+  updateFlag(host: string, id: string, field: "pinned" | "archived", value: boolean, known?: WsMeta, expected?: boolean) {
+    return this.mutate(sessionKey(host, id), async () => {
+      const x = this.find(host, id);
+      const meta = x?.meta ?? (field === "archived" && !value ? known : undefined);
+      if (!meta) throw new Error("missing_session");
+      const before = field === "pinned" ? (!!meta.pinned || this.snap.pins.includes(sessionKey(host, id))) : !!meta.archived;
+      if (expected !== undefined && before !== expected) throw new Error("state_changed");
+      if (before !== value) await this.updateOne(host, id, { [field]: value }, meta);
+      const current = this.find(host, id);
+      const after = current ? (field === "pinned" ? this.isPinned(current) : !!current.meta.archived) : value;
+      if (after !== value) throw new Error("state_changed");
+      return { before, after, meta: { ...(current?.meta ?? meta), [field]: value } };
+    });
+  }
+
+  private async updateOne(host: string, id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, known?: WsMeta): Promise<void> {
     const key = sessionKey(host, id);
     const h = this.snap.hosts[host];
     // `known`: a session no longer listed (archived), so that undoing brings it back at once.
@@ -983,21 +1054,38 @@ export class WorkspaceStore {
       const v = await this.deps.call(host, "chat_update", { session: id, ...patch });
       const meta = normalizeMeta(v && typeof v === "object" && "meta" in (v as object) ? (v as { meta: unknown }).meta : v);
       const fresh = meta && meta.id === id ? meta : null;
+      // A reply carries a full metadata snapshot. Apply only the fields this edit owns to a
+      // listed row, so an undo (or a slow reply) cannot rewind titles and live events.
+      const accepted: Partial<WsMeta> = { ...optimistic };
+      if (fresh) {
+        if (patch.pinned !== undefined) accepted.pinned = fresh.pinned;
+        if (patch.archived !== undefined) accepted.archived = fresh.archived;
+        if (patch.title !== undefined) { accepted.title = fresh.title; accepted.title_source = fresh.title_source; }
+      }
       this.setHost(host, (s) => ({
         ...s,
         update: true,
         sessions: (s.sessions.some((m) => m.id === id)
-          ? s.sessions.map((m) => (m.id === id ? { ...m, ...(fresh ?? optimistic) } : m))
+          ? s.sessions.map((m) => (m.id === id ? { ...m, ...accepted } : m))
           : fresh
             ? [fresh, ...s.sessions]
             : s.sessions
         ).filter((m) => this.keeps(m)),
       }));
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e && typeof e === "object" && "message" in e && typeof e.message === "string" ? e.message : String(e);
       // Put back what was shown (an archived session that failed to come back stays away).
       if (before && !(patch.archived === false && !listed)) {
-        this.setHost(host, (s) => ({ ...s, sessions: s.sessions.some((m) => m.id === id) ? s.sessions.map((m) => (m.id === id ? before : m)) : [before, ...s.sessions] }));
+        this.setHost(host, (s) => ({ ...s, sessions: s.sessions.some((m) => m.id === id) ? s.sessions.map((m) => {
+          if (m.id !== id) return m;
+          const restore: Partial<WsMeta> = {};
+          if (patch.pinned !== undefined && m.pinned === optimistic.pinned) restore.pinned = before.pinned;
+          if (patch.archived !== undefined && m.archived === optimistic.archived) restore.archived = before.archived;
+          if (patch.title !== undefined && m.title === optimistic.title && m.title_source === optimistic.title_source) {
+            restore.title = before.title; restore.title_source = before.title_source;
+          }
+          return { ...m, ...restore };
+        }) : [before, ...s.sessions] }));
       } else if (patch.archived === false && !listed) {
         this.setHost(host, (s) => ({ ...s, sessions: s.sessions.filter((m) => m.id !== id) }));
       }
