@@ -76,6 +76,10 @@ export function Workspace({
   const snap = useWorkspace(computers, true);
   const [side, setSide] = useState(readSide);
   const [floatOpen, setFloatOpen] = useState(false);
+  /** The folded sidebar was opened by the pointer at the window's left edge (it goes when the pointer leaves). */
+  const [peek, setPeek] = useState(false);
+  const [edgeHint, setEdgeHint] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const winW = useWindowWidth();
   const narrow = winW <= narrowAt(side.w);
@@ -102,6 +106,7 @@ export function Workspace({
     }
   };
   const toggle = useCallback(() => {
+    setPeek(false);
     if (narrow) setFloatOpen((o) => !o);
     else saveSide({ ...side, hidden: !side.hidden });
   }, [narrow, side]);
@@ -182,6 +187,76 @@ export function Workspace({
     return () => window.removeEventListener("keydown", on);
   });
 
+  // SB-03's edge peek (the simple path): with the sidebar folded in a narrow window, the pointer within
+  // 48 px of the left edge shows a hint, within 16 px for 100 ms opens it over the page — not while a
+  // button is held. It goes 180 ms after the pointer leaves it, later while one of its menus is open or
+  // its rename field has the focus.
+  useEffect(() => {
+    if (!narrow || floatOpen) {
+      setEdgeHint(false);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const stopTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const move = (e: PointerEvent) => {
+      const x = e.clientX - (root.current?.getBoundingClientRect().left ?? 0);
+      setEdgeHint(!e.buttons && x <= 48);
+      if (e.buttons || x > 16) return stopTimer();
+      timer ??= setTimeout(() => {
+        setPeek(true);
+        setFloatOpen(true);
+      }, 100);
+    };
+    const out = () => {
+      stopTimer();
+      setEdgeHint(false);
+    };
+    window.addEventListener("pointermove", move);
+    document.documentElement.addEventListener("pointerleave", out);
+    return () => {
+      stopTimer();
+      window.removeEventListener("pointermove", move);
+      document.documentElement.removeEventListener("pointerleave", out);
+    };
+  }, [narrow, floatOpen]);
+  useEffect(() => {
+    if (!peek || !floatOpen) return;
+    const side = root.current?.querySelector<HTMLElement>(".ws-side");
+    if (!side) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const busy = () => !!document.querySelector(".ws-menu") || (side.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement);
+    const later = () => {
+      timer = setTimeout(() => {
+        if (busy()) later();
+        else {
+          setFloatOpen(false);
+          setPeek(false);
+        }
+      }, 180);
+    };
+    const enter = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const leave = () => {
+      enter();
+      later();
+    };
+    side.addEventListener("pointerenter", enter);
+    side.addEventListener("pointerleave", leave);
+    return () => {
+      enter();
+      side.removeEventListener("pointerenter", enter);
+      side.removeEventListener("pointerleave", leave);
+    };
+  }, [peek, floatOpen]);
+  useEffect(() => {
+    if (!narrow) setPeek(false);
+  }, [narrow]);
+
   // The edge: drag to resize (3 px before it counts), below half the minimum it hides; a click hides
   // or shows; a double click goes back to 288 px (SB-02).
   const onGripDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -240,6 +315,7 @@ export function Workspace({
 
   return (
     <div
+      ref={root}
       className={cx("ws", dragging && "dragging")}
       data-side={docked ? "docked" : shown ? "float" : "hidden"}
       style={{ ["--ws-side-w" as string]: `${width}px` }}
@@ -269,7 +345,8 @@ export function Workspace({
           }}
         />
       )}
-      {narrow && floatOpen && <div className="ws-float-scrim" onPointerDown={() => setFloatOpen(false)} />}
+      {narrow && floatOpen && !peek && <div className="ws-float-scrim" onPointerDown={() => setFloatOpen(false)} />}
+      {edgeHint && <div className="ws-peek-hint" aria-hidden />}
       <main className="ws-main">
         {route.host && route.session ? (
           <SessionPage

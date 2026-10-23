@@ -7,8 +7,8 @@
 // own (new session there, copy the path, collapse the others — also Alt+click).
 
 import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { knownHome } from "../../lib/chat";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { folderName, knownHome } from "../../lib/chat";
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
 import {
@@ -39,7 +39,7 @@ import {
 import { cx } from "../util";
 import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { ModeSwitch, type AppMode } from "./ModeSwitch";
-import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
+import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
 import { workspace } from "./useWorkspace";
 
 const COLLAPSED = "ai-remote.ws.collapsed";
@@ -163,6 +163,22 @@ export function Sidebar(p: SidebarProps) {
   const [listMenu, setListMenu] = useState<MenuAt | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
+  // SB-32: a card beside the row the pointer rests on (500 ms; once one shows, the next row's follows at
+  // once), gone 200 ms after the pointer leaves; not while a menu is open or a row is being renamed.
+  const [card, setCard] = useState<{ key: string; rect: DOMRect } | null>(null);
+  const cardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quiet = !!menu || !!groupMenu || !!listMenu || !!p.renaming;
+  const hoverRow = (key: string | null, el?: HTMLElement) => {
+    if (cardTimer.current) clearTimeout(cardTimer.current);
+    if (key && el && !quiet) cardTimer.current = setTimeout(() => setCard({ key, rect: el.getBoundingClientRect() }), card ? 0 : 500);
+    else cardTimer.current = setTimeout(() => setCard(null), key ? 0 : 200);
+  };
+  useEffect(() => {
+    if (quiet) setCard(null);
+  }, [quiet]);
+  useEffect(() => () => {
+    if (cardTimer.current) clearTimeout(cardTimer.current);
+  }, []);
   const byKey = useMemo(() => new Map(all.map((x) => [x.key, x])), [all]);
   const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
   const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived };
@@ -345,6 +361,7 @@ export function Sidebar(p: SidebarProps) {
       renaming={p.renaming === x.key}
       tabIndex={navIndex(`row:${x.key}`)}
       onFocus={() => setFocusId(`row:${x.key}`)}
+      onHover={(el) => hoverRow(el ? x.key : null, el ?? undefined)}
       onOpen={() => p.onOpen(x.host, x.meta.id)}
       onMenu={(at) => {
         setConfirmEnd(null);
@@ -397,7 +414,7 @@ export function Sidebar(p: SidebarProps) {
         </span>
         <span>{t("ws_new")}</span>
       </button>
-      <div className="ws-list" ref={list} onKeyDown={onListKey} role="list" aria-label={t("ws_sessions")}>
+      <div className="ws-list" ref={list} onKeyDown={onListKey} onScroll={() => card && setCard(null)} role="list" aria-label={t("ws_sessions")}>
         {noComputers ? (
           <div className="ws-list-empty">
             <p>{t("ws_no_computers")}</p>
@@ -567,6 +584,7 @@ export function Sidebar(p: SidebarProps) {
         />
       )}
       {listMenu && <PopMenu at={listMenu} label={listLabel} items={listMenuItems()} onClose={() => setListMenu(null)} />}
+      {card && byKey.get(card.key) && <RowCard item={byKey.get(card.key) as WsItem} rect={card.rect} />}
     </nav>
   );
 }
@@ -645,6 +663,7 @@ function Row({
   renaming,
   tabIndex,
   onFocus,
+  onHover,
   onOpen,
   onMenu,
   onRenamed,
@@ -658,6 +677,8 @@ function Row({
   renaming: boolean;
   tabIndex?: number;
   onFocus: () => void;
+  /** The pointer came onto the row (its element) or left it (null). */
+  onHover: (el: HTMLElement | null) => void;
   onOpen: () => void;
   onMenu: (at: MenuAt) => void;
   onRenamed: (title: string | null) => void;
@@ -677,6 +698,9 @@ function Row({
       data-menu-open={menuOpen ? "" : undefined}
       data-decorated={decorated ? "" : undefined}
       data-archived={item.meta.archived ? "" : undefined}
+      onPointerEnter={(e) => e.pointerType === "mouse" && onHover(e.currentTarget)}
+      onPointerLeave={() => onHover(null)}
+      onPointerDown={() => onHover(null)}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu({ x: e.clientX, y: e.clientY });
@@ -731,6 +755,54 @@ function Row({
           </button>
         </span>
       )}
+    </div>
+  );
+}
+
+const PENDING_TEXT = { permission: "ws_needs_permission", question: "ws_asked_question", plan: "ws_plan_review" } as const;
+
+/** "5 minutes ago", "yesterday": how long since a moment, in the app's language. */
+function since(ms: number): string {
+  const rtf = new Intl.RelativeTimeFormat(currentLang() === "zh" ? "zh-CN" : "en", { numeric: "auto" });
+  const s = Math.round((ms - Date.now()) / 1000);
+  const a = Math.abs(s);
+  if (a < 60) return rtf.format(0, "second");
+  if (a < 3600) return rtf.format(Math.round(s / 60), "minute");
+  if (a < 86400) return rtf.format(Math.round(s / 3600), "hour");
+  return rtf.format(Math.round(s / 86400), "day");
+}
+
+/** SB-32's card: the whole title, where the session runs, what it is doing or waits for, when it last moved. */
+function RowCard({ item, rect }: { item: WsItem; rect: DOMRect }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(rect.top);
+  useLayoutEffect(() => {
+    const h = box.current?.offsetHeight ?? 0;
+    setTop(Math.max(8, Math.min(rect.top + rect.height / 2 - h / 2, viewHeight() - h - 8)));
+  }, [rect]);
+  const m = item.meta;
+  const dot = workspace.dot(item);
+  const where = [folderName(m.cwd) || m.cwd, item.local ? null : item.host, m.branch?.trim() || null].filter(Boolean).join(" · ");
+  const state: { text: string; tone?: "you" | "danger" } | null =
+    m.pending && m.state !== "ended"
+      ? { text: t(PENDING_TEXT[m.pending]), tone: "you" }
+      : dot === "running"
+        ? { text: t("ws_card_working") }
+        : dot === "failed"
+          ? { text: m.last_reason ? `${t("ws_hit_error")}: ${m.last_reason}` : t("ws_hit_error"), tone: "danger" }
+          : m.state === "ended"
+            ? { text: t("ws_card_ended") }
+            : null;
+  return (
+    <div ref={box} className="ws-hovercard" role="tooltip" style={{ left: rect.right + 8, top }}>
+      <div className="ws-hovercard-title">{titleOf(item)}</div>
+      <div className="ws-hovercard-where">{where}</div>
+      {state && (
+        <div className="ws-hovercard-state" data-tone={state.tone}>
+          {state.text}
+        </div>
+      )}
+      <div className="ws-hovercard-when">{t("ws_card_active", { when: since(m.last_activity) })}</div>
     </div>
   );
 }

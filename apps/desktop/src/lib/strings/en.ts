@@ -158,6 +158,9 @@ export const en = {
   ws_copied: "Copied {path}",
   ws_fold_others: "Collapse other groups",
   ws_expand_all: "Expand all groups",
+  ws_card_working: "Working on it…",
+  ws_card_ended: "This session has ended",
+  ws_card_active: "Active {when}",
   // ── end workspace ──
   app: "ai-remote",
   preview_badge: "Preview",

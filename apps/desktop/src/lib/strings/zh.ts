@@ -160,6 +160,9 @@ export const zh: Record<keyof typeof en, string> = {
   ws_copied: "已复制 {path}",
   ws_fold_others: "折叠其他分组",
   ws_expand_all: "展开全部分组",
+  ws_card_working: "正在处理…",
+  ws_card_ended: "会话已结束",
+  ws_card_active: "最后活动：{when}",
   // ── end workspace ──
   app: "ai-remote",
   preview_badge: "界面预览",

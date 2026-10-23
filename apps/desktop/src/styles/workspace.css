@@ -164,6 +164,17 @@
 .ws-more:hover { background: var(--ws-hover); color: var(--ws-t2); }
 .ws-more:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent); }
 
+/* SB-32: the card beside a row after 500 ms (240 px, centred on the row; it goes 200 ms after the pointer) */
+.ws-hovercard { position: fixed; z-index: 55; width: 240px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; background: var(--ws-s3);
+  box-shadow: var(--ws-shadow-pop), var(--ws-ring); pointer-events: none; animation: ws-pop 120ms var(--ws-ease); white-space: normal; }
+.ws-hovercard-title { font-size: 13px; line-height: 18px; font-weight: 500; color: var(--ws-t1); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ws-hovercard-where, .ws-hovercard-when { font-size: 12px; line-height: 16px; color: var(--ws-t3); overflow-wrap: anywhere; }
+.ws-hovercard-state { font-size: 12px; line-height: 16px; color: var(--ws-t2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.ws-hovercard-state[data-tone="you"] { color: var(--ws-warn-text); }
+.ws-hovercard-state[data-tone="danger"] { color: var(--ws-danger-text); }
+/* SB-03: the pointer near the left edge of a narrow window, where the folded sidebar comes out */
+.ws-peek-hint { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 38; pointer-events: none; background: color-mix(in srgb, var(--ws-t1) 22%, transparent); animation: ws-reveal 120ms ease-out; }
+
 /* the status dot (SB-23 / VS-11..12): 6 px; running blinks 0.3 ↔ 1 every 1.2 s, in step everywhere */
 .ws-dot { display: inline-block; width: 6px; height: 6px; flex: none; border-radius: 50%; }
 .ws-dot[data-kind="running"] { background: var(--ws-t3); animation: ws-blink 1.2s ease-in-out infinite; }
