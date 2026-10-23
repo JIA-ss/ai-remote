@@ -1480,6 +1480,11 @@ fn smoke(app: &tauri::App) {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
             if let Some(w) = handle.get_webview_window("main") {
+                // The page shows its initially hidden window after its first paint. On macOS that
+                // can constrain a pre-show position back onto a screen; move after that show too.
+                if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() != Ok("1") {
+                    let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
+                }
                 eprintln!("[smoke] scripted window position: {:?}, size: {:?}", w.outer_position(), w.outer_size());
                 let _ = w.eval(script);
             }
