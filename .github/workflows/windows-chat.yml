@@ -44,6 +44,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16.0'
+      - name: Verify native Node argument boundary
+        run: |
+          node -e "const args = process.argv.slice(1); console.log(JSON.stringify({tauri_forwarded_args: args})); if (args.join('|') !== 'build|--debug|--no-bundle|--ci|--|--locked') process.exit(1)" -- build --debug --no-bundle --ci -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13.2'
@@ -81,7 +85,7 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npx tauri build --debug --no-bundle --ci -- --locked
+          node node_modules/@tauri-apps/cli/tauri.js build --debug --no-bundle --ci -- --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Six fake-agent suites, two separate rounds each
         run: |
