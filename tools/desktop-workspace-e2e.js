@@ -1050,8 +1050,32 @@
     await check("the real screen canvas is mounted beside the workspace", !!liveCanvas);
     // Stream zeroes its drawing size at start; only VideoDecoder's real output restores dimensions.
     // A DOM canvas alone (with the HTML default 300x150) is not proof that the host sent a frame.
+    const liveFrameWaitStarted = performance.now();
     const decodedFrame = await until("a decoded frame from the isolated test host", () => liveCanvas?.isConnected
       && liveCanvas.width > 0 && liveCanvas.height > 0 && !$(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"), 30000);
+    const sessionError = $(".nt-live-workspace .session-error");
+    const streamEnded = $(".nt-live-workspace .stream-ended");
+    // Error text stays local. Only these static classifications and typed state reach CI evidence;
+    // never include the text, host/monitor labels, paths, frame contents or arbitrary exceptions.
+    const localScreenError = `${text(sessionError)}\n${text(streamEnded)}`;
+    const screenErrorCodes = [
+      ["stream_terminal", /The screen stream ended\./i],
+      ["wgc_unsupported", /Windows Graphics Capture is not supported here/i],
+      ["wgc_start", /start Windows Graphics Capture/i],
+      ["dda_start", /capture the screen with Desktop Duplication/i],
+      ["capture_start", /start screen capture:/i],
+      ["monitor_unavailable", /no such monitor:/i],
+    ].filter(([, pattern]) => pattern.test(localScreenError)).map(([code]) => code);
+    if ((sessionError || streamEnded) && !screenErrorCodes.length) screenErrorCodes.push("other");
+    await say("e2e", `     (live screen diagnostic ${JSON.stringify({
+      schema: 1, checkpoint: "workspace_live_frame", elapsed_ms: Math.max(0, Math.round(performance.now() - liveFrameWaitStarted)),
+      document_hidden: document.hidden, secure_context: window.isSecureContext === true,
+      video_decoder_available: typeof window.VideoDecoder === "function", encoded_video_chunk_available: typeof window.EncodedVideoChunk === "function",
+      canvas_present: !!liveCanvas, canvas_connected: !!liveCanvas?.isConnected,
+      width: liveCanvas ? liveCanvas.width : null, height: liveCanvas ? liveCanvas.height : null,
+      session_error_present: !!sessionError, stream_ended_present: !!streamEnded,
+      wait_satisfied: !!decodedFrame, error_codes: screenErrorCodes,
+    })})`);
     await check("a real decoded screen frame has arrived without a capture error", !!decodedFrame,
       `${liveCanvas?.width}x${liveCanvas?.height}; ${text($(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"))}`);
     await note(`live-screen-continuity ${JSON.stringify({ phase: "begin", ts: Date.now(), host: CFG.host,

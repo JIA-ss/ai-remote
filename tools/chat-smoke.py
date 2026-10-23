@@ -36,11 +36,14 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--real", action="append", default=[], help="base=path of a real agent, e.g. codex=/usr/local/bin/codex")
 parser.add_argument("--model", help="model for the real agent")
+parser.add_argument("--out", type=Path, help="new private evidence directory (steer events and isolated host log; never publish raw)")
 parser.add_argument("--hostw", type=Path, help="run the test host with this ai-remote-hostw instead of `ai-remote host`")
 parser.add_argument("--quiet", action="store_true",
                     help="write [network] quiet = true for the test host and controller (no mDNS / UPnP; needs a build "
                          "with quiet mode). Use it on managed networks.")
 options = parser.parse_args()
+if options.out:
+    options.out.mkdir(parents=True, exist_ok=False, mode=0o700)
 
 failures = []
 
@@ -188,28 +191,45 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
     def steer_real(kind, rsid):
         """Counts to 20, one shell command per number, steered to stop at 5 once two have run."""
+        evidence = options.out / f"steer-{len(list(options.out.glob('steer-*.jsonl'))) + 1}.jsonl" if options.out else None
+        def record(value):
+            if evidence:
+                with evidence.open("a", encoding="utf-8") as output:
+                    output.write(json.dumps({"observed_ns": time.monotonic_ns(), **value}, ensure_ascii=False) + "\n")
+                evidence.chmod(0o600)
         seq = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == rsid)["seq"]
         watch = subprocess.Popen([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", rsid,
                                   "--since", str(seq)], stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", env=env)
-        cli("chat", "send", rsid, "Count from 1 to 20. For each number N run the shell command `sleep 1; echo N` in "
+        started = cli("chat", "send", rsid, "Count from 1 to 20. For each number N run the shell command `sleep 1; echo N` in "
             "the foreground, one separate command per number (never a loop or several numbers in one command), then "
-            "reply with only the last number printed.")
-        done, sent_at, steer_turn, user_turn, final, t0 = 0, None, None, None, None, time.time()
+            "reply with only the last number printed. Wait for each command's tool result before preparing or "
+            "launching the next command. Never launch commands in parallel or queue future commands ahead of their results.")
+        record({"kind": "initial_send", "returncode": started.returncode, "since": seq})
+        completed, execute_ids = set(), set()
+        sent_at, steer_turn, user_turn, final, t0, steer_code = None, None, None, None, time.time(), None
         for line in watch.stdout:
             if not line.startswith("{"):
                 continue
             e = json.loads(line)
+            record({"kind": "event", "event": e})
             if e.get("t") == "turn_start" and steer_turn is None:
                 steer_turn = e["turn"]
-            if e.get("t") == "tool_update" and e.get("status") == "completed":
-                done += 1
-                if done == 2 and sent_at is None:
+            if e.get("t") == "tool_call" and e.get("kind") == "execute":
+                execute_ids.add(e["call_id"])
+            if e.get("t") == "tool_update" and e.get("status") == "completed" and e.get("call_id") in execute_ids:
+                completed.add(e["call_id"])
+                if len(completed) == 2 and sent_at is None:
                     sent_at = time.time()
-                    cli("chat", "send", rsid, "Change of plan: stop at 5 instead of 20.", "--steer")
+                    record({"kind": "steer_send", "completed_calls": sorted(completed), "started_calls": sorted(execute_ids)})
+                    steered = cli("chat", "send", rsid, "Change of plan: stop at 5 instead of 20.", "--steer")
+                    steer_code = steered.returncode
+                    record({"kind": "steer_send_result", "returncode": steer_code})
             if e.get("t") == "user" and e.get("steer"):
                 user_turn = e["turn"]
-                print(f"      steer joined after {time.time() - sent_at:.2f} s")
+                record({"kind": "steer_ack", "input_id": e.get("input_id"), "turn": user_turn,
+                        "completed_calls": sorted(completed), "started_calls": sorted(execute_ids)})
+                print(f"      steer joined after {time.time() - sent_at:.2f} s" if sent_at is not None else "      unexpected steer event")
             if e.get("t") == "turn_end":
                 final = e.get("final_text") or ""
                 break
@@ -220,7 +240,11 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             watch.wait(timeout=20)
         except subprocess.TimeoutExpired:
             watch.kill()
-        check(f"real {kind}: a steer joins the running turn", user_turn is not None and user_turn == steer_turn,
+        done = len(completed)
+        record({"kind": "summary", "completed_execute_calls": done, "started_execute_calls": len(execute_ids),
+                "turn": steer_turn, "steer_turn": user_turn, "final": final, "steer_returncode": steer_code})
+        check(f"real {kind}: a steer joins the running turn", started.returncode == 0 and steer_code == 0
+              and user_turn is not None and user_turn == steer_turn,
               f"turn {steer_turn}, steer in {user_turn}")
         check(f"real {kind}: the steer changes what it does", final is not None and re.findall(r"\d+", final)[-1:] == ["5"]
               and done < 12, f"{done} commands, answer {final!r}, {time.time() - t0:.1f} s")
@@ -501,6 +525,11 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             host.kill()
         cli("stop-agent")
         log.close()
+        if options.out:
+            source_log = host_home / "host" / "host.log" if options.hostw else base / "host.log"
+            if source_log.is_file():
+                (options.out / "host.log").write_bytes(source_log.read_bytes())
+                (options.out / "host.log").chmod(0o600)
         if failures:
             hostw_log = host_home / "host" / "host.log"
             print(((hostw_log if options.hostw and hostw_log.exists() else base / "host.log")

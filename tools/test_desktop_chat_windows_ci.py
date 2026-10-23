@@ -155,8 +155,79 @@ vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTE
         self.assertFalse(ci.accepted({**self.good(), 'suite': 'chat'}))
         duplicate = ci.parse_log(self.motion_line(valid) + '\n' + self.motion_line(valid), '')
         self.assertFalse(ci.accepted({**self.good(), 'suite': 'chat', **duplicate}))
-        for suite in ('render', 'offline', 'preview', 'codex', 'workspace'):
+        for suite in ('render', 'offline', 'preview', 'codex'):
             self.assertTrue(ci.accepted({**self.good(), 'suite': suite}), suite)
+
+    def screen_observation(self):
+        return dict(schema=1, checkpoint='workspace_live_frame', elapsed_ms=12,
+                    document_hidden=True, secure_context=True, video_decoder_available=True,
+                    encoded_video_chunk_available=True, canvas_present=True, canvas_connected=True,
+                    width=1280, height=720, session_error_present=False, stream_ended_present=False,
+                    wait_satisfied=True, error_codes=[])
+
+    def screen_line(self, payload):
+        return '     (live screen diagnostic ' + json.dumps(payload) + ')'
+
+    def test_screen_diagnostic_keeps_only_typed_fields_and_invalid_slots(self):
+        valid = self.screen_observation()
+        parsed = ci.parse_log(self.screen_line({**valid, 'text': r'C:\Users\Alice\auth.secret'}), '')
+        self.assertEqual(parsed['screen_diagnostics'], [valid])
+        self.assertNotIn('Alice', json.dumps(parsed))
+        invalid = [None, [], {**valid, 'schema': True}, {**valid, 'width': True},
+                   {**valid, 'width': -1}, {**valid, 'height': 65536}, {**valid, 'elapsed_ms': float('inf')},
+                   {**valid, 'canvas_connected': 1}, {**valid, 'error_codes': ['private-command']},
+                   {**valid, 'error_codes': ['other', 'other']}, {**valid, 'error_codes': [{}]}]
+        missing = dict(valid); del missing['width']; invalid.append(missing)
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertEqual(ci.parse_log(self.screen_line(payload), '')['screen_diagnostics'], [None])
+        for line in ('     (live screen diagnostic {bad})', self.screen_line(valid) + ' trailing'):
+            self.assertEqual(ci.parse_log(line, '')['screen_diagnostics'], [None])
+
+    def test_workspace_requires_exactly_one_successful_frame_observation(self):
+        valid = self.screen_observation()
+        good = {**self.good(), 'suite': 'workspace', 'screen_diagnostics': [valid]}
+        self.assertTrue(ci.accepted(good))
+        for observations in (None, [], [None], [valid, valid], [valid, None]):
+            self.assertFalse(ci.accepted({**good, 'screen_diagnostics': observations}))
+        for changed in ({'width': 0}, {'height': None}, {'wait_satisfied': False}, {'canvas_present': False}, {'canvas_connected': False},
+                        {'session_error_present': True}, {'stream_ended_present': True}):
+            self.assertFalse(ci.accepted({**good, 'screen_diagnostics': [{**valid, **changed}]}))
+
+    def test_workspace_driver_emits_the_schema_consumed_by_the_runner(self):
+        source = Path(__file__).with_name('desktop-workspace-e2e.js').read_text()
+        block = source[source.index('    const sessionError = '):source.index('    await check("a real decoded screen frame')]
+        script = r'''
+const vm = require('node:vm'), emitted=[];
+const context={performance:{now:()=>123},liveFrameWaitStarted:100,decodedFrame:true,
+ document:{hidden:true},window:{isSecureContext:true,VideoDecoder:function(){},EncodedVideoChunk:function(){}},
+ liveCanvas:{width:1280,height:720,isConnected:true},$:()=>null,text:()=>'',say:async(level,message)=>emitted.push(message)};
+vm.createContext(context);
+vm.runInContext('(async()=>{'+BLOCK+'})()',context).then(()=>process.stdout.write(JSON.stringify(emitted)));
+'''.replace('BLOCK', json.dumps(block))
+        process = subprocess.run(['node', '-'], input=script, text=True, capture_output=True, check=True)
+        emitted = json.loads(process.stdout)
+        self.assertEqual(len(emitted), 1)
+        observation = ci.parse_log(emitted[0], '')['screen_diagnostics']
+        self.assertEqual(observation, [{**self.screen_observation(), 'elapsed_ms': 23}])
+
+    def test_native_stream_evidence_never_exports_raw_log_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            absent = ci.native_stream_evidence(root)
+            self.assertEqual(absent['logs_present'], {'host': False, 'app': False})
+            (root/'host.log').write_text('GPU frame conversion unavailable: C:\\Users\\Alice\\secret\n'
+                                        'the GPU video processor cannot write NV12 token=secret\n')
+            (root/'app.stderr.log').write_text('[video] sent first frame: 4 bytes\n'
+                                              '[page error] Live video: NotSupportedError private-command\n'
+                                              '[page info] Live video: decoder configured: private-command\n')
+            report = ci.native_stream_evidence(root)
+            self.assertEqual(report['signature_counts']['host']['gpu_conversion_unavailable'], 1)
+            self.assertEqual(report['signature_counts']['host']['nv12_unsupported'], 1)
+            self.assertEqual(report['signature_counts']['app']['native_first_packet'], 1)
+            self.assertEqual(report['decoder_error_names']['NotSupportedError'], 1)
+            for raw in ('Alice', 'token=secret', 'private-command', '4 bytes', 'C:\\Users'):
+                self.assertNotIn(raw, json.dumps(report))
 
     def test_success_requires_harness_app_isolation_assertions_and_cleanup(self):
         self.assertTrue(ci.accepted(self.good()))

@@ -26,6 +26,76 @@ SUITES = (
     ("workspace", "desktop-workspace-e2e.js", 600),
 )
 KIND_ALLOWLIST = {"stream_workspace_ui", "stream_chat_rail", "preview_dialog", "workspace_ui", "devices_ui"}
+SCREEN_ERROR_CODES = {"stream_terminal", "wgc_unsupported", "wgc_start", "dda_start", "capture_start", "monitor_unavailable", "other"}
+
+
+def screen_diagnostic(payload):
+    """Keep only a bounded, typed observation; never retain screen error text or paths."""
+    if not isinstance(payload, dict) or payload.get("schema") != 1 or type(payload.get("schema")) is not int:
+        return None
+    if payload.get("checkpoint") != "workspace_live_frame":
+        return None
+    booleans = ("document_hidden", "secure_context", "video_decoder_available", "encoded_video_chunk_available",
+                "canvas_present", "canvas_connected", "session_error_present", "stream_ended_present", "wait_satisfied")
+    if any(type(payload.get(key)) is not bool for key in booleans):
+        return None
+    elapsed = payload.get("elapsed_ms")
+    if type(elapsed) is not int or not 0 <= elapsed <= 3_600_000:
+        return None
+    if any(payload.get(key) is not None and (type(payload[key]) is not int or not 0 <= payload[key] <= 65535)
+           for key in ("width", "height")) or any(key not in payload for key in ("width", "height")):
+        return None
+    codes = payload.get("error_codes")
+    if (not isinstance(codes, list) or len(codes) > len(SCREEN_ERROR_CODES)
+            or any(type(code) is not str or code not in SCREEN_ERROR_CODES for code in codes)
+            or len(set(codes)) != len(codes)):
+        return None
+    keys = ("schema", "checkpoint", "elapsed_ms", *booleans, "width", "height", "error_codes")
+    return {key: payload[key] for key in keys}
+
+
+def native_stream_evidence(raw_dir):
+    """Classify private native logs with public source literals; export no raw log values.
+
+    The native first-packet marker includes pongs and pointer messages as well as video. It is
+    deliberately not called a decoded/received-video counter. All counts are diagnostics only.
+    """
+    signatures = {
+        "host": {
+            "wgc_unsupported": "Windows Graphics Capture is not supported here",
+            "gpu_capture_cpu_fallback": "GPU screen capture unavailable; using the CPU path",
+            "gpu_conversion_unavailable": "GPU frame conversion unavailable",
+            "gpu_frame_conversion_error": "live view frame conversion",
+            "dda_unavailable": "Desktop Duplication unavailable",
+            "no_d3d11_video_device": "the GPU has no D3D11 video device",
+            "no_d3d11_video_context": "the GPU has no D3D11.1 video context",
+            "nv12_unsupported": "the GPU video processor cannot write NV12",
+            "hardware_encoder_unavailable": "hardware encoder unavailable",
+            "software_encoder_fallback": "using OpenH264",
+            "encoder_log_marker": "live view encoder",
+            "live_view_frame_marker": "live view frame",
+        },
+        "app": {
+            "native_first_packet": "[video] sent first frame:",
+            "decoder_configured": "Live video: decoder configured:",
+            "decoder_caught_up": "Live video: decoder caught up",
+            "stream_start_error": "Cannot start live video:",
+        },
+    }
+    result = {"schema": 1, "logs_present": {}, "signature_counts": {}, "decoder_error_names": {}}
+    for role, filename in (("host", "host.log"), ("app", "app.stderr.log")):
+        path = raw_dir / filename
+        present = path.is_file() and not path.is_symlink()
+        result["logs_present"][role] = present
+        raw = path.read_text(encoding="utf-8", errors="replace") if present else ""
+        result["signature_counts"][role] = {name: min(raw.count(literal), 1_000_000) for name, literal in signatures[role].items()}
+        if role == "app":
+            video_errors = [line for line in raw.splitlines() if "[page error] Live video:" in line]
+            result["decoder_error_names"] = {
+                name: min(sum(bool(re.search(r"\b" + name + r"\b", line)) for line in video_errors), 1_000_000)
+                for name in ("NotSupportedError", "DataError", "InvalidStateError", "OperationError", "ReferenceError", "TypeError")
+            }
+    return result
 
 
 def digest(path):
@@ -71,8 +141,19 @@ def parse_log(raw, source):
     names = static_names(source)
     checks, exits, geometries = [], [], []
     motion_preferences = []
+    screen_diagnostics = []
     all_passed, failed_summaries, reported_checks, storage = 0, [], [], False
     for line in raw.splitlines():
+        if line.startswith("     (live screen diagnostic "):
+            observation = None
+            match = re.fullmatch(r"     \(live screen diagnostic (\{.*\})\)", line)
+            if match:
+                try:
+                    observation = screen_diagnostic(json.loads(match[1]))
+                except ValueError:
+                    pass
+            # Retain malformed/duplicate slots: they must not disappear into an accepted run.
+            screen_diagnostics.append(observation)
         if line.startswith("     (live tool normal paint "):
             # Keep one slot per observed record, including invalid records, so duplicates or
             # malformed evidence cannot be silently discarded into a successful chat result.
@@ -114,6 +195,7 @@ def parse_log(raw, source):
             "fail_count": sum(not x["passed"] for x in checks), "all_passed_count": all_passed,
             "failed_summary_counts": failed_summaries, "reported_check_counts": reported_checks, "app_exit_codes": exits,
             "motion_preferences": motion_preferences,
+            "screen_diagnostics": screen_diagnostics,
             "isolated_storage": storage, "isolated_placement": bool(geometries) and all(offscreen(x) for x in geometries)}
 
 
@@ -210,6 +292,15 @@ def accepted(record):
                 or not (preference["appReduce"] is None
                         or type(preference["appReduce"]) is str and preference["appReduce"] in ("true", "false"))):
             return False
+    if record.get("suite") == "workspace":
+        observations = record.get("screen_diagnostics")
+        if not isinstance(observations, list) or len(observations) != 1 or observations[0] is None:
+            return False
+        observation = screen_diagnostic(observations[0])
+        if (observation is None or not observation["wait_satisfied"] or not observation["canvas_present"] or not observation["canvas_connected"]
+                or not observation["width"] or not observation["height"]
+                or observation["session_error_present"] or observation["stream_ended_present"]):
+            return False
     return (record.get("harness_exit") == 0 and record.get("cleanup_ok") is True and not record.get("timed_out")
             and record.get("runner_error_stage") is None
             and record.get("all_passed_count") == 1 and record.get("ok_count", 0) > 0 and record.get("fail_count") == 0
@@ -241,6 +332,7 @@ def run_one(suite, round_number, private_root, output, cli, app):
               "cleanup_ok": result.get("cleanup_ok", False), "runner_error_stage": result.get("error"), "runner_winerror": result.get("winerror")}
     raw_log = (private / "harness.log").read_text(encoding="utf-8", errors="replace") if (private / "harness.log").exists() else ""
     record.update(parse_log(raw_log, (ROOT / "tools" / filename).read_text(encoding="utf-8")))
+    record["native_stream_evidence"] = native_stream_evidence(raw)
     record["images"] = collect_images(raw, output / "test-ui" / label)
     record["exported_crop_count"] = sum(x["crop_status"] == "saved_test_ui_only" for x in record["images"])
     record["omitted_crop_count"] = len(record["images"]) - record["exported_crop_count"]
