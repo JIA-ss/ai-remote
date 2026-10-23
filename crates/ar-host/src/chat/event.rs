@@ -50,8 +50,78 @@ pub enum ToolStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolContent {
-    Text { text: String },
-    Diff { path: String, old: Option<String>, new: String },
+    Text {
+        text: String,
+    },
+    Diff {
+        path: String,
+        old: Option<String>,
+        new: String,
+        /// The change with its real line numbers, when the agent reports them (Claude's
+        /// `structuredPatch`, the `@@` headers of Codex's unified diffs).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hunks: Vec<Hunk>,
+    },
+}
+
+/// One hunk of a diff: where it starts and how many lines it spans on each side, and its lines,
+/// each starting with `" "`, `"-"` or `"+"` (a `"\"` line notes a missing newline).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hunk {
+    pub old_start: u64,
+    pub old_lines: u64,
+    pub new_start: u64,
+    pub new_lines: u64,
+    pub lines: Vec<String>,
+}
+
+/// Most hunks kept of one file change, and lines of one hunk.
+pub const MAX_HUNKS: usize = 200;
+pub const MAX_HUNK_LINES: usize = 2000;
+
+impl Hunk {
+    /// The hunk cut to what an event keeps: at most [`MAX_HUNK_LINES`] lines of at most 2000 bytes.
+    pub fn bounded(mut self) -> Self {
+        self.lines.truncate(MAX_HUNK_LINES);
+        for l in &mut self.lines {
+            if l.len() > 2000 {
+                *l = cut(l, 2000).0;
+            }
+        }
+        self
+    }
+}
+
+/// One choice of a question part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// One part of a question (Claude's AskUserQuestion asks up to a few at once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    /// More than one option may be picked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+}
+
+/// How a permission, plan or question was settled (see [`Ev::Resolved`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Allowed,
+    AllowedSession,
+    Denied,
+    Answered,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,12 +261,16 @@ pub enum Ev {
     Plan {
         entries: Vec<PlanEntry>,
     },
-    /// The agent asks the user; answered with an `answer` command (one per question).
+    /// The agent asks the user; answered with an `answer` command (one per question). `prompt` and
+    /// `options` are the first part, for controllers that know only one; `questions` has every part
+    /// (Claude's AskUserQuestion).
     Question {
         qid: String,
         prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        questions: Vec<QuestionItem>,
         /// Codex: the request the question belongs to (its questions are answered together; an
         /// empty answer skips one), the item that asked, the question's short header, a description
         /// per option (aligned with `options`, empty where it has none), whether a free answer is
@@ -230,6 +304,50 @@ pub enum Ev {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         answers: BTreeMap<String, Vec<String>>,
         how: String,
+    },
+    /// The session's title: the agent's summary of the first message, or a name someone gave it.
+    Title {
+        title: String,
+        /// `agent` or `user`.
+        source: String,
+    },
+    /// The agent wants to use a tool and its permission mode says to ask first; answered with a
+    /// `permit` command.
+    Permission {
+        rid: String,
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ToolKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// `session`: it may be allowed for the rest of the session.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        suggestions: Vec<String>,
+        /// The tool call it is about, when the agent says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+    },
+    /// The agent proposes a plan and asks how to go on (Claude's ExitPlanMode); answered with a
+    /// `permit` command.
+    PlanReview {
+        rid: String,
+        plan: String,
+    },
+    /// A permission, plan or question was answered (the first answer wins) or fell away with its
+    /// turn: every viewer closes its card.
+    Resolved {
+        id: String,
+        outcome: Outcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<By>,
+    },
+    /// Claude's permission mode now: `default`, `acceptEdits`, `plan` or `bypassPermissions`.
+    Mode {
+        mode: String,
     },
     Usage {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -367,6 +485,8 @@ const NOTICE_WORDS: &[&str] = &[
     "no_images",
     "other",
     "steer_queued",
+    "mode_rejected",
+    "permission_expired",
 ];
 
 fn static_str<'de, D: Deserializer<'de>>(d: D) -> Result<&'static str, D::Error> {
@@ -433,7 +553,7 @@ mod tests {
                 status: ToolStatus::InProgress,
                 input: None,
                 locations: vec![],
-                content: vec![ToolContent::Diff { path: "a".into(), old: None, new: "b".into() }],
+                content: vec![ToolContent::Diff { path: "a".into(), old: None, new: "b".into(), hunks: vec![] }],
             }),
             Out::Session("s".into()),
             Out::TurnEnd { status: TurnStatus::Completed, final_text: Some("ok".into()), reason: None },

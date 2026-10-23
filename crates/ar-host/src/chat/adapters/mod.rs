@@ -7,9 +7,10 @@ mod acp;
 mod claude;
 mod codex;
 
-use std::{path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{Image, detect::Resolved, event::Out, interrupt_grace, proc::AgentProc, runtimes::Protocol};
@@ -28,8 +29,20 @@ pub enum LiveCmd {
     Steer { id: String, text: String, images: Vec<Image> },
     /// Stop the current turn; the adapter answers with a turn end.
     Interrupt,
-    /// The answer to a question the agent asked.
-    Answer { qid: String, text: String },
+    /// The answer to a question the agent asked: `text` answers the first part, `answers` (when
+    /// given) every part, by its question.
+    Answer { qid: String, text: String, answers: Option<BTreeMap<String, String>> },
+    /// The answer to a permission or a plan the agent asked about (see [`Ev::Permission`],
+    /// [`Ev::PlanReview`]); a plan approved with `mode` switches to that mode.
+    ///
+    /// [`Ev::Permission`]: super::event::Ev::Permission
+    /// [`Ev::PlanReview`]: super::event::Ev::PlanReview
+    Permit { rid: String, decision: Decision, message: Option<String>, mode: Option<String> },
+    /// Switch the permission mode (Claude Code only; the session refuses it for other agents).
+    SetMode { mode: String },
+    /// Ask the agent for a title for the conversation that starts with `description` (Claude Code
+    /// only; others ignore it). Answered with a `title` event, or not at all.
+    GenerateTitle { description: String },
     /// End the process; `done` fires when it is gone.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -43,7 +56,27 @@ pub struct Launch<'a> {
     pub hardened: bool,
     /// The agent's own conversation id to continue.
     pub resume: Option<&'a str>,
+    /// Claude Code's permission mode (see [`PERMISSION_MODES`]); `None` is `bypassPermissions`.
+    pub permission_mode: Option<&'a str>,
 }
+
+/// What a person decided about a permission or a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    /// Allow this once (a plan: go ahead).
+    Once,
+    /// Allow it for the rest of the session, as the agent suggested.
+    Session,
+    /// Do not (a plan: change it, with `message` saying how).
+    Deny,
+}
+
+/// Claude Code's permission modes a session may use.
+pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// The mode a Claude Code session runs in when none was chosen (what sessions always did).
+pub const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 
 /// A running adapter.
 pub struct LiveHandle {
@@ -74,7 +107,8 @@ pub fn launch(l: Launch<'_>) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
     let name = l.resolved.name.clone();
     match protocol {
         Protocol::ClaudeStreamJson => {
-            tokio::spawn(claude::run(proc, lines, cmds, out_tx, name));
+            let mode = l.permission_mode.unwrap_or(DEFAULT_PERMISSION_MODE).to_string();
+            tokio::spawn(claude::run(proc, lines, cmds, out_tx, name, mode));
         }
         Protocol::CodexAppServer => {
             let opts = codex::Opts {

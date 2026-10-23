@@ -459,13 +459,14 @@ impl RunnerLink {
         model: Option<&str>,
         hardened: bool,
         resume: Option<&str>,
+        permission_mode: Option<&str>,
     ) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
         let c = self.ensure().await?;
         let (out_tx, out) = mpsc::channel(1024);
         c.lives.lock().unwrap().insert(live.to_string(), Sink { out: out_tx, last: 0, marked: 0 });
         let req = json!({
             "op": "launch", "live": live, "runtime": runtime, "custom": custom, "cwd": cwd, "model": model,
-            "hardened": hardened, "resume": resume,
+            "hardened": hardened, "resume": resume, "permission_mode": permission_mode,
         });
         let info = match self.request(&c, req, LOOKUP).await.and_then(|v| Ok(serde_json::from_value::<LiveInfo>(v)?)) {
             Ok(i) => i,
@@ -546,7 +547,16 @@ impl RunnerLink {
                                 json!({"t": "steer", "id": id, "text": text, "images": images_json(&images)})
                             }
                             Some(LiveCmd::Interrupt) => json!({"t": "interrupt"}),
-                            Some(LiveCmd::Answer { qid, text }) => json!({"t": "answer", "qid": qid, "text": text}),
+                            Some(LiveCmd::Answer { qid, text, answers }) => {
+                                json!({"t": "answer", "qid": qid, "text": text, "answers": answers})
+                            }
+                            Some(LiveCmd::Permit { rid, decision, message, mode }) => {
+                                json!({"t": "permit", "rid": rid, "decision": decision, "message": message, "mode": mode})
+                            }
+                            Some(LiveCmd::SetMode { mode }) => json!({"t": "mode", "mode": mode}),
+                            Some(LiveCmd::GenerateTitle { description }) => {
+                                json!({"t": "title", "description": description})
+                            }
                             Some(LiveCmd::Shutdown { done }) => {
                                 conn.lives.lock().unwrap().remove(&live);
                                 let _ = link.request(&conn, json!({"op": "shutdown", "live": live}), Duration::from_secs(20)).await;
@@ -669,6 +679,8 @@ struct Req {
     hardened: bool,
     #[serde(default)]
     resume: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<String>,
     #[serde(default)]
     after: u64,
     #[serde(default)]
@@ -835,6 +847,17 @@ impl Runner {
                     Some("answer") => LiveCmd::Answer {
                         qid: c["qid"].as_str().unwrap_or_default().to_string(),
                         text: c["text"].as_str().unwrap_or_default().to_string(),
+                        answers: serde_json::from_value(c["answers"].clone()).ok().flatten(),
+                    },
+                    Some("permit") => LiveCmd::Permit {
+                        rid: c["rid"].as_str().unwrap_or_default().to_string(),
+                        decision: serde_json::from_value(c["decision"].clone())?,
+                        message: c["message"].as_str().map(str::to_string),
+                        mode: c["mode"].as_str().map(str::to_string),
+                    },
+                    Some("mode") => LiveCmd::SetMode { mode: c["mode"].as_str().unwrap_or_default().to_string() },
+                    Some("title") => LiveCmd::GenerateTitle {
+                        description: c["description"].as_str().unwrap_or_default().to_string(),
                     },
                     _ => bail!("unknown command"),
                 };
@@ -870,6 +893,7 @@ impl Runner {
             model: req.model.as_deref(),
             hardened: req.hardened,
             resume: req.resume.as_deref(),
+            permission_mode: req.permission_mode.as_deref(),
         })?;
         let l = Arc::new(RLive {
             tx: handle.tx,

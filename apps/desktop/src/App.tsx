@@ -2,6 +2,10 @@
 // session); the content column shows one route at a time under a toolbar of glass capsules, with a
 // Finder-like history (‹ ›, ⌘[ ⌘]). Settings, the live session, the first-run welcome and pairing are
 // routes of this shell, not windows of their own. Routing is lib/nav.ts, keys are lib/shortcuts.ts.
+//
+// The agents workspace is a route too ({ page: "agents" }), but it takes the whole window with its own
+// sidebar (ui/workspace/Workspace.tsx). The computers / agents switch at the top of either sidebar moves
+// between the halves as ordinary history entries; the half you were last in opens next time.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "./lib/api";
@@ -14,6 +18,8 @@ import {
   forward as goForward,
   fromTray,
   hidden,
+  lastAgents,
+  modeOf,
   navKey,
   parseMemory,
   parseRoute,
@@ -41,6 +47,8 @@ import { SessionPage } from "./ui/Session";
 import { SettingsPage, SettingsTabs, settingsTitle } from "./ui/Settings";
 import { computerFacts, Facts, ShellContext, Sidebar, TitleBar, type ShellApi } from "./ui/Shell";
 import { cx, useNow } from "./ui/util";
+import { saveMode, savedMode } from "./ui/workspace/ModeSwitch";
+import { Workspace } from "./ui/workspace/Workspace";
 
 const WELCOMED = "ai-remote.welcomed";
 const MEMORY = "ai-remote.nav-mem";
@@ -56,7 +64,7 @@ export default function App() {
   const snap = useStore();
   const now = useNow(5000);
   const [mem, setMem] = useState<Memory>(() => parseMemory(localStorage.getItem(MEMORY)));
-  const [boot] = useState(() => parseRoute(location.search, mem));
+  const [boot] = useState(() => parseRoute(location.search, mem, savedMode()));
   const [hist, setHist] = useState<History>(() => ({ stack: [boot.route], i: 0 }));
   const route = current(hist);
   const [welcomed, setWelcomed] = useState(() => boot.welcomed ?? localStorage.getItem(WELCOMED) === "1");
@@ -85,6 +93,11 @@ export default function App() {
     if (next === memRef.current) return;
     localStorage.setItem(MEMORY, JSON.stringify(next));
     setMem(next);
+  }, [route]);
+  // The half of the window you are in, to open there again next time.
+  useEffect(() => {
+    const m = modeOf(route);
+    if (m) saveMode(m);
   }, [route]);
   /** Every in-app navigation passes the current page's guard (pairing asks before it is left). */
   const commit = (next: (h: History) => History) => {
@@ -204,6 +217,8 @@ export default function App() {
   actRef.current = act;
   const sessionRef = useRef(false);
   sessionRef.current = route.page === "session";
+  const agentsRef = useRef(false);
+  agentsRef.current = route.page === "agents";
   useEffect(() => {
     const where = (target: EventTarget | null) => {
       const el = target instanceof Element ? target : null;
@@ -212,6 +227,7 @@ export default function App() {
         inChat: !!el?.closest(".nt-chat"),
         modal: !!document.documentElement.dataset.modal,
         session: sessionRef.current,
+        agents: agentsRef.current,
       };
     };
     const onKey = (e: KeyboardEvent) => {
@@ -259,6 +275,30 @@ export default function App() {
     attention: waiting,
   };
 
+  const device = status ? (status.device.startsWith("eid:demo") ? "home-laptop" : status.device.slice(0, 12)) : "this device";
+
+  // The agents workspace: the whole window, its own sidebar; its pages are entries of this history.
+  if (route.page === "agents") {
+    return (
+      <div className="win" data-route="agents" style={{ width: "100vw", height: "100vh" }}>
+        {snap.ready && (
+          <Workspace
+            computers={snap.computers}
+            device={status?.name ?? device}
+            route={route}
+            onRoute={(r) => go({ page: "agents", ...r })}
+            back={shell.canBack ? back : null}
+            forward={shell.canForward ? forward : null}
+            onMode={() => go({ page: "devices" })}
+            onWatch={(host) => go({ page: "session", host })}
+            onPair={() => nav("pair")}
+            onSettings={() => nav("settings")}
+          />
+        )}
+      </div>
+    );
+  }
+
   const computerOf = (host: string) => snap.computers.find((c) => c.host.name === host);
   const sessionComputer = route.page === "session" ? computerOf(route.host) : undefined;
   const toolbar = toolbarFor(route, snap, go);
@@ -269,7 +309,7 @@ export default function App() {
       <SessionPage
         key={sessionComputer.host.name}
         c={sessionComputer}
-        device={status ? (status.device.startsWith("eid:demo") ? "home-laptop" : status.device.slice(0, 12)) : "this device"}
+        device={device}
         waiting={waiting}
         onBack={back}
         onNav={nav}
@@ -382,6 +422,7 @@ export default function App() {
             onToggle={toggleSidebar}
             onSearch={focusSearch}
             searchRef={searchRef}
+            onMode={() => go(lastAgents(hist))}
           />
           <main
             className="page gl-main"
@@ -471,5 +512,8 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
     }
     case "session":
       return { title: route.host };
+    case "agents":
+      // the workspace draws its own toolbars
+      return { bare: true };
   }
 }

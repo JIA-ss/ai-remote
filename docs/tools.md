@@ -600,7 +600,7 @@ Coding agents installed on the host (Claude Code, Codex, and agents that speak t
 Protocol: DeepSeek Harness (`dsh --profile acp`), Gemini CLI, OpenCode, Qwen Code, Copilot CLI, Cursor
 Agent, Kimi, Goose) can be started from a controller and talked to while they work. The agent runs on
 the host as the signed-in user and **does not ask before it acts** (Claude Code
-`--permission-mode bypassPermissions`, Codex `approvalPolicy: never` with
+`--permission-mode bypassPermissions` unless the session chose another mode, Codex `approvalPolicy: never` with
 `sandbox: danger-full-access`, ACP agents' auto mode plus "allow once" answers from the host):
 anything that user may do, it may do, including changing this host's own
 settings. Hence every tool here needs admin level, and starting asks the owner by default.
@@ -608,16 +608,29 @@ settings. Hence every tool here needs admin level, and starting asks the owner b
 | Tool | Default | What it does |
 |---|---|---|
 | `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`; `host.can_start`, `host.enabled` |
-| `chat_sessions` | allow | the sessions, newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns; never the conversation |
-| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`. Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
+| `chat_sessions` | allow | the sessions that are not archived (`archived: true`: the archived ones), newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns, `last_seq`, `pinned`, `archived`, and when known `title` / `title_source` (`agent` or `user`), `first_text` (the first message, 200 characters), `last_status` / `last_reason`, `pending` (`permission`, `question` or `plan`: something waits for an answer), `branch` (read from the folder's `.git/HEAD`, git is never run) and Claude Code's `permission_mode`; never the conversation |
+| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`, and for Claude Code `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`; default `bypassPermissions`). Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
+| `chat_update` | allow | `session` and any of `title` (at most 200 characters; empty: back to the agent's title or the first message), `pinned`, `archived`. A title given here is not replaced by the agent's. Returns the session as `chat_sessions` lists it; audited |
 | `chat_attach` | allow | `session`. A ticket to watch the session and send it messages (any device with admin level; each message records who sent it) |
 | `chat_interrupt` | allow | stops the running turn; the session takes the next message |
 | `chat_end` | allow | ends the session and its agent process; the transcript stays |
 | `chat_file` | allow | `session`, `path`. A one-time ticket (2 minutes, files channel) to read an HTML, Markdown or image file of the session for a preview in the app: at most 16 MiB, and only inside the session's folder (after links are followed) or a path the agent itself named in the session (a tool call's location or diff, or its text) |
 
-`chat_start`, `chat_attach` and `chat_file` are not listed to MCP clients (like `files_push` / `files_pull`): the
+`chat_start`, `chat_attach`, `chat_file` and `chat_update` are not listed to MCP clients (like `files_push` / `files_pull`): the
 conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and command line speak
 (`ai-remote chat`, see [operations.md](operations.md)).
+
+**Permissions, plans and questions (Claude Code).** Claude Code runs with `--permission-prompt-tool stdio`, so
+what its permission mode says to ask about reaches the session: `AskUserQuestion` (in every mode, bypass
+included) as a `question` event with every part (`questions`), `ExitPlanMode` (plan mode) as `plan_review`,
+any other tool outside bypass mode as `permission`. The controller answers on the chat channel with
+`answer` (per part, `answers`) or `permit` (`once`, `session` or `deny`, with a `message` the model reads,
+or for a plan the `mode` to go on in); the first answer from any device settles it for everyone (a
+`resolved` event), later ones get the error code `resolved`, and what is still asked when the turn ends
+is settled as `cancelled`. "For the session" allows it for this session only: the agent's own suggested
+rule goes back with its destination set to the session, so nothing is written to the project's Claude
+settings. `mode` switches the permission mode (Claude Code only). Each answer is audited
+(`chat_permission`: who, which request, how), never what was typed.
 
 `chat_file` runs without asking because it adds no reach: the device already has level admin and can
 ask the agent, which runs as the user without asking, to print any file. It is kept to the files the

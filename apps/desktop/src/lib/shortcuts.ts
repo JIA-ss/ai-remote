@@ -13,7 +13,9 @@
 //   full screen            (⌃⌘F, Session) F11             (only on a session; forwarded to Session's ⌃⌘F)
 //
 // Nothing is taken while an input method is composing, while a dialog is open (data-modal), or from
-// the remote picture (.nt-picture: while you drive, every key belongs to the remote computer).
+// the remote picture (.nt-picture: while you drive, every key belongs to the remote computer). In the
+// agents workspace the shell keeps only history, Settings and the page keys: ⌘N (a new session), its
+// own sidebar toggle (⌘B) and search (⌘K) are the workspace's, and the shell's sidebar is not shown.
 
 import type { Os } from "./platform";
 
@@ -51,7 +53,12 @@ export interface KeyContext {
   inChat?: boolean;
   /** The current route is a live session (F11 means something only there). */
   session?: boolean;
+  /** The current route is the agents workspace, which has its own ⌘N, sidebar and search. */
+  agents?: boolean;
 }
+
+/** The actions the agents workspace keeps for itself (see the table above). */
+const WORKSPACE_OWNS: ReadonlySet<Action["kind"]> = new Set(["pair", "search", "sidebar"]);
 
 const PAGES = { "1": "devices", "2": "approvals", "3": "activity" } as const;
 
@@ -62,6 +69,11 @@ const is = (e: KeyLike, key: string, code: string) => e.key.toLowerCase() === ke
 
 /** The action a key press asks for, or null to leave it alone. */
 export function shortcutOf(e: KeyLike, os: Os, ctx: KeyContext = {}): Action | null {
+  const a = shellShortcut(e, os, ctx);
+  return a && ctx.agents && WORKSPACE_OWNS.has(a.kind) ? null : a;
+}
+
+function shellShortcut(e: KeyLike, os: Os, ctx: KeyContext): Action | null {
   if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return null;
   if (ctx.inPicture || ctx.modal) return null;
   const digit = /^[123]$/.test(e.key) ? e.key : !printable(e.key) ? (/^Digit([123])$/.exec(e.code ?? "")?.[1] ?? null) : null;

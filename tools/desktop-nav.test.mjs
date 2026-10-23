@@ -1,7 +1,8 @@
 // The desktop shell's navigation and keyboard shortcuts (apps/desktop/src/lib/nav.ts, shortcuts.ts):
 // every deep link the screenshots, docs and e2e scripts open, the history (push / back / forward /
 // replace / parentOf / canBack), tray intents, the sidebar's remembered state, and the shortcut table
-// on both platforms with its guards. Both modules have only `import type`, so they run in a vm.
+// on both platforms with its guards, and the agents workspace as one of the routes (deep links, the
+// remembered half, round trips through the history). Both modules have only `import type`, so they run in a vm.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -273,4 +274,134 @@ test("mouse buttons 3 and 4 go back and forward, never over the remote picture",
   assert.equal(keys.mouseActionOf(3, { inPicture: true }), null);
   assert.equal(keys.shortcutLabel("back", "mac"), "⌘[");
   assert.equal(keys.shortcutLabel("sidebar", "windows"), "Ctrl+\\");
+});
+
+// ---- the agents workspace: a route of the shell that takes the whole window ----
+
+test("agents deep links, and the half the window was last in", () => {
+  const at = (search, mode) => plain(nav.parseRoute(search, nav.DEFAULT_MEMORY, mode));
+  assert.deepEqual(route("?view=agents"), { route: { page: "agents" }, explicit: true });
+  assert.deepEqual(route("?view=agents&shotlang=zh&shottheme=dark"), { route: { page: "agents" }, explicit: true });
+  assert.deepEqual(route("?view=agents&host=lab-pc"), { route: { page: "agents", host: "lab-pc" }, explicit: true });
+  assert.deepEqual(route("?view=agents&host=lab-pc&session=s1"), { route: { page: "agents", host: "lab-pc", session: "s1" }, explicit: true });
+  // a session id without its computer means nothing: the new-session page
+  assert.deepEqual(route("?view=agents&session=s1"), { route: { page: "agents" }, explicit: true });
+  // no view at all: the workspace again when it was the last half; a named page always wins
+  assert.deepEqual(at("", "agents"), { route: { page: "agents" }, explicit: false });
+  assert.deepEqual(at("?shotlang=en", "agents"), { route: { page: "agents" }, explicit: false });
+  assert.deepEqual(at("?view=devices", "agents"), { route: { page: "devices" }, explicit: true });
+  assert.deepEqual(at("?view=session&host=lab-pc&panel=chat", "agents").route, { page: "session", host: "lab-pc", panel: "chat" });
+  assert.deepEqual(at("?view=nonsense", "agents"), { route: { page: "devices" }, explicit: false });
+  assert.deepEqual(at("", "computers"), { route: { page: "devices" }, explicit: false });
+  assert.deepEqual(at(""), { route: { page: "devices" }, explicit: false });
+});
+
+test("agents routes: same place by computer and session, the new-session prefill does not count", () => {
+  const place = { host: "lab-pc", cwd: "~/src/app" };
+  assert.equal(nav.same({ page: "agents" }, { page: "agents", place }), true);
+  assert.equal(nav.same({ page: "agents", host: "a", session: "1" }, { page: "agents", host: "a", session: "1" }), true);
+  assert.equal(nav.same({ page: "agents", host: "a", session: "1" }, { page: "agents", host: "a", session: "2" }), false);
+  assert.equal(nav.same({ page: "agents", host: "a", session: "1" }, { page: "agents", host: "b", session: "1" }), false);
+  assert.equal(nav.same({ page: "agents" }, { page: "agents", host: "a", session: "1" }), false);
+  // undefined and missing fields are the same (the workspace spreads its route into the shell's)
+  assert.equal(nav.same({ page: "agents", host: undefined, session: undefined }, { page: "agents" }), true);
+  assert.equal(nav.same({ page: "agents" }, { page: "devices" }), false);
+  // a new session somewhere else, from the new-session page: the entry is swapped, not added
+  let h = hist({ page: "agents" });
+  h = nav.push(h, { page: "agents", place });
+  assert.equal(h.stack.length, 1);
+  assert.deepEqual(plain(nav.current(h)), { page: "agents", place });
+  h = nav.push(h, { page: "agents", host: "lab-pc", session: "s1" });
+  assert.equal(h.stack.length, 2);
+  assert.equal(nav.navKey(nav.current(h)), null, "the shell's sidebar is not shown on the workspace");
+});
+
+test("agents history: a session's parent is the new-session page, the new-session page has none", () => {
+  assert.deepEqual(plain(nav.parentOf({ page: "agents", host: "a", session: "1" })), { page: "agents" });
+  assert.equal(nav.parentOf({ page: "agents" }), null);
+  assert.equal(nav.parentOf({ page: "agents", host: "a" }), null);
+  const deep = hist({ page: "agents", host: "a", session: "1" });
+  assert.equal(nav.canBack(deep), true);
+  assert.deepEqual(plain(nav.current(nav.back(deep))), { page: "agents" });
+  const top = hist({ page: "agents" });
+  assert.equal(nav.canBack(top), false);
+  assert.equal(nav.back(top), top);
+});
+
+test("agents round trips: the mode switch, a live view, Settings, and back", () => {
+  const ws = { page: "agents", host: "lab-pc", session: "s1" };
+  // opened on the workspace; the switch goes to the computers, ‹ comes back to the same session
+  let h = hist(ws);
+  h = nav.push(h, { page: "devices" });
+  assert.deepEqual(plain(nav.lastAgents(h)), ws, "the switch back to agents returns to the session you left");
+  h = nav.back(h);
+  assert.deepEqual(plain(nav.current(h)), ws);
+  assert.equal(nav.canForward(h), true);
+  // "open in the live view" from the session page, then ‹: the workspace again
+  h = nav.push(h, { page: "session", host: "lab-pc" });
+  assert.deepEqual(plain(h.stack.map((r) => r.page)), ["agents", "session"]);
+  h = nav.back(h);
+  assert.deepEqual(plain(nav.current(h)), ws);
+  // Settings from the workspace's footer, then ‹
+  h = nav.push(h, { page: "settings", sec: "general" });
+  h = nav.back(h);
+  assert.deepEqual(plain(nav.current(h)), ws);
+  // nothing of the workspace in the history: its new-session page
+  assert.deepEqual(plain(nav.lastAgents(hist({ page: "devices" }, { page: "pair" }))), { page: "agents" });
+  // a workspace page ahead of you (you went back past it) still counts
+  const ahead = nav.back(hist({ page: "devices" }, { page: "agents", host: "b", session: "2" }));
+  assert.deepEqual(plain(nav.lastAgents(ahead)), { page: "agents", host: "b", session: "2" });
+  // the nearest one behind wins over older ones
+  assert.deepEqual(plain(nav.lastAgents(hist({ page: "agents" }, { page: "devices" }, ws, { page: "devices" }))), ws);
+});
+
+test("the window going to the tray: a live view opened from the workspace goes back to it", () => {
+  const ws = { page: "agents", host: "lab-pc", session: "s1" };
+  const h = hist({ page: "devices" }, ws, { page: "session", host: "lab-pc" });
+  const after = nav.hidden(h, mem);
+  assert.equal(after.stack.length, 2, "the live view's entry is dropped");
+  assert.deepEqual(plain(nav.current(after)), ws);
+  assert.equal(nav.canForward(after), false, "› does not reopen the picture");
+  // from the computers it is still its computer page; the workspace itself stays put
+  const fromPc = nav.hidden(hist(ws, { page: "devices" }, { page: "session", host: "a" }), mem);
+  assert.deepEqual(plain(nav.current(fromPc)), { page: "computer", host: "a", tab: "tools" });
+  const onWs = hist(ws);
+  assert.equal(nav.hidden(onWs, mem), onWs);
+});
+
+test("modeOf: the half each route belongs to, none for the routes both halves reach", () => {
+  assert.equal(nav.modeOf({ page: "agents" }), "agents");
+  assert.equal(nav.modeOf({ page: "agents", host: "a", session: "1" }), "agents");
+  for (const r of [{ page: "devices" }, { page: "approvals" }, { page: "activity" }, { page: "pair" }, { page: "computer", host: "a", tab: "overview" }]) {
+    assert.equal(nav.modeOf(r), "computers", r.page);
+  }
+  for (const r of [{ page: "settings", sec: "general" }, { page: "session", host: "a" }, { page: "welcome" }]) {
+    assert.equal(nav.modeOf(r), null, r.page);
+  }
+});
+
+test("shortcuts on the agents workspace: history, Settings and pages stay; ⌘N, search and the sidebar are the workspace's", () => {
+  const cmd = { metaKey: true };
+  const ctx = { agents: true };
+  const mac = [
+    [ev("[", cmd), "back"],
+    [ev("]", cmd), "forward"],
+    [ev(",", cmd), "settings"],
+    [ev("1", cmd), "page:devices"],
+    [ev("n", cmd), null],
+    [ev("f", cmd), null],
+    [ev("\\", cmd), null],
+    [ev("s", { metaKey: true, ctrlKey: true }), null],
+  ];
+  for (const [e, want] of mac) assert.equal(kind(keys.shortcutOf(e, "mac", ctx)), want, JSON.stringify(e));
+  const ctrl = { ctrlKey: true };
+  const win = [
+    [ev("ArrowLeft", { altKey: true }), "back"],
+    [ev(",", ctrl), "settings"],
+    [ev("n", ctrl), null],
+    [ev("f", ctrl), null],
+    [ev("\\", ctrl), null],
+  ];
+  for (const [e, want] of win) assert.equal(kind(keys.shortcutOf(e, "windows", ctx)), want, JSON.stringify(e));
+  assert.equal(kind(keys.mouseActionOf(3, ctx)), "back");
 });

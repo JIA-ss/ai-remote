@@ -77,10 +77,16 @@ for line in sys.stdin:
             {"name": "review", "description": "Review the changes", "argumentHint": "<pr>"},
             {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
         continue
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "generate_session_title":
+        title = "Fake: " + msg["request"].get("description", "")[:40]
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"title": title}}})
+        continue
     if msg.get("type") == "control_request":
         if slow:
             slow.set(); slow = None
             out({"type": "result", "subtype": "error_during_execution", "is_error": True})
+        continue
+    if msg.get("type") != "user":
         continue
     content = msg["message"]["content"]
     text = next((b["text"] for b in content if b.get("type") == "text"), "")

@@ -71,7 +71,63 @@ export function parseMarkdown(src: string): MdBlock[] {
   return parseLines(src.replace(/\r\n?/g, "\n").split("\n"));
 }
 
-function parseLines(lines: string[]): MdBlock[] {
+/**
+ * A reply being streamed, parsed so far: its blocks, and how much of them a longer text keeps. The
+ * parser only looks forward, so the blocks before a cut stay what they are once the text grows,
+ * when the cut is a block that starts after a blank line and the block before it cannot reach past
+ * that line: every block stops at a blank line except a list, which looks at the first line after
+ * its blank lines (so that line must be complete, a newline after it).
+ */
+export interface MdStream {
+  /** The text parsed (line endings normalized). */
+  src: string;
+  blocks: MdBlock[];
+  /** `blocks.slice(0, head)` stay as they are while the text only grows; they end before `cut`. */
+  head: number;
+  cut: number;
+}
+
+/**
+ * Parses `src` reusing `prev` when `src` only added to its text: the blocks before the last safe
+ * cut are kept (the same objects, so a view keyed on them does not re-render) and only the tail is
+ * parsed again. The result always equals `parseMarkdown(src)`; a text that changed in place (not an
+ * append) is parsed whole.
+ */
+export function parseMarkdownStream(prev: MdStream | null, src: string): MdStream {
+  const norm = src.replace(/\r\n?/g, "\n");
+  const keep = prev && norm.startsWith(prev.src) ? prev : null;
+  const from = keep ? keep.cut : 0;
+  const head = keep ? keep.blocks.slice(0, keep.head) : [];
+  const lines = norm.slice(from).split("\n");
+  const starts: number[] = [];
+  const tail = parseLines(lines, starts);
+  // The furthest block that is a safe cut, keeping the last block (the one still growing) in the tail.
+  let at = 0;
+  for (let j = tail.length - 1; j >= 1; j--) {
+    const s = starts[j];
+    if (!blank(lines[s - 1])) continue;
+    if (tail[j - 1].t === "list" && s >= lines.length - 1) continue;
+    at = j;
+    break;
+  }
+  let cut = from;
+  for (let k = 0; k < (at ? starts[at] : 0); k++) cut += lines[k].length + 1;
+  return { src: norm, blocks: [...head, ...tail], head: head.length + at, cut };
+}
+
+/**
+ * The text of a reply still streaming, without a last line that is only a list marker (a task box
+ * too) or only heading marks: those would flash as an empty item or heading before their words come.
+ */
+export function holdStreamingTail(text: string): string {
+  const nl = text.lastIndexOf("\n");
+  const last = text.slice(nl + 1);
+  if (/^ {0,12}(?:[-*+]|\d{1,9}[.)])(?:[ \t]+\[[ xX]?\]?)?[ \t]*$/.test(last) || /^ {0,3}#{1,6}[ \t]*$/.test(last)) return text.slice(0, nl + 1);
+  return text;
+}
+
+/** The blocks of `lines`; `starts`, when given, gets the line each top-level block starts on. */
+function parseLines(lines: string[], starts?: number[]): MdBlock[] {
   const out: MdBlock[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -80,6 +136,7 @@ function parseLines(lines: string[]): MdBlock[] {
       i++;
       continue;
     }
+    starts?.push(i);
     let m: RegExpExecArray | null;
     if ((m = FENCE.exec(line))) {
       const mark = m[1];

@@ -16,8 +16,17 @@ own; a message with images answers with their types and sizes; it lists /review,
 /tidy; FILES writes an HTML page, Markdown and a
 PNG into the session's folder and a Markdown file outside it (named in a Write), for the file previews
 (tools/desktop-chat-preview-e2e.js, run with E2E_SCRIPT=tools/desktop-chat-preview-e2e.js). "No-steer fake" is the same program
-with `steer = false`. Neither asks questions (Claude's adapter does not carry them), so the question
-card is not covered here.
+with `steer = false`.
+
+They also speak the control protocol as Claude Code 2.1.308 does (docs/agent-workspace-notes/host.md): the
+first message is answered with a title (generate_session_title), set_permission_mode switches the mode (a
+`status` line follows), and three keywords ask with can_use_tool: ASK asks two questions (AskUserQuestion,
+the second multiple choice), PLAN proposes a plan (ExitPlanMode), PERMIT wants to run a command (Bash, with
+a rule to allow it for the session). The turn then ends with what the answer said (a denial with its message).
+RICH's Edit result carries a structuredPatch (real line numbers); EDITAT edits with two hunks at lines 22
+and 40. FAIL ends the turn with an error; LATER<n> answers by itself n seconds later (8 by default), while
+the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s late. The workspace e2e
+(tools/desktop-workspace-e2e.js) uses these, with E2E_QUERY=view=devices to start on the computers page.
 
 Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
 screen; screenshots land in --out.
@@ -55,11 +64,15 @@ options = parser.parse_args()
 
 RICH_AGENT = r'''
 import json, sys, threading
+lock = threading.Lock()
 def out(v):
-    sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
+    # Timers (LATER, DELAYTITLE) write from their own threads: one line at a time.
+    with lock:
+        sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
-out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"]})
+mode = sys.argv[sys.argv.index("--permission-mode") + 1] if "--permission-mode" in sys.argv else "default"
+out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"], "permissionMode": mode})
 OLD = "def quarter_end(year, q):\n    return date(year, q * 3, 31)\n"
 ANSWER = """Fixed: the quarter end was always **day 31**.
 
@@ -102,8 +115,14 @@ def rich():
                  "old_string": "    return date(year, q * 3, 31)",
                  "new_string": "    last = calendar.monthrange(year, q * 3)[1]\n    return date(year, q * 3, last)"}},
                 todo("completed", "completed", "completed")],
-         [{"type": "tool_result", "tool_use_id": "grep1", "content": "export.py:2:    return date(year, q * 3, 31)"},
-          {"type": "tool_result", "tool_use_id": "edit1", "content": "ok"}])
+         [{"type": "tool_result", "tool_use_id": "grep1", "content": "export.py:2:    return date(year, q * 3, 31)"}])
+    # An edit's result comes alone with its patch: the hunk and its real line numbers.
+    out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "edit1", "content": "ok"}]},
+         "tool_use_result": {"filePath": "/work/export.py", "oldString": "    return date(year, q * 3, 31)",
+                             "newString": "    last = calendar.monthrange(year, q * 3)[1]\n    return date(year, q * 3, last)",
+                             "structuredPatch": [{"oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 3, "lines": [
+                                 " def quarter_end(year, q):", "-    return date(year, q * 3, 31)",
+                                 "+    last = calendar.monthrange(year, q * 3)[1]", "+    return date(year, q * 3, last)"]}]}})
     stream("r3", "text", ANSWER)
     out({"type": "assistant", "message": {"id": "r3", "model": "claude-fake", "content": [{"type": "text", "text": ANSWER}],
          "usage": {"input_tokens": 1200, "cache_read_input_tokens": 40000, "output_tokens": 600}}})
@@ -167,6 +186,38 @@ def subagent():
          "content": [{"type": "text", "text": "It is built in `export.py`, line 2."}]}]}})
     out({"type": "assistant", "message": {"id": "a2", "content": [{"type": "text", "text": "The sub-agent found it in export.py."}]}})
     out({"type": "result", "subtype": "success", "is_error": False, "result": "found"})
+QUESTIONS = [
+    {"question": "Which quarter should the export cover?", "header": "Quarter", "multiSelect": False,
+     "options": [{"label": "Q2", "description": "April to June"}, {"label": "Q3", "description": "July to September"}]},
+    {"question": "Which formats?", "header": "Formats", "multiSelect": True,
+     "options": [{"label": "CSV"}, {"label": "PDF"}, {"label": "XLSX"}]},
+]
+dones = iter(range(1, 1 << 30))
+def done(text):
+    out({"type": "assistant", "message": {"id": "d" + str(next(dones)), "content": [{"type": "text", "text": text}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": text})
+asks = 0
+def ask(kind, tool, inp, **extra):
+    # Every request has its own id (a session asks the same thing more than once).
+    global asking
+    n = str(asks)
+    asking = (kind, "cu-" + kind + n)
+    out({"type": "control_request", "request_id": "cu-" + kind + n,
+         "request": dict({"subtype": "can_use_tool", "tool_name": tool, "input": inp, "tool_use_id": "tu-" + kind + n}, **extra)})
+def edit_at():
+    # An edit far into the file: two hunks with their real line numbers (22 and 40).
+    out({"type": "assistant", "message": {"id": "e1", "content": [{"type": "tool_use", "id": "editat", "name": "Edit", "input": {
+         "file_path": "/work/export.py", "old_string": "    return date(year, q * 3, 31)", "new_string": "    return month_end(year, q * 3)"}}]}})
+    out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "editat", "content": "ok"}]},
+         "tool_use_result": {"filePath": "/work/export.py", "oldString": "    return date(year, q * 3, 31)",
+                             "newString": "    return month_end(year, q * 3)",
+                             "structuredPatch": [
+                                 {"oldStart": 22, "oldLines": 3, "newStart": 22, "newLines": 3, "lines": [
+                                     " def quarter_end(year, q):", "-    return date(year, q * 3, 31)", "+    return month_end(year, q * 3)", " "]},
+                                 {"oldStart": 40, "oldLines": 2, "newStart": 40, "newLines": 3, "lines": [
+                                     " def month_end(year, month):", "+    import calendar", "     return date(year, month, calendar.monthrange(year, month)[1])"]}]}})
+    done("Edited export.py at lines 22 and 40.")
+asking = None
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
@@ -176,10 +227,43 @@ for line in sys.stdin:
             {"name": "release-notes", "description": "Draft release notes from the commits"},
             {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
         continue
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "generate_session_title":
+        title = "Fake: " + msg["request"].get("description", "")[:40]
+        reply = {"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"title": title}}}
+        # DELAYTITLE: the title comes 4 s late (the first message stands in for it until then).
+        if "DELAYTITLE" in msg["request"].get("description", ""):
+            threading.Timer(4.0, out, (reply,)).start()
+        else:
+            out(reply)
+        continue
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "set_permission_mode":
+        mode = msg["request"]["mode"]
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"mode": mode}}})
+        out({"type": "system", "subtype": "status", "status": None, "permissionMode": mode})
+        continue
     if msg.get("type") == "control_request":
-        if slow:
-            slow.set(); slow = None
+        if slow or asking:
+            if slow:
+                slow.set()
+            slow = asking = None
             out({"type": "result", "subtype": "error_during_execution", "is_error": True})
+        continue
+    if msg.get("type") == "control_response":
+        r = msg["response"]
+        if not asking or r.get("request_id") != asking[1]:
+            continue
+        kind, asking = asking[0], None
+        asks += 1
+        resp = r.get("response", {})
+        if resp.get("behavior") != "allow":
+            done("Not done: " + (resp.get("message") or "declined"))
+        elif kind == "ask":
+            done("You picked: " + "; ".join(q + " -> " + a for q, a in resp["updatedInput"].get("answers", {}).items()))
+        elif kind == "plan":
+            done("The plan was approved; going on in " + mode + " mode.")
+        else:
+            out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu-permit" + str(asks - 1), "content": "built"}]}})
+            done("Ran it (" + ("for this session" if resp.get("updatedPermissions") else "once") + ").")
         continue
     if msg.get("type") != "user":
         continue
@@ -199,8 +283,29 @@ for line in sys.stdin:
         slow = threading.Event()
         out({"type": "assistant", "message": {"id": "s", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "sleep 600"}}]}})
         continue
+    if "ASK" in text:
+        ask("ask", "AskUserQuestion", {"questions": QUESTIONS}, requires_user_interaction=True); continue
+    if "PLAN" in text:
+        ask("plan", "ExitPlanMode", {"plan": "## Plan\n1. Use the month's real last day\n2. Run the tests"}, requires_user_interaction=True)
+        continue
+    if "PERMIT" in text:
+        out({"type": "assistant", "message": {"id": "pm" + str(asks), "content": [{"type": "tool_use", "id": "tu-permit" + str(asks), "name": "Bash",
+             "input": {"command": "make build"}}]}})
+        ask("permit", "Bash", {"command": "make build"}, decision_reason="This command requires approval",
+            permission_suggestions=[{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "make build"}],
+                                     "behavior": "allow", "destination": "localSettings"}])
+        continue
     if "RICH" in text:
         rich(); continue
+    if "FAIL" in text:
+        out({"type": "result", "subtype": "success", "is_error": True, "result": "API Error: 500 overloaded (fake)"}); continue
+    if "EDITAT" in text:
+        edit_at(); continue
+    if "LATER" in text:
+        # Answers on its own a few seconds later (LATER6: 6 s), whoever looks at the session meanwhile.
+        secs = int("".join(c for c in text.split("LATER", 1)[1][:3] if c.isdigit()) or 8)
+        threading.Timer(secs, done, ("later: " + text,)).start()
+        continue
     if "FILES" in text:
         files(); continue
     if "AGENT" in text:
@@ -290,7 +395,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
-                   "AI_REMOTE_SMOKE_QUERY": f"view=session&host={name}&panel=chat",
+                   # E2E_QUERY: another page to start on (and `shotlang` / `shottheme` to pin the look).
+                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or f"view=session&host={name}&panel=chat",
                    # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
                    "WEBVIEW2_USER_DATA_FOLDER": str(webview)}

@@ -37,8 +37,8 @@
   }
   const composer = () => $(".nt-compose textarea");
   const running = () => !!$(".nt-compose .round.stop");
-  const turns = () => $$(".nt-turn");
-  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && turns().at(-1)?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const turns = () => $$(".cl-turn");
+  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && turns().at(-1)?.querySelector(".cl-foot, .cl-stopped"), ms);
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
@@ -78,7 +78,12 @@
     // A long message folds behind a fading mask.
     const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}: 这是一条很长的消息，用来检查折叠 the long message folds`).join("\n");
     await send(long);
-    const bubble = $$(".nt-user .bubble").at(-1);
+    // The message as the conversation has it, not the copy shown while it is on its way (that one
+    // leaves the page when the host takes it, and measured then it has no size).
+    const bubble = await until("the delivered long message", () => {
+      const b = $$(".nt-user:not(.nt-sending) .bubble").at(-1);
+      return b?.textContent.includes("line 40") ? b : null;
+    });
     const txt = bubble && $(".txt", bubble);
     const mask = txt ? (getComputedStyle(txt).maskImage || getComputedStyle(txt).webkitMaskImage) : "";
     await check("a long message folds", !!bubble && bubble.classList.contains("folded"), bubble?.className);

@@ -581,7 +581,7 @@ const demoRuntimes: RuntimesReport = {
   runtimes: [
     { id: "claude", name: "Claude Code", base: "claude", custom: false, protocol: "claude-stream-json", verdict: "ok", version: "2.1.174",
       path: "C:\\Users\\me\\.local\\bin\\claude.exe", login: { state: "logged_in", method: "claude.ai", plan: "max" },
-      caps: { ...CAPS, questions: false, steer: true } },
+      caps: { ...CAPS, steer: true, permissions: true, questions_multi: true } },
     { id: "codex", name: "Codex", base: "codex", custom: false, protocol: "codex-app-server", verdict: "ok", version: "0.163.0",
       path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", login: { state: "logged_in", method: "chatgpt" },
       caps: { ...CAPS, steer: true } },
@@ -602,6 +602,123 @@ const demoSessions: SessionInfo[] = [
   { id: "x5d0c7e2a9f1b", runtime: "codex", name: "Codex", cwd: "D:\\work\\report-tool", state: "idle", by: { device: "home-laptop" },
     started_at: t0 - 4 * minute, turns: 2, last_activity: t0 + 60_000, seq: 0 },
 ];
+
+// ---- The agents workspace's session list (docs/agent-workspace.zh-CN.md 1.1): sessions on several
+// computers and folders, in every state the sidebar shows — running, waiting for you (an approval, a
+// question, a plan), failed, unread (one finishes and one appears a few seconds after the first look),
+// pinned, archived — Claude Code and Codex. lab-pc runs an ai-remote from before the workspace: its
+// sessions have none of the new fields and it has no chat_update.
+
+/** The computer of each demo session (the two above are office-pc's). */
+const demoSessionHost = new Map<string, string>();
+/** Computers whose chat tools answer in the demo although this device's level there is lower. */
+const DEMO_AGENT_HOSTS = new Set(["studio-mac", "lab-pc"]);
+/** Computers running an ai-remote from before the workspace. */
+const DEMO_OLD_HOSTS = new Set(["lab-pc"]);
+/** The workspace's fields of each session; `last_seq` comes from its log or `seq` here. */
+interface DemoMeta {
+  title?: string | null;
+  title_source?: "auto" | "agent" | "user";
+  auto_title?: string | null;
+  first_text?: string;
+  last_status?: "completed" | "failed" | "interrupted";
+  last_reason?: string;
+  pending?: "permission" | "question" | "plan";
+  branch?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  permission_mode?: string;
+  seq?: number;
+}
+const demoMeta = new Map<string, DemoMeta>([
+  ["c3f9a1e7b2c4d", { title: "Fix the Q3 export date error", auto_title: "Fix the Q3 export date error", title_source: "agent", branch: "fix/quarter-dates", pinned: true, permission_mode: "bypassPermissions" }],
+  ["x5d0c7e2a9f1b", { title: "Q3 export crash and a regression test", auto_title: "Q3 export crash and a regression test", title_source: "agent", branch: "fix/quarter-dates" }],
+]);
+
+function demoWorkspaceSessions() {
+  const add = (host: string, s: Omit<SessionInfo, "by" | "turns" | "seq"> & { by?: string; turns?: number }, m: DemoMeta) => {
+    demoSessions.push({ by: { device: s.by ?? "home-laptop" }, turns: s.turns ?? 3, seq: 0, ...s } as SessionInfo);
+    demoSessionHost.set(s.id, host);
+    demoMeta.set(s.id, { title_source: "agent", auto_title: m.title ?? null, seq: 20 + s.id.length * 3, ...m });
+  };
+  const ago = (m: number) => Date.now() - m * minute;
+  const bill = "D:\\work\\billing-api";
+  add("office-pc", { id: "w-bill-1", runtime: "claude", name: "Claude Code", cwd: bill, state: "running", started_at: ago(30), last_activity: ago(0.2) },
+    { title: "Retry failed webhooks with backoff", branch: "feat/webhook-retry", first_text: "Retry failed webhook deliveries with exponential backoff, at most 5 tries." });
+  add("office-pc", { id: "w-bill-2", runtime: "claude", name: "Claude Code", cwd: bill, state: "running", started_at: ago(50), last_activity: ago(2) },
+    { title: "Rotate the signing keys", pending: "permission", branch: "chore/rotate-keys", permission_mode: "default" });
+  add("office-pc", { id: "w-bill-3", runtime: "codex", name: "Codex", cwd: bill, state: "idle", started_at: ago(90), last_activity: ago(12) },
+    { title: "Flaky invoice rounding test", last_status: "failed", last_reason: "pytest exited with code 1", branch: "fix/rounding" });
+  add("office-pc", { id: "w-bill-4", runtime: "claude", name: "Claude Code", cwd: bill, state: "idle", started_at: ago(300), last_activity: ago(180) },
+    { title: "Document the refunds API", last_status: "completed", branch: "main" });
+  add("office-pc", { id: "w-bill-5", runtime: "claude", name: "Claude Code", cwd: bill, state: "parked", started_at: ago(1500), last_activity: ago(1400) },
+    { title: "Upgrade to Python 3.13", last_status: "completed" });
+  add("office-pc", { id: "w-bill-6", runtime: "codex", name: "Codex", cwd: bill, state: "ended", started_at: ago(3000), last_activity: ago(2900) },
+    { title: "Split settings per environment", last_status: "completed" });
+  add("office-pc", { id: "w-bill-7", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(4500), last_activity: ago(4400) },
+    { title: "Add request ids to every log line", last_status: "interrupted" });
+  add("office-pc", { id: "w-old-1", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(9000), last_activity: ago(8800) },
+    { title: "Spike: GraphQL gateway", last_status: "completed", archived: true });
+  add("office-pc", { id: "w-game-1", runtime: "claude", name: "Claude Code", cwd: "D:\\games\\client", state: "running", started_at: ago(40), last_activity: ago(4) },
+    { title: "Profile the loading screen hitch", pending: "question", branch: "perf/loading" });
+  add("studio-mac", { id: "m-site-1", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/site", state: "running", started_at: ago(20), last_activity: ago(0.5) },
+    { title: "Redesign the pricing page hero", branch: "design/hero", permission_mode: "acceptEdits" });
+  add("studio-mac", { id: "m-site-2", runtime: "codex", name: "Codex", cwd: "/Users/me/code/site", state: "idle", started_at: ago(200), last_activity: ago(150) },
+    { title: "Fix dark mode contrast in the footer", last_status: "completed", branch: "main" });
+  add("studio-mac", { id: "m-rep-1", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/report-tool", state: "running", started_at: ago(70), last_activity: ago(6) },
+    { title: "Port the export to the mac build", pending: "plan", branch: "mac-export", permission_mode: "plan" });
+  add("lab-pc", { id: "l-bench-1", runtime: "claude", name: "Claude Code", cwd: "C:\\lab\\bench", state: "idle", started_at: ago(400), last_activity: ago(300) }, {});
+  add("lab-pc", { id: "l-bench-2", runtime: "codex", name: "Codex", cwd: "C:\\lab\\bench", state: "running", started_at: ago(25), last_activity: ago(1) }, {});
+}
+demoWorkspaceSessions();
+
+const demoHostOf = (id: string) => demoSessionHost.get(id) ?? "office-pc";
+
+/** A session as `chat_sessions` / `chat_update` report it: with the workspace's fields, except on lab-pc. */
+function demoDescribe(s: SessionInfo, host: string): Record<string, unknown> {
+  if (DEMO_OLD_HOSTS.has(host)) return { ...s };
+  const m = demoMeta.get(s.id) ?? {};
+  const log = demoLogs.get(s.id) ?? [];
+  const lastEnd = [...log].reverse().find((e) => e.t === "turn_end") as { status?: DemoMeta["last_status"] } | undefined;
+  const firstUser = log.find((e) => e.t === "user") as { text?: string } | undefined;
+  return {
+    ...s,
+    title: m.title ?? undefined,
+    title_source: m.title_source,
+    first_text: (m.first_text ?? firstUser?.text)?.slice(0, 200),
+    last_status: lastEnd?.status ?? m.last_status,
+    last_reason: m.last_reason,
+    pending: demoRuns.get(s.id)?.answer ? "question" : m.pending,
+    last_seq: Math.max(s.seq, log.length ? log[log.length - 1].seq : 0, m.seq ?? 0),
+    branch: m.branch,
+    pinned: m.pinned || undefined,
+    archived: m.archived || undefined,
+    permission_mode: m.permission_mode,
+  };
+}
+
+/** After the first look at the list: one running session finishes (unread), another computer gets a new one. */
+let demoTimeline = false;
+function startDemoTimeline() {
+  if (demoTimeline) return;
+  demoTimeline = true;
+  setTimeout(() => {
+    const s = demoSessions.find((x) => x.id === "w-bill-1");
+    const m = demoMeta.get("w-bill-1");
+    if (!s || !m || s.state !== "running") return;
+    s.state = "idle";
+    s.last_activity = Date.now();
+    s.turns += 1;
+    m.last_status = "completed";
+    m.seq = (m.seq ?? 0) + 14;
+  }, 4000);
+  setTimeout(() => {
+    const at = Date.now();
+    demoSessions.push({ id: "m-site-3", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/site", state: "idle", by: { device: "iphone" }, started_at: at - 2 * minute, turns: 1, last_activity: at, seq: 0 });
+    demoSessionHost.set("m-site-3", "studio-mac");
+    demoMeta.set("m-site-3", { title: "Check the sitemap after the redesign", title_source: "agent", last_status: "completed", branch: "design/hero", seq: 9 });
+  }, 7000);
+}
 
 const EXPORT_OLD = [
   "import calendar",
@@ -834,6 +951,13 @@ interface DemoRun {
   stopped: boolean;
   steers: string[];
   answer: ((text: string) => void) | null;
+  /** Waiting on a permission or a plan (Claude sessions). */
+  permit?: ((d: DemoPermit) => void) | null;
+}
+interface DemoPermit {
+  decision: "once" | "session" | "deny";
+  mode?: string;
+  message?: string;
 }
 const demoRuns = new Map<string, DemoRun>();
 const demoQueues = new Map<string, Array<{ id: string; text: string }>>();
@@ -874,9 +998,41 @@ async function step(s: SessionInfo, run: DemoRun, ms: number) {
   return !run.stopped;
 }
 
+/** The permission mode of each demo Claude session (`mode` commands change it). */
+const demoModes = new Map<string, string>();
+const demoTitled = new Set<string>();
+const demoMode = (s: SessionInfo) => demoModes.get(s.id) ?? "default";
+
+/** Waits for the person's answer to a permission or a plan (Stop answers no). */
+function permitted(s: SessionInfo, run: DemoRun, rid: string, e: Record<string, unknown>) {
+  push(s, { ...e, rid });
+  return new Promise<DemoPermit>((resolve) => (run.permit = resolve)).then((d) => {
+    run.permit = null;
+    if (!run.stopped) push(s, { t: "resolved", id: rid, outcome: d.decision === "deny" ? "denied" : d.decision === "session" ? "allowed_session" : "allowed", by: { device: "home-laptop" } });
+    return d;
+  });
+}
+
+const DENIED = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
+
+const DATES_OLD = "import pytest\nfrom datetime import date\nfrom export import quarter_range\n\n" + "# …\n".repeat(17) + "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n";
+const DATES_NEW = DATES_OLD.replace("from export import quarter_range", "from export import month_end, quarter_range")
+  + "\n\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n";
+/** The edit as Claude Code reports it (`structuredPatch`): two hunks with the file's own line numbers. */
+const DATES_HUNKS = [
+  { old_start: 1, old_lines: 4, new_start: 1, new_lines: 4, lines: [" import pytest", " from datetime import date", "-from export import quarter_range", "+from export import month_end, quarter_range", " "] },
+  { old_start: 22, old_lines: 2, new_start: 22, new_lines: 7, lines: [" def test_quarter_end_q3():", "     assert quarter_range(2026, 3)[1] == date(2026, 9, 30)", "+", "+",
+    "+@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])", "+def test_february_end(year, last):", "+    assert month_end(year, 2) == date(year, 2, last)"] },
+];
+
+const DEMO_PLAN = "## Plan: leap-year safe month ends\n\n1. Add `month_end(year, month)` to **export.py**, built on `calendar.monthrange`.\n2. Use it in `quarter_range` instead of the fixed day 31.\n3. Add February tests for **2024** (29 days) and **2026** (28 days).\n4. Run the whole suite.\n\nNothing outside `export.py` and `tests/test_dates.py` changes.";
+
+/** A scripted Claude turn: reasoning, a plan, reads and a search, a failing command, an edit with real line
+ *  numbers, a permission to run the tests (in the modes that ask), a question in two parts, and the answer.
+ *  PLAN in the message proposes a plan first (plan mode); the first turn names the session. */
 async function demoReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
   if (s.runtime.startsWith("codex")) return demoCodexReply(s, text, inputId, attachments);
-  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  const run: DemoRun = { stopped: false, steers: [], answer: null, permit: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
   push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
@@ -885,35 +1041,82 @@ async function demoReply(s: SessionInfo, text: string, inputId: string, attachme
   push(s, { t: "turn_start" });
   const n = s.seq;
   const k = (x: string) => `${x}${n}`;
+  const plan = /\bPLAN\b/.test(text);
+  if (plan && demoMode(s) !== "plan") {
+    demoModes.set(s.id, "plan");
+    push(s, { t: "mode", mode: "plan" });
+  } else if (!demoTitled.has(s.id)) push(s, { t: "mode", mode: demoMode(s) });
+  if (!demoTitled.has(s.id)) {
+    demoTitled.add(s.id);
+    push(s, { t: "title", title: plan ? "Plan leap-year safe month ends" : "Leap-year tests for the date helpers", source: "agent" });
+  }
   await stream(s, run, "thought", k("r"), "The user wants the leap-year case covered too. February's last day depends on the year, so the same calendar.monthrange fix applies; I should add tests for 2024 and 2026 and run the suite.", 40);
   if (!(await step(s, run, 300))) return;
+  if (plan) {
+    push(s, { t: "tool_call", call_id: k("x"), title: "ExitPlanMode", kind: "other", status: "pending", input: { plan: DEMO_PLAN } });
+    const d = await permitted(s, run, k("pp"), { t: "plan_review", plan: DEMO_PLAN });
+    if (run.stopped) return;
+    if (d.decision === "deny") {
+      push(s, { t: "tool_update", call_id: k("x"), status: "failed", content: [{ type: "text", text: DENIED }] });
+      await stream(s, run, "message", k("m"), d.message ? `Understood — I'll rework the plan: “${d.message}”.` : "Okay, I won't go ahead with that plan.", 60);
+      return demoEnd(s, run, started);
+    }
+    push(s, { t: "tool_update", call_id: k("x"), status: "completed" });
+    demoModes.set(s.id, d.mode ?? "default");
+    push(s, { t: "mode", mode: d.mode ?? "default" });
+  }
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "in_progress" }, { content: "Add leap-year cases", status: "pending" }, { content: "Run the suite", status: "pending" }] });
-  push(s, { t: "tool_call", call_id: k("a"), title: "Read D:\\work\\report-tool\\tests\\test_dates.py", kind: "read", status: "in_progress", locations: ["D:\\work\\report-tool\\tests\\test_dates.py"] });
+  push(s, { t: "tool_call", call_id: k("a"), title: "Read D:\\work\\report-tool\\tests\\test_dates.py", kind: "read", status: "in_progress", locations: ["D:\\work\\report-tool\\tests\\test_dates.py"],
+    input: { file_path: "D:\\work\\report-tool\\tests\\test_dates.py" } });
   if (!(await step(s, run, 700))) return;
-  push(s, { t: "tool_update", call_id: k("a"), status: "completed" });
-  push(s, { t: "tool_call", call_id: k("b"), title: "Grep def test_ tests/", kind: "search", status: "completed", content: [{ type: "text", text: "tests/test_dates.py:8:def test_quarter_start\ntests/test_dates.py:14:def test_quarter_end_q1\ntests/test_dates.py:20:def test_quarter_end_q3" }] });
-  push(s, { t: "tool_call", call_id: k("c"), title: "Bash python -m pytest -q tests/test_dates.py", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q tests/test_dates.py" } });
+  push(s, { t: "tool_update", call_id: k("a"), status: "completed", content: [{ type: "text", text: DATES_OLD.split("\n").slice(0, -1).map((l, i) => `${String(i + 1).padStart(6)}→${l}`).join("\n") }] });
+  push(s, { t: "tool_call", call_id: k("b"), title: "Grep def test_ tests/", kind: "search", status: "completed", input: { pattern: "def test_", path: "tests/" },
+    content: [{ type: "text", text: "tests/test_dates.py:8:def test_quarter_start\ntests/test_dates.py:14:def test_quarter_end_q1\ntests/test_dates.py:22:def test_quarter_end_q3" }] });
+  push(s, { t: "tool_call", call_id: k("c"), title: "Bash python -m pytest -q tests/test_dates.py", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q tests/test_dates.py", description: "Run the date tests" } });
   if (!(await step(s, run, 2200))) return;
   push(s, { t: "tool_update", call_id: k("c"), status: "failed", content: [{ type: "text", text: PYTEST_FAIL }] });
   push(s, { t: "thought", id: k("r2"), text: "The checked-in tests still expect the old helper; the installed copy is stale. I'll add the leap-year test next to the others.", delta: false });
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "in_progress" }, { content: "Run the suite", status: "pending" }] });
-  push(s, { t: "tool_call", call_id: k("d"), title: "Edit D:\\work\\report-tool\\tests\\test_dates.py", kind: "edit", status: "completed", content: [{ type: "diff", path: "D:\\work\\report-tool\\tests\\test_dates.py",
-    old: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n",
-    new: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n\n\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n" }] });
+  push(s, { t: "tool_call", call_id: k("d"), title: "Edit D:\\work\\report-tool\\tests\\test_dates.py", kind: "edit", status: "completed",
+    input: { file_path: "D:\\work\\report-tool\\tests\\test_dates.py", old_string: "from export import quarter_range", new_string: "from export import month_end, quarter_range" },
+    content: [{ type: "diff", path: "D:\\work\\report-tool\\tests\\test_dates.py", old: DATES_OLD, new: DATES_NEW, hunks: DATES_HUNKS }] });
   if (!(await step(s, run, 600))) return;
   if (!demoAsked.has(s.id)) {
     demoAsked.add(s.id);
-    push(s, { t: "question", qid: k("q"), prompt: "Should `month_end` live in **export.py** or in a new `dates.py` module?", options: ["Keep it in export.py", "Move it to dates.py"] });
+    const questions = [
+      { header: "Module", question: "Where should `month_end` live?", options: [{ label: "export.py", description: "Next to quarter_range, where it is used" }, { label: "dates.py", description: "A new module for date helpers" }], multi: false },
+      { header: "Years", question: "Which years should the February test cover?", options: [{ label: "2024", description: "A leap year: 29 days" }, { label: "2026", description: "28 days" }, { label: "2100", description: "Divisible by 100, so not a leap year" }], multi: true },
+    ];
+    push(s, { t: "question", qid: k("q"), prompt: questions[0].question, options: questions[0].options.map((o) => o.label), questions });
     const answer = await new Promise<string>((resolve) => (run.answer = resolve));
     run.answer = null;
     if (run.stopped) return;
+    push(s, { t: "resolved", id: k("q"), outcome: "answered", by: { device: "home-laptop" } });
     push(s, { t: "message", id: k("ans"), text: `Going with: ${answer}.`, delta: false });
   }
-  push(s, { t: "tool_call", call_id: k("e"), title: "Bash python -m pytest -q", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q" } });
+  const tests = { command: "python -m pytest -q", description: "Run the whole test suite" };
+  push(s, { t: "tool_call", call_id: k("e"), title: "Bash python -m pytest -q", kind: "execute", status: "pending", input: tests });
+  if (demoMode(s) === "default" || demoMode(s) === "plan") {
+    const d = await permitted(s, run, k("p"), { t: "permission", tool: "Bash", kind: "execute", title: "python -m pytest -q", input: tests,
+      reason: "Commands are not allowed without asking in this mode", suggestions: ["session"], call_id: k("e") });
+    if (run.stopped) return;
+    if (d.decision === "deny") {
+      push(s, { t: "tool_update", call_id: k("e"), status: "failed", content: [{ type: "text", text: DENIED }] });
+      await stream(s, run, "message", k("m"), d.message ? `Okay, not running the tests: “${d.message}”.` : "Okay, I won't run the tests. The new February test is in place; run `python -m pytest -q` when you are ready.", 60);
+      return demoEnd(s, run, started);
+    }
+  }
+  push(s, { t: "tool_update", call_id: k("e"), status: "in_progress" });
   if (!(await step(s, run, 1600))) return;
   push(s, { t: "tool_update", call_id: k("e"), status: "completed", content: [{ type: "text", text: "..............                                                     [100%]\n14 passed in 1.97s" }] });
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "completed" }, { content: "Run the suite", status: "completed" }] });
   await stream(s, run, "message", k("m"), "All **14 tests** pass, including two new February cases:\n\n1. `2024` — a leap year, ends on the 29th\n2. `2026` — ends on the 28th\n\n```python\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n```\n\nNothing else in the export depended on the old day-31 rule.", 110);
+  if (run.stopped) return;
+  demoEnd(s, run, started);
+}
+
+/** Ends a scripted Claude turn: usage, the end, and the next queued message. */
+function demoEnd(s: SessionInfo, run: DemoRun, started: number) {
   if (run.stopped) return;
   const used = 52_300 + s.turns * 9_000;
   push(s, { t: "usage", input_tokens: 21_000, output_tokens: 640, context_window: 200_000, context_used: used });
@@ -927,7 +1130,7 @@ async function demoReply(s: SessionInfo, text: string, inputId: string, attachme
 /** A Codex turn as a Codex host streams it: thinking, a remark, reads and searches, a failing then
  * passing command, an edit with its unified diff, a web search, a question, and the answer. */
 async function demoCodexReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
-  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  const run: DemoRun = { stopped: false, steers: [], answer: null, permit: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
   push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
@@ -1027,8 +1230,15 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Prom
     demoQueues.set(s.id, (demoQueues.get(s.id) ?? []).filter((q) => q.id !== dq.id));
     push(s, { t: "state", state: s.state, queued: demoQueues.get(s.id) });
   }
-  const ans = c.answer as { text?: string } | undefined;
-  if (ans?.text && run?.answer) run.answer(ans.text);
+  const ans = c.answer as { text?: string; answers?: Record<string, string> } | undefined;
+  if (ans && run?.answer) run.answer(ans.answers ? Object.values(ans.answers).join("; ") : ans.text ?? "");
+  const pm = c.permit as DemoPermit | undefined;
+  if (pm && run?.permit) run.permit(pm);
+  const md = c.mode as { mode?: string } | undefined;
+  if (md?.mode) {
+    demoModes.set(s.id, md.mode);
+    push(s, { t: "mode", mode: md.mode });
+  }
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");
   const files = c.files as { rid?: string; query?: string } | undefined;
@@ -1046,6 +1256,7 @@ const DEMO_FILES = ["export.py", "README.md", "tests/test_export.py", "report/qu
 async function demoStop(s: SessionInfo, run: DemoRun) {
   run.stopped = true;
   run.answer?.("");
+  run.permit?.({ decision: "deny" });
   setState(s, "interrupting");
   await wait(300);
   push(s, { t: "turn_end", status: "interrupted", duration_ms: 900 });
@@ -1058,7 +1269,7 @@ async function demoStop(s: SessionInfo, run: DemoRun) {
 function demoChatTool(host: string, tool: string, args: Record<string, unknown>): ToolResult | null {
   if (!tool.startsWith("chat_")) return null;
   const level = hosts.find((h) => h.name === host)?.levelAtPairing;
-  if (level !== "admin") {
+  if (level !== "admin" && !DEMO_AGENT_HOSTS.has(host)) {
     return { isError: true, content: [{ type: "text", text: `'${tool}' requires level 'admin', but this device has '${level}'.` }] };
   }
   const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(v) }], structuredContent: v });
@@ -1070,17 +1281,49 @@ function demoChatTool(host: string, tool: string, args: Record<string, unknown>)
   switch (tool) {
     case "chat_runtimes":
       return ok({ ...demoRuntimes, host: { ...demoRuntimes.host, enabled: demoChatEnabled } });
-    case "chat_sessions":
-      return ok({ sessions: demoSessions, live: demoSessions.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    case "chat_sessions": {
+      startDemoTimeline();
+      const mine = demoSessions.filter((s) => demoHostOf(s.id) === host && (args.archived === true) === !!demoMeta.get(s.id)?.archived);
+      return ok({ sessions: mine.map((s) => demoDescribe(s, host)), live: mine.filter((s) => s.state !== "ended" && s.state !== "parked").length });
+    }
+    case "chat_update": {
+      if (DEMO_OLD_HOSTS.has(host)) return { isError: true, content: [{ type: "text", text: "unknown tool 'chat_update'" }] };
+      const s = demoSessions.find((x) => x.id === args.session && demoHostOf(x.id) === host);
+      if (!s) return { isError: true, content: [{ type: "text", text: `no chat session '${String(args.session)}'` }] };
+      const m = demoMeta.get(s.id) ?? {};
+      if (typeof args.title === "string") {
+        const title = args.title.trim();
+        m.title = title || (m.auto_title ?? null);
+        m.title_source = title ? "user" : "auto";
+      }
+      if (typeof args.pinned === "boolean") m.pinned = args.pinned;
+      if (typeof args.archived === "boolean") m.archived = args.archived;
+      demoMeta.set(s.id, m);
+      return ok(demoDescribe(s, host));
+    }
     case "chat_start": {
       if (!demoChatEnabled) return { isError: true, content: [{ type: "text", text: "coding agents are switched off on this host" }] };
       const rt = demoRuntimes.runtimes.find((r) => r.id === args.runtime);
       const s: SessionInfo = { id: `c${Math.random().toString(16).slice(2, 14)}`, runtime: String(args.runtime), name: rt?.name ?? String(args.runtime),
         cwd: String(args.cwd), state: "idle", by: { device: "home-laptop" }, started_at: Date.now(), turns: 0, last_activity: Date.now(), seq: 0 };
       demoSessions.unshift(s);
+      demoSessionHost.set(s.id, host);
       demoLogs.set(s.id, []);
-      if (typeof args.prompt === "string" && args.prompt) setTimeout(() => void demoReply(s, args.prompt as string, "u1"), 600);
-      return ok({ ...s, session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
+      const prompt = typeof args.prompt === "string" ? args.prompt : "";
+      // The host names the session after its first message a moment later (a `title` event, design 1.4).
+      const auto = prompt.split(/\s+/).filter(Boolean).slice(0, 7).join(" ").replace(/[.,;:!?。，]+$/, "");
+      demoMeta.set(s.id, { first_text: prompt.slice(0, 200) || undefined, permission_mode: typeof args.permission_mode === "string" ? args.permission_mode : undefined, auto_title: auto || null });
+      if (prompt) {
+        setTimeout(() => void demoReply(s, prompt, "u1"), 600);
+        setTimeout(() => {
+          const m = demoMeta.get(s.id);
+          if (!m || m.title_source === "user" || !auto) return;
+          m.title = auto;
+          m.title_source = "agent";
+          push(s, { t: "title", title: auto, source: "agent" });
+        }, 1500);
+      }
+      return ok({ ...demoDescribe(s, host), session: s.id, ticket: ticket(s.id), role: "rw", expires_in_secs: 120 });
     }
     case "chat_attach": {
       const s = demoSessions.find((x) => x.id === args.session);

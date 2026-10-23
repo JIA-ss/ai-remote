@@ -18,7 +18,18 @@
 //!   `{"t":"error","code":..,"input_id":"..","text":".."}` when it refuses it (the hello says
 //!   `"acks":true`); a message later dropped because the queue is full gets a `queue_full` notice
 //!   with its `input_id`;
-//! - `{"interrupt":{}}`, `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`;
+//! - `{"interrupt":{}}`, `{"dequeue":{"id":".."}}`;
+//! - `{"answer":{"qid":"..","text":"..","answers":{"<question>":"<answer>",..}}}`: answers a
+//!   question (`text` its first part, `answers` every part, when the agent asks several);
+//! - `{"permit":{"rid":"..","decision":"once"|"session"|"deny","message":"..","mode":".."}}`:
+//!   answers a permission or a plan (`mode`: the permission mode an approved plan goes on in;
+//!   `message`: what to do instead);
+//!
+//!   An answer to a request that is no longer open (another device answered first, the turn
+//!   ended) gets `{"t":"error","code":"resolved","id":".."}`; the first answer settles it for
+//!   everyone with a `resolved` event;
+//! - `{"mode":{"mode":"default"|"acceptEdits"|"plan"|"bypassPermissions"}}`: switches Claude Code's
+//!   permission mode (other agents answer with a `mode_rejected` notice);
 //! - `{"files":{"rid":..,"query":"..","limit":N}}`: files in the session's folder whose relative
 //!   path contains every word of `query` (see [`crate::chat::files`]), answered with
 //!   `{"t":"files","rid":..,"files":[".."],"truncated":bool,"source":"git"|"walk"}` (or an
@@ -55,7 +66,10 @@ use tokio::{
 
 use crate::{
     HostState,
-    chat::{Chat, Cmd, Image, Input, MAX_IMAGES, MAX_INPUT, Role, event::By, line_seq, random_hex},
+    chat::{
+        Chat, Cmd, Image, Input, MAX_IMAGES, MAX_INPUT, Pending, Role, adapters::Decision, event::By, line_seq,
+        random_hex,
+    },
 };
 
 /// Longest command line accepted from a controller: a message with its images (each at most 5 MiB
@@ -100,7 +114,21 @@ enum Command {
     Interrupt {},
     Answer {
         qid: String,
+        #[serde(default)]
         text: String,
+        #[serde(default)]
+        answers: Option<std::collections::BTreeMap<String, String>>,
+    },
+    Permit {
+        rid: String,
+        decision: Decision,
+        #[serde(default)]
+        message: Option<String>,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    Mode {
+        mode: String,
     },
     Dequeue {
         id: String,
@@ -222,6 +250,8 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
         "acks": true,
         // Whether this agent takes images with a message (`agent` events update it).
         "images": host.chat().takes_images(&chat),
+        // The permission mode now: a session started in the mode it asked for has no `mode` event.
+        "permission_mode": meta.permission_mode,
     });
     if !write_line(&mut send, &hello.to_string()).await {
         return;
@@ -322,8 +352,8 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
         Command::Ping(n) => return Ok(Some(json!({"pong": n}))),
         _ => {}
     }
-    if role == Role::Ro {
-        return Ok(Some(json!({"t": "error", "code": "readonly", "text": "this device may only watch this session"})));
+    if let Some(refusal) = readonly(role) {
+        return Ok(Some(refusal));
     }
     if let Err(e) = require_admin(host, peer).await {
         return Ok(Some(json!({"t": "error", "text": format!("{e:#}")})));
@@ -372,7 +402,20 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
             }
         }
         Command::Interrupt {} => chat.send(Cmd::Interrupt { then: None }),
-        Command::Answer { qid, text } => chat.send(Cmd::Answer { qid, text }),
+        Command::Answer { qid, text, answers } => {
+            if chat.claim(&qid, &[Pending::Question]).is_none() {
+                return Ok(Some(resolved(&qid)));
+            }
+            let answers = answers.map(|a| a.into_iter().take(16).map(|(q, a)| (cap(q), cap(a))).collect());
+            chat.send(Cmd::Answer { qid, text: cap(text), answers, by })
+        }
+        Command::Permit { rid, decision, message, mode } => {
+            if chat.claim(&rid, &[Pending::Permission, Pending::Plan]).is_none() {
+                return Ok(Some(resolved(&rid)));
+            }
+            chat.send(Cmd::Permit { rid, decision, message: message.map(cap), mode, by })
+        }
+        Command::Mode { mode } => chat.send(Cmd::SetMode { mode, by }),
         Command::Dequeue { id } => chat.send(Cmd::Dequeue { id }),
         Command::End {} => chat.send(Cmd::End { reason: format!("ended by {}", peer.name) }),
         Command::Bye {} | Command::Ping(_) | Command::Files { .. } => unreachable!(),
@@ -384,6 +427,24 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
     }
     // The session has the message (it may still wait in the queue or for the agent to take it).
     Ok(input_id.map(|id| json!({"t": "ack", "input_id": id})))
+}
+
+/// The refusal of every command but `bye` and `ping` from a ticket that may only watch: no
+/// messages, answers, permissions or mode switches.
+fn readonly(role: Role) -> Option<Value> {
+    (role == Role::Ro)
+        .then(|| json!({"t": "error", "code": "readonly", "text": "this device may only watch this session"}))
+}
+
+/// The answer to an answer that came too late: another device answered first, or the request
+/// fell away with its turn.
+fn resolved(id: &str) -> Value {
+    json!({"t": "error", "code": "resolved", "id": id, "text": "this was already answered or is no longer asked"})
+}
+
+/// A person's answer, cut to what goes to the agent.
+fn cap(s: String) -> String {
+    if s.len() <= 8 * 1024 { s } else { crate::chat::event::cut(&s, 8 * 1024).0 }
 }
 
 /// Every few seconds: ends sessions whose device lost level admin, and stops running turns while
@@ -411,5 +472,30 @@ pub async fn enforce(host: Weak<HostState>) {
                 None => false,
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answers_permits_and_modes_parse_and_watchers_may_send_none() {
+        let c: Command = serde_json::from_str(
+            r#"{"permit":{"rid":"p1","decision":"session","message":"careful","mode":"acceptEdits"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(c, Command::Permit { decision: Decision::Session, mode: Some(m), .. } if m == "acceptEdits"));
+        let c: Command =
+            serde_json::from_str(r#"{"answer":{"qid":"q1","text":"a","answers":{"Which?":"a"}}}"#).unwrap();
+        assert!(matches!(c, Command::Answer { answers: Some(a), .. } if a["Which?"] == "a"));
+        // An older controller's answer still parses.
+        assert!(serde_json::from_str::<Command>(r#"{"answer":{"qid":"q1","text":"a"}}"#).is_ok());
+        assert!(matches!(serde_json::from_str(r#"{"mode":{"mode":"plan"}}"#).unwrap(), Command::Mode { .. }));
+        assert!(serde_json::from_str::<Command>(r#"{"permit":{"rid":"p1","decision":"always"}}"#).is_err());
+        assert_eq!(readonly(Role::Ro).unwrap()["code"], "readonly");
+        assert!(readonly(Role::Rw).is_none());
+        assert_eq!(resolved("p1")["code"], "resolved");
+        assert_eq!(cap("x".repeat(20_000)).len(), 8 * 1024 + "…".len());
     }
 }

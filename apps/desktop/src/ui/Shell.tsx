@@ -3,6 +3,8 @@
 // toolbar strip of glass capsules: ‹ › history, the page title (the page's only h1), a centre slot
 // (tabs, settings sections), actions, and at most one tinted primary action. On macOS the traffic
 // lights sit over the sidebar's top strip; on Windows the window frame draws the caption buttons.
+// The sidebar's top carries the computers / agents switch (ui/workspace/ModeSwitch.tsx): "agents"
+// hands the whole window to the agents workspace, a route of this shell (App.tsx).
 //
 // TitleBar stays backward compatible: the session page still passes title / facts / onBack / end and
 // gets the shell's history through ShellContext; without a shell (tests) it draws only what it gets.
@@ -18,6 +20,7 @@ import { Glyph, Mark, OsGlyph } from "./glyphs";
 import { Icon } from "./Icon";
 import { TurnLine, turnSpec } from "./TurnLine";
 import { clock, cx, routeLabel } from "./util";
+import { ModeSwitch, type AppMode } from "./workspace/ModeSwitch";
 
 /** A sidebar row (the session page names it so). */
 export type Nav = NavKey;
@@ -255,6 +258,7 @@ export function Sidebar({
   onToggle,
   onSearch,
   searchRef,
+  onMode,
 }: {
   computers: Computer[];
   active: NavKey | null;
@@ -268,6 +272,8 @@ export function Sidebar({
   /** The compact sidebar's search button: expand and focus the field. */
   onSearch: () => void;
   searchRef?: RefObject<HTMLInputElement | null>;
+  /** The computers / agents switch at the top: "agents" opens the agents workspace. */
+  onMode?: (mode: AppMode) => void;
 }) {
   const width = 240;
   const own = useRef<HTMLInputElement | null>(null);
@@ -306,6 +312,12 @@ export function Sidebar({
         )}
         <SidebarToggle state={state} onToggle={onToggle} />
       </div>
+      {/* At the strip's right end while expanded; under it, stacked, while compact (styles/workspace.css). */}
+      {onMode && (
+        <div className="gl-side-modes">
+          <ModeSwitch mode="computers" onMode={onMode} />
+        </div>
+      )}
       <div className="search">
         <Icon name="search" size={14} />
         <input
