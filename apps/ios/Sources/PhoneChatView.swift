@@ -572,13 +572,20 @@ public struct PhoneChatView: View {
             .ignoresSafeArea()
         }
         #endif
-        .task(id: autocomplete.map { $0.mode + ":" + $0.query }) {
+        .task(id: autocomplete.map { (chat.current?.id ?? "") + ":" + $0.mode + ":" + $0.query }) {
             menuActive = 0
+            mentionFiles = []; mentionError = nil
             guard let ac = autocomplete, ac.mode == "mention" else { return }
+            let session = chat.current?.id
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            do { mentionFiles = try await chat.files(ac.query); mentionError = nil }
-            catch { mentionFiles = []; mentionError = error.localizedDescription }
+            do {
+                let files = try await chat.files(ac.query)
+                guard !Task.isCancelled, chat.current?.id == session else { return }
+                mentionFiles = files
+            } catch {
+                if !Task.isCancelled, chat.current?.id == session { mentionError = error.localizedDescription }
+            }
         }
     }
 
