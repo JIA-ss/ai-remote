@@ -107,3 +107,8 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .lr.n-livey .r i { box-shadow: 0 0 0 4px var(--you-soft); }
 /* (any material) the tile face only centres the glyph; the mask above applies with the material on */
 .tile > .gl-tile-face { display: grid; place-items: center; }
+
+/* (any material) a chat error note painted its red text on the same red fill (--danger on
+   --danger-fill, unreadable in the light theme): a tint instead. Pre-existing; the chat package
+   takes it over. */
+.nt-chat-note.err { background: color-mix(in srgb, var(--danger) 12%, transparent); }
