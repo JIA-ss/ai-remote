@@ -3,11 +3,26 @@
 //! user line starts a turn that ends with a `result` line), so a conversation keeps its context
 //! without re-reading the transcript; `--resume <session>` continues it in a new process.
 //!
-//! - Bypass: `--permission-mode bypassPermissions`. Should the agent still ask
-//!   (`control_request` `can_use_tool`), the answer is allow, with `run_in_background` turned off:
-//!   a background shell outlives the turn that started it, and nothing here would report it.
-//! - `AskUserQuestion` is disallowed: its questions arrive as a permission request this client has
-//!   no way to answer in the protocol, and the turn would hang.
+//! - Permissions: `--permission-mode <the session's mode>` (`bypassPermissions` unless the session
+//!   chose another) and `--permission-prompt-tool stdio`, so whatever the mode says to ask about
+//!   comes as a `control_request` `can_use_tool` (measured with Claude Code 2.1.308, see
+//!   docs/agent-workspace-notes/host.md):
+//!   - `AskUserQuestion` comes in every mode, bypass included: it becomes a `question` event with
+//!     every part; the answer is allow with `updatedInput = {questions, answers}`, which the model
+//!     reads as the person's answers.
+//!   - `ExitPlanMode` (plan mode) comes with the plan in its input: a `plan_review` event; approved,
+//!     it is allowed and the mode is switched (`set_permission_mode`); not approved, it is denied
+//!     with what to change.
+//!   - Any other tool: in bypass mode it is allowed at once; otherwise a `permission` event. Allowed
+//!     for the session, the agent's own `permission_suggestions` go back as `updatedPermissions`
+//!     with their destination set to `session` (as suggested they would be written to the
+//!     project's `.claude/settings.local.json`). Every allow turns `run_in_background` off: a
+//!     background shell outlives the turn that started it, and nothing here would report it.
+//!   - Denied with a message, the model reads the message and goes on (`interrupt: false`);
+//!     without one the turn stops. An interrupt denies what is still asked.
+//! - The mode: `system` lines (`init`, `status`) carry `permissionMode`; each change is a `mode`
+//!   event. `set_permission_mode` answers `{mode}` or an error (`mode_rejected`).
+//! - Title: `generate_session_title` with the first message answers `{title}` (a `title` event).
 //! - Text streams with `--include-partial-messages`; the complete `assistant` message that follows
 //!   only contributes what did not stream (its tool calls).
 //! - Interrupt: a `control_request` of subtype `interrupt`; the turn then ends with a `result`.
@@ -25,20 +40,26 @@
 //!   first turn's `system` `init` then says which of them are skills (`skills`). Agents too old to
 //!   answer it still list the names in `init` (`slash_commands`).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::chat::{Image, event::SlashCommand};
+use crate::chat::{Image, event::SlashCommand, random_hex};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use super::{LiveCmd, content_text, exit_reason, report};
+use super::{DEFAULT_PERMISSION_MODE, Decision, LiveCmd, PERMISSION_MODES, content_text, exit_reason, report};
 use crate::chat::{
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, Ev, Hunk, MAX_HUNKS, Out, Outcome, PREVIEW, PlanEntry, QuestionItem, QuestionOption, ToolContent,
+        ToolKind, ToolStatus, TurnStatus, cut, preview_value,
     },
     proc::{AgentProc, Line},
 };
+
+/// The mode a session asked for, if Claude Code knows it; the default otherwise.
+pub fn mode_or_default(mode: Option<&str>) -> &str {
+    mode.filter(|m| PERMISSION_MODES.contains(m)).unwrap_or(DEFAULT_PERMISSION_MODE)
+}
 
 pub fn args(l: &super::Launch<'_>) -> Vec<String> {
     let mut a: Vec<String> = [
@@ -50,10 +71,10 @@ pub fn args(l: &super::Launch<'_>) -> Vec<String> {
         "--verbose",
         "--include-partial-messages",
         "--replay-user-messages",
+        "--permission-prompt-tool",
+        "stdio",
         "--permission-mode",
-        "bypassPermissions",
-        "--disallowedTools",
-        "AskUserQuestion",
+        mode_or_default(l.permission_mode),
     ]
     .map(String::from)
     .to_vec();
@@ -93,6 +114,33 @@ struct State {
     /// An `init` said which commands are skills: the list goes out from then on (before that, every
     /// start would send it twice, once without its skills).
     skills_known: bool,
+    /// The permission mode: as started until the agent says, then as it last said.
+    mode: String,
+    /// A `mode` event went out for `mode`.
+    mode_said: bool,
+    /// What the agent asks and waits on a person for, by the id the events carry.
+    asks: HashMap<String, Ask>,
+}
+
+/// A `can_use_tool` request waiting for a person.
+struct Ask {
+    /// Claude Code's id of the request, for the answer.
+    request: Value,
+    tool: String,
+    input: Value,
+    /// The agent's `permission_suggestions` (rules or a mode to allow it for the session).
+    suggestions: Vec<Value>,
+}
+
+impl State {
+    fn new(mode: &str) -> Self {
+        Self { mode: mode_or_default(Some(mode)).to_string(), ..Default::default() }
+    }
+
+    fn request_id(&mut self, what: &str) -> String {
+        self.next_req += 1;
+        format!("ar-{what}-{}", self.next_req)
+    }
 }
 
 /// Most tool calls of a session followed (results of others are not shown).
@@ -132,8 +180,9 @@ pub async fn run(
     mut cmds: mpsc::Receiver<LiveCmd>,
     out: mpsc::Sender<Out>,
     name: String,
+    mode: String,
 ) {
-    let mut st = State::default();
+    let mut st = State::new(&mode);
     let _ = proc.write_line(initialize_line()).await;
     loop {
         tokio::select! {
@@ -180,14 +229,14 @@ pub async fn run(
                         report(&out, Out::SteerRejected { id, reason: format!("{e:#}") }).await;
                     }
                 },
-                Some(LiveCmd::Interrupt) => {
-                    st.interrupting = true;
-                    st.next_req += 1;
-                    let line = json!({"type": "control_request", "request_id": format!("ar-int-{}", st.next_req), "request": {"subtype": "interrupt"}});
-                    let _ = proc.write_line(line.to_string()).await;
-                }
-                Some(LiveCmd::Answer { .. }) => {
-                    report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: "Claude Code is not waiting for an answer".into() })).await;
+                Some(cmd @ (LiveCmd::Interrupt | LiveCmd::Answer { .. } | LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. })) => {
+                    let (writes, outs) = command(&mut st, cmd);
+                    for w in writes {
+                        let _ = proc.write_line(w).await;
+                    }
+                    for o in outs {
+                        report(&out, o).await;
+                    }
                 }
                 Some(LiveCmd::Shutdown { done }) => {
                     proc.shutdown(std::time::Duration::from_secs(3)).await;
@@ -214,6 +263,252 @@ fn user_line(text: &str, images: &[Image]) -> String {
         content.push(json!({"type": "text", "text": text}));
     }
     json!({"type": "user", "message": {"role": "user", "content": content}}).to_string()
+}
+
+fn control(request_id: String, request: Value) -> String {
+    json!({"type": "control_request", "request_id": request_id, "request": request}).to_string()
+}
+
+fn reply(request: &Value, response: Value) -> String {
+    json!({"type": "control_response", "response": {"subtype": "success", "request_id": request, "response": response}})
+        .to_string()
+}
+
+/// Allowing a tool as asked, with `run_in_background` turned off (see the module notes).
+fn allow(mut input: Value) -> Value {
+    if input.get("run_in_background").is_some() {
+        input["run_in_background"] = json!(false);
+    }
+    json!({"behavior": "allow", "updatedInput": input})
+}
+
+/// Not allowing it: with a message the model reads it and goes on, without one the turn stops.
+fn deny(message: Option<&str>) -> Value {
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => json!({"behavior": "deny", "message": m, "interrupt": false}),
+        None => json!({"behavior": "deny", "message": "The user declined this.", "interrupt": true}),
+    }
+}
+
+fn notice(code: &'static str, text: String) -> Out {
+    Out::Ev(Ev::Notice { input_id: None, level: "warn", code, text })
+}
+
+/// Applies a session command that needs no process call of its own; returns lines to write and
+/// messages for the session.
+fn command(st: &mut State, cmd: LiveCmd) -> (Vec<String>, Vec<Out>) {
+    let mut writes = Vec::new();
+    let mut outs = Vec::new();
+    match cmd {
+        LiveCmd::Interrupt => {
+            st.interrupting = true;
+            // What the turn still asks about would keep it waiting: no, and its cards close.
+            for (id, ask) in std::mem::take(&mut st.asks) {
+                writes.push(reply(&ask.request, deny(None)));
+                outs.push(Out::Ev(Ev::Resolved { id, outcome: Outcome::Cancelled, by: None }));
+            }
+            let id = st.request_id("int");
+            writes.push(control(id, json!({"subtype": "interrupt"})));
+        }
+        LiveCmd::Answer { qid, text, answers } => match st.asks.get(&qid) {
+            Some(ask) if ask.tool == "AskUserQuestion" => {
+                let ask = st.asks.remove(&qid).expect("present");
+                let questions = ask.input["questions"].clone();
+                let answers: BTreeMap<String, String> = match answers.filter(|a| !a.is_empty()) {
+                    Some(a) => a,
+                    None => questions[0]["question"].as_str().map(|q| (q.to_string(), text)).into_iter().collect(),
+                };
+                writes.push(reply(
+                    &ask.request,
+                    json!({"behavior": "allow", "updatedInput": {"questions": questions, "answers": answers}}),
+                ));
+            }
+            _ => outs.push(notice("no_question", "Claude Code is not waiting for that answer".into())),
+        },
+        LiveCmd::Permit { rid, decision, message, mode } => {
+            let Some(ask) = st.asks.remove(&rid) else {
+                outs.push(notice("permission_expired", "Claude Code no longer waits for that answer".into()));
+                return (writes, outs);
+            };
+            let response = match (ask.tool.as_str(), decision) {
+                (_, Decision::Deny) => deny(message.as_deref()),
+                ("ExitPlanMode", _) => {
+                    // The plan goes ahead in the mode chosen with it.
+                    let mode = mode.filter(|m| PERMISSION_MODES.contains(&m.as_str()) && m != "plan");
+                    let id = st.request_id("mode");
+                    let mode = mode.unwrap_or_else(|| "default".into());
+                    writes.push(reply(&ask.request, allow(ask.input)));
+                    writes.push(control(id, json!({"subtype": "set_permission_mode", "mode": mode})));
+                    return (writes, outs);
+                }
+                (_, Decision::Once) => allow(ask.input),
+                (_, Decision::Session) => {
+                    let mut r = allow(ask.input);
+                    // Kept for this session only: as suggested they would be written to the project.
+                    let rules: Vec<Value> = ask
+                        .suggestions
+                        .into_iter()
+                        .map(|mut s| {
+                            s["destination"] = json!("session");
+                            s
+                        })
+                        .collect();
+                    if !rules.is_empty() {
+                        r["updatedPermissions"] = json!(rules);
+                    }
+                    r
+                }
+            };
+            writes.push(reply(&ask.request, response));
+        }
+        LiveCmd::SetMode { mode } => {
+            if PERMISSION_MODES.contains(&mode.as_str()) {
+                let id = st.request_id("mode");
+                writes.push(control(id, json!({"subtype": "set_permission_mode", "mode": mode})));
+            } else {
+                outs.push(notice("mode_rejected", format!("'{mode}' is not a permission mode")));
+            }
+        }
+        LiveCmd::GenerateTitle { description } => {
+            let id = st.request_id("title");
+            let description = cut(&description, 2000).0;
+            writes.push(control(
+                id,
+                json!({"subtype": "generate_session_title", "description": description, "persist": false}),
+            ));
+        }
+        LiveCmd::Prompt { .. } | LiveCmd::Steer { .. } | LiveCmd::Shutdown { .. } => {}
+    }
+    (writes, outs)
+}
+
+/// The parts of an AskUserQuestion input.
+fn question_items(input: &Value) -> Vec<QuestionItem> {
+    input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(8)
+        .filter_map(|q| {
+            let text = |v: &Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| cut(s, 2000).0);
+            Some(QuestionItem {
+                header: text(&q["header"]),
+                question: text(&q["question"])?,
+                options: q["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .take(16)
+                    .filter_map(|o| {
+                        Some(QuestionOption { label: text(&o["label"])?, description: text(&o["description"]) })
+                    })
+                    .collect(),
+                multi: q["multiSelect"].as_bool() == Some(true),
+            })
+        })
+        .collect()
+}
+
+/// A `can_use_tool` request: answered at once (bypass mode), or reported for a person to answer.
+fn can_use_tool(st: &mut State, request: Value, req: &Value, writes: &mut Vec<String>, outs: &mut Vec<Out>) {
+    let tool = req["tool_name"].as_str().unwrap_or("").to_string();
+    let input = req["input"].clone();
+    let ask = |input: Value| Ask {
+        request: request.clone(),
+        tool: tool.clone(),
+        input,
+        suggestions: req["permission_suggestions"].as_array().cloned().unwrap_or_default(),
+    };
+    match tool.as_str() {
+        "AskUserQuestion" => {
+            let questions = question_items(&input);
+            let Some(first) = questions.first() else {
+                writes.push(reply(&request, deny(Some("There was no question to ask."))));
+                return;
+            };
+            let qid = format!("q{}", &random_hex()[..10]);
+            outs.push(Out::Ev(Ev::Question {
+                qid: qid.clone(),
+                prompt: first.question.clone(),
+                options: first.options.iter().map(|o| o.label.clone()).collect(),
+                questions: questions.clone(),
+            }));
+            st.asks.insert(qid, ask(input));
+        }
+        "ExitPlanMode" => {
+            let rid = format!("p{}", &random_hex()[..10]);
+            let plan = cut(input["plan"].as_str().unwrap_or(""), DIFF_SIDE).0;
+            outs.push(Out::Ev(Ev::PlanReview { rid: rid.clone(), plan }));
+            st.asks.insert(rid, ask(input));
+        }
+        _ if st.mode == "bypassPermissions" => writes.push(reply(&request, allow(input))),
+        _ => {
+            let rid = format!("p{}", &random_hex()[..10]);
+            let (kind, title) = describe(&tool, &input);
+            let reason = [&req["decision_reason"], &req["description"]]
+                .into_iter()
+                .find_map(|v| v.as_str().filter(|s| !s.trim().is_empty()))
+                .map(|s| cut(s, 300).0);
+            let suggestions = if req["permission_suggestions"].as_array().is_some_and(|s| !s.is_empty()) {
+                vec!["session".into()]
+            } else {
+                vec![]
+            };
+            outs.push(Out::Ev(Ev::Permission {
+                rid: rid.clone(),
+                tool: tool.clone(),
+                kind: Some(kind),
+                title: Some(title),
+                input: Some(preview_value(&input)),
+                reason,
+                suggestions,
+                call_id: req["tool_use_id"].as_str().map(str::to_string),
+            }));
+            st.asks.insert(rid, ask(input));
+        }
+    }
+}
+
+/// The mode Claude Code reports, as a `mode` event when it changed (or was never said).
+fn mode_said(st: &mut State, mode: Option<&str>, outs: &mut Vec<Out>) {
+    let Some(mode) = mode.filter(|m| !m.is_empty()) else { return };
+    if mode != st.mode || !st.mode_said {
+        st.mode = mode.to_string();
+        st.mode_said = true;
+        outs.push(Out::Ev(Ev::Mode { mode: mode.to_string() }));
+    }
+}
+
+/// The diff of a finished edit with its line numbers, from the result's `structuredPatch`.
+fn patched(result: &Value) -> Option<ToolContent> {
+    let patch = result["structuredPatch"].as_array().filter(|p| !p.is_empty())?;
+    let num = |h: &Value, k: &str| h[k].as_u64().unwrap_or(0);
+    let hunks = patch
+        .iter()
+        .take(MAX_HUNKS)
+        .map(|h| {
+            Hunk {
+                old_start: num(h, "oldStart"),
+                old_lines: num(h, "oldLines"),
+                new_start: num(h, "newStart"),
+                new_lines: num(h, "newLines"),
+                lines: h["lines"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| l.as_str().map(str::to_string))
+                    .collect(),
+            }
+            .bounded()
+        })
+        .collect();
+    let text = |k: &str| result[k].as_str();
+    Some(ToolContent::Diff {
+        path: text("filePath").unwrap_or("").to_string(),
+        old: text("oldString").or(text("originalFile")).map(|s| cut(s, DIFF_SIDE).0),
+        new: cut(text("newString").or(text("content")).unwrap_or(""), DIFF_SIDE).0,
+        hunks,
+    })
 }
 
 /// Translates one line of Claude Code's output; returns lines to write back and messages for the
@@ -257,7 +552,9 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                     st.skills = skills;
                     outs.push(st.command_list());
                 }
+                mode_said(st, v["permissionMode"].as_str(), &mut outs);
             }
+            "status" => mode_said(st, v["permissionMode"].as_str(), &mut outs),
             "api_retry" if !st.retried => {
                 st.retried = true;
                 let err = v["error"].as_str().unwrap_or("error");
@@ -364,20 +661,30 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             st.echoed = true;
         }
         "user" if v["isReplay"].as_bool() != Some(true) => {
-            for block in v["message"]["content"].as_array().into_iter().flatten() {
-                if block["type"] != "tool_result" {
-                    continue;
-                }
+            let results: Vec<&Value> = v["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|b| b["type"] == "tool_result")
+                .collect();
+            // The message's `tool_use_result` is the result of its one tool call: an edit's diff
+            // with line numbers.
+            let patch = if results.len() == 1 { patched(&v["tool_use_result"]) } else { None };
+            for block in results {
                 let call_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
                 if !st.calls.contains(&call_id) {
                     continue;
                 }
                 let (text, truncated) = cut(&content_text(&block["content"]), PREVIEW);
                 let failed = block["is_error"].as_bool() == Some(true);
+                let mut content: Vec<ToolContent> = patch.clone().into_iter().collect();
+                if !text.is_empty() {
+                    content.push(ToolContent::Text { text });
+                }
                 outs.push(Out::Ev(Ev::ToolUpdate {
                     call_id,
                     status: Some(if failed { ToolStatus::Failed } else { ToolStatus::Completed }),
-                    content: if text.is_empty() { vec![] } else { vec![ToolContent::Text { text }] },
+                    content,
                     truncated,
                     exit_code: None,
                     duration_ms: None,
@@ -420,7 +727,34 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 .then(|| text.clone().unwrap_or_else(|| v["subtype"].as_str().unwrap_or("error").replace('_', " ")));
             st.interrupting = false;
             st.streamed.clear();
+            // Nothing is asked once the turn is over.
+            for id in std::mem::take(&mut st.asks).into_keys() {
+                outs.push(Out::Ev(Ev::Resolved { id, outcome: Outcome::Cancelled, by: None }));
+            }
             outs.push(Out::TurnEnd { status, final_text: if failed { None } else { text }, reason });
+        }
+        "control_response" if v["response"]["request_id"].as_str().is_some_and(|r| r.starts_with("ar-mode-")) => {
+            let r = &v["response"];
+            if r["subtype"] == "success" {
+                mode_said(st, r["response"]["mode"].as_str(), &mut outs);
+            } else {
+                let why = r["error"].as_str().unwrap_or("refused");
+                outs.push(notice("mode_rejected", format!("Claude Code did not switch the permission mode: {why}")));
+            }
+        }
+        "control_response" if v["response"]["request_id"].as_str().is_some_and(|r| r.starts_with("ar-title-")) => {
+            if let Some(title) = v["response"]["response"]["title"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+                outs.push(Out::Ev(Ev::Title { title: cut(title, 200).0, source: "agent".into() }));
+            }
+        }
+        "control_cancel_request" => {
+            // The agent no longer waits for that answer.
+            let gone: Vec<String> =
+                st.asks.iter().filter(|(_, a)| a.request == v["request_id"]).map(|(id, _)| id.clone()).collect();
+            for id in gone {
+                st.asks.remove(&id);
+                outs.push(Out::Ev(Ev::Resolved { id, outcome: Outcome::Cancelled, by: None }));
+            }
         }
         "control_response" if v["response"]["request_id"] == INIT_REQUEST => {
             let r = &v["response"]["response"];
@@ -440,16 +774,12 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
         "control_request" => {
             let id = v["request_id"].clone();
             let req = &v["request"];
-            let reply = if req["subtype"] == "can_use_tool" {
-                let mut input = req["input"].clone();
-                if input.get("run_in_background").is_some() {
-                    input["run_in_background"] = json!(false);
-                }
-                json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": {"behavior": "allow", "updatedInput": input}}})
+            if req["subtype"] == "can_use_tool" {
+                can_use_tool(st, id, req, &mut writes, &mut outs);
             } else {
-                json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "not supported by this client"}})
-            };
-            writes.push(reply.to_string());
+                let reply = json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "not supported by this client"}});
+                writes.push(reply.to_string());
+            }
         }
         _ => {}
     }
@@ -471,6 +801,25 @@ fn context_window(usage: &Value, model: Option<&str>) -> Option<u64> {
         .or_else(|| models.values().filter_map(of).max())
 }
 
+/// What a tool does and the line that names it (`Bash cargo build`).
+fn describe(name: &str, input: &Value) -> (ToolKind, String) {
+    let s = |k: &str| input[k].as_str().unwrap_or("").to_string();
+    let (kind, what) = match name {
+        "Bash" => (ToolKind::Execute, s("command")),
+        "Read" | "NotebookRead" => (ToolKind::Read, s("file_path")),
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => (ToolKind::Edit, s("file_path")),
+        "Grep" => (ToolKind::Search, s("pattern")),
+        "Glob" => (ToolKind::Search, s("pattern")),
+        "LS" => (ToolKind::Search, s("path")),
+        "WebFetch" => (ToolKind::Fetch, s("url")),
+        "WebSearch" => (ToolKind::Fetch, s("query")),
+        "Task" | "Agent" => (ToolKind::Think, s("description")),
+        _ => (ToolKind::Other, String::new()),
+    };
+    let title = if what.is_empty() { name.to_string() } else { format!("{name} {}", cut(&what, 300).0) };
+    (kind, title)
+}
+
 /// A `tool_use` block as a tool call (or, for the to-do list, a plan).
 fn tool_call(st: &mut State, block: &Value, parent: Option<&str>) -> Option<Out> {
     let call_id = block["id"].as_str()?.to_string();
@@ -490,19 +839,7 @@ fn tool_call(st: &mut State, block: &Value, parent: Option<&str>) -> Option<Out>
     }
     st.calls.insert(call_id.clone());
     let s = |k: &str| input[k].as_str().unwrap_or("").to_string();
-    let (kind, title) = match name {
-        "Bash" => (ToolKind::Execute, s("command")),
-        "Read" | "NotebookRead" => (ToolKind::Read, s("file_path")),
-        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => (ToolKind::Edit, s("file_path")),
-        "Grep" => (ToolKind::Search, s("pattern")),
-        "Glob" => (ToolKind::Search, s("pattern")),
-        "LS" => (ToolKind::Search, s("path")),
-        "WebFetch" => (ToolKind::Fetch, s("url")),
-        "WebSearch" => (ToolKind::Fetch, s("query")),
-        "Task" | "Agent" => (ToolKind::Think, s("description")),
-        _ => (ToolKind::Other, String::new()),
-    };
-    let title = if title.is_empty() { name.to_string() } else { format!("{name} {}", cut(&title, 300).0) };
+    let (kind, title) = describe(name, input);
     let path = input["file_path"].as_str().map(str::to_string);
     let mut content = Vec::new();
     match name {
@@ -510,16 +847,21 @@ fn tool_call(st: &mut State, block: &Value, parent: Option<&str>) -> Option<Out>
             path: s("file_path"),
             old: Some(cut(&s("old_string"), DIFF_SIDE).0),
             new: cut(&s("new_string"), DIFF_SIDE).0,
+            hunks: Vec::new(),
         }),
-        "Write" => {
-            content.push(ToolContent::Diff { path: s("file_path"), old: None, new: cut(&s("content"), DIFF_SIDE).0 })
-        }
+        "Write" => content.push(ToolContent::Diff {
+            path: s("file_path"),
+            old: None,
+            new: cut(&s("content"), DIFF_SIDE).0,
+            hunks: Vec::new(),
+        }),
         "MultiEdit" => {
             for e in input["edits"].as_array().into_iter().flatten().take(20) {
                 content.push(ToolContent::Diff {
                     path: s("file_path"),
                     old: Some(cut(e["old_string"].as_str().unwrap_or(""), DIFF_SIDE).0),
                     new: cut(e["new_string"].as_str().unwrap_or(""), DIFF_SIDE).0,
+                    hunks: Vec::new(),
                 });
             }
         }
@@ -554,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_turn_streams_text_tools_and_ends_with_its_result() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         let (writes, outs) = run_lines(
             &mut st,
             &[
@@ -594,7 +936,7 @@ mod tests {
 
     #[test]
     fn errors_and_interrupts_end_the_turn_accordingly() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         let (_, outs) = run_lines(
             &mut st,
             &[
@@ -613,7 +955,7 @@ mod tests {
 
     #[test]
     fn edits_carry_their_diff_and_todos_become_a_plan() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         let (_, outs) = run_lines(
             &mut st,
             &[json!({"type": "assistant", "message": {"id": "m", "content": [
@@ -646,9 +988,17 @@ mod tests {
             model: Some("haiku"),
             hardened: true,
             resume: Some("s1"),
+            permission_mode: None,
         };
         let a = args(&l).join(" ");
         assert!(a.contains("--permission-mode bypassPermissions"), "{a}");
+        assert!(a.contains("--permission-prompt-tool stdio"), "{a}");
+        assert!(!a.contains("--disallowedTools"), "{a}");
+        let l = super::super::Launch { permission_mode: Some("plan"), ..l };
+        assert!(args(&l).join(" ").contains("--permission-mode plan"));
+        // A mode Claude Code may not know falls back to the default.
+        let l = super::super::Launch { permission_mode: Some("yolo"), ..l };
+        assert!(args(&l).join(" ").contains("--permission-mode bypassPermissions"));
         assert!(a.contains("--setting-sources user --strict-mcp-config"), "{a}");
         assert!(a.ends_with("--model haiku --resume s1"), "{a}");
     }
@@ -659,7 +1009,7 @@ mod tests {
 
     #[test]
     fn steers_echoed_before_the_result_joined_the_turn_and_the_rest_run_next() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         st.written.push_back(Written { steer: None, late: false });
         st.written.push_back(Written { steer: Some("s1".into()), late: false });
         st.written.push_back(Written { steer: Some("s2".into()), late: false });
@@ -689,7 +1039,7 @@ mod tests {
 
     #[test]
     fn commands_come_from_initialize_and_skills_from_init() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         let (_, outs) = run_lines(
             &mut st,
             &[
@@ -712,7 +1062,7 @@ mod tests {
         );
         assert_eq!((commands[1].kind.as_str(), commands[1].hint.as_deref()), ("skill", None));
         // An agent that does not answer `initialize` still names its commands in `init`.
-        let mut old = State::default();
+        let mut old = State::new("bypassPermissions");
         let (_, outs) = run_lines(
             &mut old,
             &[json!({"type": "system", "subtype": "init", "session_id": "s", "slash_commands": ["clear", "review"]})],
@@ -737,7 +1087,7 @@ mod tests {
 
     #[test]
     fn a_sub_agents_tool_calls_come_with_their_parent() {
-        let mut st = State::default();
+        let mut st = State::new("bypassPermissions");
         let (_, outs) = run_lines(
             &mut st,
             &[
@@ -761,5 +1111,259 @@ mod tests {
         assert!(matches!(&outs[3], Out::Ev(Ev::ToolUpdate { call_id, .. }) if call_id == "a1"));
         // The sub-agent's own text is not shown as the agent's.
         assert_eq!(outs.len(), 4, "{outs:?}");
+    }
+
+    fn can_use(id: &str, tool: &str, input: Value, extra: Value) -> Value {
+        let mut req =
+            json!({"subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": format!("tu-{id}")});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            req[k] = v.clone();
+        }
+        json!({"type": "control_request", "request_id": id, "request": req})
+    }
+
+    fn written(w: &str) -> Value {
+        serde_json::from_str(w).unwrap()
+    }
+
+    #[test]
+    fn questions_come_in_bypass_mode_with_every_part_and_answers_go_back_per_part() {
+        // As measured (2.1.308): AskUserQuestion is asked even in bypass mode.
+        let mut st = State::new("bypassPermissions");
+        let input = json!({"questions": [
+            {"question": "Which config?", "header": "Config", "multiSelect": false,
+             "options": [{"label": "debug", "description": "fast"}, {"label": "release"}]},
+            {"question": "Which targets?", "header": "Targets", "multiSelect": true, "options": [{"label": "mac"}, {"label": "win"}]},
+        ]});
+        let (w, outs) = run_lines(&mut st, &[can_use("r1", "AskUserQuestion", input.clone(), json!({}))]);
+        assert!(w.is_empty(), "nothing is answered until a person does");
+        let Some(Out::Ev(Ev::Question { qid, prompt, options, questions })) = outs.first() else { panic!("{outs:?}") };
+        assert_eq!((prompt.as_str(), options.len(), questions.len()), ("Which config?", 2, 2));
+        assert_eq!(questions[0].options[0].description.as_deref(), Some("fast"));
+        assert!(questions[1].multi && !questions[0].multi);
+        let qid = qid.clone();
+        let answers: BTreeMap<String, String> =
+            [("Which config?".into(), "release".into()), ("Which targets?".into(), "mac, win".into())].into();
+        let (w, outs) =
+            command(&mut st, LiveCmd::Answer { qid: qid.clone(), text: "release".into(), answers: Some(answers) });
+        assert!(outs.is_empty());
+        let r = written(&w[0]);
+        assert_eq!(r["response"]["request_id"], "r1");
+        assert_eq!(r["response"]["response"]["behavior"], "allow");
+        assert_eq!(r["response"]["response"]["updatedInput"]["questions"], input["questions"]);
+        assert_eq!(r["response"]["response"]["updatedInput"]["answers"]["Which targets?"], "mac, win");
+        // Answered once: a second answer finds nothing.
+        let (w, outs) = command(&mut st, LiveCmd::Answer { qid, text: "x".into(), answers: None });
+        assert!(w.is_empty() && matches!(&outs[0], Out::Ev(Ev::Notice { code: "no_question", .. })));
+        // An older controller's answer (text only) answers the first part.
+        let (_, outs) = run_lines(&mut st, &[can_use("r2", "AskUserQuestion", input, json!({}))]);
+        let Some(Out::Ev(Ev::Question { qid, .. })) = outs.first() else { panic!() };
+        let (w, _) = command(&mut st, LiveCmd::Answer { qid: qid.clone(), text: "debug".into(), answers: None });
+        assert_eq!(
+            written(&w[0])["response"]["response"]["updatedInput"]["answers"],
+            json!({"Which config?": "debug"})
+        );
+    }
+
+    #[test]
+    fn a_plan_is_reviewed_then_approved_in_a_mode_or_sent_back() {
+        let mut st = State::new("plan");
+        let input = json!({"plan": "## Plan\n1. build", "planFilePath": "/p/plan.md"});
+        let (w, outs) = run_lines(&mut st, &[can_use("r1", "ExitPlanMode", input.clone(), json!({}))]);
+        assert!(w.is_empty());
+        let Some(Out::Ev(Ev::PlanReview { rid, plan })) = outs.first() else { panic!("{outs:?}") };
+        assert_eq!(plan, "## Plan\n1. build");
+        let (w, _) = command(
+            &mut st,
+            LiveCmd::Permit {
+                rid: rid.clone(),
+                decision: Decision::Once,
+                message: None,
+                mode: Some("acceptEdits".into()),
+            },
+        );
+        assert_eq!(written(&w[0])["response"]["response"], json!({"behavior": "allow", "updatedInput": input}));
+        let m = written(&w[1]);
+        assert_eq!(m["request"], json!({"subtype": "set_permission_mode", "mode": "acceptEdits"}));
+        // The switch is reported as the agent confirms it.
+        let id = m["request_id"].as_str().unwrap().to_string();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": {"mode": "acceptEdits"}}}),
+            ],
+        );
+        assert!(matches!(&outs[0], Out::Ev(Ev::Mode { mode }) if mode == "acceptEdits"));
+        // Sent back with what to change: denied, and the model reads why.
+        let (_, outs) = run_lines(&mut st, &[can_use("r2", "ExitPlanMode", input, json!({}))]);
+        let Some(Out::Ev(Ev::PlanReview { rid, .. })) = outs.first() else { panic!() };
+        let (w, _) = command(
+            &mut st,
+            LiveCmd::Permit { rid: rid.clone(), decision: Decision::Deny, message: Some("not CI".into()), mode: None },
+        );
+        assert_eq!(
+            written(&w[0])["response"]["response"],
+            json!({"behavior": "deny", "message": "not CI", "interrupt": false})
+        );
+        assert_eq!(w.len(), 1, "no mode switch");
+    }
+
+    #[test]
+    fn tools_ask_outside_bypass_mode_once_for_the_session_or_not() {
+        let mut st = State::new("default");
+        let suggestion = json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "cargo build"}], "behavior": "allow", "destination": "localSettings"});
+        let extra =
+            json!({"permission_suggestions": [suggestion], "decision_reason": "This command requires approval"});
+        let ask = |st: &mut State, id: &str| {
+            let (w, outs) = run_lines(
+                st,
+                &[can_use(id, "Bash", json!({"command": "cargo build", "run_in_background": true}), extra.clone())],
+            );
+            assert!(w.is_empty());
+            let Some(Out::Ev(Ev::Permission { rid, tool, kind, title, reason, suggestions, call_id, .. })) =
+                outs.first()
+            else {
+                panic!("{outs:?}")
+            };
+            assert_eq!(
+                (tool.as_str(), *kind, title.as_deref()),
+                ("Bash", Some(ToolKind::Execute), Some("Bash cargo build"))
+            );
+            assert_eq!(
+                (reason.as_deref(), suggestions.as_slice()),
+                (Some("This command requires approval"), &["session".to_string()][..])
+            );
+            assert_eq!(call_id.as_deref(), Some(format!("tu-{id}").as_str()));
+            rid.clone()
+        };
+        let rid = ask(&mut st, "r1");
+        let (w, _) = command(&mut st, LiveCmd::Permit { rid, decision: Decision::Once, message: None, mode: None });
+        let r = written(&w[0])["response"]["response"].clone();
+        assert_eq!((r["behavior"].as_str(), &r["updatedInput"]["run_in_background"]), (Some("allow"), &json!(false)));
+        assert!(r.get("updatedPermissions").is_none());
+        // For the session: the agent's own rule, kept for this session (not written to the project).
+        let rid = ask(&mut st, "r2");
+        let (w, _) = command(&mut st, LiveCmd::Permit { rid, decision: Decision::Session, message: None, mode: None });
+        let r = written(&w[0])["response"]["response"].clone();
+        assert_eq!(r["updatedPermissions"][0]["destination"], "session");
+        assert_eq!(r["updatedPermissions"][0]["rules"][0]["ruleContent"], "cargo build");
+        // No without a word stops the turn; with one the model goes on.
+        let rid = ask(&mut st, "r3");
+        let (w, _) = command(&mut st, LiveCmd::Permit { rid, decision: Decision::Deny, message: None, mode: None });
+        assert_eq!(written(&w[0])["response"]["response"]["interrupt"], true);
+        // An answer to what is no longer asked.
+        let (w, outs) =
+            command(&mut st, LiveCmd::Permit { rid: "p0".into(), decision: Decision::Once, message: None, mode: None });
+        assert!(w.is_empty() && matches!(&outs[0], Out::Ev(Ev::Notice { code: "permission_expired", .. })));
+        // In bypass mode nothing is asked about tools.
+        let mut st = State::new("bypassPermissions");
+        let (w, outs) = run_lines(&mut st, &[can_use("r4", "Bash", json!({"command": "ls"}), extra)]);
+        assert!(outs.is_empty() && written(&w[0])["response"]["response"]["behavior"] == "allow");
+    }
+
+    #[test]
+    fn what_is_still_asked_falls_away_with_an_interrupt_or_the_turn() {
+        let mut st = State::new("default");
+        let (_, outs) =
+            run_lines(&mut st, &[can_use("r1", "Write", json!({"file_path": "/a", "content": "x"}), json!({}))]);
+        let Some(Out::Ev(Ev::Permission { rid, suggestions, .. })) = outs.first() else { panic!() };
+        assert!(suggestions.is_empty());
+        let rid = rid.clone();
+        let (w, outs) = command(&mut st, LiveCmd::Interrupt);
+        assert_eq!(written(&w[0])["response"]["response"]["behavior"], "deny");
+        assert_eq!(written(&w[1])["request"]["subtype"], "interrupt");
+        assert!(matches!(&outs[0], Out::Ev(Ev::Resolved { id, outcome: Outcome::Cancelled, .. }) if *id == rid));
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                can_use("r2", "Edit", json!({"file_path": "/a"}), json!({})),
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "x"}),
+            ],
+        );
+        assert!(matches!(&outs[2], Out::Ev(Ev::Resolved { outcome: Outcome::Cancelled, .. })), "{outs:?}");
+        // The agent took a request back.
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                can_use("r3", "Edit", json!({"file_path": "/a"}), json!({})),
+                json!({"type": "control_cancel_request", "request_id": "r3"}),
+            ],
+        );
+        assert!(matches!(&outs[1], Out::Ev(Ev::Resolved { outcome: Outcome::Cancelled, .. })), "{outs:?}");
+        assert!(st.asks.is_empty());
+    }
+
+    #[test]
+    fn modes_come_from_system_lines_and_titles_from_their_answer() {
+        let mut st = State::new("bypassPermissions");
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "system", "subtype": "init", "session_id": "s", "permissionMode": "bypassPermissions"}),
+                json!({"type": "system", "subtype": "init", "session_id": "s", "permissionMode": "bypassPermissions"}),
+                json!({"type": "system", "subtype": "status", "status": null, "permissionMode": "acceptEdits"}),
+            ],
+        );
+        let modes: Vec<&str> = outs
+            .iter()
+            .filter_map(|o| if let Out::Ev(Ev::Mode { mode }) = o { Some(mode.as_str()) } else { None })
+            .collect();
+        assert_eq!(modes, ["bypassPermissions", "acceptEdits"], "said at start, then on each change");
+        let (w, _) = command(&mut st, LiveCmd::SetMode { mode: "plan".into() });
+        let id = written(&w[0])["request_id"].as_str().unwrap().to_string();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "Cannot set permission mode"}}),
+            ],
+        );
+        assert!(matches!(&outs[0], Out::Ev(Ev::Notice { code: "mode_rejected", .. })));
+        let (w, outs) = command(&mut st, LiveCmd::SetMode { mode: "yolo".into() });
+        assert!(w.is_empty() && matches!(&outs[0], Out::Ev(Ev::Notice { code: "mode_rejected", .. })));
+        // Title: the first message goes out, the answer's title comes back.
+        let (w, _) = command(&mut st, LiveCmd::GenerateTitle { description: "Fix the build".into() });
+        let req = written(&w[0]);
+        assert_eq!(
+            req["request"],
+            json!({"subtype": "generate_session_title", "description": "Fix the build", "persist": false})
+        );
+        let id = req["request_id"].as_str().unwrap().to_string();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": {"title": "Build fix"}}}),
+            ],
+        );
+        assert!(matches!(&outs[0], Out::Ev(Ev::Title { title, source }) if title == "Build fix" && source == "agent"));
+    }
+
+    #[test]
+    fn an_edit_result_carries_its_structured_patch_as_hunks() {
+        let mut st = State::new("bypassPermissions");
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": "e1", "name": "Edit", "input": {"file_path": "/w/t.py", "old_string": "b = 2", "new_string": "b = 20"}}]}}),
+                // As measured (2.1.308): the result's `tool_use_result` has the patch.
+                json!({"type": "user", "message": {"content": [{"tool_use_id": "e1", "type": "tool_result", "content": "updated"}]},
+                       "tool_use_result": {"filePath": "/w/t.py", "oldString": "b = 2", "newString": "b = 20", "originalFile": "a = 1\nb = 2\nc = 3\n",
+                         "structuredPatch": [{"oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3, "lines": [" a = 1", "-b = 2", "+b = 20", " c = 3"]}]}}),
+            ],
+        );
+        let Out::Ev(Ev::ToolUpdate { content, .. }) = &outs[1] else { panic!("{outs:?}") };
+        let ToolContent::Diff { path, old, new, hunks } = &content[0] else { panic!("{content:?}") };
+        assert_eq!((path.as_str(), old.as_deref(), new.as_str()), ("/w/t.py", Some("b = 2"), "b = 20"));
+        assert_eq!((hunks[0].old_start, hunks[0].new_lines, hunks[0].lines.len()), (1, 3, 4));
+        assert!(matches!(&content[1], ToolContent::Text { text } if text == "updated"));
+        // A new file's empty patch adds nothing.
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "assistant", "message": {"id": "m2", "content": [{"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": "/w/n", "content": "hi"}}]}}),
+                json!({"type": "user", "message": {"content": [{"tool_use_id": "w1", "type": "tool_result", "content": "created"}]},
+                       "tool_use_result": {"type": "create", "filePath": "/w/n", "content": "hi", "structuredPatch": []}}),
+            ],
+        );
+        assert!(matches!(&outs[1], Out::Ev(Ev::ToolUpdate { content, .. }) if content.len() == 1));
     }
 }

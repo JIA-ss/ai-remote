@@ -57,6 +57,13 @@ pub struct Caps {
     /// May take images with a message. For ACP agents this is a guess until the agent says
     /// (`promptCapabilities.image`); the session then reports what holds (an `agent` event).
     pub images: bool,
+    /// Asks before tools run as its permission mode says (`permission` / `plan_review` events) and
+    /// takes `permit` and `mode` commands.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub permissions: bool,
+    /// Asks questions of several parts (`question.questions`), answered per part.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub questions_multi: bool,
 }
 
 /// A built-in agent.
@@ -77,8 +84,17 @@ pub struct Runtime {
     pub caps: Caps,
 }
 
-const ACP_CAPS: Caps =
-    Caps { interrupt: true, resume: true, partial: true, thinking: true, questions: false, steer: false, images: true };
+const ACP_CAPS: Caps = Caps {
+    interrupt: true,
+    resume: true,
+    partial: true,
+    thinking: true,
+    questions: false,
+    steer: false,
+    images: true,
+    permissions: false,
+    questions_multi: false,
+};
 
 /// Every agent this host knows, in display order.
 pub const RUNTIMES: &[Runtime] = &[
@@ -96,9 +112,13 @@ pub const RUNTIMES: &[Runtime] = &[
             resume: true,
             partial: true,
             thinking: true,
-            questions: false,
+            // AskUserQuestion (several parts), permissions and plans come over the control
+            // protocol (`--permission-prompt-tool stdio`).
+            questions: true,
             steer: true,
             images: true,
+            permissions: true,
+            questions_multi: true,
         },
     },
     Runtime {
@@ -118,6 +138,8 @@ pub const RUNTIMES: &[Runtime] = &[
             questions: true,
             steer: true,
             images: true,
+            permissions: false,
+            questions_multi: false,
         },
     },
     Runtime {
@@ -138,6 +160,8 @@ pub const RUNTIMES: &[Runtime] = &[
             questions: false,
             steer: false,
             images: false,
+            permissions: false,
+            questions_multi: false,
         },
     },
     Runtime {
@@ -278,6 +302,14 @@ pub fn caps_of(id: &str, custom: &[CustomAgent]) -> Option<Caps> {
     match custom.iter().find(|c| c.id == id) {
         Some(c) => builtin(&c.base).map(|b| c.caps(b)),
         None => builtin(id).map(|r| r.caps),
+    }
+}
+
+/// The protocol of agent `id` (a built-in or a `chat.toml` entry).
+pub fn protocol_of(id: &str, custom: &[CustomAgent]) -> Option<Protocol> {
+    match custom.iter().find(|c| c.id == id) {
+        Some(c) => builtin(&c.base).map(|b| b.protocol),
+        None => builtin(id).map(|r| r.protocol),
     }
 }
 

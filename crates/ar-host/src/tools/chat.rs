@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{NoParams, Tool, ToolSpec, json, parse};
+use super::{Tool, ToolSpec, json, parse};
 use crate::{
     chat::{Role, TICKET_TTL},
     session::ToolCtx,
@@ -32,6 +32,7 @@ pub fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(Sessions::new()),
         Arc::new(Start::new()),
         Arc::new(Attach::new()),
+        Arc::new(Update::new()),
         Arc::new(Interrupt::new()),
         Arc::new(End::new()),
         Arc::new(FilePreview::new()),
@@ -77,6 +78,13 @@ impl Tool for Runtimes {
     }
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct SessionsParams {
+    /// List the archived sessions instead of the others.
+    #[serde(default)]
+    archived: bool,
+}
+
 struct Sessions {
     spec: ToolSpec,
 }
@@ -84,11 +92,12 @@ struct Sessions {
 impl Sessions {
     fn new() -> Self {
         Self {
-            spec: ToolSpec::new::<NoParams>(
+            spec: ToolSpec::new::<SessionsParams>(
                 "chat_sessions",
                 Level::Admin,
                 "The coding-agent sessions on this host, newest first: agent, folder, state (starting, idle, running, \
-                 interrupting, parked, ended), who started it, how many turns. Not the conversation itself.",
+                 interrupting, parked, ended), who started it, how many turns, its title, git branch, what waits for \
+                 an answer (pending), pinned. Not the conversation itself. Archived sessions only with archived=true.",
             )
             .allow()
             .read_only(),
@@ -102,8 +111,9 @@ impl Tool for Sessions {
         &self.spec
     }
 
-    async fn call(&self, ctx: &ToolCtx<'_>, _args: JsonObject) -> Result<CallToolResult> {
-        Ok(json(json!({"sessions": ctx.host.chat().list(), "live": ctx.host.chat().live_count()})))
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let p: SessionsParams = parse(args)?;
+        Ok(json(json!({"sessions": ctx.host.chat().list(Some(p.archived)), "live": ctx.host.chat().live_count()})))
     }
 }
 
@@ -122,6 +132,10 @@ struct StartParams {
     /// Ignore the folder's own agent settings, hooks and MCP servers where the agent supports it.
     #[serde(default)]
     hardened: bool,
+    /// Claude Code only: the permission mode it starts in (default, acceptEdits, plan,
+    /// bypassPermissions). Without one it does not ask before acting (bypassPermissions).
+    #[serde(default)]
+    permission_mode: Option<String>,
     /// Why, shown to the owner.
     #[serde(default)]
     intent: Option<String>,
@@ -159,8 +173,11 @@ impl Tool for Start {
     async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: StartParams = parse(args)?;
         let _ = p.intent;
-        let chat =
-            ctx.host.chat().start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt).await?;
+        let chat = ctx
+            .host
+            .chat()
+            .start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt, p.permission_mode)
+            .await?;
         let ticket = ctx.host.chat().issue_ticket(&chat.id, ctx.session.peer.principal.clone(), Role::Rw);
         let mut v = chat.describe();
         v["session"] = json!(chat.id);
@@ -215,6 +232,51 @@ impl Tool for Attach {
         v["role"] = json!(role);
         v["expires_in_secs"] = json!(TICKET_TTL.as_secs());
         Ok(json(v))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateParams {
+    /// The session id (from chat_sessions or chat_start).
+    session: String,
+    /// A new title (at most 200 characters); an empty one goes back to the agent's title or the first
+    /// message.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    pinned: Option<bool>,
+    /// Archived sessions are listed only by chat_sessions with archived=true.
+    #[serde(default)]
+    archived: Option<bool>,
+}
+
+struct Update {
+    spec: ToolSpec,
+}
+
+impl Update {
+    fn new() -> Self {
+        Self {
+            spec: ToolSpec::new::<UpdateParams>(
+                "chat_update",
+                Level::Admin,
+                "Renames, pins or archives a coding-agent session; returns the session as chat_sessions lists it.",
+            )
+            .allow()
+            .non_destructive(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Update {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let p: UpdateParams = parse(args)?;
+        Ok(json(ctx.host.chat().update(&p.session, p.title, p.pinned, p.archived, &ctx.session.peer)?))
     }
 }
 

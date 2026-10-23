@@ -36,6 +36,7 @@ pub mod adapters;
 pub mod detect;
 pub mod event;
 pub mod files;
+pub mod git;
 mod jsonrpc;
 pub mod preview;
 pub mod proc;
@@ -61,8 +62,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 
 use self::{
-    adapters::{Launch, LiveCmd, LiveHandle},
-    event::{By, Ev, Out, Queued, SlashCommand, ToolContent, TurnStatus},
+    adapters::{Decision, Launch, LiveCmd, LiveHandle, PERMISSION_MODES},
+    event::{By, Ev, Out, Outcome, Queued, SlashCommand, ToolContent, TurnStatus},
     runtimes::{ChatConfig, Protocol},
 };
 
@@ -150,6 +151,52 @@ pub struct Meta {
     /// The runner's number of the last output of that agent recorded here.
     #[serde(default)]
     pub runner_seq: Option<u64>,
+    /// The session's title; none: controllers show the first message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Where the title came from: `agent` (Claude Code summed up the first message) or `user` (a
+    /// person named it; the agent's title no longer replaces it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<String>,
+    /// The first message, cut to [`FIRST_TEXT`] characters (a title before there is one, search).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_text: Option<String>,
+    /// How the last turn ended, and why it failed (cut to 300 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<TurnStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reason: Option<String>,
+    /// What waits for a person: `permission`, `question` or `plan` (the oldest open one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<Pending>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// Archived: `chat_sessions` lists it only when asked for archived sessions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    /// Claude Code's permission mode (see [`adapters::PERMISSION_MODES`]); other agents have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+}
+
+/// Characters of the first message kept in [`Meta::first_text`].
+pub const FIRST_TEXT: usize = 200;
+
+/// What an open request waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pending {
+    Permission,
+    Question,
+    Plan,
+}
+
+/// A permission, plan or question the agent waits on a person for.
+#[derive(Debug, Clone, Copy)]
+struct OpenAsk {
+    kind: Pending,
+    /// When it came (the session's `seq`), so the oldest is what [`Meta::pending`] shows.
+    seq: u64,
 }
 
 /// The running turn as `meta.json` keeps it: who sent the message and a hash of it, never the text
@@ -229,9 +276,25 @@ pub enum Cmd {
     Interrupt {
         then: Option<Input>,
     },
+    /// The answer to a question, already claimed with [`Chat::claim`]: `answers` has every part's.
     Answer {
         qid: String,
         text: String,
+        answers: Option<BTreeMap<String, String>>,
+        by: By,
+    },
+    /// The answer to a permission or a plan, already claimed with [`Chat::claim`].
+    Permit {
+        rid: String,
+        decision: adapters::Decision,
+        message: Option<String>,
+        mode: Option<String>,
+        by: By,
+    },
+    /// Switch Claude Code's permission mode.
+    SetMode {
+        mode: String,
+        by: By,
     },
     Dequeue {
         id: String,
@@ -320,6 +383,9 @@ pub struct Chat {
     dir: PathBuf,
     /// The folder's files, for the `@` menu.
     pub files: files::FileCache,
+    /// The permissions, plans and questions the agent waits on a person for, by id. The first
+    /// answer takes one out ([`Chat::claim`]); later answers find it gone.
+    open: Mutex<BTreeMap<String, OpenAsk>>,
 }
 
 struct Log {
@@ -433,11 +499,67 @@ impl ChatManager {
         v
     }
 
-    /// Every session, newest first.
-    pub fn list(&self) -> Vec<Value> {
-        let mut v: Vec<(u64, Value)> = self.all().iter().map(|c| (c.meta().started_at, c.describe())).collect();
+    /// The sessions, newest first: with `archived`, only the archived ones or only the others.
+    pub fn list(&self, archived: Option<bool>) -> Vec<Value> {
+        let mut v: Vec<(u64, Value)> = self
+            .all()
+            .iter()
+            .filter(|c| archived.is_none_or(|a| c.meta().archived == a))
+            .map(|c| (c.meta().started_at, c.describe()))
+            .collect();
         v.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
         v.into_iter().map(|(_, v)| v).collect()
+    }
+
+    /// The protocol of agent `id` (built in or custom).
+    pub fn protocol_of(&self, id: &str) -> Option<Protocol> {
+        runtimes::protocol_of(id, &self.custom())
+    }
+
+    /// Changes what a person may change of a session: its title (empty: back to the agent's or the
+    /// first message), pinned, archived. Returns what `chat_sessions` shows of it now.
+    pub fn update(
+        &self,
+        id: &str,
+        title: Option<String>,
+        pinned: Option<bool>,
+        archived: Option<bool>,
+        by: &Peer,
+    ) -> Result<Value> {
+        let chat = self.get(id)?;
+        let title = title.map(|t| t.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string());
+        if let Some(t) = &title
+            && t.chars().count() > 200
+        {
+            bail!("a title has at most 200 characters");
+        }
+        chat.set_meta(|m| {
+            if let Some(t) = &title {
+                if t.is_empty() {
+                    m.title = None;
+                    m.title_source = None;
+                } else {
+                    m.title = Some(t.clone());
+                    m.title_source = Some("user".into());
+                }
+            }
+            if let Some(p) = pinned {
+                m.pinned = p;
+            }
+            if let Some(a) = archived {
+                m.archived = a;
+            }
+        });
+        if let Some(t) = title.filter(|t| !t.is_empty())
+            && chat.state() != State::Ended
+        {
+            chat.emit(Ev::Title { title: t, source: "user".into() });
+        }
+        self.audit(json!({
+            "kind": "chat_session", "action": "update", "chat": chat.id, "by": by.name, "principal": by.principal,
+            "title": chat.meta().title_source.as_deref() == Some("user"), "pinned": pinned, "archived": archived,
+        }));
+        Ok(chat.describe())
     }
 
     pub fn get(&self, id: &str) -> Result<Arc<Chat>> {
@@ -457,6 +579,7 @@ impl ChatManager {
     /// Starts a session for `creator`: checks what can be checked now (switched on, agent
     /// installed, folder exists, room for another process) and returns it; the agent process
     /// starts with its first message.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
         creator: Peer,
@@ -465,7 +588,13 @@ impl ChatManager {
         model: Option<String>,
         hardened: bool,
         prompt: Option<String>,
+        permission_mode: Option<String>,
     ) -> Result<Arc<Chat>> {
+        if let Some(m) = &permission_mode
+            && !PERMISSION_MODES.contains(&m.as_str())
+        {
+            bail!("unknown permission mode '{m}' (one of {})", PERMISSION_MODES.join(", "));
+        }
         if let Some(e) = &self.0.config_error {
             bail!("coding agents are switched off on this host until its chat.toml is fixed: {e}");
         }
@@ -504,6 +633,9 @@ impl ChatManager {
         let dir = self.0.dir.join(&id);
         std::fs::create_dir_all(&dir)?;
         let by = By { device: creator.name.clone(), principal: creator.principal.clone() };
+        // Only Claude Code has permission modes; its sessions always say which they run in.
+        let permission_mode = (self.protocol_of(&rid) == Some(Protocol::ClaudeStreamJson))
+            .then(|| permission_mode.unwrap_or_else(|| adapters::DEFAULT_PERMISSION_MODE.to_string()));
         let meta = Meta {
             id: id.clone(),
             runtime: rid.clone(),
@@ -527,12 +659,21 @@ impl ChatManager {
             turn: None,
             runner_live: None,
             runner_seq: None,
+            title: None,
+            title_source: None,
+            first_text: None,
+            last_status: None,
+            last_reason: None,
+            pending: None,
+            pinned: false,
+            archived: false,
+            permission_mode: permission_mode.clone(),
         };
         let chat = self.insert(meta, creator, &dir, false)?;
         self.audit(json!({
             "kind": "chat_session", "action": "start", "chat": id, "runtime": rid,
             "program": program, "cwd": chat.meta().cwd, "by": by.device,
-            "principal": by.principal, "hardened": hardened,
+            "principal": by.principal, "hardened": hardened, "permission_mode": permission_mode,
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
             chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by, images: Vec::new() }));
@@ -563,6 +704,7 @@ impl ChatManager {
             creator,
             dir: dir.to_path_buf(),
             files: files::FileCache::new(matches!(self.0.backend, Backend::Local(_))),
+            open: Mutex::new(BTreeMap::new()),
         });
         chat.save();
         self.0.chats.lock().unwrap().insert(chat.id.clone(), chat.clone());
@@ -678,6 +820,8 @@ impl ChatManager {
             let dir = entry.path();
             let Ok(text) = std::fs::read_to_string(dir.join("meta.json")) else { continue };
             let Ok(mut meta) = serde_json::from_str::<Meta>(&text) else { continue };
+            let claude = self.protocol_of(&meta.runtime) == Some(Protocol::ClaudeStreamJson);
+            migrate(&mut meta, &dir.join("events.jsonl"), claude);
             if runner && meta.state != State::Ended && meta.runner_live.is_some() && meta.pid.is_some() {
                 let creator = Peer {
                     name: meta.by.device.clone(),
@@ -809,15 +953,75 @@ impl Chat {
         self.cmd.send(cmd).is_ok()
     }
 
-    /// What `chat_sessions` shows.
+    /// What `chat_sessions` shows. The workspace fields (title, pending, ...) are left out while
+    /// they have no value, as an older host leaves them out.
     pub fn describe(&self) -> Value {
         let m = self.meta();
-        json!({
+        let seq = self.log.lock().unwrap().seq;
+        let mut v = json!({
             "id": m.id, "runtime": m.runtime, "name": m.name, "version": m.version, "cwd": m.cwd,
             "model": m.model, "state": m.state, "by": m.by, "started_at": m.started_at, "turns": m.turns,
             "last_activity": m.last_activity, "ended_at": m.ended_at, "end_reason": m.end_reason,
-            "seq": self.log.lock().unwrap().seq,
-        })
+            "seq": seq, "last_seq": seq, "pinned": m.pinned, "archived": m.archived,
+        });
+        let extra = [
+            ("title", m.title.map(Value::from)),
+            ("title_source", m.title_source.map(Value::from)),
+            ("first_text", m.first_text.map(Value::from)),
+            ("last_status", m.last_status.map(|s| json!(s))),
+            ("last_reason", m.last_reason.map(Value::from)),
+            ("pending", m.pending.map(|p| json!(p))),
+            ("permission_mode", m.permission_mode.map(Value::from)),
+            ("branch", git::branch(Path::new(&m.cwd)).map(Value::from)),
+        ];
+        for (k, x) in extra {
+            if let Some(x) = x {
+                v[k] = x;
+            }
+        }
+        v
+    }
+
+    /// Takes the open request `id` for an answer, if it is one of `kinds` and still open: the first
+    /// answer gets it, and the request no longer counts as waiting.
+    pub fn claim(&self, id: &str, kinds: &[Pending]) -> Option<Pending> {
+        let kind = {
+            let mut open = self.open.lock().unwrap();
+            let kind = open.get(id).filter(|o| kinds.contains(&o.kind))?.kind;
+            open.remove(id);
+            kind
+        };
+        self.update_pending();
+        Some(kind)
+    }
+
+    /// Whether `id` is an open request (of any kind).
+    pub fn is_open(&self, id: &str) -> bool {
+        self.open.lock().unwrap().contains_key(id)
+    }
+
+    /// Records in `meta.json` what waits for a person now (the oldest open request).
+    fn update_pending(&self) {
+        let pending = self.open.lock().unwrap().values().min_by_key(|o| o.seq).map(|o| o.kind);
+        if self.meta().pending != pending {
+            self.set_meta(|m| m.pending = pending);
+        }
+    }
+
+    /// Opens a request (an event asking a person) and records it.
+    fn open_ask(&self, id: &str, kind: Pending) {
+        let seq = self.log.lock().unwrap().seq;
+        self.open.lock().unwrap().insert(id.to_string(), OpenAsk { kind, seq });
+        self.update_pending();
+    }
+
+    /// Settles every open request as cancelled (the turn ended, the process went away).
+    fn cancel_open(&self) {
+        let ids: Vec<String> = std::mem::take(&mut *self.open.lock().unwrap()).into_keys().collect();
+        for id in ids {
+            self.emit(Ev::Resolved { id, outcome: Outcome::Cancelled, by: None });
+        }
+        self.update_pending();
     }
 
     fn save(&self) {
@@ -888,6 +1092,44 @@ impl Chat {
             }
         }
         (lines, upto, rx)
+    }
+}
+
+/// Fills what a `meta.json` written by an older host lacks: the first message and how the last
+/// turn ended come from the transcript; a Claude Code session ran in bypass mode. Nothing is
+/// changed for a session that has them (or never had a turn).
+fn migrate(meta: &mut Meta, transcript: &Path, claude: bool) {
+    if claude && meta.permission_mode.is_none() {
+        meta.permission_mode = Some(adapters::DEFAULT_PERMISSION_MODE.to_string());
+    }
+    if meta.turns == 0 || (meta.first_text.is_some() && meta.last_status.is_some()) {
+        return;
+    }
+    let Ok(f) = File::open(transcript) else { return };
+    let mut first = None;
+    let mut last = None;
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        // Only the lines that matter are parsed.
+        if first.is_none() && line.contains("\"t\":\"user\"") {
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                first = v["text"].as_str().map(|t| t.trim().chars().take(FIRST_TEXT).collect::<String>());
+            }
+        } else if line.contains("\"t\":\"turn_end\"")
+            && let Ok(v) = serde_json::from_str::<Value>(&line)
+        {
+            last = serde_json::from_value::<TurnStatus>(v["status"].clone())
+                .ok()
+                .map(|s| (s, v["reason"].as_str().map(|r| event::cut(r, 300).0)));
+        }
+    }
+    if meta.first_text.is_none() {
+        meta.first_text = first.filter(|t| !t.is_empty());
+    }
+    if meta.last_status.is_none()
+        && let Some((status, reason)) = last
+    {
+        meta.last_status = Some(status);
+        meta.last_reason = reason.filter(|_| status == TurnStatus::Failed);
     }
 }
 
@@ -1075,9 +1317,11 @@ impl Driver {
                     self.next_turn().await;
                 }
             }
-            Cmd::Answer { qid, text } => match &self.live {
+            Cmd::Answer { qid, text, answers, by } => match &self.live {
                 Some(l) => {
-                    let _ = l.tx.send(LiveCmd::Answer { qid, text }).await;
+                    let _ = l.tx.send(LiveCmd::Answer { qid: qid.clone(), text, answers }).await;
+                    self.chat.emit(Ev::Resolved { id: qid.clone(), outcome: Outcome::Answered, by: Some(by.clone()) });
+                    self.audit_answer("answer", &qid, None, &by);
                 }
                 None => self.chat.emit(Ev::Notice {
                     input_id: None,
@@ -1086,6 +1330,25 @@ impl Driver {
                     text: "nothing is waiting for an answer".into(),
                 }),
             },
+            Cmd::Permit { rid, decision, message, mode, by } => match &self.live {
+                Some(l) => {
+                    let outcome = match decision {
+                        Decision::Once => Outcome::Allowed,
+                        Decision::Session => Outcome::AllowedSession,
+                        Decision::Deny => Outcome::Denied,
+                    };
+                    let _ = l.tx.send(LiveCmd::Permit { rid: rid.clone(), decision, message, mode }).await;
+                    self.chat.emit(Ev::Resolved { id: rid.clone(), outcome, by: Some(by.clone()) });
+                    self.audit_answer("permit", &rid, Some(outcome), &by);
+                }
+                None => self.chat.emit(Ev::Notice {
+                    input_id: None,
+                    level: "warn",
+                    code: "permission_expired",
+                    text: "the agent is no longer waiting for that answer".into(),
+                }),
+            },
+            Cmd::SetMode { mode, by } => self.set_mode(mode, by).await,
             Cmd::Dequeue { id } => {
                 self.queue.retain(|i| i.id != id);
                 self.chat.emit_state(&self.queue);
@@ -1114,6 +1377,50 @@ impl Driver {
             }
         }
         false
+    }
+
+    /// Records who answered a permission, plan or question, never what they wrote.
+    fn audit_answer(&self, action: &str, id: &str, outcome: Option<Outcome>, by: &By) {
+        if let Some(m) = self.manager() {
+            m.audit(json!({
+                "kind": "chat_permission", "action": action, "chat": self.chat.id, "id": id, "outcome": outcome,
+                "by": by.device, "principal": by.principal,
+            }));
+        }
+    }
+
+    /// Switches Claude Code's permission mode: the running agent is told; a session without a
+    /// process records it for the next one.
+    async fn set_mode(&mut self, mode: String, by: By) {
+        let meta = self.chat.meta();
+        let claude = self.manager().and_then(|m| m.protocol_of(&meta.runtime)) == Some(Protocol::ClaudeStreamJson);
+        if !claude || !PERMISSION_MODES.contains(&mode.as_str()) {
+            let text = if claude {
+                format!("'{mode}' is not a permission mode (one of {})", PERMISSION_MODES.join(", "))
+            } else {
+                format!("{} has no permission modes", meta.name)
+            };
+            self.chat.emit(Ev::Notice { input_id: None, level: "warn", code: "mode_rejected", text });
+            return;
+        }
+        if let Some(m) = self.manager() {
+            m.audit(json!({
+                "kind": "chat_session", "action": "mode", "chat": self.chat.id, "mode": mode,
+                "by": by.device, "principal": by.principal,
+            }));
+        }
+        match &self.live {
+            // The agent says when it switched (a `mode` event).
+            Some(l) => {
+                let _ = l.tx.send(LiveCmd::SetMode { mode }).await;
+            }
+            None => {
+                if meta.permission_mode.as_deref() != Some(mode.as_str()) {
+                    self.chat.set_meta(|m| m.permission_mode = Some(mode.clone()));
+                    self.chat.emit(Ev::Mode { mode });
+                }
+            }
+        }
     }
 
     /// Queues a message and starts it if nothing runs.
@@ -1274,10 +1581,20 @@ impl Driver {
             input_chars: input.text.chars().count(),
             started_at: now_ms(),
         };
+        let meta = self.chat.meta();
+        if meta.turns == 0 && meta.title.is_none() && !input.text.trim().is_empty() {
+            // The agent names the session after its first message (Claude Code; others ignore it).
+            let _ = live.tx.send(LiveCmd::GenerateTitle { description: input.text.clone() }).await;
+        }
+        let first_text = (meta.first_text.is_none() && !input.text.trim().is_empty())
+            .then(|| input.text.trim().chars().take(FIRST_TEXT).collect::<String>());
         self.chat.set_meta(|m| {
             m.turns += 1;
             m.last_activity = now_ms();
             m.turn = Some(info.clone());
+            if first_text.is_some() {
+                m.first_text = first_text;
+            }
         });
         self.turn = Some(Turn {
             info,
@@ -1302,6 +1619,7 @@ impl Driver {
                     model: meta.model.as_deref(),
                     hardened: meta.hardened,
                     resume: meta.proto_session.as_deref(),
+                    permission_mode: meta.permission_mode.as_deref(),
                 })?;
                 (handle, out, None, resolved.caps.steer)
             }
@@ -1316,6 +1634,7 @@ impl Driver {
                         meta.model.as_deref(),
                         meta.hardened,
                         meta.proto_session.as_deref(),
+                        meta.permission_mode.as_deref(),
                     )
                     .await?;
                 let steer = runtimes::caps_of(&meta.runtime, &manager.custom()).is_some_and(|c| c.steer);
@@ -1377,6 +1696,39 @@ impl Driver {
                     }
                     self.chat.emit(Ev::Commands { commands });
                 }
+            }
+            Out::Ev(Ev::Title { title, source }) => {
+                // A name a person gave is not replaced by the agent's.
+                if self.chat.meta().title_source.as_deref() != Some("user") {
+                    self.chat.set_meta(|m| {
+                        m.title = Some(title.clone());
+                        m.title_source = Some(source.clone());
+                    });
+                    self.chat.emit(Ev::Title { title, source });
+                }
+            }
+            Out::Ev(Ev::Mode { mode }) => {
+                if self.chat.meta().permission_mode.as_deref() != Some(mode.as_str()) {
+                    self.chat.set_meta(|m| m.permission_mode = Some(mode.clone()));
+                    self.chat.emit(Ev::Mode { mode });
+                }
+            }
+            Out::Ev(Ev::Resolved { id, outcome, by }) => {
+                // The agent stopped waiting: settled now, unless an answer took it first.
+                if self.chat.claim(&id, &[Pending::Permission, Pending::Question, Pending::Plan]).is_some() {
+                    self.chat.emit(Ev::Resolved { id, outcome, by });
+                }
+            }
+            Out::Ev(ev @ (Ev::Permission { .. } | Ev::PlanReview { .. } | Ev::Question { .. })) => {
+                let (id, kind) = match &ev {
+                    Ev::Permission { rid, .. } => (rid.clone(), Pending::Permission),
+                    Ev::PlanReview { rid, .. } => (rid.clone(), Pending::Plan),
+                    Ev::Question { qid, .. } => (qid.clone(), Pending::Question),
+                    _ => unreachable!(),
+                };
+                // Open before anyone sees it, so the first answer finds it.
+                self.chat.open_ask(&id, kind);
+                self.chat.emit(ev);
             }
             Out::Ev(ev) => {
                 if let (Ev::ToolCall { kind, .. }, Some(t)) = (&ev, self.turn.as_mut()) {
@@ -1561,10 +1913,15 @@ impl Driver {
             status
         };
         let duration_ms = turn.started.elapsed().as_millis() as u64;
+        // What the turn still asked about falls away with it.
+        self.chat.cancel_open();
         self.chat.emit(Ev::TurnEnd { status, final_text, duration_ms, reason: reason.clone() });
+        let last_reason = reason.as_deref().filter(|_| status == TurnStatus::Failed).map(|r| event::cut(r, 300).0);
         self.chat.set_meta(|m| {
             m.last_activity = now_ms();
             m.turn = None;
+            m.last_status = Some(status);
+            m.last_reason = last_reason;
         });
         if let Some(m) = self.manager() {
             let info = &turn.info;
@@ -1589,6 +1946,7 @@ impl Driver {
         self.live = None;
         self.out = None;
         self.requeue_unanswered();
+        self.chat.cancel_open();
         self.chat.set_meta(|m| {
             m.pid = None;
             m.pid_start = None;
@@ -1609,6 +1967,7 @@ impl Driver {
         let Some(live) = self.live.take() else { return };
         self.out = None;
         self.requeue_unanswered();
+        self.chat.cancel_open();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         if live.tx.send(LiveCmd::Shutdown { done: done_tx }).await.is_ok() {
             let _ = tokio::time::timeout(Duration::from_secs(15), done_rx).await;

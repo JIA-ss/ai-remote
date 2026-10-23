@@ -206,6 +206,8 @@ pub async fn run(
                 Some(LiveCmd::Answer { .. }) => {
                     report(&out, Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "no_question", text: format!("{name} is not waiting for an answer") })).await;
                 }
+                // Permissions, modes and titles are Claude Code's; nothing asks for them here.
+                Some(LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. }) => {}
                 Some(LiveCmd::Steer { id, .. }) => {
                     // ACP has no way to add to a running prompt turn.
                     report(&out, Out::SteerRejected { id, reason: "the protocol has no way to add to a running turn".into() }).await;
@@ -602,6 +604,7 @@ fn contents(v: &Value) -> (Vec<ToolContent>, bool) {
                 path: b["path"].as_str().unwrap_or("").to_string(),
                 old: b["oldText"].as_str().map(|s| cut(s, DIFF_SIDE).0),
                 new: cut(b["newText"].as_str().unwrap_or(""), DIFF_SIDE).0,
+                hunks: Vec::new(),
             }),
             _ => None,
         })
