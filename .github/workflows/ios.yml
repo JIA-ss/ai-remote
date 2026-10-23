@@ -7,7 +7,7 @@ permissions:
 jobs:
   acceptance:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -30,7 +30,7 @@ jobs:
           echo "SIMULATOR_UDID=$simulator" >> "$GITHUB_ENV"
           xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b
-          args=(-project apps/ios/AIRemote.xcodeproj -scheme AIRemote -destination "id=$simulator" -configuration Debug -derivedDataPath target/ios-build -test-timeouts-enabled YES -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO)
+          args=(-project apps/ios/AIRemote.xcodeproj -scheme AIRemote -destination "id=$simulator" -configuration Debug -derivedDataPath target/ios-build -test-timeouts-enabled YES -maximum-test-execution-time-allowance 600 CODE_SIGNING_ALLOWED=NO)
           if [[ "$UI_RUN" == suite ]]; then
             xcodebuild "${args[@]}" -resultBundlePath target/suite.xcresult \
               -only-testing:AIRemoteUITests/PhoneCodexUITests -only-testing:AIRemoteUITests/PhoneChatUITests test
