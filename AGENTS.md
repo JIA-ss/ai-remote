@@ -35,6 +35,9 @@
   family/status，要求存在对应 family 且全部为 loaded；超时、拒绝或空结果均失败，不以 `fonts.check` 的回退结果放行。5 秒是等待上限，没有记作实测耗时。
   该断言只证明打包字体资源在 WK 可加载，不证明每个字形排他选中该字体；不修改系统字体或产品回退策略。
   本次只做脚本语法编译检查，没有启动原生应用或被控端；两轮真实链路结果须由后续集成验收补录。
+- **合入 P1 基线后的前端复核**：已合入 `028ccc9`，保留本节 P3 追记；本树全前端 391 项（390 过、1 跳过）与 TypeScript 检查通过。
+  WK 字体断言经源码复核：ready/load 共用 5 秒等待预算、对应 family 非空且全部 loaded 才通过，未改产品回退。P3 原生断言及逐图 QA 仍待执行。
+  工作区说明在 `docs/agent-workspace-notes/workspace.md` 追加阶段记录，历史数字不覆盖。
 - **截图字体限制**：演示服务器最初因依赖目录的符号链接而拒绝字体资源；临时验收配置放行后，资源 URL 已返回 HTTP 200，但 Camofox
   的 `document.fonts.load` 仍报 `NS_ERROR_FAILURE`，换独立端口仍相同，原因未定位。截图存在 Geist Mono 字体回退条件，字体没有验收通过。
 - **未测**：本批未运行 Rust、Tauri 原生窗口或 Windows 系统输入；原生 WKWebView 与 Windows 中的字体加载、字形和布局仍须在集成验收中确认。
