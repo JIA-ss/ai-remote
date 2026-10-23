@@ -1,0 +1,41 @@
+--- a/apps/ios/Sources/PhoneChatView.swift
++++ b/apps/ios/Sources/PhoneChatView.swift
+@@ -226,7 +226,7 @@
+                 }
+                 .padding(16)
+             }
+-            .defaultScrollAnchor(.bottom)
++            .modifier(PhoneInitialChatScroll())
+             .onChange(of: chat.log.seq) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
+             .onChange(of: chat.outgoing.count) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
+             .safeAreaInset(edge: .bottom, spacing: 0) { footer(session) }
+@@ -582,6 +582,17 @@
+     }
+ }
+ 
++/// Start a conversation at its end without anchoring later disclosure-size changes to the bottom.
++private struct PhoneInitialChatScroll: ViewModifier {
++    func body(content: Content) -> some View {
++        if #available(iOS 18.0, macOS 15.0, *) {
++            content.defaultScrollAnchor(.bottom, for: .initialOffset)
++        } else {
++            content.defaultScrollAnchor(.bottom)
++        }
++    }
++}
++
+ /// The file a preview sheet shows.
+ struct PhonePreviewTarget: Identifiable, Equatable {
+     let path: String
+--- a/apps/ios/Sources/PhoneCodexRows.swift
++++ b/apps/ios/Sources/PhoneCodexRows.swift
+@@ -817,8 +817,7 @@
+                 }
+             }
+         }
+-        // On iOS 26.2, accessibility snapshots could loop in the enclosing LazyVStack's layout
+-        // with this expanding subtree clipped. Keep the border without clipping the whole card.
++        .clipShape(RoundedRectangle(cornerRadius: 12))
+         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.line))
+         .accessibilityElement(children: .contain)
+         .accessibilityIdentifier("codex-changes")
