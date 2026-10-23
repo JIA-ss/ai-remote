@@ -27,6 +27,8 @@ RICH's Edit result carries a structuredPatch (real line numbers); EDITAT edits w
 and 40. FAIL ends the turn with an error; LATER<n> answers by itself n seconds later (8 by default), while
 the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s late. The workspace e2e
 (tools/desktop-workspace-e2e.js) uses these, with E2E_QUERY=view=devices to start on the computers page.
+CODEDETAILS emits successful terminal output and an ANSI Markdown fence; ASKDETAILS asks one formatted
+question and echoes its raw answer as JSON (tools/desktop-claude-details-e2e.js).
 
 Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
 screen; screenshots land in --out.
@@ -265,6 +267,28 @@ QUESTIONS = [
     {"question": "Which formats?", "header": "Formats", "multiSelect": True,
      "options": [{"label": "CSV"}, {"label": "PDF"}, {"label": "XLSX"}]},
 ]
+DETAILS_ANSI = ("\x1b[31mRED16\x1b[0m \x1b[38;5;46mGREEN256\x1b[0m "
+                "\x1b[38;2;12;34;56mTRUECOLOR\x1b[0m\n\x1b[31;44;7mINVERSE\x1b[0m\n"
+                "old\rnew\nab\bX\nBEFORE_ESCAPE\x1b\nAFTER_ESCAPE\nSAFE_OSC\x1b]0;HIDDEN_OSC\x1b")
+DETAILS_DIFF = ("diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+                "@@ -1 +1 @@\n-BEFORE_DIFF\n+AFTER_DIFF\n+OUTSIDE_HUNK\n")
+DETAILS_FENCE = "\x1b[31mFENCE_RED\x1b[0m\n" + "WRAPPED_" * 32
+DETAILS_QUESTIONS = [{
+    "question": "Pick **output** for `sample.txt`", "header": "Output", "multiSelect": False,
+    "options": [
+        {"label": "**Plain** `sample.txt`", "description": "Keep *raw* text and [the note](https://example.com/notes)."},
+        {"label": "**Styled** `sample.txt`", "description": "Keep ~~old~~ colors and **new** details."},
+    ],
+}]
+def code_details():
+    tool("details", [
+        {"type": "tool_use", "id": "details-ansi", "name": "Bash", "input": {"command": "python ansi_demo.py"}},
+        {"type": "tool_use", "id": "details-diff", "name": "Bash", "input": {"command": "git diff -- sample.txt"}},
+    ], [
+        {"type": "tool_result", "tool_use_id": "details-ansi", "content": DETAILS_ANSI},
+        {"type": "tool_result", "tool_use_id": "details-diff", "content": DETAILS_DIFF},
+    ])
+    done("### Code details\n\n```text\n" + DETAILS_FENCE + "\n```\n\nOutput stays readable.")
 dones = iter(range(1, 1 << 30))
 def done(text):
     out({"type": "assistant", "message": {"id": "d" + str(next(dones)), "content": [{"type": "text", "text": text}]}})
@@ -332,6 +356,8 @@ for line in sys.stdin:
             done("Not done: " + (resp.get("message") or "declined"))
         elif kind == "ask":
             done("You picked: " + "; ".join(q + " -> " + a for q, a in resp["updatedInput"].get("answers", {}).items()))
+        elif kind == "askdetails":
+            done("Answer payload:\n```json\n" + json.dumps(resp["updatedInput"].get("answers", {}), ensure_ascii=False) + "\n```")
         elif kind == "plan":
             done("The plan was approved; going on in " + mode + " mode.")
         else:
@@ -352,6 +378,10 @@ for line in sys.stdin:
         out({"type": "assistant", "message": {"id": "st", "content": [{"type": "text", "text": "steered: " + text}]}})
         out({"type": "result", "subtype": "success", "is_error": False, "result": "steered: " + text})
         continue
+    if "CODEDETAILS" in text:
+        code_details(); continue
+    if "ASKDETAILS" in text:
+        ask("askdetails", "AskUserQuestion", {"questions": DETAILS_QUESTIONS}, requires_user_interaction=True); continue
     if "SLOW" in text:
         slow = threading.Event()
         out({"type": "assistant", "message": {"id": "s", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "sleep 600"}}]}})
