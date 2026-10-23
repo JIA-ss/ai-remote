@@ -3,7 +3,9 @@ import SwiftUI
 
 /// Simulator UI acceptance only (`-ui-chat-fixture`): the production chat view over demo events, with no
 /// host. Sending starts a turn running a slow tool; while it runs, sending joins the turn (steer) or, with
-/// `-ui-chat-no-steer`, queues; stop ends the turn as interrupted and offers 继续.
+/// `-ui-chat-no-steer`, queues; stop ends the turn as interrupted and offers 继续. With `-ui-chat-codex`
+/// the open session is a Codex one (PhoneCodexFixture.swift), laid out the way Codex's app shows it;
+/// `-ui-codex-live` also starts a turn that keeps working until Stop.
 public struct PhoneChatFixtureView: View {
     @PhoneViewState<PhoneChatStore> private var chat: PhoneChatStore
 
@@ -19,7 +21,10 @@ public struct PhoneChatFixtureView: View {
             "by": .object(["device": .string("iPhone")]), "turns": .number(4), "last_activity": .number(now - 3_600_000)])),
             PhoneChatSession(.object([
             "id": .string("fixture-3"), "name": .string("Codex"), "cwd": .string("/Users/me/work/ai-remote/"), "state": .string("ended"),
-            "by": .object(["device": .string("my-mac")]), "turns": .number(2), "last_activity": .number(now - 2 * 86_400_000)]))]
+            "by": .object(["device": .string("my-mac")]), "turns": .number(2), "last_activity": .number(now - 2 * 86_400_000)])),
+            PhoneChatSession(.object([
+            "id": .string("fixture-codex"), "runtime": .string("codex"), "name": .string("Codex"), "cwd": .string(PhoneChatStore.codexFixtureCwd),
+            "state": .string("idle"), "by": .object(["device": .string("home-laptop")]), "turns": .number(2), "last_activity": .number(now - 60_000)]))]
         chat.home = "/Users/me"
         chat.runtimes = [
             PhoneChatRuntime(.object(["id": .string("claude"), "name": .string("Claude Code"), "verdict": .string("ok"), "login": .object(["state": .string("logged_in")])])),
@@ -65,16 +70,29 @@ public struct PhoneChatFixtureView: View {
                 .object(["name": text("compact"), "description": text("压缩对话历史，保留摘要"), "kind": text("command"), "insert": text("/compact")]),
                 .object(["name": text("tidy"), "description": text("整理代码（技能）"), "kind": text("skill"), "insert": text("/tidy")])])],
         ]
+        let arguments = ProcessInfo.processInfo.arguments
         chat.current = session
         chat.role = "rw"; chat.connected = true; chat.runtimeName = "Claude Code"
+        // `-ui-chat-codex`: the Codex session, with what a Codex host's hello says about its agent.
+        let codex = arguments.contains("-ui-chat-codex")
+        if codex {
+            chat.current = chat.sessions.first { $0.id == "fixture-codex" }
+            chat.runtimeName = "Codex"; chat.runtimeID = "codex"; chat.runtimeProtocol = "codex-app-server"; chat.runtimeFor = "fixture-codex"
+            chat.fixtureCodex = true
+        }
         // `-ui-chat-no-steer`: an agent that cannot take a message mid-turn, so sending queues.
-        let arguments = ProcessInfo.processInfo.arguments
         var caps = PhoneChatCaps(); caps.steer = !arguments.contains("-ui-chat-no-steer"); caps.images = true
         chat.caps = caps
         chat.hostAcks = true
         // `-ui-chat-unacked`: the first message is refused (not delivered, then sent again).
         chat.fixtureRefuse = arguments.contains("-ui-chat-unacked")
-        for line in lines { chat.fixtureEvent(line) }
+        for line in codex ? PhoneChatStore.codexFixtureLog(now: now) : lines { chat.fixtureEvent(line) }
+        if codex {
+            chat.fixtureEvent(["t": text("commands"), "turn": .number(2), "commands": .array([
+                .object(["name": text("release-notes"), "description": text("Draft release notes from the commits since the last tag"), "kind": text("skill"), "insert": text("$release-notes")])])])
+            // `-ui-codex-live`: a message was sent and its turn is working now.
+            if arguments.contains("-ui-codex-live") { chat.draft = "Check leap years too."; Task { await chat.send() } }
+        }
         // `-ui-chat-attach`: an image waits in the composer (the simulator has no photos to pick).
         if arguments.contains("-ui-chat-attach"), let image = phonePrepareImage(phoneFixturePNG(width: 640, height: 400), name: "chart") {
             chat.attach(image)
