@@ -142,20 +142,21 @@ function hooksFixture(canvas, pointerCanvas) {
   };
 }
 
-function sessionModule(hooks, api, createDecoder) {
-  const storage = new Map();
-  const quality = module("../apps/desktop/src/lib/stream-quality.ts", {}, {
-    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-  });
+function sessionModule(hooks, api, createDecoder, storage = new Map()) {
+  const localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  const quality = module("../apps/desktop/src/lib/stream-quality.ts", {}, { localStorage });
+  const monitors = module("../apps/desktop/src/lib/monitors.ts", {}, { localStorage });
   const RemoteInput = () => {};
+  const TitleBar = () => {};
   const exported = module("../apps/desktop/src/ui/Session.tsx", {
     react: hooks.react,
     "react/jsx-runtime": jsxRuntime,
     "../lib/api": { api },
     "../bindings": { commands: { logFromPage: async () => {} } },
-    "../lib/demo": { demoScreenUrl: () => "preview-image" },
+    "../lib/demo": { demoScreenUrl: () => "preview-image", demoMonitors: [{ index: 0, x: 0, y: 0, width: 1600, height: 1000, primary: true }] },
     "../lib/i18n": { t: (key) => key, currentLang: () => "en" },
     "../lib/stream-quality": quality,
+    "../lib/monitors": monitors,
     "../lib/video": { createDecoder },
     "../lib/codec": { preferredCodecs: () => ["hevc", "h264"] },
     "../lib/clock": { createHostClock: () => ({ pong() {}, ping: () => 0, toLocalMs: () => null, errorMs: () => null }),
@@ -168,7 +169,7 @@ function sessionModule(hooks, api, createDecoder) {
     "../lib/drop": { watchFileDrop: () => () => {} },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
     "./Icon": { Icon: () => {} },
-    "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar: () => {} },
+    "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar },
     "../lib/fullscreen": { setFullscreen: async () => {}, isFullscreen: async () => false, watchFullscreen: () => () => {} },
     "motion/react": { AnimatePresence: ({ children }) => children, motion: { div: "div" } },
     "./TurnLine": { TurnLine: () => {}, turnSpec: () => null },
@@ -178,7 +179,7 @@ function sessionModule(hooks, api, createDecoder) {
   }, { localStorage: { getItem: () => null }, performance,
     // The page registers its full-screen keys on the window and sizes the picture by device pixels.
     window: { addEventListener() {}, removeEventListener() {}, devicePixelRatio: 1, setTimeout, clearTimeout } });
-  return { ...exported, RemoteInput };
+  return { ...exported, RemoteInput, TitleBar };
 }
 
 function nodes(tree) {
@@ -390,4 +391,204 @@ test("a human driver keeps a tab that brings the hidden bars back, under the rai
   assert.ok(!handleOf(tree), "no tab when you are not driving");
   assert.equal(bottomOf(tree).props.className, "nt-anchor bottom");
   hooks.close();
+});
+
+// ---- The host's monitors: the picker, the stream it restarts, and the pointer on another monitor.
+
+/** win-dev's monitors as its `system_info` lists them (2026-10-22): a portrait one right of the
+ *  primary, one left of it, then the 5120x2160 primary; both portrait ones start 9 px higher. */
+const THREE_MONITORS = [
+  { index: 0, x: 5120, y: -9, width: 1440, height: 2560, primary: false },
+  { index: 1, x: -1440, y: -9, width: 1440, height: 2560, primary: false },
+  { index: 2, x: 0, y: 0, width: 5120, height: 2160, primary: true },
+];
+
+function catalogT(lang) {
+  const { en } = module("../apps/desktop/src/lib/strings/en.ts");
+  const catalog = lang === "zh" ? module("../apps/desktop/src/lib/strings/zh.ts").zh : en;
+  return (key, vars = {}) => (catalog[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
+}
+
+function monitorsModule(storage = new Map()) {
+  return module("../apps/desktop/src/lib/monitors.ts", {}, {
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+  });
+}
+
+test("monitors are named by where they stand next to the primary one and listed left to right", () => {
+  const m = monitorsModule();
+  assert.deepEqual(plain(m.pickerOrder(THREE_MONITORS).map((x) => x.index)), [1, 2, 0]);
+  const zh = m.monitorNames(THREE_MONITORS, catalogT("zh"));
+  assert.deepEqual([0, 1, 2].map((i) => m.monitorOption(THREE_MONITORS[i], zh)),
+    ["右侧竖屏 · 1440×2560", "左侧竖屏 · 1440×2560", "主屏 · 5120×2160"]);
+  const en = m.monitorNames(THREE_MONITORS, catalogT("en"));
+  assert.deepEqual([0, 1, 2].map((i) => en.get(i)), ["Right portrait display", "Left portrait display", "Main display"]);
+  // Above and below, and two on the same side numbered left to right.
+  const stacked = [
+    { index: 0, x: 0, y: 0, width: 1920, height: 1080, primary: true },
+    { index: 1, x: 0, y: -1440, width: 2560, height: 1440, primary: false },
+    { index: 2, x: 3840, y: 0, width: 1920, height: 1080, primary: false },
+    { index: 3, x: 1920, y: 0, width: 1920, height: 1080, primary: false },
+  ];
+  const names = m.monitorNames(stacked, catalogT("zh"));
+  assert.deepEqual([0, 1, 2, 3].map((i) => names.get(i)), ["主屏", "上方屏幕", "右侧屏幕 2", "右侧屏幕 1"]);
+  // A host from before positions: numbers (portrait ones said so), the primary still named.
+  const old = [{ index: 0, width: 1920, height: 1080, primary: false }, { index: 1, width: 2560, height: 1440, primary: true },
+    { index: 2, width: 1440, height: 2560, primary: false }];
+  assert.deepEqual([0, 1, 2].map((i) => m.monitorNames(old, catalogT("en")).get(i)), ["Display 1", "Main display", "Portrait display 3"]);
+  assert.equal(m.monitorNames(old, catalogT("zh")).get(2), "竖屏 3");
+  assert.deepEqual(plain(m.pickerOrder(old).map((x) => x.index)), [0, 1, 2]);
+});
+
+test("the monitor picked is remembered per computer, and a host's refusal of a gone monitor is recognised", () => {
+  const storage = new Map();
+  const m = monitorsModule(storage);
+  assert.equal(m.loadMonitor("win-dev"), null);
+  m.saveMonitor("win-dev", 2);
+  m.saveMonitor("mac", 0);
+  assert.equal(m.loadMonitor("win-dev"), 2);
+  assert.equal(m.loadMonitor("mac"), 0);
+  m.saveMonitor("win-dev", null);
+  assert.equal(m.loadMonitor("win-dev"), null);
+  assert.equal(m.loadMonitor("mac"), 0);
+  storage.set("ai-remote.stream-monitor", "not json");
+  assert.equal(m.loadMonitor("mac"), null);
+  storage.set("ai-remote.stream-monitor", '{"mac":-1,"x":"2"}');
+  assert.equal(m.loadMonitor("mac"), null);
+  assert.equal(m.loadMonitor("x"), null);
+  // This host's words, and older Windows and macOS hosts'.
+  for (const reason of ["host 'win-dev': there is no monitor 3 on this computer: it has 3 (0 to 2)",
+    "host 'win-dev': no such monitor: monitor not found", "host 'mac': monitor not found"]) {
+    assert.equal(m.isMissingMonitor(reason), true, reason);
+  }
+  assert.equal(m.isMissingMonitor("host 'mac': screen capture permission was refused"), false);
+});
+
+test("the request names the monitor, and the reply's monitors and streamed index reach the page", async () => {
+  const s = apiFixture({ screen: { x: -1440, y: -9, width: 1440, height: 2560 }, monitors: THREE_MONITORS, monitor: 1 });
+  const view = await s.api.watchScreen("test-host", () => {}, { monitor: 1 });
+  assert.equal(s.requests[0].request.monitor, 1);
+  assert.deepEqual(plain(view.monitors), THREE_MONITORS);
+  assert.equal(view.monitor, 1);
+  assert.deepEqual(plain(view.screen), { x: -1440, y: -9, width: 1440, height: 2560 });
+  // An older host lists monitors without positions and does not say which one it streams.
+  const old = apiFixture({ screen: { x: 0, y: 0, width: 1600, height: 1000 }, monitors: [{ index: 0, width: 1600, height: 1000, primary: true }] });
+  const oldView = await old.api.watchScreen("test-host", () => {});
+  assert.equal(oldView.monitor, null);
+  assert.equal(oldView.monitors.length, 1);
+});
+
+test("switching the monitor restarts the stream on it, and a gone monitor sends the page back to the primary one", async () => {
+  const s = streamFixture();
+  const reported = [];
+  let missing = 0;
+  s.update({ monitor: 2, onMonitors: (list, index) => reported.push([list.length, index]), onMonitorMissing: () => missing++ });
+  s.render();
+  assert.equal(s.views[0].options.monitor, 2);
+  s.views[0].resolve(Object.assign(s.views[0].view, { monitors: THREE_MONITORS, monitor: 2 })); await tick();
+  assert.deepEqual(reported, [[3, 2]]);
+  s.decoders[0].onSize(1440, 2560);
+  assert.equal(s.hasFrame(), true);
+  s.update({ monitor: 1 }); s.render();
+  assert.equal(s.views.length, 2, "a new monitor is a new stream");
+  assert.equal(s.views[0].view.stops, 1);
+  assert.equal(s.views[1].options.monitor, 1);
+  assert.equal(s.hasFrame(), false);
+  assert.equal(s.screens.at(-1), null, "no input lands on the old monitor's geometry meanwhile");
+  // An older host does not name the monitor: the one asked for is the one streamed.
+  s.views[1].resolve(Object.assign(s.views[1].view, { monitors: THREE_MONITORS, monitor: null })); await tick();
+  assert.deepEqual(reported.at(-1), [3, 1]);
+  // Unplugged since it was picked: the host refuses it; the page is told to fall back.
+  s.update({ monitor: 3 }); s.render();
+  s.views[2].reject(new Error("host 'test-host': there is no monitor 3 on this computer: it has 3 (0 to 2)")); await tick();
+  assert.equal(missing, 1);
+  // Any other refusal keeps the choice (a reconnect may well work).
+  s.update({ monitor: 2 }); s.render();
+  s.views[3].reject(new Error("host 'test-host': did not answer")); await tick();
+  assert.equal(missing, 1);
+  // The primary one is never "gone".
+  s.update({ monitor: null }); s.render();
+  s.views[4].reject(new Error("host 'test-host': monitor not found")); await tick();
+  assert.equal(missing, 1);
+  s.close();
+});
+
+test("the session page offers every monitor in the title bar and in full screen, and remembers the choice", () => {
+  const hooks = hooksFixture();
+  const storage = new Map([["ai-remote.stream-monitor", '{"other-host":2}']]);
+  const { SessionPage, Stream, RemoteInput, TitleBar } = sessionModule(hooks, { kind: "tauri" },
+    () => assert.fail("nested Stream should not execute in the page fixture"), storage);
+  const c = { host: { name: "test-host", path: "direct" }, os: "windows", online: true, feed: {
+    agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null,
+    driver: { state: "person", device: "test-device", since_ms: 1000, agent_may_watch: false },
+  } };
+  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {} };
+  const render = () => hooks.render(SessionPage, props);
+  const stream = (tree) => nodes(tree).find((node) => node.type === Stream);
+  const titlePicker = (tree) => nodes(nodes(tree).find((node) => node.type === TitleBar).props.end)
+    .find((node) => node.type === "select" && node.props["aria-label"] === "stream_monitor");
+  const topPicker = (tree) => nodes(nodes(tree).find((node) => node.props?.className === "nt-anchor top"))
+    .find((node) => node.type === "select" && node.props["aria-label"] === "stream_monitor");
+  let tree = render();
+  assert.equal(stream(tree).props.monitor, null, "another computer's choice is not this one's");
+  assert.equal(titlePicker(tree), undefined, "nothing to pick before the host lists its monitors");
+  stream(tree).props.onMonitors([THREE_MONITORS[2]], 2); tree = render();
+  assert.equal(titlePicker(tree), undefined, "one monitor: no picker");
+  stream(tree).props.onMonitors(THREE_MONITORS, 2);
+  stream(tree).props.onFrame(); stream(tree).props.onScreen({ x: 0, y: 0, width: 5120, height: 2160 }); tree = render();
+  const picker = titlePicker(tree);
+  assert.equal(picker.props.value, 2, "the streamed monitor is the one shown");
+  const options = nodes(picker).filter((node) => node.type === "option");
+  assert.deepEqual(options.map((o) => o.props.value), [1, 2, 0], "left to right");
+  assert.ok(nodes(tree).some((node) => node.type === RemoteInput));
+  // Pick the left portrait monitor: a new stream there, no input until its frame and geometry arrive.
+  let blurred = 0;
+  picker.props.onChange({ currentTarget: { blur: () => blurred++ }, target: { value: "1" } }); tree = render();
+  assert.equal(blurred, 1);
+  assert.equal(stream(tree).props.monitor, 1);
+  assert.equal(titlePicker(tree).props.value, 1, "the choice shows while the new stream starts");
+  assert.equal(JSON.parse(storage.get("ai-remote.stream-monitor"))["test-host"], 1);
+  assert.equal(JSON.parse(storage.get("ai-remote.stream-monitor"))["other-host"], 2);
+  assert.ok(!nodes(tree).some((node) => node.type === RemoteInput), "the old monitor's geometry is dropped");
+  stream(tree).props.onFrame(); stream(tree).props.onScreen({ x: -1440, y: -9, width: 1440, height: 2560 }); tree = render();
+  assert.deepEqual(plain(nodes(tree).find((node) => node.type === RemoteInput).props.screen), { x: -1440, y: -9, width: 1440, height: 2560 });
+  // Full screen keeps the picker in its top bar.
+  nodes(nodes(tree).find((node) => node.type === TitleBar).props.end).find((node) => node.props?.["aria-label"] === "fs_enter").props.onClick();
+  tree = render();
+  assert.equal(topPicker(tree).props.value, 1);
+  // The host no longer has it: back to the primary one, and forgotten.
+  stream(tree).props.onMonitorMissing(); tree = render();
+  assert.equal(stream(tree).props.monitor, null);
+  assert.ok(nodes(tree).some((node) => node.props?.children === "monitor_gone"), "a note says why the picture changed");
+  assert.equal(JSON.parse(storage.get("ai-remote.stream-monitor"))["test-host"], undefined);
+  hooks.close();
+  // Opening the computer again starts on the monitor picked last.
+  const again = hooksFixture();
+  storage.set("ai-remote.stream-monitor", '{"test-host":2}');
+  const page = sessionModule(again, { kind: "tauri" }, () => assert.fail("nested Stream should not execute"), storage);
+  tree = again.render(page.SessionPage, props);
+  assert.equal(nodes(tree).find((node) => node.type === page.Stream).props.monitor, 2);
+  again.close();
+});
+
+test("the host's pointer is placed on a monitor left of the primary one and hides once it leaves it", () => {
+  const { createPointerLayer } = module("../apps/desktop/src/lib/pointer.ts");
+  const noop = () => {};
+  const ctx = { beginPath: noop, moveTo: noop, lineTo: noop, closePath: noop, fill: noop, stroke: noop, clearRect: noop, putImageData: noop };
+  const layer = { style: {}, width: 0, height: 0, getContext: () => ctx };
+  // A 1440x2560 portrait monitor shown 360 px wide: a quarter of its pixels.
+  const video = { clientWidth: 360, offsetLeft: 0, offsetTop: 0 };
+  const pointer = createPointerLayer(layer, video);
+  const screen = { x: -1440, y: -9, width: 1440, height: 2560 };
+  // Positions are relative to the streamed monitor (the host subtracts its origin).
+  pointer.move({ x: 440, y: 109, visible: true, shape: 0 }, screen);
+  assert.equal(layer.style.display, "block");
+  assert.equal(layer.style.transform, "translate(110px, 27.25px)");
+  // On the primary monitor (x 1450 here) or right of the left edge's negative side: not on this one.
+  for (const at of [{ x: 1450, y: 19 }, { x: -1, y: 100 }, { x: 10, y: 2560 }]) {
+    pointer.move({ ...at, visible: true, shape: 0 }, screen);
+    assert.equal(layer.style.display, "none", JSON.stringify(at));
+  }
+  pointer.move({ x: 0, y: 0, visible: true, shape: 0 }, screen);
+  assert.equal(layer.style.display, "block");
 });

@@ -28,8 +28,7 @@
         "transparent": true,
         "windowEffects": {
           "effects": [
-            "sidebar",
-            "windowBackground"
+            "sidebar"
           ],
           "state": "followsWindowActiveState"
         }

@@ -5,6 +5,7 @@
 @import "./styles/v2-pages.css";
 @import "./styles/app.css";
 @import "./styles/native.css";
+@import "./styles/glass/index.css";
 @import "./styles/codex.css";
 @import "./styles/workspace.css";
 @import "./styles/claude.css";

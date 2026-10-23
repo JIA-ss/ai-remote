@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,98 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
+
+main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口里的路由（`lib/nav.ts` + 历史），本分支的智能体工作区原来挂在旧
+`App.tsx` 的 View 上，这次改成外壳的一个路由。设计见 `docs/agent-workspace.zh-CN.md` 2.1。
+- **冲突取舍**：`App.tsx`、`ui/Shell.tsx` 以 main 为准再接回工作区；`index.css` 里 `glass/index.css` 照 main 的位置，`codex.css` /
+  `workspace.css` / `claude.css` 放最后；CI 和上面"通用约定"的前端测试列表取并集，加上 `workspace` / `claude-view` / `chat-codex`。
+- **路由**（纯函数，`tools/desktop-nav.test.mjs` 新增 7 项）：`Route` 加 `{ page: "agents"; host?; session?; place? }`；
+  `parseRoute` 第三个参数是上次所在的半边，网址没有 `view` 时据此进工作区；`same` 按电脑 + 会话比（`place` 不算）；
+  会话的 `parentOf` 是新建会话页；`hidden` 遇到"前一条是工作区"的推流就退回工作区并丢掉推流条目；`lastAgents` 给外壳侧栏的
+  「智能体」用（回到历史里最近的工作区位置）；`modeOf` 决定每个路由属于哪半边，`App.tsx` 据此写 `ai-remote.mode`（设置、推流、欢迎页不改它）。
+- **快捷键**：`KeyContext.agents` 为真时外壳不处理 ⌘N / 搜索 / 侧栏开关（工作区有自己的 ⌘N、⌘K、⌘B），历史、设置、⌘1–3 照旧。
+- **组件**：`Workspace.tsx` 去掉自带的历史栈，‹ › 用外壳的 `back` / `forward`，打开页面走 `onRoute` → 外壳 `push`；新建会话页的预填从路由的
+  `place` 读。外壳 `Sidebar` 加 `onMode`，渲染 `ModeSwitch`；位置与玻璃样式写在 `styles/workspace.css` 的 `.gl-side-modes`
+  （展开时顶栏右端的胶囊，紧凑时竖排在顶栏下），没动 glass 包的文件。工作区整窗时不套 `.gl-win`，仍是自己的不透明面。
+- **验证**（本机 macOS，camofox + vite 演示后端，端口 1451）：工作区 ⇄ 电脑往返、工作区会话 → 推流 → ‹ 回会话、‹ › 跨两半边、
+  设置从工作区进出、外壳侧栏「智能体」回到上次的工作区位置、无 `view` 重开回到上次半边、工作区里 ⌘N 新建而不是配对、⌘\ 不改外壳侧栏偏好、
+  鼠标侧键后退；12 张截图在 `/tmp/merge-glass-shots/`（不进仓库）。门槛：`cargo fmt --all --check`、`npx tsc --noEmit -p .`、
+  `node --test tools/*.test.mjs`（248 项，246 过，2 跳过）。
+- **没验证**：真实 Tauri 窗口（macOS 红绿灯与切换的间距、Windows 标题条）、`window-hidden` 事件本身（只有 `hidden` 的单测）、
+  真正的窄窗（只用 ⌘\ 切到紧凑看过）。camofox（Firefox 内核）里 Codex 输入框有一条 2 px 的滚动条（textarea 内容高 30、框高 28），
+  那是 `ui/chat/Composer.tsx` 的老样式，这次合并没碰。
+
+## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
+
+用户反馈"进了设置只能点返回才能回主页"，要求整体 UI/UX 重做、所有界面主打毛玻璃、页面简洁现代。因为额度不够，
+这次按"阶段性验收"只交付地基：材质层 + 常驻外壳导航。各页面的精修（第 2 段）没做，见"下一步"。
+设计过程：4 路并行摸底（导航结构、样式层、测试依赖的选择器、玻璃平台调研）→ 3 份完整方案（Apple 式 / 简单优先 / 工程稳健）
+→ 主控定稿（以 Apple 式为底，嫁接"会话里侧栏收成 72 px 图标栏"和"Pages.tsx 先拆文件"）。方案原文没进仓库（在本机 `/tmp/glass-design/`）。
+
+### 决定
+
+- **玻璃怎么做才是真的**：CSS `backdrop-filter` 只能模糊网页自己画的像素，永远采不到桌面，所以"全界面毛玻璃"=
+  整窗一层原生材质（macOS NSVisualEffectView `sidebar`；Windows 11 Mica）+ `html/body/#root/.win` 透明 + 内容面画成
+  半透明着色（磨砂由原生层完成，内容区不做 CSS 模糊）；只有浮在已绘制内容上的功能层（工具栏胶囊、菜单、对话框）
+  用 CSS 玻璃 + 1 px 高光描边。**会话舞台（视频）上任何东西都不模糊**（5K@75fps 合成器本来就满）。
+- `<html data-material="native|preview|none">`：App 内 = native（Windows 要 UA-CH 确认是 Windows 11，否则 none，避免 Win10
+  透明窗口直接露出未模糊的桌面）；浏览器预览 = preview（画一张低饱和静态替身底）；设置里"减少透明度"、系统减少透明度 /
+  增强对比 / 强制颜色 = none，回到原来 `native.css` 的不透明外观（逐像素对比 6 个页面，只有时钟文字不同）。
+- 内容面透明度按 WCAG 公式推导：深色 `rgb(30 30 32/.76)`、浅色 `rgb(244 244 247/.74)`，卡片浅色 .78（**推导值，没在屏幕上量过**）。
+- `tauri.conf.json` 的 `windowEffects.effects` 只留 `["sidebar"]`（Tauri 只取第一个，`windowBackground` 从来没生效）。
+  钉住主题时调用 `setTheme`，让原生材质跟着变（新权限 `core:window:allow-set-theme`），不再把侧栏画成实色。没用 `liquidGlass*`
+  （macOS 27 上打包版有 AppKit 崩溃报告，window-vibrancy#229）。
+- **常驻外壳**：设置、会话、欢迎、配对都是外壳里的路由，侧栏一直在（只有沉浸全屏用 `:has()` 藏起来）；同一时刻只挂一个页面。
+  `lib/nav.ts`（纯函数）：路由模型、全部旧深链（`?view/&sec/&tab/&host/&panel=chat/welcome/empty`）、Finder 式历史
+  （‹ › 前进后退，没历史时回逻辑上级）、托盘意图（仍是"路由 + intent 同一次渲染"，HostPanel 照旧消费）、`window-hidden`。
+  `lib/shortcuts.ts`：⌘[ ⌘] / Alt+←→、⌘,、⌘1-3、⌘N、⌘F、⌘\ / ⌃⌘S / Ctrl+\；输入法组字、对话框打开、远程画面上的按键一律不拦。
+- **侧栏两种形态**：展开 240 px / 图标栏 72 px，按情境分别记忆（页面默认展开、会话默认图标栏）；开关固定在红绿灯右边。
+  "你在操作"单独成组；离线组可折叠（≥3 台默认折叠）。
+- **工具栏**：透明条 + 玻璃胶囊（‹ ›、本页唯一的 h1 + 副标题、中间槽、操作、唯一一个着色主按钮），不再放应用图标；
+  设置的 6 个分区变成工具栏中间的分段胶囊（仍是 `nav.snav`），电脑页的标签也在工具栏。页面从工具栏下面滚过，滚动后才出现滚动边缘。
+- 页面只做了接入外壳必需的改动：设备页去掉自己的大标题和第二个搜索框；电脑页顶栏并进工具栏、标签受控；活动页可按电脑筛选；
+  欢迎页"设置这台电脑"直接打开应用内的开启对话框（不再给命令行）；找不到的电脑显示"找不到 {host}"。
+- 文案：新键一次加齐在 `back:` 之后的锚定块里，并给后续工作包留了空块（`// glass: pages / computer / settings / overlays`）。
+  改值 5 个：设置的"智能体"→"智能体接入"、"批准"→"批准方式"，电脑页标签→"编程智能体"，本机审计→"本机审计记录"，离线卡按钮→"返回"。
+- `Pages.tsx` 拆成 `ui/pages/*.tsx`（纯搬家，`Pages.tsx` 只 re-export），后续各页可以并行改。
+- **没动**：`Session.tsx`、`RemoteInput.tsx`、`native.css`、生成样式表、`src-tauri/src/**`、`bindings.ts`。新样式全在 `styles/glass/`
+  （固定导入顺序 tokens → material → surfaces → shell → pages → settings → overlays → chat → stage → platform → fallbacks，
+  其中 pages / settings / overlays / chat / stage 是空占位）。
+
+### 踩过的坑
+
+1. Camofox 是 Firefox 无头版，**不渲染 `backdrop-filter`**：浏览器截图里看不到模糊，只能核对计算样式；真效果要看真 App。
+2. 滚动边缘层不显示时也挂着 `backdrop-filter` 等于每页顶部常驻一块模糊层，改成滚动后才模糊。
+3. 对话错误条原来是红底红字（浅色主题下看不见字），旧问题，先在 `surfaces.css` 改成浅红底。
+4. 侧栏开关不能用 `role=switch`：`network-ui-smoke` 要求文档里第一个 switch 是"局域网发现"。
+
+### 实测
+
+全部在本机 macOS 27.0.1，debug 包（`npx tauri build --debug --no-bundle`），HEAD = 本节第 5 个地基提交之后。
+- 静态：`tsc --noEmit` 过；`npm run build` 过；`node --test tools/*.test.mjs` **143 项 141 过 0 失败 2 跳过**（基线 125/123/0/2，
+  新增 `tools/desktop-nav.test.mjs` 18 项：全部深链、历史栈、托盘载荷、两平台快捷键表与守卫）；debug 构建后 `bindings.ts` 无变化。
+  cargo fmt / clippy / test 没在本地跑（Rust 源码没改，只改了 `tauri.conf.json` 和 capabilities，debug 构建通过），交给 CI。
+- e2e（本机隔离被控端，两端 `quiet = true`，替身智能体）：`desktop-chat-e2e.py` **67 项 ×3 次全过**；预览 e2e **31 项 ×2 次全过**；
+  渲染 e2e **10 项 ×1 次全过**；离线 e2e **6 项 ×1 次全过**；`network-ui-smoke.py` **17 项 ×1 次全过**。
+  对照：改动前（main 5d82098）同一台机器对话 e2e 67 项 ×1 次全过。
+- 真 App（真实配置，连着 win-dev）：整屏截图裁窗 1 张（系统深色、一张风景壁纸）：侧栏透出原生磨砂，内容面半透明，没看到透明窗口里
+  CSS 模糊取错色（tauri#12804）；真 WKWebView 里 ⌘2 → 待批准、⌘, → 设置（工具栏分区胶囊）生效。坑：osascript 的 `keystroke ","`
+  在中文输入法下送不到，用 `key code 43 using command down`。
+- **没测**：真 App 浅色外观、窗口失焦外观、会话窗口态 / 沉浸全屏真机清单、`stream-e2e.py` 帧率对比（舞台没加任何模糊、`Session.tsx`
+  没改，但会话旁边现在多了 72 px 图标栏，未量）、Windows（Mica、标题条点击）、不同壁纸下的对比度。
+
+### 没做 / 下一步
+
+- [ ] 第 2 段页面精修（设计里拆好的工作包，文件已拆开可并行）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
+      设置各分区重排（`.hd` 大标题、"我"图块、版本行去重、快捷键分组）；`Modal.tsx` 统一对话框并 portal 到 body（目前对话框仍在页面树里，
+      `data-modal` 还没有地方设置）；决策卡 Esc 只拒绝一张；会话舞台浮条的"舞台玻璃"外观（`stage.css`）；对话面板浮层（`chat.css`）。
+- [ ] 真机验证：原生材质在不同壁纸下的对比度（内容面透明度是推导值）；tauri#12804（透明窗口里 CSS 模糊取到文字颜色）；
+      滚动边缘上 mask + 模糊叠加；`setTheme` 后托盘菜单外观；Windows 11 Mica 是否透出来、plugin-frame 标题条是否挡住工具栏按钮（win-dev 未测）。
+- [ ] `tools/desktop-ui-smoke.py` 已过期（找 `.capsule`、`.stream-request`），应改写成 Camofox REST 版的玻璃巡检（每页一个页面根、
+      一个 h1、舞台内 0 个模糊元素、对话框不在 `.win` 里）。
+- [ ] macOS 系统"减少透明度 / 增强对比度"在 WKWebView 里没有媒体查询，要 Rust 侧用 NSWorkspace 桥接（没做，目前只有应用内开关）。
 
 ## Codex 会话按 Codex 自家应用的样子显示（2026-10-22，分支 `feat/codex-chat-view`，worktree `../ai-remote-codex-view`）
 
@@ -163,6 +255,123 @@ runner 握手用的 `BufReader` 一次读进了两行，而 `serve` 里 `wire.io
 **顺手修的**：Windows 上 `detect::which` 只会给名字加 PATHEXT 后缀，`chat.toml` 里写 `command = "powershell.exe"` /
 `"node.exe"` 这类带后缀的名字会去找 `powershell.exe.exe`，报"not found"（上面的测试就是这么撞到的）。现在名字已带 PATHEXT 里的
 后缀时先按原名找；新增 Windows 单测 `programs_are_found_on_a_path_with_or_without_their_extension`。
+
+## 被控端多屏：会话页切换显示器（2026-10-22，分支 `feat/multi-monitor`，worktree `../ai-remote-monitors`）
+
+起因：用户说"被控端的多屏幕记得适配一下"。win-dev 的 `system_info`（2026-10-22 读到）：序号 0 是右侧竖屏 1440×2560 @ (5120, -9)，
+1 是左侧竖屏 1440×2560 @ (-1440, -9)，2 才是主屏 5120×2160 @ (0, 0)；主屏缩放 1.75，两块竖屏 1.25（混合 DPI）。
+
+**原来的样子（读代码）**：会话页从不传 `monitor`，永远推主屏，没有切屏入口。`screen/1` 本来就收 `monitor`（`system_info.monitors`
+的序号），回复的 `monitors` 只有 index / width / height / primary，没有原点，也不说推的是哪块。被控端其余部分对非主屏本来就对：
+- Windows 上 `monitors()`（windows_capture）、`geometry()`（xcap）和截屏用的 `win::monitor`（windows_capture `from_index`）都是同一个
+  `EnumDisplayMonitors` 顺序，宽高都是 `dmPelsWidth`、原点是 `dmPosition`；被控端进程是 PerMonitorV2，所以都是物理像素。
+  DDA 按 `HMONITOR` 找对应的 DXGI 输出。macOS 都用 xcap 同一列表、`CGDisplayBounds` 点坐标。
+- 光标：`GetCursorInfo` 是物理像素，`PointerFeed` 减去推流那块屏的原点；前端 `PointerLayer.move` 在 `0..width` / `0..height` 之外就隐藏。
+- 输入：前端 `RemoteInput.toScreen` 用回复的 `screen` 矩形换算（负原点照样对），滚轮先 move 再 wheel；被控端注入走
+  `MOUSEEVENTF_VIRTUALDESK` 再用 `SetCursorPos` 校正，`virtualdesk_*` 单测早就用 win-dev 的 (-1440, -9, 8000, 2560) 布局。
+
+**改了什么**：
+- 被控端 `stream/capture.rs`：`monitors()` 两个平台都用 xcap，返回 `MonitorInfo`（index、x、y、width、height、primary），和
+  `system_info` 是同一个列表。`stream/protocol.rs`：回复的 `monitors` 每项带 `x` / `y`；新增 `monitor`（实际推的那块：请求的那块，
+  没指定就是主屏，没有标主屏时取第一块）；请求了不存在的序号，两个平台统一回 `there is no monitor <n> on this computer: it has N (0 to N-1)`；
+  审计 `view_start` / `view_end` 的 `monitor` 记实际那块（以前没指定时是 null）。光标相对坐标抽成 `relative()`。单测 3 个。
+- 桌面端 `lib/monitors.ts`：按和主屏的相对位置起名（主屏 / 左侧竖屏 / 右侧屏幕 / 上方 / 下方；同一侧多块按从左到右编号；
+  旧被控端没有原点时叫"屏幕 N"）；下拉按桌面上从左到右排；按电脑记在 `localStorage["ai-remote.stream-monitor"]`；
+  `isMissingMonitor` 认三种说法（新被控端、旧 Windows 的 `no such monitor`、旧 macOS 的 `monitor not found`）。
+- `Session.tsx`：`Stream` 加 `monitor` / `onMonitors` / `onMonitorMissing`，`monitor` 进 effect 依赖，切屏就是重开一条流（和换画质
+  一样：清画面、清 `screen`，接管时的输入层先卸掉，新流的第一帧和几何到了再装上，不会把输入按旧屏的矩形发出去）。
+  标题条和全屏顶栏在画质下拉左边加"显示器"下拉，用同一套 `nt-select-wrap` / `nt-select`，被控端只有一块屏时不出现。
+  记住的那块屏不在了：回到主屏、忘掉这台电脑的选择、提示 `monitor_gone`。演示后端给了三块屏（主屏 1600×1000、左侧竖屏、右侧屏），
+  浏览器预览里能看到下拉。
+- 被控端 `stream/capture/dda.rs` + `win.rs`（真机上发现，见下）：DDA 交出的画面是面板扫描方向，竖屏横躺。`duplicate()` 带回
+  `DXGI_OUTDUPL_DESC.Rotation`，`upright()` 选视频处理器的顺时针转角（`ROTATE90/180/270` 对应 `ROTATION_90/180/270`，和微软
+  DDA 示例的映射一致），`Converter::rotated` 里 `VideoProcessorSetStreamRotation`（先查 `FEATURE_CAPS_ROTATION`），推流尺寸按
+  转正后的宽高算。单测 `rotated_outputs_are_turned_upright`；`#[ignore]` 的 `every_monitor_comes_out_upright` 在真机上把每块屏
+  经 DDA 和 WGC 各截一帧、核对方向、把亮度平面写成 PGM 供肉眼看。
+- 桌面端：旧被控端不给原点时，竖屏叫"竖屏 N"（`monitor_n_portrait`），横屏仍是"屏幕 N"。
+- 文档：`docs/architecture*.md` 的 `screen/1`、`docs/desktop-design.md` 的会话页顶栏。
+
+**实测（本机 macOS，2026-10-22，合并 main 54169f2 之后，各 1 次）**：
+- `cargo fmt --check` 过；`cargo clippy --workspace --all-targets --locked -- -D warnings` 无警告；`cargo test --workspace --locked`
+  402 过 0 失败 8 忽略。`dda.rs` 只在 Windows 编译，另在 win-dev 上跑：`cargo fmt --check` 过、`cargo clippy -p ar-host --all-targets --locked
+  -- -D warnings` 无警告、`cargo test -p ar-host --lib stream::` 25 过 10 忽略（含新单测）。
+- 前端：本文件开头列出的 10 个 `node --test` 文件 118 项 116 过 2 跳过（`stream-ui.test.mjs` 新增 6 项：命名与排序、记住选择与识别
+  "屏不在了"、请求带 `monitor` 与回复解析、切屏重开流与回退主屏、标题条和全屏顶栏都有下拉、光标层在负原点竖屏上的位置与移出隐藏；
+  `manual-input.test.mjs` 新增 1 项：负原点竖屏上的移动、滚轮和点击落点）；`tsc --noEmit` 过。
+- 浏览器预览（`vite --port 1437` + Camofox，演示后端）：标题条出现"主屏 · 1600×1000"，选项依次是"左侧竖屏 · 1080×1920 / 主屏 ·
+  1600×1000 / 右侧屏幕 · 1920×1080"；切到左侧竖屏后画面变成竖的、居中；全屏顶栏里同样有这个下拉，和画质下拉同款；刷新后仍是左侧
+  竖屏；英文文案也核对过。这是 Firefox 内核里的原生 select，不是 Tauri 的 WKWebView / WebView2。
+
+**真机实测（2026-10-22 18:25–18:45，Mac debug 桌面包 → 真实控制端 → win-dev 服务，服务程序是 17:42 换上的那份，没有本分支的改动）**：
+做法：debug 包带 `AI_REMOTE_SMOKE_SCRIPT` 往页面注入驱动脚本（`AI_REMOTE_SMOKE_VISIBLE=1`，窗口出现在 Mac 屏上但不抢焦点），
+`AI_REMOTE_CLI` 指向安装版、不设 `AI_REMOTE_HOME`，复用正在跑的控制端，不起新实例。win-dev 两块竖屏上各盖一个置顶的 WinForms
+记录窗口（进程设 PerMonitorV2，记录物理像素的指针位置、点击、滚轮、按键），测试的点击和按键只落在它上面。
+- 切屏：真实 app 里下拉 3 项"屏幕 1 · 1440×2560 / 屏幕 2 · 1440×2560 / 主屏 · 5120×2160"（旧服务不给原点，所以没有左右），默认主屏；
+  切左、切右都重开了流（审计 `view_start` / `view_end` 的 monitor 依次对上）；进全屏后顶栏有下拉，在全屏里切回左屏生效，退出全屏正常。
+  两轮都走通。
+- **发现 1：服务模式下竖屏横躺**。服务是 SYSTEM，截屏走 DDA；两块竖屏推来都是 2560×1440，桌面转了四分之一圈（左屏测试窗口的字
+  竖着、从右上角往下排）。被控端日志 `DXGI_MODE_ROTATION(4)`（`ROTATE270`）。已在本分支修（见上）。修后在 win-dev 以登录用户跑
+  `every_monitor_comes_out_upright`：两块竖屏 DDA 720×1280、WGC 720×1280，导出的画面方向一致、测试窗口的字在左上角正着；主屏两条路
+  都是 1280×540（1 次）。经服务推流的端到端见下面"端到端"。
+- **发现 2：服务模式下同一块屏只能有一个观看者**。第二个观看者的 `DuplicateOutput` 返回 `E_INVALIDARG (0x80070057)`（文档列的原因之一：
+  本进程已在复制这个输出），回退 WGC 又是"not supported here"（SYSTEM 不能用 WGC），最后 CPU 路径报
+  `Failed to convert item to GraphicsCaptureItem`——背景里提过的那个错就是它。审计证实两次失败时都有另一个观看者（同一台 Mac 的控制端）
+  正在看主屏。没修，列为后续。
+- 输入：接管左竖屏后，第一次移动（画面中心）在 win-dev 上读到的指针位置是 (-720, 1271)，和预期完全一致（1 个点）。其余移动、点击、
+  滚轮、按键都被被控端以"an ai-remote approval prompt is open on the host, so input is paused"拒绝（审计 `input_end` 三次分别是
+  moves=1 errors=3、moves=1 errors=5、moves=0 errors=5），记录窗口没收到。
+- **发现 3：审批超时后对话框不关，实时输入一直暂停**。屏上两个"ai-remote: approve an action"是另一个会话的 `chat_start`
+  （17:56:14、18:38:31 发起），审计里都已 `approval_resolved verdict=timeout`（60 s），但两个窗口到 18:45 还开着；被控端只看"有没有
+  审批框开着"，于是 18:39 之后没有任何待批请求，接管的人照样不能操作。没修，列为后续。用户让点"否"关掉，但这两个窗口属于 SYSTEM
+  进程，从 zremote（管理员、用户会话）用 UI 自动化只能看到窗口、看不到按钮（Windows 不让低完整性级别的进程操作 SYSTEM 的窗口）；
+  下面换服务程序时旧进程退出，窗口随之关闭，请求早已按超时处理，没有批准任何东西。
+
+**端到端（2026-10-22 19:03–19:05，用户同意后把 win-dev 服务临时换成本分支 006bc71 的 release 构建，测完换回）**：
+- 换法：停服务后 `--chat-runner` 子进程（以用户身份跑编程智能体）不退出，一直占着 `ai-remote-svc-bin\ai-remote-hostw.exe`，原地覆盖失败
+  （它是有意跨重启保留的：新被控端起来后日志 `the agent runner connected pid=66568`）。于是把新程序放到 `ai-remote-svc-bin-pr35`，
+  临时改注册表 `HKLM\SYSTEM\CurrentControlSet\Services\ai-remote-host-cc166525\ImagePath` 指过去；测完停服务、改回原值、再启动。
+  服务前后共停了两次，每次约 1 分钟；原程序哈希前后一致；临时目录、备份和 win-dev 上的临时 worktree 都已删除。
+- 新回复：CLI `ai-remote view --json` 里每块屏带 `x` / `y`；审计里默认主屏的观看记成 `monitor=2`（实际推的那块）。
+- 真实 app：下拉按位置命名、从左到右排："左侧竖屏 · 1440×2560 / 主屏 · 5120×2160 / 右侧竖屏 · 1440×2560"。依次切左、右、主、左：
+  竖屏画面 1440×2560、在舞台里竖着居中，测试窗口的字正着在左上角（截图看过）；主屏 5120×2160。
+- 接管后的输入（记录窗口记下的物理像素，1 轮）：左竖屏四次移动落在 (-1440, -9)、(-1, 2550)、(-1080, 1910)、(-720, 1015)，和预期完全一致；
+  点击按下 / 抬起都在 (-720, 1015)；滚轮 -240（2 格）落在 (-1010, 1526)，预期 (-1008, 1526)；按键 x、y、z 都收到（记成大写是因为
+  win-dev 开着大写锁定）。右竖屏移动 (5120, -9)、(6559, 2550)、(5840, 1015) 一致，点击 (5840, 1015) 并激活了右侧窗口，滚轮在
+  (5550, 1526)（预期 5552），按键都收到。滚轮差 2 像素是合成 `WheelEvent` 的坐标只有整数 CSS 像素（此时 1 CSS 像素约 3.4 屏幕像素），
+  不是换算问题；真鼠标没测。全程没有报错，最后交还控制成功。
+- 记住的屏不在了：把 win-dev 记成第 7 块屏再打开会话，被控端回 `there is no monitor 7 on this computer: it has 3 (0 to 2)`，页面回到主屏、
+  提示"上次选的显示器已不在，改为显示主屏。"、清掉了记住的选择。
+- 远端光标叠加层：win-dev 的光标处于抑制状态（`GetCursorInfo` flags=2），被控端一直报不可见，叠加层全程隐藏；从 zremote 注入的
+  相对移动也清不掉这个状态。所以叠加层在侧屏上的位置真机没测，靠单测。
+
+**坑**：
+- zsh 里 `"VAR=值" 命令` 不算环境变量赋值（`command not found`），带 `&` 的值用 `env 'VAR=a&b' 命令`。
+- `window.__TAURI_INTERNALS__.invoke` 不能替换（赋值不生效），截不到推流回复；预期坐标直接用 `system_info` 的矩形。
+- 合成的 `pointerdown` 没有真实指针，`setPointerCapture` 会抛错、`RemoteInput` 的处理到不了发送那一步：脚本里先把它包一层 try。
+- debug 包和安装版是同一个 bundle id，`localStorage` 共用：脚本结束时删掉 `ai-remote.stream-monitor` 里的 win-dev 和
+  `ai-remote.video-trace`（smoke 模式会写这个键）。可见窗口用户能点到（第三轮被点了一下，跳回主屏、切到了对话栏）。
+- win-dev 是多个会话共用的：别的会话的观看和审批框会直接影响测试，先看审计（`audit.jsonl` 的 `view_*`、`approval_*`）。
+
+**推导（没有真机数据）**：远端光标到主屏（x ≥ 0）时，相对左竖屏的 x ≥ 1440，叠加层隐藏（单测覆盖，真机光标一直不可见）。
+
+**未测**：真鼠标拖动（只用了合成事件，没有拖动）；光标叠加层在侧屏上的位置（win-dev 光标被抑制，被控端一直报不可见）；混合 DPI 下
+侧屏光标形状的大小；锁屏后切屏；`ROTATE90` / `ROTATE180` 的屏（win-dev 两块都是 `ROTATE270`，另两种只有单测和微软示例的映射）；
+macOS 被控端多屏（这台 Mac 没接外屏）；Windows 控制端（WebView2）里下拉的样子。win-dev 的服务现在仍是原来的程序，不含本分支。
+
+**和 PR #34（`fix/fullscreen-cursor`）**：两边都改了 `Session.tsx`。#34 先合进了 main；本分支合并 main 9933900 时只有 `Stream` 的
+`callbacks` 那两行冲突，取并集：`{ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown }`，
+合并后 `tsc --noEmit` 过，前端 10 个测试文件 119 项 117 过 2 跳过。远端光标移出当前屏时叠加层隐藏（本分支）、本地鼠标随之重新出现（#34 的
+`onPointerShown`）。
+
+**和 PR #38（`fix/dda-shared-viewers`，同一块屏多个观看者共用一个 DDA 复制）**：#38 先合进了 main；本分支合并 main 37a4fcc 时 `dda.rs` 冲突，
+照 #38 那一节写的办法解：导入取两边的并集；`run` 用 #38 的结构（`while !source.stopping()`），解构成 `(output, dup, rotation)`，
+把 `*rotation` 传给 `Viewer::deliver`；`deliver` 里用 `upright(rotation, input)` 算转角和转正后的尺寸，`SizedConverter` 带上转角比较，
+建转换器用 `Converter::rotated`。也就是说每个观看者各自转正（各自的尺寸、各自的转换器）。两边各加的 `#[cfg(test)] mod tests` 合成一个；
+git 把我的 `mod tests` 插到了 #38 给 `bench` 写的文档注释和 `mod bench` 中间，已挪开，注释回到 `bench` 上。`bench` 里的两个手动测试
+（`every_monitor_comes_out_upright`、`two_viewers_of_one_monitor_both_get_frames`）都保留。合并结果在 win-dev 上单独的目录里
+（`%USERPROFILE%\ai-remote-mm-check`，git bundle 送过去，没碰服务）：`cargo fmt --check` 过，`cargo clippy -p ar-host --all-targets
+-- -D warnings` 无警告，`cargo test -p ar-host --lib stream::` 31 过 0 失败 11 忽略（含 `rotated_outputs_are_turned_upright` 和 #38 的共享复制测试）。本机 Rust 全量 410 过 0 失败 8 忽略。合并后的竖屏转正
+和多观看者没在真机上一起跑过（推导：两条改动只在 `deliver` 里相遇，各管各的）。
 
 ## iPhone 对话补齐到桌面端：预览、选目录、按项目分组、输入增强（2026-10-22，分支 `feat/ios-chat-v3`）
 
@@ -1073,7 +1282,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 - **实测**：替身流程 35 项 ×3 次全过（Mac 的 36 项里有 1 项是"同一会话面板被重挂载"的诊断，Windows 上没触发，不计入）；真实 Claude Code 2.1.293 13 项 ×1 次全过：首轮 30 s，插话 3 s 内作为普通用户消息进同一轮，最终跑 5 条命令停下，上下文环 132k / 1.0M。截图在 Mac 的 `/tmp/win-chat-ui/`、`/tmp/win-chat-real/`、`/tmp/win-chat-render/`（没进仓库）。
 - **新增 `tools/desktop-chat-e2e-render.js`**（`E2E_SCRIPT=tools/desktop-chat-e2e-render.js python tools/desktop-chat-e2e.py`）：查主流程没覆盖的渲染项。WebView2 上 10 项 ×2 次全过：
   - 长消息（40 行）折叠，`mask-image` 生效（计算值 `linear-gradient(rgb(0,0,0) 65%, transparent)`），可见高度 202 px / 全文 806 px，截图里末行渐隐；
-  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件，**没有用真实中文输入法打过字**；
+  - 输入法组字时（`isComposing`、keyCode 229）回车不发送，普通回车发送。这是合成事件；真实输入法见下面"真实中文输入法"；
   - 6 轮时前 4 轮 `content-visibility: auto`、后 2 轮 `visible`，滚到顶后第 1 轮正常绘制（高 574 px）；
   - 发送后列表停在底部（距底 < 40 px）；
   - 字体：正文是 `Segoe UI Variable Text` → `Microsoft YaHei UI`，代码是打包进来的 Geist Mono。
@@ -1099,7 +1308,28 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 未测 / 下一步
 
-- 真实中文输入法打字、高 DPI 缩放（这台是 100%）、浅色主题的 Windows 截图。
+- 高 DPI 缩放、浅色主题的 Windows 截图。
+
+### 真实中文输入法（2026-10-22，分支 `claude/ime-e2e`，基于 main 9933900）
+
+- **做法**：`E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --visible`。页面脚本发
+  `(action) input {...}` 行，脚本用 `tools/win_input.py`（ctypes `SendInput`）在真实桌面上点输入框、把焦点窗口的键盘布局切到
+  0804、逐键敲 `nihao`、空格、回车，按键和人打字一样经过微软拼音。`--visible` 让调试版窗口显示并可聚焦（`lib.rs` 的 smoke 模式
+  原来一律 `set_focusable(false)`，现在只在屏幕外时这样）。它会动那台电脑的鼠标、改焦点窗口的键盘布局（结束时切回 0409），
+  开着的大写锁定会先关掉、结束时恢复。
+- **实测**（win-dev，Windows 11，微软拼音，WebView2，debug 构建）：3 次全过，每次 9 项：
+  - 输入框拿到键盘焦点，敲 `nihao` 开始组字（输入框里是带下划线的 `ni'hao`，下面是"1 你好 2 … 3 泥嚎"候选框，整屏截图看到）；
+  - 组字中按回车：输入法把字母 `nihao` 落进输入框，**没有发送**（用户消息数不变）；
+  - 再敲 `nihao` + 空格：输入框是"你好"；回车：发出"你好"，输入框清空，替身智能体回"you said: 你好"。
+  - WebView2 里被输入法吃掉的那次回车**根本不发 keydown 给页面**（3/3 次 0 个），所以 `Composer.tsx` 的 `isComposing` /
+    keyCode 229 判断在这条路径上没被用到；Chrome 等会发 229，那条路径由合成事件测试覆盖。
+- **踩过的坑**（都只是测试驱动的问题，界面本身没改）：
+  - 驱动脚本所在的 Python 进程没声明 DPI 感知时，`ClientToScreen` 给的是虚拟化坐标，点击落到桌面上；改为 Per-Monitor V2。
+  - 键盘布局按线程算：`WM_INPUTLANGCHANGEREQUEST` 要发给真正有焦点的窗口（WebView2 进程里的 `Chrome_WidgetWin_1`），发给应用的
+    顶层窗口不管用。
+  - win-dev 的大写锁定开着时，微软拼音直接出大写英文、不组字。
+  - 新输入上下文里第一次组字要 1 s 以上才开始，固定等 1.2 s 不够，改成最多等 5 s。
+  - 文件夹选择器要等进入目标文件夹（路径栏 `.cur` 变成它）再点"使用"，否则选不上，后面的"启动"会点到"使用"按钮。
 - 服务模式（SYSTEM 被控端 + chat-runner）下的窗口与进程树：那是另一个分支 `feat/host-chat-service` 的事。
 - ~~被控端在 Codex 打断后是否该替它收掉还在跑的命令~~：已做，见下一小节。
 

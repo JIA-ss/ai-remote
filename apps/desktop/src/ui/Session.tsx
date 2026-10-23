@@ -8,8 +8,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type LiveView, type PointerPosition } from "../lib/api";
 import { commands } from "../bindings";
-import { demoScreenUrl } from "../lib/demo";
+import { demoMonitors, demoScreenUrl } from "../lib/demo";
 import { currentLang, t } from "../lib/i18n";
+import { isMissingMonitor, loadMonitor, monitorNames, monitorOption, pickerOrder, primaryOf, saveMonitor, type RemoteMonitor } from "../lib/monitors";
 import { loadStreamQuality, resolveQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
 import type { Step } from "../lib/types";
@@ -43,6 +44,9 @@ function barOf(c: Computer, hasFrame: boolean): Bar {
 /** The remote screen: decoded video in the app, a still picture in the demo. */
 export function Stream({
   host,
+  monitor = null,
+  onMonitors,
+  onMonitorMissing,
   onFrame,
   onSize,
   maxFps,
@@ -55,6 +59,12 @@ export function Stream({
   onPointerShown,
 }: {
   host: string;
+  /** The host's monitor to show (an index of its list); null: the primary one. */
+  monitor?: number | null;
+  /** The host's monitors, and the index of the one streamed (null from older hosts). */
+  onMonitors?: (monitors: RemoteMonitor[], streamed: number | null) => void;
+  /** The host refused `monitor` as one it does not have (unplugged since it was picked). */
+  onMonitorMissing?: () => void;
   onFrame?: () => void;
   /** Whether the host's pointer is drawn over the picture now (only then may the local cursor hide:
    *  a host that reports its pointer hidden, e.g. Windows suppressing it after touch or pen input,
@@ -76,8 +86,8 @@ export function Stream({
   const pointerCanvas = useRef<HTMLCanvasElement>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const callbacks = useRef({ onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown });
-  callbacks.current = { onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown };
+  const callbacks = useRef({ onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown });
+  callbacks.current = { onMonitors, onMonitorMissing, onFrame, onSize, onScreen, onStats, onRestart, onError, onPointerShown };
   useEffect(() => {
     callbacks.current.onRestart?.();
     callbacks.current.onScreen?.(null);
@@ -168,7 +178,7 @@ export function Stream({
         rate.received(f.byteLength, performance.now());
         decoder.push(f);
       },
-        { maxFps, maxLongEdge, bitrateKbps, codecs: preferredCodecs(), onPong: clock.pong, onEnded: end,
+        { monitor, maxFps, maxLongEdge, bitrateKbps, codecs: preferredCodecs(), onPong: clock.pong, onEnded: end,
           onPointer: (at) => { pointerAt = at; movePointer(); },
           onPointerShape: (shape) => {
             if (stopped) return;
@@ -179,6 +189,7 @@ export function Stream({
         if (stopped) v?.stop();
         else {
           view = v;
+          if (v) callbacks.current.onMonitors?.(v.monitors, v.monitor ?? monitor);
           callbacks.current.onScreen?.(v?.screen ?? null);
           if (v) stopPinging = startPinging(clock, (n) => v.ping(n));
           movePointer();
@@ -187,7 +198,10 @@ export function Stream({
       .catch((e) => {
         if (stopped) return;
         void commands.logFromPage("error", `Cannot start live video: ${String(e)}`);
-        end(e instanceof Error ? e.message : String(e));
+        const reason = e instanceof Error ? e.message : String(e);
+        end(reason);
+        // A monitor remembered from before it was unplugged: the page goes back to the primary one.
+        if (monitor !== null && isMissingMonitor(reason)) callbacks.current.onMonitorMissing?.();
       });
     return () => {
       stopped = true;
@@ -200,9 +214,11 @@ export function Stream({
       callbacks.current.onStats?.(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [host, maxFps, maxLongEdge, bitrateKbps, retryGeneration]);
+  }, [host, monitor, maxFps, maxLongEdge, bitrateKbps, retryGeneration]);
   if (api.kind !== "tauri") {
-    return <img key={`${host}/${maxFps}/${maxLongEdge}/${bitrateKbps}/${retryGeneration}`} className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { callbacks.current.onSize?.(1600, 1000); callbacks.current.onFrame?.(); callbacks.current.onScreen?.({ x: 0, y: 0, width: 1600, height: 1000 }); }} />;
+    // The preview's computer has three monitors, so the picker shows; each one shows the same picture.
+    const shown = demoMonitors.find((m) => m.index === monitor) ?? demoMonitors[0];
+    return <img key={`${host}/${monitor}/${maxFps}/${maxLongEdge}/${bitrateKbps}/${retryGeneration}`} className="rd-holder" src={demoScreenUrl()} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onLoad={() => { callbacks.current.onSize?.(shown.width, shown.height); callbacks.current.onFrame?.(); callbacks.current.onMonitors?.(demoMonitors, shown.index); callbacks.current.onScreen?.({ x: shown.x ?? 0, y: shown.y ?? 0, width: shown.width, height: shown.height }); }} />;
   }
   return (
     <>
@@ -497,6 +513,16 @@ export function SessionPage({
   const [hasFrame, setHasFrame] = useState(false);
   const [screen, setScreen] = useState<ScreenRect | null>(null);
   const [quality, setQuality] = useState(loadStreamQuality);
+  // The host's monitor to show (null: the primary one), remembered per computer; the host's list and
+  // the index it streams come with each start and stay while the next stream starts.
+  const [monitor, setMonitor] = useState(() => loadMonitor(host));
+  const [monitors, setMonitors] = useState<RemoteMonitor[]>([]);
+  const [streamed, setStreamed] = useState<number | null>(null);
+  useEffect(() => {
+    setMonitor(loadMonitor(host));
+    setMonitors([]);
+    setStreamed(null);
+  }, [host]);
   // Concrete limits ("auto" follows this display), fixed while the quality stays the same.
   const limits = useMemo(() => resolveQuality(quality), [quality]);
   const [stats, setStats] = useState<VideoStats | null>(null);
@@ -738,6 +764,32 @@ export function SessionPage({
     </span>
   );
 
+  // Only a host with more than one monitor gets the picker; options read left to right as on its desk.
+  const shownMonitor = monitor ?? streamed ?? primaryOf(monitors)?.index ?? null;
+  const names = monitorNames(monitors, t);
+  const monitorPicker = monitors.length > 1 && (
+    <span className="nt-select-wrap">
+      <select
+        className="nt-select"
+        aria-label={t("stream_monitor")}
+        value={shownMonitor ?? ""}
+        title={t("stream_monitor_hint", { n: monitors.length })}
+        onChange={(e) => {
+          // Let go of the focus, or the bar it sits on would stay up.
+          e.currentTarget.blur();
+          const next = Number(e.target.value);
+          if (!Number.isInteger(next) || next === shownMonitor) return;
+          resetVideo();
+          saveMonitor(host, next);
+          setMonitor(next);
+        }}
+      >
+        {pickerOrder(monitors).map((m) => <option key={m.index} value={m.index}>{monitorOption(m, names)}</option>)}
+      </select>
+      <Icon name="chevD" size={12} />
+    </span>
+  );
+
   return (
     <div className={cx("nt-session", immersive && "immersive")}>
       <TitleBar
@@ -756,6 +808,7 @@ export function SessionPage({
                 {t("relay_fix_firewall")}
               </button>
             )}
+            {monitorPicker}
             {qualityPicker}
             <button className="nt-iconbtn" onClick={() => enter(true)} aria-label={t("fs_enter")} title={`${t("fs_enter")} · ⌃⌘F`}>
               <Icon name="fullscreen" size={16} />
@@ -777,6 +830,16 @@ export function SessionPage({
             {c.online !== false && (
               <Stream
                 host={host}
+                monitor={monitor}
+                onMonitors={(list, index) => {
+                  setMonitors(list);
+                  setStreamed(index);
+                }}
+                onMonitorMissing={() => {
+                  saveMonitor(host, null);
+                  setMonitor(null);
+                  setNotice(t("monitor_gone"));
+                }}
                 maxFps={limits.maxFps}
                 maxLongEdge={limits.maxLongEdge}
                 bitrateKbps={limits.bitrateKbps}
@@ -844,6 +907,7 @@ export function SessionPage({
                   <Facts items={computerFacts(c)} />
                 </span>
                 <span className="vr" />
+                {monitorPicker}
                 {qualityPicker}
                 <button className="nt-iconbtn" onClick={() => enter(false)} aria-label={t("fs_exit")} title={`${t("fs_exit")} · ⌃⌘F`}>
                   <Icon name="exitFullscreen" size={16} />

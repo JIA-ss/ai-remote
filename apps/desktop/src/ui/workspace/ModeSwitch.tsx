@@ -5,9 +5,10 @@
 
 import { Bot, Monitor } from "lucide-react";
 import { t } from "../../lib/i18n";
+import type { AppMode } from "../../lib/nav";
 import { cx } from "../util";
 
-export type AppMode = "computers" | "agents";
+export type { AppMode };
 
 const MODE = "ai-remote.mode";
 

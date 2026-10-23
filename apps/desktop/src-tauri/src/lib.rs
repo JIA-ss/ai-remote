@@ -1379,11 +1379,13 @@ fn smoke(app: &tauri::App) {
     let Some(out) = std::env::var_os("AI_REMOTE_SMOKE") else { return };
     let secs: u64 = std::env::var("AI_REMOTE_SMOKE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_focusable(false);
         let _ = w.set_skip_taskbar(true);
+        // `AI_REMOTE_SMOKE_VISIBLE=1` shows the window and lets it take focus, for runs that type into it
+        // with real key events (an input method, tools/desktop-chat-e2e-ime.js).
         if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() == Ok("1") {
             let _ = w.show();
         } else {
+            let _ = w.set_focusable(false);
             let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
         }
         // `AI_REMOTE_SMOKE_QUALITY=ultra` picks a live-view quality first (a stream-quality id; run

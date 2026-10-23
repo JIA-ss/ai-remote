@@ -3,7 +3,9 @@
 // its edge (a click on the edge or ⌘B hides it, a double click resets it), and folds away in a narrow
 // window, where ⌘B or the toggle lays it over the page instead (SB-02 / SB-03). ⌘K searches, ⌘N starts
 // a new session (⌘⇧N where the open one runs), F2 renames, ⌘⌥P / R / U / A pin, rename, change the read
-// state and archive (SB-39). Back / forward walk this workspace's own history.
+// state and archive (SB-39). Back / forward are the shell's history (lib/nav.ts): the workspace is one
+// route of the window, every page it opens is an entry there, so ‹ › and ⌘[ ⌘] walk across the
+// workspace, the live views it opens and the computers alike.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../lib/i18n";
@@ -22,14 +24,13 @@ import { useWorkspace, workspace } from "./useWorkspace";
 /** The session shortcuts' keys (with ⌘⌥ / Ctrl+Alt). */
 const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA"]);
 
-/** Where the workspace is: a session on a computer, or the new-session page. */
+/** Where the workspace is: a session on a computer, or the new-session page (with the place it was
+ *  opened for). The shell's `{ page: "agents" }` route carries the same fields. */
 export interface WsRoute {
   host?: string;
   session?: string;
+  place?: Place | null;
 }
-
-/** A history entry: the route and, for the new-session page, the place it was opened for. */
-type Entry = WsRoute & { place?: Place | null };
 
 const SIDE = "ai-remote.ws.side";
 
@@ -59,6 +60,8 @@ export function Workspace({
   device,
   route,
   onRoute,
+  back,
+  forward,
   onMode,
   onWatch,
   onPair,
@@ -67,7 +70,11 @@ export function Workspace({
   computers: Computer[];
   device: string;
   route: WsRoute;
+  /** Opens a workspace page: a new entry in the shell's history. */
   onRoute: (r: WsRoute) => void;
+  /** The shell's history; null when there is nothing that way. */
+  back: (() => void) | null;
+  forward: (() => void) | null;
   onMode: (m: AppMode) => void;
   onWatch: (host: string) => void;
   onPair: () => void;
@@ -92,9 +99,6 @@ export function Workspace({
   const [renamingTitle, setRenamingTitle] = useState(false);
   /** Tickets from `chat_start`, for the first look at a session just started here. */
   const tickets = useRef(new Map<string, string>());
-  const hist = useRef<Entry[]>([route]);
-  const [at, setAt] = useState(0);
-  const entry: Entry = hist.current[at] ?? route;
   const current = route.host && route.session ? sessionKey(route.host, route.session) : null;
 
   const saveSide = (next: { w: number; hidden: boolean }) => {
@@ -111,24 +115,12 @@ export function Workspace({
     else saveSide({ ...side, hidden: !side.hidden });
   }, [narrow, side]);
 
-  const go = (r: Entry) => {
-    const list = [...hist.current.slice(0, at + 1), r].slice(-50);
-    hist.current = list;
-    setAt(list.length - 1);
-    setRenamingTitle(false);
+  const go = (r: WsRoute) => {
     if (narrow) setFloatOpen(false);
-    onRoute({ host: r.host, session: r.session });
+    onRoute(r);
   };
-  const back = at > 0 ? () => {
-    setAt(at - 1);
-    const r = hist.current[at - 1];
-    onRoute({ host: r.host, session: r.session });
-  } : null;
-  const forward = at < hist.current.length - 1 ? () => {
-    setAt(at + 1);
-    const r = hist.current[at + 1];
-    onRoute({ host: r.host, session: r.session });
-  } : null;
+  // A rename of the title belongs to the page it started on (also when ‹ › leave it).
+  useEffect(() => setRenamingTitle(false), [route.host, route.session]);
   const openSession = (host: string, id: string) => {
     if (route.host === host && route.session === id) return;
     go({ host, session: id });
@@ -369,7 +361,7 @@ export function Workspace({
           <NewSession
             snap={snap}
             computers={computers}
-            prefill={entry.place ?? null}
+            prefill={route.place ?? null}
             corner={mainCorner}
             onStarted={(host, session, ticket) => {
               tickets.current.set(`${host}/${session}`, ticket);

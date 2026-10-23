@@ -130,9 +130,14 @@ Codex 的规格在同目录 `codex-X*.md`，Codex 页面归 `ui/codex/`。
 
 ### 2.1 入口与路由
 
-- 主窗口左栏顶部加两段式切换「电脑 / 智能体」（位置和形态仿规格 SB-01 的对话 / 代码切换）。选「智能体」进入工作区，整窗由工作区接管
-  （自己的左栏 + 主区），选「电脑」回到原来的电脑列表。上次所在的模式记在 localStorage。
-- `App.tsx` 的 View 增加 `{ kind: "agents"; host?: string; session?: string }`；`?view=agents[&host=&session=]` 直接打开（截图、e2e）。
+- 主窗口（玻璃外壳）左栏顶部加两段式切换「电脑 / 智能体」（位置和形态仿规格 SB-01 的对话 / 代码切换；展开时在顶栏右端，
+  紧凑 72 px 时竖排在顶栏下方）。选「智能体」进入工作区，整窗由工作区接管（自己的左栏 + 主区），工作区左栏顶部的同一个切换选「电脑」
+  回到电脑列表。上次所在的半边记在 localStorage（`ai-remote.mode`），打开 app 且网址没指定页面时回到那半边。
+- 工作区是外壳的一个路由：`lib/nav.ts` 的 `Route` 增加 `{ page: "agents"; host?: string; session?: string; place?: Place | null }`
+  （`place` 是新建会话页的预填，不算不同位置）；`?view=agents[&host=&session=]` 直接打开（截图、e2e）。工作区里开会话、新建、
+  「在推流里打开」、设置、配对都是外壳历史里的普通条目，‹ › / ⌘[ ⌘] / 鼠标侧键跨两半边走同一条历史；会话的逻辑父级是新建会话页。
+  窗口藏到托盘时，从工作区打开的推流回到工作区（推流条目丢掉），其余推流照旧回到它的电脑页。工作区里外壳只留历史、设置和页面快捷键，
+  ⌘N、侧栏开关、搜索归工作区。
 - 推流会话页右栏的「对话」标签照旧，但里面的对话按智能体分派到 `ClaudeConversation` / `CodexConversation`，和工作区共用组件。
 
 ### 2.2 工作区（`ui/workspace/`，`lib/workspace.ts`，`styles/workspace.css`，文案 `ws_`）

@@ -128,7 +128,7 @@ const liveInput = {};
 vm.runInNewContext(liveInputCompiled, { exports: liveInput, Error, console, JSON, Math, Set, setTimeout, clearTimeout });
 
 /** `live`: the host offers the live input channel (its lines go to `sent`); otherwise the fallback runs. */
-function remoteInputFixture(live = false) {
+function remoteInputFixture(live = false, screen = { x: 0, y: 0, width: 1000, height: 1000 }) {
   const calls = [], errors = [], cleanups = [], pendingTimers = new Map(), sent = [], notices = [];
   const first = deferred();
   let timerId = 0, refId = 0, handBack = 0, closed = 0;
@@ -168,7 +168,7 @@ function remoteInputFixture(live = false) {
     document: { hasFocus: () => false } });
   if (live) opened.resolve({ os: "windows", clipboard: false, clipboardWrite: false, send: async (data) => { sent.push(data); return true; }, close: () => closed++ });
   else opened.reject(new Error("older host"));
-  const { props } = exports.RemoteInput({ host: "test-mac", screen: { x: 0, y: 0, width: 1000, height: 1000 }, mac: !live,
+  const { props } = exports.RemoteInput({ host: "test-mac", screen, mac: !live,
     onError: (message) => { if (message) errors.push(message); },
     onNotice: (message) => notices.push(message),
     onHandBack: () => { assert.equal(pendingTimers.size, 0, "cancel text BEFORE handing back"); handBack++; },
@@ -219,6 +219,32 @@ test("with the live channel, moves, presses, wheel and keys stream as lines and 
   assert.equal(s.calls.length, 0, "no tool calls on the live path");
   for (const cleanup of s.cleanups) cleanup();
   assert.equal(s.closed(), 1);
+});
+
+test("input lands on the streamed monitor: one left of the primary (negative origin) and portrait", async () => {
+  // The picture is 100x100 CSS pixels here; the monitor is 1440x2560 at (-1440, -9), as on win-dev.
+  const left = { x: -1440, y: -9, width: 1440, height: 2560 };
+  const s = remoteInputFixture(true, left);
+  await tick();
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 10));
+  // Each move waits for the last to go out: runs of moves collapse to the newest.
+  for (const [clientX, clientY] of [[0, 0], [100, 100], [50, 25]]) {
+    s.props.onPointerMove({ clientX, clientY });
+    await wait();
+  }
+  // The corners are the monitor's first and last pixels; nothing reaches the primary monitor at x >= 0.
+  assert.deepEqual(s.lines(), [{ m: [-1440, -9] }, { m: [-1, 2550] }, { m: [-720, 631] }]);
+  // A wheel notch moves there first, so it scrolls what is under the pointer on this monitor.
+  s.props.onWheel({ clientX: 10, clientY: 90, deltaX: 0, deltaY: 100, deltaMode: 0 });
+  await wait();
+  assert.deepEqual(s.lines().slice(3), [{ m: [-1296, 2294] }, { w: [0, 2] }]);
+  for (const cleanup of s.cleanups) cleanup();
+  // Without the live channel, the tool calls take the same screen coordinates.
+  const right = remoteInputFixture(false, { x: 5120, y: -9, width: 1440, height: 2560 });
+  await tick();
+  right.props.onPointerDown({ ...right.pointer, clientX: 100, clientY: 0 });
+  right.props.onPointerUp({ ...right.pointer, clientX: 100, clientY: 0 });
+  assert.deepEqual(plain(right.calls[0].args), { action: "click", x: 6559, y: -9, space: "screen" });
 });
 
 test("without the live channel the fallback is used and a note says so", async () => {

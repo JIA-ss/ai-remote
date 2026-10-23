@@ -104,8 +104,20 @@
 .ws-mode:hover { color: var(--text-1); }
 .ws-mode.on { color: var(--text-1); background: color-mix(in srgb, var(--text-1) 14%, transparent); box-shadow: 0 1px 2px rgb(0 0 0 / .18); }
 [data-theme="light"] .ws-mode.on { background: #ffffff; box-shadow: 0 0 0 .5px rgb(0 0 0 / .08), 0 1px 2px rgb(0 0 0 / .10); }
-.nt-drag.ws-modes-strip { display: flex; align-items: center; justify-content: flex-end; padding-right: 2px; }
-
+/* In the shell's glass sidebar (ui/Shell.tsx): at the right end of the 48 px top strip while expanded
+   (clear of the macOS traffic lights, the sidebar toggle and the Windows app name), shaped like the
+   toolbar's segmented capsules (glass/shell.css .gl-segbtn); stacked under the strip while compact,
+   where the traffic lights take the whole 72 px strip. Not .gl-glass: the sidebar is material already. */
+.gl-side-modes { position: absolute; top: 10px; right: 10px; z-index: 31; }
+.gl-side-modes .ws-modes { border-radius: 14px; background: var(--fill-1); }
+.gl-side-modes .ws-mode { width: 32px; border-radius: 12px; color: var(--text-2); }
+.gl-side-modes .ws-mode:hover:not(.on) { background: var(--fill-1); color: var(--text-1); }
+.gl-side-modes .ws-mode:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.gl-side-modes .ws-mode.on { color: var(--text-1); background: rgb(255 255 255 / .14); box-shadow: none; }
+:root[data-theme="light"] .gl-side-modes .ws-mode.on { background: #FFFFFF; box-shadow: 0 1px 2px rgb(0 0 0 / .10), 0 0 0 .5px rgb(0 0 0 / .05); }
+:root[data-material="none"][data-theme="dark"] .gl-side-modes .ws-mode.on { background: var(--raised); box-shadow: 0 1px 2px rgb(0 0 0 / .18); }
+.gl-win[data-sidebar="compact"] .gl-side-modes { position: static; display: flex; justify-content: center; margin: 0 0 8px; }
+.gl-win[data-sidebar="compact"] .gl-side-modes .ws-modes { flex-direction: column; }
 /* ---- 4. Sidebar (SB / VS-24..31): compact density, 28 px session rows 2 px apart ---- */
 .ws-side-top { height: 48px; flex: none; display: flex; align-items: center; padding: 0 8px; gap: 4px; }
 .ws-lead { width: 24px; height: 24px; flex: none; display: grid; place-items: center; }
