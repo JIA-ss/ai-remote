@@ -450,6 +450,9 @@
     await check("a Codex session gets the Codex view", !!(await until("codex view", () => $(".ws-main .nt-chat.cdx"), 20000)), $(".ws-main .nt-chat")?.className);
     await check("in its own folder's group", groupName(k3) === "src", text($(".ws-gh-label", rowOf(k3)?.closest(".ws-sec"))));
     await until("codex turn", () => $(".ws-main .cdx-turn"), 15000);
+    const codexComposer = $(".ws-main .nt-chat.cdx .nt-compose")?.getBoundingClientRect();
+    await check("the workspace Codex composer keeps its whole lower edge above the window bottom",
+      !!codexComposer && codexComposer.bottom <= innerHeight - 12, codexComposer && `${codexComposer.bottom} / ${innerHeight}`);
     await shot("a07-codex");
 
     // A8. ⌘K: by title, by folder; Enter opens.
@@ -676,6 +679,8 @@
     $(".ws-main .nt-compose .round.stop").click();
     const stopped = await until("stopped", () => $(".cl-stopped", lastTurn()), 10000);
     await check("Stop ends the turn and offers Continue", !!stopped);
+    await check("b07-stopped: the tool reaches stopped after its specified display dwell",
+      !!(await until("displayed tool stopped", () => $('.cl-tool[data-state="stopped"]', lastTurn()), 3000)));
     await shot("b07-stopped");
     $(".cl-stopped .cl-btn", lastTurn())?.click();
     await check("Continue sends a new turn", !!(await until("continued", () => !$(".ws-main .cl-stopped") && /you said: (从刚才|Continue where)/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-100));
@@ -709,7 +714,9 @@
       const res = other2.events.find((e) => e && e.t === "resolved" && e.id === ev?.rid);
       await check("the host reports it resolved (who answered)", !!res, JSON.stringify(res ?? {}).slice(0, 160));
       if (!/另一|other device|elsewhere|已在/.test(text(lastTurn()))) note("nothing on the page says another device answered (the card just closes)");
-      await shot("c02-after-other");
+      await check("c02-after-other: the tool reaches done after its specified display dwell",
+      !!(await until("displayed tool done", () => $('.cl-tool[data-state="done"]', lastTurn()), 3000)));
+    await shot("c02-after-other");
       const otherAt = Date.now();
       const settled = await until("not awaiting", () => dotOf(kb) !== "awaiting", 30000);
       if (settled) await note(`the amber dot went ${((Date.now() - otherAt) / 1000).toFixed(1)} s after the other connection answered`);

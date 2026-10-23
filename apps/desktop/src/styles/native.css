@@ -619,6 +619,8 @@ textarea.ta-input:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
 .nt-q.done .prompt { color: var(--c-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .nt-q.done .ans { color: var(--c-fg); }
 .nt-notice { display: flex; gap: 7px; align-items: flex-start; font-size: 12px; line-height: 1.5; color: var(--c-faint); padding: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Conversation notices belong to their turn. The stage's notice above remains an overlay. */
+.nt-transcript .nt-notice { position: static; inset: auto; transform: none; z-index: auto; max-width: 100%; background: transparent; border-radius: 0; box-shadow: none; }
 .nt-notice svg { flex: none; margin-top: 2px; }
 .nt-notice.warn { color: var(--you-text); }
 .nt-notice.error { color: var(--danger); }

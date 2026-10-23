@@ -681,6 +681,10 @@
       !!box && box.scrollHeight > box.clientHeight + 100 && lastLineIn() && getComputedStyle($("pre.x-out", box)).whiteSpace === "pre" && !$(".x-more", bigShell),
       box && `${box.scrollHeight}/${box.clientHeight} ${getComputedStyle($("pre.x-out", box)).whiteSpace}`);
     await check("all of it is a scroll away", /line 1:/.test($("pre.x-out", box).textContent) && box.dataset.up !== undefined);
+    const oldError = $$(".nt-transcript .nt-notice.error").find((node) => /overloaded/.test(text(node)));
+    await check("a previous turn's failure stays in transcript flow and never overlays the next terminal",
+      !!oldError && getComputedStyle(oldError).position === "static" && oldError.getBoundingClientRect().bottom <= bigShell.getBoundingClientRect().top,
+      oldError && `${getComputedStyle(oldError).position}: ${oldError.getBoundingClientRect().bottom} / ${bigShell.getBoundingClientRect().top}`);
     await screenshotAt("c07-many", bigShell);
 
     // 9. A Codex that sends no phases: the last text of the finished turn is the answer.
