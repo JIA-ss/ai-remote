@@ -925,6 +925,17 @@ export function questionParts(b: QuestionBlock): QuestionItem[] {
   return [{ question: b.prompt, options: b.options.map((label) => ({ label })) }];
 }
 
+/** TC-47: dragging an option's text does not pick it. A selection elsewhere and keyboard clicks do. */
+export function questionSelectionBlocks(detail: number, selection: Selection | null, option: Node): boolean {
+  if (detail === 0 || !selection || selection.isCollapsed || !selection.toString()) return false;
+  for (let i = 0; i < selection.rangeCount; i++) {
+    try {
+      if (selection.getRangeAt(i).intersectsNode(option)) return true;
+    } catch { /* A range can disappear when the streamed page changes. */ }
+  }
+  return false;
+}
+
 export function qInit(n: number): QDraft {
   return { page: 0, picks: Array.from({ length: n }, () => []), other: Array.from({ length: n }, () => null), skipped: Array.from({ length: n }, () => false) };
 }

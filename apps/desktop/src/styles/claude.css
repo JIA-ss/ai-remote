@@ -137,6 +137,9 @@
 .cl-out-box { min-width: 0; }
 .cl-out { margin: 0; max-height: 400px; overflow: auto; font-family: var(--cl-mono); font-size: 12px; line-height: 18px; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--cl-text-2); }
 .cl-out.err { color: var(--cl-danger); }
+.cl-out-add { background: color-mix(in srgb, var(--cl-add) 20%, transparent); }
+.cl-out-del { background: color-mix(in srgb, var(--cl-del) 20%, transparent); }
+.cl-out-line { display: block; }
 .cl-more { font-size: 12px; color: var(--cl-muted); padding: 0 0 4px; }
 .cl-more:hover { color: var(--cl-text); }
 .cl-settled { font-size: 12px; color: var(--cl-text-2); }
@@ -300,6 +303,9 @@
 .cl-qc { padding: 0; gap: 0; overflow: hidden; max-height: none; }
 .cl-qc-hd { display: flex; align-items: flex-start; gap: 12px; padding: 8px 12px; background: var(--cl-a1); }
 .cl-qc-hd .q { flex: 1; min-width: 0; font-weight: 500; }
+.cl-qc .md-inline { overflow-wrap: anywhere; }
+.cl-qc .md-inline code { font-family: var(--cl-mono); font-size: .93em; padding: 1px 3px; border-radius: 4px; background: var(--cl-a1); }
+.cl-qc .q, .cl-qc-opts .lb { user-select: text; }
 .cl-qc-hd .pager { flex: none; display: inline-flex; align-items: center; gap: 2px; font-size: 11px; color: var(--cl-muted); }
 .cl-qc-opts { display: flex; flex-direction: column; }
 .cl-qc-opts .opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; text-align: left; border-top: 1px solid var(--cl-a2); color: var(--cl-text); }

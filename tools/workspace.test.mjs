@@ -47,6 +47,33 @@ const meta = (over = {}) => ({
 });
 const item = (host, m, local = false) => ({ host, key: `${host}/${m.id}`, meta: m, local, online: true });
 
+test("number jumps use Ctrl+Shift on every platform and reject Cmd, Alt and incomplete chords", () => {
+  const chord = { ctrlKey: true, shiftKey: true, metaKey: false, altKey: false };
+  assert.equal(ws.sessionJumpChord(chord), true);
+  for (const change of [{ metaKey: true }, { altKey: true }, { ctrlKey: false }, { shiftKey: false }]) {
+    assert.equal(ws.sessionJumpChord({ ...chord, ...change }), false);
+  }
+  // Shift+1 is "!" on a US layout; digit selection must still work on other keyboard layouts.
+  assert.equal(ws.sessionJumpNumber({ code: "Digit1", key: "!" }), 1);
+  assert.equal(ws.sessionJumpNumber({ code: "Digit9", key: "(" }), 9);
+  assert.equal(ws.sessionJumpNumber({ code: "Numpad2", key: "2" }), 2);
+  assert.equal(ws.sessionJumpNumber({ code: "", key: "3" }), 3);
+  for (const key of [{ code: "Digit0", key: ")" }, { code: "KeyQ", key: "q" }, { code: "ShiftLeft", key: "Shift" }]) {
+    assert.equal(ws.sessionJumpNumber(key), null);
+  }
+});
+
+test("environment chips collapse only when needed and restore after more than 2 px spare", () => {
+  assert.equal(ws.compactEnvironment(false, 400, 400), false);
+  assert.equal(ws.compactEnvironment(false, 399.9, 400), true);
+  assert.equal(ws.compactEnvironment(true, 400, 400), true);
+  assert.equal(ws.compactEnvironment(true, 402, 400), true);
+  assert.equal(ws.compactEnvironment(true, 402.1, 400), false);
+  // Hidden or not-yet-laid-out rows do not erase their last stable mode.
+  assert.equal(ws.compactEnvironment(true, 0, 400), true);
+  assert.equal(ws.compactEnvironment(false, Number.NaN, 400), false);
+});
+
 test("sessions group by folder and computer; pinned ones go to their own section", () => {
   const a = item("mac", meta({ cwd: "/home/me/app", last_activity: 50 }), true);
   const b = item("mac", meta({ cwd: "/home/me/app/", last_activity: 90 }), true);

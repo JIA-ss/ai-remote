@@ -11,7 +11,7 @@ import { folderChoices, folderName, lastCwd, recentCwds, rememberCwd, sameFolder
 import { isCodexRuntime } from "../../lib/codex";
 import { t } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
-import { isRunning, keepOrder, lastSeq, normalizeMeta, recentPlaces, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
+import { compactEnvironment, isRunning, keepOrder, lastSeq, normalizeMeta, recentPlaces, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
 import { FolderPicker, type Listing } from "../chat/FolderPicker";
 import { cx } from "../util";
 import { ComputerMark, isMac, modKey, modLabel, PopMenu, type MenuAt, type MenuLine, type Toast } from "./parts";
@@ -161,6 +161,49 @@ export function NewSession({
   const envCard = useRef<HTMLElement>(null);
   const stepsCard = useRef<HTMLElement>(null);
   const composer = useRef<HTMLDivElement>(null);
+  const environment = useRef<HTMLDivElement>(null);
+  const [compactEnv, setCompactEnv] = useState(false);
+  const compactEnvRef = useRef(false);
+  // NS-34: measure the full labels even while only their icons are drawn. The measurement attribute
+  // changes layout synchronously and is removed before paint; popup content is not part of the row.
+  useLayoutEffect(() => {
+    const row = environment.current;
+    const lead = row?.querySelector<HTMLElement>(".ws-env-lead");
+    const trail = row?.querySelector<HTMLElement>(".ws-env-trail");
+    if (!row || !lead || !trail) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const measure = () => {
+      const style = getComputedStyle(row);
+      const available = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      if (available <= 0) return;
+      row.dataset.measuring = "";
+      const required = lead.getBoundingClientRect().width + trail.getBoundingClientRect().width + (parseFloat(style.columnGap) || 0);
+      delete row.dataset.measuring;
+      const next = compactEnvironment(compactEnvRef.current, available, required);
+      if (next !== compactEnvRef.current) {
+        compactEnvRef.current = next;
+        setCompactEnv(next);
+      }
+    };
+    // Leave the current ResizeObserver delivery before switching the label layout. Measuring during
+    // that delivery would resize its own observed children and defer notifications with a loop error.
+    const schedule = () => {
+      timer ??= setTimeout(() => { timer = null; measure(); }, 0);
+    };
+    measure();
+    const resize = new ResizeObserver(schedule);
+    resize.observe(row);
+    resize.observe(lead);
+    resize.observe(trail);
+    // Model names, folders, computer names and language changes can require a different width.
+    const text = new MutationObserver(schedule);
+    text.observe(row, { childList: true, characterData: true, subtree: true });
+    return () => {
+      if (timer) clearTimeout(timer);
+      resize.disconnect();
+      text.disconnect();
+    };
+  }, []);
   // NS-03: the cards stand halfway down the room from the top to 2.75rem above the composer's bottom,
   // counting the environment card and one next step (3.25rem; 2.5rem without the card). Where even that
   // does not fit, next steps that do not stop sending are left out (the card too, when none is left).
@@ -477,12 +520,13 @@ export function NewSession({
               <ArrowUp size={16} strokeWidth={2} />
             </button>
           </div>
-          <div className="ws-env">
+          <div className="ws-env" ref={environment} data-compact={compactEnv || undefined}>
             <div className="ws-env-lead">
               <button
                 type="button"
-                className={cx("ws-chip", !online && host && "off")}
+                className={cx("ws-chip ws-chip-location", !online && host && "off")}
                 aria-haspopup="menu"
+                aria-label={host ? `${t("ws_where")}: ${host}` : t("ws_choose_computer")}
                 title={host ? `${t("ws_where")}: ${host}${online ? "" : ` (${t("ws_offline")})`}` : t("ws_where")}
                 onClick={(e) => openMenu("env", e.currentTarget, "above")}
               >
@@ -490,7 +534,7 @@ export function NewSession({
                 <span className="ws-chip-text">{host ?? t("ws_choose_computer")}</span>
               </button>
               {host && (
-                <div className="ws-chip-folder" ref={folderBox} title={cwd ? t("ws_folder_tip", { path: cwd }) : undefined}>
+                <div className="ws-chip-folder" ref={folderBox} title={cwd ? t("ws_folder_tip", { path: cwd }) : t("hc_folder_choose")}>
                   <FolderPicker
                     key={host}
                     host={host}

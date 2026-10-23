@@ -7,7 +7,7 @@
 // own (new session there, copy the path, collapse the others — also Alt+click).
 
 import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { folderName, knownHome } from "../../lib/chat";
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
@@ -21,6 +21,9 @@ import {
   isFiltered,
   normalizeList,
   rowsBeforeMore,
+  SESSION_JUMP,
+  sessionJumpChord,
+  sessionJumpNumber,
   shownByStatus,
   sortSessions,
   stateBucket,
@@ -47,6 +50,117 @@ const COLLAPSED = "ai-remote.ws.collapsed";
 const LIST = "ai-remote.ws.list";
 const PINNED_KEY = "pinned";
 const ALL_KEY = "all";
+
+/** SB-41: number the rows actually drawn by the current grouping (not rows behind Show more). */
+function useSessionJumps(list: RefObject<HTMLDivElement | null>, disabled: boolean, onOpen: (key: string) => void): string[] {
+  const [keys, setKeys] = useState<string[]>([]);
+  const open = useRef(onOpen);
+  open.current = onOpen;
+  useEffect(() => {
+    setKeys([]);
+    if (disabled) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let held = false;
+    let showing = false;
+    const rows = () => [...(list.current?.querySelectorAll<HTMLButtonElement>(".ws-row-main") ?? [])]
+      .filter((el) => el.getClientRects().length > 0 && !el.closest("[inert], [aria-hidden=true]"))
+      .slice(0, SESSION_JUMP.COUNT);
+    const update = () => {
+      const next = rows().map((el) => el.closest<HTMLElement>("[data-row-key]")!.dataset.rowKey!);
+      setKeys((prev) => prev.length === next.length && prev.every((key, i) => key === next[i]) ? prev : next);
+    };
+    const hide = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      showing = false;
+      setKeys((prev) => prev.length ? [] : prev);
+    };
+    const editing = () => {
+      const a = document.activeElement;
+      return a instanceof HTMLElement && (a.isContentEditable || !!a.closest("input, textarea, select, [role=textbox]"));
+    };
+    const down = (e: globalThis.KeyboardEvent) => {
+      if (e.isComposing || editing() || document.hidden || !sessionJumpChord(e)) {
+        held = false;
+        hide();
+        return;
+      }
+      const number = sessionJumpNumber(e);
+      if (number !== null) {
+        if (e.repeat) return;
+        // The delay reveals hints; a quick Ctrl+Shift+digit can still open the corresponding row.
+        const el = rows()[number - 1];
+        if (el) {
+          e.preventDefault();
+          const key = el.closest<HTMLElement>("[data-row-key]")!.dataset.rowKey!;
+          hide();
+          el.focus({ preventScroll: true });
+          el.scrollIntoView({ block: "nearest" });
+          open.current(key);
+        }
+        return;
+      }
+      if (e.key !== "Control" && e.key !== "Shift") {
+        hide();
+        return;
+      }
+      if (held) return;
+      held = true;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!held || editing() || document.hidden) return;
+        showing = true;
+        update();
+      }, SESSION_JUMP.HOLD_MS);
+    };
+    const up = (e: globalThis.KeyboardEvent) => {
+      if (!sessionJumpChord(e)) {
+        held = false;
+        hide();
+      }
+    };
+    const blur = () => { held = false; hide(); };
+    const focus = () => { if (editing()) hide(); };
+    let resolution: MediaQueryList;
+    const scaleChanged = () => {
+      hide();
+      resolution.removeEventListener("change", scaleChanged);
+      resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution.addEventListener("change", scaleChanged);
+    };
+    resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    resolution.addEventListener("change", scaleChanged);
+    const changes = new MutationObserver(() => { if (showing) update(); });
+    if (list.current) changes.observe(list.current, { childList: true, subtree: true });
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("pointermove", hide);
+    window.addEventListener("wheel", hide, { passive: true });
+    window.addEventListener("blur", blur);
+    // Browser zoom changes the layout viewport or its visual scale; either removes stale hints.
+    window.addEventListener("resize", hide);
+    window.visualViewport?.addEventListener("resize", hide);
+    document.addEventListener("scroll", hide, true);
+    document.addEventListener("focusin", focus);
+    document.addEventListener("visibilitychange", blur);
+    return () => {
+      if (timer) clearTimeout(timer);
+      changes.disconnect();
+      resolution.removeEventListener("change", scaleChanged);
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("pointermove", hide);
+      window.removeEventListener("wheel", hide);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("resize", hide);
+      window.visualViewport?.removeEventListener("resize", hide);
+      document.removeEventListener("scroll", hide, true);
+      document.removeEventListener("focusin", focus);
+      document.removeEventListener("visibilitychange", blur);
+    };
+  }, [disabled, list]);
+  return keys;
+}
 
 function readCollapsed(): Set<string> {
   try {
@@ -180,6 +294,10 @@ export function Sidebar(p: SidebarProps) {
     if (cardTimer.current) clearTimeout(cardTimer.current);
   }, []);
   const byKey = useMemo(() => new Map(all.map((x) => [x.key, x])), [all]);
+  const jumps = useSessionJumps(list, quiet, (key) => {
+    const item = byKey.get(key);
+    if (item) p.onOpen(item.host, item.meta.id);
+  });
   const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
   const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived };
 
@@ -355,6 +473,7 @@ export function Sidebar(p: SidebarProps) {
       key={x.key}
       item={x}
       lead={opts.lead}
+      jump={jumps.indexOf(x.key) + 1 || undefined}
       env={opts.env && !x.local ? (computer(x.host) ?? { os: null, online: x.online }) : null}
       selected={x.key === p.current}
       menuOpen={menu?.key === x.key}
@@ -657,6 +776,7 @@ function Section({
 function Row({
   item,
   lead,
+  jump,
   env,
   selected,
   menuOpen,
@@ -670,6 +790,7 @@ function Row({
 }: {
   item: WsItem;
   lead?: boolean;
+  jump?: number;
   /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
   env: Pick<Computer, "os" | "online"> | null;
   selected: boolean;
@@ -719,9 +840,9 @@ function Row({
           aria-current={selected ? "page" : undefined}
           aria-description={item.meta.archived ? t("ws_archived_row") : undefined}
         >
-          {lead && (
+          {(lead || jump) && (
             <span className="ws-row-lead">
-              <CodeXml size={14} strokeWidth={1.5} />
+              {jump ? <kbd className="ws-jump-key" aria-hidden>{jump}</kbd> : <CodeXml size={14} strokeWidth={1.5} />}
             </span>
           )}
           <span className="ws-row-title" ref={ref}>

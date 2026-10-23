@@ -34,6 +34,7 @@ import { previewKind } from "../../lib/preview";
 import { cx } from "../util";
 import { CopyButton, StreamingMarkdown } from "../chat/Markdown";
 import { PreviewButton, TurnFiles } from "../chat/Preview";
+import { renderAnsiText } from "../chat/Ansi";
 import { NoticeRow } from "../chat/Rows";
 import { ToolBody } from "./ToolBody";
 import { countOf, dur, SentenceView, ToolLabel } from "./text";
@@ -157,7 +158,7 @@ function Prose({ row }: { row: Extract<ClRow, { kind: "text" }> }) {
   // A fence that has only opened would flash as an empty code block before its first line comes.
   const text = row.streaming ? paced.replace(/(^|\n)[ \t>]*(?:`{1,}|~{1,})[\w+-]*[ \t]*$/, "$1") : paced;
   if (!text) return null;
-  return <StreamingMarkdown text={text} streaming={row.streaming} className={cx("cl-md", row.streaming && "streaming")} />;
+  return <StreamingMarkdown text={text} streaming={row.streaming} className={cx("cl-md", row.streaming && "streaming")} renderAnsi={renderAnsiText} />;
 }
 
 /** "+3 −1" of an edit. */
@@ -308,7 +309,7 @@ const AgentRow = memo(function AgentRow({ row, states, now, store }: { row: Extr
           {row.children.map((c) => (
             <ToolRow key={c.callId} x={c} st={states.get(c.callId) ?? toolState(c)} now={now} store={store} nested />
           ))}
-          {out && st !== "busy" && <StreamingMarkdown text={out} streaming={false} className="cl-md cl-agent-out" />}
+          {out && st !== "busy" && <StreamingMarkdown text={out} streaming={false} className="cl-md cl-agent-out" renderAnsi={renderAnsiText} />}
         </div>
       )}
     </div>

@@ -482,6 +482,25 @@ export function narrowAt(sidebarWidth: number): number {
   return Math.max(700, Math.ceil(sidebarWidth) + 329);
 }
 
+/** SB-41: the same Ctrl+Shift chord on every platform; Cmd and Alt never join it. */
+export function sessionJumpChord(e: { ctrlKey: boolean; shiftKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
+  return e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey;
+}
+
+/** Shift changes a number row's `key` to punctuation, so physical digit keys take precedence. */
+export function sessionJumpNumber(e: { key: string; code: string }): number | null {
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(e.code)?.[1] ?? (/^[1-9]$/.test(e.key) ? e.key : null);
+  return digit === null ? null : Number(digit);
+}
+
+export const SESSION_JUMP = { HOLD_MS: 200, COUNT: 9 } as const;
+
+/** NS-34: collapse when full labels no longer fit; restore only with more than 2 px spare. */
+export function compactEnvironment(compact: boolean, available: number, required: number): boolean {
+  if (!Number.isFinite(available) || !Number.isFinite(required) || available <= 0 || required <= 0) return compact;
+  return compact ? available <= required + 2 : available < required;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The new-session page: recent projects (NS-04) and next steps (NS-08 / NS-09)
 
