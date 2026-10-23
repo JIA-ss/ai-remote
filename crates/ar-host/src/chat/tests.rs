@@ -723,3 +723,69 @@ async fn an_older_hosts_session_gains_its_first_message_and_last_outcome() {
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).unwrap()).unwrap();
     assert_eq!(saved["first_text"], "first ask");
 }
+
+/// The next event of type `what` (or the turn's end, which comes instead when it is not asked),
+/// printing what passes.
+async fn wait(rx: &mut broadcast::Receiver<Arc<str>>, what: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let line = tokio::time::timeout_at(deadline, rx.recv()).await.expect(what).expect("open");
+        eprintln!("{}", line.chars().take(300).collect::<String>());
+        let v: Value = serde_json::from_str(&line).unwrap();
+        if v["t"] == what || v["t"] == "turn_end" {
+            return v;
+        }
+    }
+}
+
+/// The permission flows against a real Claude Code (its sign-in and a little of its quota):
+///
+///   AR_REAL_CLAUDE=$(command -v claude) cargo test -p ar-host --lib real_claude -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "needs a signed-in Claude Code in AR_REAL_CLAUDE"]
+async fn real_claude_asks_titles_and_switches_modes() {
+    let Ok(program) = std::env::var("AR_REAL_CLAUDE") else { return };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"claude\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let chat =
+        m.start(creator(), "real", work, Some("haiku".into()), true, None, Some("default".into())).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input(
+        "Use the AskUserQuestion tool to ask me ONE question: which color I prefer, options red and blue. After I \
+         answer, reply with exactly: YOU CHOSE <color>.",
+    ));
+    let q = wait(&mut rx, "question").await;
+    assert_eq!(q["t"], "question", "{q}");
+    let qid = q["qid"].as_str().unwrap().to_string();
+    let question = q["questions"][0]["question"].as_str().unwrap().to_string();
+    chat.claim(&qid, &[Pending::Question]).unwrap();
+    let answers = [(question, "blue".to_string())].into();
+    chat.send(Cmd::Answer { qid, text: "blue".into(), answers: Some(answers), by: person("laptop") });
+    let end = wait(&mut rx, "turn_end").await;
+    assert!(end["final_text"].as_str().is_some_and(|t| t.to_lowercase().contains("blue")), "{end}");
+    assert!(chat.meta().title.is_some(), "the agent named the session: {:?}", chat.meta());
+
+    chat.send(input(
+        "Run exactly this shell command with the Bash tool and report its output: \
+         curl -s -o /dev/null -w %{http_code} https://example.com",
+    ));
+    let p = wait(&mut rx, "permission").await;
+    assert_eq!((p["t"].as_str(), p["tool"].as_str()), (Some("permission"), Some("Bash")), "{p}");
+    let rid = p["rid"].as_str().unwrap().to_string();
+    chat.claim(&rid, &[Pending::Permission]).unwrap();
+    chat.send(Cmd::Permit { rid, decision: Decision::Session, message: None, mode: None, by: person("laptop") });
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    assert!(!f.work.join(".claude/settings.local.json").exists(), "a session rule is not written to the project");
+
+    chat.send(Cmd::SetMode { mode: "plan".into(), by: person("laptop") });
+    let mode = wait(&mut rx, "mode").await;
+    assert_eq!(mode["mode"], "plan", "{mode}");
+    chat.send(Cmd::End { reason: "done".into() });
+}
