@@ -709,9 +709,12 @@ it, and an edit's is `{files: [{path, kind, move_path, diff, truncated}]}`),
 `truncated` past 512 KiB; sent just before `turn_end`), `question` (`qid`, `prompt`, `options`; a Codex question also has `request`, the request it
 belongs to, whose questions are answered together with one `answer` per question, an empty text
 skipping it; `item_id`, `header`, `descriptions` aligned with `options`, `other` when a free answer
-is welcome besides the options, `secret`, `blocking`), `question_done` (Codex: `request`, `answers`
-by question id, `how`: answered, skipped, resolved — Codex closed it or its turn ended — or
-dismissed — its turn was stopped), `usage` (tokens, cost, and when the agent reports
+is welcome besides the options, `secret`, `blocking`, and for a question that does not block the
+turn `expires_in_ms`: after that long from the event the host answers it with nothing and the agent
+goes on by itself; `request` is unique within the session, not Codex's own JSON-RPC id, which
+starts from 0 in every Codex process), `question_done` (Codex: `request`, `answers` by question id,
+`how`: answered, skipped, expired — nobody answered in time —, resolved — Codex closed it or its
+turn ended — or dismissed — its turn was stopped), `usage` (tokens, cost, and when the agent reports
 them `context_window`, `context_used`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`),
 `turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
 (`state`, `queued`), `commands` (the agent's slash commands and skills, all of them, sent when the

@@ -243,8 +243,12 @@
     await check("'Worked for' folds the work again", !!(await until("folded", () => !$(".cdx-work", t1), 3000)));
 
     // 5. Questions: a card in place of the composer, one question at a time; the answers go together.
+    // The reader is still in the composer when the question comes: the card must not take the keys
+    // they type next.
+    composer().focus();
     await sendTurn("ASK which modules");
     const card = await until("question card", () => $(".cdx-reqs .cdx-req"));
+    await check("a question that comes while one types does not take the keyboard", !card.contains(document.activeElement), document.activeElement?.className);
     await check("the question comes as a card in place of the composer", !!card && $(".nt-compose-slot").hidden && !$(".nt-q", lastTurn()),
       `${!!card} ${$(".nt-compose-slot")?.hidden}`);
     await check("its title is the question, without its header; 1 / 2", /Should I fix report\/monthly\.py too\?/.test(text($(".x-ti", card))) && !/Scope/.test(text($(".x-hd", card)))
@@ -263,8 +267,10 @@
     await check("a number key takes that option and moves on", !!(await until("second question", () => /2 \/ 2/.test(text($(".cdx-req .x-pager"))), 3000)));
     const card2 = $(".cdx-reqs .cdx-req");
     await check("the second question has no row of its own, Skip below", /Add a test for every quarter\?/.test(text($(".x-ti", card2))) && !$(".x-other", card2) && /Skip|跳过/.test(text($(".x-acts .btn", card2))));
+    $(".x-acts .btn", card2).focus();
     $(".x-acts .btn", card2).click();
     await idle();
+    await check("after answering, the keyboard is back in the composer", document.activeElement === composer(), document.activeElement?.className);
     await check("the answers reach the agent together, the skipped one left out",
       /Going with Fix it too \(Recommended\); tests: no answer\. Answered: scope\./.test(text($(".cdx-answer", lastTurn()))), text($(".cdx-answer", lastTurn())));
     await check("the composer is back", !$(".cdx-reqs") && !$(".nt-compose-slot").hidden);
@@ -280,6 +286,12 @@
     // A draft in the composer (hidden behind the card, still there).
     setValue(composer(), "my unsent draft");
     const card3 = await until("question card again", () => $(".cdx-reqs .cdx-req"), 15000);
+    // Enter on a button elsewhere in the panel is that button's, not an answer.
+    const tg = $(".cdx-worked button.x-tg", turns()[0]);
+    tg.focus();
+    tg.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await sleep(400);
+    await check("Enter on another button does not answer the question", !!$(".cdx-reqs .cdx-req") && /1 \/ 2/.test(text($(".cdx-req .x-pager"))));
     card3.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await check("Esc closes the card at once", !!(await until("card gone", () => !$(".cdx-reqs"), 3000)));
     await idle();
@@ -292,6 +304,8 @@
     await sendTurn("RESOLVED name it");
     const card4 = await until("free-text card", () => $(".cdx-reqs .cdx-req"), 15000);
     await check("a question without options asks for text", !!card4 && !!$(".x-free textarea", card4) && /What should the report be called\?/.test(text($(".x-ti", card4))));
+    await check("one that does not block says when Codex goes on by itself", /(Codex goes on without an answer in|后 Codex 会不等回答继续)/.test(text($(".x-expires", card4)))
+      && /[0-9]:[0-5][0-9]/.test(text($(".x-expires", card4))), text($(".x-expires", card4)));
     await check("Codex closing it takes the card away", !!(await until("card gone", () => !$(".cdx-reqs"), 8000)));
     await idle();
     await check("the turn goes on to its answer", /kept the name/.test(text($(".cdx-answer", lastTurn()))), text(lastTurn()).slice(-160));
@@ -434,6 +448,22 @@
     setValue(composer(), "");
     await sleep(150);
     const esc = () => composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    // The ⋯ menu closes with Esc, and that Esc is no step toward stopping.
+    $(".nt-chat-hd .nt-chat-menu-btn").click();
+    await until("session menu", () => $(".nt-chat-menu"), 3000);
+    esc();
+    await sleep(200);
+    await check("Esc closes the ⋯ menu, and only that", !$(".nt-chat-menu") && text(rounds()[0]) !== "Esc", `${!!$(".nt-chat-menu")} ${text(rounds()[0])}`);
+    // With a popover open, Esc closes it and is no step toward stopping.
+    const ring = $("button.nt-ring");
+    if (ring) {
+      ring.click();
+      await until("usage popover", () => $(".nt-usage"), 3000);
+      esc();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(200);
+      await check("Esc with a popover open only closes it", !$(".nt-usage") && text(rounds()[0]) !== "Esc", `${!!$(".nt-usage")} ${text(rounds()[0])}`);
+    }
     esc();
     await sleep(200);
     await check("Esc once: it still runs, the button says Esc", lastTurn().classList.contains("running") && text(rounds()[0]) === "Esc", text(rounds()[0]));
@@ -462,6 +492,15 @@
     await check("moving up while it streams lets go of the end", fromEnd() > 100 && $(".nt-jump").dataset.shown === "true" && !!$(".cdx-answer.streaming", lastTurn()),
       `${Math.round(fromEnd())} px from the end`);
     await check("the way back is a round button, three dots waving while it works", $$(".nt-jump .x-wave i").length === 3);
+    // More streamed in below; now the list gets shorter (the composer grows): what was at its bottom
+    // edge stays there, the reader's place is kept.
+    const top0 = body.scrollTop, h0 = body.clientHeight;
+    setValue(composer(), "one\ntwo\nthree\nfour");
+    await sleep(400);
+    const shift = body.scrollTop - top0, shrink = h0 - body.clientHeight;
+    await check("a shorter list keeps the reader's place", shrink > 0 && Math.abs(shift - shrink) <= 4 && fromEnd() > 100, `scrolled ${shift} for ${shrink} px shorter`);
+    setValue(composer(), "");
+    await sleep(200);
     $(".nt-jump").click();
     await sleep(600);
     await check("it goes back to the end and follows again", fromEnd() <= 24 && $(".nt-jump").dataset.shown === "false", `${Math.round(fromEnd())} px`);

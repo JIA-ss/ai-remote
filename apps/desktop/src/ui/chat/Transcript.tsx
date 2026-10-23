@@ -225,12 +225,14 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
   // the list takes hold again only at the very end (24 px) and not within a second of such a move. A
   // jump to the end runs over 260 ms; what the page scrolls itself is no move of the reader's.
   const codexView = variant === "codex";
+  // The panel knows it is a Codex session only once the session says so (after this list mounted).
+  const codexRef = useRef(codexView);
+  codexRef.current = codexView;
   const leftAt = useRef(-Infinity);
   const jumping = useRef<number | null>(null);
-  const fromBottom = useRef(0);
   const touchY = useRef<number | null>(null);
   const letGo = () => {
-    if (!codexView) return;
+    if (!codexRef.current) return;
     leftAt.current = performance.now();
     if (jumping.current !== null) cancelAnimationFrame(jumping.current);
     jumping.current = null;
@@ -260,12 +262,18 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
     const el = scroller.current;
     const inner = el?.firstElementChild;
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
+    let height = el.clientHeight;
+    const ro = new ResizeObserver((entries) => {
+      const resized = entries.some((e) => e.target === el) && el.clientHeight !== height;
+      const was = height;
+      height = el.clientHeight;
       if (stick.current) el.scrollTop = el.scrollHeight;
-      else if (codexView) el.scrollTop = el.scrollHeight - el.clientHeight - fromBottom.current;
+      // The list itself got shorter or taller (the composer, a question card): what was at its bottom
+      // edge stays there. Content growing below the reader moves nothing.
+      else if (codexRef.current && resized) el.scrollTop += was - el.clientHeight;
     });
     ro.observe(inner);
-    if (codexView) ro.observe(el);
+    ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
@@ -357,7 +365,6 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
           const el = e.currentTarget;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
           if (codexView) {
-            fromBottom.current = Math.max(0, dist);
             if (jumping.current !== null) return;
             if (dist <= 24) {
               if (performance.now() - leftAt.current < 1000) return;

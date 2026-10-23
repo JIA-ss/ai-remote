@@ -439,6 +439,7 @@ fn can_use_tool(st: &mut State, request: Value, req: &Value, writes: &mut Vec<St
                 other: false,
                 secret: false,
                 blocking: None,
+                expires_in_ms: None,
             }));
             st.asks.insert(qid, ask(input));
         }

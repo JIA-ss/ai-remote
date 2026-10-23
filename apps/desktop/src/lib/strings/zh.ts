@@ -1304,6 +1304,7 @@ export const zh: Record<keyof typeof en, string> = {
   cdx_q_other_ph: "不，并告诉 Codex 该怎么做",
   cdx_q_type_here: "在此输入",
   cdx_q_recommended: "推荐",
+  cdx_q_expires: "{t} 后 Codex 会不等回答继续",
   cdx_q_secret_ph: "输入答案（不显示）",
   cdx_btn_send: "发送",
   cdx_btn_steer: "插话",
