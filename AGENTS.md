@@ -31,6 +31,21 @@
   首次失败的根因仍未知；后续成功也不追认它为已查明。
   下一步据新 CI 的阶段与留存状态判断具体路径，再决定修复；不单靠扩大超时或重跑消红。
 
+## MCP 聚合入口元数据（2026-10-24）
+
+- `list_hosts` 明确声明只读、非破坏性、幂等；`use_host` 会改本会话的默认被控端，所以不是只读，重复选择同一端是幂等的。
+  两者均可能查询已配对的外部主机，`openWorldHint = true`。这些是客户端提示，不改变原有配对、等级、审批与审计门禁。
+- 新增真实 rmcp `tools/list` 协议回归：全新临时 profile、未配对、LAN-only、关闭发现和映射，不使用机主设备或本机服务。
+  测试先在原代码上因缺 annotations 失败，再补齐两项本地工具的四个布尔 hint。根 `glama.json` 仅声明维护者供目录核对。
+- 中英 README 的 20 px 紧凑 M8ven badge 保留平台本次领取的公开所有权核对参数；这不是 Live 声明，项目的平台 WIP / pre-alpha 边界不变。
+- 首次本机 macOS（`9851dbe`）：Rust fmt / workspace Clippy 通过；workspace tests 440 过、9 忽略；规定的 Node 测试 361 过、1 跳过，TypeScript 通过。
+  这些验证只覆盖协议元数据和回归检查，没有把它们当成真机远程操作或平台安全认证。
+- PR #49 首轮 Windows native CI 的 11 项已记录断言均符合预期，但最后收集 fixture JSON 时失败；Windows fixture 每 100 ms 原位重写，
+  最后的直接读取可能撞上写入空窗。保留首轮产物，未声称捕获了当时的空文件本体。`ui_fixture_state.py` 只有限重读新数据，
+  不缓存旧状态、不重复 UI 动作；空/半写/UTF-8 截断后完成、持续损坏明确超时与不复用上次结果均有先红后绿的回归，native CI 同跑。
+- 随后接到 main `1aefe9f`：完整保留 PR #47 的诊断章节、原生两轮采样和产物路径；仅在本节做并列记录。
+  新基准本机 fmt / workspace Clippy、Rust 440 过 / 9 忽略、Node 374 过 / 1 跳过、TypeScript、fixture reader 4 项回归通过；新 head 的 CI 单独等待。
+
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
 从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。

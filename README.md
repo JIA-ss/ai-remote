@@ -8,6 +8,8 @@
 </picture></p>
 <p align="center"><a href="#across-your-devices">Platforms</a> · <a href="#paired-devices-connected-over-p2p">P2P</a> · <a href="#ai-native-from-protocol-to-control">AI Native</a> · <a href="#start-from-source">Get started</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="docs/architecture.md">Architecture</a></p>
 
+<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven publisher verification" height="20"></a></p>
+
 **AI-native remote control across your devices, over encrypted P2P.**
 Your phone, your tablet, your Mac, your PC — and your AI agent, connected through one shared control layer. Use the human apps to view and control your paired computers, or connect your existing MCP agent to do the work. Watch the screen, take over, and hand control back whenever you want.
 

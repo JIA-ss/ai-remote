@@ -8,6 +8,8 @@
 </picture></p>
 <p align="center"><a href="#连接你的每一端">平台支持</a> · <a href="#多端-p2p-加密连接">P2P 直连</a> · <a href="#ai-native从协议到控制">AI Native</a> · <a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
 
+<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven 发布者验证" height="20"></a></p>
+
 **AI Native 多端远程控制，P2P 加密连接你的设备。**
 手机、平板、Mac、PC，与你的 AI，共用一套远程控制核心。通过控制端查看和操作已配对的电脑，也可以接入现有 MCP 智能体，让 AI 动手。你看得见屏幕和操作过程，随时接管，再把控制权交还给 AI。
 
