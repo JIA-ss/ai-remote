@@ -395,7 +395,7 @@ function TurnFoot({ turn, stopped, onContinue, readonly }: { turn: Turn; stopped
         <div className={cx("cl-foot", turn.status)}>
           {turn.status === "interrupted" && <span className="st">{t("cl_st_stopped")}</span>}
           {reply && <CopyButton text={reply} label={t("cl_copy_reply")} />}
-          {turn.durationMs != null && <span className="meta tnum">{dur(turn.durationMs)}</span>}
+          {turn.durationMs != null && turn.durationMs >= 1000 && <span className="meta tnum">{dur(turn.durationMs)}</span>}
         </div>
       )}
     </>

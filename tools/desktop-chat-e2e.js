@@ -153,7 +153,7 @@
       !!reply && !!$("h1, h2, h3, h4, h5, h6", reply) && !!$("li", reply) && !!$("table", reply) && !!$("pre", reply), reply?.innerHTML.slice(0, 200));
     const ring = $(".nt-ring");
     await check("context usage shows as a ring", !!ring && /4[12]k \/ 200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
-    await check("the turn's foot has copy and how long it took", !!$(".cl-foot .meta", t1), $(".cl-foot", t1)?.textContent);
+    await check("the turn's foot offers to copy the reply (its time shows from 1 s)", !!$(".cl-foot button", t1), $(".cl-foot", t1)?.innerHTML.slice(0, 120));
     await shot("01-first-turn");
 
     // 2b. The composer's input side (one send button, / and @ menus, images, find, quote, usage,
