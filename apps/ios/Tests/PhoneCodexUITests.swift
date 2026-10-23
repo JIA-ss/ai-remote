@@ -123,6 +123,30 @@ final class PhoneCodexUITests: XCTestCase {
         waitFor("folded again") { !app.buttons["codex-group-cc1"].exists }
     }
 
+    func testLongCodexHistoryStartsWithThirtyTurnsAndOpensTheEarlierPage() {
+        continueAfterFailure = false
+        let app = launch(["-ui-codex-history"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["History request 35"].waitForExistence(timeout: 15), "the conversation starts at its end")
+        let turns = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "codex-turn-"))
+        XCTAssertEqual(turns.count, 30, "only the latest page is mounted")
+        XCTAssertTrue(app.staticTexts["History request 6"].exists)
+        XCTAssertFalse(app.staticTexts["History request 1"].exists, "older turns are not mounted yet")
+        let earlier = app.buttons["chat-earlier-turns"]
+        XCTAssertTrue(scroll(app, to: earlier, up: true, tries: 40), "the history button is above the visible turns")
+        XCTAssertEqual(earlier.label, words("cdx_show_earlier_turns"))
+        earlier.tap()
+        let first = app.staticTexts["History request 1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "the older page joins the existing turns")
+        XCTAssertEqual(turns.count, 35, "no previous turns were dropped or duplicated")
+        XCTAssertFalse(earlier.exists, "there are no more retained turns to open")
+        XCTAssertTrue(first.isHittable, "opening history positions its new first turn in view")
+        let second = app.staticTexts["History request 2"]
+        XCTAssertTrue(first.frame.minY < second.frame.minY, "older turns stay in chronological order")
+        XCTAssertTrue(app.staticTexts["History request 35"].exists, "the latest turn is still mounted")
+        shot(app, "c12-earlier-history")
+    }
+
     func testLiveCodexTurnSaysWhatRunsAndShowsItsPlanThenStops() {
         continueAfterFailure = false
         let app = launch(["-ui-codex-live"])

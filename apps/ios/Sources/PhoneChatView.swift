@@ -184,51 +184,36 @@ public struct PhoneChatView: View {
 
     // MARK: Conversation
 
+    /// The first retained turn the reader opened, per session; nil starts with the latest page.
+    @PhoneViewState private var codexHistoryFirst: [String: Int] = [:]
+
     private func conversation(_ session: PhoneChatSession) -> some View {
-        let stopped = chat.log.stoppedTurn?.n
-        let readonly = !chat.canWrite
-        // Codex conversations are laid out the way Codex's own app shows them; others keep these rows.
         let codex = chat.isCodex
+        let window = phoneChatTurnWindow(chat.log.turns, first: codexHistoryFirst[session.id])
+        let turns = codex ? chat.log.turns[window.range] : chat.log.turns[...]
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: codex ? 28 : 14) {
-                    Text(session.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
-                        .textSelection(.enabled)
-                    ForEach(Array(chat.log.notices.enumerated()), id: \.offset) { _, notice in
-                        PhoneNoticeRow(level: notice.level, text: phoneNoticeText(code: notice.code, text: notice.text))
+                if codex {
+                    // SwiftUI's lazy layout can fail to settle while accessibility reads an expanded
+                    // Codex diff. Render a bounded page eagerly; earlier turns stay in the model.
+                    VStack(alignment: .leading, spacing: 28) {
+                        conversationRows(session, codex: true, turns: turns, earlier: window.earlier)
                     }
-                    ForEach(chat.log.turns) { turn in
-                        if codex {
-                            PhoneCodexTurnView(turn: turn, cwd: session.cwd, readonly: readonly, stopped: turn.n == stopped,
-                                               stopping: chat.log.state == "interrupting" && turn.status == "running",
-                                               opened: codexOpened("\(session.id):\(turn.n)"),
-                                               resume: { Task { await chat.continueStopped() } }) {
-                                PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks))
-                            }
-                        } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(phoneTurnRows(turn)) { row in
-                                PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
-                            }
-                            if turn.status != "running" { PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks)) }
-                            PhoneTurnFoot(turn: turn, stopped: turn.n == stopped, readonly: readonly) { Task { await chat.continueStopped() } }
-                            if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
-                                PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
-                            }
-                        }
-                        }
+                    .padding(16)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        conversationRows(session, codex: false, turns: turns, earlier: nil)
                     }
-                    if chat.log.busy, chat.log.turns.last?.status != "running" {
-                        PhoneWorkingRow(label: workingLabel, since: nil)
-                    }
-                    ForEach(chat.outgoing) { o in outgoingRow(o) }
-                    Color.clear.frame(height: 1).id("chat-bottom")
+                    .padding(16)
                 }
-                .padding(16)
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: chat.log.seq) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
             .onChange(of: chat.outgoing.count) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
+            .onChange(of: codexHistoryFirst[session.id]) { _, first in
+                // The new eager rows are present in this update; show the start of the older page.
+                if codex, let first { proxy.scrollTo(first, anchor: .top) }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) { footer(session) }
         }
         .environment(\.phoneSentImages, chat.sentImages)
@@ -239,6 +224,50 @@ public struct PhoneChatView: View {
             return .systemAction
         })
         .sheet(item: $previewing) { target in PhonePreviewSheet(chat: chat, path: target.path) { previewing = nil } }
+    }
+
+    /// Both layouts share the same rows; only Codex limits its mounted turn window.
+    @ViewBuilder private func conversationRows(_ session: PhoneChatSession, codex: Bool,
+                                               turns: ArraySlice<PhoneChatTurn>, earlier: Int?) -> some View {
+        let stopped = chat.log.stoppedTurn?.n
+        let readonly = !chat.canWrite
+        Text(session.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+            .textSelection(.enabled)
+        ForEach(Array(chat.log.notices.enumerated()), id: \.offset) { _, notice in
+            PhoneNoticeRow(level: notice.level, text: phoneNoticeText(code: notice.code, text: notice.text))
+        }
+        if codex, let earlier {
+            Button(phoneCodexWord("cdx_show_earlier_turns")) { codexHistoryFirst[session.id] = earlier }
+                .font(.footnote).buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityIdentifier("chat-earlier-turns")
+        }
+        ForEach(turns) { turn in
+            if codex {
+                PhoneCodexTurnView(turn: turn, cwd: session.cwd, readonly: readonly, stopped: turn.n == stopped,
+                                   stopping: chat.log.state == "interrupting" && turn.status == "running",
+                                   opened: codexOpened("\(session.id):\(turn.n)"),
+                                   resume: { Task { await chat.continueStopped() } }) {
+                    PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks))
+                }
+                .id(turn.n)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(phoneTurnRows(turn)) { row in
+                        PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
+                    }
+                    if turn.status != "running" { PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks)) }
+                    PhoneTurnFoot(turn: turn, stopped: turn.n == stopped, readonly: readonly) { Task { await chat.continueStopped() } }
+                    if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
+                        PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
+                    }
+                }
+            }
+        }
+        if chat.log.busy, chat.log.turns.last?.status != "running" {
+            PhoneWorkingRow(label: workingLabel, since: nil)
+        }
+        ForEach(chat.outgoing) { o in outgoingRow(o) }
+        Color.clear.frame(height: 1).id("chat-bottom")
     }
 
     @PhoneViewState private var previewing: PhonePreviewTarget?

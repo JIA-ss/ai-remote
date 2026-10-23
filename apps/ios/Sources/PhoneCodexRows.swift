@@ -817,8 +817,7 @@ private struct ChangesCard: View {
                 }
             }
         }
-        // On iOS 26.2, accessibility snapshots could loop in the enclosing LazyVStack's layout
-        // with this expanding subtree clipped. Keep the border without clipping the whole card.
+        // Keep the border without clipping the expanding accessibility subtree.
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("codex-changes")

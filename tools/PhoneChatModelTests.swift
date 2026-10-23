@@ -1263,5 +1263,36 @@ test("a question request that is over waits no more, whoever ended it") {
     if case .question(let q) = c.turns[0].blocks[1] { check(q.answer == "yes", "an answered question keeps its answer") } else { check(false, "question") }
 }
 
+test("a transcript window opens thirty retained turns at a time, in order, without changing the model") {
+    let turns = (1...95).map { PhoneChatTurn(n: $0) }
+    let initial = phoneChatTurnWindow(turns)
+    check(initial.range == 65..<95 && initial.earlier == 36, "latest thirty")
+    let next = phoneChatTurnWindow(turns, first: initial.earlier)
+    check(next.range == 35..<95 && next.earlier == 6, "thirty earlier")
+    let third = phoneChatTurnWindow(turns, first: next.earlier)
+    check(third.range == 5..<95 && third.earlier == 1, "another thirty")
+    let all = phoneChatTurnWindow(turns, first: third.earlier)
+    check(all.range == 0..<95 && all.earlier == nil, "the oldest partial page")
+    check(Array(turns[all.range]).map(\.n) == Array(1...95), "every turn, once, in order")
+    check(turns.count == 95, "only the view was windowed")
+    let short = Array(turns.prefix(35))
+    check(phoneChatTurnWindow(short).range == 5..<35 && phoneChatTurnWindow(short).earlier == 1, "the UI fixture's thirty-five")
+    check(phoneChatTurnWindow(Array(turns.prefix(3))).range == 0..<3, "fewer than a page")
+    check(phoneChatTurnWindow([]).range.isEmpty && phoneChatTurnWindow([]).earlier == nil, "empty")
+    check(phoneChatTurnWindow(short, pageSize: 0).range == 34..<35, "a bad page size is bounded")
+}
+
+test("new turns keep opened transcript history, and a trimmed model starts at its next retained turn") {
+    let turns = (1...35).map { PhoneChatTurn(n: $0) }
+    let loaded = phoneChatTurnWindow(turns, first: 1)
+    let newer = turns + [PhoneChatTurn(n: 36)]
+    check(phoneChatTurnWindow(newer, first: turns[loaded.range.lowerBound].n).range == 0..<36, "a new turn keeps the opened oldest one")
+    check(phoneChatTurnWindow(newer).range == 6..<36, "an unopened history stays bounded")
+    let retained = Array(newer.dropFirst(10))
+    check(phoneChatTurnWindow(retained, first: 1).range == 0..<26, "an already-trimmed model still shows all retained history")
+    let gaps = [10, 20, 30, 40].map { PhoneChatTurn(n: $0) }
+    check(phoneChatTurnWindow(gaps, first: 25, pageSize: 1).range == 2..<4, "turn numbers are not array offsets")
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

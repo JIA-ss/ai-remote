@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: [A-initial-no-clip, B-initial-with-clip, C-initial-alignment-no-clip, D-eager-no-clip]
+        run: [suite, repeated-fold]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       UI_RUN: ${{ matrix.run }}
@@ -23,20 +23,6 @@ jobs:
           path: apps/ios/Generated/
           run-id: 39943578229
           github-token: ${{ github.token }}
-      - name: Apply one anchor diagnostic
-        run: |
-          if [[ "$UI_RUN" == D-eager-no-clip ]]; then
-            python3 - <<'PYCODE'
-          from pathlib import Path
-          p = Path('apps/ios/Sources/PhoneChatView.swift')
-          s = p.read_text()
-          a = 'LazyVStack(alignment: .leading, spacing: codex ? 28 : 14)'
-          assert a in s
-          p.write_text(s.replace(a, 'VStack(alignment: .leading, spacing: codex ? 28 : 14)', 1))
-          PYCODE
-          else
-            git apply ".github/ios-anchor-variants/$UI_RUN.patch"
-          fi
       - run: brew install xcodegen && cd apps/ios && xcodegen generate
       - name: Run UI acceptance on an explicit simulator
         run: |
