@@ -350,6 +350,7 @@ const NOTICE_WORDS: &[&str] = &[
     "api_retry",
     "context_lost",
     "killed",
+    "late_answer",
     "no_question",
     "paused",
     "queue_full",

@@ -78,7 +78,9 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
   - 字号颜色：Codex 的种子色（墨色、强调色、增删色，深浅两套），正文 14px、行高 22.75px，段距按字号四分之一的倍数。
   - 时长两种格式（Intl 单位格式，跟随界面语言）：命令行用"12s / 1m 0s / 1h 0m 3s"，计时分隔用"0s / 1m / 1h 5s"。
 - iOS（`apps/ios/Sources/PhoneCodex*.swift`）跟到了 dbfdfbd 的样子（折叠、Shell 卡、diff、改动卡、停止中），**还没跟上**上面的提问卡、
-  推理标题、计时分隔、计划胶囊等（iOS 收到 `question_done` 等新事件会忽略，不会出错）。
+  推理标题、计时分隔、计划胶囊等。iOS 处理 `question_done`（请求结束就不再显示"等你回答"）；其他新事件忽略。**老版桌面端**不认
+  `question_done`：Codex 的非阻塞提问被被控端 120 秒后放行以后，它仍显示提问，这时再答会收到一条 `late_answer` 提醒（"回答到达时
+  Codex 已经自己继续"），答案不会送出。
 - 演示后端（`lib/demo.ts`）有一个 Codex 会话和一段 Codex 形状的实时回复，`?view=session&host=office-pc&panel=chat` 打开后在
   会话列表里选 Codex。
 
@@ -88,11 +90,12 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
 - `tools/fake-codex-app-server.py`：Codex app-server 的 JSON-RPC 替身（走真实的被控端适配器和 runner），按关键词演一轮：EXPLORE、
   ASK（一个请求两道题）、RESOLVED（Codex 自己关掉提问）、STEERME、SLOW（收到中断后 0.8 秒才停，像真 Codex）、FAIL、MANY、NOPHASE、
   COMPACT、REEDIT（同一文件改两次 + 建了又删，发 `turn/diff/updated`）、BADPATCH、LATEPHASE、DRAWL（慢慢流 8 秒的答案）。
-- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，109 项全过
-  （104 项那一版在 Mac 连续 2 次、win-dev 上 3 次全过）。这一轮抓到并修掉的真问题：停止时"正在停止…"一闪而过（替身停得太快，两条事件同批到达——替身改成像真 Codex 那样稍等）、
+- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，111 项全过
+  （104 项那一版在 Mac 连续 2 次、win-dev 上 3 次全过；109 项那一版 win-dev 上也全过）。这一轮抓到并修掉的真问题：停止时"正在停止…"一闪而过（替身停得太快，两条事件同批到达——替身改成像真 Codex 那样稍等）、
   "审阅"收起时收不回单独点开的文件、提问卡首屏依赖淡入动画（后台窗口里动画可能不走，改成只在翻题时淡入）、引用按钮被页面自己的
   平滑滚动清掉（改成跟着选区移动，Claude 视图同样受益）。
-- 回归：Claude 视图的 `desktop-chat-e2e.js` 连续多次全过。
+- 回归：Claude 视图的 `desktop-chat-e2e.js` 多次全过；最后一轮 3 次里有 1 次第一项"记住的会话已不存在时回到会话列表并提示"
+  超时（面板回到了新会话页，但没有提示；判定在 `useConversation` 的连接错误分类里，这次没改那部分），另外 2 次全过，判为偶发。
 - 真实 Codex：`E2E_MODEL=gpt-5.6-luna E2E_CODEX=/Applications/ChatGPT.app/Contents/Resources/codex E2E_SCRIPT=tools/desktop-chat-codex-real.js
   python3 tools/desktop-chat-e2e.py --real "Codex (path)"`（codex-cli 0.150.0-alpha）全过：读文件、改 export.py、跑校验命令、折叠与改动
   卡片、插话被采纳、停止 `sleep 120`、重开回放。**坑**：本机 `~/.codex/config.toml` 的默认模型 `gpt-5.5` 在 ChatGPT 账号下 0.137 和
@@ -105,6 +108,9 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
   掉到 body；上下文弹层开着时 Esc 被当作停止的第一下；`\r\n` 行尾丢掉颜色、退格和擦行不认转义、半截转义显示成乱码；
   `curl … | sh` 之类被算成"搜索网页"；没有整轮 diff 时"新建再修改"给出 git 不认的补丁；答案开始后再停止，时长只算到答案开始；
   Codex 视图的列表尺寸观察在 hello 之前挂载时取不到 Codex 标记。
+- 对这批修复再审查一轮，又确认 4 项（都已修，附测试）：iOS / 老桌面端不认 `question_done`，过期后仍显示提问且之后的回答被悄悄丢掉
+  （iOS 补上处理，迟到的回答发 `late_answer` 提醒）；截止前一刻的回答可能输给自己的截止时间（`select!` 改成 `biased`，命令优先）；
+  读者往上翻、内容继续流入后列表变矮，视图会往前跳（改成按容器高度差移动）；⋯ 菜单没有 Esc / 点外面关闭，开着时 Esc 停不了。
 
 **没做 / 没验证**（按收益排序，规格里的 Should / Later）：
 - 输入框整体外形（两行布局、"完全访问"标签、上下文环弹层、队列托盘、读图等待、历史）、头部（文件夹按钮 + 标题 + ⋯ 菜单、连接横幅、

@@ -448,6 +448,12 @@
     setValue(composer(), "");
     await sleep(150);
     const esc = () => composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    // The ⋯ menu closes with Esc, and that Esc is no step toward stopping.
+    $(".nt-chat-hd .nt-chat-menu-btn").click();
+    await until("session menu", () => $(".nt-chat-menu"), 3000);
+    esc();
+    await sleep(200);
+    await check("Esc closes the ⋯ menu, and only that", !$(".nt-chat-menu") && text(rounds()[0]) !== "Esc", `${!!$(".nt-chat-menu")} ${text(rounds()[0])}`);
     // With a popover open, Esc closes it and is no step toward stopping.
     const ring = $("button.nt-ring");
     if (ring) {
@@ -486,6 +492,15 @@
     await check("moving up while it streams lets go of the end", fromEnd() > 100 && $(".nt-jump").dataset.shown === "true" && !!$(".cdx-answer.streaming", lastTurn()),
       `${Math.round(fromEnd())} px from the end`);
     await check("the way back is a round button, three dots waving while it works", $$(".nt-jump .x-wave i").length === 3);
+    // More streamed in below; now the list gets shorter (the composer grows): what was at its bottom
+    // edge stays there, the reader's place is kept.
+    const top0 = body.scrollTop, h0 = body.clientHeight;
+    setValue(composer(), "one\ntwo\nthree\nfour");
+    await sleep(400);
+    const shift = body.scrollTop - top0, shrink = h0 - body.clientHeight;
+    await check("a shorter list keeps the reader's place", shrink > 0 && Math.abs(shift - shrink) <= 4 && fromEnd() > 100, `scrolled ${shift} for ${shrink} px shorter`);
+    setValue(composer(), "");
+    await sleep(200);
     $(".nt-jump").click();
     await sleep(600);
     await check("it goes back to the end and follows again", fromEnd() <= 24 && $(".nt-jump").dataset.shown === "false", `${Math.round(fromEnd())} px`);
