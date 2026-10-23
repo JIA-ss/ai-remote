@@ -421,6 +421,23 @@ public struct PhoneDiffLine: Equatable, Sendable {
     }
 }
 
+/// Read a diff row as one item, including its visible line numbers and whether it adds or deletes
+/// code. The separate visual columns are otherwise decorative to assistive technologies.
+public func phoneCodexDiffLabel(_ line: PhoneDiffLine, lang: PhoneCodexLang = .current) -> String {
+    func word(_ key: String, _ vars: [String: String] = [:]) -> String { phoneCodexText(key, vars, lang: lang) }
+    var parts: [String] = []
+    if line.kind == .add { parts.append(word("cdx_diff_added")) }
+    if line.kind == .del { parts.append(word("cdx_diff_deleted")) }
+    if let old = line.old, old == line.new {
+        parts.append(word("cdx_diff_line", ["n": "\(old)"]))
+    } else {
+        if let old = line.old { parts.append(word("cdx_diff_old_line", ["n": "\(old)"])) }
+        if let new = line.new { parts.append(word("cdx_diff_new_line", ["n": "\(new)"])) }
+    }
+    let text = line.text.isEmpty ? word("cdx_diff_blank") : line.text
+    return parts.isEmpty ? text : parts.joined(separator: lang == .zh ? "，" : ", ") + (lang == .zh ? "：" : ": ") + text
+}
+
 public struct PhoneFileChange: Equatable, Sendable {
     public var path: String
     public var movePath: String?
@@ -1409,6 +1426,13 @@ enum PhoneCodexStrings {
         "cdx_copy_cmd": "Copy command",
         "cdx_copy_output": "Copy output",
         "cdx_copy_patch": "Copy patch",
+        "cdx_diff_added": "Added",
+        "cdx_diff_deleted": "Deleted",
+        "cdx_diff_line": "line {n}",
+        "cdx_diff_old_line": "old line {n}",
+        "cdx_diff_new_line": "new line {n}",
+        "cdx_diff_blank": "blank line",
+
         "cdx_edited_file": "Edited {name}",
         "cdx_edited_files": "Edited {n} files",
         "cdx_review": "Review",
@@ -1521,6 +1545,13 @@ enum PhoneCodexStrings {
         "cdx_copy_cmd": "复制命令",
         "cdx_copy_output": "复制输出",
         "cdx_copy_patch": "复制补丁",
+        "cdx_diff_added": "新增",
+        "cdx_diff_deleted": "删除",
+        "cdx_diff_line": "第 {n} 行",
+        "cdx_diff_old_line": "原第 {n} 行",
+        "cdx_diff_new_line": "新第 {n} 行",
+        "cdx_diff_blank": "空行",
+
         "cdx_edited_file": "已编辑 {name}",
         "cdx_edited_files": "已编辑 {n} 个文件",
         "cdx_review": "审阅",

@@ -516,6 +516,11 @@ struct PhoneCodexDiffView: View {
         .padding(.leading, numbered ? 0 : 6)
         .padding(.vertical, 1)
         .background(add ? Ink.addBG : del ? Ink.delBG : Color.clear)
+        // Expose the visible numbers and change marker with the code, rather than hiding that
+        // information from readers who navigate the diff through accessibility.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(phoneCodexDiffLabel(l))
+        .accessibilityAddTraits(.isStaticText)
     }
 
     /// A line number, right-aligned in a column as wide as the largest one.

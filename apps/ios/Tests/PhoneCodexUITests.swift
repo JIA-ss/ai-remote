@@ -105,6 +105,10 @@ final class PhoneCodexUITests: XCTestCase {
         XCTAssertTrue(changed.descendants(matching: .any)["codex-diff"].waitForExistence(timeout: 5), "a changed file opens to its diff")
         bringIntoView(app, changed)
         XCTAssertTrue(text(changed, "end = date(year, quarter * 3, 31)").exists, "a removed line")
+        let removed = phoneCodexDiffLabel(PhoneDiffLine(.del, "    end = date(year, quarter * 3, 31)", old: 7), lang: lang)
+        let added = phoneCodexDiffLabel(PhoneDiffLine(.add, "    end = date(year, quarter * 3, last)", new: 8), lang: lang)
+        XCTAssertTrue(changed.staticTexts[removed].exists, "a deleted row exposes its old line number and code")
+        XCTAssertTrue(changed.staticTexts[added].exists, "an added row exposes its new line number and code")
         // Exercise the expanded card through the audit engine used by Accessibility Inspector too.
         // This is an automated audit, not a VoiceOver navigation test.
         try app.performAccessibilityAudit(for: [.elementDetection])

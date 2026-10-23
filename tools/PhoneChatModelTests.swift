@@ -1294,5 +1294,15 @@ test("new turns keep opened transcript history, and a trimmed model starts at it
     check(phoneChatTurnWindow(gaps, first: 25, pageSize: 1).range == 2..<4, "turn numbers are not array offsets")
 }
 
+test("Codex diff accessibility names each change, visible line numbers, and the complete code") {
+    check(phoneCodexDiffLabel(PhoneDiffLine(.add, "    fixed()", new: 8), lang: .en) == "Added, new line 8:     fixed()", "added code and indentation")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.del, "old()", old: 7), lang: .en) == "Deleted, old line 7: old()", "deleted code")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.context, "same()", old: 4, new: 4), lang: .en) == "line 4: same()", "the same line number once")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.context, "moved()", old: 8, new: 9), lang: .en) == "old line 8, new line 9: moved()", "both different columns")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.context, "", old: 9, new: 10), lang: .en) == "old line 9, new line 10: blank line", "a visible blank row")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.add, "x"), lang: .en) == "Added: x", "an older host without line numbers")
+    check(phoneCodexDiffLabel(PhoneDiffLine(.add, "代码", new: 2), lang: .zh) == "新增，新第 2 行：代码", "Chinese labels")
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
