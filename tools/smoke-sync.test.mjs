@@ -155,4 +155,130 @@ for (const script of scripts) {
     assert.equal(f.pending(), 0);
     assert.equal(f.timers.size, 0);
   });
+
+  test(`${script}: screenshot preparation completes before the native capture request`, async () => {
+    const order = [];
+    const f = fixture(script, () => order.push("native request"));
+    let prepared;
+    f.window.__smokePrepareShot = (name) => {
+      order.push(`prepare ${name}`);
+      return new Promise((resolve) => { prepared = resolve; });
+    };
+    const waiting = f.shot("terminal-state");
+    assert.deepEqual(order, ["prepare terminal-state"]);
+    await f.advance(1000);
+    assert.equal(f.logs.length, 0, "preparing the screenshot must finish before any capture request");
+    order.push("preparation complete");
+    prepared();
+    await f.advance(0);
+    assert.deepEqual(order, ["prepare terminal-state", "preparation complete", "native request"]);
+    f.window.__smokeShot("terminal-state");
+    await waiting;
+    assert.equal(f.pending(), 0);
+    assert.equal(f.timers.size, 0);
+  });
+
+  test(`${script}: failed screenshot preparation stops the run without requesting capture`, async () => {
+    for (const asynchronous of [false, true]) {
+      const f = fixture(script);
+      f.window.__smokePrepareShot = () => {
+        const error = new Error("finite animation could not finish");
+        if (asynchronous) return Promise.reject(error);
+        throw error;
+      };
+      let advanced = false;
+      const flow = (async () => {
+        await f.shot("terminal-state");
+        advanced = true;
+      })();
+      await assert.rejects(flow, /screenshot terminal-state failed: Error: finite animation could not finish/);
+      assert.equal(advanced, false);
+      assert.equal(f.logs.length, 0);
+      assert.equal(f.pending(), 0);
+      assert.equal(f.timers.size, 0);
+    }
+  });
 }
+
+function preparationFixture() {
+  const source = readFileSync(new URL("desktop-chat-e2e.py", import.meta.url), "utf8");
+  const match = source.match(/^SMOKE_PREPARE_SHOT = r'''\n([\s\S]*?)^'''/m);
+  assert.ok(match, "load the exact screenshot preparation injected by the Python harness");
+  const calls = [];
+  const logs = [];
+  const animations = [];
+  const context = {
+    window: { __TAURI_INTERNALS__: { invoke(cmd, args) {
+      assert.equal(cmd, "log_from_page");
+      const detail = JSON.parse(args.message.slice(args.message.indexOf("{")));
+      logs.push(detail);
+      calls.push(`log ${detail.phase}`);
+      return Promise.resolve();
+    } } },
+    document: {
+      getAnimations: () => animations,
+      documentElement: { getBoundingClientRect() { calls.push("layout"); return { width: 1280, height: 900 }; } },
+      body: { get offsetHeight() { calls.push("body layout"); return 900; } },
+    },
+    getComputedStyle: (el) => ({ opacity: el.opacity ?? "1", transform: el.transform ?? "none" }),
+  };
+  vm.runInNewContext(match[1], context, { filename: "desktop-chat-e2e.py:SMOKE_PREPARE_SHOT" });
+  function animation(name, endTime, terminal, fail = false) {
+    const target = { tagName: "DIV", className: "cdx-reveal x-in", opacity: "0",
+      classList: { contains: (name) => name === "cdx-reveal" },
+      parentElement: { tagName: "DIV", className: "ancestor", opacity: ".5" } };
+    const value = {
+      animationName: name,
+      currentTime: 0,
+      playState: "running",
+      effect: { target, getComputedTiming: () => ({ endTime }) },
+      get finished() {
+        assert.equal(terminal, true, `${name}: leave the live animation's finished promise alone`);
+        return Promise.resolve();
+      },
+      finish() {
+        assert.equal(terminal, true, `${name}: leave the live animation running`);
+        calls.push(`finish ${name}`);
+        if (fail) throw new Error("finish rejected");
+        this.currentTime = endTime;
+        this.playState = "finished";
+        target.opacity = name === "cdx-out" ? "0" : "1";
+      },
+    };
+    animations.push(value);
+    return value;
+  }
+  return { prepare: context.window.__smokePrepareShot, calls, logs, animation };
+}
+
+test("injected screenshot preparation finishes finite entrances/exits and lays out their terminal state", async () => {
+  const f = preparationFixture();
+  const entrance = f.animation("cdx-in", 220, true);
+  f.animation("cdx-out", 150, true);
+  const spinner = f.animation("cdx-spin", Infinity, false);
+  const infiniteEntrance = f.animation("cdx-in", Infinity, false);
+  const streamingSweep = f.animation("cdx-sweep", 1000, false);
+  await f.prepare("c02-work-open");
+  assert.deepEqual(f.calls, ["log before", "finish cdx-in", "finish cdx-out", "layout", "body layout", "log after"]);
+  assert.equal(entrance.currentTime, 220);
+  assert.equal(entrance.effect.target.opacity, "1");
+  for (const live of [spinner, infiniteEntrance, streamingSweep]) {
+    assert.equal(live.currentTime, 0);
+    assert.equal(live.playState, "running");
+  }
+  const before = f.logs[0].samples[0];
+  assert.equal(before.currentTime, 0);
+  assert.equal(before.ancestors[0].opacity, "0");
+  assert.equal(before.ancestors[1].opacity, ".5", "record a partially transparent ancestor too");
+  assert.equal(f.logs[0].samples[2].endTime, "Infinity", "preserve infinity rather than reporting it as null");
+  assert.equal(f.logs[1].samples[0].ancestors[0].opacity, "1");
+  assert.equal(f.logs[1].layout.bodyHeight, 900);
+});
+
+test("injected screenshot preparation surfaces finish errors instead of pretending the final layout was captured", async () => {
+  const f = preparationFixture();
+  f.animation("cdx-in", 220, true, true);
+  await assert.rejects(f.prepare("c03-lines-open"), /finish rejected/);
+  assert.deepEqual(f.calls, ["log before", "finish cdx-in"]);
+  assert.equal(f.logs.length, 1, "retain the before sample when preparation fails");
+});

@@ -1315,6 +1315,9 @@ pub fn run() {
             // windows must never read or change an installed app's cookies or local preferences.
             for window in &mut context.config_mut().app.windows {
                 window.incognito = true;
+                // Keep off-screen acceptance windows rendering. The installed app retains its
+                // normal throttling policy; Windows also uses the harness's occlusion flag.
+                window.background_throttling = Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
             }
             eprintln!("[smoke] isolated nonpersistent webview storage");
         }

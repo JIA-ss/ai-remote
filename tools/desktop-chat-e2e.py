@@ -30,6 +30,8 @@ the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s l
 
 Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
 screen; screenshots land in --out.
+Screenshots settle finite entrance/exit animations at their terminal state; infinite live indicators
+stay active. This verifies screenshot content, not animation timing or performance.
 
   cargo build -p ai-remote && (cd apps/desktop && npx tauri build --debug --no-bundle)
   python3 tools/desktop-chat-e2e.py [--out /tmp/desktop-chat-e2e]
@@ -51,6 +53,69 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
 TMP = None if os.name == "nt" else "/tmp"
+
+SMOKE_TRACE_UI = r'''
+(() => {
+  const ids = new WeakMap();
+  let next = 0, previous = "";
+  const id = (el) => { if (!el) return null; if (!ids.has(el)) ids.set(el, ++next); return ids.get(el); };
+  const state = () => ({ route: document.querySelector('.win')?.dataset.route,
+    rail: id(document.querySelector('.nt-rail')), chat: id(document.querySelector('.nt-chat')),
+    tab: document.querySelector('.nt-rail .seg [role=tab].sel')?.textContent.trim(),
+    view: document.querySelector('.nt-chat')?.className, picker: !!document.querySelector('.nt-chat-picker') });
+  const log = (type, value) => window.__TAURI_INTERNALS__.invoke('log_from_page',
+    { level: 'e2e', message: `     ui-trace ${type}: ${JSON.stringify(value)}` }).catch(() => {});
+  document.addEventListener('click', (event) => {
+    const el = event.target instanceof Element ? event.target.closest('.nt-rail .seg [role=tab], .nt-chat-menu [role=menuitem], .nt-chat-menu-btn, .nt-anchor .b') : null;
+    if (el) void log('click', { text: el.textContent.trim(), classes: el.className, trusted: event.isTrusted,
+      state: state(), stack: String(new Error().stack).replace(/\n/g, ' | ').slice(0, 900) });
+  }, true);
+  new MutationObserver(() => {
+    const current = state(), signature = JSON.stringify(current);
+    if (signature !== previous) { previous = signature; void log('state', current); }
+  }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+})();
+'''
+
+SMOKE_PREPARE_SHOT = r'''
+// Screenshot-only terminal state for finite entrance/exit animations, not an animation performance test.
+window.__smokePrepareShot = async (name) => {
+  if (typeof document.getAnimations !== "function") throw new Error("screenshot animation inspection is unavailable");
+  const entrances = new Set(["cdx-in", "cdx-out", "cdx-fade", "cdx-grow", "cl-fade", "cl-card-in", "cl-q-in",
+    "ws-pop", "ws-reveal", "ws-palette-in", "ws-toast-in"]);
+  const value = (v) => Number.isFinite(v) ? v : v == null ? null : String(v);
+  const label = (el) => {
+    if (!el) return null;
+    const classes = typeof el.className === "string" ? el.className : el.className?.baseVal ?? "";
+    return `${el.tagName ?? "element"}${el.id ? `#${el.id}` : ""}${classes ? `.${classes.trim().replace(/\s+/g, ".")}` : ""}`;
+  };
+  const describe = (animation) => {
+    const ancestors = [];
+    for (let el = animation.effect?.target, depth = 0; el && depth < 8; el = el.parentElement, depth++) {
+      const style = getComputedStyle(el);
+      if (depth === 0 || style.opacity !== "1" || el.classList?.contains("cdx-reveal")) {
+        ancestors.push({ element: label(el), opacity: style.opacity, transform: style.transform });
+      }
+    }
+    return { animation: animation.animationName ?? animation.id ?? "", currentTime: value(animation.currentTime),
+      endTime: value(animation.effect?.getComputedTiming().endTime), playState: animation.playState, ancestors };
+  };
+  const animations = document.getAnimations();
+  // A finite streaming sweep is not an entrance/exit animation and must keep its real state too.
+  const terminal = animations.filter((animation) => entrances.has(animation.animationName)
+    && Number.isFinite(animation.effect?.getComputedTiming().endTime));
+  const log = (phase, samples, layout) => window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "e2e",
+    message: `     稳定截图的有限动画终态: ${JSON.stringify({ shot: name, phase, samples, layout })}` });
+  await log("before", animations.map((animation) => ({ ...describe(animation), finishForScreenshot: terminal.includes(animation) })));
+  for (const animation of terminal) animation.finish();
+  await Promise.all(terminal.map((animation) => animation.finished));
+  // Force style and layout after finishing, before the caller asks the native webview to capture.
+  const rect = document.documentElement.getBoundingClientRect();
+  const layout = { width: rect.width, height: rect.height, bodyHeight: document.body.offsetHeight };
+  await log("after", terminal.map(describe), layout);
+};
+'''
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
@@ -364,9 +429,9 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         f'[[agent]]\nid = "codexfake"\nbase = "codex"\nname = "Codex fake"\n{codex_entry}{extra}', encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k not in ("AI_REMOTE_HOST", "AI_REMOTE_HOME")}
 
-    def cli(*args, home):
+    def cli(*args, home, timeout=120):
         return subprocess.run([str(options.cli), "--home", str(home), *map(str, args)], capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=120, env=env)
+                              encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
     log = open(base / "host.log", "w")
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
@@ -393,7 +458,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
 
         script = base / "drive.js"
         source = ROOT / (os.environ.get("E2E_SCRIPT") or ("tools/desktop-chat-e2e-real.js" if options.real else "tools/desktop-chat-e2e.js"))
-        script.write_text(source.read_text(encoding="utf-8")
+        script.write_text(SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
@@ -464,6 +529,16 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             except subprocess.TimeoutExpired:
                 app.kill()
                 app.wait(timeout=10)
+        if app is not None:
+            try:
+                snapshot = cli("--json", "chat", "sessions", home=desk, timeout=10)
+                (options.out / "sessions.json").write_text(json.dumps({"exit": snapshot.returncode,
+                    "stdout": snapshot.stdout, "stderr": snapshot.stderr}, ensure_ascii=False, indent=2), encoding="utf-8")
+            except subprocess.TimeoutExpired:
+                (options.out / "sessions.json").write_text(json.dumps({"error": "session snapshot timed out"}), encoding="utf-8")
+            exported = work / "export.py"
+            if exported.is_file() and not exported.is_symlink() and exported.stat().st_size <= 1024 * 1024:
+                shutil.copyfile(exported, options.out / "work-export.py")
         cli("stop-agent", home=desk)
         cli("stop-host", home=host_home)
         try:

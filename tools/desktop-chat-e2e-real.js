@@ -45,11 +45,16 @@
     };
     const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
     shotWaits.set(name, finish);
-    // The page must stay on this state until the native capture has finished.
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
     try {
-      Promise.resolve(say("shot", name)).catch((error) => finish(String(error) || "screenshot request rejected"));
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
     } catch (error) {
-      finish(String(error) || "screenshot request rejected");
+      finish(String(error) || "screenshot preparation or request rejected");
     }
   });
   function setValue(el, v) {

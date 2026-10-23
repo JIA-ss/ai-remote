@@ -67,11 +67,16 @@
     };
     const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
     shotWaits.set(name, finish);
-    // The page must stay on this state until the native capture has finished.
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
     try {
-      Promise.resolve(say("shot", name)).catch((error) => finish(String(error) || "screenshot request rejected"));
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
     } catch (error) {
-      finish(String(error) || "screenshot request rejected");
+      finish(String(error) || "screenshot preparation or request rejected");
     }
   });
   function setValue(el, v) {
@@ -512,7 +517,9 @@
     await until("approval card", () => $(".ws-main .cl-ap"), 20000);
     await sleep(500);
     btn(/^(拒绝|Deny)\s*(esc)?$/)?.click();
-    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    await check("Deny tells the agent no", !!(await until("denied", () => lastTurn()?.textContent.includes("Not done: The user declined this."), 15000)), lastTurn()?.textContent.slice(-120));
+    const deniedTool = $(".cl-tool[data-state='denied']", lastTurn());
+    await check("a denied tool is not labelled as executed", !!deniedTool && !/运行了|^Ran\b/.test(text($(".cl-lbl", deniedTool))), text(deniedTool));
     await idle();
 
     // B2. A question in two parts: single choice, then multiple with Other; the answers in the transcript.

@@ -48,11 +48,16 @@
     };
     const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
     shotWaits.set(name, finish);
-    // The page must stay on this state until the native capture has finished.
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
     try {
-      Promise.resolve(say("shot", name)).catch((error) => finish(String(error) || "screenshot request rejected"));
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
     } catch (error) {
-      finish(String(error) || "screenshot request rejected");
+      finish(String(error) || "screenshot preparation or request rejected");
     }
   });
   function setValue(el, v) {
@@ -114,7 +119,13 @@
     await check("a long message folds", !!bubble && bubble.classList.contains("folded"), bubble?.className);
     await check("the fold fades out with mask-image", /gradient/.test(mask ?? ""), mask);
     await check("the folded text is cut short", !!txt && txt.clientHeight < txt.scrollHeight, `${txt?.clientHeight} < ${txt?.scrollHeight}`);
-    bubble?.scrollIntoView({ block: "center" });
+    const feed = $(".nt-chat-body");
+    feed.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    bubble?.scrollIntoView({ block: "center", behavior: "instant" });
+    await check("the folded message is in the viewport", !!(await until("folded bubble in view", () => {
+      const b = bubble.getBoundingClientRect(), f = feed.getBoundingClientRect();
+      return b.top >= f.top && b.bottom <= f.bottom;
+    })));
     await sleep(300);
     await shot("10-long-folded");
 
@@ -138,7 +149,9 @@
     const body = $(".nt-chat-body");
     await check("the list follows the newest turn", body.scrollHeight - body.scrollTop - body.clientHeight < 40,
       `${body.scrollHeight} - ${body.scrollTop} - ${body.clientHeight}`);
+    body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
     body.scrollTop = 0;
+    await check("the reader reaches the first turn", !!(await until("scrolled to the first turn", () => body.scrollTop < 1)));
     await sleep(300);
     await check("far turns still paint when scrolled to", turns()[0].getBoundingClientRect().height > 50, turns()[0].getBoundingClientRect().height);
     await shot("11-scrolled-top");
