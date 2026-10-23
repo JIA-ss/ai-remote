@@ -46,7 +46,12 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
     老 runner 不认识新命令会把回答丢掉。新事件 `question_done{request, answers, how}`：answered / skipped / resolved
     （Codex 发 `serverRequest/resolved`，或轮次结束时还没答）/ dismissed（轮次被停）。启动参数加了
     `-c features.default_mode_request_user_input=true`（0.137 和 0.150 都有这个开关；不认识的 `features.*` 键 Codex 也不报错，实测），
-    让 Codex 在默认模式下也能提问。
+    让 Codex 在默认模式下也能提问。**默认模式的提问不阻塞**（`isBlocking: false`）：Codex 自家应用约 1.5~2.5 分钟没人答就用空答案放行，
+    模型自己拿主意；适配器照做，`QUESTION_WAIT` 120 秒后回 `{answers:{}}`、发 `question_done{how:"expired"}`，提问事件带
+    `expires_in_ms`，卡片上显示倒计时。不这样做的话命令行（`chat run` / `send --wait` 没法作答）发起的任务会一直挂着。
+    会话层的"30 分钟没有事件就停止"看门狗在有提问等着时不计时。
+  - 提问的 `request` 名是"进程启动毫秒-JSON-RPC id"：Codex 每个进程的服务端请求 id 都从 0 开始，而一个会话会跨多个进程
+    （空闲 20 分钟收进程、`thread/resume`），只用 id 会让新提问和老提问撞名。回复 Codex 时仍用原始 id。
   - 对话 hello 的 `runtime` 多了 `protocol`；轮次自己的错误信息原来把服务商 JSON 原样显示，改成取里面的 message。
   - **老控制端**：`turn_diff`、`question_done`、`phase` 忽略；提问显示时少了 header；只有移动没改内容的编辑没有 content，老控制端
     会把 `input.files` 当 JSON 显示一块。
@@ -78,13 +83,13 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
   会话列表里选 Codex。
 
 **测试与实测**（2026-10-23，本机 macOS，debug 包）：
-- 单测：`tools/chat-codex.test.mjs` 32 项（`git apply --check` 验证复制出的补丁、ANSI、时长、提问分组等）；`cargo test -p ar-host --lib chat`
-  71 项；`clippy -D warnings`、全部前端测试过。
+- 单测：`tools/chat-codex.test.mjs` 37 项（`git apply --check` 验证复制出的补丁、ANSI、时长、提问分组等）；`cargo test -p ar-host --lib chat`
+  73 项（Windows 上同一命令 58 项，部分测试只在 Unix 编译）；`cargo test --workspace` 420 项、`clippy -D warnings`、全部前端测试过。
 - `tools/fake-codex-app-server.py`：Codex app-server 的 JSON-RPC 替身（走真实的被控端适配器和 runner），按关键词演一轮：EXPLORE、
   ASK（一个请求两道题）、RESOLVED（Codex 自己关掉提问）、STEERME、SLOW（收到中断后 0.8 秒才停，像真 Codex）、FAIL、MANY、NOPHASE、
   COMPACT、REEDIT（同一文件改两次 + 建了又删，发 `turn/diff/updated`）、BADPATCH、LATEPHASE、DRAWL（慢慢流 8 秒的答案）。
-- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，104 项，最后连续
-  2 次全过。这一轮抓到并修掉的真问题：停止时"正在停止…"一闪而过（替身停得太快，两条事件同批到达——替身改成像真 Codex 那样稍等）、
+- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，109 项全过
+  （104 项那一版在 Mac 连续 2 次、win-dev 上 3 次全过）。这一轮抓到并修掉的真问题：停止时"正在停止…"一闪而过（替身停得太快，两条事件同批到达——替身改成像真 Codex 那样稍等）、
   "审阅"收起时收不回单独点开的文件、提问卡首屏依赖淡入动画（后台窗口里动画可能不走，改成只在翻题时淡入）、引用按钮被页面自己的
   平滑滚动清掉（改成跟着选区移动，Claude 视图同样受益）。
 - 回归：Claude 视图的 `desktop-chat-e2e.js` 连续多次全过。
@@ -93,6 +98,13 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
   卡片、插话被采纳、停止 `sleep 120`、重开回放。**坑**：本机 `~/.codex/config.toml` 的默认模型 `gpt-5.5` 在 ChatGPT 账号下 0.137 和
   0.150 都报"不支持"，要在开始表单的模型里填账号能用的（`~/.codex/models_cache.json` 里列着）。
 - e2e 偶发点（已处理）：60 ms 轮询在后台窗口里赶不上不到 1 秒的流式窗口，相关检查改用 MutationObserver。
+- 合并前做了一轮对抗式审查（3 个方向各自找问题、每条再由独立 agent 试图推翻），确认 16 项，全部修掉并补了单测或 e2e：
+  非阻塞提问没人放行（见上）；请求 id 跨进程撞名导致新提问卡不出现、旧答案被改写（`question_done` 现在只改本轮，草稿和"已关闭"
+  按轮次记）；正在输入框打字时卡片抢焦点、下一个数字键 / 回车替用户作答（卡片首次渲染时记下焦点，在输入框里就不抢；输入框被隐藏
+  会把焦点挪走，挂载后再看已经晚了）；焦点在面板任意按钮上按回车会被卡片当作作答（现在只从对话列表本身转发按键）；关卡片后焦点
+  掉到 body；上下文弹层开着时 Esc 被当作停止的第一下；`\r\n` 行尾丢掉颜色、退格和擦行不认转义、半截转义显示成乱码；
+  `curl … | sh` 之类被算成"搜索网页"；没有整轮 diff 时"新建再修改"给出 git 不认的补丁；答案开始后再停止，时长只算到答案开始；
+  Codex 视图的列表尺寸观察在 hello 之前挂载时取不到 Codex 标记。
 
 **没做 / 没验证**（按收益排序，规格里的 Should / Later）：
 - 输入框整体外形（两行布局、"完全访问"标签、上下文环弹层、队列托盘、读图等待、历史）、头部（文件夹按钮 + 标题 + ⋯ 菜单、连接横幅、

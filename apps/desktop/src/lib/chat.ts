@@ -84,7 +84,7 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "plan"; entries: PlanEntry[] }
   /** Codex also says which request it belongs to (its questions are answered together) and more about it. */
   | { t: "question"; qid: string; prompt: string; options?: string[]; request?: string; item_id?: string; header?: string;
-      descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean }
+      descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean; expires_in_ms?: number }
   /** A question request is over (Codex), with the answers given. */
   | { t: "question_done"; request: string; answers?: Record<string, string[]>; how: string }
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
@@ -213,6 +213,8 @@ export type TextBlock = { kind: "text"; id: string; text: string; phase?: Messag
  */
 export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string;
   request?: string; header?: string; descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean;
+  /** When the agent goes on without an answer (the host's clock), for a question that does not block the turn. */
+  expiresAt?: number;
   answers?: string[]; how?: string };
 
 /** One block of a turn, in the order it happened. */
@@ -397,18 +399,16 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false,
         ...(e.request !== undefined ? { request: e.request } : {}), ...(e.header ? { header: e.header } : {}),
         ...(e.descriptions?.length ? { descriptions: e.descriptions } : {}), ...(e.other ? { other: true } : {}),
-        ...(e.secret ? { secret: true } : {}), ...(typeof e.blocking === "boolean" ? { blocking: e.blocking } : {}) });
+        ...(e.secret ? { secret: true } : {}), ...(typeof e.blocking === "boolean" ? { blocking: e.blocking } : {}),
+        ...(typeof e.expires_in_ms === "number" ? { expiresAt: e.ts + e.expires_in_ms } : {}) });
       break;
     case "question_done":
-      // Every question of the request, in whichever turn asked it.
-      for (let k = 0; k < c.turns.length; k++) {
-        const t = c.turns[k];
-        if (!t.blocks.some((x) => x.kind === "question" && x.request === e.request)) continue;
-        c.turns[k] = { ...t, blocks: t.blocks.map((x) => {
-          if (x.kind !== "question" || x.request !== e.request) return x;
-          const answers = e.answers?.[x.qid] ?? [];
-          return { ...x, answered: true, answers, answer: answers.join(", ") || x.answer, how: e.how };
-        }) };
+      // Every question of the request, in the turn that asked it (a request ends with its turn).
+      for (let i = 0; i < b.length; i++) {
+        const x = b[i];
+        if (x.kind !== "question" || x.request !== e.request) continue;
+        const answers = e.answers?.[x.qid] ?? [];
+        b[i] = { ...x, answered: true, answers, answer: answers.join(", ") || x.answer, how: e.how };
       }
       break;
     case "usage": {
@@ -444,16 +444,19 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
 }
 
 /**
- * Marks a question answered (the answer goes to the host separately). With `request` (Codex), only
- * that request's question of that id; a question already answered keeps its answer.
+ * Marks a question answered (the answer goes to the host separately): the open question of that id
+ * (with `request`, of that request; with `turn`, in that turn). A question already answered keeps
+ * its answer.
  */
-export function markAnswered(prev: Chat, qid: string, answer?: string, request?: string): Chat {
+export function markAnswered(prev: Chat, qid: string, answer?: string, request?: string, turn?: number): Chat {
   const hit = (b: Block): b is QuestionBlock =>
-    b.kind === "question" && b.qid === qid && (request !== undefined ? b.request === request : !b.answered);
+    b.kind === "question" && b.qid === qid && !b.answered && (request === undefined || b.request === request);
   return {
     ...prev,
     turns: prev.turns.map((t) =>
-      t.blocks.some(hit) ? { ...t, blocks: t.blocks.map((b) => (hit(b) ? { ...b, answered: true, answer } : b)) } : t,
+      (turn === undefined || t.n === turn) && t.blocks.some(hit)
+        ? { ...t, blocks: t.blocks.map((b) => (hit(b) ? { ...b, answered: true, answer } : b)) }
+        : t,
     ),
   };
 }

@@ -973,6 +973,8 @@ struct Turn {
     tools: BTreeMap<&'static str, u32>,
     /// Messages that joined this turn.
     steers: u32,
+    /// Question requests waiting for the user: the turn is quiet because of them, not stuck.
+    asking: HashSet<String>,
 }
 
 struct Driver {
@@ -1284,6 +1286,7 @@ impl Driver {
             started: Instant::now(),
             last_event: Instant::now(),
             interrupt_deadline: None,
+            asking: HashSet::new(),
             then: None,
             tools: BTreeMap::new(),
             steers: 0,
@@ -1359,6 +1362,15 @@ impl Driver {
     async fn handle(&mut self, out: Out) -> Option<Out> {
         if let Some(t) = self.turn.as_mut() {
             t.last_event = Instant::now();
+            match &out {
+                Out::Ev(Ev::Question { qid, request, .. }) => {
+                    t.asking.insert(request.clone().unwrap_or_else(|| qid.clone()));
+                }
+                Out::Ev(Ev::QuestionDone { request, .. }) => {
+                    t.asking.remove(request);
+                }
+                _ => {}
+            }
         }
         match out {
             Out::Ev(Ev::Agent { images }) => {
@@ -1460,6 +1472,7 @@ impl Driver {
                         started,
                         last_event: Instant::now(),
                         interrupt_deadline: None,
+                        asking: HashSet::new(),
                         then: None,
                         tools: BTreeMap::new(),
                         steers: 0,
@@ -1640,7 +1653,8 @@ impl Driver {
                 self.stop_process("stopped by force after an interrupt").await;
                 return;
             }
-            if t.interrupt_deadline.is_none() && t.last_event.elapsed() >= QUIET_TURN {
+            // A turn waiting for the user's answer is quiet, not stuck.
+            if t.interrupt_deadline.is_none() && t.asking.is_empty() && t.last_event.elapsed() >= QUIET_TURN {
                 self.chat.emit(Ev::Notice {
                     input_id: None,
                     level: "warn",

@@ -216,10 +216,15 @@ pub enum Ev {
         secret: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blocking: Option<bool>,
+        /// A question that does not block the turn is answered with nothing after this long (from
+        /// the event's time): the agent then goes on by itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_in_ms: Option<u64>,
     },
     /// A question request is over (Codex): `how` is `answered`, `skipped` (every answer empty),
-    /// `resolved` (Codex closed it, or its turn ended unanswered) or `dismissed` (its turn was
-    /// stopped); `answers` are the non-empty answers by question id.
+    /// `expired` (nobody answered in time; the agent went on by itself), `resolved` (Codex closed it,
+    /// or its turn ended unanswered) or `dismissed` (its turn was stopped); `answers` are the
+    /// non-empty answers by question id.
     QuestionDone {
         request: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

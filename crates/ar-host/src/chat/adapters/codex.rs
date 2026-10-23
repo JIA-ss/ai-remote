@@ -13,6 +13,11 @@
 //!   ended) or dismissed (the turn was stopped). Several requests can wait at once. Codex only lets
 //!   the model ask outside plan mode with `features.default_mode_request_user_input`, which the
 //!   adapter turns on (0.137 and 0.150 have it; a Codex that does not know a feature ignores it).
+//!   Such a question does not block the turn (`isBlocking: false`): Codex's own clients answer it
+//!   with nothing after a while so the model decides by itself, and so does the adapter, after
+//!   [`QUESTION_WAIT`] (the question says when, `expires_in_ms`; a command-line run cannot answer
+//!   at all). A request is named in events by this process's start and its JSON-RPC id, since
+//!   Codex numbers requests from 0 in every process and a session outlives its processes.
 //! - Reasoning: only its summary is shown (as Codex's own app does), one paragraph per summary
 //!   part; the raw reasoning text is left out.
 //! - A model the account cannot use fails every turn with an `error` notification before
@@ -64,22 +69,30 @@ pub fn args(_l: &super::Launch<'_>) -> Vec<String> {
     vec!["-c".into(), "features.default_mode_request_user_input=true".into(), "app-server".into()]
 }
 
+/// How long a question that does not block the turn waits for an answer before the agent goes on
+/// without one (Codex's own clients wait about as long).
+pub const QUESTION_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// A question request waiting for answers.
 #[derive(Debug)]
 struct Asking {
-    /// Its JSON-RPC id, and that id as the events name it.
+    /// Its JSON-RPC id, and the name events give it.
     id: Value,
     request: String,
     qids: Vec<String>,
     answers: HashMap<String, String>,
+    /// When it is answered with nothing (a question that does not block the turn).
+    deadline: Option<tokio::time::Instant>,
 }
 
-/// How a JSON-RPC id is named in events.
-fn request_name(id: &Value) -> String {
-    match id {
+/// How a request is named in events: this process's start and the JSON-RPC id (Codex numbers its
+/// requests from 0 in each process).
+fn request_name(st: &State, id: &Value) -> String {
+    let id = match id {
         Value::String(s) => s.clone(),
         other => other.to_string(),
-    }
+    };
+    format!("{}-{id}", st.epoch)
 }
 
 /// What a request we sent was for.
@@ -114,6 +127,8 @@ struct State {
     last_error: Option<String>,
     /// Question requests waiting for answers, oldest first.
     asking: Vec<Asking>,
+    /// When this process started (ms since the epoch), which names its question requests.
+    epoch: u128,
     /// A turn was asked for and has no id yet.
     starting: bool,
     /// Steers waiting for that id.
@@ -174,7 +189,10 @@ pub async fn run(
     name: String,
     opts: Opts,
 ) {
-    let mut st = State::default();
+    let mut st = State {
+        epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
+        ..Default::default()
+    };
     let init = st.request(
         "initialize",
         json!({"clientInfo": {"name": "ai-remote", "title": "ai-remote", "version": ar_core::VERSION}, "capabilities": {"experimentalApi": true}}),
@@ -186,6 +204,12 @@ pub async fn run(
     }
     loop {
         tokio::select! {
+            _ = next_deadline(&st) => {
+                for (reply, done) in expire(&mut st, tokio::time::Instant::now()) {
+                    let _ = proc.write_line(reply).await;
+                    report(&out, Out::Ev(done)).await;
+                }
+            }
             line = lines.recv() => match line {
                 Some(Ok(line)) => {
                     let (writes, outs) = handle(&mut st, &line, &opts);
@@ -281,6 +305,30 @@ fn answer(st: &mut State, qid: String, text: String) -> Option<(String, Ev)> {
         jsonrpc::response(&a.id, json!({"answers": map})),
         Ev::QuestionDone { request: a.request, answers: given, how: how.into() },
     ))
+}
+
+/// The question requests whose wait is over: each answered with nothing (the agent goes on by itself),
+/// as replies to write and events saying so.
+fn expire(st: &mut State, now: tokio::time::Instant) -> Vec<(String, Ev)> {
+    let (over, keep): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut st.asking).into_iter().partition(|a| a.deadline.is_some_and(|d| d <= now));
+    st.asking = keep;
+    over.into_iter()
+        .map(|a| {
+            (
+                jsonrpc::response(&a.id, json!({"answers": {}})),
+                Ev::QuestionDone { request: a.request, answers: Default::default(), how: "expired".into() },
+            )
+        })
+        .collect()
+}
+
+/// Waits until the earliest question deadline (forever when there is none).
+async fn next_deadline(st: &State) {
+    match st.asking.iter().filter_map(|a| a.deadline).min() {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A steer for the running turn: the request to write, nothing yet (waiting for the turn id), or
@@ -458,7 +506,9 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     writes.push(jsonrpc::response(&id, json!({"action": "decline", "content": null})))
                 }
                 "item/tool/requestUserInput" => {
-                    let request = request_name(&id);
+                    let request = request_name(st, &id);
+                    let blocking = params["isBlocking"].as_bool();
+                    let waits = blocking != Some(true);
                     let mut qids = Vec::new();
                     for q in params["questions"].as_array().into_iter().flatten() {
                         let qid = q["id"].as_str().unwrap_or("").to_string();
@@ -484,13 +534,15 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                             descriptions,
                             other: q["isOther"] == true,
                             secret: q["isSecret"] == true,
-                            blocking: params["isBlocking"].as_bool(),
+                            blocking,
+                            expires_in_ms: waits.then_some(QUESTION_WAIT.as_millis() as u64),
                         }));
                     }
                     if qids.is_empty() {
                         writes.push(jsonrpc::response(&id, json!({"answers": {}})));
                     } else {
-                        st.asking.push(Asking { id, request, qids, answers: HashMap::new() });
+                        let deadline = waits.then(|| tokio::time::Instant::now() + QUESTION_WAIT);
+                        st.asking.push(Asking { id, request, qids, answers: HashMap::new(), deadline });
                     }
                 }
                 other => writes.push(jsonrpc::unsupported(&id, other)),
@@ -1448,6 +1500,7 @@ mod tests {
             other,
             secret,
             blocking,
+            expires_in_ms,
         }) = &o[0]
         else {
             panic!("{o:?}")
@@ -1457,9 +1510,10 @@ mod tests {
         assert_eq!(descriptions, &["Same bug", ""]);
         assert_eq!(
             (request.as_deref(), item_id.as_deref(), header.as_deref()),
-            (Some("8"), Some("call-1"), Some("Scope"))
+            (Some("0-8"), Some("call-1"), Some("Scope")),
+            "the request is named by the process's start and its id"
         );
-        assert!(*other && !*secret && *blocking == Some(true));
+        assert!(*other && !*secret && *blocking == Some(true) && expires_in_ms.is_none());
         let Out::Ev(Ev::Question { header, descriptions, other, secret, options, .. }) = &o[1] else { panic!() };
         assert!(header.is_none() && descriptions.is_empty() && options.is_empty() && !*other && *secret);
     }
@@ -1477,7 +1531,7 @@ mod tests {
             "{reply}"
         );
         assert!(
-            matches!(&done, Ev::QuestionDone { request, how, answers } if request == "req-9" && how == "answered" && answers["a"] == ["yes"])
+            matches!(&done, Ev::QuestionDone { request, how, answers } if request == "0-req-9" && how == "answered" && answers["a"] == ["yes"])
         );
         assert!(answer(&mut st, "a".into(), "first".into()).is_none(), "b is still open");
         let (reply, done) = answer(&mut st, "b".into(), "  ".into()).unwrap();
@@ -1502,7 +1556,7 @@ mod tests {
             &opts(None),
         );
         assert!(
-            matches!(&o[..], [Out::Ev(Ev::QuestionDone { request, how, .. })] if request == "8" && how == "resolved"),
+            matches!(&o[..], [Out::Ev(Ev::QuestionDone { request, how, .. })] if request == "0-8" && how == "resolved"),
             "{o:?}"
         );
         let (_, o) = handle(
@@ -1511,11 +1565,48 @@ mod tests {
             &opts(None),
         );
         assert!(
-            matches!(&o[0], Out::Ev(Ev::QuestionDone { request, how, .. }) if request == "9" && how == "dismissed"),
+            matches!(&o[0], Out::Ev(Ev::QuestionDone { request, how, .. }) if request == "0-9" && how == "dismissed"),
             "{o:?}"
         );
         assert!(matches!(o.last(), Some(Out::TurnEnd { .. })));
         assert!(st.asking.is_empty());
+    }
+
+    #[test]
+    fn a_question_that_does_not_block_is_answered_with_nothing_once_its_wait_is_over() {
+        let mut st =
+            State { thread: Some("th".into()), turn: Some("t".into()), ready: true, epoch: 77, ..Default::default() };
+        let line = json!({"id": 3, "method": "item/tool/requestUserInput",
+            "params": {"threadId": "th", "turnId": "t", "itemId": "call-9", "isBlocking": false,
+                "questions": [{"id": "name", "question": "Name?"}]}});
+        let o = handle(&mut st, &line.to_string(), &opts(None)).1;
+        assert!(
+            matches!(&o[0], Out::Ev(Ev::Question { request, expires_in_ms, .. })
+                if request.as_deref() == Some("77-3") && *expires_in_ms == Some(QUESTION_WAIT.as_millis() as u64)),
+            "{o:?}"
+        );
+        ask(&mut st, json!(4), json!([{"id": "b", "question": "Blocking?"}]));
+        let now = tokio::time::Instant::now();
+        assert!(expire(&mut st, now).is_empty(), "nothing is over yet");
+        let over = expire(&mut st, now + QUESTION_WAIT + std::time::Duration::from_secs(1));
+        assert_eq!(over.len(), 1, "only the question that does not block");
+        assert!(over[0].0.contains(r#""id":3"#) && over[0].0.contains(r#""answers":{}"#), "{}", over[0].0);
+        assert!(matches!(&over[0].1, Ev::QuestionDone { request, how, .. } if request == "77-3" && how == "expired"));
+        assert_eq!(st.asking.len(), 1);
+        assert!(st.asking[0].deadline.is_none());
+    }
+
+    #[test]
+    fn requests_of_two_processes_have_different_names() {
+        let mut a = State { thread: Some("th".into()), ready: true, epoch: 1, ..Default::default() };
+        let mut b = State { thread: Some("th".into()), ready: true, epoch: 2, ..Default::default() };
+        let name = |o: &[Out]| match &o[0] {
+            Out::Ev(Ev::Question { request, .. }) => request.clone(),
+            _ => None,
+        };
+        let qa = ask(&mut a, json!(0), json!([{"id": "q", "question": "?"}]));
+        let qb = ask(&mut b, json!(0), json!([{"id": "q", "question": "?"}]));
+        assert_ne!(name(&qa), name(&qb), "Codex numbers requests from 0 in each process");
     }
 
     #[test]

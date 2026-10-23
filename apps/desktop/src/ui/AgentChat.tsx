@@ -48,7 +48,7 @@ import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
 import { CodexLiveStrip, livePlan } from "./codex/CodexLiveStrip";
-import { CodexRequestCard, requestKey } from "./codex/CodexRequestCard";
+import { CodexRequestCard, dropDraft, requestKey } from "./codex/CodexRequestCard";
 import { Icon } from "./Icon";
 import { cx } from "./util";
 
@@ -528,10 +528,23 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
   const [closed, setClosed] = useState<string | null>(null);
   const asking = pending && pendingId !== closed ? pending : null;
   const plan = codex && !asking ? livePlan(chat.turns) : null;
-  const onAnswers = (request: string | null, answers: Array<[string, string]>) => {
+  // A request that is over (answered here or elsewhere, closed by Codex, its turn ended) leaves no draft.
+  const lastPending = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastPending.current && lastPending.current !== pendingId) dropDraft(lastPending.current);
+    lastPending.current = pendingId;
+  }, [pendingId]);
+  /** Back to the composer once the card is gone (it had the keyboard). */
+  const backToComposer = () =>
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body || a.closest(".cdx-reqs")) (document.querySelector(".nt-chat .nt-compose textarea") as HTMLTextAreaElement | null)?.focus();
+    }, 0);
+  const onAnswers = (req: { request: string | null; turn: number }, answers: Array<[string, string]>) => {
     for (const [qid, text] of answers) sendRef.current({ answer: { qid, text } });
-    setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, request ?? undefined), c));
+    setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, req.request ?? undefined, req.turn), c));
     setFollow((n) => n + 1);
+    backToComposer();
   };
   // Codex: Esc twice within 2 s stops the turn (the first press shows "Esc" on the Stop button); a
   // message sent while the answer is already coming waits for the turn to end.
@@ -547,7 +560,9 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
   const onEsc = (e: React.KeyboardEvent) => {
     if (!codex || e.key !== "Escape" || e.repeat || !running || readonly || asking || e.nativeEvent.isComposing) return;
     const at = e.target as HTMLElement;
-    if (document.querySelector(".nt-chat .nt-ac") || at.closest(".nt-findbar, .nt-qd.editing, [role=dialog], [role=menu]")) return;
+    // Esc closes what is open first (a menu, a popover, the find bar) and is not a press toward stopping.
+    if (document.querySelector(".nt-chat .nt-ac, .nt-chat .nt-chat-menu, .nt-chat .nt-usage, [role=dialog], [role=menu]")
+      || at.closest(".nt-findbar, .nt-qd.editing")) return;
     e.preventDefault();
     e.stopPropagation();
     if (escArmed) {
@@ -653,11 +668,12 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
       {plan && <CodexLiveStrip plan={plan} />}
       {asking && pendingId && (
         <div className="cdx-reqs">
-          <CodexRequestCard key={pendingId} req={asking} id={pendingId} readonly={readonly}
-            onSubmit={(answers) => onAnswers(asking.request, answers)}
+          <CodexRequestCard key={pendingId} req={asking} id={pendingId} readonly={readonly} now={now}
+            onSubmit={(answers) => onAnswers(asking, answers)}
             onDismiss={() => {
               setClosed(pendingId);
               send({ interrupt: {} });
+              backToComposer();
             }} />
         </div>
       )}

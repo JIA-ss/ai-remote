@@ -1155,6 +1155,7 @@ export const en = {
   cdx_q_other_ph: "No, and tell Codex what to do differently",
   cdx_q_type_here: "Type here",
   cdx_q_recommended: "Recommended",
+  cdx_q_expires: "Codex goes on without an answer in {t}",
   cdx_q_secret_ph: "Type the answer (not shown)",
   cdx_btn_send: "Send",
   cdx_btn_steer: "Steer",

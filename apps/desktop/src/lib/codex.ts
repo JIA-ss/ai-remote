@@ -405,6 +405,8 @@ export interface FileChange {
   lines: DiffLine[];
   /** The host cut its diff short (a very large change). */
   truncated?: boolean;
+  /** Several edits of the file put together: their hunks count from different versions of it. */
+  merged?: boolean;
 }
 
 /** Whether a "diff" is a unified diff, rather than the content Codex sends for an added or deleted file. */
@@ -578,6 +580,13 @@ export function turnChanges(turn: Turn, cwd?: string | null): FileChange[] {
       // Deleted then written again: it changed; deleted at the end: it is gone. An added file stays added.
       have.kind = have.kind === "delete" && f.kind === "add" ? "update" : f.kind === "delete" ? "delete" : have.kind;
       if (f.truncated) have.truncated = true;
+      // The edits' hunks count from different versions of the file: shown in turn, never a patch.
+      have.merged = true;
+      // A file the turn created has, in the end, the lines it was created with and those added since.
+      if (have.kind === "add") {
+        have.add -= f.del;
+        have.del = 0;
+      }
     }
   }
   return [...out.values()];
@@ -589,7 +598,7 @@ export function turnChanges(turn: Turn, cwd?: string | null): FileChange[] {
  */
 export function filePatch(f: FileChange, cwd: string | null | undefined): string | null {
   const changed = f.lines.filter((l): l is Exclude<DiffLine, { kind: "hunk" }> => l.kind !== "hunk");
-  if (!changed.length || f.truncated || changed.some((l) => l.old === null && l.new === null)) return null;
+  if (!changed.length || f.truncated || f.merged || changed.some((l) => l.old === null && l.new === null)) return null;
   const rel = (p: string) => relPath(p, cwd).replace(/\\/g, "/").replace(/^\/+/, "");
   const a = rel(f.path);
   const b = rel(f.movePath ?? f.path);
@@ -786,8 +795,15 @@ export type SummaryPart = "tools" | "edited" | "read" | "ran" | "web" | "failed"
 
 /** A command that only fetches a page off the internet (`curl https://…`), which Codex counts as a web search. */
 export function isWebFetch(info: ExecInfo): boolean {
-  const words = splitWords(info.command);
-  if (program(words[0] ?? "") !== "curl" || words.some((w) => /^(-X|--request|-d|--data.*|-F|--form|-T|--upload-file|-o|--output)$/.test(w))) return false;
+  // One plain curl that only reads: no pipe, chain or redirection, nothing written, sent or run.
+  const list = commandList(info.command);
+  if (!list || list.length !== 1 || list[0].length !== 1) return false;
+  const words = splitWords(list[0][0]);
+  if (program(words[0] ?? "") !== "curl") return false;
+  const writes = (w: string) =>
+    /^--(request|data|json|form|upload|output|remote-name|remote-header-name|config|create-dirs)/.test(w)
+    || /^-[A-Za-z]*[XdFToOKJ]/.test(w);
+  if (words.slice(1).some(writes)) return false;
   const url = words.find((w) => /^https?:\/\//i.test(w));
   if (!url) return false;
   const host = url.replace(/^https?:\/\/(\[[^\]]*\]|[^/:?#]*).*$/i, "$1").toLowerCase();
@@ -867,7 +883,8 @@ export function workedMs(turn: Turn, now: number): number {
   const start = turn.startedTs ?? turn.user?.ts ?? now;
   const ans = answerIndex(turn);
   const answered = ans >= 0 ? (turn.blocks[ans] as TextBlock).startedTs : undefined;
-  if (answered !== undefined) return Math.max(0, answered - start);
+  // A turn stopped or failed while answering says how long it ran in all.
+  if (answered !== undefined && (turn.status === "completed" || turn.status === "running")) return Math.max(0, answered - start);
   if (turn.durationMs !== null && turn.status !== "running") return turn.durationMs;
   return Math.max(0, now - start);
 }
@@ -978,23 +995,9 @@ function color256(n: number): string | undefined {
  * character; other escapes are dropped. Text only, never markup.
  */
 export function parseAnsi(input: string): AnsiRun[] {
-  // First the line edits: each line keeps what its last carriage return left.
-  const lines = input.split("\n").map((line) => {
-    if (!line.includes("\r") && !line.includes("\b")) return line;
-    let out = "";
-    for (const piece of line.split("\r")) {
-      let cur = "";
-      for (const ch of piece) cur = ch === "\b" ? cur.slice(0, -1) : cur + ch;
-      // A carriage return goes back to the line's start; what follows writes over it (and "erase to end
-      // of line" clears the rest).
-      const erase = /\x1b\[0?K/.test(cur);
-      const visible = cur.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-      const outVisible = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-      out = erase || visible.length >= outVisible.length ? cur : cur + outVisible.slice(visible.length);
-    }
-    return out;
-  });
-  const text = lines.join("\n");
+  // An escape cut off at the end (output still streaming, or cut by the host) waits for its rest.
+  // Line ends are \n (a \r\n line end is not a return to the line's start).
+  const text = input.replace(/\x1b(?:\[[0-9;?]*|\][^\x07\x1b]*|[()])?$/, "").replace(/\r+\n/g, "\n").split("\n").map(editLine).join("\n");
   const runs: AnsiRun[] = [];
   let style: Omit<AnsiRun, "text"> = {};
   const re = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b./g;
@@ -1043,6 +1046,60 @@ export function parseAnsi(input: string): AnsiRun[] {
   }
   push(text.slice(at));
   return runs;
+}
+
+/** An escape sequence (styles, cursor and erase commands, titles and links), as one zero-width piece. */
+const ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b./y;
+
+/**
+ * One line as a terminal leaves it: `\r` goes back to its start and what follows writes over it,
+ * `\b` steps back one character (at the end of the line it takes that character away, as Codex
+ * shows it), ESC[K / ESC[1K / ESC[2K erase to its end / from its start / all of it. Escapes take no
+ * room: they stay with the character that follows them.
+ */
+function editLine(line: string): string {
+  if (!line.includes("\r") && !line.includes("\b")) return line;
+  const cells: Array<{ pre: string; ch: string; erased?: boolean }> = [];
+  let pending = "";
+  let at = 0;
+  for (let i = 0; i < line.length; ) {
+    const c = line[i];
+    if (c === "\x1b") {
+      ESCAPE.lastIndex = i;
+      const m = ESCAPE.exec(line);
+      const seq = m ? m[0] : c;
+      i += seq.length;
+      const erase = /^\x1b\[([012]?)K$/.exec(seq);
+      if (!erase) {
+        pending += seq;
+        continue;
+      }
+      const how = erase[1] || "0";
+      if (how === "0") cells.length = Math.min(cells.length, at);
+      else for (let k = how === "2" ? cells.length - 1 : Math.min(at, cells.length - 1); k >= 0; k--) cells[k] = { pre: cells[k].pre, ch: " ", erased: true };
+      if (how === "2") cells.length = Math.min(cells.length, at);
+      continue;
+    }
+    i++;
+    if (c === "\r") at = 0;
+    else if (c === "\b") {
+      at = Math.max(0, at - 1);
+      if (at === cells.length - 1) {
+        pending = cells[at].pre + pending;
+        cells.pop();
+      }
+    }
+    else {
+      while (cells.length < at) cells.push({ pre: "", ch: " " });
+      if (at < cells.length) cells[at] = { pre: cells[at].pre + pending, ch: c };
+      else cells.push({ pre: pending, ch: c });
+      pending = "";
+      at++;
+    }
+  }
+  // What an erase left blank at the end is not text.
+  while (cells.length && cells[cells.length - 1].erased) pending = cells.pop()!.pre + pending;
+  return cells.map((x) => x.pre + x.ch).join("") + pending;
 }
 
 /** When a message was sent, as its line says it: the time today, the weekday this week, else the date. */

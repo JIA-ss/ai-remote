@@ -272,6 +272,7 @@
 .cdx-req .x-ib { flex: none; width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 6px; color: var(--x-60); }
 .cdx-req .x-ib:hover:not(:disabled) { background: var(--x-hover); color: var(--x-ink); }
 .cdx-req .x-ib:disabled { opacity: .35; cursor: default; }
+.cdx-req .x-expires { margin: -4px 16px 6px; font-size: 12px; line-height: 16px; color: var(--x-45); }
 .cdx-req .x-body { display: flex; flex-direction: column; padding-bottom: 8px; }
 .cdx-req .x-body.x-in { animation: cdx-fade .3s ease; }
 @keyframes cdx-fade { from { opacity: 0; } to { opacity: 1; } }

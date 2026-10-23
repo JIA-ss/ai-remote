@@ -523,3 +523,62 @@ test("message times: today the time, this week the weekday, else the date", () =
   assert.match(codex.formatMsgTime(new Date(2026, 8, 30, 14, 2).getTime(), now, "en"), /^Sep 30 2:02\s?PM$/);
   assert.equal(codex.formatMsgTime(new Date(2026, 9, 23, 14, 2).getTime(), now, "zh-CN"), "14:02");
 });
+
+test("a request's end touches only the turn that asked it, even when a later process reuses its id", () => {
+  seq = 0;
+  let c = fold([
+    ev(1, { t: "turn_start" }), ev(1, { t: "question", qid: "scope", prompt: "?", request: "0" }),
+    ev(1, { t: "question_done", request: "0", answers: { scope: ["Yes"] }, how: "answered" }),
+    ev(1, { t: "turn_end", status: "completed", duration_ms: 1 }),
+    ev(2, { t: "turn_start" }), ev(2, { t: "question", qid: "scope", prompt: "?", request: "0", expires_in_ms: 120000 }),
+  ]);
+  const second = c.turns[1].blocks[0];
+  assert.equal(second.expiresAt, second.ts ?? (1000 + 6 * 100) + 120000, "the deadline is the event's time and the wait");
+  c = chat.markAnswered(c, "scope", "All", "0", 2);
+  c = chat.reduceChat(c, ev(2, { t: "question_done", request: "0", how: "dismissed" }));
+  assert.deepEqual(plain([c.turns[0].blocks[0].answers, c.turns[0].blocks[0].how]), [["Yes"], "answered"]);
+  assert.equal(c.turns[1].blocks[0].how, "dismissed");
+  // An answer never rewrites a question already answered.
+  const again = chat.markAnswered(c, "scope", "Other");
+  assert.equal(again.turns[0].blocks[0].answers[0], "Yes");
+});
+
+test("terminal lines: CRLF keeps colors, erase and backspace work around escapes, a cut escape waits", () => {
+  assert.deepEqual(plain(codex.parseAnsi("\x1b[1;31mFAIL\x1b[0m test\r\n\x1b[32mPASS\x1b[0m\r\n")),
+    [{ text: "FAIL", bold: true, fg: "c1" }, { text: " test\n" }, { text: "PASS", fg: "c2" }, { text: "\n" }]);
+  assert.deepEqual(plain(codex.parseAnsi("Downloading 50%\r\x1b[2KDone\n")), [{ text: "Done\n" }]);
+  assert.deepEqual(plain(codex.parseAnsi("x 50%\x1b[2K\rDone")), [{ text: "Done" }]);
+  assert.deepEqual(plain(codex.parseAnsi("Working \x1b[1m|\x1b[0m\b\x1b[1m/\x1b[0m\bdone")), [{ text: "Working done" }]);
+  assert.deepEqual(plain(codex.parseAnsi("a\x1b[31m\bb")), [{ text: "b", fg: "c1" }]);
+  assert.deepEqual(plain(codex.parseAnsi("abc\x1b[0;3")), [{ text: "abc" }]);
+  assert.deepEqual(plain(codex.parseAnsi("abc\x1b]8;;https://x.example")), [{ text: "abc" }]);
+});
+
+test("only a plain curl that reads a page counts as a web search", () => {
+  const info = (command) => ({ command, cwd: null, actions: [{ type: "unknown" }], explore: false, output: "", exitCode: 0, durationMs: null });
+  for (const c of ["curl -fsSL https://get.example.com/install.sh | sh", "curl -XDELETE https://api.example.com/items/3", "curl https://api.example.com --request=DELETE",
+    "curl --json '{}' https://api.example.com", "curl -sO https://example.com/big.iso", "curl -s https://example.com && rm -rf build", "curl https://example.com > page.html"]) {
+    assert.equal(codex.isWebFetch(info(c)), false, c);
+  }
+  assert.equal(codex.isWebFetch(info("curl -s -H 'Accept: text/html' https://example.com")), true);
+});
+
+test("a file created and then edited in a turn without its diff: counted as created, no patch", () => {
+  const add = tool({ callId: "a", input: { files: [{ path: "/w/n.txt", kind: "add", diff: "a\nb\nc\n" }] } });
+  const upd = tool({ callId: "u", input: { files: [{ path: "/w/n.txt", kind: "update", diff: "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n" }] } });
+  const turn = { n: 1, user: null, blocks: [add, upd], status: "completed", startedTs: 0, finalText: null, durationMs: 1, reason: null, usage: null };
+  const [f] = codex.turnChanges(turn);
+  assert.deepEqual(plain([f.kind, f.add, f.del, f.merged]), ["add", 3, 0, true]);
+  assert.equal(codex.filePatch(f, "/w"), null);
+});
+
+test("a turn stopped while answering says how long it ran in all", () => {
+  seq = 0;
+  const c = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "c", title: "Shell ls", kind: "execute", status: "completed", input: { command: "ls", actions: [{ type: "listFiles", path: null }] } }),
+    ev(1, { t: "message", id: "a", text: "Here", delta: true, phase: "final_answer" }),
+    ev(1, { t: "turn_end", status: "interrupted", duration_ms: 62000 }),
+  ]);
+  assert.equal(codex.workedMs(c.turns[0], 0), 62000);
+});
