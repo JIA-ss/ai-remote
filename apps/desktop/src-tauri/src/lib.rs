@@ -1449,6 +1449,8 @@ fn smoke(app: &tauri::App) {
             let _ = w.set_focus();
         } else {
             let _ = w.set_focusable(false);
+            let _ = w.set_ignore_cursor_events(true);
+            let _ = w.set_title("ai-remote · 隔离验收");
             let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
         }
         // `AI_REMOTE_SMOKE_QUALITY=ultra` picks a live-view quality first (a stream-quality id; run
@@ -1478,6 +1480,7 @@ fn smoke(app: &tauri::App) {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
             if let Some(w) = handle.get_webview_window("main") {
+                eprintln!("[smoke] scripted window position: {:?}, size: {:?}", w.outer_position(), w.outer_size());
                 let _ = w.eval(script);
             }
         });

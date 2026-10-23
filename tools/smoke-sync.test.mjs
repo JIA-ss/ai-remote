@@ -282,3 +282,33 @@ test("injected screenshot preparation surfaces finish errors instead of pretendi
   assert.deepEqual(f.calls, ["log before", "finish cdx-in"]);
   assert.equal(f.logs.length, 1, "retain the before sample when preparation fails");
 });
+
+function inputIsolation(visible) {
+  const harness = readFileSync(new URL("./desktop-chat-e2e.py", import.meta.url), "utf8");
+  const source = /SMOKE_INPUT_ISOLATION = r'''([\s\S]*?)'''/.exec(harness)?.[1];
+  assert.ok(source);
+  const listeners = new Map();
+  vm.runInNewContext(source.replace("__ALLOW_NATIVE_INPUT__", String(visible)), {
+    document: { addEventListener: (type, listener, options) => { assert.equal(options.capture, true); assert.equal(options.passive, false); listeners.set(type, listener); } },
+    window: { __TAURI_INTERNALS__: { invoke: async () => {} } },
+  });
+  return listeners;
+}
+
+test("off-screen smoke isolates native activation without blocking injected actions or real layout notifications", () => {
+  const listeners = inputIsolation(false);
+  for (const type of ["click", "pointerdown", "keydown", "wheel"]) {
+    let prevented = 0, stopped = 0;
+    const event = { type, isTrusted: false, preventDefault: () => prevented++, stopImmediatePropagation: () => stopped++ };
+    listeners.get(type)(event);
+    assert.equal(prevented + stopped, 0, `${type}: injected input remains usable`);
+    listeners.get(type)({ ...event, isTrusted: true });
+    assert.equal(prevented, 1); assert.equal(stopped, 1);
+  }
+  for (const type of ["scroll", "resize", "selectionchange", "focus", "input", "change"])
+    assert.equal(listeners.has(type), false, `${type}: browser layout and control notifications are preserved`);
+});
+
+test("explicit visible smoke retains the native keyboard and pointer path", () => {
+  assert.equal(inputIsolation(true).size, 0);
+});

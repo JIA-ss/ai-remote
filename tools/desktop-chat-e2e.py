@@ -54,6 +54,23 @@ ROOT = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
 TMP = None if os.name == "nt" else "/tmp"
 
+SMOKE_INPUT_ISOLATION = r'''
+// Default smoke is driven by injected DOM events. An unrelated native click/key must not drive
+// this throwaway window; explicit --visible runs keep real input for the input-method tests.
+(() => {
+  if (__ALLOW_NATIVE_INPUT__) return;
+  const block = (event) => {
+    if (!event.isTrusted) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "smoke",
+      message: `ignored external native input: ${event.type}` }).catch(() => {});
+  };
+  for (const type of ["click", "dblclick", "contextmenu", "pointerdown", "pointerup", "mousedown", "mouseup", "keydown", "keyup", "wheel"])
+    document.addEventListener(type, block, { capture: true, passive: false });
+})();
+'''
+
 SMOKE_TRACE_UI = r'''
 (() => {
   const ids = new WeakMap();
@@ -476,7 +493,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
   }) });
 })();
 '''
-        script.write_text(metadata + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
+        script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.visible))
+                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
