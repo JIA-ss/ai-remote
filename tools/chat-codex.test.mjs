@@ -306,6 +306,8 @@ test("copied patches apply with git", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "cdx-patch-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: dir });
+    // Git for Windows turns LF into CRLF on checkout by default; the patch is about content.
+    execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: dir });
     mkdirSync(join(dir, "src"));
     writeFileSync(join(dir, "src", "m.py"), "a\nb\nc\n");
     writeFileSync(join(dir, "old.txt"), "bye\n");
