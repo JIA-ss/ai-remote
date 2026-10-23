@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -17,23 +17,33 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
-## 智能体工作区第二阶段 · 环境接手阻塞（2026-10-23）
+## 智能体工作区第二阶段 · 本机验收接手（2026-10-23，进行中）
 
-**缺规格**：约定的用户主目录下 `ar-refs/spec/` 不存在。按本轮要求“没有就停在这一步”，停在第 0 阶段，
-没有进入 CI 排查、全量 E2E 或第二阶段实现；没有读取或逆向官方应用，也没有用旧笔记补造洁净室规格。
+初次盘点时**缺规格**，在第 0 阶段停过；随后用户补交交接包，17 份 Markdown 规格与 2 张参考图已在仓库外就位，
+阻塞解除。基于 `origin/main` 的 `3e69f81` 在独立 worktree、`fix/workspace-acceptance` 分支推进；原工作区的其他修改没有改动。
 
-- **做了什么**：只读核对系统、空间、现有工具链与仓库；拉取 `origin/main` 后基线仍为 `3e69f81`，
-  在独立 worktree 的 `docs/workspace-stage2-spec-blocked` 分支记录本次阻塞。已有仓库与工具无需重复安装；
-  本地提交身份已核对，原工作区的其他修改没有改动。
-- **实测**（本次 macOS 环境盘点，不是产品验收）：macOS 27.0.1、arm64；仓库所在外置盘可用约 1.6 TiB；
-  rustup 1.29.1、rustc 1.95.0，锁定工具链已安装；Node.js 25.5.0、Python 3.14.2、gh 2.86.0；
-  Xcode Command Line Tools 可用。当前 shell 的 PATH 未包含 Cargo 可执行文件目录，恢复测试前需加载 Rust 环境。
-- **未测 / 未做**：完整 Xcode 与 iOS 编译；`npm ci`；fmt、Clippy、Rust 测试、前端测试、TypeScript 门槛；
-  main 的 CI 与 iPhone workflow 取消原因；调试构建、替身与真实智能体 E2E、截图验收、Windows 原生窗口验收。
-  本轮没有测试通过数量或性能推导值，不能作为“上线就能直接用”的验收结果。
-- **装机状态**：本轮没有新增 main 产品提交，也未给 Mac 或 Windows 开发机安装；现有 main `3e69f81` 的两端安装状态未核实。
-- **下一步**：洁净室规格到位后，先核对 Claude 的 SB / NS / SP / TR / TC / CP / VS / GAPS、Codex 的 X 系列及两张截图；
-  加载 Rust 环境并安装桌面依赖，完成基线，再按 CI 排障 → 全量 E2E → 第二阶段实现推进。每段通过约定检查后再合入 main。
+- **环境实测**：macOS 27.0.1、arm64；外置盘可用约 1.6 TiB；Rust 1.95.0、Node.js 25.5.0、Python 3.14.2；CLT 可用。
+  已加载 Rust 环境并完成 `npm ci`，没有重复安装已有工具链。
+- **CI 实测**：`3e69f81` 与 #43 的 `4b73551`，desktop/core 与 native 的 macOS、Windows 检查均成功。
+  #43 的 iPhone [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39929694837)被同一 main 的后续 push 取代；
+  `3e69f81` 的 iPhone [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39934119268)则先真实失败，再在缓存保存时撞到 45 分钟上限。
+  UI 实测 31 项、1 跳过、1 失败：Codex 改动卡查询无障碍快照超时。另有独立诊断分支，本批不重复修改 iOS。
+- **已发现并修复 / 正在验证**：Claude 新视图漏接共享文件预览入口；旧 E2E 的 Claude 选择器未跟新视图同步；
+  smoke 窗口原先共用安装版的 WKWebView 存储，现在 debug smoke 改用非持久数据；测试脚本同时检查进程退出码、保存 host 日志并限制外部等待时间。
+  被控端冒烟补齐每个临时 home 的 host/controller 四份 quiet 配置。
+- **门槛实测**：Rust 标准测试 438 过、9 忽略，另有 13 项集成检查通过；TypeScript、fmt、Clippy 与调试桌面构建通过。
+  初次 Rust 全量测试在控制端点退出后立即重绑失败；已用显式解锁修复继承描述符仍持锁的确定性回归，64 轮重启回归通过。
+  原始偶发是否由 fork 触发未观测，不把机制复现写成现场因果证明。首次失败与所有重跑日志保留。
+- **E2E 实测（仍在收尾）**：被控端替身 35 项连续两轮通过；真实 Codex 被控端 44 项通过；工作区替身全流程 104 项连续两轮通过。
+  真实 Codex 已完成文件任务、校验命令、插话、停止；离开再重开仍在补现场诊断，未记整段通过。
+  六套桌面替身矩阵与逐图核对仍在推进，不把单套成功写成全量通过。
+- **截图条件**：debug smoke 独立非持久存储，关闭受支持系统的离屏后台节流；截图严格等待原生确认。
+  截图前仅将白名单内有限时长的入场/退场动画推进到终态，无限指示器与流式扫光保留；这是稳定截图的测试条件，未验动画性能。
+- **未测 / 尚在推进**：完整矩阵、真实 Codex 整段与最终全部截图；真实 Claude 未登录，整段真实流程未测；
+  完整 Xcode/iOS 本地构建、Windows 原生工作区和 Claude 页面仍未测。没有性能推导值。
+- **装机状态**：本轮尚未新增 main 产品提交，也未给 Mac 或 Windows 开发机安装；交接包记录 `3e69f81` 尚未装到两端。
+- **下一步**：完成 Rust 回归修复和全部本机 E2E，记下最终条件与数量，经 test/native 的 macOS、Windows 检查后合入 main；
+  第二阶段首批在独立分支按规格推进数字跳转、窄布局芯片、Claude 输出与提问细节，另行验收、开 PR。
 
 ## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
 
