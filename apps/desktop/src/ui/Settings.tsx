@@ -1,6 +1,6 @@
-// Settings, a window of its own (back returns to the main window): General, Agents, This device,
-// Network, Approvals and About. Only what works today is shown; nothing here is a switch that does
-// nothing.
+// Settings, a page of the shell (the sections are a segmented control in its toolbar): General,
+// Agent access, This device, Network, Approving and About. Only what works today is shown; nothing
+// here is a switch that does nothing.
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
@@ -8,6 +8,7 @@ import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n"
 import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
+import type { Section } from "../lib/nav";
 import { useStore } from "../lib/store";
 import type {
   AgentStatus,
@@ -29,10 +30,8 @@ import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
 import { PairCodeDialog } from "./PairCode";
-import { TitleBar } from "./Shell";
 import { clock, cx } from "./util";
 
-type Section = "general" | "agents" | "device" | "network" | "approvals" | "about";
 
 const SECTIONS: Array<[Section, IconName | "approval", Key]> = [
   ["general", "settings", "set_general"],
@@ -42,11 +41,6 @@ const SECTIONS: Array<[Section, IconName | "approval", Key]> = [
   ["approvals", "approval", "set_approvals"],
   ["about", "info", "set_about"],
 ];
-
-function initialSection(): Section {
-  const v = new URLSearchParams(location.search).get("sec");
-  return SECTIONS.some(([s]) => s === v) ? (v as Section) : "general";
-}
 
 const mac = detectOs() === "mac";
 
@@ -81,17 +75,67 @@ function Row({ ic, tt, ds, children }: { ic: React.ReactNode; tt: React.ReactNod
   );
 }
 
-export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; intent?: TrayIntent | null }) {
-  const [sec, setSec] = useState<Section>(initialSection);
-  // The tray menu picks a section ("Open Settings" lands on This device).
-  useEffect(() => {
-    if (intent && once("sec", intent) && SECTIONS.some(([x]) => x === intent.sec)) setSec(intent.sec as Section);
-  }, [intent]);
-  const [status, setStatus] = useState<AgentStatus | null>(null);
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    api.status().then(setStatus, () => setStatus(null));
-  }, [round]);
+/** The settings section's name for the toolbar's screen-reader heading ("Settings: Network"). */
+export function settingsTitle(sec: Section): string {
+  const label = SECTIONS.find(([s]) => s === sec)?.[2] ?? "set_general";
+  return t("settings_h1", { sec: t(label) });
+}
+
+/**
+ * The sections as one segmented control in the toolbar (the old second sidebar): arrow keys move
+ * between them, Home / End jump to the ends. Keeps the `snav` class the screenshots look for.
+ */
+export function SettingsTabs({ sec, onSec }: { sec: Section; onSec: (sec: Section) => void }) {
+  const move = (e: React.KeyboardEvent, i: number) => {
+    const to =
+      e.key === "ArrowRight" ? (i + 1) % SECTIONS.length
+      : e.key === "ArrowLeft" ? (i - 1 + SECTIONS.length) % SECTIONS.length
+      : e.key === "Home" ? 0
+      : e.key === "End" ? SECTIONS.length - 1
+      : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    onSec(SECTIONS[to][0]);
+    e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[to]?.focus();
+  };
+  return (
+    <div className="gl-cap gl-glass thin gl-segcap">
+      <nav className="snav gl-seg" role="tablist" aria-label={t("settings")}>
+        {SECTIONS.map(([s, ic, label], i) => (
+          <button
+            key={s}
+            type="button"
+            role="tab"
+            className={cx("gl-segbtn", s === sec && "sel")}
+            aria-selected={s === sec}
+            tabIndex={s === sec ? 0 : -1}
+            title={t(label)}
+            onClick={() => onSec(s)}
+            onKeyDown={(e) => move(e, i)}
+          >
+            {ic === "approval" ? <Glyph name="approval" size={14} /> : <Icon name={ic} size={14} />}
+            <span className="lbl">{t(label)}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+/** Settings inside the shell: one section at a time; the section is part of the route. */
+export function SettingsPage({
+  sec,
+  status,
+  onStatus,
+  intent = null,
+}: {
+  sec: Section;
+  status: AgentStatus | null;
+  /** Fetch the agent's status again (after a change here). */
+  onStatus: () => void;
+  /** A tray intent: its action, anchor or error goes to This device. */
+  intent?: TrayIntent | null;
+}) {
   const name = status?.name ?? "";
   const heads: Record<Section, [Key, Key]> = {
     general: ["set_general", mac ? "gn_lede_mac" : "gn_lede"],
@@ -103,53 +147,18 @@ export function SettingsWindow({ onBack, intent = null }: { onBack: () => void; 
   };
   const [hd, lede] = heads[sec];
   return (
-    <div className="win gl-win swin" style={{ width: "100vw", height: "100vh" }}>
-      <div className="body-row">
-        <nav className="snav">
-          <div className="nt-drag" data-tauri-drag-region />
-          <div className="me">
-            <span className="tile">
-              <Icon name="laptop" size={20} />
-            </span>
-            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-              <span className="strong ell">{name || "—"}</span>
-              <span className="cap c3">{t(mac ? "mac" : "win")}</span>
-            </div>
-          </div>
-          {SECTIONS.map(([s, ic, label]) => (
-            <div
-              key={s}
-              className={cx("nv", s === sec && "sel")}
-              role="button"
-              tabIndex={0}
-              aria-current={s === sec}
-              onClick={() => setSec(s)}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSec(s)}
-            >
-              {ic === "approval" ? <Glyph name="approval" size={16} /> : <Icon name={ic} size={16} />}
-              <span>{t(label)}</span>
-            </div>
-          ))}
-        </nav>
-        <main className="page">
-          <TitleBar title={t("settings")} onBack={onBack} />
-          <div className="nt-content">
-          <div className="spage" style={{ overflowY: "auto" }}>
-            <div className="hd">{t(hd)}</div>
-            <div className="body c2" style={{ marginTop: 6, maxWidth: 640 }}>
-              {t(lede, { name })}
-            </div>
-            <div style={{ marginTop: 28 }}>
-              {sec === "general" && <General version={status?.version} />}
-              {sec === "agents" && <Agents status={status} name={name} onChange={() => setRound((r) => r + 1)} />}
-              {sec === "device" && <Device status={status} intent={intent} />}
-              {sec === "network" && <Network />}
-              {sec === "approvals" && <Approvals />}
-              {sec === "about" && <About version={status?.version} />}
-            </div>
-          </div>
-          </div>
-        </main>
+    <div className="spage" style={{ overflowY: "auto" }}>
+      <div className="hd">{t(hd)}</div>
+      <div className="body c2" style={{ marginTop: 6, maxWidth: 640 }}>
+        {t(lede, { name })}
+      </div>
+      <div style={{ marginTop: 28 }}>
+        {sec === "general" && <General version={status?.version} />}
+        {sec === "agents" && <Agents status={status} name={name} onChange={onStatus} />}
+        {sec === "device" && <Device status={status} intent={intent} />}
+        {sec === "network" && <Network />}
+        {sec === "approvals" && <Approvals />}
+        {sec === "about" && <About version={status?.version} />}
       </div>
     </div>
   );

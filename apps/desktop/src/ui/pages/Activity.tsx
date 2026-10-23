@@ -28,26 +28,40 @@ function axisTicks(computers: Computer[], now: number): string[] {
   return [0, 1, 2, 3, 4].map((i) => clock(t0 + ((now - t0) * i) / 4, false));
 }
 
-export function ActivityPage({ snap }: { snap: Snapshot }) {
+/** The computers whose steps the page shows: all of them, or the one the toolbar's filter picked. */
+export function activityComputers(snap: Snapshot, host?: string): Computer[] {
+  return host ? snap.computers.filter((c) => c.host.name === host) : snap.computers;
+}
+
+export function ActivityPage({
+  snap,
+  host,
+}: {
+  snap: Snapshot;
+  /** Only this computer's steps (the toolbar's filter). */
+  host?: string;
+  onHost?: (host?: string) => void;
+  onOpenComputer?: (host: string) => void;
+}) {
   const now = useNow(5000);
   const [sel, setSel] = useState<string | null>(null);
   const [listRef, list] = useSize<HTMLDivElement>();
+  const shown = useMemo(() => activityComputers(snap, host), [snap, host]);
   const rows = useMemo(
     () =>
-      snap.computers
+      shown
         .flatMap((c) => c.feed.steps.map((s) => ({ s, c })))
         .sort((a, b) => b.s.startedMs - a.s.startedMs)
         .slice(0, 300),
-    [snap],
+    [shown],
   );
   const picked = rows.find((r) => `${r.c.host.name}/${r.s.key}` === sel);
-  const mm = snap.computers.filter((c) => c.feed.steps.length > 0);
+  const mm = shown.filter((c) => c.feed.steps.length > 0);
   const mmW = Math.max((list.w || 600) - 32 - 40 - 32 - 96 - 12, 100);
   return (
     <div className="act">
       <div className="act-list" ref={listRef} style={{ overflowY: "auto" }}>
-        <div className="hd">{t("activity")}</div>
-        <div className="body c2" style={{ marginTop: 6 }}>
+        <div className="body c2">
           {t("act_sub")}
         </div>
         {mm.length > 0 && (

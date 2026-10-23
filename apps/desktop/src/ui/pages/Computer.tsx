@@ -1,17 +1,17 @@
 // The computer page: its news in one large sentence, the live preview and recent steps (Overview),
-// this device's access, the tools on offer and the coding agents.
+// this device's access, the tools on offer and the coding agents (the tabs sit in the toolbar).
 
-import { useState } from "react";
 import { currentLang, t, type Key } from "../../lib/i18n";
+import type { ComputerTab } from "../../lib/nav";
 import { groupOf, type Computer } from "../../lib/store";
 import type { Step } from "../../lib/types";
 import type { ChatTarget } from "../AgentChat";
 import { AccessTab, AgentsTab, ToolsTab } from "../ComputerTabs";
 import { DecisionCard } from "../Decide";
-import { OsGlyph, Pointer, SeatMark } from "../glyphs";
+import { Pointer, SeatMark } from "../glyphs";
 import { Icon } from "../Icon";
 import { Stream } from "../Session";
-import { computerFacts, Facts, statusOf } from "../Shell";
+import { statusOf } from "../Shell";
 import { TurnLine, turnSpec } from "../TurnLine";
 import { agentLabel, clock, cx, relayNote, useNow, useShortWindow, useSize } from "../util";
 import { levelName } from "./common";
@@ -72,70 +72,68 @@ function StepRows({ steps }: { steps: Step[] }) {
   );
 }
 
-type Tab = "overview" | "access" | "tools" | "agents";
+const TABS: Array<[ComputerTab, Key]> = [
+  ["overview", "tab_overview"],
+  ["access", "tab_access"],
+  ["tools", "tab_tools"],
+  ["agents", "tab_agents"],
+];
 
-/** `?tab=` opens a tab directly (screenshots of the page outside the app). */
-function initialTab(): Tab {
-  const v = new URLSearchParams(location.search).get("tab");
-  return v === "access" || v === "tools" || v === "agents" ? v : "overview";
+/** The computer page's tabs, drawn in the shell's toolbar (a tab change replaces the route, it adds
+ *  no history). Arrow keys move between them, Home / End jump to the ends. */
+export function ComputerTabStrip({ tab, onTab }: { tab: ComputerTab; onTab: (tab: ComputerTab) => void }) {
+  const move = (e: React.KeyboardEvent, i: number) => {
+    const n = TABS.length;
+    const to = e.key === "ArrowRight" ? (i + 1) % n : e.key === "ArrowLeft" ? (i - 1 + n) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    onTab(TABS[to][0]);
+    e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[to]?.focus();
+  };
+  return (
+    <div className="gl-cap gl-glass thin gl-segcap">
+      <div className="gl-seg" role="tablist">
+        {TABS.map(([k, label], i) => (
+          <button
+            type="button"
+            key={k}
+            className={cx("gl-segbtn", k === tab && "sel")}
+            role="tab"
+            tabIndex={k === tab ? 0 : -1}
+            aria-selected={k === tab}
+            onClick={() => onTab(k)}
+            onKeyDown={(e) => move(e, i)}
+          >
+            <span className="lbl">{t(label)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
-/** One computer: what is happening there (Overview), this device's access, the tools on offer. */
+/** One computer: what is happening there (Overview), this device's access, the tools on offer, the
+ *  coding agents. Its name, facts and tabs are in the shell's toolbar. */
 export function ComputerPage({
   c,
+  tab,
   onWatch,
   onActivity,
   onUnpaired,
   onOpenChat,
 }: {
   c: Computer;
+  tab: ComputerTab;
   onWatch: () => void;
-  onActivity: () => void;
+  /** This computer's steps on the activity page. */
+  onActivity: (host: string) => void;
   onUnpaired: () => void;
   /** Opens a coding-agent chat beside the live view. */
   onOpenChat: (target: ChatTarget) => void;
 }) {
-  const [tab, setTab] = useState<Tab>(initialTab);
-  const off = c.online === false;
   const short = useShortWindow();
-  const tabs: Array<[Tab | "activity", Key]> = [
-    ["overview", "tab_overview"],
-    ["access", "tab_access"],
-    ["tools", "tab_tools"],
-    ["agents", "tab_agents"],
-    ["activity", "tab_activity"],
-  ];
   return (
     <div className={cx("cpage", short && "short")}>
-      <div className="cp-top">
-        <span className="tile">
-          <OsGlyph os={c.os ?? "windows"} size={16} />
-          <i className={cx("pd", (off || c.online === null) && "off")} />
-        </span>
-        <span className="nm">{c.host.name}</span>
-        <span className="facts">
-          <Facts items={computerFacts(c)} />
-          <span>
-            <i className={c.online === true ? "on" : "off"} />
-            {off ? t("st_offline") : c.online === null ? t("st_connecting") : t("live")}
-          </span>
-        </span>
-        <div className="seg fit" role="tablist">
-          {tabs.map(([k, label]) => (
-            <button
-              type="button"
-              key={k}
-              className={cx(k === tab && "sel")}
-              role="tab"
-              tabIndex={0}
-              aria-selected={k === tab}
-              onClick={() => (k === "activity" ? onActivity() : setTab(k))}
-            >
-              {t(label)}
-            </button>
-          ))}
-        </div>
-      </div>
       {tab === "access" ? (
         <AccessTab c={c} onUnpaired={onUnpaired} />
       ) : tab === "tools" ? (
@@ -143,7 +141,7 @@ export function ComputerPage({
       ) : tab === "agents" ? (
         <AgentsTab c={c} onOpenChat={onOpenChat} />
       ) : (
-        <Overview c={c} short={short} onWatch={onWatch} onActivity={onActivity} />
+        <Overview c={c} short={short} onWatch={onWatch} onActivity={() => onActivity(c.host.name)} />
       )}
     </div>
   );

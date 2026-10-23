@@ -1,6 +1,7 @@
 // Pairing: the ticket, then the safety words both screens show.
 
 import { useState } from "react";
+import type { NavGuard } from "../../lib/nav";
 import { api, type Paired } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { CmdLine } from "../CmdLine";
@@ -11,7 +12,15 @@ import { cx } from "../util";
 import { levelName } from "./common";
 
 /** Pairing: the ticket, then the safety words both screens show. */
-export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
+export function PairPage({
+  onPaired,
+}: {
+  onPaired: (host: string) => void;
+  /** Settings › This device with its pair-code dialog open (pairing the other way round). */
+  onShowMyCode?: () => void;
+  /** Asks before the shell navigates away (step 2: paired, safety words not checked yet). */
+  registerGuard?: (guard: NavGuard | null) => void;
+}) {
   const [code, setCode] = useState("");
   const [ticket, setTicket] = useState("");
   const [useTicket, setUseTicket] = useState(false);
@@ -47,8 +56,7 @@ export function PairPage({ onPaired }: { onPaired: (host: string) => void }) {
   const cur = step === "mismatch" ? 2 : step;
   return (
     <div className="ppage" style={{ overflowY: "auto" }}>
-      <div className="row" style={{ justifyContent: "space-between", maxWidth: 620 }}>
-        <div className="strong">{t("pair")}</div>
+      <div className="row" style={{ maxWidth: 620 }}>
         <div className="cap c3">{t("step_of", { n: cur, m: 3 })}</div>
       </div>
       <div className="steps4" style={{ marginTop: 14 }}>

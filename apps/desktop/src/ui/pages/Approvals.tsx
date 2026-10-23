@@ -8,7 +8,7 @@ import { Icon } from "../Icon";
 import { agentLabel, clock, cx } from "../util";
 import { receiptOf } from "./common";
 
-export function ApprovalsPage({ snap }: { snap: Snapshot }) {
+export function ApprovalsPage({ snap }: { snap: Snapshot; onOpenComputer?: (host: string) => void }) {
   const list = allPending(snap);
   const today = new Date().toDateString();
   const decided = snap.computers

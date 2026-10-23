@@ -1,6 +1,5 @@
 // First run: the product in one sentence, the two ways in, and the turn line told as a story.
 
-import { useState } from "react";
 import { t } from "../../lib/i18n";
 import { CmdLine } from "../CmdLine";
 import { Glyph, Pointer, SeatMark, Wordmark } from "../glyphs";
@@ -25,8 +24,14 @@ function phrases(s: string): React.ReactNode {
 }
 
 /** First run: the product in one sentence, the two ways in, and the turn line told as a story. */
-export function WelcomePage({ onPair }: { onPair: () => void }) {
-  const [hostHelp, setHostHelp] = useState(false);
+export function WelcomePage({
+  onPair,
+  onSetupHost,
+}: {
+  onPair: () => void;
+  /** Settings › This device with the enable dialog open (the administrator confirms once). */
+  onSetupHost: () => void;
+}) {
   const W = 616;
   const spec: TurnSpec = {
     // A finished story: the wait was answered, so it is the thin stroke with its decision dot, not dashes.
@@ -90,16 +95,11 @@ export function WelcomePage({ onPair }: { onPair: () => void }) {
               <div className="ttl">{t("fr_host")}</div>
               <div className="d">{t("fr_host_d")}</div>
               <div className="a">
-                <button className="btn lg" onClick={() => setHostHelp(true)}>
+                <button className="btn lg" onClick={onSetupHost}>
                   {t("setup_this")}
                 </button>
               </div>
-              {hostHelp && (
-                <>
-                  <div className="note">{t("fr_host_cmd")}</div>
-                  <CmdLine cmd="ai-remote host install" style={{ marginTop: 8 }} />
-                </>
-              )}
+              <div className="note">{t("fr_host_note")}</div>
             </div>
           </div>
         </div>
