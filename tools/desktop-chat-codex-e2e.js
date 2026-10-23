@@ -46,13 +46,55 @@
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const navigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    chat: $(".nt-chat")?.className ?? null,
+    picker: !!$(".nt-chat-picker"),
+    form: !!$(".nt-chat-start"),
+    sessions: $$(".nt-sessions .sess").length,
+    menu: !!$(".nt-chat-menu"),
+    hidden: document.hidden,
+    focus: document.activeElement?.className ?? null,
+  });
+  // Navigation and picker data load independently. Retry only a missed navigation, and keep that
+  // first failure counted even if recovery works; a picker waiting for runtimes needs no second click.
+  async function leaveSession(what, ready) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const before = navigationState();
+      const button = $$(".nt-chat-hd .ico").at(-1);
+      if (!button) throw new Error(`${what}: menu button missing; ${JSON.stringify({ before })}`);
+      button.click();
+      const item = await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]);
+      if (!item) throw new Error(`${what}: menu did not open; ${JSON.stringify({ before, after: navigationState() })}`);
+      const connected = item.isConnected;
+      item.click();
+      const clicked = navigationState();
+      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
+      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
+      if (!left) {
+        await say("e2e", `     navigation failure: ${JSON.stringify({ attempt, connected, before, clicked, after: navigationState() })}`);
+        continue;
+      }
+      const waiting = navigationState(), started = Date.now();
+      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
+      const loaded = await until(`${what}: picker content ready`, ready, 30000);
+      await check(`${what} content loads after leaving the conversation`, !!loaded);
+      if (!loaded) {
+        await say("e2e", `     picker loading failure: ${JSON.stringify({ elapsedMs: Date.now() - started, waiting, after: navigationState() })}`);
+        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+      }
+      return;
+    }
+    throw new Error(`${what}: neither menu click left the conversation`);
+  }
   const lines = (root) => $$(".cdx-act > .x-hd > .x-ln", root).map(text);
   const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
   async function send(t) {
     const ta = await until("composer", composer);
     setValue(ta, t);
-    await sleep(100);
-    $(".nt-compose .round.send").click();
+    const button = await until("message ready to send", () => $(".nt-compose .round.send:not(:disabled)"));
+    if (!button) throw new Error("the composer never enabled Send");
+    button.click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
   /** Sends a message that starts a turn, and waits for that turn to show. */
@@ -79,8 +121,7 @@
     // 1. Start Codex fake from the start form, in the work folder.
     await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
     if ($(".nt-chat")) {
-      $$(".nt-chat-hd .ico").at(-1).click();
-      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
+      await leaveSession("the start form opens", () => $(".nt-chat-start"));
     }
     const form = await until("start form", () => $(".nt-chat-start"), 30000);
     const pick = $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Codex fake"));
@@ -103,6 +144,14 @@
     await check("the work folder is chosen", folderShown() === work, folderShown());
     setValue($("#ag-prompt"), "EXPLORE fix the quarter export");
     await sleep(200);
+    // Observe before starting: the host can already be running a short command while the form's
+    // start response and the runtime-specific conversation are still mounting.
+    const live = new Set();
+    const liveWatch = new MutationObserver(() => {
+      const turn = lastTurn();
+      if (turn) for (const line of $$(".cdx-act.is-live .x-tx .cdx-cad > .x-base", turn)) live.add(text(line));
+    });
+    liveWatch.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
     $(".nt-chat-start .btn.primary").click();
     const panel = await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000);
     await check("starting opens the conversation", !!panel);
@@ -113,7 +162,6 @@
     // shell), "Working for", the plan open; then the work folds behind "Worked for" as the answer streams.
     const bubble = await until("user bubble", () => $$(".cdx-turn .nt-user .bubble").find((b) => b.textContent.includes("EXPLORE fix the quarter export")));
     await check("the message shows in a bubble on the right", !!bubble && getComputedStyle(bubble.parentElement).alignItems === "flex-end", bubble?.parentElement && getComputedStyle(bubble.parentElement).alignItems);
-    const live = new Set();
     let workingSeen = false, foldedWhileStreaming = false, titleSeen = false, sweepSeen = false, rawSeen = false, dividerFirst = null, thoughtRow = false;
     const planSeen = new Set();
     let planSteps = 0;
@@ -154,6 +202,7 @@
       await sleep(60);
     }
     foldWatch.disconnect();
+    liveWatch.disconnect();
     const liveList = [...live];
     await check("a live line names the command running now, without its shell",
       liveList.some((l) => /(Running|正在运行) python3 export\.py --quarter Q3/.test(l)) && !liveList.some((l) => /\/bin\/zsh|-lc/.test(l)), liveList.join(" | "));
@@ -165,7 +214,9 @@
     await check("'Working for' sits at the top of the work", dividerFirst === true, String(dividerFirst));
     await check("the reasoning's title says what the agent is at", titleSeen);
     await check("reasoning is never a line of the work, nor its raw text shown", !thoughtRow && !rawSeen, `${thoughtRow} ${rawSeen}`);
-    await check("the live text catches a sweep of light now and then", sweepSeen);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    await check("the live text respects the system's motion setting", reducedMotion ? !sweepSeen : sweepSeen,
+      `reduced motion: ${reducedMotion}; sweep: ${sweepSeen}`);
     await check("the work folds behind 'Worked for' as soon as the answer streams", foldedWhileStreaming);
     await idle();
     let t1 = turns()[0];
@@ -527,11 +578,7 @@
     await shot("c08-later-turns");
 
     // 12. A Claude Code session keeps its own rows.
-    for (let tries = 0; tries < 2 && !$(".nt-chat-start"); tries++) {
-      $$(".nt-chat-hd .ico").at(-1).click();
-      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]))?.click();
-      await until("picker", () => $(".nt-chat-start"), 8000);
-    }
+    await leaveSession("the session picker opens", () => $(".nt-chat-start"));
     $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
     setValue($("#ag-prompt"), "RICH check the export");
     await sleep(200);
@@ -545,12 +592,10 @@
     // 13. Back to the Codex session: it replays the same way, loading first, never "empty".
     let emptySeen = false, loadingSeen = false;
     const lw = new MutationObserver(() => {
-      if ($(".nt-chat-empty")) emptySeen = true;
-      if ($(".cdx-loading")) loadingSeen = true;
+      if ($(".nt-chat-empty, .cl-empty")) emptySeen = true;
+      if ($(".cdx-loading, .cl-loading")) loadingSeen = true;
     });
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("sessions", () => $$(".nt-sessions .sess").length >= 2);
+    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 2);
     lw.observe(document.body, { subtree: true, childList: true });
     $$(".nt-sessions .sess").find((s) => s.textContent.includes("Codex fake")).click();
     const replayed = await until("replay", () => $(".nt-chat.cdx") && turns().length === codexTurns && turns()[0].querySelector(".cdx-worked"), 30000);

@@ -27,10 +27,10 @@ function load() {
     vm.runInNewContext(compile(name), { exports, require, JSON, Set, Map, Math, Number, String, Array, Object, RegExp, URL }, { filename: `${name}.ts` });
     return exports;
   };
-  return { chat: run("chat"), cl: run("claude") };
+  return { chat: run("chat"), cl: run("claude"), input: run("chat-input") };
 }
 
-const { chat, cl } = load();
+const { chat, cl, input } = load();
 const plain = (v) => JSON.parse(JSON.stringify(v));
 let seq = 0;
 const ev = (turn, e) => ({ seq: ++seq, ts: 1000 + seq * 100, turn, ...e });
@@ -67,6 +67,25 @@ test("prose breaks the work into groups; reasoning and calls in a row are one gr
   assert.deepEqual(plain(rows[3].children.map((x) => x.callId)), ["c1"]);
   assert.equal(cl.singleCall(rows[4]).callId, "e", "a finished group of one call is that call's row");
   assert.equal(cl.singleCall(rows[1]), null);
+});
+
+test("the Claude rows keep sent images' input ids and metadata, including an image-only steer", () => {
+  seq = 0;
+  const attachment = { name: "screenshot.png", mime: "image/png", bytes: 3852 };
+  let c = fold([
+    ev(0, { t: "user", input_id: "image-message", by: { device: "test-device" }, text: "describe this", attachments: [attachment] }),
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "user", input_id: "image-steer", by: { device: "test-device" }, text: "", steer: true, attachments: [attachment] }),
+  ]);
+  const expected = [
+    ["describe this", "image-message", false, [attachment]],
+    ["", "image-steer", true, [attachment]],
+  ];
+  const images = () => plain(cl.claudeRows(c.turns[0]).filter((r) => r.kind === "user")
+    .map((r) => [r.text, r.inputId, r.steer, r.attachments]));
+  assert.deepEqual(images(), expected, "the bubble can find this device's thumbnail by the host's echoed input id");
+  c = chat.reduceChat(c, ev(1, { t: "turn_end", status: "completed", duration_ms: 32 }));
+  assert.deepEqual(images(), expected, "the images remain when the outgoing message has settled and the turn ends");
 });
 
 test("while the turn runs its last group is live and its last text streams", () => {
@@ -439,4 +458,153 @@ test("modes, the queue's preview and scroll keys", () => {
   assert.equal(cl.scrollKey(" ", true), "up");
   assert.equal(cl.scrollKey(" ", false), "down");
   assert.equal(cl.scrollKey("a", false), null);
+});
+
+test("a Claude selection remains quotable after scrolling and clears when the selection is cancelled", () => {
+  const hooks = [], effects = [], listeners = new Map();
+  let cursor = 0;
+  const state = (value) => {
+    const i = cursor++;
+    hooks[i] ??= { value: typeof value === "function" ? value() : value };
+    return [hooks[i].value, (next) => { hooks[i].value = typeof next === "function" ? next(hooks[i].value) : next; }];
+  };
+  const effect = (run, deps) => {
+    const i = cursor++, previous = hooks[i];
+    if (previous && deps && previous.deps && deps.every((v, n) => Object.is(v, previous.deps[n]))) return;
+    effects.push(() => { previous?.cleanup?.(); hooks[i] = { deps, cleanup: run() }; });
+  };
+  const textNode = {};
+  let selectionTop = 200;
+  const selection = {
+    isCollapsed: false, rangeCount: 1, anchorNode: textNode, focusNode: textNode,
+    toString: () => "Selected line",
+    getRangeAt: () => ({ getBoundingClientRect: () => ({ top: selectionTop, left: 50, width: 120 }) }),
+    removeAllRanges() { this.isCollapsed = true; },
+  };
+  const scroller = { scrollHeight: 1000, scrollTop: 0, clientHeight: 500, contains: (n) => n === textNode,
+    parentElement: { getBoundingClientRect: () => ({ top: 0, left: 0, width: 600 }) } };
+  const jsx = (type, props, key) => ({ type, props, key });
+  const dependencies = {
+    react: { useState: state, useEffect: effect, useLayoutEffect: effect,
+      useRef: (value) => { const i = cursor++; hooks[i] ??= { current: value }; return hooks[i]; } },
+    "react/jsx-runtime": { jsx, jsxs: jsx },
+    "lucide-react": { ArrowDown: () => null, Quote: () => null },
+    "../../lib/chat": chat,
+    "../../lib/claude": cl,
+    "../../lib/i18n": { t: (key) => key },
+    "../util": { cx: (...values) => values.filter(Boolean).join(" ") },
+    "../chat/Rows": { NoticeRow: () => null },
+    "../chat/Transcript": { FindBar: () => null, OutgoingRow: () => null },
+    "./ClaudeTurn": { ClaudeTurnView: () => null },
+  };
+  const source = readFileSync(new URL("../apps/desktop/src/ui/claude/ClaudeTranscript.tsx", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, { exports,
+    require: (name) => { assert.ok(name in dependencies, name); return dependencies[name]; },
+    window: { getSelection: () => selection },
+    document: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: (name) => listeners.delete(name) },
+    ResizeObserver: undefined, setTimeout,
+  });
+  const nodes = (tree) => !tree || typeof tree !== "object" ? [] : [tree,
+    ...(Array.isArray(tree.props?.children) ? tree.props.children : [tree.props?.children]).flatMap(nodes)];
+  let draft = "My reply";
+  const props = { chat: chat.emptyChat(), now: 0, readonly: false, empty: "Selected line", follow: 0, outgoing: [], store: new Map(),
+    finding: false, findFocus: 0, onCloseFind() {}, onRetry() {}, onDiscard() {}, onContinue() {}, status: null,
+    onQuote: (text) => { draft = input.withQuote(draft, input.quoteText(text)); } };
+  const render = () => {
+    cursor = 0;
+    const tree = exports.ClaudeTranscript(props);
+    nodes(tree).find((n) => n.props?.role === "feed").props.ref.current = scroller;
+    nodes(tree).find((n) => n.props?.className === "cl-col").props.ref.current = {};
+    for (const run of effects.splice(0)) run();
+    return tree;
+  };
+  const feed = (tree) => nodes(tree).find((n) => n.props?.role === "feed");
+  const quote = (tree) => nodes(tree).find((n) => n.props?.className === "nt-quote");
+  let tree = render();
+  feed(tree).props.onKeyUp({ shiftKey: true });
+  tree = render();
+  assert.equal(quote(tree).props.style.top, 166);
+  selectionTop = 120;
+  scroller.scrollTop -= 80;
+  feed(tree).props.onScroll({ currentTarget: scroller });
+  tree = render();
+  assert.ok(quote(tree), "a scroll with a valid selection keeps the Quote button");
+  assert.equal(quote(tree).props.style.top, 86, "the button follows the selection's new position");
+  quote(tree).props.onClick();
+  assert.equal(draft, "My reply\n\n> Selected line\n\n", "clicking after the scroll inserts the selected text");
+  assert.equal(selection.isCollapsed, true);
+  tree = render();
+  assert.equal(quote(tree), undefined);
+  selection.isCollapsed = false;
+  feed(tree).props.onKeyUp({ shiftKey: true });
+  tree = render();
+  assert.ok(quote(tree));
+  selection.isCollapsed = true;
+  listeners.get("selectionchange")();
+  tree = render();
+  assert.equal(quote(tree), undefined, "cancelling the selection still removes Quote");
+  for (const hook of hooks) hook.cleanup?.();
+});
+
+test("the Claude conversation shows loading before hello and until replay catches up, then a real empty state", () => {
+  const jsx = (type, props, key) => ({ type, props, key });
+  const noop = () => {};
+  const react = { useState: (value) => [typeof value === "function" ? value() : value, noop], useRef: (value) => ({ current: value }),
+    useMemo: (fn) => fn(), useCallback: (fn) => fn, useEffect: noop, useLayoutEffect: noop };
+  const conv = { chat: chat.emptyChat(), hello: null, connected: false, gone: false, error: null, outgoing: [],
+    send: noop, setChat: noop, sendInput: noop, retry: noop, discard: noop, listFiles: noop };
+  const dependencies = {
+    react, "react/jsx-runtime": { jsx, jsxs: jsx },
+    "lucide-react": { ArrowDown: noop, Quote: noop, LoaderCircle: noop, Search: noop },
+    "../../lib/chat": chat, "../../lib/chat-input": input, "../../lib/claude": cl,
+    "../../lib/codex": { isCodexRuntime: () => false },
+    "../../lib/i18n": { t: (key) => key },
+    "../util": { cx: (...values) => values.filter(Boolean).join(" ") },
+    "../chat/Rows": { NoticeRow: noop }, "../chat/Transcript": { FindBar: noop, OutgoingRow: noop },
+    "./ClaudeTurn": { ClaudeTurnView: noop, openStore: () => new Map() },
+    "../AgentChat": { useConversation: () => conv, useNowTick: () => 0, newId: () => "test-input", sentBySession: new Map() },
+    "../chat/Composer": { Composer: noop }, "../chat/FolderPicker": { FolderLabel: noop },
+    "../chat/Preview": { PreviewProvider: noop }, "../Icon": { Icon: noop },
+    "./Cards": { CardDock: noop }, "./Dock": { ModePicker: noop, StatusLine: noop, TodoDock: noop },
+  };
+  const component = (name) => {
+    const source = readFileSync(new URL(`../apps/desktop/src/ui/claude/${name}.tsx`, import.meta.url), "utf8");
+    const compiled = ts.transpileModule(source, { compilerOptions: {
+      module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+    } }).outputText;
+    const exports = {};
+    vm.runInNewContext(compiled, { exports, require: (name) => { assert.ok(name in dependencies, name); return dependencies[name]; } });
+    return exports;
+  };
+  const { ClaudeTranscript } = component("ClaudeTranscript");
+  dependencies["./ClaudeTranscript"] = { ClaudeTranscript };
+  const { ClaudeConversation } = component("ClaudeConversation");
+  const nodes = (tree) => !tree || typeof tree !== "object" ? [] : [tree,
+    ...(Array.isArray(tree.props?.children) ? tree.props.children : [tree.props?.children]).flatMap(nodes)];
+  const render = () => {
+    const view = ClaudeConversation({ host: "test-host", target: { session: "test-session" }, onLeave: noop });
+    const tree = view.type(view.props);
+    const transcript = nodes(tree).find((n) => n.type === ClaudeTranscript);
+    return { loading: transcript.props.loading, tree: ClaudeTranscript(transcript.props) };
+  };
+  const hello = { seq: 5, runtime: { id: "claude", name: "Claude Code", protocol: "claude-stream-json" } };
+  for (const [header, seq] of [[null, 0], [hello, 0], [hello, 4]]) {
+    conv.hello = header;
+    conv.chat = { ...chat.emptyChat(), seq };
+    const result = render();
+    assert.equal(result.loading, true, `hello ${JSON.stringify(header)}, replay at ${seq}`);
+    assert.ok(nodes(result.tree).some((n) => n.props?.className === "cl-loading"));
+    assert.ok(!nodes(result.tree).some((n) => n.props?.className === "cl-empty"), "an unfinished replay never flashes the empty prompt");
+    assert.equal(nodes(result.tree).find((n) => n.props?.role === "feed").props["aria-busy"], true);
+  }
+  conv.hello = hello;
+  conv.chat = { ...chat.emptyChat(), seq: 5 };
+  const caughtUp = render();
+  assert.equal(caughtUp.loading, false);
+  assert.ok(!nodes(caughtUp.tree).some((n) => n.props?.className === "cl-loading"));
+  assert.ok(nodes(caughtUp.tree).some((n) => n.props?.className === "cl-empty"), "a caught-up conversation without turns really is empty");
 });

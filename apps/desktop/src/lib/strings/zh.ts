@@ -411,6 +411,7 @@ export const zh: Record<keyof typeof en, string> = {
   composer_sent: "已发送，智能体会随下一次结果收到",
   send: "发送",
 
+  takeover_options: "接管选项",
   let_watch: "让智能体观看",
   what_changed: "你改了什么？",
   optional_sent: "选填，交还控制时一并发给智能体",

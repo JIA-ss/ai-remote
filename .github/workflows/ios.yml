@@ -19,7 +19,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       # macos-15 ARM64 lists Xcode 26.2 and its iOS 26.2 simulator runtime:
       # https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md

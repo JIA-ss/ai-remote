@@ -130,7 +130,7 @@ function hooksFixture(canvas, pointerCanvas) {
     useMemo(compute) { return compute(); },
     useEffect(effect, dependencies) {
       const index = cursor++, previous = hooks[index];
-      if (previous && dependencies.every((value, i) => value === previous.dependencies[i])) return;
+      if (previous && dependencies && previous.dependencies && dependencies.every((value, i) => value === previous.dependencies[i])) return;
       previous?.cleanup?.();
       hooks[index] = { dependencies, cleanup: effect() };
     },
@@ -148,6 +148,8 @@ function sessionModule(hooks, api, createDecoder, storage = new Map()) {
   const monitors = module("../apps/desktop/src/lib/monitors.ts", {}, { localStorage });
   const RemoteInput = () => {};
   const TitleBar = () => {};
+  const AgentChat = () => null;
+  const DecisionCard = () => {};
   const exported = module("../apps/desktop/src/ui/Session.tsx", {
     react: hooks.react,
     "react/jsx-runtime": jsxRuntime,
@@ -163,8 +165,8 @@ function sessionModule(hooks, api, createDecoder, storage = new Map()) {
       startPinging: () => () => {} },
     "../lib/pointer": { createPointerLayer: () => ({ shape() {}, move: (at) => at.visible, hide() {} }) },
     "../lib/rate": { createRateController: () => ({ observe() {}, received() {}, pathDelay() {}, current: () => Infinity }) },
-    "./AgentChat": { AgentChat: () => null },
-    "./Decide": { DecisionCard: () => {} },
+    "./AgentChat": { AgentChat },
+    "./Decide": { DecisionCard },
     "./RemoteInput": { RemoteInput },
     "../lib/drop": { watchFileDrop: () => () => {} },
     "./glyphs": { Glyph: () => {}, Pointer: () => {}, SeatMark: () => {} },
@@ -172,14 +174,13 @@ function sessionModule(hooks, api, createDecoder, storage = new Map()) {
     "./Shell": { computerFacts: () => [], Facts: () => {}, TitleBar },
     "../lib/fullscreen": { setFullscreen: async () => {}, isFullscreen: async () => false, watchFullscreen: () => () => {} },
     "motion/react": { AnimatePresence: ({ children }) => children, motion: { div: "div" } },
-    "./TurnLine": { TurnLine: () => {}, turnSpec: () => null },
     "./util": { agentLabel: () => "Test agent", clock: () => "12:00", countdown: () => "1:00", cx: (...values) => values.filter(Boolean).join(" "),
       relayNote: () => null,
       useNow: () => 1000, useSize: () => [{ current: null }, { w: 1000, h: 700 }] },
   }, { localStorage: { getItem: () => null }, performance,
     // The page registers its full-screen keys on the window and sizes the picture by device pixels.
     window: { addEventListener() {}, removeEventListener() {}, devicePixelRatio: 1, setTimeout, clearTimeout } });
-  return { ...exported, RemoteInput, TitleBar };
+  return { ...exported, RemoteInput, TitleBar, AgentChat, DecisionCard };
 }
 
 function nodes(tree) {
@@ -366,6 +367,177 @@ test("manual input mounts only for a human driver with a decoded frame and scree
   restarted.props.onFrame(); restarted.props.onScreen({ x: 0, y: 0, width: 1600, height: 1000 });
   c.feed.driver = { state: "agent" }; tree = render();
   assert.ok(!nodes(tree).some((node) => node.type === RemoteInput), "an agent driver never mounts human input");
+  hooks.close();
+});
+
+test("the live view always shows the existing conversation and keeps approvals reachable after full screen", () => {
+  const hooks = hooksFixture();
+  const { SessionPage, TitleBar, AgentChat, DecisionCard } = sessionModule(hooks, { kind: "demo" }, () => {});
+  const c = { host: { name: "test-host", path: "direct" }, os: "mac", online: true, feed: {
+    agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null, driver: { state: "agent" },
+  } };
+  const chosen = { session: "from-workspace" };
+  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {}, chat: chosen };
+  const render = () => hooks.render(SessionPage, props);
+  let tree = render();
+  const rail = nodes(tree).find((node) => node.type === "aside");
+  assert.equal(rail.props.className, "nt-rail wide");
+  assert.equal(nodes(rail).filter((node) => node.type === AgentChat).length, 1);
+  assert.equal(nodes(rail).find((node) => node.type === AgentChat).props.target, chosen);
+  assert.ok(nodes(rail).every((node) => node.props?.role !== "tablist" && node.props?.role !== "tab"));
+  assert.ok(nodes(rail).every((node) => node.props?.className !== "composer-foot"));
+  assert.ok(!nodes(tree).some((node) => node.type === DecisionCard));
+
+  c.feed.pending = [{ id: "approval-1", tool: "shell", expiresMs: 10_000 }];
+  c.feed.steps = [{ approvalId: "approval-1", startedMs: 500 }];
+  tree = render();
+  const approval = nodes(tree).find((node) => node.type === DecisionCard);
+  assert.equal(approval.props.p.id, "approval-1");
+  assert.equal(approval.props.askedMs, 500);
+  assert.equal(nodes(tree).find((node) => node.props?.className === "nt-chat-approval").props.ref, approval.props.escapeScope,
+    "the wrapper focused by Review is the card's Escape scope");
+  assert.ok(nodes(tree).indexOf(approval) < nodes(tree).findIndex((node) => node.type === AgentChat), "approval precedes the conversation");
+
+  nodes(tree).find((node) => node.type === TitleBar).props.end.props.children.at(-1).props.onClick();
+  tree = render();
+  assert.ok(!nodes(tree).some((node) => node.type === "aside"), "full screen keeps the picture clear");
+  const review = nodes(tree).find((node) => node.type === "button" && node.props.children === "review");
+  assert.ok(review, "the stage still offers to review the pending action");
+  review.props.onClick();
+  tree = render();
+  assert.ok(nodes(tree).some((node) => node.type === DecisionCard));
+  assert.ok(nodes(tree).some((node) => node.type === AgentChat));
+  hooks.close();
+});
+
+test("host approval Escape stays with its card beside chat and respects the real find bar", async () => {
+  class Element {
+    constructor(parent = null) { this.parent = parent; }
+    contains(node) {
+      for (let at = node; at; at = at.parent) if (at === this) return true;
+      return false;
+    }
+  }
+  const window = new EventTarget();
+  const document = { activeElement: null };
+  const denied = [], mounted = [];
+  const approvalRoot = new Element(), approvalButton = new Element(approvalRoot), chatField = new Element();
+  const scope = { current: approvalRoot };
+  const dependencies = (hooks) => ({
+    react: hooks.react, "react/jsx-runtime": jsxRuntime,
+    "../lib/api": { api: { approverStatus: async () => true, deny: async (host, id) => { denied.push([host, id]); } } },
+    "../lib/i18n": { currentLang: () => "en", t: (key) => key },
+    "../lib/platform": { detectOs: () => "mac" },
+    "./glyphs": { Actor: () => null, Pointer: () => null }, "./Icon": { Icon: () => null },
+    "./util": { clock: () => "12:00", commandOf: () => "echo ok", countdown: () => "1:00",
+      cx: (...xs) => xs.filter(Boolean).join(" "), destructive: () => false, useNow: () => 1000 },
+  });
+  const mount = (id, escapeScope) => {
+    const hooks = hooksFixture();
+    const { DecisionCard } = module("../apps/desktop/src/ui/Decide.tsx", dependencies(hooks), { window, document, Node: Element });
+    hooks.render(DecisionCard, { p: { id, tool: "shell", argsPreview: {}, expiresMs: 10_000 }, host: "test-host", agent: "test-agent", escapeScope });
+    mounted.push(hooks);
+    return hooks;
+  };
+  const escape = (target, repeat = false) => {
+    const event = new Event("keydown", { cancelable: true });
+    Object.defineProperties(event, { key: { value: "Escape" }, target: { value: target }, repeat: { value: repeat } });
+    return event;
+  };
+
+  // Load the actual shared FindBar, used by both Claude and Codex, and bubble its handled key.
+  const findHooks = hooksFixture();
+  const { FindBar } = module("../apps/desktop/src/ui/chat/Transcript.tsx", {
+    react: { ...findHooks.react, memo: (fn) => fn }, "react/jsx-runtime": jsxRuntime,
+    "lucide-react": {}, "../../lib/chat-input": {}, "../../lib/chat": {},
+    "../../lib/i18n": { t: (key) => key }, "../util": { cx: () => "" },
+    "./Rows": {}, "../codex/CodexTurn": {},
+  });
+  let closed = 0;
+  const find = findHooks.render(FindBar, { root: { current: null }, focus: 0, onShow() {}, onClose: () => closed++ });
+  const input = nodes(find).find((node) => node.type === "input");
+  const scoped = mount("beside-chat", scope);
+  document.activeElement = chatField;
+  const findKey = escape(chatField);
+  input.props.onKeyDown(findKey);
+  window.dispatchEvent(findKey);
+  assert.equal(closed, 1, "Escape closes the real chat find bar");
+  assert.equal(findKey.defaultPrevented, true);
+  assert.deepEqual(denied, [], "closing find cannot reject the adjacent host request");
+
+  window.dispatchEvent(escape(chatField));
+  assert.deepEqual(denied, [], "even an unhandled Escape outside the local scope cannot reject it");
+  document.activeElement = approvalButton;
+  const cardKey = escape(approvalButton);
+  window.dispatchEvent(cardKey);
+  assert.equal(cardKey.defaultPrevented, true, "the card consumes its own Escape");
+  assert.deepEqual(denied, [["test-host", "beside-chat"]]);
+  window.dispatchEvent(escape(approvalButton, true));
+  assert.equal(denied.length, 1, "holding Escape does not repeat the rejection");
+  scoped.close();
+
+  mount("standalone");
+  mount("another-standalone");
+  document.activeElement = chatField;
+  const consumed = escape(chatField);
+  consumed.preventDefault();
+  window.dispatchEvent(consumed);
+  assert.equal(denied.length, 1, "standalone approvals also honor a key another control consumed");
+  window.dispatchEvent(escape(chatField));
+  assert.deepEqual(denied, [["test-host", "beside-chat"], ["test-host", "standalone"]],
+    "legacy standalone cards retain Escape, and only the first consumes a key");
+  await tick();
+  for (const hooks of mounted) hooks.close();
+  findHooks.close();
+});
+
+test("takeover options live over the stage and preserve watch and hand-back settings", async () => {
+  const hooks = hooksFixture();
+  const calls = [];
+  const { SessionPage, AgentChat } = sessionModule(hooks, {
+    kind: "demo", setTurn: async (...args) => { calls.push(args); },
+  }, () => {});
+  const c = { host: { name: "test-host", path: "direct" }, os: "mac", online: true, feed: {
+    agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null, driver: { state: "person" },
+  } };
+  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {} };
+  const render = () => hooks.render(SessionPage, props);
+  const driverBar = (tree) => nodes(tree).find((node) => node.type?.name === "DriverBar");
+  const optionsOf = (tree) => nodes(tree).find((node) => node.props?.id === "takeover-options");
+  let tree = render();
+  assert.equal(optionsOf(tree), undefined, "the small settings panel starts closed");
+  driverBar(tree).props.onOptions();
+  tree = render();
+  let options = optionsOf(tree);
+  assert.ok(options);
+  assert.equal(options.props.role, "region", "expandable takeover settings are a nonmodal region");
+  assert.equal(options.props["aria-label"], "takeover_options");
+  assert.ok(!nodes(tree).some((node) => node.props?.role === "dialog"), "the settings do not activate the conversation's dialog Escape guard");
+  assert.ok(nodes(tree).some((node) => node.props?.className === "nt-stage" && nodes(node).includes(options)), "settings belong to the stage");
+  assert.ok(!nodes(options).some((node) => node.type === AgentChat));
+  nodes(options).find((node) => node.type === "input").props.onChange({ target: { checked: true } });
+  nodes(options).find((node) => node.type === "textarea").props.onChange({ target: { value: "Changed the export folder." } });
+  tree = render();
+  options = optionsOf(tree);
+  assert.equal(nodes(options).find((node) => node.type === "input").props.checked, true);
+  assert.equal(nodes(options).find((node) => node.type === "textarea").props.value, "Changed the export folder.");
+  assert.deepEqual(plain(calls[0]), ["test-host", "take_over", { agentMayWatch: true }]);
+  let stopped = false;
+  options.props.onKeyDown({ key: "Escape", preventDefault() {}, stopPropagation() { stopped = true; } });
+  tree = render();
+  assert.equal(optionsOf(tree), undefined, "Escape inside the region still collapses it");
+  assert.equal(stopped, true, "the settings consume their own Escape");
+  driverBar(tree).props.onOptions();
+  tree = render();
+  assert.equal(nodes(optionsOf(tree)).find((node) => node.type === "textarea").props.value, "Changed the export folder.", "collapsing settings preserves the hand-back draft");
+  await driverBar(tree).props.onAction("hand_back");
+  assert.deepEqual(plain(calls[1]), ["test-host", "hand_back", { note: "Changed the export folder." }]);
+  tree = render();
+  assert.equal(optionsOf(tree), undefined, "hand-back closes the panel");
+  c.feed.driver = { state: "agent" };
+  tree = render();
+  const bar = driverBar(tree);
+  assert.ok(!nodes(bar.type(bar.props)).some((node) => node.props?.["aria-controls"] === "takeover-options"), "only a human driver gets the settings entry");
   hooks.close();
 });
 

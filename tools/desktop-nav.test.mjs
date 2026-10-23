@@ -355,6 +355,17 @@ test("agents round trips: the mode switch, a live view, Settings, and back", () 
   assert.deepEqual(plain(nav.lastAgents(hist({ page: "agents" }, { page: "devices" }, ws, { page: "devices" }))), ws);
 });
 
+test("opening a computer from a workspace conversation preserves that session through history", () => {
+  const ws = { page: "agents", host: "lab-pc", session: "current-session" };
+  const screen = nav.screenRoute(ws.host, ws.session);
+  assert.deepEqual(plain(screen), { page: "session", host: "lab-pc", chat: { session: "current-session" } });
+  assert.equal(screen.chat.ticket, undefined, "a one-use attachment ticket never crosses views");
+  const h = nav.push(hist(ws), screen);
+  assert.deepEqual(plain(nav.current(nav.back(h))), ws);
+  assert.deepEqual(plain(nav.current(nav.forward(nav.back(h)))), plain(screen));
+  assert.deepEqual(plain(nav.screenRoute("lab-pc")), { page: "session", host: "lab-pc" }, "a computer without a chosen conversation uses its picker or remembered session");
+});
+
 test("the window going to the tray: a live view opened from the workspace goes back to it", () => {
   const ws = { page: "agents", host: "lab-pc", session: "s1" };
   const h = hist({ page: "devices" }, ws, { page: "session", host: "lab-pc" });

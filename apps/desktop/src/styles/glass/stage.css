@@ -1,1 +1,15 @@
-/* glass: the session in the shell: stage glass bars (never blurred), HUD, handle, rail. Owned by the session package; empty in the foundation. */
+/* The live-view rail reuses the workspace's conversations. Stage controls stay opaque: no blur is
+   composited over the video. */
+.nt-session .nt-rail > .nt-chat { margin-top: 0; }
+.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow-y: auto; margin-bottom: 12px; }
+.nt-chat-approval .decide { padding: 12px; }
+
+.nt-drive-options { position: absolute; z-index: 9; right: 12px; bottom: 72px; width: min(320px, calc(100% - 24px));
+  max-height: calc(100% - 96px); overflow-y: auto; box-sizing: border-box; padding: 14px; border-radius: 12px;
+  background: var(--canvas); border: 1px solid var(--stroke-2); color: var(--text-1); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
+.nt-drive-options-hd { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 12px; }
+.nt-drive-watch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 14px; }
+.nt-drive-watch input { width: 16px; height: 16px; accent-color: var(--agent); }
+.nt-drive-note { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.nt-drive-note textarea { box-sizing: border-box; width: 100%; min-height: 54px; resize: vertical; }
+.nt-drive-options p { margin: 6px 0 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
