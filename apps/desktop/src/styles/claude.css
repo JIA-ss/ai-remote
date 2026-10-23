@@ -81,14 +81,20 @@
 
 /* ---- one line of tool work (TC-14, TC-15) -------------------------------------------- */
 .cl-tool, .cl-agent { min-width: 0; }
+.nt-cl-tool-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.nt-cl-tool-head > .cl-tool-hd { flex: 1; }
+.nt-cl-tool-head > .nt-pv-btn { flex: none; }
 .cl-tool-hd, .cl-group-hd { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 0; border: 0; background: none; text-align: left;
   font: inherit; font-size: 13px; line-height: 20px; color: var(--cl-muted); cursor: pointer; min-width: 0; }
 .cl-tool-hd:disabled { cursor: default; }
 .cl-tool-hd:not(:disabled):hover, .cl-group-hd:hover, .cl-tool-hd:focus-visible, .cl-group-hd:focus-visible { color: var(--cl-text-2); }
-.cl-tool[data-state="busy"] > .cl-tool-hd, .cl-tool[data-state="blocked"] > .cl-tool-hd, .cl-group.is-live > .cl-group-hd, .cl-agent[data-state="busy"] > .cl-tool-hd { color: var(--cl-text-2); }
+.cl-tool[data-state="busy"] > .nt-cl-tool-head > .cl-tool-hd, .cl-tool[data-state="blocked"] > .nt-cl-tool-head > .cl-tool-hd,
+.cl-tool[data-state="busy"] > .cl-tool-hd, .cl-tool[data-state="blocked"] > .cl-tool-hd,
+.cl-group.is-live > .cl-group-hd, .cl-agent[data-state="busy"] > .cl-tool-hd { color: var(--cl-text-2); }
 .cl-tool-hd .chev, .cl-group-hd .chev { flex: none; color: var(--cl-muted); transition: transform 60ms; }
 .cl-tool-hd:disabled .chev { visibility: hidden; }
-.cl-tool.open > .cl-tool-hd .chev, .cl-agent.open > .cl-tool-hd .chev, .cl-group.open > .cl-group-hd .chev { transform: rotate(90deg); color: var(--cl-text-2); }
+.cl-tool.open > .nt-cl-tool-head > .cl-tool-hd .chev, .cl-tool.open > .cl-tool-hd .chev,
+.cl-agent.open > .cl-tool-hd .chev, .cl-group.open > .cl-group-hd .chev { transform: rotate(90deg); color: var(--cl-text-2); }
 .cl-group-hd .chev { opacity: 0; }
 .cl-group-hd:hover .chev, .cl-group-hd:focus-visible .chev, .cl-group.open > .cl-group-hd .chev { opacity: 1; }
 .cl-line { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -121,7 +127,7 @@
 .cl-group-bd { margin-top: 6px; padding: 0 10px; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--cl-a2); }
 .cl-group-bd > * { padding: 4px 0; }
 .cl-group-bd > * + * { border-top: 1px solid var(--cl-a2); }
-.cl-tool.nested > .cl-tool-hd { min-height: 26px; }
+.cl-tool.nested > .nt-cl-tool-head > .cl-tool-hd, .cl-tool.nested > .cl-tool-hd { min-height: 26px; }
 
 /* ---- what an opened call shows (TC-18 … TC-34) --------------------------------------- */
 .cl-tool-bd { padding: 4px 0 6px 18px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }

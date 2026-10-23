@@ -46,8 +46,8 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const running = () => !!$(".nt-compose .round.stop");
-  const lastTurn = () => $$(".nt-turn").at(-1);
-  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const lastTurn = () => $$(".cl-turn").at(-1);
+  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
   const dialog = () => $(".nt-pv-dlg");
   const esc = () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
   const times = [];
@@ -91,8 +91,8 @@
     await check("the files turn finishes", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)) && !!(await idle(30000)));
 
     const turn = lastTurn();
-    const run = $(".nt-run", turn);
-    $(".rh", run).click();
+    const run = $(".cl-group", turn);
+    $(".cl-group-hd", run).click();
     await sleep(200);
     const eyes = () => $$(".nt-pv-btn", turn).map((b) => b.getAttribute("aria-label"));
     await check("written HTML and Markdown get a preview button, the command does not", eyes().length === 3 &&

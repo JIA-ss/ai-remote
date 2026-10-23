@@ -30,8 +30,10 @@ import {
   type ToolState,
 } from "../../lib/claude";
 import { t } from "../../lib/i18n";
+import { previewKind } from "../../lib/preview";
 import { cx } from "../util";
 import { CopyButton, StreamingMarkdown } from "../chat/Markdown";
+import { PreviewButton, TurnFiles } from "../chat/Preview";
 import { NoticeRow } from "../chat/Rows";
 import { ToolBody } from "./ToolBody";
 import { countOf, dur, SentenceView, ToolLabel } from "./text";
@@ -183,25 +185,37 @@ function hasBody(x: ToolItem): boolean {
   return toolName(x) === "Bash" || x.tool === "execute";
 }
 
+/** A file the call acted on that still exists and can be previewed. */
+function previewTarget(x: ToolItem): string | null {
+  if (x.status === "failed" || x.tool === "delete") return null;
+  const diffs = x.content.filter((c): c is Extract<ToolItem["content"][number], { type: "diff" }> => c.type === "diff");
+  const deleted = new Set(diffs.filter((c) => c.new === "" && !!c.old).map((c) => c.path));
+  return [...x.locations, ...diffs.map((c) => c.path)].find((p) => !deleted.has(p) && previewKind(p)) ?? null;
+}
+
 /** One tool call: a line that opens to its command and output, a file, a diff, … (TC-14, TC-15). */
 const ToolRow = memo(function ToolRow({ x, st, now, store, nested }: { x: ToolItem; st: ToolState; now: number; store: Map<string, boolean>; nested?: boolean }) {
   const [open, toggle] = useOpen(store, `t:${x.callId}`, false);
   const shown = useDwell<ToolState>(st, 0) ?? st;
   const body = hasBody(x);
+  const file = previewTarget(x);
   const elapsed = shown === "busy" ? now - x.startedTs : 0;
   const stat = shown !== "busy" && x.content.some((c) => c.type === "diff") ? groupStat([x]) : null;
   return (
     <div className={cx("cl-tool", nested && "nested", open && "open")} data-state={shown}>
-      <button type="button" className="cl-tool-hd" aria-expanded={body ? open : undefined} disabled={!body} onClick={toggle}>
-        <ChevronRight size={12} className="chev" aria-hidden />
-        <span className={cx("cl-line", shown === "busy" && "shimmer")}>
-          <ToolLabel x={x} st={shown} />
-        </span>
-        {shown === "busy" && <span className="sr-only">{t("cl_st_running")}</span>}
-        <StateWord st={shown} />
-        <Stat s={stat} />
-        {elapsed >= 2000 && <span className="cl-tm tnum">{dur(elapsed)}</span>}
-      </button>
+      <div className="nt-cl-tool-head">
+        <button type="button" className="cl-tool-hd" aria-expanded={body ? open : undefined} disabled={!body} onClick={toggle}>
+          <ChevronRight size={12} className="chev" aria-hidden />
+          <span className={cx("cl-line", shown === "busy" && "shimmer")}>
+            <ToolLabel x={x} st={shown} />
+          </span>
+          {shown === "busy" && <span className="sr-only">{t("cl_st_running")}</span>}
+          <StateWord st={shown} />
+          <Stat s={stat} />
+          {elapsed >= 2000 && <span className="cl-tm tnum">{dur(elapsed)}</span>}
+        </button>
+        {file && <PreviewButton path={file} />}
+      </div>
       {open && body && <ToolBody x={x} st={shown} now={now} />}
     </div>
   );
@@ -447,6 +461,7 @@ export const ClaudeTurnView = memo(function ClaudeTurnView({ turn, requests, now
         }
       })}
       {showChanges(turn, rows) && <ChangesCard turn={turn} store={store} />}
+      <TurnFiles turn={turn} />
       <TurnFoot turn={turn} stopped={stopped} onContinue={onContinue} readonly={readonly} />
     </section>
   );
