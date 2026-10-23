@@ -572,7 +572,7 @@ const demoRuntimes: RuntimesReport = {
   runtimes: [
     { id: "claude", name: "Claude Code", base: "claude", custom: false, protocol: "claude-stream-json", verdict: "ok", version: "2.1.174",
       path: "C:\\Users\\me\\.local\\bin\\claude.exe", login: { state: "logged_in", method: "claude.ai", plan: "max" },
-      caps: { ...CAPS, questions: false, steer: true } },
+      caps: { ...CAPS, steer: true, permissions: true, questions_multi: true } },
     { id: "codex", name: "Codex", base: "codex", custom: false, protocol: "codex-app-server", verdict: "ok", version: "0.163.0",
       path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", login: { state: "logged_in", method: "chatgpt" },
       caps: { ...CAPS, steer: true } },
@@ -825,6 +825,13 @@ interface DemoRun {
   stopped: boolean;
   steers: string[];
   answer: ((text: string) => void) | null;
+  /** Waiting on a permission or a plan (Claude sessions). */
+  permit?: ((d: DemoPermit) => void) | null;
+}
+interface DemoPermit {
+  decision: "once" | "session" | "deny";
+  mode?: string;
+  message?: string;
 }
 const demoRuns = new Map<string, DemoRun>();
 const demoQueues = new Map<string, Array<{ id: string; text: string }>>();
@@ -865,9 +872,41 @@ async function step(s: SessionInfo, run: DemoRun, ms: number) {
   return !run.stopped;
 }
 
+/** The permission mode of each demo Claude session (`mode` commands change it). */
+const demoModes = new Map<string, string>();
+const demoTitled = new Set<string>();
+const demoMode = (s: SessionInfo) => demoModes.get(s.id) ?? "default";
+
+/** Waits for the person's answer to a permission or a plan (Stop answers no). */
+function permitted(s: SessionInfo, run: DemoRun, rid: string, e: Record<string, unknown>) {
+  push(s, { ...e, rid });
+  return new Promise<DemoPermit>((resolve) => (run.permit = resolve)).then((d) => {
+    run.permit = null;
+    if (!run.stopped) push(s, { t: "resolved", id: rid, outcome: d.decision === "deny" ? "denied" : d.decision === "session" ? "allowed_session" : "allowed", by: { device: "home-laptop" } });
+    return d;
+  });
+}
+
+const DENIED = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
+
+const DATES_OLD = "import pytest\nfrom datetime import date\nfrom export import quarter_range\n\n" + "# …\n".repeat(17) + "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n";
+const DATES_NEW = DATES_OLD.replace("from export import quarter_range", "from export import month_end, quarter_range")
+  + "\n\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n";
+/** The edit as Claude Code reports it (`structuredPatch`): two hunks with the file's own line numbers. */
+const DATES_HUNKS = [
+  { old_start: 1, old_lines: 4, new_start: 1, new_lines: 4, lines: [" import pytest", " from datetime import date", "-from export import quarter_range", "+from export import month_end, quarter_range", " "] },
+  { old_start: 22, old_lines: 2, new_start: 22, new_lines: 7, lines: [" def test_quarter_end_q3():", "     assert quarter_range(2026, 3)[1] == date(2026, 9, 30)", "+", "+",
+    "+@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])", "+def test_february_end(year, last):", "+    assert month_end(year, 2) == date(year, 2, last)"] },
+];
+
+const DEMO_PLAN = "## Plan: leap-year safe month ends\n\n1. Add `month_end(year, month)` to **export.py**, built on `calendar.monthrange`.\n2. Use it in `quarter_range` instead of the fixed day 31.\n3. Add February tests for **2024** (29 days) and **2026** (28 days).\n4. Run the whole suite.\n\nNothing outside `export.py` and `tests/test_dates.py` changes.";
+
+/** A scripted Claude turn: reasoning, a plan, reads and a search, a failing command, an edit with real line
+ *  numbers, a permission to run the tests (in the modes that ask), a question in two parts, and the answer.
+ *  PLAN in the message proposes a plan first (plan mode); the first turn names the session. */
 async function demoReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
   if (s.runtime.startsWith("codex")) return demoCodexReply(s, text, inputId, attachments);
-  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  const run: DemoRun = { stopped: false, steers: [], answer: null, permit: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
   push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
@@ -876,35 +915,82 @@ async function demoReply(s: SessionInfo, text: string, inputId: string, attachme
   push(s, { t: "turn_start" });
   const n = s.seq;
   const k = (x: string) => `${x}${n}`;
+  const plan = /\bPLAN\b/.test(text);
+  if (plan && demoMode(s) !== "plan") {
+    demoModes.set(s.id, "plan");
+    push(s, { t: "mode", mode: "plan" });
+  } else if (!demoTitled.has(s.id)) push(s, { t: "mode", mode: demoMode(s) });
+  if (!demoTitled.has(s.id)) {
+    demoTitled.add(s.id);
+    push(s, { t: "title", title: plan ? "Plan leap-year safe month ends" : "Leap-year tests for the date helpers", source: "agent" });
+  }
   await stream(s, run, "thought", k("r"), "The user wants the leap-year case covered too. February's last day depends on the year, so the same calendar.monthrange fix applies; I should add tests for 2024 and 2026 and run the suite.", 40);
   if (!(await step(s, run, 300))) return;
+  if (plan) {
+    push(s, { t: "tool_call", call_id: k("x"), title: "ExitPlanMode", kind: "other", status: "pending", input: { plan: DEMO_PLAN } });
+    const d = await permitted(s, run, k("pp"), { t: "plan_review", plan: DEMO_PLAN });
+    if (run.stopped) return;
+    if (d.decision === "deny") {
+      push(s, { t: "tool_update", call_id: k("x"), status: "failed", content: [{ type: "text", text: DENIED }] });
+      await stream(s, run, "message", k("m"), d.message ? `Understood — I'll rework the plan: “${d.message}”.` : "Okay, I won't go ahead with that plan.", 60);
+      return demoEnd(s, run, started);
+    }
+    push(s, { t: "tool_update", call_id: k("x"), status: "completed" });
+    demoModes.set(s.id, d.mode ?? "default");
+    push(s, { t: "mode", mode: d.mode ?? "default" });
+  }
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "in_progress" }, { content: "Add leap-year cases", status: "pending" }, { content: "Run the suite", status: "pending" }] });
-  push(s, { t: "tool_call", call_id: k("a"), title: "Read D:\\work\\report-tool\\tests\\test_dates.py", kind: "read", status: "in_progress", locations: ["D:\\work\\report-tool\\tests\\test_dates.py"] });
+  push(s, { t: "tool_call", call_id: k("a"), title: "Read D:\\work\\report-tool\\tests\\test_dates.py", kind: "read", status: "in_progress", locations: ["D:\\work\\report-tool\\tests\\test_dates.py"],
+    input: { file_path: "D:\\work\\report-tool\\tests\\test_dates.py" } });
   if (!(await step(s, run, 700))) return;
-  push(s, { t: "tool_update", call_id: k("a"), status: "completed" });
-  push(s, { t: "tool_call", call_id: k("b"), title: "Grep def test_ tests/", kind: "search", status: "completed", content: [{ type: "text", text: "tests/test_dates.py:8:def test_quarter_start\ntests/test_dates.py:14:def test_quarter_end_q1\ntests/test_dates.py:20:def test_quarter_end_q3" }] });
-  push(s, { t: "tool_call", call_id: k("c"), title: "Bash python -m pytest -q tests/test_dates.py", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q tests/test_dates.py" } });
+  push(s, { t: "tool_update", call_id: k("a"), status: "completed", content: [{ type: "text", text: DATES_OLD.split("\n").slice(0, -1).map((l, i) => `${String(i + 1).padStart(6)}→${l}`).join("\n") }] });
+  push(s, { t: "tool_call", call_id: k("b"), title: "Grep def test_ tests/", kind: "search", status: "completed", input: { pattern: "def test_", path: "tests/" },
+    content: [{ type: "text", text: "tests/test_dates.py:8:def test_quarter_start\ntests/test_dates.py:14:def test_quarter_end_q1\ntests/test_dates.py:22:def test_quarter_end_q3" }] });
+  push(s, { t: "tool_call", call_id: k("c"), title: "Bash python -m pytest -q tests/test_dates.py", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q tests/test_dates.py", description: "Run the date tests" } });
   if (!(await step(s, run, 2200))) return;
   push(s, { t: "tool_update", call_id: k("c"), status: "failed", content: [{ type: "text", text: PYTEST_FAIL }] });
   push(s, { t: "thought", id: k("r2"), text: "The checked-in tests still expect the old helper; the installed copy is stale. I'll add the leap-year test next to the others.", delta: false });
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "in_progress" }, { content: "Run the suite", status: "pending" }] });
-  push(s, { t: "tool_call", call_id: k("d"), title: "Edit D:\\work\\report-tool\\tests\\test_dates.py", kind: "edit", status: "completed", content: [{ type: "diff", path: "D:\\work\\report-tool\\tests\\test_dates.py",
-    old: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n",
-    new: "def test_quarter_end_q3():\n    assert quarter_range(2026, 3)[1] == date(2026, 9, 30)\n\n\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n" }] });
+  push(s, { t: "tool_call", call_id: k("d"), title: "Edit D:\\work\\report-tool\\tests\\test_dates.py", kind: "edit", status: "completed",
+    input: { file_path: "D:\\work\\report-tool\\tests\\test_dates.py", old_string: "from export import quarter_range", new_string: "from export import month_end, quarter_range" },
+    content: [{ type: "diff", path: "D:\\work\\report-tool\\tests\\test_dates.py", old: DATES_OLD, new: DATES_NEW, hunks: DATES_HUNKS }] });
   if (!(await step(s, run, 600))) return;
   if (!demoAsked.has(s.id)) {
     demoAsked.add(s.id);
-    push(s, { t: "question", qid: k("q"), prompt: "Should `month_end` live in **export.py** or in a new `dates.py` module?", options: ["Keep it in export.py", "Move it to dates.py"] });
+    const questions = [
+      { header: "Module", question: "Where should `month_end` live?", options: [{ label: "export.py", description: "Next to quarter_range, where it is used" }, { label: "dates.py", description: "A new module for date helpers" }], multi: false },
+      { header: "Years", question: "Which years should the February test cover?", options: [{ label: "2024", description: "A leap year: 29 days" }, { label: "2026", description: "28 days" }, { label: "2100", description: "Divisible by 100, so not a leap year" }], multi: true },
+    ];
+    push(s, { t: "question", qid: k("q"), prompt: questions[0].question, options: questions[0].options.map((o) => o.label), questions });
     const answer = await new Promise<string>((resolve) => (run.answer = resolve));
     run.answer = null;
     if (run.stopped) return;
+    push(s, { t: "resolved", id: k("q"), outcome: "answered", by: { device: "home-laptop" } });
     push(s, { t: "message", id: k("ans"), text: `Going with: ${answer}.`, delta: false });
   }
-  push(s, { t: "tool_call", call_id: k("e"), title: "Bash python -m pytest -q", kind: "execute", status: "in_progress", input: { command: "python -m pytest -q" } });
+  const tests = { command: "python -m pytest -q", description: "Run the whole test suite" };
+  push(s, { t: "tool_call", call_id: k("e"), title: "Bash python -m pytest -q", kind: "execute", status: "pending", input: tests });
+  if (demoMode(s) === "default" || demoMode(s) === "plan") {
+    const d = await permitted(s, run, k("p"), { t: "permission", tool: "Bash", kind: "execute", title: "python -m pytest -q", input: tests,
+      reason: "Commands are not allowed without asking in this mode", suggestions: ["session"], call_id: k("e") });
+    if (run.stopped) return;
+    if (d.decision === "deny") {
+      push(s, { t: "tool_update", call_id: k("e"), status: "failed", content: [{ type: "text", text: DENIED }] });
+      await stream(s, run, "message", k("m"), d.message ? `Okay, not running the tests: “${d.message}”.` : "Okay, I won't run the tests. The new February test is in place; run `python -m pytest -q` when you are ready.", 60);
+      return demoEnd(s, run, started);
+    }
+  }
+  push(s, { t: "tool_update", call_id: k("e"), status: "in_progress" });
   if (!(await step(s, run, 1600))) return;
   push(s, { t: "tool_update", call_id: k("e"), status: "completed", content: [{ type: "text", text: "..............                                                     [100%]\n14 passed in 1.97s" }] });
   push(s, { t: "plan", entries: [{ content: "Find the date tests", status: "completed" }, { content: "Add leap-year cases", status: "completed" }, { content: "Run the suite", status: "completed" }] });
   await stream(s, run, "message", k("m"), "All **14 tests** pass, including two new February cases:\n\n1. `2024` — a leap year, ends on the 29th\n2. `2026` — ends on the 28th\n\n```python\n@pytest.mark.parametrize(\"year, last\", [(2024, 29), (2026, 28)])\ndef test_february_end(year, last):\n    assert month_end(year, 2) == date(year, 2, last)\n```\n\nNothing else in the export depended on the old day-31 rule.", 110);
+  if (run.stopped) return;
+  demoEnd(s, run, started);
+}
+
+/** Ends a scripted Claude turn: usage, the end, and the next queued message. */
+function demoEnd(s: SessionInfo, run: DemoRun, started: number) {
   if (run.stopped) return;
   const used = 52_300 + s.turns * 9_000;
   push(s, { t: "usage", input_tokens: 21_000, output_tokens: 640, context_window: 200_000, context_used: used });
@@ -918,7 +1004,7 @@ async function demoReply(s: SessionInfo, text: string, inputId: string, attachme
 /** A Codex turn as a Codex host streams it: thinking, a remark, reads and searches, a failing then
  * passing command, an edit with its unified diff, a web search, a question, and the answer. */
 async function demoCodexReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
-  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  const run: DemoRun = { stopped: false, steers: [], answer: null, permit: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
   push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
@@ -1018,8 +1104,15 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Prom
     demoQueues.set(s.id, (demoQueues.get(s.id) ?? []).filter((q) => q.id !== dq.id));
     push(s, { t: "state", state: s.state, queued: demoQueues.get(s.id) });
   }
-  const ans = c.answer as { text?: string } | undefined;
-  if (ans?.text && run?.answer) run.answer(ans.text);
+  const ans = c.answer as { text?: string; answers?: Record<string, string> } | undefined;
+  if (ans && run?.answer) run.answer(ans.answers ? Object.values(ans.answers).join("; ") : ans.text ?? "");
+  const pm = c.permit as DemoPermit | undefined;
+  if (pm && run?.permit) run.permit(pm);
+  const md = c.mode as { mode?: string } | undefined;
+  if (md?.mode) {
+    demoModes.set(s.id, md.mode);
+    push(s, { t: "mode", mode: md.mode });
+  }
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");
   const files = c.files as { rid?: string; query?: string } | undefined;
@@ -1037,6 +1130,7 @@ const DEMO_FILES = ["export.py", "README.md", "tests/test_export.py", "report/qu
 async function demoStop(s: SessionInfo, run: DemoRun) {
   run.stopped = true;
   run.answer?.("");
+  run.permit?.({ decision: "deny" });
   setState(s, "interrupting");
   await wait(300);
   push(s, { t: "turn_end", status: "interrupted", duration_ms: 900 });
