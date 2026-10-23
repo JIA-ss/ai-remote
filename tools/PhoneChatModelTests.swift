@@ -978,5 +978,23 @@ test("codex: a late phase arrives as an empty delta and only sets the phase") {
     check(v.answer?.text == "All done." && v.foldable, "now it is the answer and the work folds")
 }
 
+test("a question request that is over waits no more, whoever ended it") {
+    var c = fold([
+        ev(0, ["t": s("state"), "state": s("running"), "queued": .array([])]),
+        ev(1, ["t": s("turn_start")]),
+        ev(1, ["t": s("question"), "qid": s("name"), "prompt": s("Name?"), "request": s("7-0"), "expires_in_ms": .number(120000)]),
+        ev(1, ["t": s("question"), "qid": s("old"), "prompt": s("Other?"), "request": s("7-1")]),
+    ])
+    check(c.phase.what == "asking", "it waits")
+    c.apply(ev(1, ["t": s("question_done"), "request": s("7-0"), "how": s("expired")]))
+    if case .question(let q) = c.turns[0].blocks[0] { check(q.answered && q.answer == nil, "expired: over, no answer") } else { check(false, "question") }
+    if case .question(let q) = c.turns[0].blocks[1] { check(!q.answered, "the other request still waits") } else { check(false, "question") }
+    c.apply(ev(1, ["t": s("question_done"), "request": s("7-1"), "answers": .object(["old": .array([s("yes")])]), "how": s("answered")]))
+    if case .question(let q) = c.turns[0].blocks[1] { check(q.answered && q.answer == "yes", "answered elsewhere") } else { check(false, "question") }
+    check(c.phase.what != "asking", "nothing waits")
+    c.markAnswered("old", answer: "no")
+    if case .question(let q) = c.turns[0].blocks[1] { check(q.answer == "yes", "an answered question keeps its answer") } else { check(false, "question") }
+}
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

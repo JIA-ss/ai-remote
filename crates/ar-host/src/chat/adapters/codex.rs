@@ -129,6 +129,9 @@ struct State {
     asking: Vec<Asking>,
     /// When this process started (ms since the epoch), which names its question requests.
     epoch: u128,
+    /// Questions whose request closed without their answer (expired, resolved, the turn ended),
+    /// newest last: an answer that comes for one later is said to be too late.
+    closed: VecDeque<String>,
     /// A turn was asked for and has no id yet.
     starting: bool,
     /// Steers waiting for that id.
@@ -204,39 +207,8 @@ pub async fn run(
     }
     loop {
         tokio::select! {
-            _ = next_deadline(&st) => {
-                for (reply, done) in expire(&mut st, tokio::time::Instant::now()) {
-                    let _ = proc.write_line(reply).await;
-                    report(&out, Out::Ev(done)).await;
-                }
-            }
-            line = lines.recv() => match line {
-                Some(Ok(line)) => {
-                    let (writes, outs) = handle(&mut st, &line, &opts);
-                    for w in writes {
-                        let _ = proc.write_line(w).await;
-                    }
-                    for o in outs {
-                        if !report(&out, o).await {
-                            proc.shutdown(std::time::Duration::from_secs(2)).await;
-                            return;
-                        }
-                    }
-                }
-                Some(Err(why)) => {
-                    let reason = exit_reason(&name, &proc, Some(why));
-                    proc.shutdown(std::time::Duration::from_secs(1)).await;
-                    report(&out, Out::Exited(reason)).await;
-                    return;
-                }
-                None => {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let reason = exit_reason(&name, &proc, None);
-                    proc.shutdown(std::time::Duration::from_secs(1)).await;
-                    report(&out, Out::Exited(reason)).await;
-                    return;
-                }
-            },
+            // A command first: an answer that came in time must not lose to its own deadline.
+            biased;
             cmd = cmds.recv() => match cmd {
                 Some(LiveCmd::Prompt { text, images }) => {
                     if st.ready {
@@ -268,9 +240,18 @@ pub async fn run(
                     }
                 },
                 Some(LiveCmd::Answer { qid, text }) => {
+                    let late = !st.asking.iter().any(|a| a.qids.contains(&qid)) && st.closed.contains(&qid);
                     if let Some((reply, done)) = answer(&mut st, qid, text) {
                         let _ = proc.write_line(reply).await;
                         report(&out, Out::Ev(done)).await;
+                    } else if late {
+                        report(&out, Out::Ev(Ev::Notice {
+                            input_id: None,
+                            level: "warn",
+                            code: "late_answer",
+                            text: "the answer came after Codex had gone on without one; it was not sent".into(),
+                        }))
+                        .await;
                     }
                 }
                 Some(LiveCmd::Shutdown { done }) => {
@@ -283,6 +264,39 @@ pub async fn run(
                     return;
                 }
             },
+            line = lines.recv() => match line {
+                Some(Ok(line)) => {
+                    let (writes, outs) = handle(&mut st, &line, &opts);
+                    for w in writes {
+                        let _ = proc.write_line(w).await;
+                    }
+                    for o in outs {
+                        if !report(&out, o).await {
+                            proc.shutdown(std::time::Duration::from_secs(2)).await;
+                            return;
+                        }
+                    }
+                }
+                Some(Err(why)) => {
+                    let reason = exit_reason(&name, &proc, Some(why));
+                    proc.shutdown(std::time::Duration::from_secs(1)).await;
+                    report(&out, Out::Exited(reason)).await;
+                    return;
+                }
+                None => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let reason = exit_reason(&name, &proc, None);
+                    proc.shutdown(std::time::Duration::from_secs(1)).await;
+                    report(&out, Out::Exited(reason)).await;
+                    return;
+                }
+            },
+            _ = next_deadline(&st) => {
+                for (reply, done) in expire(&mut st, tokio::time::Instant::now()) {
+                    let _ = proc.write_line(reply).await;
+                    report(&out, Out::Ev(done)).await;
+                }
+            }
         }
     }
 }
@@ -313,6 +327,9 @@ fn expire(st: &mut State, now: tokio::time::Instant) -> Vec<(String, Ev)> {
     let (over, keep): (Vec<_>, Vec<_>) =
         std::mem::take(&mut st.asking).into_iter().partition(|a| a.deadline.is_some_and(|d| d <= now));
     st.asking = keep;
+    for a in &over {
+        close(st, a);
+    }
     over.into_iter()
         .map(|a| {
             (
@@ -321,6 +338,18 @@ fn expire(st: &mut State, now: tokio::time::Instant) -> Vec<(String, Ev)> {
             )
         })
         .collect()
+}
+
+/// Remembers a request that closed without (all) its answers.
+fn close(st: &mut State, a: &Asking) {
+    for q in &a.qids {
+        if !a.answers.contains_key(q) {
+            st.closed.push_back(q.clone());
+        }
+    }
+    while st.closed.len() > 64 {
+        st.closed.pop_front();
+    }
 }
 
 /// Waits until the earliest question deadline (forever when there is none).
@@ -581,6 +610,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
         "serverRequest/resolved" => {
             if let Some(i) = st.asking.iter().position(|a| a.id == p["requestId"]) {
                 let a = st.asking.remove(i);
+                close(st, &a);
                 outs.push(Out::Ev(Ev::QuestionDone {
                     request: a.request,
                     answers: Default::default(),
@@ -706,6 +736,7 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
             };
             // Questions still waiting end with their turn.
             for a in std::mem::take(&mut st.asking) {
+                close(st, &a);
                 let how = if status == TurnStatus::Interrupted { "dismissed" } else { "resolved" };
                 outs.push(Out::Ev(Ev::QuestionDone {
                     request: a.request,
@@ -1594,6 +1625,9 @@ mod tests {
         assert!(matches!(&over[0].1, Ev::QuestionDone { request, how, .. } if request == "77-3" && how == "expired"));
         assert_eq!(st.asking.len(), 1);
         assert!(st.asking[0].deadline.is_none());
+        // An answer that comes now finds nothing to answer, and the request is known to have closed.
+        assert!(answer(&mut st, "name".into(), "late".into()).is_none());
+        assert!(st.closed.contains(&"name".to_string()));
     }
 
     #[test]

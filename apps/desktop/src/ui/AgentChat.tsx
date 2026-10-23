@@ -484,6 +484,18 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
     if (gone) onLeave(true);
   }, [gone]);
   const [menu, setMenu] = useState(false);
+  // The ⋯ menu closes with Esc or a click elsewhere.
+  useEffect(() => {
+    if (!menu) return;
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setMenu(false);
+    const down = (e: MouseEvent) => !(e.target as Element | null)?.closest(".nt-chat-menu, .nt-chat-menu-btn") && setMenu(false);
+    document.addEventListener("keydown", key);
+    document.addEventListener("mousedown", down);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("mousedown", down);
+    };
+  }, [menu]);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [insert, setInsert] = useState<{ text: string; n: number } | null>(null);
@@ -625,7 +637,7 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
         <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
           <Search size={14} />
         </button>
-        <button type="button" className="ico" aria-label={t("hc_menu")} onClick={() => setMenu((v) => !v)}>
+        <button type="button" className="ico nt-chat-menu-btn" aria-label={t("hc_menu")} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>
           <Icon name="more" size={14} />
         </button>
         {menu && (

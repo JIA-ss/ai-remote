@@ -140,6 +140,8 @@ public struct PhoneQuestion: Equatable, Sendable {
     public let options: [String]
     public var answered = false
     public var answer: String?
+    /// The request it belongs to (Codex); `question_done` closes all of a request's questions.
+    public var request: String? = nil
 }
 
 public struct PhoneQueued: Equatable, Sendable, Identifiable {
@@ -388,7 +390,18 @@ public struct PhoneChatLog: Equatable, Sendable {
             }
         case "question":
             turns[i].blocks.append(.question(PhoneQuestion(qid: e["qid"].string ?? "", prompt: e["prompt"].string ?? "",
-                                                           options: e["options"].array.compactMap(\.string))))
+                                                           options: e["options"].array.compactMap(\.string), request: e["request"].string)))
+        case "question_done":
+            // The request is over (answered, or Codex went on without an answer): its questions wait no more.
+            guard let request = e["request"].string else { break }
+            for (k, block) in turns[i].blocks.enumerated() {
+                if case .question(var q) = block, q.request == request {
+                    let given = e["answers"][q.qid].array.compactMap(\.string)
+                    q.answered = true
+                    if !given.isEmpty { q.answer = given.joined(separator: ", ") }
+                    turns[i].blocks[k] = .question(q)
+                }
+            }
         case "turn_diff":
             turns[i].diff = PhoneTurnDiff(text: e["diff"].string ?? "", truncated: e["truncated"] == .bool(true))
         case "usage":
@@ -423,7 +436,7 @@ public struct PhoneChatLog: Equatable, Sendable {
     public mutating func markAnswered(_ qid: String, answer: String?) {
         for t in turns.indices {
             for b in turns[t].blocks.indices {
-                if case .question(var q) = turns[t].blocks[b], q.qid == qid {
+                if case .question(var q) = turns[t].blocks[b], q.qid == qid, !q.answered {
                     q.answered = true; q.answer = answer
                     turns[t].blocks[b] = .question(q)
                 }
