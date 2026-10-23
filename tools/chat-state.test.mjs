@@ -394,3 +394,16 @@ test("answer, permit and mode commands are what the host reads", () => {
   assert.deepEqual(plain(chat.answerCommand("q2", "release")), { answer: { qid: "q2", text: "release" } });
   assert.deepEqual(plain(chat.answerCommand("q2", "release", { "Which?": "release" })), { answer: { qid: "q2", text: "release", answers: { "Which?": "release" } } });
 });
+
+test("an edit's update with the real patch replaces the call's diff of that file, output is added", () => {
+  seq = 0;
+  const c = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "e1", title: "Edit src/a.rs", kind: "edit", status: "in_progress", content: [{ type: "diff", path: "src/a.rs", old: "b", new: "B" }] }),
+    ev(1, { t: "tool_update", call_id: "e1", status: "completed", content: [{ type: "diff", path: "src/a.rs", old: "a\nb\nc", new: "a\nB\nc", hunks: [{ old_start: 22, new_start: 22 }] }, { type: "text", text: "ok" }] }),
+  ]);
+  const tool = c.turns[0].blocks.find((b) => b.kind === "tool");
+  assert.deepEqual(plain(tool.content.map((x) => x.type)), ["diff", "text"]);
+  assert.equal(tool.content[0].hunks[0].old_start, 22);
+  assert.deepEqual(plain(chat.mergeToolContent([{ type: "text", text: "a" }], [{ type: "text", text: "b" }]).map((x) => x.text)), ["a", "b"]);
+});

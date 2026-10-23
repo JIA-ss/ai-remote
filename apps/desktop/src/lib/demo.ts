@@ -1283,7 +1283,7 @@ function demoChatTool(host: string, tool: string, args: Record<string, unknown>)
       return ok({ ...demoRuntimes, host: { ...demoRuntimes.host, enabled: demoChatEnabled } });
     case "chat_sessions": {
       startDemoTimeline();
-      const mine = demoSessions.filter((s) => demoHostOf(s.id) === host && (args.archived === true || !demoMeta.get(s.id)?.archived));
+      const mine = demoSessions.filter((s) => demoHostOf(s.id) === host && (args.archived === true) === !!demoMeta.get(s.id)?.archived);
       return ok({ sessions: mine.map((s) => demoDescribe(s, host)), live: mine.filter((s) => s.state !== "ended" && s.state !== "parked").length });
     }
     case "chat_update": {

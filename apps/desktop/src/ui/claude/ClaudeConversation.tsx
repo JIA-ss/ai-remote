@@ -98,8 +98,8 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
     root.current?.querySelector<HTMLTextAreaElement>(".nt-compose textarea")?.focus();
   };
   const actions: CardActions = {
-    permit: (r, decision) => {
-      send(permitCommand(r.id, decision));
+    permit: (r, decision, message) => {
+      send(permitCommand(r.id, decision, { message }));
       setChat((c) => markResolved(c, r.id, decision === "deny" ? "denied" : decision === "session" ? "allowed_session" : "allowed"));
       backToComposer();
     },
@@ -215,7 +215,7 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
           holdEnter={holdEnter}
           escClaimed={cards}
           lead={claude && permissions ? (
-            <ModePicker mode={chat.mode} busy={running} agent={agent} host={host} folder={hello?.cwd ?? ""} disabled={readonly || ended}
+            <ModePicker mode={chat.mode ?? hello?.permission_mode ?? null} busy={running} agent={agent} host={host} folder={hello?.cwd ?? ""} disabled={readonly || ended}
               onPick={(m: Mode) => send(modeCommand(m))} />
           ) : null}
         />

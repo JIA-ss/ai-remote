@@ -218,6 +218,8 @@ export interface ChatHello {
   commands?: SlashCommand[];
   /** Whether the agent takes images with a message (`agent` events update it). */
   images?: boolean;
+  /** The permission mode when the channel opened (`mode` events update it; older hosts leave it out). */
+  permission_mode?: string | null;
 }
 
 export interface ToolItem {
@@ -352,6 +354,17 @@ function newTurn(n: number): Turn {
 }
 
 /** Folds one event into the chat; returns a new chat object (blocks are copied on write). */
+
+/**
+ * What a `tool_update` adds to a tool's content. A diff for a file the call already showed replaces
+ * it: the update's diff is the real patch (with line numbers), the call's was the request. Anything
+ * else (output, more files) is added after.
+ */
+export function mergeToolContent(old: ToolItem["content"], add: ToolItem["content"]): ToolItem["content"] {
+  const paths = new Set(add.flatMap((c) => (c.type === "diff" ? [c.path] : [])));
+  if (!paths.size) return [...old, ...add];
+  return [...old.filter((c) => !(c.type === "diff" && paths.has(c.path))), ...add];
+}
 export function reduceChat(prev: Chat, e: ChatEvent): Chat {
   if (e.seq < 0 && e.t === "commands") {
     // The list the host knew when the chat opened; a numbered `commands` event is newer.
@@ -470,7 +483,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       if (i < 0) break;
       const old = b[i] as ToolItem;
       const status = e.status ?? old.status;
-      b[i] = { ...old, status, content: e.content?.length ? [...old.content, ...e.content] : old.content,
+      b[i] = { ...old, status, content: e.content?.length ? mergeToolContent(old.content, e.content) : old.content,
         truncated: old.truncated || !!e.truncated,
         endedTs: status === "completed" || status === "failed" ? e.ts : old.endedTs,
         ...(typeof e.exit_code === "number" ? { exitCode: e.exit_code } : {}),

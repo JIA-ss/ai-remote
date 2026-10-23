@@ -190,11 +190,12 @@ export function dotOf(m: WsMeta, unread: boolean, acked = false): Dot | null {
 }
 
 /**
- * SB-26: "Mark as done" keeps the event number it was given at; a failure is put aside while nothing
- * happened since (a later turn that fails shows again).
+ * SB-26: "Mark as done" keeps the turn count it was given at; a failure is put aside while no turn
+ * was sent since (a later turn that fails shows again). Not the event number: renaming, pinning or a
+ * mode change add events without a new turn and must not bring the failure back.
  */
-export function isAcked(m: WsMeta, ackedSeq: number | undefined): boolean {
-  return ackedSeq !== undefined && ackedSeq >= lastSeq(m);
+export function isAcked(m: WsMeta, ackedTurns: number | undefined): boolean {
+  return ackedTurns !== undefined && ackedTurns >= m.turns;
 }
 
 /** The dot that stands for several sessions (a folded group): the one first in `DOT_PRIORITY`. */
@@ -612,7 +613,7 @@ const KEYS = {
   pins: "ai-remote.ws.pins",
   first: "ai-remote.ws.first",
   base: "ai-remote.ws.baselined",
-  acked: "ai-remote.ws.acked",
+  acked: "ai-remote.ws.ackedTurns",
   cache: "ai-remote.ws.cache",
 } as const;
 
@@ -768,8 +769,14 @@ export class WorkspaceStore {
     if (!this.snap.hosts[host] || this.snap.hosts[host].status === "cached") this.setHost(host, (h) => ({ ...h, status: h.sessions.length ? h.status : "loading" }));
     try {
       const withArchived = this.snap.withArchived;
-      const v = (await this.deps.call(host, "chat_sessions", withArchived ? { archived: true } : {})) as { sessions?: unknown[] };
-      const raw = Array.isArray(v?.sessions) ? v.sessions : [];
+      // `archived: true` lists only the archived sessions, so "with archived" asks twice and merges.
+      const list = async (args: Record<string, unknown>) => {
+        const v = (await this.deps.call(host, "chat_sessions", args)) as { sessions?: unknown[] };
+        return Array.isArray(v?.sessions) ? v.sessions : [];
+      };
+      const [live, archived] = await Promise.all([list({}), withArchived ? list({ archived: true }) : Promise.resolve([])]);
+      const ids = new Set(live.map((r) => (r && typeof r === "object" ? (r as { id?: unknown }).id : undefined)));
+      const raw = [...live, ...archived.filter((r) => !(r && typeof r === "object" && ids.has((r as { id?: unknown }).id)))];
       // An answer to a question asked before the list changed its filter keeps what that filter wants.
       const sessions = raw.map(normalizeMeta).filter((m): m is WsMeta => !!m && (this.snap.withArchived || !m.archived));
       const learned = updatesFrom(raw);
@@ -852,7 +859,7 @@ export class WorkspaceStore {
     const x = this.items().find((i) => i.key === key);
     if (!x) return () => {};
     const was = { acked: this.snap.acked[key], unread: this.unread(x), explicit: this.snap.unread.includes(key), seen: this.snap.seen[key] };
-    this.set({ acked: keepLast({ ...this.snap.acked, [key]: lastSeq(x.meta) }, MAX_MARKS) });
+    this.set({ acked: keepLast({ ...this.snap.acked, [key]: x.meta.turns }, MAX_MARKS) });
     this.markRead(key);
     return () => {
       const acked = { ...this.snap.acked };

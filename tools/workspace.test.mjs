@@ -470,8 +470,9 @@ test("by state: needs you (and failed), working, to look at, done, idle — in t
 
 test("'Mark as done' puts a failure aside until something new happens, and can be undone", async () => {
   let seq = 7;
+  let turns = 2;
   const { store, storage } = storeWith(
-    { "new chat_sessions": () => ({ sessions: [meta({ id: "n1", last_status: "failed", last_seq: seq })] }) },
+    { "new chat_sessions": () => ({ sessions: [meta({ id: "n1", last_status: "failed", last_seq: seq, turns })] }) },
     { computers: [{ name: "new", online: true, local: false }] },
   );
   await store.refreshAll();
@@ -479,21 +480,27 @@ test("'Mark as done' puts a failure aside until something new happens, and can b
   assert.equal(store.dot(x()), "failed");
   const undo = store.markDone("new/n1");
   assert.equal(store.dot(x()), null);
-  assert.equal(JSON.parse(storage.store.get("ai-remote.ws.acked"))["new/n1"], 7);
+  assert.equal(JSON.parse(storage.store.get("ai-remote.ws.ackedTurns"))["new/n1"], 2);
   undo();
   assert.equal(store.dot(x()), "failed");
   store.markDone("new/n1");
+  // Events without a turn (a rename, a pin, a mode change) keep it put aside.
+  seq = 8;
+  await store.refreshAll();
+  assert.notEqual(store.dot(x()), "failed");
   // A later turn that fails again shows again.
   seq = 9;
+  turns = 3;
   await store.refreshAll();
   assert.equal(store.dot(x()), "failed");
-  assert.equal(ws.isAcked(x().meta, 7), false);
+  assert.equal(ws.isAcked(x().meta, 2), false);
 });
 
 test("archived sessions are asked for and kept only while the list shows them", async () => {
   const { store, calls } = storeWith(
     {
-      "new chat_sessions": (args) => ({ sessions: [meta({ id: "n1" }), ...(args.archived ? [meta({ id: "n2", archived: true })] : [])] }),
+      // As the host answers: archived=true lists only the archived ones.
+      "new chat_sessions": (args) => ({ sessions: args.archived ? [meta({ id: "n2", archived: true })] : [meta({ id: "n1" })] }),
       "new chat_update": (args) => ({ ...meta({ id: args.session }), archived: !!args.archived }),
     },
     { computers: [{ name: "new", online: true, local: false }] },

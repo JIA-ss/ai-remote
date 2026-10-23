@@ -39,7 +39,8 @@ type Plan = Extract<Request, { kind: "plan" }>;
 type Question = QuestionBlock & { turn: number };
 
 export interface CardActions {
-  permit: (r: Permission, decision: "once" | "session" | "deny") => void;
+  /** `message`: with a denial, what the agent is told instead (the turn goes on). */
+  permit: (r: Permission, decision: "once" | "session" | "deny", message?: string) => void;
   plan: (r: Plan, accept: { mode: string } | { revise: string }) => void;
   answer: (q: Question, answers: Record<string, string>) => void;
 }
@@ -118,11 +119,22 @@ function Kbd({ k }: { k: string }) {
 
 function ApprovalCard({ r, box, agent, readonly, draft, armed, armedAt, actions }: CardProps & { r: Permission; armedAt: React.RefObject<number>; actions: CardActions }) {
   const v = permitView(r);
+  const [noting, setNoting] = useState(false);
+  const [note, setNote] = useState("");
   const answer = (d: "once" | "session" | "deny") => {
     if (readonly || !armed()) return;
     actions.permit(r, d);
   };
+  const denyWithNote = () => {
+    if (readonly || !armed()) return;
+    actions.permit(r, "deny", note);
+  };
   useCardKeys((e) => {
+    if (noting) {
+      if (e.key !== "Escape" || e.isComposing || e.metaKey || e.ctrlKey) return false;
+      setNoting(false);
+      return true;
+    }
     const act = approvalKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, repeat: e.repeat, composing: e.isComposing, now: Date.now(), focus: focusOf(box.current) },
       { armedAt: armedAt.current, draft, session: v.session, buttons: v.session ? 3 : 2 });
     if (!act) return false;
@@ -150,24 +162,50 @@ function ApprovalCard({ r, box, agent, readonly, draft, armed, armedAt, actions 
         {v.reason && <div className="cl-ap-row"><span className="k">{t("cl_ap_reason")}</span><span>{v.reason}</span></div>}
         {v.diff && <DiffView c={{ type: "diff", path: v.diff.path, old: v.diff.old, new: v.diff.new }} head={false} />}
       </div>
+      {noting && (
+        <textarea className="cl-pl-note cl-ap-note-field" rows={3} autoFocus value={note} placeholder={t("cl_ap_note_ph", { agent })}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              denyWithNote();
+            }
+          }} />
+      )}
       {readonly && <div className="cl-card-note">{t("cl_card_readonly")}</div>}
       <div className="cl-btns">
         <div className="l">
-          <button type="button" className="cl-btn" disabled={readonly} onMouseDown={(e) => e.preventDefault()} onClick={() => answer("deny")}>
-            {t("cl_ap_deny")}
-            <Kbd k="esc" />
-          </button>
+          {noting ? (
+            <button type="button" className="cl-btn" disabled={readonly} onClick={() => setNoting(false)}>
+              {t("cl_pl_back")}
+              <Kbd k="esc" />
+            </button>
+          ) : (
+            <>
+              <button type="button" className="cl-btn" disabled={readonly} onMouseDown={(e) => e.preventDefault()} onClick={() => answer("deny")}>
+                {t("cl_ap_deny")}
+                <Kbd k="esc" />
+              </button>
+              <button type="button" className="cl-btn" disabled={readonly} onMouseDown={(e) => e.preventDefault()} onClick={() => setNoting(true)}>
+                {t("cl_ap_deny_note")}
+              </button>
+            </>
+          )}
         </div>
         <div className="r">
-          {v.session && (
+          {noting ? (
+            <button type="button" className="cl-btn primary" disabled={readonly || !note.trim()} onClick={denyWithNote}>{t("cl_ap_deny_send")}</button>
+          ) : v.session && (
             <button type="button" className="cl-btn" disabled={readonly} title={t("cl_ap_session_tip")} onMouseDown={(e) => e.preventDefault()} onClick={() => answer("session")}>
               {t("cl_ap_session")}
             </button>
           )}
-          <button type="button" className="cl-btn primary" disabled={readonly} onMouseDown={(e) => e.preventDefault()} onClick={() => answer("once")}>
-            {t("cl_ap_once")}
-            {!draft && <Kbd k={CMD_ENTER} />}
-          </button>
+          {!noting && (
+            <button type="button" className="cl-btn primary" disabled={readonly} onMouseDown={(e) => e.preventDefault()} onClick={() => answer("once")}>
+              {t("cl_ap_once")}
+              {!draft && <Kbd k={CMD_ENTER} />}
+            </button>
+          )}
         </div>
       </div>
     </div>

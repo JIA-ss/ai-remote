@@ -471,11 +471,23 @@
     await send("PERMIT 第三次");
     await until("approval card", () => $(".ws-main .cl-ap"), 20000);
     await sleep(500);
-    const noteField = $(".ws-main .cl-ap textarea, .ws-main .cl-ap input");
-    await check("the approval card can deny with a note for the agent", !!noteField || !!btn(/说明|note|instead|告诉/i),
-      "only Deny / Allow for this session / Allow once: the host takes permit.deny.message, the card never sends one");
-    btn(/^拒绝|^Deny/).click();
-    await check("Deny tells the agent no", !!(await until("denied", () => /Not done:/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    const noteBtn = btn(/拒绝并说明|Deny with a note/);
+    await check("the approval card can deny with a note for the agent", !!noteBtn, $(".ws-main .cl-ap .cl-btns")?.textContent);
+    noteBtn?.click();
+    const noteField = await until("note field", () => $(".ws-main .cl-ap textarea"), 3000);
+    if (noteField) {
+      setValue(noteField, "别动那个目录");
+      await sleep(200);
+      btn(/拒绝并发送|Deny and send/)?.click();
+    } else btn(/^拒绝|^Deny/)?.click();
+    await check("Deny with a note tells the agent the note", !!(await until("denied", () => /Not done: 别动那个目录/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    await shot("b02b-deny-note");
+    await idle();
+    await send("PERMIT 第四次");
+    await until("approval card", () => $(".ws-main .cl-ap"), 20000);
+    await sleep(500);
+    btn(/^(拒绝|Deny)\s*(esc)?$/)?.click();
+    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
     await idle();
 
     // B2. A question in two parts: single choice, then multiple with Other; the answers in the transcript.

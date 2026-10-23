@@ -250,6 +250,8 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
         "acks": true,
         // Whether this agent takes images with a message (`agent` events update it).
         "images": host.chat().takes_images(&chat),
+        // The permission mode now: a session started in the mode it asked for has no `mode` event.
+        "permission_mode": meta.permission_mode,
     });
     if !write_line(&mut send, &hello.to_string()).await {
         return;
