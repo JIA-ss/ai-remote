@@ -9,7 +9,8 @@
 // module turns the events of a turn (lib/chat.ts) into that structure. The layout was studied from
 // Codex's app; the code and wording here are this project's own.
 
-import { baseName, diffRows, type Block, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ThoughtBlock, type ToolItem, type Turn } from "./chat";
+import { baseName, diffRows, type Block, type Chat, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ToolItem, type Turn } from "./chat";
+import { inlineText, parseInline } from "./markdown";
 
 /** Whether a session's agent is Codex: by its protocol, or (hosts that do not say) its id or name. */
 export function isCodexRuntime(runtime: { id?: string; name?: string; protocol?: string | null } | null | undefined): boolean {
@@ -620,19 +621,17 @@ export type Act =
   | { kind: "exec"; key: string; tool: ToolItem; info: ExecInfo }
   | { kind: "patch"; key: string; tool: ToolItem; files: FileChange[] }
   | { kind: "web"; key: string; tool: ToolItem; query: string }
-  | { kind: "tool"; key: string; tool: ToolItem }
-  /** Reasoning between two tool calls of a group. */
-  | { kind: "thought"; key: string; block: ThoughtBlock };
+  | { kind: "tool"; key: string; tool: ToolItem };
 
 export type Unit =
   /** Tool calls in a row, shown as one line. */
   | { kind: "group"; key: string; acts: Act[]; live: boolean }
   /** What the agent said between steps. */
   | { kind: "message"; key: string; block: TextBlock; streaming: boolean }
-  | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** A sub-agent the agent started. */
   | { kind: "agent"; key: string; tool: ToolItem }
-  | { kind: "question"; key: string; block: QuestionBlock }
+  /** Questions the agent asked (one request), once they are answered or closed. */
+  | { kind: "asked"; key: string; questions: QuestionBlock[] }
   | { kind: "notice"; key: string; level: string; code: string; text: string }
   /** A message the user added to the running turn. */
   | { kind: "steer"; key: string; block: Extract<Block, { kind: "user" }> };
@@ -646,6 +645,8 @@ export interface CodexTurn {
   status: "working" | "worked" | "stopped" | "failed";
   /** The agent is thinking now (nothing else shows that it is working). */
   thinking: boolean;
+  /** The title of the agent's latest reasoning (its summary's last line), said while it works. */
+  title: string | null;
   /** A question waits for the user's answer. */
   asking: boolean;
   /** The turn's plan as last updated (shown above its work, not as a step of it). */
@@ -695,6 +696,7 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
   const units: Unit[] = [];
   let group: Extract<Unit, { kind: "group" }> | null = null;
   let plan: PlanEntry[] | null = null;
+  let title: string | null = null;
   const groupable = (x: Block | undefined) => x?.kind === "tool" && !isAgentTool(x);
   for (let i = 0; i < b.length; i++) {
     if (i === ans) continue;
@@ -702,6 +704,11 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
     if (x.kind === "plan") {
       // A plan update is not a step: it neither shows in the work nor splits a group.
       plan = x.entries;
+      continue;
+    }
+    if (x.kind === "thought") {
+      // Reasoning is not a step either (as in Codex's app): only its title says what the agent is at.
+      title = reasoningTitle(x.text) ?? title;
       continue;
     }
     if (groupable(x)) {
@@ -713,20 +720,8 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
       group.acts.push(actOf(tool));
       continue;
     }
-    if (x.kind === "thought") {
-      // Reasoning between two tool calls stays in their group, and so does reasoning after the last one
-      // while the turn runs (the next call may follow; the group's line must not come apart meanwhile).
-      // Anywhere else it is a line of its own.
-      let next = i + 1;
-      while (next < b.length && (b[next].kind === "thought" || b[next].kind === "plan")) next++;
-      if (group && (groupable(b[next]) || (live && next >= b.length))) {
-        group.acts.push({ kind: "thought", key: `t:${x.id}`, block: x });
-        continue;
-      }
-      group = null;
-      if (x.text.trim()) units.push({ kind: "thought", key: `t${turn.n}:${x.id}`, block: x, live: false });
-      continue;
-    }
+    // A question still waiting is asked in its own card, in place of the composer.
+    if (x.kind === "question" && live && !x.answered) continue;
     group = null;
     switch (x.kind) {
       case "text":
@@ -735,9 +730,16 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
       case "tool":
         units.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x });
         break;
-      case "question":
-        units.push({ kind: "question", key: `q${turn.n}:${x.qid}`, block: x });
+      case "question": {
+        // One line per request (an older host does not say: questions in a row are one request).
+        const prev = units[units.length - 1];
+        const same = x.request !== undefined
+          ? units.find((u): u is Extract<Unit, { kind: "asked" }> => u.kind === "asked" && u.questions[0].request === x.request)
+          : prev?.kind === "asked" && prev.questions[0].request === undefined ? prev : undefined;
+        if (same) same.questions.push(x);
+        else units.push({ kind: "asked", key: `q${turn.n}:${x.request ?? x.qid}`, questions: [x] });
         break;
+      }
       case "notice":
         units.push({ kind: "notice", key: `n${turn.n}:${i}`, level: x.level, code: x.code, text: x.text });
         break;
@@ -752,13 +754,13 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
   let thinking = false;
   if (live) {
     for (const u of units) {
-      if (u.kind === "group") u.live = u.acts.some((a) => a.kind !== "thought" && running(a.tool));
+      if (u.kind === "group") u.live = u.acts.some((a) => running(a.tool));
     }
+    // The last group stays the live line until something else follows it (the next call may come).
     if (lastUnit?.kind === "group" && ans < 0) lastUnit.live = true;
     if (lastUnit?.kind === "message" && ans < 0 && lastBlock?.kind === "text") lastUnit.streaming = true;
-    if (lastUnit?.kind === "thought" && lastBlock?.kind === "thought") lastUnit.live = true;
     // Nothing on screen says the agent is busy: it is thinking.
-    const busy = units.some((u) => (u.kind === "group" && u.live) || (u.kind === "thought" && u.live) || (u.kind === "message" && u.streaming)
+    const busy = units.some((u) => (u.kind === "group" && u.acts.some((a) => running(a.tool))) || (u.kind === "message" && u.streaming)
       || (u.kind === "agent" && running(u.tool)))
       || (ans >= 0 && lastBlock === b[ans]);
     thinking = !busy && !asking;
@@ -768,10 +770,11 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
   return {
     units,
     answer,
-    // Reasoning alone is not work worth folding away.
-    foldable: answer !== null && turn.status !== "interrupted" && units.some((u) => u.kind !== "thought"),
+    // A compaction alone is not work worth folding away.
+    foldable: answer !== null && turn.status !== "interrupted" && units.some((u) => !(u.kind === "notice" && u.code === "compacted")),
     status,
     thinking,
+    title: live ? title : null,
     asking,
     plan,
     changes: live ? [] : turnChanges(turn, cwd),
@@ -825,42 +828,93 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
 export function activeAct(acts: Act[]): Act | null {
   for (let i = acts.length - 1; i >= 0; i--) {
     const a = acts[i];
-    if (a.kind !== "thought" && running(a.tool)) return a;
+    if (running(a.tool)) return a;
   }
-  for (let i = acts.length - 1; i >= 0; i--) if (acts[i].kind !== "thought") return acts[i];
-  return null;
+  return acts.at(-1) ?? null;
 }
 
-/** How long a turn worked, from its start to its end (or now). */
+/**
+ * How long a turn worked: up to the moment its answer started (the answer is not work), else to its
+ * end, or to now while it runs.
+ */
 export function workedMs(turn: Turn, now: number): number {
-  if (turn.durationMs !== null && turn.status !== "running") return turn.durationMs;
   const start = turn.startedTs ?? turn.user?.ts ?? now;
+  const ans = answerIndex(turn);
+  const answered = ans >= 0 ? (turn.blocks[ans] as TextBlock).startedTs : undefined;
+  if (answered !== undefined) return Math.max(0, answered - start);
+  if (turn.durationMs !== null && turn.status !== "running") return turn.durationMs;
   return Math.max(0, now - start);
 }
 
-/** "8s", "1m 23s", "2h 5m" (Codex's way), or the Chinese equivalent. */
-export function duration(ms: number, zh = false): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return zh ? `${s} 秒` : `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return zh ? `${m} 分 ${s % 60} 秒` : `${m}m ${s % 60}s`;
-  return zh ? `${Math.floor(m / 60)} 小时 ${m % 60} 分` : `${Math.floor(m / 60)}h ${m % 60}m`;
+/** The title reasoning gives itself: its summary's last line (bold, or as plain text), without comments. */
+export function reasoningTitle(text: string): string | null {
+  const lines = text.replace(/<!--[\s\S]*?(-->|$)/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const line = lines.at(-1);
+  if (!line) return null;
+  const bold = /^\*\*(.+)\*\*$/.exec(line);
+  const title = (bold ? bold[1] : inlineText(parseInline(line))).trim();
+  return title || null;
 }
 
-/** A command's run time for its line ("in 2.4s"): under a second it is not worth saying. */
-export function elapsed(ms: number | null, zh = false): string | null {
+function units(lang: string): Array<[number, Intl.NumberFormat]> {
+  const f = (unit: string) => new Intl.NumberFormat(lang, { style: "unit", unit, unitDisplay: "narrow" });
+  return [[86400, f("day")], [3600, f("hour")], [60, f("minute")], [1, f("second")]];
+}
+const unitCache = new Map<string, Array<[number, Intl.NumberFormat]>>();
+function parts(ms: number, lang: string): Array<{ n: number; text: string }> {
+  let fmts = unitCache.get(lang);
+  if (!fmts) unitCache.set(lang, (fmts = units(lang)));
+  let s = Math.max(0, Math.floor(ms / 1000));
+  return fmts.map(([size, f]) => {
+    const n = Math.floor(s / size);
+    s -= n * size;
+    return { n, text: f.format(n) };
+  });
+}
+
+/**
+ * A command's run time, as its line says it ("12s", "1m 0s", "1h 0m 3s"): every unit from the
+ * largest one on; null under a second.
+ */
+export function durationA(ms: number | null, lang: string): string | null {
   if (ms === null || ms < 1000) return null;
-  if (ms < 10_000) return zh ? `${(ms / 1000).toFixed(1)} 秒` : `${(ms / 1000).toFixed(1)}s`;
-  return duration(ms, zh);
+  const p = parts(ms, lang);
+  const first = p.findIndex((x) => x.n > 0);
+  return p.slice(first).map((x) => x.text).join(" ");
 }
 
-/** The step of a plan the agent is on, for the plan's line ("Step 2 / 5"). */
+/** How long a turn worked ("0s", "1m", "1h 5s"): units that are not zero. */
+export function durationB(ms: number, lang: string): string {
+  const p = parts(ms, lang).filter((x) => x.n > 0);
+  return p.length ? p.map((x) => x.text).join(" ") : parts(0, lang)[3].text;
+}
+
+/** The step of a plan the agent is on ("Step 2 / 5"): the one in progress, else the first not done. */
 export function planStep(entries: PlanEntry[]): { step: number; total: number; done: number; current: PlanEntry | null } {
   const done = entries.filter((e) => e.status === "completed").length;
-  const at = entries.findIndex((e) => e.status === "in_progress");
-  const current = at >= 0 ? entries[at] : entries.find((e) => e.status !== "completed") ?? null;
-  const step = at >= 0 ? at + 1 : Math.min(done + 1, entries.length);
-  return { step, total: entries.length, done, current };
+  let at = entries.findIndex((e) => e.status === "in_progress");
+  if (at < 0) at = entries.findIndex((e) => e.status !== "completed");
+  const current = at >= 0 ? entries[at] : null;
+  return { step: at >= 0 ? at + 1 : entries.length, total: entries.length, done, current };
+}
+
+/**
+ * The questions waiting for the user's answer: the latest request of the running turn (an older host
+ * names no request: all the turn's open questions).
+ */
+export function pendingRequest(chat: Pick<Chat, "turns">): { turn: number; request: string | null; questions: QuestionBlock[] } | null {
+  const turn = [...chat.turns].reverse().find((t) => t.status === "running");
+  if (!turn) return null;
+  const open = turn.blocks.filter((b): b is QuestionBlock => b.kind === "question" && !b.answered);
+  if (!open.length) return null;
+  const request = open[open.length - 1].request ?? null;
+  return { turn: turn.n, request, questions: request === null ? open.filter((q) => q.request === undefined) : open.filter((q) => q.request === request) };
+}
+
+/** An option's label without Codex's " (Recommended)" mark, and whether it had it. */
+export function splitRecommended(label: string): { label: string; recommended: boolean } {
+  const m = /^(.*\S)\s+\(Recommended\)$/.exec(label);
+  return m ? { label: m[1], recommended: true } : { label, recommended: false };
 }
 
 export type { MessagePhase };

@@ -73,7 +73,7 @@
     await sleep(250);
     return line;
   };
-  const WORKED = /Worked for \d+(m \d+)?s|工作了 \d+( 分 \d+)? 秒/;
+  const WORKED = /Worked for (\d+[dhms] ?)+|用时 (\d+(天|小时|分钟|秒) ?)+/;
 
   try {
     // 1. Start Codex fake from the start form, in the work folder.
@@ -114,24 +114,40 @@
     const bubble = await until("user bubble", () => $$(".cdx-turn .nt-user .bubble").find((b) => b.textContent.includes("EXPLORE fix the quarter export")));
     await check("the message shows in a bubble on the right", !!bubble && getComputedStyle(bubble.parentElement).alignItems === "flex-end", bubble?.parentElement && getComputedStyle(bubble.parentElement).alignItems);
     const live = new Set();
-    let workingSeen = false, foldedWhileStreaming = false, thinkingSeen = false;
+    let workingSeen = false, foldedWhileStreaming = false, titleSeen = false, sweepSeen = false, rawSeen = false, dividerFirst = null, thoughtRow = false;
     const planSeen = new Set();
-    // The answer streams for well under a second: look at every change, not only at each poll (a
-    // window in the background gets its timers slowed down).
+    let planSteps = 0;
+    // The answer streams for well under a second, and the reasoning's title shows only until the next
+    // step: look at every change, not only at each poll (a window in the background gets its timers
+    // slowed down).
     const foldWatch = new MutationObserver(() => {
       const t = lastTurn();
-      if (t && $(".cdx-answer.streaming", t) && $(".cdx-worked", t) && !$(".cdx-work", t)) foldedWhileStreaming = true;
+      if (!t) return;
+      if ($(".cdx-answer.streaming", t) && $(".cdx-worked", t) && !$(".cdx-work", t)) foldedWhileStreaming = true;
+      if (text($(".cdx-thinking", t)) === "Reading the export code") titleSeen = true;
+      if ($("[data-sweep]", t)) sweepSeen = true;
+      if (/RAW REASONING/.test(t.textContent)) rawSeen = true;
+      if ($(".cdx-act.thought", t)) thoughtRow = true;
+      const wk = $(".cdx-worked", t), wo = $(".cdx-work", t);
+      if (wk && wo && dividerFirst === null) dividerFirst = !!(wk.compareDocumentPosition(wo) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const pill = $(".cdx-live .cdx-plan-pill");
+      if (pill) {
+        planSeen.add(text($(":scope > .tnum", pill)));
+        planSteps = Math.max(planSteps, $$(".cdx-plan-pop li", pill).length);
+      }
     });
     foldWatch.observe($(".nt-chat"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
     const watchEnd = Date.now() + 40000;
     while (Date.now() < watchEnd) {
       const t = lastTurn();
       if (t) {
-        for (const s of $$(".cdx-shimmer", t)) live.add(text(s));
-        if (/Working|已工作|工作中/.test(text($(".cdx-status", t)))) workingSeen = true;
-        if ($(".cdx-thinking", t)) thinkingSeen = true;
-        const pill = $(".cdx-plan .x-pill", t);
-        if (pill && $(".cdx-plan ol", t)) planSeen.add(text(pill));
+        for (const s of $$(".cdx-act.is-live .x-tx .cdx-cad > .x-base", t)) live.add(text(s));
+        if (/Working|处理中|已处理/.test(text($(".cdx-worked", t)))) workingSeen = true;
+        const pill = $(".cdx-live .cdx-plan-pill");
+        if (pill && !planSteps) {
+          pill.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+          pill.focus();
+        }
         if ($(".cdx-answer.streaming", t) && $(".cdx-worked", t) && !$(".cdx-work", t)) foldedWhileStreaming = true;
         if (!t.classList.contains("running") && !running()) break;
       }
@@ -144,19 +160,26 @@
     await check("reads, searches and listings show as what they do while they run",
       liveList.some((l) => /(Searching|Reading|Listing|Read|Searched|Listed|正在搜索|正在读取|正在列出|读取了|搜索了|列出了)/.test(l)), liveList.join(" | "));
     await check("'Working for' counts while the turn runs", workingSeen);
-    await check("the plan is open while it runs, with its step", [...planSeen].some((p) => /Step \d \/ 3|第 \d \/ 3 步/.test(p)), [...planSeen].join(" | "));
+    await check("the plan shows as a pill above the composer, with its step", [...planSeen].some((p) => /Step \d \/ 3|第 \d \/ 3 步/.test(p)), [...planSeen].join(" | "));
+    await check("the pill lists the plan's steps", planSteps === 3, `${planSteps} steps`);
+    await check("'Working for' sits at the top of the work", dividerFirst === true, String(dividerFirst));
+    await check("the reasoning's title says what the agent is at", titleSeen);
+    await check("reasoning is never a line of the work, nor its raw text shown", !thoughtRow && !rawSeen, `${thoughtRow} ${rawSeen}`);
+    await check("the live text catches a sweep of light now and then", sweepSeen);
     await check("the work folds behind 'Worked for' as soon as the answer streams", foldedWhileStreaming);
-    void thinkingSeen;
     await idle();
     let t1 = turns()[0];
     await shot("c01-turn-folded");
 
-    // 3. The finished turn: "Worked for", the answer, the plan folded and done, the turn's changes.
-    await check("the finished turn says how long it worked", WORKED.test(text($(".cdx-worked .x-tg", t1))), text($(".cdx-worked", t1)));
+    // 3. The finished turn: "Worked for" (held still), the answer, no plan, the turn's changes.
+    const worked1 = text($(".cdx-worked .x-tg", t1));
+    await check("the finished turn says how long it worked", WORKED.test(worked1), worked1);
+    await sleep(1500);
+    await check("and that time stays put", text($(".cdx-worked .x-tg", t1)) === worked1, text($(".cdx-worked .x-tg", t1)));
     await check("the work stays folded", !$(".cdx-work", t1));
     const answer = $(".cdx-answer", t1);
     await check("the answer renders Markdown: bold, table, code block", !!answer && !!$("strong", answer) && !!$("table", answer) && !!$(".nt-cb", answer), text(answer).slice(0, 120));
-    await check("the plan folds once done and says so", !$(".cdx-plan ol", t1) && /3 out of 3|已完成 3 \/ 3/.test(text($(".cdx-plan .x-pill", t1))), text($(".cdx-plan", t1)));
+    await check("the plan leaves with the turn: no pill, nothing in the transcript", !$(".cdx-live") && !$(".cdx-plan, .cdx-plan-pill", t1));
     const changes = $(".cdx-changes", t1);
     await check("the turn's changes: 2 files with their counts", !!changes && /2 files changed|2 个文件已更改/.test(text($(".x-hd", changes)))
       && /\+11/.test(text($(".x-hd .cdx-stat", changes))) && /−1/.test(text($(".x-hd .cdx-stat", changes))), text($(".x-hd", changes)));
@@ -170,12 +193,12 @@
       fileDiff && `${$$(".x-dl.x-add", fileDiff).length}+ ${$$(".x-dl.x-del", fileDiff).length}-`);
     await check("the answer can be copied", !!$(".cdx-foot .nt-ib", t1));
 
-    // 4. Opening the work: the remarks, a thought, two groups summed up in a sentence.
+    // 4. Opening the work: the remarks and two groups summed up in a sentence.
     const w = await openWork(t1);
     await check("'Worked for' opens the work", !!w);
     const units = $$(".cdx-unit", w);
     await check("the remarks show between the steps", units.filter((u) => u.dataset.unit === "message").length === 2, units.map((u) => u.dataset.unit).join(","));
-    await check("the reasoning shows as a 'Thought' line", !!$(".cdx-act.thought", w), lines(w).join(" | "));
+    await check("no line for the reasoning in the work", !$(".cdx-act.thought", w) && !/RAW REASONING|Locating the date math/.test(w.textContent), lines(w).join(" | "));
     const groups = $$(".cdx-act.group", w);
     const sentences = groups.map((g) => text($(":scope > .x-hd", g)));
     await check("tool calls in a row fold into one line each, summed up",
@@ -199,7 +222,7 @@
     const g2 = g2acts.map((a) => text($(":scope > .x-hd", a)));
     await check("edits read as Edited / Created with their counts",
       g2.some((l) => /^(Edited|编辑了) export\.py \+2 ?−1$/.test(l)) && g2.some((l) => /^(Created|创建了) test_quarters\.py \+9$/.test(l)), g2.join(" | "));
-    await check("a passing command says how long it ran", g2.some((l) => /python3 -m pytest -q (in 2\.3s|用时 2\.3 秒)/.test(l)), g2.join(" | "));
+    await check("a passing command says how long it ran", g2.some((l) => /python3 -m pytest -q (in 2s|用时 2秒)/.test(l)), g2.join(" | "));
     await check("the web search reads as one", g2.some((l) => /(Searched the web|搜索了网页) .*python calendar monthrange/.test(l)), g2.join(" | "));
     const edit = g2acts.find((a) => /export\.py/.test(text(a)) && /Edited|编辑了/.test(text(a)));
     await openLine(edit);
@@ -213,17 +236,59 @@
     $(".cdx-worked .x-tg", t1).click();
     await check("'Worked for' folds the work again", !!(await until("folded", () => !$(".cdx-work", t1), 3000)));
 
-    // 5. A question: the turn waits for the answer, then goes on.
+    // 5. Questions: a card in place of the composer, one question at a time; the answers go together.
     await sendTurn("ASK which modules");
-    const q = await until("question", () => $(".cdx .nt-q:not(.done)", lastTurn()));
-    await check("the agent's question shows with its choices", !!q && $$(".opt", q).length === 2 && /monthly\.py/.test(text(q)), text(q));
-    await check("the turn says it waits for the answer", /Waiting for your answer|等你回答/.test(text($(".cdx-status", lastTurn()))), text($(".cdx-status", lastTurn())));
+    const card = await until("question card", () => $(".cdx-reqs .cdx-req"));
+    await check("the question comes as a card in place of the composer", !!card && $(".nt-compose-slot").hidden && !$(".nt-q", lastTurn()),
+      `${!!card} ${$(".nt-compose-slot")?.hidden}`);
+    await check("its title is the question, without its header; 1 / 2", /Should I fix report\/monthly\.py too\?/.test(text($(".x-ti", card))) && !/Scope/.test(text($(".x-hd", card)))
+      && /1 \/ 2/.test(text($(".x-pager", card))), text($(".x-hd", card)));
+    const opts = $$(".x-opt[role=radio]", card);
+    await check("numbered options, the first chosen, with descriptions and the Recommended mark",
+      opts.length === 2 && opts[0].getAttribute("aria-checked") === "true" && /Same bug, same fix/.test(text(opts[0])) && /^1/.test(text($(".x-mk", opts[0])))
+        && text($(".x-badge", opts[0])) !== "" && !/\(Recommended\)/.test(text(opts[0])), opts.map(text).join(" | "));
+    await check("a row for an answer of one's own, with Skip", !!$(".x-other textarea", card) && /Skip|跳过/.test(text($(".x-other .btn", card))));
+    await check("the turn says it waits for the answer", /Waiting for your answer|等你回答/.test(text($(".cdx-thinking.x-ask", lastTurn()))), text(lastTurn()).slice(-80));
+    await sleep(500);
+    await check("the card's options are drawn (faded in, in view)", getComputedStyle($(".x-body", card)).opacity === "1" && opts[0].getBoundingClientRect().height >= 32,
+      `${getComputedStyle($(".x-body", card)).opacity} ${opts[0].getBoundingClientRect().height}`);
     await shot("c04-question");
-    $$(".opt", q)[0].click();
+    card.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true }));
+    await check("a number key takes that option and moves on", !!(await until("second question", () => /2 \/ 2/.test(text($(".cdx-req .x-pager"))), 3000)));
+    const card2 = $(".cdx-reqs .cdx-req");
+    await check("the second question has no row of its own, Skip below", /Add a test for every quarter\?/.test(text($(".x-ti", card2))) && !$(".x-other", card2) && /Skip|跳过/.test(text($(".x-acts .btn", card2))));
+    $(".x-acts .btn", card2).click();
     await idle();
-    await check("the answer reaches the agent and the turn ends", /Going with Fix it too/.test(text($(".cdx-answer", lastTurn()))), text(lastTurn()).slice(-160));
-    await openWork(lastTurn());
-    await check("the question shows answered", !!$(".nt-q.done", lastTurn()), text($(".nt-q", lastTurn())));
+    await check("the answers reach the agent together, the skipped one left out",
+      /Going with Fix it too \(Recommended\); tests: no answer\. Answered: scope\./.test(text($(".cdx-answer", lastTurn()))), text($(".cdx-answer", lastTurn())));
+    await check("the composer is back", !$(".cdx-reqs") && !$(".nt-compose-slot").hidden);
+    const wq = await openWork(lastTurn());
+    const asked = $$(".cdx-act.asked", wq)[0];
+    await check("the request shows as one 'Asked' line", !!asked && /^(Asked 2 questions|已询问 2 个问题)$/.test(text($(":scope > .x-hd > .x-ln", asked))), lines(wq).join(" | "));
+    await openLine(asked);
+    const qa = $$(".cdx-asked .x-qa", asked).map(text);
+    await check("opening it shows each answer, and none for the skipped one", qa[0] === "Fix it too (Recommended)" && /No answer provided|未提供答案/.test(qa[1]), qa.join(" | "));
+
+    // 5b. Closing the card stops the turn; what was typed in the composer is still there.
+    await sendTurn("ASK again");
+    // A draft in the composer (hidden behind the card, still there).
+    setValue(composer(), "my unsent draft");
+    const card3 = await until("question card again", () => $(".cdx-reqs .cdx-req"), 15000);
+    card3.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await check("Esc closes the card at once", !!(await until("card gone", () => !$(".cdx-reqs"), 3000)));
+    await idle();
+    await check("and stops the turn: Codex waits on the answer", /stopped after|停止了/.test(text($(".cdx-worked", lastTurn()))) || lastTurn().querySelector(".cdx-worked.x-stop") !== null,
+      text(lastTurn()).slice(-160));
+    await check("the composer keeps its draft", composer().value === "my unsent draft", composer().value);
+    setValue(composer(), "");
+
+    // 5c. A question Codex closes itself: the card goes, the turn goes on.
+    await sendTurn("RESOLVED name it");
+    const card4 = await until("free-text card", () => $(".cdx-reqs .cdx-req"), 15000);
+    await check("a question without options asks for text", !!card4 && !!$(".x-free textarea", card4) && /What should the report be called\?/.test(text($(".x-ti", card4))));
+    await check("Codex closing it takes the card away", !!(await until("card gone", () => !$(".cdx-reqs"), 8000)));
+    await idle();
+    await check("the turn goes on to its answer", /kept the name/.test(text($(".cdx-answer", lastTurn()))), text(lastTurn()).slice(-160));
 
     // 6a. A message added to a turn that then finishes stays in view when its work folds.
     await sendTurn("STEERME build it");
@@ -238,7 +303,7 @@
     const before = turns().length;
     await sendTurn("SLOW count");
     const sleeping = await until("live sleep", () => $$(".cdx-act.is-live", lastTurn()).find((a) => /(Running|正在运行) sleep 30/.test(text(a))));
-    await check("a long command shows as running, shimmering", !!sleeping && !!$(".cdx-shimmer", sleeping), text(lastTurn()).slice(-120));
+    await check("a long command shows as running, its text the live kind", !!sleeping && !!$(".cdx-cad", sleeping), text(lastTurn()).slice(-120));
     await send("stop at three");
     const steered = await until("steer bubble", () => $$(".nt-user", lastTurn()).find((u) => u.textContent.includes("stop at three")));
     await check("a message sent meanwhile joins the running turn", !!steered && steered.dataset.steer === "1");
@@ -247,15 +312,15 @@
     await shot("c05-steer");
     // "Stopping…" shows from the click until the agent confirms (only a moment with the stand-in).
     let stoppingSeen = false;
-    const watch = new MutationObserver(() => { if (/Stopping…|正在停止…/.test(text($(".cdx-status", lastTurn())))) stoppingSeen = true; });
+    const watch = new MutationObserver(() => { if (/Stopping…|正在停止…/.test(text($(".cdx-worked", lastTurn())))) stoppingSeen = true; });
     watch.observe(lastTurn(), { subtree: true, childList: true, characterData: true });
     $(".nt-compose .round.stop").click();
-    if (/Stopping…|正在停止…/.test(text($(".cdx-status", lastTurn())))) stoppingSeen = true;
-    const stopped = await until("stopped", () => $(".cdx-divider.x-stop", lastTurn()));
+    if (/Stopping…|正在停止…/.test(text($(".cdx-worked", lastTurn())))) stoppingSeen = true;
+    const stopped = await until("stopped", () => $(".cdx-worked.x-stop", lastTurn()));
     watch.disconnect();
     await check("the status says Stopping… until the agent stops", stoppingSeen);
     await check("Stop ends the turn: 'You stopped after …'", !!stopped && /You stopped after|你在.*后停止了/.test(text(stopped)), text(stopped));
-    await check("a stopped turn does not fold its work", !$(".cdx-worked", lastTurn()) && !!$(".cdx-work", lastTurn()));
+    await check("a stopped turn does not fold its work", !$(".cdx-worked button.x-tg", lastTurn()) && !!$(".cdx-work", lastTurn()));
     await check("the cut-short command says Stopped", $$(".cdx-act", lastTurn()).some((a) => /^(Stopped|停止了) sleep 30/.test(text($(":scope > .x-hd", a)))), lines(lastTurn()).join(" | "));
     const cont = await until("continue", () => $(".nt-stopped .btn", lastTurn()));
     await check("it offers to continue", !!cont);

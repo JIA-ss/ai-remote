@@ -57,11 +57,9 @@
 .cdx-act .x-hd:hover .x-btns, .cdx-act .x-btns:focus-within { opacity: 1; }
 .cdx-chev { flex: none; color: var(--x-35); opacity: 0; transition: transform .2s ease, opacity .12s; }
 .cdx-chev.open { transform: rotate(90deg); opacity: 1; }
-.cdx-act .x-ln:hover .cdx-chev, .cdx-act .x-ln:focus-visible .cdx-chev, .cdx-worked .x-tg .cdx-chev, .cdx-plan .x-hd .cdx-chev, .cdx-changes .x-file .cdx-chev { opacity: 1; }
+.cdx-act .x-ln:hover .cdx-chev, .cdx-act .x-ln:focus-visible .cdx-chev, .cdx-worked .x-tg .cdx-chev, .cdx-changes .x-file .cdx-chev { opacity: 1; }
 .cdx-act > .x-bd { padding: 8px 0 4px 24px; min-width: 0; }
 .cdx-act.group > .x-bd { padding: 6px 0 2px 2px; }
-.cdx-act.thought .x-ln { color: var(--x-45); }
-.cdx-act.thought .x-ln:hover, .cdx-act.thought.open > .x-hd > .x-ln { color: var(--x-60); }
 .cdx-list { display: flex; flex-direction: column; gap: var(--x-grouped-gap); max-height: 224px; overflow-y: auto; padding: 0 0 0 10px; border-left: 1px solid var(--x-line); scrollbar-width: thin; }
 .cdx-list:has(.cdx-act.open) { max-height: 420px; }
 [data-os="windows"] .cdx-list, [data-os="windows"] .cdx-shell .x-sh-bd, [data-os="windows"] .cdx-diff { scrollbar-color: var(--stroke-2) transparent; }
@@ -84,18 +82,48 @@
 }
 .cdx-shimmer * { color: transparent !important; }
 @keyframes cdx-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
-@media (prefers-reduced-motion: reduce) { .cdx-shimmer { animation: none; color: var(--x-60); } .cdx-reveal.x-in, .cdx-reveal.x-out { animation: none; } }
 
-/* "Worked for 1m 23s" over a hairline; status lines */
-.cdx-worked { display: flex; flex-direction: column; gap: 6px; }
-.cdx-worked .x-tg { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--x-60); border-radius: 6px; }
-.cdx-worked .x-tg:hover { color: var(--x-ink); }
+/* what the agent is at now: dim text that a band of light sweeps over once in a while (600 ms after it
+   shows, then every 4 s; 1 s in 48 steps); the band is a copy of the text in ink, moved under a mask */
+.cdx-cad { position: relative; display: inline-block; max-width: 100%; vertical-align: top; overflow: hidden; }
+.cdx-cad > .x-base { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-cad > .x-sweep {
+  position: absolute; inset: 0; pointer-events: none; user-select: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 20%, #000 30%, transparent 50%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 20%, #000 30%, transparent 50%);
+}
+.cdx-cad > .x-sweep > .x-hi { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-cad > .x-sweep > .x-hi, .cdx-cad > .x-sweep > .x-hi * { color: var(--x-ink) !important; }
+.cdx-cad > .x-sweep { animation: cdx-sweep 1s steps(48, end) 1 both; }
+.cdx-cad > .x-sweep > .x-hi { animation: cdx-sweep-hi 1s steps(48, end) 1 both; }
+@keyframes cdx-sweep { from { transform: translateX(-50%); } to { transform: translateX(125%); } }
+@keyframes cdx-sweep-hi { from { transform: translateX(50%); } to { transform: translateX(-125%); } }
+@media (prefers-reduced-motion: reduce) {
+  .cdx-shimmer { animation: none; color: var(--x-60); }
+  .cdx-reveal.x-in, .cdx-reveal.x-out, .cdx-cad > .x-sweep, .cdx-cad > .x-sweep > .x-hi, .cdx-worked.x-new, .cdx-req .x-body { animation: none; }
+}
+
+/* "Working for 12s" over a hairline at the top of the work, still once the answer starts ("Worked for",
+   then the fold's toggle); "You stopped after 4s" */
+.cdx-worked { display: flex; flex-direction: column; gap: 8px; }
+.cdx-worked.x-new { animation: cdx-grow .3s cubic-bezier(.19, 1, .22, 1); overflow: hidden; }
+@keyframes cdx-grow { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 48px; } }
+.cdx-worked .x-tg { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; line-height: 20px; color: var(--x-60); border-radius: 6px; }
+.cdx-worked button.x-tg:hover { color: var(--x-ink); }
+.cdx-worked .x-tg .cdx-chev { color: var(--x-35); }
 .cdx-worked .x-rule { border-top: 1px solid var(--x-line); }
-.cdx-status, .cdx-thinking { font-size: 13px; color: var(--x-60); }
-.cdx-status { color: var(--x-45); font-size: 12.5px; }
+/* the line at the end of a running turn: the reasoning's title or "Thinking"; waiting for an answer */
+.cdx-thinking { font-size: 13px; line-height: 20px; color: var(--x-60); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-thinking.x-ask { display: flex; align-items: center; gap: 6px; }
+.cdx-thinking.x-ask svg { flex: none; }
 .cdx-divider { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--x-45); }
 .cdx-divider::before, .cdx-divider::after { content: ""; flex: 1; border-top: 1px solid var(--x-line); }
-.cdx-divider.x-stop { color: var(--x-45); }
+
+/* questions once answered: "Asked 2 questions", opening to each with its answer */
+.cdx-asked { display: flex; flex-direction: column; gap: 12px; }
+.cdx-asked .x-q { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 20px; }
+.cdx-asked .x-qt { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--x-60); }
+.cdx-asked .x-qa { color: color-mix(in srgb, var(--text-1) 30%, transparent); overflow-wrap: anywhere; }
 
 /* a command's shell */
 .cdx-shell { border: 1px solid var(--x-line); border-radius: 10px; background: var(--x-ground); overflow: hidden; min-width: 0; }
@@ -137,20 +165,69 @@
 .cdx-tool { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .cdx-tool pre.x-out { margin: 0; padding: 8px 10px; border: 1px solid var(--x-line); border-radius: 10px; background: var(--x-ground); font-family: var(--font-data); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--x-60); max-height: 280px; overflow: auto; }
 
-/* the plan */
-.cdx-plan { font-size: 13px; }
-.cdx-plan .x-hd { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; color: var(--x-60); }
-.cdx-plan .x-hd:hover { color: var(--x-ink); }
-.cdx-plan .x-ti { flex: none; }
-.cdx-plan .x-pill { flex: none; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--x-hover); color: var(--x-60); }
-.cdx-plan .x-cur { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--x-45); }
-.cdx-plan ol { list-style: none; margin: 8px 0 0; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--x-line); border-radius: 10px; background: var(--x-ground); }
-.cdx-plan li { display: flex; align-items: flex-start; gap: 8px; color: var(--x-60); line-height: 1.45; }
-.cdx-plan li svg { flex: none; margin-top: 2px; color: var(--x-35); }
-.cdx-plan li.completed { color: var(--x-45); text-decoration: line-through; text-decoration-color: var(--x-35); }
-.cdx-plan li.completed svg { color: var(--x-add); }
-.cdx-plan li.in_progress { color: var(--x-ink); }
-.cdx-plan li.in_progress svg { color: var(--text-1); }
+/* above the composer while a turn runs: the plan as a pill that lists its steps on hover */
+.cdx-live { display: flex; justify-content: center; align-items: center; height: 32px; flex: none; }
+.cdx-plan-pill { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 999px;
+  font-size: 12.5px; color: var(--x-60); background: color-mix(in srgb, var(--text-1) 5%, transparent); cursor: default; outline: none; }
+.cdx-plan-pill:hover, .cdx-plan-pill:focus-visible { color: var(--x-ink); }
+.cdx-plan-pill .x-ring { flex: none; transform: rotate(-90deg); }
+.cdx-plan-pill .x-ring circle { fill: none; stroke-width: 2; }
+.cdx-plan-pill .x-track { stroke: color-mix(in srgb, var(--text-1) 15%, transparent); }
+.cdx-plan-pill .x-done { stroke: #339cff; stroke-linecap: round; transition: stroke-dashoffset .4s ease; }
+.cdx-plan-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; z-index: 20; width: max-content; max-width: min(24rem, calc(100vw - 32px));
+  padding: 10px 14px; border-radius: 12px; background: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .18), 0 0 0 1px var(--x-line);
+  opacity: 0; transform: translate(-50%, 4px); pointer-events: none; transition: opacity .15s ease-out, transform .15s ease-out; }
+.cdx-plan-pop.open { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.cdx-plan-pop ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-width: 320px; max-height: 280px; overflow-y: auto; scrollbar-width: thin; }
+.cdx-plan-pop li { display: flex; align-items: flex-start; gap: 8px; max-width: 288px; font-size: 13px; line-height: 18px; color: color-mix(in srgb, var(--text-1) 65%, transparent); }
+.cdx-plan-pop li svg { flex: none; margin-top: 2px; }
+.cdx-plan-pop li.completed { color: var(--x-45); }
+.cdx-plan-pop li.completed svg { color: #339cff; }
+.cdx-plan-pop li.in_progress { color: var(--x-ink); }
+
+/* the agent's question, in place of the composer */
+.nt-compose-slot { display: contents; }
+.nt-compose-slot[hidden] { display: none; }
+.cdx-reqs { flex: none; }
+.cdx-req { display: flex; flex-direction: column; overflow: hidden; border-radius: 20px; outline: none; container: request-card / inline-size;
+  background: color-mix(in srgb, var(--text-1) 5%, var(--canvas)); box-shadow: 0 8px 24px rgba(0, 0, 0, .12), 0 0 0 1px var(--x-line); }
+.cdx-req:focus-visible { box-shadow: 0 8px 24px rgba(0, 0, 0, .12), 0 0 0 2px color-mix(in srgb, var(--text-1) 30%, transparent); }
+.cdx-req .x-hd { display: flex; align-items: flex-start; gap: 8px; padding: 16px 12px 8px 16px; }
+.cdx-req .x-ti { flex: 1; min-width: 0; font-size: 13px; line-height: 20px; font-weight: 500; color: var(--x-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cdx-req .x-pager { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 20px; font-size: 12px; color: var(--x-60); }
+.cdx-req .x-ib { flex: none; width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 6px; color: var(--x-60); }
+.cdx-req .x-ib:hover:not(:disabled) { background: var(--x-hover); color: var(--x-ink); }
+.cdx-req .x-ib:disabled { opacity: .35; cursor: default; }
+.cdx-req .x-body { display: flex; flex-direction: column; padding-bottom: 8px; animation: cdx-fade .3s ease; }
+@keyframes cdx-fade { from { opacity: 0; } to { opacity: 1; } }
+.cdx-req .x-opts { display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
+.cdx-req .x-opt { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 12px; background: none; text-align: left; color: var(--x-ink); }
+.cdx-req .x-opt:hover:not(:disabled), .cdx-req .x-opt.on, .cdx-req button.x-opt:focus-visible { background: var(--x-hover); }
+.cdx-req .x-opt:disabled { cursor: default; }
+.cdx-req .x-mk { flex: none; width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 50%; border: 1px solid var(--x-line);
+  background: color-mix(in srgb, var(--text-1) 5%, transparent); font-size: 12px; color: var(--x-60); transition: background .18s, border-color .18s; }
+.cdx-req .x-flash .x-mk { background: var(--text-1); border-color: var(--text-1); }
+.cdx-req .x-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--canvas); }
+.cdx-req .x-lb { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cdx-req .x-l1 { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; line-height: 20px; font-weight: 500; }
+.cdx-req .x-badge { font-size: 12px; font-weight: 400; line-height: 16px; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-1) 5%, transparent); color: var(--x-60); }
+.cdx-req .x-desc { font-size: 12px; line-height: 18px; color: var(--x-45); }
+.cdx-req .x-go { flex: none; color: var(--x-45); opacity: 0; }
+.cdx-req .x-opt:hover .x-go, .cdx-req .x-opt.on .x-go, .cdx-req .x-opt:focus-visible .x-go { opacity: 1; }
+.cdx-req .x-other { border-radius: 16px; cursor: text; }
+.cdx-req .x-other:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-1) 25%, transparent); }
+.cdx-req .x-other textarea, .cdx-req .x-other input { flex: 1; min-width: 0; max-height: 128px; resize: none; border: 0; outline: none; background: none; padding: 4px 0;
+  font: inherit; font-size: 13px; line-height: 20px; color: var(--x-ink); }
+.cdx-req .x-free { padding: 0 16px; }
+.cdx-req .x-free textarea, .cdx-req .x-free input { width: 100%; box-sizing: border-box; resize: none; border: 1px solid var(--x-line); border-radius: 12px; outline: none;
+  background: transparent; padding: 8px 10px; font: inherit; font-size: 13px; line-height: 20px; color: var(--x-ink); }
+.cdx-req .x-free textarea:focus, .cdx-req .x-free input:focus { border-color: color-mix(in srgb, var(--text-1) 28%, transparent); }
+.cdx-req textarea::placeholder, .cdx-req input::placeholder { color: var(--x-45); }
+.cdx-req .x-acts { display: flex; justify-content: flex-end; padding: 6px 8px 0; }
+.cdx-req .btn.sm { flex: none; height: 28px; padding: 0 12px; border-radius: 999px; }
+.cdx-req .btn.x-outline { background: transparent; border: 1px solid color-mix(in srgb, var(--text-1) 16%, transparent); color: var(--x-ink); }
+.cdx-req .btn.x-outline:hover:not(:disabled) { background: var(--x-hover); }
+.cdx-req .btn.primary { background: var(--text-1); color: var(--canvas); border-color: transparent; }
 
 /* the files a turn changed */
 .cdx-changes { border: 1px solid var(--x-line); border-radius: 10px; overflow: hidden; font-size: 13px; }
@@ -186,12 +263,3 @@
 .cdx .nt-compose .line textarea { padding: 5px 4px; }
 .cdx .nt-compose .round { width: 30px; height: 30px; }
 .cdx .nt-qd { border-radius: 14px; }
-
-/* the agent's question: a quiet card like the others, the answer in ink rather than an accent */
-.cdx .nt-q { border: 1px solid var(--x-line); background: var(--x-ground); border-radius: 12px; }
-.cdx .nt-q .top, .cdx .nt-q .ic { color: var(--x-60); }
-.cdx .nt-q .opt { background: transparent; }
-.cdx .nt-q .opt:hover { border-color: color-mix(in srgb, var(--text-1) 22%, transparent); background: var(--x-hover); }
-.cdx .nt-q .other input:focus { border-color: color-mix(in srgb, var(--text-1) 28%, transparent); }
-.cdx .nt-q .btn.primary { background: var(--text-1); color: var(--canvas); border-color: transparent; }
-.cdx .nt-q.done { border: 0; background: none; padding: 0; }

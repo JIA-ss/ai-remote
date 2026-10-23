@@ -1,20 +1,22 @@
 // A Codex turn, laid out the way Codex's own desktop app shows one (lib/codex.ts has the structure):
-// the user's message on the right; the agent's work as quiet one-line units that open in place — a
-// command opens to its shell output, an edit to its diff with line numbers — with what the agent said
-// between them; "Worked for …" folding all of that once the answer starts; the answer; and the files
-// the turn changed, each opening to its diff. The look was studied from Codex's app; the components
-// are this project's own, on this app's Markdown, previews and question card.
+// the user's message on the right; "Working for …" over a hairline once the work starts; the agent's
+// work as quiet one-line units that open in place — a command opens to its shell output, an edit to
+// its diff with line numbers — with what the agent said between them; a line saying what it is at
+// while nothing else does (its reasoning's title, or "Thinking"); the work folding behind "Worked for
+// …" once the answer starts; the answer; and the files the turn changed, each opening to its diff.
+// Questions are asked in a card in place of the composer (CodexRequestCard) and stay here as one
+// "Asked" line once answered. The look was studied from Codex's app; the components are this
+// project's own, on this app's Markdown and previews.
 
-import { ChevronRight, CircleCheck, Circle, CircleDot, FileDiff, ListTodo, Play } from "lucide-react";
+import { ChevronRight, CircleCheck, FileDiff, MessageCircleQuestion, Play } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { baseName, type PlanEntry, type ThoughtBlock, type ToolItem, type Turn } from "../../lib/chat";
+import { baseName, type QuestionBlock, type ToolItem, type Turn } from "../../lib/chat";
 import {
   activeAct,
   codexTurn,
-  duration,
-  elapsed,
+  durationA,
+  durationB,
   groupSummary,
-  planStep,
   filePatch,
   relPath,
   workedMs,
@@ -26,19 +28,53 @@ import {
   type Unit,
 } from "../../lib/codex";
 import { currentLang, t, type Key } from "../../lib/i18n";
-import { inlineText, parseInline } from "../../lib/markdown";
 import { cx } from "../util";
 import { CodeBlock, CopyButton, Highlighted, Markdown } from "../chat/Markdown";
 import { PreviewButton, TurnFiles } from "../chat/Preview";
-import { NoticeRow, QuestionCard, UserRow } from "../chat/Rows";
+import { NoticeRow, UserRow } from "../chat/Rows";
 
 const zh = () => currentLang() === "zh";
+/** The language durations are written in. */
+export const lang = () => (zh() ? "zh-CN" : "en");
 const plural = (key: string, n: number, vars: Record<string, string | number> = {}) => t(`${key}_${n === 1 ? "one" : "many"}` as Key, { n, ...vars });
 const toolRunning = (x: ToolItem) => x.status === "in_progress" || x.status === "pending";
 
-/** Text that shimmers while the agent works on it. */
+/** Text that shimmers all the time while it is on (a sub-agent at work, a secondary label). */
 function Shimmer({ children, on }: { children: ReactNode; on: boolean }) {
   return <span className={cx(on && "cdx-shimmer")}>{children}</span>;
+}
+
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Text the agent is at now: it rests in the dimmer color and, 600 ms after it shows and then every
+ * 4 s, a band of light sweeps over it once (Codex's cadenced shimmer; none with reduced motion).
+ */
+export function Cadenced({ children, on }: { children: ReactNode; on: boolean }) {
+  // Which sweep this is (a new one starts afresh even if the last never said it ended), and whether it runs.
+  const [n, setN] = useState(0);
+  const [sweep, setSweep] = useState(false);
+  useEffect(() => {
+    if (!on || reducedMotion()) return;
+    let timer = setTimeout(function next() {
+      setN((k) => k + 1);
+      setSweep(true);
+      timer = setTimeout(next, 4000);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [on]);
+  if (!on) return <>{children}</>;
+  return (
+    <span className="cdx-cad" data-sweep={sweep ? "" : undefined}>
+      <span className="x-base">{children}</span>
+      {/* The bright copy exists only while it sweeps (so find and copy see the text once). */}
+      {sweep && (
+        <span key={n} className="x-sweep" aria-hidden onAnimationEnd={(e) => e.target === e.currentTarget && setSweep(false)}>
+          <span className="x-hi">{children}</span>
+        </span>
+      )}
+    </span>
+  );
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -86,7 +122,7 @@ function ActLine({ label, live, failed, details, defaultOpen = false, className,
     <div className={cx("cdx-act", open && "open", live && "is-live", failed && "failed", className)}>
       <div className="x-hd">
         <button type="button" className="x-ln" onClick={() => can && setOpen((v) => !v)} aria-expanded={can ? open : undefined} disabled={!can}>
-          <span className="x-tx"><Shimmer on={!!live}>{label}</Shimmer></span>
+          <span className="x-tx"><Cadenced on={!!live}>{label}</Cadenced></span>
           {can && <Chevron open={open} />}
         </button>
         {trailing}
@@ -146,11 +182,11 @@ function execWords(info: ExecInfo, x: ToolItem, cwd: string | null): ReactNode {
       </span>
     ));
   }
-  const took = done ? elapsed(info.durationMs, zh()) : null;
+  const took = done ? durationA(info.durationMs, lang()) : null;
   return (
     <>
       <Verb k={!done ? "cdx_v_running" : x.stopped ? "cdx_v_stopped" : "cdx_v_ran"} /> <code className="x-cmd">{oneLine(info.command)}</code>
-      {took && <Detail> {t("cdx_in_time", { t: took })}</Detail>}
+      {took && <Detail> {t(x.stopped ? "cdx_after_time" : "cdx_in_time", { t: took })}</Detail>}
       {done && !x.stopped && info.exitCode !== null && info.exitCode !== 0 && <span className="x-bad"> · {t("cdx_exit_short", { n: info.exitCode })}</span>}
     </>
   );
@@ -221,12 +257,6 @@ function actWords(a: Act, cwd: string | null): ReactNode {
       return (
         <>
           <Verb k={toolRunning(a.tool) ? "cdx_v_calling" : a.tool.status === "failed" ? "cdx_v_failed" : "cdx_v_called"} /> <Detail><code className="x-cmd">{toolName(a.tool)}</code></Detail>
-        </>
-      );
-    case "thought":
-      return (
-        <>
-          <Verb k="cdx_thought" /> <Detail>{inlineText(parseInline(a.block.text.trim().split("\n")[0].replace(/^[#>\s*_]+|[*_]+$/g, "")))}</Detail>
         </>
       );
   }
@@ -346,8 +376,6 @@ function ActRow({ a, cwd }: { a: Act; cwd: string | null }): ReactNode {
     case "tool":
       return <ActLine label={actWords(a, cwd)} live={toolRunning(a.tool)} failed={a.tool.status === "failed" && !a.tool.stopped}
         details={hasToolDetails(a.tool) ? () => <ToolDetails x={a.tool} /> : null} />;
-    case "thought":
-      return <ActLine className="thought" label={actWords(a, cwd)} details={a.block.text.includes("\n") || a.block.text.length > 80 ? () => <Markdown text={a.block.text} className="cdx-thought-md" /> : null} />;
   }
 }
 
@@ -381,21 +409,45 @@ function summarySentence(acts: Act[]): ReactNode {
   );
 }
 
+/**
+ * A live label that holds for at least `ms` before the next one replaces it, so a quick run of calls
+ * does not flicker past; once not live (the summary) it changes at once.
+ */
+function useDwell(key: string, node: ReactNode, live: boolean, ms = 1000): ReactNode {
+  const [shown, setShown] = useState(() => ({ key, node, at: Date.now() }));
+  const latest = useRef({ key, node });
+  latest.current = { key, node };
+  useEffect(() => {
+    if (!live || key === shown.key) return;
+    const wait = shown.at + ms - Date.now();
+    if (wait <= 0) {
+      setShown({ key, node, at: Date.now() });
+      return;
+    }
+    const timer = setTimeout(() => setShown({ ...latest.current, at: Date.now() }), wait);
+    return () => clearTimeout(timer);
+  }, [key, live, shown]);
+  return !live || key === shown.key ? node : shown.node;
+}
+
 /** Tool calls in a row: one line naming what runs now, or what was done; opens to each call. */
-const GroupRow = memo(function GroupRow({ u, cwd }: { u: Extract<Unit, { kind: "group" }>; cwd: string | null }) {
-  const acts = u.acts.filter((a) => a.kind !== "thought");
+const GroupRow = memo(function GroupRow({ u, cwd, title }: { u: Extract<Unit, { kind: "group" }>; cwd: string | null;
+  /** The title of the agent's latest reasoning, said while no call runs. */
+  title: string | null }) {
+  const acts = u.acts;
+  const single = acts.length === 1 && !(acts[0].kind === "patch" && acts[0].files.length > 1);
+  // Live: the call running now; between calls, the reading the agent is in the middle of, its
+  // reasoning's title, or "Thinking".
+  const active = u.live ? activeAct(acts) : null;
+  const doing = active && (toolRunning(active.tool) || (active.kind === "exec" && active.info.explore)) ? active : null;
+  const liveKey = doing ? `a:${doing.key}:${toolRunning(doing.tool)}` : title ? `t:${title}` : "thinking";
+  const liveLabel = doing ? actWords(doing, cwd) : title ?? t("cdx_thinking");
+  const label = useDwell(liveKey, liveLabel, u.live && !single);
   // A single call is its own line, live or done (the line does not change component while it runs).
-  if (acts.length === 1 && !(acts[0].kind === "patch" && acts[0].files.length > 1)) return <ActRow a={acts[0]} cwd={cwd} />;
-  // Live: the call running now; between calls, the reading the agent is in the middle of, or "Thinking".
-  const active = u.live ? activeAct(u.acts) : null;
-  const label = !u.live
-    ? summarySentence(u.acts)
-    : active && active.kind !== "thought" && (toolRunning(active.tool) || (active.kind === "exec" && active.info.explore))
-      ? actWords(active, cwd)
-      : t("cdx_thinking");
+  if (single) return <ActRow a={acts[0]} cwd={cwd} />;
   const failed = acts.some((a) => a.tool.status === "failed" && !a.tool.stopped);
   return (
-    <ActLine className="group" label={label} live={u.live} failed={!u.live && failed}
+    <ActLine className="group" label={u.live ? label : summarySentence(acts)} live={u.live} failed={!u.live && failed}
       details={() => (
         <div className="cdx-list">
           {u.acts.map((a) => <ActRow key={a.key} a={a} cwd={cwd} />)}
@@ -403,12 +455,6 @@ const GroupRow = memo(function GroupRow({ u, cwd }: { u: Extract<Unit, { kind: "
       )} />
   );
 });
-
-function ThoughtRow({ block, live, now }: { block: ThoughtBlock; live: boolean; now: number }) {
-  const took = (live ? now : block.endedTs) - block.startedTs;
-  const label = live ? t("cdx_thinking") : took >= 1000 ? t("cdx_thought_for", { t: duration(took, zh()) }) : t("cdx_thought");
-  return <ActLine className="thought" label={label} live={live} details={block.text.trim() ? () => <Markdown text={block.text} className="cdx-thought-md" /> : null} />;
-}
 
 function AgentRow({ x }: { x: ToolItem }) {
   const out = x.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n").trim();
@@ -424,46 +470,36 @@ function AgentRow({ x }: { x: ToolItem }) {
   );
 }
 
-function PlanCard({ entries, live }: { entries: PlanEntry[]; live: boolean }) {
-  // Open while the turn runs, folded once it is done, unless the reader chose otherwise.
-  const [chosen, setChosen] = useState<boolean | null>(null);
-  const open = chosen ?? live;
-  const st = planStep(entries);
+/** Questions the agent asked (one request), once answered or closed: "Asked 2 questions", opening to each with its answer. */
+function AskedRow({ questions }: { questions: QuestionBlock[] }) {
   return (
-    <div className={cx("cdx-plan", open && "open")}>
-      <button type="button" className="x-hd" onClick={() => setChosen(!open)} aria-expanded={open}>
-        <ListTodo size={13} aria-hidden />
-        <span className="x-ti">{t("cdx_plan")}</span>
-        <span className="x-pill tnum">{st.done === st.total ? t("cdx_plan_done", { d: st.done, n: st.total }) : t("cdx_plan_step", { s: st.step, n: st.total })}</span>
-        {!open && st.current && st.done < st.total && <span className="x-cur">{st.current.content}</span>}
-        <Chevron open={open} />
-      </button>
-      <Reveal open={open}>
-        <ol>
-          {entries.map((e, i) => (
-            <li key={i} className={e.status}>
-              {e.status === "completed" ? <CircleCheck size={13} aria-hidden /> : e.status === "in_progress" ? <CircleDot size={13} aria-hidden /> : <Circle size={13} aria-hidden />}
-              <span>{e.content}</span>
-            </li>
-          ))}
-        </ol>
-      </Reveal>
-    </div>
+    <ActLine className="asked" label={<><Verb k="cdx_q_asked" /> <Detail>{plural("cdx_q_n", questions.length)}</Detail></>}
+      details={() => (
+        <div className="cdx-asked">
+          {questions.map((q) => {
+            const given = q.answers ?? (q.answer ? [q.answer] : []);
+            return (
+              <div key={q.qid} className="x-q">
+                <div className="x-qt">{q.prompt}</div>
+                <div className="x-qa">{given.length ? (q.secret ? "••••••" : given.join(", ")) : t("cdx_q_no_answer")}</div>
+              </div>
+            );
+          })}
+        </div>
+      )} />
   );
 }
 
-function UnitView({ u, cwd, now, readonly, onAnswer }: { u: Unit; cwd: string | null; now: number; readonly: boolean; onAnswer: (qid: string, text: string) => void }): ReactNode {
+function UnitView({ u, cwd, title }: { u: Unit; cwd: string | null; title: string | null }): ReactNode {
   switch (u.kind) {
     case "group":
-      return <GroupRow u={u} cwd={cwd} />;
+      return <GroupRow u={u} cwd={cwd} title={title} />;
     case "message":
       return <Markdown text={u.block.text} className={cx("cdx-md", u.streaming && "streaming")} />;
-    case "thought":
-      return <ThoughtRow block={u.block} live={u.live} now={now} />;
     case "agent":
       return <AgentRow x={u.tool} />;
-    case "question":
-      return <QuestionCard block={u.block} onAnswer={onAnswer} readonly={readonly} />;
+    case "asked":
+      return <AskedRow questions={u.questions} />;
     case "notice":
       if (u.code === "compacted") return <div className="cdx-divider"><span>{t("cdx_compacted")}</span></div>;
       return <NoticeRow level={u.level} code={u.code} text={u.text} />;
@@ -532,7 +568,7 @@ function ChangedFile({ f, cwd }: { f: FileChange; cwd: string | null }) {
 /** Folded turns, by session and turn, so a turn opened once stays open while the panel lives. */
 const opened = new Map<string, boolean>();
 
-export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, readonly, stopped, stopping = false, cwd, far, onAnswer, onContinue }: {
+export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, readonly, stopped, stopping = false, cwd, far, onContinue }: {
   turn: Turn;
   session: string;
   now: number;
@@ -543,69 +579,82 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
   stopping?: boolean;
   cwd: string | null;
   far: boolean;
-  onAnswer: (qid: string, text: string) => void;
   onContinue: () => void;
 }) {
   const v = useMemo(() => codexTurn(turn, cwd), [turn, cwd]);
   const key = `${session}:${turn.n}`;
   const [open, setOpen] = useState<boolean>(() => opened.get(key) ?? false);
   const folded = v.foldable && !open;
+  const running = turn.status === "running";
   const ms = workedMs(turn, now);
-  const time = duration(ms, zh());
+  const time = durationB(ms, lang());
   const answerText = v.answer?.block.text ?? "";
   const tokens = turn.usage?.output != null ? Math.round(((turn.usage.input ?? 0) + turn.usage.output) / 100) / 10 : null;
   const work = v.units;
   // The work folds by itself once the answer starts (at once); the reader's own clicks animate it.
   const byReader = useRef(false);
+  // A turn that starts while it is shown lets its "Working" line come in; a replayed one does not.
+  const appear = useRef(running);
   const toggle = () => {
     byReader.current = true;
     opened.set(key, !open);
     setOpen(!open);
   };
+  // "Working for 12s" over a hairline once the work starts, held still once the answer starts ("Worked
+  // for"); a stopped or failed turn says after how long.
+  const timer = stopping ? t("hc_st_stopping")
+    : v.status === "stopped" ? t("cdx_stopped_after", { t: time })
+      : v.status === "failed" ? t("cdx_failed_after", { t: time })
+        : v.status === "worked" || v.answer ? t("cdx_worked_for", { t: time })
+          : ms >= 1000 ? t("cdx_working_for", { t: time }) : t("cdx_working");
+  const divider = work.length > 0 || v.status === "stopped";
   return (
-    <section className={cx("cdx-turn", turn.status === "running" && "running", far && "far")} data-turn={turn.n}>
+    <section className={cx("cdx-turn", running && "running", far && "far")} data-turn={turn.n}>
       {turn.user && (
         <UserRow row={{ kind: "user", key: `u${turn.n}`, text: turn.user.text, by: turn.user.by, ts: turn.user.ts, steer: false, inputId: turn.user.inputId, attachments: turn.user.attachments }} />
       )}
-      {v.plan && <PlanCard entries={v.plan} live={turn.status === "running"} />}
-      {v.foldable && (
-        <div className="cdx-worked">
-          <button type="button" className="x-tg" onClick={toggle} aria-expanded={open}>
-            <span className="tnum">{t("cdx_worked_for", { t: time })}</span>
-            <Chevron open={open} />
-          </button>
+      {divider && (
+        <div className={cx("cdx-worked", appear.current && "x-new", v.status === "stopped" && "x-stop", v.status === "failed" && "x-fail")}>
+          {v.foldable ? (
+            <button type="button" className="x-tg" onClick={toggle} aria-expanded={open}>
+              <span className="tnum">{timer}</span>
+              <Chevron open={open} />
+            </button>
+          ) : (
+            <span className="x-tg tnum">{timer}</span>
+          )}
           <div className="x-rule" />
         </div>
       )}
       {/* What the user added to the running turn stays in view when the work folds (as in Codex). */}
       {folded && work.filter((u) => u.kind === "steer").map((u) => (
         <div key={u.key} className="cdx-unit" data-unit={u.kind}>
-          <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
+          <UnitView u={u} cwd={cwd} title={v.title} />
         </div>
       ))}
       {work.length > 0 && (
         <Reveal open={!folded} className="cdx-work" quiet={!byReader.current}>
           {work.map((u) => (
             <div key={u.key} className="cdx-unit" data-unit={u.kind}>
-              <UnitView u={u} cwd={cwd} now={now} readonly={readonly} onAnswer={onAnswer} />
+              <UnitView u={u} cwd={cwd} title={v.title} />
             </div>
           ))}
         </Reveal>
       )}
-      {v.thinking && !stopping && <div className="cdx-thinking"><Shimmer on>{t("cdx_thinking")}</Shimmer></div>}
-      {v.status === "working" && (stopping || !v.answer) && (
-        <div className="cdx-status tnum" aria-live="polite">
-          {stopping ? t("hc_st_stopping") : v.asking ? t("cdx_waiting_answer") : ms >= 1000 ? t("cdx_working_for", { t: time }) : t("cdx_working")}
-        </div>
-      )}
+      {running && (v.asking ? (
+        <div className="cdx-thinking x-ask"><MessageCircleQuestion size={14} aria-hidden /><span>{t("cdx_waiting_answer")}</span></div>
+      ) : stopping ? (
+        !divider && <div className="cdx-thinking">{t("hc_st_stopping")}</div>
+      ) : v.thinking && (
+        <div className="cdx-thinking"><Cadenced on>{v.title ?? t("cdx_thinking")}</Cadenced></div>
+      ))}
       {v.answer && <Markdown text={answerText} className={cx("cdx-md cdx-answer", v.answer.streaming && "streaming")} />}
-      {v.status === "stopped" && <div className="cdx-divider x-stop"><span className="tnum">{t("cdx_stopped_after", { t: time })}</span></div>}
       {v.status === "failed" && (
         <NoticeRow level="error" code="failed" text={turn.reason ? `${t("hc_failed")}: ${turn.reason}` : t("hc_failed")} />
       )}
       {v.changes.length > 0 && <ChangesCard files={v.changes} cwd={cwd} />}
-      {turn.status !== "running" && <TurnFiles turn={turn} />}
-      {turn.status !== "running" && (stopped && !readonly ? (
+      {!running && <TurnFiles turn={turn} />}
+      {!running && (stopped && !readonly ? (
         <div className="nt-stopped">
           <span>{turn.reason ? `${t("hc_stopped_lede")} ${turn.reason}` : t("hc_stopped_lede")}</span>
           <button type="button" className="btn sm" onClick={onContinue}>
@@ -616,7 +665,6 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
       ) : (answerText || tokens != null) && (
         <div className="cdx-foot">
           {answerText && <CopyButton text={answerText} label={t("cdx_copy_response")} />}
-          {!v.foldable && v.status === "worked" && <span className="x-meta tnum">{t("cdx_worked_for", { t: time })}</span>}
           {tokens != null && <span className="x-meta tnum">{t("hc_tokens", { n: tokens })}</span>}
         </div>
       ))}

@@ -6,7 +6,9 @@ the host's Codex adapter sends (initialize, thread/start and /resume, skills/lis
 
   EXPLORE  reasoning, a remark, a search, a read and a listing, a failing command, an edit of two files
            (one new) that it really writes, a passing command, a web search, plan updates, the answer
-  ASK      asks the user (item/tool/requestUserInput) and answers with the choice
+  ASK      asks the user two questions in one request (item/tool/requestUserInput: one with options,
+           descriptions and room for another answer, one plain) and answers with what it got
+  RESOLVED asks a question, then closes it itself (serverRequest/resolved) and goes on
   SLOW     runs `sleep 30` until Stop; a message sent meanwhile (turn/steer) is acknowledged
   STEERME  runs a command until a message is sent meanwhile (up to 20 s), takes it, and answers
   FAIL     the provider refuses: an `error` notification, then the turn fails
@@ -83,12 +85,18 @@ def message(mid, text, phase="final_answer", chunk=24, delay=0.03, late=False):
 
 
 def reasoning(rid, summary):
+    """Reasoning as Codex streams it: a summary part per paragraph (and raw reasoning text, which
+    clients do not show)."""
+    parts = summary.split("\n\n")
     item_started({"type": "reasoning", "id": rid, "summary": [], "content": []})
-    for i in range(0, len(summary), 20):
-        note("item/reasoning/summaryTextDelta", {"itemId": rid, "delta": summary[i:i + 20], "summaryIndex": 0})
-        if not pause(0.02):
-            return False
-    item_completed({"type": "reasoning", "id": rid, "summary": [summary], "content": []})
+    for k, part in enumerate(parts):
+        note("item/reasoning/summaryPartAdded", {"itemId": rid, "summaryIndex": k})
+        for i in range(0, len(part), 20):
+            note("item/reasoning/summaryTextDelta", {"itemId": rid, "delta": part[i:i + 20], "summaryIndex": k})
+            if not pause(0.02):
+                return False
+        note("item/reasoning/textDelta", {"itemId": rid, "delta": "RAW REASONING, NOT SHOWN ", "contentIndex": 0})
+    item_completed({"type": "reasoning", "id": rid, "summary": parts, "content": ["RAW REASONING, NOT SHOWN"]})
     return True
 
 
@@ -212,7 +220,7 @@ All 5 tests pass."""
 def explore(n):
     k = lambda x: f"{x}{n}"
     cwd = state["cwd"]
-    if not reasoning(k("r"), "**Locating the date math**\n\nThe error says the day is out of range, so the quarter end is probably built with a fixed day."):
+    if not reasoning(k("r"), "**Locating the date math**\n\nThe error says the day is out of range, so the quarter end is probably built with a fixed day.\n\n**Reading the export code**"):
         return end("interrupted")
     if not message(k("m"), "I'll find where the quarter end is computed, then reproduce the crash.", "commentary"):
         return end("interrupted")
@@ -255,21 +263,38 @@ def explore(n):
 
 
 def ask(n):
-    if not message(f"m{n}", "Before I change anything I need one decision.", "commentary"):
+    if not message(f"m{n}", "Before I change anything I need two decisions.", "commentary"):
         return end("interrupted")
     answered.clear()
     answers.clear()
     rid = state["next_id"] = state["next_id"] + 1
     send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
-        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}",
-        "questions": [{"id": "scope", "header": "Scope", "question": "Should I fix report/monthly.py too?", "isOther": True, "isSecret": False,
-                       "options": [{"label": "Fix it too", "description": "Same bug, same fix"}, {"label": "Only export.py", "description": "Keep the change small"}]}]}})
+        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": True,
+        "questions": [
+            {"id": "scope", "header": "Scope", "question": "Should I fix report/monthly.py too?", "isOther": True, "isSecret": False,
+             "options": [{"label": "Fix it too (Recommended)", "description": "Same bug, same fix"},
+                         {"label": "Only export.py", "description": "Keep the change small"}]},
+            {"id": "tests", "header": "Tests", "question": "Add a test for every quarter?", "isOther": False, "isSecret": False,
+             "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]}]}})
     state["asking"] = rid
     while not answered.wait(0.2):
         if interrupted.is_set():
             return end("interrupted")
-    choice = (answers.get("scope") or {}).get("answers", ["?"])[0]
-    if not message(f"a{n}", f"Going with **{choice}**. Nothing else needed changing.", "final_answer"):
+    got = lambda q: ", ".join((answers.get(q) or {}).get("answers", [])) or "no answer"
+    if not message(f"a{n}", f"Going with **{got('scope')}**; tests: {got('tests')}. Answered: {', '.join(sorted(answers)) or 'none'}.", "final_answer"):
+        return end("interrupted")
+    end()
+
+
+def resolved(n):
+    rid = state["next_id"] = state["next_id"] + 1
+    send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
+        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": False,
+        "questions": [{"id": "name", "header": "Name", "question": "What should the report be called?", "isOther": False, "isSecret": False, "options": None}]}})
+    if not pause(2.5):
+        return end("interrupted")
+    note("serverRequest/resolved", {"requestId": rid})
+    if not message(f"a{n}", "No answer came, so I kept the name **report.csv**.", "final_answer"):
         return end("interrupted")
     end()
 
@@ -407,7 +432,7 @@ def short(n):
     end()
 
 
-SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact),
+SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact), ("RESOLVED", resolved),
            ("REEDIT", reedit), ("BADPATCH", badpatch), ("LATEPHASE", latephase)]
 
 

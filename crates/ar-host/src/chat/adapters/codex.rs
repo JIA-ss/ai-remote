@@ -6,8 +6,15 @@
 //!
 //! - Bypass: the thread starts with `approvalPolicy: "never"` and `sandbox: "danger-full-access"`;
 //!   approval requests that still come are accepted.
-//! - `item/tool/requestUserInput` (the agent asks the user) becomes question events; the answers
-//!   go back when every question has one.
+//! - `item/tool/requestUserInput` (the agent asks the user) becomes question events carrying the
+//!   request they belong to; the answers go back when every question of the request has one (an
+//!   empty answer skips it and is left out of the reply), and a `question_done` event says how the
+//!   request ended: answered, skipped, resolved by Codex (`serverRequest/resolved`, or the turn
+//!   ended) or dismissed (the turn was stopped). Several requests can wait at once. Codex only lets
+//!   the model ask outside plan mode with `features.default_mode_request_user_input`, which the
+//!   adapter turns on (0.137 and 0.150 have it; a Codex that does not know a feature ignores it).
+//! - Reasoning: only its summary is shown (as Codex's own app does), one paragraph per summary
+//!   part; the raw reasoning text is left out.
 //! - A model the account cannot use fails every turn with an `error` notification before
 //!   `turn/completed`; its message becomes the turn's reason, so the user sees why and can pick
 //!   another model.
@@ -54,7 +61,25 @@ pub struct Opts {
 }
 
 pub fn args(_l: &super::Launch<'_>) -> Vec<String> {
-    vec!["app-server".into()]
+    vec!["-c".into(), "features.default_mode_request_user_input=true".into(), "app-server".into()]
+}
+
+/// A question request waiting for answers.
+#[derive(Debug)]
+struct Asking {
+    /// Its JSON-RPC id, and that id as the events name it.
+    id: Value,
+    request: String,
+    qids: Vec<String>,
+    answers: HashMap<String, String>,
+}
+
+/// How a JSON-RPC id is named in events.
+fn request_name(id: &Value) -> String {
+    match id {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// What a request we sent was for.
@@ -87,8 +112,8 @@ struct State {
     streamed: HashSet<String>,
     final_text: Option<String>,
     last_error: Option<String>,
-    /// A question request waiting for answers: its JSON-RPC id, the question ids and the answers so far.
-    asking: Option<(Value, Vec<String>, HashMap<String, String>)>,
+    /// Question requests waiting for answers, oldest first.
+    asking: Vec<Asking>,
     /// A turn was asked for and has no id yet.
     starting: bool,
     /// Steers waiting for that id.
@@ -219,20 +244,9 @@ pub async fn run(
                     }
                 },
                 Some(LiveCmd::Answer { qid, text }) => {
-                    let mut reply = None;
-                    if let Some((id, qids, answers)) = st.asking.as_mut() {
-                        if qids.contains(&qid) {
-                            answers.insert(qid, text);
-                        }
-                        if qids.iter().all(|q| answers.contains_key(q)) {
-                            let map: serde_json::Map<String, Value> =
-                                answers.iter().map(|(k, v)| (k.clone(), json!({"answers": [v]}))).collect();
-                            reply = Some(jsonrpc::response(id, json!({"answers": map})));
-                        }
-                    }
-                    if let Some(r) = reply {
-                        st.asking = None;
-                        let _ = proc.write_line(r).await;
+                    if let Some((reply, done)) = answer(&mut st, qid, text) {
+                        let _ = proc.write_line(reply).await;
+                        report(&out, Out::Ev(done)).await;
                     }
                 }
                 Some(LiveCmd::Shutdown { done }) => {
@@ -247,6 +261,26 @@ pub async fn run(
             },
         }
     }
+}
+
+/// Records the answer to question `qid` (of the latest request still waiting for it); once every
+/// question of that request has one, the reply to write and the event saying it is over.
+fn answer(st: &mut State, qid: String, text: String) -> Option<(String, Ev)> {
+    let i = st.asking.iter().rposition(|a| a.qids.contains(&qid) && !a.answers.contains_key(&qid))?;
+    let a = &mut st.asking[i];
+    a.answers.insert(qid, text.trim().to_string());
+    if !a.qids.iter().all(|q| a.answers.contains_key(q)) {
+        return None;
+    }
+    let a = st.asking.remove(i);
+    let given: std::collections::BTreeMap<String, Vec<String>> =
+        a.answers.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k, vec![v])).collect();
+    let map: serde_json::Map<String, Value> = given.iter().map(|(k, v)| (k.clone(), json!({"answers": v}))).collect();
+    let how = if given.is_empty() { "skipped" } else { "answered" };
+    Some((
+        jsonrpc::response(&a.id, json!({"answers": map})),
+        Ev::QuestionDone { request: a.request, answers: given, how: how.into() },
+    ))
 }
 
 /// A steer for the running turn: the request to write, nothing yet (waiting for the turn id), or
@@ -424,26 +458,39 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     writes.push(jsonrpc::response(&id, json!({"action": "decline", "content": null})))
                 }
                 "item/tool/requestUserInput" => {
+                    let request = request_name(&id);
                     let mut qids = Vec::new();
                     for q in params["questions"].as_array().into_iter().flatten() {
                         let qid = q["id"].as_str().unwrap_or("").to_string();
-                        let header = q["header"].as_str().unwrap_or("");
-                        let question = q["question"].as_str().unwrap_or("");
-                        let prompt =
-                            if header.is_empty() { question.to_string() } else { format!("{header}: {question}") };
-                        let options = q["options"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|o| o["label"].as_str().map(str::to_string))
+                        let header = q["header"].as_str().map(str::trim).filter(|h| !h.is_empty()).map(str::to_string);
+                        let opts = q["options"].as_array().map(Vec::as_slice).unwrap_or_default();
+                        let options = opts.iter().filter_map(|o| o["label"].as_str().map(str::to_string)).collect();
+                        let mut descriptions: Vec<String> = opts
+                            .iter()
+                            .filter(|o| o["label"].is_string())
+                            .map(|o| o["description"].as_str().unwrap_or("").trim().to_string())
                             .collect();
+                        if descriptions.iter().all(String::is_empty) {
+                            descriptions.clear();
+                        }
                         qids.push(qid.clone());
-                        outs.push(Out::Ev(Ev::Question { qid, prompt, options }));
+                        outs.push(Out::Ev(Ev::Question {
+                            qid,
+                            prompt: q["question"].as_str().unwrap_or("").to_string(),
+                            options,
+                            request: Some(request.clone()),
+                            item_id: params["itemId"].as_str().map(str::to_string),
+                            header,
+                            descriptions,
+                            other: q["isOther"] == true,
+                            secret: q["isSecret"] == true,
+                            blocking: params["isBlocking"].as_bool(),
+                        }));
                     }
                     if qids.is_empty() {
                         writes.push(jsonrpc::response(&id, json!({"answers": {}})));
                     } else {
-                        st.asking = Some((id, qids, HashMap::new()));
+                        st.asking.push(Asking { id, request, qids, answers: HashMap::new() });
                     }
                 }
                 other => writes.push(jsonrpc::unsupported(&id, other)),
@@ -467,10 +514,27 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
             let phase = st.phases.get(&id).cloned();
             outs.push(Out::Ev(Ev::Message { id, text: p["delta"].as_str().unwrap_or("").into(), delta: true, phase }));
         }
-        "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
+        "item/reasoning/summaryTextDelta" => {
             let id = p["itemId"].as_str().unwrap_or("").to_string();
             st.streamed.insert(id.clone());
             outs.push(Out::Ev(Ev::Thought { id, text: p["delta"].as_str().unwrap_or("").into(), delta: true }));
+        }
+        // A new paragraph of the summary.
+        "item/reasoning/summaryPartAdded" => {
+            let id = p["itemId"].as_str().unwrap_or("").to_string();
+            if p["summaryIndex"].as_u64().unwrap_or(0) > 0 && st.streamed.contains(&id) {
+                outs.push(Out::Ev(Ev::Thought { id, text: "\n\n".into(), delta: true }));
+            }
+        }
+        "serverRequest/resolved" => {
+            if let Some(i) = st.asking.iter().position(|a| a.id == p["requestId"]) {
+                let a = st.asking.remove(i);
+                outs.push(Out::Ev(Ev::QuestionDone {
+                    request: a.request,
+                    answers: Default::default(),
+                    how: "resolved".into(),
+                }));
+            }
         }
         "item/started" => {
             if p["item"]["type"] == "commandExecution"
@@ -588,6 +652,15 @@ fn notification(st: &mut State, method: &str, p: &Value, writes: &mut Vec<String
                 "interrupted" => TurnStatus::Interrupted,
                 _ => TurnStatus::Failed,
             };
+            // Questions still waiting end with their turn.
+            for a in std::mem::take(&mut st.asking) {
+                let how = if status == TurnStatus::Interrupted { "dismissed" } else { "resolved" };
+                outs.push(Out::Ev(Ev::QuestionDone {
+                    request: a.request,
+                    answers: Default::default(),
+                    how: how.into(),
+                }));
+            }
             let commands = std::mem::take(&mut st.commands);
             if status == TurnStatus::Interrupted
                 && !commands.is_empty()
@@ -722,7 +795,7 @@ fn item_completed(st: &mut State, item: &Value, outs: &mut Vec<Out>) {
         "reasoning" => {
             let text: Vec<&str> = item["summary"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             if !st.streamed.contains(&id) && !text.is_empty() {
-                outs.push(Out::Ev(Ev::Thought { id, text: text.join("\n"), delta: false }));
+                outs.push(Out::Ev(Ev::Thought { id, text: text.join("\n\n"), delta: false }));
             }
         }
         "plan" => {
@@ -1340,10 +1413,136 @@ mod tests {
         let (w, o) = handle(&mut st, q, &opts(None));
         assert!(w.is_empty());
         assert!(matches!(&o[0], Out::Ev(Ev::Question { qid, options, .. }) if qid == "q1" && options.len() == 2));
-        assert!(st.asking.is_some());
+        assert_eq!(st.asking.len(), 1);
         let (w, _) =
             handle(&mut st, r#"{"id":9,"method":"account/chatgptAuthTokens/refresh","params":{}}"#, &opts(None));
         assert!(w[0].contains("-32601"));
+    }
+
+    fn ask(st: &mut State, id: Value, qs: Value) -> Vec<Out> {
+        let line = json!({"id": id, "method": "item/tool/requestUserInput",
+            "params": {"threadId": "th", "turnId": "t", "itemId": "call-1", "isBlocking": true, "questions": qs}});
+        handle(st, &line.to_string(), &opts(None)).1
+    }
+
+    #[test]
+    fn a_question_says_its_request_header_descriptions_and_whether_other_answers_are_welcome() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        let o = ask(
+            &mut st,
+            json!(8),
+            json!([
+                {"id": "scope", "header": "Scope", "question": "Fix monthly.py too?", "isOther": true,
+                 "options": [{"label": "Fix it too (Recommended)", "description": "Same bug"}, {"label": "Only export.py", "description": ""}]},
+                {"id": "token", "header": "", "question": "Your token?", "isSecret": true},
+            ]),
+        );
+        let Out::Ev(Ev::Question {
+            qid,
+            prompt,
+            options,
+            request,
+            item_id,
+            header,
+            descriptions,
+            other,
+            secret,
+            blocking,
+        }) = &o[0]
+        else {
+            panic!("{o:?}")
+        };
+        assert_eq!((qid.as_str(), prompt.as_str()), ("scope", "Fix monthly.py too?"), "the header is its own field");
+        assert_eq!(options, &["Fix it too (Recommended)", "Only export.py"]);
+        assert_eq!(descriptions, &["Same bug", ""]);
+        assert_eq!(
+            (request.as_deref(), item_id.as_deref(), header.as_deref()),
+            (Some("8"), Some("call-1"), Some("Scope"))
+        );
+        assert!(*other && !*secret && *blocking == Some(true));
+        let Out::Ev(Ev::Question { header, descriptions, other, secret, options, .. }) = &o[1] else { panic!() };
+        assert!(header.is_none() && descriptions.is_empty() && options.is_empty() && !*other && *secret);
+    }
+
+    #[test]
+    fn answers_go_back_per_request_without_the_skipped_ones() {
+        let mut st = State { thread: Some("th".into()), ready: true, ..Default::default() };
+        ask(&mut st, json!(8), json!([{"id": "a", "question": "A?"}, {"id": "b", "question": "B?"}]));
+        ask(&mut st, json!("req-9"), json!([{"id": "a", "question": "Again A?"}]));
+        assert_eq!(st.asking.len(), 2, "a second request does not replace the first");
+        // The later request's `a` first, then the earlier one's, skipping its `b`.
+        let (reply, done) = answer(&mut st, "a".into(), " yes ".into()).expect("the later request is complete");
+        assert!(
+            reply.contains(r#""id":"req-9""#) && reply.contains(r#""answers":{"a":{"answers":["yes"]}}"#),
+            "{reply}"
+        );
+        assert!(
+            matches!(&done, Ev::QuestionDone { request, how, answers } if request == "req-9" && how == "answered" && answers["a"] == ["yes"])
+        );
+        assert!(answer(&mut st, "a".into(), "first".into()).is_none(), "b is still open");
+        let (reply, done) = answer(&mut st, "b".into(), "  ".into()).unwrap();
+        assert!(reply.contains(r#""id":8"#) && reply.contains(r#""answers":{"a":{"answers":["first"]}}"#), "{reply}");
+        assert!(matches!(&done, Ev::QuestionDone { answers, .. } if !answers.contains_key("b")));
+        // Every answer empty: an empty reply, said to be skipped.
+        ask(&mut st, json!(10), json!([{"id": "c", "question": "C?"}]));
+        let (reply, done) = answer(&mut st, "c".into(), "".into()).unwrap();
+        assert!(reply.contains(r#""answers":{}"#), "{reply}");
+        assert!(matches!(&done, Ev::QuestionDone { how, .. } if how == "skipped"));
+        assert!(st.asking.is_empty() && answer(&mut st, "c".into(), "late".into()).is_none());
+    }
+
+    #[test]
+    fn questions_codex_closes_or_its_turn_ends_on_are_over() {
+        let mut st = State { thread: Some("th".into()), turn: Some("t".into()), ready: true, ..Default::default() };
+        ask(&mut st, json!(8), json!([{"id": "a", "question": "A?"}]));
+        ask(&mut st, json!(9), json!([{"id": "b", "question": "B?"}]));
+        let (_, o) = handle(
+            &mut st,
+            r#"{"method":"serverRequest/resolved","params":{"threadId":"th","requestId":8}}"#,
+            &opts(None),
+        );
+        assert!(
+            matches!(&o[..], [Out::Ev(Ev::QuestionDone { request, how, .. })] if request == "8" && how == "resolved"),
+            "{o:?}"
+        );
+        let (_, o) = handle(
+            &mut st,
+            r#"{"method":"turn/completed","params":{"threadId":"th","turn":{"id":"t","status":"interrupted"}}}"#,
+            &opts(None),
+        );
+        assert!(
+            matches!(&o[0], Out::Ev(Ev::QuestionDone { request, how, .. }) if request == "9" && how == "dismissed"),
+            "{o:?}"
+        );
+        assert!(matches!(o.last(), Some(Out::TurnEnd { .. })));
+        assert!(st.asking.is_empty());
+    }
+
+    #[test]
+    fn only_the_reasoning_summary_shows_one_paragraph_per_part() {
+        let mut st = State { thread: Some("th".into()), turn: Some("t".into()), ready: true, ..Default::default() };
+        let mut thoughts = String::new();
+        for l in [
+            r#"{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"th","itemId":"r","summaryIndex":0}}"#,
+            r#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th","itemId":"r","delta":"**Reading**","summaryIndex":0}}"#,
+            r#"{"method":"item/reasoning/textDelta","params":{"threadId":"th","itemId":"r","delta":"raw chain of thought","contentIndex":0}}"#,
+            r#"{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"th","itemId":"r","summaryIndex":1}}"#,
+            r#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th","itemId":"r","delta":"**Writing**","summaryIndex":1}}"#,
+        ] {
+            for o in handle(&mut st, l, &opts(None)).1 {
+                if let Out::Ev(Ev::Thought { text, .. }) = o {
+                    thoughts.push_str(&text);
+                }
+            }
+        }
+        assert_eq!(thoughts, "**Reading**\n\n**Writing**");
+        // Not streamed: the parts joined the same way.
+        let (_, o) = handle(
+            &mut st,
+            r#"{"method":"item/completed","params":{"threadId":"th","item":{"type":"reasoning","id":"r2","summary":["**A**","**B**"],"content":["raw"]}}}"#,
+            &opts(None),
+        );
+        assert!(matches!(&o[..], [Out::Ev(Ev::Thought { text, .. })] if text == "**A**\n\n**B**"), "{o:?}");
     }
 
     #[test]

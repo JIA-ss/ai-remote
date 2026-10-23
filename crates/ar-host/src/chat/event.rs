@@ -8,6 +8,8 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -189,12 +191,40 @@ pub enum Ev {
     Plan {
         entries: Vec<PlanEntry>,
     },
-    /// The agent asks the user; answered with an `answer` command.
+    /// The agent asks the user; answered with an `answer` command (one per question).
     Question {
         qid: String,
         prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        /// Codex: the request the question belongs to (its questions are answered together; an
+        /// empty answer skips one), the item that asked, the question's short header, a description
+        /// per option (aligned with `options`, empty where it has none), whether a free answer is
+        /// welcome besides the options, whether it is a secret (typed but not shown), and whether
+        /// the turn waits on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        descriptions: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        other: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocking: Option<bool>,
+    },
+    /// A question request is over (Codex): `how` is `answered`, `skipped` (every answer empty),
+    /// `resolved` (Codex closed it, or its turn ended unanswered) or `dismissed` (its turn was
+    /// stopped); `answers` are the non-empty answers by question id.
+    QuestionDone {
+        request: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        answers: BTreeMap<String, Vec<String>>,
+        how: String,
     },
     Usage {
         #[serde(skip_serializing_if = "Option::is_none")]

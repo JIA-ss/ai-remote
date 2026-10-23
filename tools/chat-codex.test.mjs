@@ -134,10 +134,11 @@ const codexTurn = () => {
 test("a running turn: one group for the tool calls, the remark before it, nothing folded yet", () => {
   const c = fold(codexTurn());
   const v = codex.codexTurn(c.turns[0]);
-  assert.deepEqual(plain(v.units.map((u) => u.kind)), ["thought", "message", "group"]);
-  const g = v.units[2];
+  assert.deepEqual(plain(v.units.map((u) => u.kind)), ["message", "group"], "reasoning is not a step");
+  const g = v.units[1];
   assert.equal(g.live, true);
-  assert.deepEqual(plain(g.acts.map((a) => a.kind)), ["exec", "exec", "thought", "patch", "exec"]);
+  assert.deepEqual(plain(g.acts.map((a) => a.kind)), ["exec", "exec", "patch", "exec"], "nor does it split the group");
+  assert.equal(v.title, "day 31 is wrong", "its latest title is what the agent is at");
   assert.equal(codex.activeAct(g.acts).tool.callId, "c3");
   assert.equal(v.answer, null);
   assert.equal(v.foldable, false);
@@ -166,9 +167,12 @@ test("the answer folds the work away; the turn's changes close it", () => {
   assert.equal(v.answer.block.text, "Fixed: the last day.");
   assert.equal(v.answer.streaming, false);
   assert.deepEqual(plain(v.changes.map((f) => [f.path, f.add, f.del])), [["/w/export.py", 1, 1]]);
-  assert.equal(codex.workedMs(done.turns[0], 0), 83_000);
-  assert.equal(codex.duration(83_000), "1m 23s");
-  assert.equal(codex.duration(83_000, true), "1 分 23 秒");
+  // Worked until the answer started, not until the turn ended; held still whatever the time now.
+  const t1 = done.turns[0];
+  const answerAt = t1.blocks.find((b) => b.kind === "text" && b.id === "m2").startedTs;
+  assert.equal(codex.workedMs(t1, 0), answerAt - t1.startedTs);
+  assert.equal(codex.workedMs(fold(events).turns[0], 9e12), answerAt - t1.startedTs, "frozen once the answer streams");
+  assert.equal(codex.workedMs(fold(codexTurn()).turns[0], t1.startedTs + 5000), 5000, "counting while it works");
 });
 
 test("a stopped turn does not fold; a commentary is never the answer", () => {
@@ -369,4 +373,110 @@ test("turn_diff and the turn-closed flag fold into the chat state", () => {
   seq = 0;
   const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "turn_diff", diff: "diff --git a/x b/x\n", truncated: true })]);
   assert.deepEqual(plain(c.turns[0].diff), { text: "diff --git a/x b/x\n", truncated: true });
+});
+
+test("durations: a command's run time keeps every unit from its largest; the turn's leaves out zeros", () => {
+  assert.equal(codex.durationA(999, "en"), null);
+  assert.equal(codex.durationA(null, "en"), null);
+  assert.equal(codex.durationA(12_000, "en"), "12s");
+  assert.equal(codex.durationA(60_000, "en"), "1m 0s");
+  assert.equal(codex.durationA(3_603_000, "en"), "1h 0m 3s");
+  assert.equal(codex.durationA(90_061_000, "en"), "1d 1h 1m 1s");
+  assert.equal(codex.durationB(500, "en"), "0s");
+  assert.equal(codex.durationB(60_000, "en"), "1m");
+  assert.equal(codex.durationB(3_605_000, "en"), "1h 5s");
+  assert.equal(codex.durationB(83_000, "zh-CN"), "1分钟 23秒");
+  assert.equal(codex.durationA(12_000, "zh-CN"), "12秒");
+});
+
+test("the plan's step: the one in progress, else the first not done, else the last", () => {
+  const st = (...xs) => codex.planStep(xs.map((status, i) => ({ content: String(i), status }))).step;
+  assert.equal(st("completed", "pending", "completed"), 2);
+  assert.equal(st("completed", "completed", "in_progress"), 3);
+  assert.equal(st("completed", "completed"), 2);
+  assert.equal(st("pending", "pending"), 1);
+});
+
+test("reasoning titles: the summary's last line, bold or as plain text, comments left out", () => {
+  assert.equal(codex.reasoningTitle("**Reading the code**\n\nThe error is in export.py."), "The error is in export.py.");
+  assert.equal(codex.reasoningTitle("Some text\n\n**Writing the fix**\n"), "Writing the fix");
+  assert.equal(codex.reasoningTitle("**Planning**\n<!-- hidden -->"), "Planning");
+  assert.equal(codex.reasoningTitle("Use `calendar.monthrange` for *every* month"), "Use calendar.monthrange for every month");
+  assert.equal(codex.reasoningTitle("  \n "), null);
+});
+
+test("a compaction alone is not worth folding", () => {
+  seq = 0;
+  const c = fold([
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "notice", level: "info", code: "compacted", text: "Codex summarized the conversation" }),
+    ev(1, { t: "message", id: "a", text: "Still here.", delta: false, phase: "final_answer" }),
+    ev(1, { t: "turn_end", status: "completed", duration_ms: 10 }),
+  ]);
+  const v = codex.codexTurn(c.turns[0]);
+  assert.equal(v.answer.block.id, "a");
+  assert.equal(v.foldable, false);
+});
+
+test("questions: the latest request waits in its card, then shows as one 'Asked' line with its answers", () => {
+  seq = 0;
+  const q = (qid, request, extra = {}) => ev(1, { t: "question", qid, prompt: `${qid}?`, options: ["Yes (Recommended)", "No"], request, ...extra });
+  let c = fold([
+    ev(0, { t: "user", input_id: "u", by: { device: "d" }, text: "go" }),
+    ev(1, { t: "turn_start" }),
+    q("scope", "8", { header: "Scope", descriptions: ["Same bug", ""], other: true, blocking: true }),
+    q("tests", "8"),
+  ]);
+  const p = codex.pendingRequest(c);
+  assert.deepEqual(plain([p.request, p.questions.map((x) => x.qid)]), ["8", ["scope", "tests"]]);
+  assert.deepEqual(plain([p.questions[0].header, p.questions[0].descriptions, p.questions[0].other, p.questions[0].blocking]), ["Scope", ["Same bug", ""], true, true]);
+  let v = codex.codexTurn(c.turns[0]);
+  assert.equal(v.units.length, 0, "a waiting question is not in the transcript");
+  assert.equal(v.asking, true);
+  assert.equal(v.thinking, false);
+  // A second request asked meanwhile is the one shown.
+  c = chat.reduceChat(c, q("name", "9"));
+  assert.equal(codex.pendingRequest(c).request, "9");
+  // The answers come back from the host (the first request's second question skipped).
+  c = chat.reduceChat(c, ev(1, { t: "question_done", request: "8", answers: { scope: ["Yes (Recommended)"] }, how: "answered" }));
+  c = chat.reduceChat(c, ev(1, { t: "question_done", request: "9", how: "dismissed" }));
+  assert.equal(codex.pendingRequest(c), null);
+  v = codex.codexTurn(c.turns[0]);
+  assert.deepEqual(plain(v.units.map((u) => [u.kind, u.questions.map((x) => [x.qid, x.answers])])),
+    [["asked", [["scope", ["Yes (Recommended)"]], ["tests", []]]], ["asked", [["name", []]]]]);
+  assert.equal(c.turns[0].blocks.find((b) => b.qid === "name").how, "dismissed");
+  // An older host names no request: the turn's open questions are one, answered one by one.
+  seq = 0;
+  const old = fold([ev(1, { t: "turn_start" }), ev(1, { t: "question", qid: "q1", prompt: "A?" }), ev(1, { t: "question", qid: "q2", prompt: "B?" })]);
+  assert.deepEqual(plain(codex.pendingRequest(old).questions.map((x) => x.qid)), ["q1", "q2"]);
+  const answered = chat.markAnswered(chat.markAnswered(old, "q1", "a"), "q2", "");
+  assert.equal(codex.pendingRequest(answered), null);
+  const ended = chat.reduceChat(answered, ev(1, { t: "turn_end", status: "completed", duration_ms: 1 }));
+  assert.deepEqual(plain(codex.codexTurn(ended.turns[0]).units.map((u) => u.questions.length)), [2]);
+});
+
+test("an answer marks only its own request's question; the same id in an earlier turn keeps its answer", () => {
+  seq = 0;
+  let c = fold([
+    ev(1, { t: "turn_start" }), ev(1, { t: "question", qid: "scope", prompt: "?", request: "1" }),
+    ev(1, { t: "question_done", request: "1", answers: { scope: ["first"] }, how: "answered" }),
+    ev(1, { t: "turn_end", status: "completed", duration_ms: 1 }),
+    ev(2, { t: "turn_start" }), ev(2, { t: "question", qid: "scope", prompt: "?", request: "2" }),
+  ]);
+  c = chat.markAnswered(c, "scope", "second", "2");
+  assert.equal(c.turns[0].blocks[0].answers[0], "first");
+  assert.equal(c.turns[1].blocks[0].answer, "second");
+});
+
+test("an option's (Recommended) mark", () => {
+  assert.deepEqual(plain(codex.splitRecommended("Fix it too (Recommended)")), { label: "Fix it too", recommended: true });
+  assert.deepEqual(plain(codex.splitRecommended("Only export.py")), { label: "Only export.py", recommended: false });
+});
+
+test("a message remembers when it started", () => {
+  seq = 0;
+  const c = fold([ev(1, { t: "turn_start" }), ev(1, { t: "message", id: "m", text: "a", delta: true }), ev(1, { t: "message", id: "m", text: "b", delta: true })]);
+  const m = c.turns[0].blocks[0];
+  assert.equal(m.text, "ab");
+  assert.equal(m.startedTs, 1200);
 });

@@ -342,7 +342,6 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
                 now={turn.status === "running" ? now : 0}
                 readonly={readonly}
                 stopped={stopped === turn}
-                onAnswer={onAnswer}
                 onContinue={onContinue}
                 far={i < visible.length - 2}
               />

@@ -38,7 +38,7 @@ import {
   type RuntimesReport,
   type SessionInfo,
 } from "../lib/chat";
-import { isCodexRuntime } from "../lib/codex";
+import { isCodexRuntime, pendingRequest } from "../lib/codex";
 import { t } from "../lib/i18n";
 import { quoteText, rememberImages } from "../lib/chat-input";
 import { Search } from "lucide-react";
@@ -47,6 +47,8 @@ import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/Fol
 import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
+import { CodexLiveStrip, livePlan } from "./codex/CodexLiveStrip";
+import { CodexRequestCard, requestKey } from "./codex/CodexRequestCard";
 import { Icon } from "./Icon";
 import { cx } from "./util";
 
@@ -519,6 +521,18 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
     setChat((c) => markAnswered(c, qid, value));
     setFollow((n) => n + 1);
   }, [setChat]);
+  // Codex asks in a card in place of the composer; a request the reader closed (which stops the turn)
+  // is not asked again while the stop takes effect.
+  const pending = codex ? pendingRequest(chat) : null;
+  const pendingId = pending ? requestKey(host, target.session, pending) : null;
+  const [closed, setClosed] = useState<string | null>(null);
+  const asking = pending && pendingId !== closed ? pending : null;
+  const plan = codex && !asking ? livePlan(chat.turns) : null;
+  const onAnswers = (request: string | null, answers: Array<[string, string]>) => {
+    for (const [qid, text] of answers) sendRef.current({ answer: { qid, text } });
+    setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, request ?? undefined), c));
+    setFollow((n) => n + 1);
+  };
   const onContinue = useCallback(() => {
     sendRef.current(inputCommand(newId(), t("hc_continue_prompt")));
     setFollow((n) => n + 1);
@@ -562,7 +576,8 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
           <span className="nm">{agent}</span>
           {hello?.cwd ? <FolderLabel host={host} path={hello.cwd} className="cwd" /> : <span className="cwd" />}
         </div>
-        {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
+        {/* A Codex turn says itself how long it works (its "Working for" line). */}
+        {running && ph.since && !codex && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
         <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
           <Search size={14} />
@@ -606,6 +621,18 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
         cwd={hello?.cwd ?? null}
       />
       </PreviewProvider>
+      {plan && <CodexLiveStrip plan={plan} />}
+      {asking && pendingId && (
+        <div className="cdx-reqs">
+          <CodexRequestCard key={pendingId} req={asking} id={pendingId} readonly={readonly}
+            onSubmit={(answers) => onAnswers(asking.request, answers)}
+            onDismiss={() => {
+              setClosed(pendingId);
+              send({ interrupt: {} });
+            }} />
+        </div>
+      )}
+      <div className="nt-compose-slot" hidden={!!asking}>
       <Composer
         agent={agent}
         host={host}
@@ -631,6 +658,7 @@ export function Conversation({ host, target, onLeave }: { host: string; target: 
           send(inputCommand(newId(), text, "steer"));
         }}
       />
+      </div>
     </div>
   );
 }
