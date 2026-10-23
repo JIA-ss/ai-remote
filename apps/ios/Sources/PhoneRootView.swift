@@ -70,6 +70,10 @@ public struct PhoneRootView: View {
                                     ToolbarItem(placement: .primaryAction) { Button("配对电脑", systemImage: "plus") { store.pairSheet = true } }
                                 }
                             }
+                            #if os(iOS)
+                            .toolbarBackground(PhonePalette.canvas, for: .navigationBar)
+                            .toolbarBackground(.visible, for: .navigationBar)
+                            #endif
                             .modifier(PhoneSessionChrome(fullscreen: false))
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)

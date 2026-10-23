@@ -3001,3 +3001,4 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
 
 - 再同步 main 的桌面导航 / Claude 细节与诊断记录（1aefe9f），移动端 apps/ios、ar-mobile / controller / net / core、Cargo 与 vendor 相对 519eee1 均无变化；iPad 记录改放文末，避免并行工作反复争用文首插入点。
 - 本次 main 同步复查：Rust fmt / Clippy / TypeScript 通过；Rust 全量 439 过 / 9 忽略 / 0 失败，前端 375 项中 374 过 / 1 跳过。移动端源码与 519eee1 一致，当前原生复验沿用该源码。
+- 第三轮 519eee1 / CI 39998306949 的五项 iPad 原生验收通过，20 张截图齐全；业务链路、窄窗往返、四向全屏和同会话草稿均完成。逐图复核又发现浅色外观下非全屏左侧导航栏文字在远程黑底不可读，显式设置 canvas 导航栏背景（不动舞台 / 全屏 / 右侧），复验标题与时间可见性。
