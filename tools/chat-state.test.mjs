@@ -274,3 +274,123 @@ test("a session the host no longer has is recognized, other errors are not", () 
   assert.equal(chat.sessionGone("'chat_attach' requires level 'admin'"), false);
   assert.equal(chat.sessionGone("connection lost"), false);
 });
+
+// ---- The workspace's protocol additions (docs/agent-workspace.zh-CN.md §1): titles, Claude's
+// permission mode, permissions and plans to answer, questions in parts, `resolved`, diff hunks.
+
+const claudeTurn = () => {
+  seq = 0;
+  return [
+    ev(0, { t: "state", state: "running", queued: [] }),
+    ev(0, { t: "user", input_id: "u1", by: { device: "laptop" }, text: "build it" }),
+    ev(1, { t: "turn_start" }),
+    ev(1, { t: "tool_call", call_id: "k1", title: "Bash cargo build", kind: "execute", status: "in_progress", input: { command: "cargo build" } }),
+  ];
+};
+
+test("a title and the permission mode are the session's, not a turn's", () => {
+  seq = 0;
+  let c = fold([ev(0, { t: "mode", mode: "default" }), ev(0, { t: "title", title: "Fix the build", source: "agent" })]);
+  assert.deepEqual(plain(c.title), { text: "Fix the build", source: "agent" });
+  assert.equal(c.mode, "default");
+  assert.equal(c.turns.length, 0, "neither starts a turn");
+  c = chat.reduceChat(c, ev(0, { t: "mode", mode: "acceptEdits" }));
+  c = chat.reduceChat(c, ev(0, { t: "title", title: "Mine" }));
+  assert.equal(c.mode, "acceptEdits");
+  assert.deepEqual(plain(c.title), { text: "Mine", source: "agent" }, "a title without a source counts as the agent's");
+  assert.deepEqual(plain([chat.emptyChat().title, chat.emptyChat().mode, chat.emptyChat().requests]), [null, null, []]);
+});
+
+test("a permission waits beside its turn and leaves the turn's rows as they were", () => {
+  const before = fold(claudeTurn());
+  const c = chat.reduceChat(before, ev(1, { t: "permission", rid: "p1", tool: "Bash", kind: "execute", title: "cargo build", input: { command: "cargo build" },
+    reason: "not allowed by the rules", suggestions: ["session"], call_id: "k1" }));
+  assert.equal(c.turns[0], before.turns[0], "the turn object is untouched (no re-render)");
+  assert.deepEqual(plain(c.requests.map((r) => [r.kind, r.id, r.turn, r.tool, r.toolKind, r.callId, r.suggestions, r.resolved])),
+    [["permission", "p1", 1, "Bash", "execute", "k1", ["session"], null]]);
+  assert.deepEqual(plain(chat.openRequests(c).map((r) => r.id)), ["p1"]);
+  // The same request again (a replay) is not a second one.
+  const again = chat.reduceChat(c, ev(1, { t: "permission", rid: "p1", tool: "Bash" }));
+  assert.equal(again.requests.length, 1);
+});
+
+test("resolved settles a request; the first answer wins over this device's own mark", () => {
+  let c = fold([...claudeTurn(), ev(1, { t: "permission", rid: "p1", tool: "Bash", suggestions: [] }), ev(1, { t: "plan_review", rid: "p2", plan: "## Plan\n1. build" })]);
+  assert.deepEqual(plain(chat.openRequests(c).map((r) => [r.kind, r.id])), [["permission", "p1"], ["plan", "p2"]]);
+  // This device answered: the card leaves at once.
+  c = chat.markResolved(c, "p1", "allowed", 5000);
+  assert.deepEqual(plain(c.requests[0].resolved), { outcome: "allowed", ts: 5000 });
+  assert.deepEqual(plain(chat.openRequests(c).map((r) => r.id)), ["p2"]);
+  // Another device was first: the host's word replaces ours.
+  c = chat.reduceChat(c, ev(1, { t: "resolved", id: "p1", outcome: "denied", by: { device: "phone" } }));
+  assert.equal(c.requests[0].resolved.outcome, "denied");
+  assert.equal(c.requests[0].resolved.by, "phone");
+  // A local mark after the host settled it changes nothing.
+  assert.equal(chat.markResolved(c, "p1", "allowed_session"), c);
+  c = chat.reduceChat(c, ev(1, { t: "resolved", id: "p2", outcome: "allowed" }));
+  assert.equal(chat.openRequests(c).length, 0);
+  assert.equal(chat.markResolved(c, "nope", "denied"), c, "an unknown id is ignored");
+});
+
+test("what a turn still asked about falls away when it ends", () => {
+  let c = fold([...claudeTurn(), ev(1, { t: "permission", rid: "p1", tool: "Bash" }), ev(1, { t: "plan_review", rid: "p2", plan: "x" })]);
+  c = chat.reduceChat(c, ev(1, { t: "resolved", id: "p2", outcome: "allowed" }));
+  c = chat.reduceChat(c, ev(1, { t: "turn_end", status: "interrupted", duration_ms: 10 }));
+  assert.deepEqual(plain(c.requests.map((r) => [r.id, r.resolved.outcome])), [["p1", "cancelled"], ["p2", "allowed"]]);
+  // The host's own `resolved cancelled` afterwards is fine too.
+  c = chat.reduceChat(c, ev(1, { t: "resolved", id: "p1", outcome: "cancelled" }));
+  assert.equal(c.requests[0].resolved.outcome, "cancelled");
+});
+
+test("a question in parts keeps its parts; resolved answers it, cancelled does not", () => {
+  const parts = [
+    { header: "Config", question: "Which config?", options: [{ label: "debug" }, { label: "release", description: "optimized" }] },
+    { question: "Which targets?", options: [{ label: "linux" }, { label: "mac" }], multi: true },
+  ];
+  const c = fold([...claudeTurn(), ev(1, { t: "question", qid: "q1", prompt: "Which config?", options: ["debug", "release"], questions: parts })]);
+  const q = c.turns[0].blocks.find((b) => b.kind === "question");
+  assert.deepEqual(plain(q.questions), parts);
+  assert.equal(typeof q.seq, "number");
+  assert.deepEqual(plain(chat.openRequests(c).map((r) => [r.kind, r.qid, r.turn])), [["question", "q1", 1]]);
+  // Answered here: the parts' answers are kept for the receipt.
+  const mine = chat.markAnswered(c, "q1", "release", { "Which config?": "release", "Which targets?": "linux, mac" });
+  assert.deepEqual(plain(mine.turns[0].blocks.find((b) => b.kind === "question").answers), { "Which config?": "release", "Which targets?": "linux, mac" });
+  assert.equal(chat.openRequests(mine).length, 0);
+  // Answered on another device.
+  const there = chat.reduceChat(c, ev(1, { t: "resolved", id: "q1", outcome: "answered", by: { device: "phone" } }));
+  const tq = there.turns[0].blocks.find((b) => b.kind === "question");
+  assert.deepEqual(plain([tq.answered, tq.outcome]), [true, "answered"]);
+  // Cancelled: no longer open, but not shown as answered either.
+  const gone = chat.reduceChat(c, ev(1, { t: "resolved", id: "q1", outcome: "cancelled" }));
+  const gq = gone.turns[0].blocks.find((b) => b.kind === "question");
+  assert.deepEqual(plain([gq.answered, gq.outcome]), [false, "cancelled"]);
+  assert.equal(chat.openRequests(gone).length, 0);
+});
+
+test("an older host's question (no parts) keeps its old shape and is open while its turn runs", () => {
+  const c = fold([...claudeTurn(), ev(1, { t: "question", qid: "q", prompt: "Which?", options: ["a"] })]);
+  const q = c.turns[0].blocks.find((b) => b.kind === "question");
+  assert.deepEqual(plain(Object.keys(q).sort()), ["answered", "kind", "options", "prompt", "qid"]);
+  assert.equal(chat.openRequests(c).length, 1);
+  const ended = chat.reduceChat(c, ev(1, { t: "turn_end", status: "completed", duration_ms: 1 }));
+  assert.equal(chat.openRequests(ended).length, 0, "a finished turn waits for nothing");
+});
+
+test("a diff can carry hunks with real line numbers; the rest of the panel reads it as before", () => {
+  const hunks = [{ old_start: 40, old_lines: 3, new_start: 40, new_lines: 4, lines: [" a", "-b", "+B", "+C", " d"] }];
+  const c = fold([...claudeTurn(), ev(1, { t: "tool_call", call_id: "e1", title: "Edit src/a.rs", kind: "edit", status: "in_progress",
+    content: [{ type: "diff", path: "src/a.rs", old: "b", new: "B\nC" }] }),
+    ev(1, { t: "tool_update", call_id: "e1", status: "completed", content: [{ type: "diff", path: "src/a.rs", old: "b", new: "B\nC", hunks }] })]);
+  const e = c.turns[0].blocks.find((b) => b.kind === "tool" && b.callId === "e1");
+  assert.deepEqual(plain(e.content.at(-1).hunks), hunks);
+  assert.deepEqual(plain(chat.diffStat([e.content[0]])), { add: 2, del: 1 });
+});
+
+test("answer, permit and mode commands are what the host reads", () => {
+  assert.deepEqual(plain(chat.permitCommand("p3", "once")), { permit: { rid: "p3", decision: "once" } });
+  assert.deepEqual(plain(chat.permitCommand("p3", "deny", { message: "  not that folder " })), { permit: { rid: "p3", decision: "deny", message: "not that folder" } });
+  assert.deepEqual(plain(chat.permitCommand("p4", "once", { mode: "acceptEdits", message: " " })), { permit: { rid: "p4", decision: "once", mode: "acceptEdits" } });
+  assert.deepEqual(plain(chat.modeCommand("plan")), { mode: { mode: "plan" } });
+  assert.deepEqual(plain(chat.answerCommand("q2", "release")), { answer: { qid: "q2", text: "release" } });
+  assert.deepEqual(plain(chat.answerCommand("q2", "release", { "Which?": "release" })), { answer: { qid: "q2", text: "release", answers: { "Which?": "release" } } });
+});

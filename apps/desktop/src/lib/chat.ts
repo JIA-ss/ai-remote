@@ -26,6 +26,10 @@ export interface Caps {
   steer?: boolean;
   /** May take images with a message (for ACP agents, until the agent says otherwise). */
   images?: boolean;
+  /** The host asks before tools run (`permission` / `plan_review` events) and takes `permit` and `mode`. */
+  permissions?: boolean;
+  /** Questions carry several parts (`question.questions`) and answers come back per part. */
+  questions_multi?: boolean;
 }
 
 /** An agent installed on a host, as `chat_runtimes` reports it. */
@@ -65,7 +69,32 @@ export interface SessionInfo {
   seq: number;
 }
 
-export type ToolContent = { type: "text"; text: string } | { type: "diff"; path: string; old: string | null; new: string };
+/** One hunk of a diff with its real line numbers (Claude's `structuredPatch`, Codex's `@@` headers);
+ *  `lines` start with " ", "-" or "+" (a "\" line notes a missing newline). */
+export interface DiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: string[];
+}
+export type ToolContent = { type: "text"; text: string } | { type: "diff"; path: string; old: string | null; new: string; hunks?: DiffHunk[] };
+/** A choice of a question part; `description` says what picking it means. */
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+/** One part of a question (Claude's AskUserQuestion asks up to a few at once). */
+export interface QuestionItem {
+  header?: string;
+  question: string;
+  options: QuestionOption[];
+  multi?: boolean;
+}
+/** How a permission, plan or question was settled (`resolved` events). */
+export type Outcome = "allowed" | "allowed_session" | "denied" | "answered" | "cancelled";
+/** What the person decided on a permission or a plan (`permit` command). */
+export type PermitDecision = "once" | "session" | "deny";
 /** Where the agent says a message belongs (Codex): said between steps, or its answer to the turn. */
 export type MessagePhase = "commentary" | "final_answer";
 export interface PlanEntry {
@@ -82,7 +111,17 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
   | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean; exit_code?: number; duration_ms?: number }
   | { t: "plan"; entries: PlanEntry[] }
-  | { t: "question"; qid: string; prompt: string; options?: string[] }
+  | { t: "question"; qid: string; prompt: string; options?: string[]; questions?: QuestionItem[] }
+  /** The session's title (the agent's summary of the first message, or a name the user gave it). */
+  | { t: "title"; title: string; source?: "auto" | "agent" | "user" }
+  /** The agent wants to use a tool and its permission mode says to ask first. */
+  | { t: "permission"; rid: string; tool: string; kind?: ToolKind; title?: string; input?: unknown; reason?: string; suggestions?: string[]; call_id?: string }
+  /** The agent proposes a plan (Claude's ExitPlanMode) and asks how to go on. */
+  | { t: "plan_review"; rid: string; plan: string }
+  /** A permission, plan or question was answered (first answer wins) or fell away with its turn. */
+  | { t: "resolved"; id: string; outcome: Outcome; by?: { device: string } }
+  /** Claude's permission mode changed: `default`, `acceptEdits`, `plan` or `bypassPermissions`. */
+  | { t: "mode"; mode: string }
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
       cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
@@ -197,7 +236,30 @@ export interface ToolItem {
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
 export type TextBlock = { kind: "text"; id: string; text: string; phase?: MessagePhase };
-export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string };
+export type QuestionBlock = {
+  kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string;
+  /** The parts of a question from a host that asks several at once (with when it came, `seq`). */
+  questions?: QuestionItem[]; seq?: number;
+  /** The answers per part as sent, and how it was settled (`resolved`). */
+  answers?: Record<string, string>; outcome?: Outcome;
+};
+
+/** How a request was settled: the outcome, which device answered, and when. */
+export interface Resolution {
+  outcome: Outcome;
+  by?: string;
+  ts: number;
+}
+
+/**
+ * Something the agent waits on the person for, outside the turn's blocks so the turn's rows stay as
+ * they were: using a tool (`permission`) or going on with a plan (`plan`). `resolved` is null while
+ * it is open; the turn ending settles what is still open as cancelled.
+ */
+export type Request =
+  | { kind: "permission"; id: string; turn: number; seq: number; ts: number; tool: string; toolKind?: ToolKind; title?: string; input?: unknown;
+      reason?: string; suggestions: string[]; callId?: string; resolved: Resolution | null }
+  | { kind: "plan"; id: string; turn: number; seq: number; ts: number; plan: string; resolved: Resolution | null };
 
 /** One block of a turn, in the order it happened. */
 export type Block =
@@ -252,9 +314,19 @@ export interface Chat {
   images: boolean | null;
   /** The agent's last usage report, for the context ring's breakdown. */
   usage: Usage | null;
+  /** The session's title from its last `title` event (null: none came, show the first message). */
+  title: { text: string; source: string } | null;
+  /** Claude's permission mode from its last `mode` event (null: the host did not say). */
+  mode: string | null;
+  /** Permissions and plans the agent asked about, open and settled, in the order they came. */
+  requests: Request[];
 }
 
-export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null, usage: null });
+export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null, usage: null,
+  title: null, mode: null, requests: [] });
+
+/** Requests kept (settled ones are only the transcript's record of them). */
+export const MAX_REQUESTS = 200;
 
 /** Turns kept in memory; older ones are dropped from the panel (the host keeps the transcript). */
 export const MAX_TURNS = 200;
@@ -328,6 +400,27 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
         c.notices = [...c.notices.slice(-20), { level: e.level, code: e.code, text: e.text, ts: e.ts }];
       }
       return c;
+    case "title":
+      c.title = { text: e.title, source: e.source ?? "agent" };
+      return c;
+    case "mode":
+      c.mode = e.mode;
+      return c;
+    case "permission":
+    case "plan_review": {
+      // Kept beside the turn, not in its blocks: the turn's rows (and views built on them) stay as they were.
+      if (c.requests.some((r) => r.id === e.rid)) return c;
+      const req: Request = e.t === "permission"
+        ? { kind: "permission", id: e.rid, turn: e.turn, seq: e.seq, ts: e.ts, tool: e.tool, ...(e.kind ? { toolKind: e.kind } : {}),
+            ...(e.title ? { title: e.title } : {}), ...(e.input !== undefined ? { input: e.input } : {}), ...(e.reason ? { reason: e.reason } : {}),
+            suggestions: e.suggestions ?? [], ...(e.call_id ? { callId: e.call_id } : {}), resolved: null }
+        : { kind: "plan", id: e.rid, turn: e.turn, seq: e.seq, ts: e.ts, plan: e.plan, resolved: null };
+      c.requests = [...c.requests, req].slice(-MAX_REQUESTS);
+      return c;
+    }
+    case "resolved":
+      // The host's word settles it, over what this device marked on its own.
+      return resolve(c, e.id, { outcome: e.outcome, ...(e.by?.device ? { by: e.by.device } : {}), ts: e.ts }, true);
     default:
       break;
   }
@@ -376,7 +469,8 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       break;
     }
     case "question":
-      b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false });
+      b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false,
+        ...(e.questions?.length ? { questions: e.questions, seq: e.seq } : {}) });
       break;
     case "usage": {
       turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
@@ -400,6 +494,10 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
           b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, ...(e.status === "interrupted" ? { stopped: true } : {}) };
         }
       }
+      // What the turn still asked about falls away with it (a host says so with `resolved` too).
+      if (c.requests.some((r) => r.turn === e.turn && !r.resolved)) {
+        c.requests = c.requests.map((r) => (r.turn === e.turn && !r.resolved ? { ...r, resolved: { outcome: "cancelled", ts: e.ts } } : r));
+      }
       break;
     default:
       break;
@@ -407,13 +505,80 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
   return c;
 }
 
-/** Marks a question answered (the answer goes to the host separately). */
-export function markAnswered(prev: Chat, qid: string, answer?: string): Chat {
+/** Settles a request or a question: by the host (`resolved`, `force`), or by this device's own answer
+ *  before the host's word comes (which then does not undo what is already settled). */
+function resolve(c: Chat, id: string, res: Resolution, force = false): Chat {
+  const i = c.requests.findIndex((r) => r.id === id);
+  if (i >= 0) {
+    if (c.requests[i].resolved && !force) return c;
+    c.requests = c.requests.slice();
+    c.requests[i] = { ...c.requests[i], resolved: res };
+    return c;
+  }
+  const ti = c.turns.findIndex((t) => t.blocks.some((b) => b.kind === "question" && b.qid === id && (force || !b.outcome)));
+  if (ti < 0) return c;
+  c.turns = c.turns.slice();
+  const turn = c.turns[ti];
+  c.turns[ti] = {
+    ...turn,
+    blocks: turn.blocks.map((b) => (b.kind === "question" && b.qid === id
+      // Cancelled is not answered: a view without outcomes keeps showing it as it was.
+      ? { ...b, outcome: res.outcome, ...(res.outcome === "answered" ? { answered: true } : {}) } : b)),
+  };
+  return c;
+}
+
+/** Marks a permission, plan or question settled here, before the host's `resolved` arrives. */
+export function markResolved(prev: Chat, id: string, outcome: Outcome, ts = Date.now()): Chat {
+  const next = resolve({ ...prev }, id, { outcome, ts });
+  return next.requests === prev.requests && next.turns === prev.turns ? prev : next;
+}
+
+/** The requests and questions still waiting for an answer, oldest first (the card shows the first). */
+export function openRequests(chat: Chat): Array<Request | (QuestionBlock & { turn: number })> {
+  const out: Array<{ at: number; item: Request | (QuestionBlock & { turn: number }) }> = [];
+  for (const r of chat.requests) if (!r.resolved) out.push({ at: r.seq, item: r });
+  const live = chat.turns.filter((t) => t.status === "running");
+  for (const t of live) {
+    for (const b of t.blocks) {
+      // A question with no seq (an older host) sorts after what came with one.
+      if (b.kind === "question" && !b.answered && !b.outcome) out.push({ at: b.seq ?? Number.MAX_SAFE_INTEGER, item: { ...b, turn: t.n } });
+    }
+  }
+  return out.sort((a, b) => a.at - b.at).map((x) => x.item);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Answers to permissions, plans and questions; Claude's permission mode
+
+/** Answering a permission or a plan: once, for the session, or no (with what to do instead). A plan
+ *  approved with `mode` switches Claude to that mode. */
+export function permitCommand(rid: string, decision: PermitDecision, extra: { message?: string; mode?: string } = {}): {
+  permit: { rid: string; decision: PermitDecision; message?: string; mode?: string };
+} {
+  const message = extra.message?.trim();
+  return { permit: { rid, decision, ...(message ? { message } : {}), ...(extra.mode ? { mode: extra.mode } : {}) } };
+}
+
+/** Switching Claude's permission mode. */
+export function modeCommand(mode: string): { mode: { mode: string } } {
+  return { mode: { mode } };
+}
+
+/** Answering a question: `text` is the first part's answer (what an older host reads), `answers` all of them by question. */
+export function answerCommand(qid: string, text: string, answers?: Record<string, string>): {
+  answer: { qid: string; text: string; answers?: Record<string, string> };
+} {
+  return { answer: { qid, text, ...(answers && Object.keys(answers).length ? { answers } : {}) } };
+}
+
+/** Marks a question answered (the answer goes to the host separately); `answers` keeps each part's. */
+export function markAnswered(prev: Chat, qid: string, answer?: string, answers?: Record<string, string>): Chat {
   return {
     ...prev,
     turns: prev.turns.map((t) =>
       t.blocks.some((b) => b.kind === "question" && b.qid === qid)
-        ? { ...t, blocks: t.blocks.map((b) => (b.kind === "question" && b.qid === qid ? { ...b, answered: true, answer } : b)) }
+        ? { ...t, blocks: t.blocks.map((b) => (b.kind === "question" && b.qid === qid ? { ...b, answered: true, answer, ...(answers ? { answers } : {}) } : b)) }
         : t,
     ),
   };

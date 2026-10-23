@@ -39,7 +39,8 @@
   }
   const composer = () => $(".nt-compose textarea");
   const running = () => !!$(".nt-compose .round.stop");
-  const turns = () => $$(".nt-turn");
+  // The rail shows Claude sessions in the Claude view (ui/claude): turns are `.cl-turn`.
+  const turns = () => $$(".cl-turn");
   const lastTurn = () => turns().at(-1);
   // The folder picker (ui/chat/FolderPicker.tsx).
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
@@ -51,7 +52,7 @@
     $(".nt-compose .round.send").click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
-  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".nt-working") && lastTurn()?.querySelector(".nt-foot, .nt-stopped"), ms);
+  const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
 
   // Diagnostics: say when the panel of the same session is replaced (a remount loses the composer's
   // state). Switching tabs or sessions replaces it on purpose and is not counted.
@@ -123,31 +124,36 @@
     await check("the first message shows as the user's", !!(await until("user row", () => $$(".nt-user").some((u) => u.textContent.includes("RICH fix the quarter export")))));
     await check("the first turn finishes", !!(await idle(30000)));
 
-    // 2. What the turn shows: reasoning, a plan, a folded run, an edit, Markdown, context usage.
+    // 2. What the turn shows (the Claude view): reasoning and tool calls folded into one sentence, the task
+    // list as a call, an edit with its counts, Markdown, context usage.
     const t1 = lastTurn();
-    await check("reasoning folds into its own row", !!$(".nt-reason", t1));
-    const plan = $(".nt-plan", t1);
-    await check("the plan shows 3 entries, all done", plan && $$("li", plan).length === 3 && $$("li.completed", plan).length === 3, plan?.textContent);
-    const run = $(".nt-run", t1);
-    await check("tool calls fold into one run with a sentence", !!run && $(".sent", run).textContent.length > 0, run?.textContent);
-    await check("the run counts the failed command", !!run && /1/.test($(".cnt", run)?.textContent ?? ""), run?.querySelector(".cnt")?.textContent);
-    await check("the run sums up the edit", !!run && /\+2/.test($(".stat", run)?.textContent ?? "") && /1/.test($(".stat .del", run)?.textContent ?? ""), run?.querySelector(".stat")?.textContent);
-    $(".rh", run).click();
-    await until("run opened", () => $$(".nt-tl", run).length >= 3);
-    await check("an opened run lists every call", $$(".nt-tl", run).length >= 3 && !!$(".nt-diff", run), $$(".nt-tl", run).map((x) => x.textContent).join(" | "));
-    const bad = $(".nt-tl.failed", run);
-    $(".rh", bad).click();
-    const out = await until("failed output", () => $(".nt-out.failed pre", bad));
-    await check("a failed command opens to its command and red output", !!out && out.textContent.includes("exit code 1") && !!$(".nt-cmd", bad), out?.textContent);
-    $(".nt-diff .rh", run).click();
-    const diff = await until("diff rows", () => $(".nt-diff-rows", run));
+    const group = $(".cl-group", t1);
+    await check("reasoning and tool calls fold into one group with a sentence", !!group && $(".cl-sent", group)?.textContent.length > 0, group?.textContent);
+    await check("the sentence counts the failed command", !!group && /1 failed|1 个失败/.test($(".cl-sent", group)?.textContent ?? ""), $(".cl-sent", group)?.textContent);
+    await check("the group sums up the edit", !!group && /\+2/.test($(".cl-group-hd .cl-stat .add", group)?.textContent ?? "") && /1/.test($(".cl-group-hd .cl-stat .del", group)?.textContent ?? ""),
+      $(".cl-group-hd .cl-stat", group)?.textContent);
+    await check("a finished group is folded", !!group && !$(".cl-group-bd", group));
+    $(".cl-group-hd", group).click();
+    await until("group opened", () => $$(".cl-group-bd .cl-tool", group).length >= 3);
+    await check("an opened group lists every call and the reasoning", $$(".cl-group-bd > .cl-tool:not(.cl-thought)", group).length >= 4 && !!$(".cl-thought", group),
+      $$(".cl-group-bd > *", group).map((x) => x.textContent).join(" | "));
+    // The to-do list is shown above the composer while the turn runs; done, nothing is left there.
+    await check("a finished task list does not stay above the composer", !$(".cl-todo"));
+    const bad = $(".cl-tool[data-state=failed]", group);
+    $(".cl-tool-hd", bad).click();
+    const out = await until("failed output", () => $(".cl-out.err", bad));
+    await check("a failed command opens to its command and red output", !!out && out.textContent.includes("exit code 1") && !!$(".cl-cmd", bad), out?.textContent);
+    const editRow = $$(".cl-tool", group).find((x) => /Edited|编辑了/.test(x.textContent));
+    $(".cl-tool-hd", editRow).click();
+    const diff = await until("diff rows", () => $(".cl-diff-rows", editRow));
     await check("the edit opens to a diff with added and removed lines", !!diff && $$(".ln.add", diff).length === 2 && $$(".ln.del", diff).length === 1,
       diff?.textContent);
-    const reply = $$(".nt-reply", t1).at(-1);
+    const reply = $$(".cl-md", t1).at(-1);
     await check("the answer renders Markdown: heading, list, table, code block",
       !!reply && !!$("h1, h2, h3, h4, h5, h6", reply) && !!$("li", reply) && !!$("table", reply) && !!$("pre", reply), reply?.innerHTML.slice(0, 200));
     const ring = $(".nt-ring");
     await check("context usage shows as a ring", !!ring && /4[12]k \/ 200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
+    await check("the turn's foot offers to copy the reply (its time shows from 1 s)", !!$(".cl-foot button", t1), $(".cl-foot", t1)?.innerHTML.slice(0, 120));
     await shot("01-first-turn");
 
     // 2b. The composer's input side (one send button, / and @ menus, images, find, quote, usage,
@@ -155,7 +161,8 @@
     const ta = composer();
     await check("one send button: no add-to-turn or queue switch", !$(".nt-compose .chip") && $$(".nt-compose .round.send").length === 1);
     const line = $(".nt-compose .line");
-    await check("one row: + at the left, the field, then send", !!line && line.firstElementChild?.classList.contains("nt-plus")
+    // One card: the field on top, + under it at the start and send at the end (a grid over the same row).
+    await check("one card: + first, then the field, then send", !!line && line.firstElementChild?.classList.contains("nt-plus")
       && line.lastElementChild?.classList.contains("right"), line?.innerHTML.slice(0, 120));
     ta.focus();
     setValue(ta, "/re");
@@ -212,12 +219,12 @@
     // A sub-agent's own steps fold under its row.
     await send("AGENT find where the quarter end is built");
     await idle();
-    const sub = await until("sub-agent row", () => $(".nt-sub", lastTurn()));
-    await check("the sub-agent row counts its own steps", !!sub && /2/.test($(".steps", sub)?.textContent ?? ""), sub?.textContent);
-    $(".rh", sub).click();
-    await check("opening it shows the steps, then its summary", !!(await until("sub steps", () => $$(".nt-sub-steps .nt-tl", sub).length === 2 && $(".nt-sub-bd", sub))),
+    const sub = await until("sub-agent row", () => $(".cl-agent", lastTurn()));
+    await check("the sub-agent row counts its own steps", !!sub && /2/.test($(".cl-steps", sub)?.textContent ?? ""), sub?.textContent);
+    $(".cl-tool-hd", sub).click();
+    await check("opening it shows the steps, then its summary", !!(await until("sub steps", () => $$(".cl-agent-bd > .cl-tool", sub).length === 2 && $(".cl-agent-out", sub))),
       sub?.textContent);
-    await check("the sub-agent's steps are not in the turn's runs", !$$(".nt-run", lastTurn()).some((r) => /quarter_end/.test(r.textContent)));
+    await check("the sub-agent's steps are not in the turn's groups", !$$(".cl-group", lastTurn()).some((r) => /quarter_end/.test(r.textContent)));
     await shot("14-subagent");
     // Find (⌘F inside the panel).
     ta.focus();
@@ -232,7 +239,7 @@
     keyDown(fq, "Escape");
     await check("Esc closes the find bar", !!(await until("closed", () => !$(".nt-findbar"), 3000)));
     // Quote a selection from a reply.
-    const para = $$(".nt-reply p", t1).find((p) => p.textContent.length > 10);
+    const para = $$(".cl-md p", t1).find((p) => p.textContent.length > 10);
     const range = document.createRange();
     range.selectNodeContents(para);
     getSelection().removeAllRanges();
@@ -257,8 +264,8 @@
     await send("SLOW job");
     await check("a slow turn runs, with stop", !!(await until("running", running)));
     await sleep(2500);
-    const tm = $(".nt-working .tm")?.textContent ?? "";
-    await check("the working line's timer counts while hidden", /^\d+(\.\d+)? s$/.test(tm.trim()) && parseFloat(tm) >= 1, tm);
+    const tm = $(".cl-status .tm")?.textContent ?? "";
+    await check("the status line's timer counts while hidden", /^\d+\s?(s|秒)$/.test(tm.trim()) && parseInt(tm, 10) >= 2, tm);
     await check("there is one send, no add-to-turn / queue switch", !$(".nt-compose .chip") && /工作时也可以继续发消息|while it works/.test(composer().placeholder), composer().placeholder);
     await send("change of plan");
     const steered = await until("steer row", () => $$(".nt-user", lastTurn()).find((u) => u.textContent.includes("change of plan")));
@@ -272,12 +279,12 @@
     await send("SLOW again");
     await until("running", running);
     $(".nt-compose .round.stop").click();
-    const stopped = await until("stopped", () => $(".nt-stopped", lastTurn()));
+    const stopped = await until("stopped", () => $(".cl-stopped", lastTurn()));
     await check("stop ends the turn and offers to continue", !!stopped);
     await shot("04-stopped");
-    const cont = await until("continue button", () => $(".nt-stopped .btn"));
+    const cont = await until("continue button", () => $(".cl-stopped .cl-btn"));
     cont.click();
-    await check("continue sends a new turn", !!(await until("continue turn", () => !$(".nt-stopped") && lastTurn().querySelector(".nt-user"))));
+    await check("continue sends a new turn", !!(await until("continue turn", () => !$(".cl-stopped") && lastTurn().querySelector(".nt-user"))));
     await idle();
 
     // 5. An agent that cannot take a message mid-turn: Send waits for the turn to end; a waiting
