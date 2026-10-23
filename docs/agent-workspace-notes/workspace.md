@@ -95,3 +95,38 @@ const View = codex ? CodexConversation : Conversation;
 - `tools/workspace.test.mjs` 新增 6 项：列表设置的默认值与升降序、状态筛选、按日期分桶（含按开始时间、升序反转）、按状态分桶顺序、
   「标记为完成」及撤销与再失败、只在需要时请求并保留已归档会话。
 - 命令：`node --test tools/workspace.test.mjs`（32 项全过）；全部前端测试 `node --test tools/*.test.mjs`。
+
+## 端到端：`tools/desktop-workspace-e2e.js`（2026-10-23）
+
+真实调试版桌面包 + 本机隔离被控端（两端 quiet）+ 替身智能体，经 `desktop-chat-e2e.py` 驱动，从电脑页开始：
+
+```sh
+E2E_SCRIPT=tools/desktop-workspace-e2e.js E2E_QUERY='view=devices&shotlang=zh&shottheme=dark' \
+  python3 tools/desktop-chat-e2e.py --secs 600 --out /tmp/ws-e2e-zh-dark      # 另一种外观：shotlang=en&shottheme=light
+```
+
+- 覆盖 102 项：A 工作区（电脑 / 智能体切换、新建页选电脑 / 浏览文件夹 / 权限模式、分组与标题兜底→替换、运行 / 未读 / 失败 /
+  待回答四种点、标记完成、置顶、F2 与菜单改名并经 `chat_sessions` 核对被控端、归档与取消归档、⌘K 按标题与文件夹、↑↓、⌘B、
+  边缘拖宽与双击复位、Codex 会话进 Codex 视图）；B Claude 页（询问模式的审批卡：停靠、可打字、400 ms 内 ⌘↵ 不生效、允许一次 /
+  本会话允许 / 拒绝；两题提问含多选与「其他」；计划卡退回附意见、批准并切到自动接受编辑后模式芯片跟随被控端；模式菜单切到计划；
+  diff 真实行号；停止后继续；结束会话；排队消息编辑与撤回）；C 第二条连接（页面内另开 `open_chat`）先批准，桌面端卡片收起。
+- 替身新增：LATER<n>（n 秒后自己结束）、FAIL、EDITAT（22 / 40 行两段 hunks）、DELAYTITLE（标题晚 4 s）、每次提问 id 不同。
+  `E2E_QUERY` 换起始页面。脚本开头去掉共享存储里旧 e2e 主机的残留，结束时还原它动过的 `ai-remote.mode` / `ai-remote.ws.*`。
+- 实测（本机 debug 包，各 1 次）：深色中文 102 项 96 过，浅色英文 102 项 96 过；6 项失败都是下面的产品问题。
+  侧栏状态点来自轮询：琥珀点出现 / 消失比卡片晚 0–20 s（屏幕外窗口，计时器可能被节流；脚本等 30 s 并记下实际用时）。
+- 发现的问题：
+  - 归档视图 / 全部会话：被控端 `chat_sessions archived:true` 只回已归档的（`crates/ar-host/src/tools/chat.rs:83`），前端当作
+    「连同已归档的」（`apps/desktop/src/lib/workspace.ts:771`，演示后端也是这么实现的）。切到「已归档的」时正打开的会话页变成
+    「找不到这个会话」，「全部会话」只列已归档的。
+  - 标记为完成后改名，红点又回来：改名产生 title 事件，`last_seq` 变大，`isAcked` 不再成立（`lib/workspace.ts:196`）。
+  - 审批卡不能附说明拒绝（`ui/claude/Cards.tsx:154` 起只有拒绝 / 本会话允许 / 允许一次；被控端支持 `permit.deny.message`）。
+  - 以询问模式新建的会话，输入框下的模式芯片显示「权限模式 ?」直到第一次切换：被控端初始模式与元数据相同就不发 mode 事件
+    （`crates/ar-host/src/chat/mod.rs:1711`），芯片只认事件（`ui/claude/ClaudeConversation.tsx` 的 `ModePicker mode={chat.mode}`）。
+  - 一次编辑显示两份 diff（输入里的旧 / 新文本一份、结果的 hunks 一份），标题上的 +/− 也加了两遍：`tool_update` 把内容追加在
+    `tool_call` 的内容后面（`apps/desktop/src/lib/chat.ts:473`）。原有的 `desktop-chat-e2e.js` 也因此失一项
+    （the group sums up the edit：+4−2；改动前后的 harness 各跑 1 次结果相同，67 项里只此一项失败）。
+  - 另一端先批准：卡片收起、工具照常运行，但页面上看不出是别的设备处理的（`resolved.by` 收到了没显示）。
+  - 小问题：提示条压在会话页输入框上；新建页「最近位置」会列出已不在电脑列表里的电脑（旧 e2e 主机）；`eventPatch`
+    （`lib/workspace.ts:109`）没有调用方，打开的会话的状态点也只能等轮询。
+- 坑：同 bundle id 的另一个调试版桌面包同时开着时，两者共用 WebKit 存储，曾把本次运行的页面切走、改写 `ws.side`；
+  合成指针事件对 `setPointerCapture` 不是有效指针，拖边时临时替换了它；菜单在窗口失焦时会关，脚本打开菜单会重试。

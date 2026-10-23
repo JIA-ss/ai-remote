@@ -22,8 +22,11 @@ They also speak the control protocol as Claude Code 2.1.308 does (docs/agent-wor
 first message is answered with a title (generate_session_title), set_permission_mode switches the mode (a
 `status` line follows), and three keywords ask with can_use_tool: ASK asks two questions (AskUserQuestion,
 the second multiple choice), PLAN proposes a plan (ExitPlanMode), PERMIT wants to run a command (Bash, with
-a rule to allow it for the session). The turn then ends with what the answer said. RICH's Edit result
-carries a structuredPatch (real line numbers).
+a rule to allow it for the session). The turn then ends with what the answer said (a denial with its message).
+RICH's Edit result carries a structuredPatch (real line numbers); EDITAT edits with two hunks at lines 22
+and 40. FAIL ends the turn with an error; LATER<n> answers by itself n seconds later (8 by default), while
+the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s late. The workspace e2e
+(tools/desktop-workspace-e2e.js) uses these, with E2E_QUERY=view=devices to start on the computers page.
 
 Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
 screen; screenshots land in --out.
@@ -61,8 +64,11 @@ options = parser.parse_args()
 
 RICH_AGENT = r'''
 import json, sys, threading
+lock = threading.Lock()
 def out(v):
-    sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
+    # Timers (LATER, DELAYTITLE) write from their own threads: one line at a time.
+    with lock:
+        sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
 mode = sys.argv[sys.argv.index("--permission-mode") + 1] if "--permission-mode" in sys.argv else "default"
@@ -186,14 +192,31 @@ QUESTIONS = [
     {"question": "Which formats?", "header": "Formats", "multiSelect": True,
      "options": [{"label": "CSV"}, {"label": "PDF"}, {"label": "XLSX"}]},
 ]
+dones = iter(range(1, 1 << 30))
 def done(text):
-    out({"type": "assistant", "message": {"id": "d" + str(abs(hash(text)) % 10000), "content": [{"type": "text", "text": text}]}})
+    out({"type": "assistant", "message": {"id": "d" + str(next(dones)), "content": [{"type": "text", "text": text}]}})
     out({"type": "result", "subtype": "success", "is_error": False, "result": text})
+asks = 0
 def ask(kind, tool, inp, **extra):
+    # Every request has its own id (a session asks the same thing more than once).
     global asking
-    asking = (kind, "cu-" + kind)
-    out({"type": "control_request", "request_id": "cu-" + kind,
-         "request": dict({"subtype": "can_use_tool", "tool_name": tool, "input": inp, "tool_use_id": "tu-" + kind}, **extra)})
+    n = str(asks)
+    asking = (kind, "cu-" + kind + n)
+    out({"type": "control_request", "request_id": "cu-" + kind + n,
+         "request": dict({"subtype": "can_use_tool", "tool_name": tool, "input": inp, "tool_use_id": "tu-" + kind + n}, **extra)})
+def edit_at():
+    # An edit far into the file: two hunks with their real line numbers (22 and 40).
+    out({"type": "assistant", "message": {"id": "e1", "content": [{"type": "tool_use", "id": "editat", "name": "Edit", "input": {
+         "file_path": "/work/export.py", "old_string": "    return date(year, q * 3, 31)", "new_string": "    return month_end(year, q * 3)"}}]}})
+    out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "editat", "content": "ok"}]},
+         "tool_use_result": {"filePath": "/work/export.py", "oldString": "    return date(year, q * 3, 31)",
+                             "newString": "    return month_end(year, q * 3)",
+                             "structuredPatch": [
+                                 {"oldStart": 22, "oldLines": 3, "newStart": 22, "newLines": 3, "lines": [
+                                     " def quarter_end(year, q):", "-    return date(year, q * 3, 31)", "+    return month_end(year, q * 3)", " "]},
+                                 {"oldStart": 40, "oldLines": 2, "newStart": 40, "newLines": 3, "lines": [
+                                     " def month_end(year, month):", "+    import calendar", "     return date(year, month, calendar.monthrange(year, month)[1])"]}]}})
+    done("Edited export.py at lines 22 and 40.")
 asking = None
 slow = None
 for line in sys.stdin:
@@ -206,7 +229,12 @@ for line in sys.stdin:
         continue
     if msg.get("type") == "control_request" and msg["request"].get("subtype") == "generate_session_title":
         title = "Fake: " + msg["request"].get("description", "")[:40]
-        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"title": title}}})
+        reply = {"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"title": title}}}
+        # DELAYTITLE: the title comes 4 s late (the first message stands in for it until then).
+        if "DELAYTITLE" in msg["request"].get("description", ""):
+            threading.Timer(4.0, out, (reply,)).start()
+        else:
+            out(reply)
         continue
     if msg.get("type") == "control_request" and msg["request"].get("subtype") == "set_permission_mode":
         mode = msg["request"]["mode"]
@@ -225,6 +253,7 @@ for line in sys.stdin:
         if not asking or r.get("request_id") != asking[1]:
             continue
         kind, asking = asking[0], None
+        asks += 1
         resp = r.get("response", {})
         if resp.get("behavior") != "allow":
             done("Not done: " + (resp.get("message") or "declined"))
@@ -233,7 +262,7 @@ for line in sys.stdin:
         elif kind == "plan":
             done("The plan was approved; going on in " + mode + " mode.")
         else:
-            out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu-permit", "content": "built"}]}})
+            out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu-permit" + str(asks - 1), "content": "built"}]}})
             done("Ran it (" + ("for this session" if resp.get("updatedPermissions") else "once") + ").")
         continue
     if msg.get("type") != "user":
@@ -260,7 +289,7 @@ for line in sys.stdin:
         ask("plan", "ExitPlanMode", {"plan": "## Plan\n1. Use the month's real last day\n2. Run the tests"}, requires_user_interaction=True)
         continue
     if "PERMIT" in text:
-        out({"type": "assistant", "message": {"id": "pm", "content": [{"type": "tool_use", "id": "tu-permit", "name": "Bash",
+        out({"type": "assistant", "message": {"id": "pm" + str(asks), "content": [{"type": "tool_use", "id": "tu-permit" + str(asks), "name": "Bash",
              "input": {"command": "make build"}}]}})
         ask("permit", "Bash", {"command": "make build"}, decision_reason="This command requires approval",
             permission_suggestions=[{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "make build"}],
@@ -268,6 +297,15 @@ for line in sys.stdin:
         continue
     if "RICH" in text:
         rich(); continue
+    if "FAIL" in text:
+        out({"type": "result", "subtype": "success", "is_error": True, "result": "API Error: 500 overloaded (fake)"}); continue
+    if "EDITAT" in text:
+        edit_at(); continue
+    if "LATER" in text:
+        # Answers on its own a few seconds later (LATER6: 6 s), whoever looks at the session meanwhile.
+        secs = int("".join(c for c in text.split("LATER", 1)[1][:3] if c.isdigit()) or 8)
+        threading.Timer(secs, done, ("later: " + text,)).start()
+        continue
     if "FILES" in text:
         files(); continue
     if "AGENT" in text:
@@ -357,7 +395,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
-                   "AI_REMOTE_SMOKE_QUERY": f"view=session&host={name}&panel=chat",
+                   # E2E_QUERY: another page to start on (and `shotlang` / `shottheme` to pin the look).
+                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or f"view=session&host={name}&panel=chat",
                    # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
                    "WEBVIEW2_USER_DATA_FOLDER": str(webview)}
