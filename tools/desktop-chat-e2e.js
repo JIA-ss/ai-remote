@@ -25,12 +25,37 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // The page must stay on this state until the native capture has finished.
+    try {
+      Promise.resolve(say("shot", name)).catch((error) => finish(String(error) || "screenshot request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot request rejected");
+    }
+  });
   // React-controlled fields: set through the native setter so React sees the change.
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -249,6 +274,9 @@
     $(".nt-chat-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     const qb = await until("quote button", () => $(".nt-quote"));
     await check("a selection offers Quote", !!qb);
+    $(".nt-chat-body").dispatchEvent(new Event("scroll", { bubbles: true }));
+    await sleep(150);
+    await check("scrolling keeps Quote attached to the selected reply", !!$(".nt-quote") && qb.isConnected);
     await shot("16-quote");
     qb.click();
     await check("Quote puts it in the composer as a quote", !!(await until("quoted", () => composer().value.startsWith("> "), 3000)), composer().value.slice(0, 80));

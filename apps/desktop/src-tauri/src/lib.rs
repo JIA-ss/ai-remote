@@ -1449,11 +1449,18 @@ fn smoke(app: &tauri::App) {
                     name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
                 if let Some(w) = handle.get_webview_window("main") {
                     let path = shots.join(format!("{name}.png"));
-                    match capture(&w).and_then(|img| img.save(&path).map_err(|e| e.to_string())) {
-                        Ok(()) => eprintln!("[smoke] saved {}", path.display()),
-                        Err(e) => eprintln!("[smoke] cannot capture {name}: {e}"),
-                    }
-                    let _ = w.eval(format!("window.__smokeShot && window.__smokeShot('{name}')"));
+                    let error = match save_capture(&w, &path) {
+                        Ok(()) => {
+                            eprintln!("[smoke] saved {}", path.display());
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!("[smoke] cannot capture {name}: {e}");
+                            Some(e)
+                        }
+                    };
+                    let _ =
+                        w.eval(format!("window.__smokeShot && window.__smokeShot({}, {})", json!(name), json!(error)));
                 }
             }
             if done {
@@ -1474,8 +1481,11 @@ fn smoke(app: &tauri::App) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
-        let picture = handle.get_webview_window("main").ok_or("no window".to_string()).and_then(|w| capture(&w));
-        let code = match picture.and_then(|img| img.save(&out).map_err(|e| e.to_string())) {
+        let picture = handle
+            .get_webview_window("main")
+            .ok_or("no window".to_string())
+            .and_then(|w| save_capture(&w, std::path::Path::new(&out)));
+        let code = match picture {
             Ok(()) => {
                 eprintln!("[smoke] saved {}", std::path::Path::new(&out).display());
                 0
@@ -1487,6 +1497,20 @@ fn smoke(app: &tauri::App) {
         };
         handle.exit(code);
     });
+}
+
+#[cfg(debug_assertions)]
+fn save_capture(w: &tauri::WebviewWindow, path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit already returns PNG bytes. Decoding and encoding them again in an unoptimized
+        // debug build can take longer than the UI step, and adds no information to the snapshot.
+        std::fs::write(path, capture_png(w)?).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        capture(w)?.save(path).map_err(|e| e.to_string())
+    }
 }
 
 /// The window's pixels, drawn by the window itself (works off screen).
@@ -1542,7 +1566,7 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
-fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
+fn capture_png(w: &tauri::WebviewWindow) -> Result<Vec<u8>, String> {
     use block2::RcBlock;
     use objc2::AnyThread;
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
@@ -1572,8 +1596,7 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
         view.takeSnapshotWithConfiguration_completionHandler(None, &done);
     })
     .map_err(|e| e.to_string())?;
-    let bytes = rx.recv_timeout(std::time::Duration::from_secs(15)).map_err(|e| e.to_string())??;
-    image::load_from_memory(&bytes).map(|i| i.into_rgba8()).map_err(|e| e.to_string())
+    rx.recv_timeout(std::time::Duration::from_secs(15)).map_err(|e| e.to_string())?
 }
 
 #[cfg(all(debug_assertions, not(any(windows, target_os = "macos"))))]
