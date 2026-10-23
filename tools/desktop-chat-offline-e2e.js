@@ -46,7 +46,7 @@
     const q = await until("folder field", () => $("#ag-folder-q"));
     setValue(q, CFG.work);
     keyDown(q, "Enter");
-    const work = CFG.work.split("/").pop();
+    const work = CFG.work.split(/[\\/]/).pop();
     (await until("use button", () => $(".nt-folder-crumbs .cur")?.textContent === work && $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
     setValue($("#ag-prompt"), "first");

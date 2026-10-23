@@ -72,8 +72,8 @@
     await document.fonts.ready;
     const fam = (sel) => { const el = $(sel); return el ? getComputedStyle(el).fontFamily : "(none)"; };
     const loaded = [...document.fonts].filter((f) => f.status === "loaded").map((f) => `${f.family} ${f.weight}`);
-    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".nt-md")} | code: ${fam(".nt-md pre, .nt-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
-    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".nt-md")).fontFamily, "读了文件"));
+    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".cl-md")} | code: ${fam(".cl-md pre, .cl-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
+    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".cl-md")).fontFamily, "读了文件"));
 
     // A long message folds behind a fading mask.
     const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}: 这是一条很长的消息，用来检查折叠 the long message folds`).join("\n");
