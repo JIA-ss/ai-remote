@@ -334,7 +334,7 @@ export interface Place {
  * the most recently used first (a place's time is the later of the two), at most `max` (NS-04: 3);
  * the selected place is kept in view by taking the last slot.
  */
-export function recentPlaces(sessions: WsItem[], started: Array<Place & { at: number }>, selected: Place | null, max = 3): Place[] {
+export function recentPlaces(sessions: WsItem[], started: Array<Place & { at: number }>, selected: Place | null, max = 3): Array<Place & { at: number }> {
   const at = new Map<string, Place & { at: number }>();
   const add = (p: Place, t: number) => {
     if (!p.cwd.trim()) return;
@@ -344,13 +344,29 @@ export function recentPlaces(sessions: WsItem[], started: Array<Place & { at: nu
   };
   for (const s of sessions) add({ host: s.host, cwd: s.meta.cwd }, s.meta.last_activity);
   for (const p of started) add(p, p.at);
-  const list = [...at.values()].sort((a, b) => b.at - a.at).map(({ host, cwd }) => ({ host, cwd }));
+  const list = [...at.values()].sort((a, b) => b.at - a.at);
   const top = list.slice(0, max);
   if (selected && selected.cwd && !top.some((p) => p.host === selected.host && sameFolder(p.cwd, selected.cwd))) {
-    const known = list.find((p) => p.host === selected.host && sameFolder(p.cwd, selected.cwd)) ?? selected;
+    const known = list.find((p) => p.host === selected.host && sameFolder(p.cwd, selected.cwd)) ?? { ...selected, at: 0 };
     return [...top.slice(0, max - 1), known];
   }
   return top;
+}
+
+/**
+ * NS-04: while the page stays open, rows already shown keep their order; a new one goes before the
+ * first shown row older than it (rows no longer offered leave).
+ */
+export function keepOrder<T extends Place & { at: number }>(shown: T[], next: T[]): T[] {
+  const same = (a: Place, b: Place) => a.host === b.host && sameFolder(a.cwd, b.cwd);
+  const out = shown.map((s) => next.find((n) => same(n, s))).filter((x): x is T => !!x);
+  for (const n of next) {
+    if (out.some((o) => same(o, n))) continue;
+    const i = out.findIndex((o) => o.at < n.at);
+    if (i < 0) out.push(n);
+    else out.splice(i, 0, n);
+  }
+  return out;
 }
 
 /**

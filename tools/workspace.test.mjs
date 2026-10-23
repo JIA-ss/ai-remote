@@ -199,8 +199,18 @@ test("recent places: most recently used first, at most three, the selected one k
     item("b", meta({ cwd: "D:\\three", last_activity: 20 })),
   ];
   const started = [{ host: "c", cwd: "/four", at: 35 }];
-  assert.deepEqual(plain(ws.recentPlaces(xs, started, null)), [{ host: "a", cwd: "/p/one" }, { host: "c", cwd: "/four" }, { host: "b", cwd: "D:\\two" }]);
-  assert.deepEqual(plain(ws.recentPlaces(xs, started, { host: "b", cwd: "d:\\THREE" })), [{ host: "a", cwd: "/p/one" }, { host: "c", cwd: "/four" }, { host: "b", cwd: "D:\\three" }]);
+  const where = (list) => plain(list.map(({ host, cwd }) => ({ host, cwd })));
+  assert.deepEqual(where(ws.recentPlaces(xs, started, null)), [{ host: "a", cwd: "/p/one" }, { host: "c", cwd: "/four" }, { host: "b", cwd: "D:\\two" }]);
+  assert.deepEqual(where(ws.recentPlaces(xs, started, { host: "b", cwd: "d:\\THREE" })), [{ host: "a", cwd: "/p/one" }, { host: "c", cwd: "/four" }, { host: "b", cwd: "D:\\three" }]);
+});
+
+test("recent places keep the order shown; a new one goes before the first older one", () => {
+  const p = (host, at) => ({ host, cwd: "/w", at });
+  const shown = [p("a", 30), p("b", 20), p("c", 10)];
+  // b became the most recent and d appeared between a and c: nothing shown moves, d goes before c.
+  const next = [p("b", 50), p("a", 30), p("d", 15)];
+  assert.deepEqual(plain(ws.keepOrder(shown, next).map((x) => x.host)), ["a", "b", "d"]);
+  assert.deepEqual(plain(ws.keepOrder([], next).map((x) => x.host)), ["b", "a", "d"]);
 });
 
 test("next steps share three places: one per group, the rest to the first that has more", () => {
