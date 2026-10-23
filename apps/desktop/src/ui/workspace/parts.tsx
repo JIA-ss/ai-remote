@@ -146,8 +146,13 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos(place(at, r.width, r.height));
-    (el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
   }, [at]);
+  useLayoutEffect(() => {
+    const el = box.current;
+    // The measuring commit is visibility:hidden, so WKWebView cannot focus its buttons yet.
+    if (!pos || !el) return;
+    (el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+  }, [pos]);
   useEffect(() => {
     const down = (e: Event) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();

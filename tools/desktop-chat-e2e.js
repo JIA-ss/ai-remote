@@ -75,6 +75,20 @@
   // The folder picker (ui/chat/FolderPicker.tsx).
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   const folderShown = () => $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  async function checkFolderSurface(name) {
+    const popup = $(".ws-chip-folder .nt-folder-pop");
+    const style = popup && getComputedStyle(popup);
+    const sample = document.createElement("canvas");
+    sample.width = sample.height = 1;
+    const context = sample.getContext("2d");
+    if (style && context) {
+      context.fillStyle = style.backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+    }
+    const alpha = context?.getImageData(0, 0, 1, 1).data[3];
+    await check(name, !!style && style.opacity === "1" && alpha === 255,
+      JSON.stringify({ background: style?.backgroundColor, opacity: style?.opacity, alpha }));
+  }
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
@@ -174,6 +188,7 @@
     keyDown(q, "Enter");
     const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work));
     await check("the typed path is browsed and lists the work folder", !!child, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
+    await checkFolderSurface("the folder browser stays opaque over the first-message composer");
     await shot("00-folder-browse");
     child.click();
     await check("entering a folder updates the crumbs", !!(await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work)), $(".nt-folder-crumbs")?.textContent);
@@ -378,6 +393,7 @@
     await check("the picker opens on recent folders, the chosen one marked", !!recent && !!$(".nt-folder-list .row.recent.sel")
       && $$(".nt-folder-list .row.recent").length === 1, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
     await check("the session list groups sessions under their folder", groupLabel?.split(" · ")[0] === work, groupLabel);
+    await checkFolderSurface("the recent-folder popup stays opaque over the first-message composer");
     await shot("04b-folder-recent");
     recent.click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);

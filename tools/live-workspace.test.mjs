@@ -60,6 +60,43 @@ function hooks() {
   };
 }
 
+test("a new popup menu focuses its chosen row only after its measured position is committed visible", () => {
+  const h = hooks(), focuses = [];
+  let style = {}, closed = 0;
+  const body = {}, first = { focus() { focuses.push({ row: "first", visible: style.visibility !== "hidden" });
+    if (style.visibility !== "hidden") document.activeElement = first; } };
+  const selected = { focus() { focuses.push({ row: "selected", visible: style.visibility !== "hidden" });
+    if (style.visibility !== "hidden") document.activeElement = selected; } };
+  const document = { body, activeElement: body, documentElement: { clientWidth: 1280, clientHeight: 800 }, addEventListener() {}, removeEventListener() {} };
+  const element = { getBoundingClientRect: () => ({ width: 220, height: 150 }),
+    querySelector: (selector) => selector.includes("aria-checked=true") ? selected : first,
+    querySelectorAll: () => [first, selected], contains: (node) => node === first || node === selected };
+  const { PopMenu } = compiled("ui/workspace/parts.tsx", {
+    react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key }, "../../lib/platform": { detectOs: () => "mac" },
+    "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
+    "lucide-react": Object.fromEntries(["ArrowLeft", "ArrowRight", "Check", "Laptop", "LaptopMinimal", "Monitor", "PanelLeft"].map((name) => [name, () => null])),
+  }, { document, window: { addEventListener() {}, removeEventListener() {} } });
+  const props = { at: { x: 30, y: 50 }, label: "Session actions", onClose: () => { closed++; },
+    items: [{ key: "first", label: "First", run() {} }, { key: "selected", label: "Selected", checked: true, run() {} }] };
+  const render = () => h.render(PopMenu, props, (tree) => { tree.props.ref.current = element; style = tree.props.style; });
+  render();
+  assert.equal(style.visibility, "hidden", "the first commit exists only to measure the menu");
+  assert.deepEqual(focuses, [], "focus on visibility:hidden is ignored by the native webview and must not be attempted");
+  assert.equal(document.activeElement, body);
+  let tree = render();
+  assert.deepEqual(plain(style), { left: 30, top: 50 });
+  assert.deepEqual(focuses, [{ row: "selected", visible: true }], "the chosen enabled row receives focus in the visible commit");
+  assert.equal(document.activeElement, selected);
+  tree = render();
+  assert.equal(focuses.length, 1, "unrelated renders do not steal menu focus again");
+  const key = { key: "Escape", preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
+  tree.props.onKeyDown(key);
+  assert.equal(closed, 1);
+  assert.equal(key.prevented, true);
+  assert.equal(key.stopped, true, "Escape is consumed by the now-focused menu before chat can arm Stop");
+  h.close();
+});
+
 class Node {}
 class Element extends Node {
   constructor(parent = null) { super(); this.parent = parent; this.tagName = "DIV"; this.clientWidth = 800; this.dataset = {}; }
