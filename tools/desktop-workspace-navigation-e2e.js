@@ -65,8 +65,10 @@
     const rich = await required("the isolated Rich fake", () => $$(".ws-menu [role=menuitemradio]")
       .find((el) => text($(".ws-menu-label", el)) === "Rich fake"));
     rich.click();
-    await check("the form uses the isolated host and Rich fake", text($(".ws-chip-location .ws-chip-text")) === CFG.host
-      && text($(".ws-env-trail .ws-chip .ws-chip-text")) === "Rich fake");
+    const fixtureSelected = () => text($(".ws-chip-location .ws-chip-text")) === CFG.host
+      && text($(".ws-env-trail .ws-chip .ws-chip-text")) === "Rich fake";
+    await required("the chosen fixture runtime and host", fixtureSelected);
+    await check("the form uses the isolated host and Rich fake", fixtureSelected());
 
     $(".ws-chip-folder .nt-folder-btn").click();
     const query = await required("folder search", () => $("#ag-folder-q"));
