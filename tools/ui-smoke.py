@@ -29,6 +29,14 @@ OUT.mkdir(parents=True, exist_ok=True)
 report = {'platform': sys.platform, 'model_calls': 0, 'targeting': 'native_elements', 'result': 'running'}
 
 
+def quiet_profiles(*homes):
+    for home in homes:
+        for role in ('host', 'controller'):
+            directory = home / role
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / 'ai-remote.toml').write_bytes(b'[network]\nquiet = true\n')
+
+
 def command(home, *args):
     p = subprocess.run([str(CLI), '--home', str(home), '--json', *map(str,args)], capture_output=True, text=True, encoding="utf-8", timeout=30)
     if p.returncode:
@@ -93,6 +101,7 @@ def select_node(tree, label):
 exit_code=0
 with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='darwin' else None) as temp:
     base=Path(temp);host_home=base/'host';client_home=base/'controller';state_file=base/'fixture.json'
+    quiet_profiles(host_home, client_home)
     host=fixture=None;bridges=[]
     log=open(OUT/'host.log','w')
     try:
@@ -106,6 +115,9 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
             exit_code=2
         else:
             doctor=bridge.call('doctor')
+            network=next((check for check in doctor.get('checks',[]) if check.get('id')=='network'), None)
+            assert network and network.get('grade')=='ok' and 'locked by quiet = true' in network.get('summary',''), 'isolated host must lock quiet network mode'
+            report['network_quiet']={'configured_profiles':4, 'host_doctor_lock':True}
             if sys.platform=='darwin':
                 checks=doctor.get('checks',[])
                 if any(c.get('id')=='accessibility' and c.get('grade')=='fail' for c in checks):

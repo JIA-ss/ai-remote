@@ -73,6 +73,27 @@ fn element<'a>(nodes: &'a [(Node, Element)], label: &str) -> &'a Element {
     assert_eq!(selected.len(), 1, "expected unique native element {label}");
     &selected[0].1
 }
+fn collect_error_details(error: &anyhow::Error) -> serde_json::Value {
+    let bounded = |text: String| text.chars().take(2048).collect::<String>();
+    #[cfg(windows)]
+    {
+        if let Some(source) = error.downcast_ref::<uiautomation::errors::Error>() {
+            let code = source.code();
+            return serde_json::json!({
+                "kind":"uiautomation", "code":code, "code_hex":format!("0x{:08X}", code as u32),
+                "display":bounded(source.to_string()), "context":bounded(error.to_string()),
+            });
+        }
+        if let Some(source) = error.downcast_ref::<windows::core::Error>() {
+            let code = source.code().0;
+            return serde_json::json!({
+                "kind":"windows_com", "code":code, "code_hex":format!("0x{:08X}", code as u32),
+                "display":bounded(source.to_string()), "context":bounded(error.to_string()),
+            });
+        }
+    }
+    serde_json::json!({"kind":"other", "context":bounded(error.to_string())})
+}
 #[test]
 #[ignore = "requires a graphical session (and macOS Accessibility permission)"]
 fn native_controls_without_images() {
@@ -127,7 +148,30 @@ fn native_controls_without_images() {
             anyhow::ensure!(start.elapsed() < Duration::from_secs(10), "observation deadline");
             Ok(())
         };
-        let (nodes, truncated, warnings) = ar_ui::collect(pid, 512, 12, &check).unwrap();
+        let (nodes, truncated, warnings) = match ar_ui::collect(pid, 512, 12, &check) {
+            Ok(tree) => tree,
+            Err(error) => {
+                let child = match fixture.child.try_wait() {
+                    Ok(None) => "running".to_string(),
+                    Ok(Some(status)) => format!("exited: {status}"),
+                    Err(error) => format!("status unavailable: {:?}", error.kind()),
+                };
+                let fixture_state = std::fs::read(&state)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                // Only this controlled fixture's state and native error metadata; never desktop nodes/titles.
+                let diagnostic = serde_json::json!({
+                    "stage":"initial_collect", "elapsed_ms":start.elapsed().as_millis(), "child":child,
+                    "error":collect_error_details(&error), "fixture_state":fixture_state,
+                });
+                std::fs::write(
+                    fixture.evidence.join("collect-error.json"),
+                    serde_json::to_vec_pretty(&diagnostic).unwrap(),
+                )
+                .expect("save initial native collect failure evidence");
+                panic!("initial native collect failed: {diagnostic}");
+            }
+        };
         assert!(!truncated, "{warnings:?}");
         let secure = ar_ui::read(element(&nodes, "Password")).unwrap();
         assert!(secure.protected && secure.value.is_none() && secure.actions.is_empty());

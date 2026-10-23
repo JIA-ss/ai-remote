@@ -87,6 +87,15 @@
   后续查找步骤的裁图可见完整摘要及“1 failed”，不属于永久缺失。结合已通过的统计/折叠断言与源码推导：回合 footer 出现时，组头仍可能处在 650 ms 最短停留窗口；650 ms 是实现约定，不是本次云失败瞬间的实测耗时。
   `dwellStep` 的受控终态 null 验证确认旧标签保持到截止、截止后正常清空；测试改为等待同一回合的真实 `.cl-sent` 非空，再执行原有两条独立断言。不加任意 sleep，不扩大既有等待预算，不改产品停留规则，不用重试覆盖失败。新脚本的本机两轮与新 Windows 运行仍待验。
 
+## Windows 首次 UIA 读取的空错误诊断（2026-10-24，PR #48）
+
+- `5eea269` 的原生运行 `40005026322` 在 Windows 第一轮、首次 `ar_ui::collect` 返回错误，6.72 秒结束；startup poll 已在 5904 ms 命中、子进程仍运行，后续输入/点击/开关动作没有执行。这是与旧 15 秒 generic poll 超时不同的失败。
+  夹具 stage 记录已到 form_shown / first_tick、stdout/stderr 为空。不能据启动耗时认定启动慢；当前空 Display 没有保留调用阶段或数值码，底层原因仍未知。
+- Windows provider 的初始化、walker/root 与根级 sibling 错误现在补静态调用阶段、十进制与十六进制数值码、有界原文，并保留源错误供 downcast；不改 no_element 集合、动作语义或 500 ms COM 超时。
+  原生夹具首次 collect 失败时另存 `collect-error.json`，只含阶段、耗时、子进程状态、错误元数据及受控夹具状态，不保存其它桌面节点或窗口标题。合成空消息的格式单测所用错误码只是测试常量，不代表本次实际失败码。
+- 同步补齐旧 `ui-smoke.py`：启动两端前以二进制 LF 写齐两份隔离 home 各 host/controller 的四份 quiet 配置，并要求远端 doctor 确认 quiet 锁定。之前默认关闭发现不替代这四份显式配置；本机 AST 独立执行已核四份精确 LF 字节，原生 CI 结果待测。
+- 本轮保留两次预先规划的原生命令，第一轮失败即停，不以重试洗掉失败；新增诊断只解决空错误不可定位，不声称底层 UIA 原因或旧 poll 超时已修复。fmt、Clippy、测试及新 CI 待完成。
+
 ## Windows 原生 fixture 失败诊断（2026-10-24，PR #47）
 
 - 首次 Windows UIA 原生测试在 15.46 秒后仅报 `fixture state verifier timed out`；四个等待点共用文案，原临时目录已删除，
