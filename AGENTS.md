@@ -43,6 +43,19 @@
 - **未测**：本批未运行 Rust、Tauri 原生窗口或 Windows 系统输入；原生 WKWebView 与 Windows 中的字体加载、字形和布局仍须在集成验收中确认。
   没有新增删除、模型或工作目录修改功能。
 
+## Windows 原生聊天 CI 验收入口（2026-10-24，P3，尚未云端运行）
+
+- 新增独立 `windows-chat.yml`：限定路径的 PR 触发和手动触发，Windows 2025；Node 22.16.0、Python 3.13.2、Rust 1.95.0。
+  90 分钟硬上限，只 restore 现有 desktop Rust 依赖缓存，不 save、不改变四个现有 required job 的超时或缓存策略。
+- 构建 CLI 与 Tauri debug/no-bundle 后，六套替身脚本各固定运行两遍；第一遍失败不会被第二遍覆盖，也没有自动重试。
+  每套 fresh temp、四份 quiet 配置、非持久 WebView、离屏几何、App/harness 退出码和精确断言计数均作为成功条件；quiet 不代表禁止全部网络。
+  Job Object 先纳管暂停的 harness 再恢复，整体超时或正常退出后清掉该 scope 的残留进程，不按进程名清理其他任务。
+- 上传产物仅字段白名单摘要与安全测试 UI 裁图。裁框来自截图前 DOM 和同一进程的原生客户区物理坐标；流式桌面只保留聊天栏，预览只保留对话框并遮掉圆角外像素，工作区保留测试 UI。
+  原 PNG、原日志、sessions、homes/auth、WebView 与 drive.js 不上传，也不把 harness 原文送到 Actions console。
+  没有可靠布局的自动终帧等会明确记为未上传/未目视；有效像素检查不等于图审，Windows 裁图须下载后逐张验收。Actions artifact 不称为私有。
+- **本地实测**：7 项便携 runner 行为测试、Python/JS 语法、布局 hook 语法和 YAML 解析通过；前端 391 项（390 过、1 跳过）。
+  2 项 Win32 Job 运行探针只在 Windows 执行，本机跳过；未运行 Windows、Tauri、Cargo、浏览器或 Actions，不能据此记 Windows 已通过。
+
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
 从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。

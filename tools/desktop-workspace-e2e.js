@@ -917,8 +917,8 @@
     }
     const geistFaces = fontEvidence.faces.filter((face) => face.family.replace(/["']/g, "").trim() === "Geist Mono");
     const fontReport = { budget_ms: fontBudgetMs, ready: fontsReady, ...fontEvidence };
-    await note(`WK bundled font resource: ${JSON.stringify(fontReport)}`);
-    await check("WK loads the bundled Geist Mono FontFace before the batch screenshots", fontsReady && !fontEvidence.error
+    await note(`native webview bundled font resource: ${JSON.stringify({ engine: mac ? "WKWebView" : "WebView2", ...fontReport })}`);
+    await check("the native webview loads the bundled Geist Mono FontFace before the batch screenshots", fontsReady && !fontEvidence.error
       && geistFaces.length > 0 && geistFaces.every((face) => face.status === "loaded"),
       JSON.stringify(fontReport));
     // This proves that WK can load the bundled resource, not which font exclusively paints a glyph.

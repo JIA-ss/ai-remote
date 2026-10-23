@@ -158,6 +158,28 @@ window.__smokePrepareShot = async (name) => {
 };
 '''
 
+# Optional CI evidence only. Rectangles come from the mounted page immediately before its named
+# screenshot; the normal harness and product do not use this metadata or change their behavior.
+SMOKE_CI_CAPTURE_LAYOUT = r'''(() => {
+  const prepare = window.__smokePrepareShot;
+  window.__smokePrepareShot = async (name) => {
+    await prepare(name);
+    const visible = (el) => el && el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== "hidden";
+    const modal = document.querySelector(".nt-pv-dlg");
+    const rail = document.querySelector(".nt-rail");
+    const workspace = document.querySelector(".ws");
+    const element = visible(modal) ? modal : visible(rail) ? rail : visible(workspace) ? workspace : null;
+    const kind = !element ? "unavailable" : element === modal ? "preview_dialog" : element === rail ? "stream_chat_rail" : "workspace_ui";
+    const rect = element?.getBoundingClientRect();
+    const style = element && getComputedStyle(element);
+    await window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "ci-capture-layout", message: JSON.stringify({
+      name, kind, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+      rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+      radius: style ? Math.max(...["borderTopLeftRadius", "borderTopRightRadius", "borderBottomLeftRadius", "borderBottomRightRadius"].map((key) => parseFloat(style[key]) || 0)) : 0
+    }) });
+  };
+})();'''
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
 parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
@@ -508,6 +530,9 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"], stdout=log, stderr=log, env=env)
     app = None
     watchdog = None
+    ci_layout = os.name == "nt" and os.environ.get("AI_REMOTE_CI_CAPTURE_LAYOUT") == "1"
+    ci_native = None
+    ci_shots = {}
     code = 1
     try:
         for _ in range(100):
@@ -540,7 +565,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
 })();
 '''
         script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.visible))
-                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + "\n" + source.read_text(encoding="utf-8")
+                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + (SMOKE_CI_CAPTURE_LAYOUT if ci_layout else "") + "\n" + source.read_text(encoding="utf-8")
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
@@ -572,6 +597,9 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                 try:
                     geometry = json.loads(line[len("[smoke] geometry "):])
                     isolated_placement = outside_displays(geometry)
+                    if ci_layout:
+                        from desktop_chat_ci_windows import client_box
+                        ci_native = client_box(app.pid, geometry)
                 except (ValueError, TypeError, AttributeError):
                     isolated_placement = False
                 if not isolated_placement:
@@ -602,6 +630,13 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                                             stdout=log, stderr=log, env=env)
                 if text in ("all passed",) or re.fullmatch(r"\d+ failed", text):
                     passed = text == "all passed"
+            elif ci_layout and line.startswith("[page ci-capture-layout] "):
+                try:
+                    layout = json.loads(line[len("[page ci-capture-layout] "):])
+                    if isinstance(layout, dict) and isinstance(layout.get("name"), str):
+                        ci_shots[layout["name"]] = layout
+                except (ValueError, TypeError):
+                    pass
             elif line.startswith("[page ") and ("error" in line or "warn" in line):
                 print("  app:", line[:300])
             elif line.startswith("[smoke]"):
@@ -645,6 +680,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         log.close()
         shutil.copyfile(base / "host.log", options.out / "host.log")
         stderr_log.close()
+        if ci_layout:
+            (options.out / "ci-layout.json").write_text(json.dumps({"native": ci_native, "shots": ci_shots}), encoding="utf-8")
         shutil.rmtree(webview, ignore_errors=True)
     if code:
         print((base / "host.log").read_text(encoding="utf-8", errors="replace")[-2000:])
