@@ -58,7 +58,7 @@ function failure(error: string | undefined): string {
  * has it, then shown like a sent message until the conversation does; "Not sent" with Retry when
  * it did not get there.
  */
-function OutgoingRow({ o, onRetry, onDiscard }: { o: Outgoing; onRetry: (o: Outgoing) => void; onDiscard: (id: string) => void }) {
+export function OutgoingRow({ o, onRetry, onDiscard }: { o: Outgoing; onRetry: (o: Outgoing) => void; onDiscard: (id: string) => void }) {
   return (
     <div className={cx("nt-user nt-sending", o.state)} data-out={o.state}>
       <div className="bubble">
@@ -100,7 +100,7 @@ function highlights(): { reg: Highlights; make: (ranges: Range[]) => unknown } |
  * (folded parts and turns not mounted are not), matches are highlighted, Enter / Shift+Enter step
  * through them, Esc closes.
  */
-function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLElement | null>; focus: number; onShow: (r: Range) => void; onClose: () => void }) {
+export function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLElement | null>; focus: number; onShow: (r: Range) => void; onClose: () => void }) {
   const [q, setQ] = useState("");
   const [cur, setCur] = useState(-1);
   const [ranges, setRanges] = useState<Range[]>([]);

@@ -52,8 +52,8 @@ use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
     Image,
     event::{
-        DIFF_SIDE, DIFF_TOTAL, Ev, Out, PREVIEW, PlanEntry, SlashCommand, TURN_DIFF, ToolContent, ToolKind, ToolStatus,
-        TurnStatus, cut, preview_value,
+        DIFF_SIDE, DIFF_TOTAL, Ev, Hunk, MAX_HUNKS, Out, PREVIEW, PlanEntry, SlashCommand, TURN_DIFF, ToolContent,
+        ToolKind, ToolStatus, TurnStatus, cut, preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
@@ -239,7 +239,9 @@ pub async fn run(
                         report(&out, Out::TurnEnd { status: TurnStatus::Interrupted, final_text: None, reason: None }).await;
                     }
                 },
-                Some(LiveCmd::Answer { qid, text }) => {
+                // Permissions, modes and titles are Claude Code's; nothing asks for them here.
+                Some(LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. }) => {}
+                Some(LiveCmd::Answer { qid, text, .. }) => {
                     let late = !st.asking.iter().any(|a| a.qids.contains(&qid)) && st.closed.contains(&qid);
                     if let Some((reply, done)) = answer(&mut st, qid, text) {
                         let _ = proc.write_line(reply).await;
@@ -557,6 +559,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                             qid,
                             prompt: q["question"].as_str().unwrap_or("").to_string(),
                             options,
+                            questions: Vec::new(),
                             request: Some(request.clone()),
                             item_id: params["itemId"].as_str().map(str::to_string),
                             header,
@@ -1002,12 +1005,19 @@ fn diffs(changes: &Value) -> Vec<ToolContent> {
             };
             let (old, new) = (old.map(|o| cut(&o, DIFF_SIDE).0), cut(&new, DIFF_SIDE).0);
             total += old.as_ref().map_or(0, String::len) + new.len();
-            out.push(ToolContent::Diff { path, old, new });
+            out.push(ToolContent::Diff { path, old, new, hunks: Vec::new() });
         } else {
+            // The same `@@` lines split both, so the numbered hunks pair with the texts.
+            let mut numbered = numbered_hunks(diff).into_iter();
             for (old, new) in hunks {
                 let (old, new) = ((kind != "add").then(|| cut(&old, DIFF_SIDE).0), cut(&new, DIFF_SIDE).0);
                 total += old.as_ref().map_or(0, String::len) + new.len();
-                out.push(ToolContent::Diff { path: path.clone(), old, new });
+                out.push(ToolContent::Diff {
+                    path: path.clone(),
+                    old,
+                    new,
+                    hunks: numbered.next().into_iter().collect(),
+                });
                 if total >= DIFF_TOTAL {
                     break;
                 }
@@ -1159,6 +1169,34 @@ fn split_words(s: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// The hunks of a unified diff with their line numbers, from the `@@ -a,b +c,d @@` headers (a
+/// count left out is 1). A header that does not parse starts a hunk at line 0, so the hunks still
+/// pair with [`hunks`].
+fn numbered_hunks(diff: &str) -> Vec<Hunk> {
+    fn range(s: Option<&str>) -> (u64, u64) {
+        let s = s.unwrap_or("").trim_start_matches(['-', '+']);
+        let (start, lines) = s.split_once(',').unwrap_or((s, "1"));
+        (start.parse().unwrap_or(0), lines.parse().unwrap_or(1))
+    }
+    let mut out: Vec<Hunk> = Vec::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("@@") {
+            let mut parts = rest.split_whitespace();
+            let (old_start, old_lines) = range(parts.next());
+            let (new_start, new_lines) = range(parts.next());
+            out.push(Hunk { old_start, old_lines, new_start, new_lines, lines: Vec::new() });
+            continue;
+        }
+        let Some(h) = out.last_mut() else { continue };
+        match line.chars().next() {
+            Some(' ' | '-' | '+' | '\\') => h.lines.push(line.to_string()),
+            None => h.lines.push(" ".into()),
+            _ => {}
+        }
+    }
+    out.into_iter().take(MAX_HUNKS).map(Hunk::bounded).collect()
 }
 
 /// The hunks of a unified diff as (old text, new text).
@@ -1534,6 +1572,7 @@ mod tests {
             secret,
             blocking,
             expires_in_ms,
+            ..
         }) = &o[0]
         else {
             panic!("{o:?}")
@@ -1739,9 +1778,31 @@ mod tests {
         assert!(
             matches!(&content[1], ToolContent::Diff { old: Some(o), new, .. } if o == "x\nz\n" && new == "x\ny\nz\n")
         );
+        // Each hunk's diff also carries its real line numbers from the `@@` header.
+        let ToolContent::Diff { hunks, .. } = &content[1] else { panic!() };
+        assert_eq!(
+            hunks[..],
+            [Hunk {
+                old_start: 10,
+                old_lines: 2,
+                new_start: 10,
+                new_lines: 3,
+                lines: vec![" x".into(), "+y".into(), " z".into()]
+            }]
+        );
         assert!(matches!(&outs[4], Out::Ev(Ev::ToolUpdate { content, .. }) if content.is_empty()), "{shown:?}");
         assert!(matches!(&outs[5], Out::Ev(Ev::Usage { context_window: Some(475000), context_used: Some(100), .. })));
         assert!(matches!(&outs[6], Out::Ev(Ev::Message { text, delta: false, .. }) if text == "1. do it"));
+    }
+
+    #[test]
+    fn hunk_headers_give_line_numbers_and_left_out_counts_are_one() {
+        let h = numbered_hunks("@@ -3 +3,2 @@ fn main\n-a\n+b\n+c\n\\ No newline at end of file\n@@ bad @@\n x\n");
+        assert_eq!((h[0].old_start, h[0].old_lines, h[0].new_start, h[0].new_lines), (3, 1, 3, 2));
+        assert_eq!(h[0].lines, ["-a", "+b", "+c", "\\ No newline at end of file"]);
+        // A header that does not parse still opens a hunk, so the hunks pair with the texts.
+        assert_eq!((h[1].old_start, h[1].new_start, h[1].lines.len()), (0, 0, 1));
+        assert_eq!(numbered_hunks("@@ -1 +1 @@\n").len(), hunks("@@ -1 +1 @@\n").len());
     }
 
     #[test]

@@ -75,7 +75,20 @@ while IFS= read -r line; do
   case "$line" in
     *'"subtype":"initialize"'*)
       echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}' ;;
-    *control_request*) echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+    *'"subtype":"interrupt"'*) echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+    *'"subtype":"set_permission_mode"'*)
+      echo '{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}' ;;
+    *control_request*) ;;
+    *'"type":"control_response"'*)
+      case "$line" in
+        *'"destination":"session"'*) echo '{"type":"result","subtype":"success","is_error":false,"result":"allowed for the session"}' ;;
+        *'"answers"'*) echo '{"type":"result","subtype":"success","is_error":false,"result":"answered"}' ;;
+        *) echo '{"type":"result","subtype":"success","is_error":false,"result":"other"}' ;;
+      esac ;;
+    *PERMIT*)
+      echo '{"type":"control_request","request_id":"cu1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make"},"permission_suggestions":[{"type":"addRules","rules":[],"behavior":"allow","destination":"localSettings"}]}}' ;;
+    *ASK*)
+      echo '{"type":"control_request","request_id":"cu2","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which?","options":[{"label":"a"}]}]}}}' ;;
     *'"type":"image"'*)
       echo '{"type":"result","subtype":"success","is_error":false,"result":"image"}' ;;
     *HOLD*)
@@ -101,8 +114,9 @@ Say '{"type":"system","subtype":"init","session_id":"fake-session"}'
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ($line -like '*"subtype":"initialize"*') {
     Say '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}'
-  } elseif ($line -like '*control_request*') {
+  } elseif ($line -like '*"subtype":"interrupt"*') {
     Say '{"type":"result","subtype":"error_during_execution","is_error":true}'
+  } elseif ($line -like '*control_request*') {
   } elseif ($line -like '*"type":"image"*') {
     Say '{"type":"result","subtype":"success","is_error":false,"result":"image"}'
   } elseif ($line -like '*HOLD*') {
@@ -247,8 +261,8 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         assert_eq!(fake["verdict"], "ok", "{fake}");
         assert_eq!(fake["version"], "2.1.0", "{fake}");
         // `~` is the user's home as the runner sees it; a relative folder is refused there.
-        assert!(m1.start(creator(), "fake", "relative", None, false, None).await.is_err());
-        let chat = m1.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        assert!(m1.start(creator(), "fake", "relative", None, false, None, None).await.is_err());
+        let chat = m1.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
         let id = chat.id.clone();
         let (_, _, mut rx) = chat.follow(0);
         chat.send(input("hello"));
@@ -320,7 +334,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         let spawned = Arc::new(AtomicUsize::new(0));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
-        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
         let (_, _, mut rx) = chat.follow(0);
         chat.send(input("HOLD"));
         wait_for(&mut rx, |v| v["t"] == "state" && v["state"] == "running").await;
@@ -340,13 +354,51 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         rt.shutdown_background();
     }
 
+    /// Permissions, answers with every part and mode switches cross the pipe, and the session's
+    /// permission mode reaches the agent the runner starts.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permits_answers_and_modes_cross_the_pipe() {
+        use crate::chat::{Pending, adapters::Decision};
+        let f = fixture();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
+        let chat = m
+            .start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("default".into()))
+            .await
+            .unwrap();
+        let (_, _, mut rx) = chat.follow(0);
+        let by = By { device: "laptop".into(), principal: None };
+        chat.send(input("PERMIT"));
+        let p = wait_for(&mut rx, |v| v["t"] == "permission").await;
+        let rid = p["rid"].as_str().unwrap().to_string();
+        assert!(chat.claim(&rid, &[Pending::Permission]).is_some());
+        chat.send(Cmd::Permit { rid, decision: Decision::Session, message: None, mode: None, by: by.clone() });
+        let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+        assert_eq!(end["final_text"], "allowed for the session", "{end}");
+        chat.send(input("ASK"));
+        let q = wait_for(&mut rx, |v| v["t"] == "question").await;
+        let qid = q["qid"].as_str().unwrap().to_string();
+        assert!(chat.claim(&qid, &[Pending::Question]).is_some());
+        let answers = [("Which?".to_string(), "a".to_string())].into();
+        chat.send(Cmd::Answer { qid, text: "a".into(), answers: Some(answers), by: by.clone() });
+        let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+        assert_eq!(end["final_text"], "answered", "{end}");
+        chat.send(Cmd::SetMode { mode: "plan".into(), by });
+        wait_for(&mut rx, |v| v["t"] == "mode" && v["mode"] == "plan").await;
+        m.close().await;
+        drop((chat, m));
+        rt.shutdown_background();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_image_crosses_the_pipe_to_an_agent_in_the_runner() {
         let f = fixture();
         let spawned = Arc::new(AtomicUsize::new(0));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
-        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
         let (_, _, mut rx) = chat.follow(0);
         let image = crate::chat::Image {
             name: "dot.png".into(),
@@ -373,7 +425,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         let spawned = Arc::new(AtomicUsize::new(0));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let m = host(&f, &rt, tokio::runtime::Handle::current(), spawned).await;
-        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+        let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
         std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
         let found = chat.previewable("report.html").unwrap();
         assert_eq!(m.read_preview(&found.path).await.unwrap(), b"<h1>hi</h1>");

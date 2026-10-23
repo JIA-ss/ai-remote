@@ -426,7 +426,7 @@ async fn handle(host: &HostState, req: HostRequest, shutdown: &CancellationToken
         }
         HostRequest::Chat => json!({
             "enabled": host.chat().enabled(),
-            "sessions": host.chat().list(),
+            "sessions": host.chat().list(None),
             "live": host.chat().live_count(),
             "can_start": host.chat().blocked().is_none(),
             "reason": host.chat().blocked(),

@@ -11,15 +11,41 @@ use super::*;
 /// message joins it (a steer, answered "steered"); one containing LATE takes two seconds without
 /// reading, so a message sent meanwhile runs as the next turn. Every message it takes is echoed
 /// back (`--replay-user-messages`).
-const FAKE_CLAUDE: &str = r#"#!/bin/sh
+///
+/// The control protocol as measured with Claude Code 2.1.308: it names the session when asked
+/// (`generate_session_title`), switches modes (`set_permission_mode`, then a `status` line), and
+/// asks with `can_use_tool`: ASK asks two questions (AskUserQuestion), PLAN proposes a plan
+/// (ExitPlanMode), PERMIT wants to run a command (with a rule to allow it for the session). The
+/// turn then ends with what the answer said: `allowed <answers>` or `denied <message>`. EDIT edits
+/// a file and its result carries a `structuredPatch`.
+const FAKE_CLAUDE: &str = r###"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
-echo '{"type":"system","subtype":"init","session_id":"fake-session","skills":["tidy"]}'
+MODE=$(printf '%s ' "$@" | sed -n 's/.*--permission-mode \([A-Za-z]*\).*/\1/p')
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake-session\",\"skills\":[\"tidy\"],\"permissionMode\":\"$MODE\"}"
 REPLAY='{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"(replay)"}]}}'
 SLOW=""
+field() { printf '%s' "$line" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
 while IFS= read -r line; do
   case "$line" in
     *'"subtype":"initialize"'*)
       echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[{"name":"review","description":"Review the changes","argumentHint":"<pr>"},{"name":"tidy","description":"A skill"}]}}}'
+      continue ;;
+    *'"subtype":"generate_session_title"'*)
+      echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(field request_id)\",\"response\":{\"title\":\"Fake title\"}}}"
+      continue ;;
+    *'"subtype":"set_permission_mode"'*)
+      MODE=$(field mode)
+      echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(field request_id)\",\"response\":{\"mode\":\"$MODE\"}}}"
+      echo "{\"type\":\"system\",\"subtype\":\"status\",\"status\":null,\"permissionMode\":\"$MODE\"}"
+      continue ;;
+    *'"type":"control_response"'*)
+      # The answer to a can_use_tool: the turn ends with what it said.
+      ANSWERS=$(printf '%s' "$line" | sed -n 's/.*"answers":\({[^}]*}\).*/\1/p' | tr -d '"')
+      case "$line" in
+        *'"behavior":"allow"'*) SAID="allowed $ANSWERS$(printf '%s' "$line" | grep -o '"destination":"[a-z]*"' | tr -d '"')" ;;
+        *) SAID="denied $(field message)" ;;
+      esac
+      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$SAID\"}"
       continue ;;
     *control_request*)
       [ -n "$SLOW" ] && kill "$SLOW" 2>/dev/null
@@ -43,12 +69,23 @@ while IFS= read -r line; do
       echo '{"type":"assistant","message":{"id":"l","content":[{"type":"text","text":"late"}]}}'
       sleep 2
       echo '{"type":"result","subtype":"success","is_error":false,"result":"late"}' ;;
+    *ASK*)
+      echo '{"type":"control_request","request_id":"cu-ask","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which config?","header":"Config","multiSelect":false,"options":[{"label":"debug"},{"label":"release"}]},{"question":"Which targets?","header":"Targets","multiSelect":true,"options":[{"label":"mac"},{"label":"win"}]}]},"tool_use_id":"tu-ask","requires_user_interaction":true}}' ;;
+    *PLAN*)
+      echo '{"type":"control_request","request_id":"cu-plan","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"## Plan: build it"},"tool_use_id":"tu-plan","requires_user_interaction":true}}' ;;
+    *PERMIT*)
+      echo '{"type":"assistant","message":{"id":"pm","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"cargo build"}}]}}'
+      echo '{"type":"control_request","request_id":"cu-bash","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo build"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"cargo build"}],"behavior":"allow","destination":"localSettings"}],"decision_reason":"This command requires approval","tool_use_id":"tu-bash"}}' ;;
+    *EDIT*)
+      echo '{"type":"assistant","message":{"id":"ed","content":[{"type":"tool_use","id":"tu-edit","name":"Edit","input":{"file_path":"/w/t.py","old_string":"b = 2","new_string":"b = 20"}}]}}'
+      echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-edit","type":"tool_result","content":"updated"}]},"tool_use_result":{"filePath":"/w/t.py","oldString":"b = 2","newString":"b = 20","structuredPatch":[{"oldStart":1,"oldLines":3,"newStart":1,"newLines":3,"lines":[" a = 1","-b = 2","+b = 20"," c = 3"]}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"edited"}' ;;
     *)
       echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"echo"}]}}'
       echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}' ;;
   esac
 done
-"#;
+"###;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -64,7 +101,8 @@ fn fixture() -> Fixture {
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let cfg = format!(
         "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{0}\"\n\n\
-         [[agent]]\nid = \"fake-nosteer\"\nbase = \"claude\"\ncommand = \"{0}\"\nsteer = false\n",
+         [[agent]]\nid = \"fake-nosteer\"\nbase = \"claude\"\ncommand = \"{0}\"\nsteer = false\n\n\
+         [[agent]]\nid = \"fake-codex\"\nbase = \"codex\"\ncommand = \"{0}\"\n",
         fake.display()
     );
     std::fs::write(root.join("chat.toml"), cfg).unwrap();
@@ -115,7 +153,7 @@ async fn wait_for(rx: &mut broadcast::Receiver<Arc<str>>, pred: impl Fn(&Value) 
 async fn a_session_runs_turns_queues_interrupts_and_ends() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("hello"));
     let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
@@ -168,7 +206,7 @@ async fn a_session_runs_turns_queues_interrupts_and_ends() {
     // Reopened by a new host: ended and numbered on.
     drop(chat);
     let (m2, _) = manager(&f);
-    let again = m2.list();
+    let again = m2.list(None);
     assert_eq!(again[0]["state"], "ended");
     assert_eq!(again[0]["seq"].as_u64(), Some(upto));
 }
@@ -177,7 +215,8 @@ async fn a_session_runs_turns_queues_interrupts_and_ends() {
 async fn a_stopped_process_parks_and_the_next_message_resumes() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).await.unwrap();
+    let chat =
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     chat.send(Cmd::Park { reason: "idle".into() });
@@ -194,12 +233,16 @@ async fn a_stopped_process_parks_and_the_next_message_resumes() {
 async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None).await.is_err());
-    assert!(m.start(creator(), "fake", "relative", None, false, None).await.is_err());
-    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None).await.is_err());
-    assert!(m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None).await.is_err());
+    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None, None).await.is_err());
+    assert!(m.start(creator(), "fake", "relative", None, false, None, None).await.is_err());
+    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None, None).await.is_err());
+    assert!(
+        m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None, None)
+            .await
+            .is_err()
+    );
     m.set_enabled(false).unwrap();
-    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
+    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.err().expect("refused");
     assert!(e.to_string().contains("switched off"), "{e}");
     // Persisted for the next host.
     let (m2, _) = manager(&f);
@@ -210,7 +253,8 @@ async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
 async fn devices_that_lose_admin_lose_their_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into())).await.unwrap();
+    let chat =
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into()), None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     m.enforce(|_| true);
@@ -254,7 +298,8 @@ async fn a_broken_settings_file_switches_agents_off() {
         .unwrap();
     let (m, _audit) = manager(&f);
     assert!(!m.enabled());
-    let e = m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None).await.err().expect("refused");
+    let e =
+        m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None, None).await.err().expect("refused");
     assert!(e.to_string().contains("chat.toml"), "{e}");
     assert!(m.runtimes(false).await["host"]["config_error"].as_str().is_some_and(|s| s.contains("built-in")));
     // Not overwritten by a switch.
@@ -266,7 +311,7 @@ async fn a_broken_settings_file_switches_agents_off() {
 async fn a_steer_joins_the_running_turn() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     let start = wait_for(&mut rx, |v| v["t"] == "turn_start").await;
@@ -291,7 +336,7 @@ async fn a_steer_joins_the_running_turn() {
 async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("LATE"));
     wait_for(&mut rx, |v| v["t"] == "message").await;
@@ -314,7 +359,7 @@ async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
 async fn a_steer_with_no_turn_running_starts_one() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(steer("hello"));
     let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
@@ -336,7 +381,7 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
         (Some(true), Some(false))
     );
     assert_eq!(row("opencode")["caps"]["steer"], false);
-    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     wait_for(&mut rx, |v| v["t"] == "tool_call").await;
@@ -358,7 +403,7 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
 async fn previews_read_only_files_the_session_is_about() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
     std::fs::write(f.work.join("notes.txt"), "x").unwrap();
     let outside = f.root.join("elsewhere");
@@ -407,7 +452,8 @@ async fn previews_read_only_files_the_session_is_about() {
 async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into())).await.unwrap();
+    let chat =
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     // `initialize` lists the commands; the first `init` says which are skills.
     let ev = wait_for(&mut rx, |v| v["t"] == "commands" && v["commands"][1]["kind"] == "skill").await;
@@ -431,7 +477,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     }
     assert_eq!(lists, 0);
     // A new session in the same folder offers them before its agent has started.
-    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     assert_eq!(m.commands_for(&other).len(), 2);
     assert!(m.commands_for(&chat).iter().any(|c| c.name == "tidy" && c.kind == "skill"));
 }
@@ -440,7 +486,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
 async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
     assert!(m.takes_images(&chat));
     let (_, _, mut rx) = chat.follow(0);
     let mut msg = message("look");
@@ -451,4 +497,295 @@ async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     let (lines, _, _) = chat.follow(0);
     assert!(!lines.iter().any(|l| l.contains("iVBORw0KGgo")), "the image's bytes stay out of the transcript");
+}
+
+fn person(device: &str) -> By {
+    By { device: device.into(), principal: Some(format!("eid:{device}")) }
+}
+
+#[tokio::test]
+async fn a_permission_waits_for_the_first_answer_and_can_hold_for_the_session() {
+    let f = fixture();
+    let (m, mut audit) = manager(&f);
+    let chat =
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("default".into())).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("PERMIT"));
+    let p = wait_for(&mut rx, |v| v["t"] == "permission").await;
+    assert_eq!((p["tool"].as_str(), p["title"].as_str()), (Some("Bash"), Some("Bash cargo build")));
+    assert_eq!((p["suggestions"].clone(), p["call_id"].as_str()), (json!(["session"]), Some("tu-bash")));
+    let rid = p["rid"].as_str().unwrap().to_string();
+    assert_eq!(chat.meta().pending, Some(Pending::Permission));
+    assert_eq!(chat.describe()["pending"], "permission");
+    // Two devices answer: the first takes it, the second finds it gone (and a question's answer
+    // never takes a permission).
+    assert_eq!(chat.claim(&rid, &[Pending::Question]), None);
+    assert_eq!(chat.claim(&rid, &[Pending::Permission, Pending::Plan]), Some(Pending::Permission));
+    assert_eq!(chat.claim(&rid, &[Pending::Permission, Pending::Plan]), None);
+    assert_eq!(chat.meta().pending, None);
+    chat.send(Cmd::Permit {
+        rid: rid.clone(),
+        decision: Decision::Session,
+        message: None,
+        mode: None,
+        by: person("phone"),
+    });
+    let r = wait_for(&mut rx, |v| v["t"] == "resolved").await;
+    assert_eq!(
+        (r["id"].as_str(), r["outcome"].as_str(), r["by"]["device"].as_str()),
+        (Some(rid.as_str()), Some("allowed_session"), Some("phone"))
+    );
+    // The agent was told to allow it for this session only.
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "allowed destination:session");
+    let mut audited = false;
+    while let Ok(v) = audit.try_recv() {
+        if v["kind"] == "chat_permission" {
+            assert_eq!((v["outcome"].as_str(), v["by"].as_str()), (Some("allowed_session"), Some("phone")));
+            audited = true;
+        }
+    }
+    assert!(audited);
+
+    // No with a reason: the model reads it.
+    chat.send(input("PERMIT again"));
+    let p = wait_for(&mut rx, |v| v["t"] == "permission").await;
+    let rid = p["rid"].as_str().unwrap().to_string();
+    chat.claim(&rid, &[Pending::Permission]).unwrap();
+    chat.send(Cmd::Permit {
+        rid,
+        decision: Decision::Deny,
+        message: Some("not now".into()),
+        mode: None,
+        by: person("laptop"),
+    });
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "denied not now");
+
+    // Unanswered when the turn stops: settled as cancelled, nothing waits any more.
+    chat.send(input("PERMIT once more"));
+    let p = wait_for(&mut rx, |v| v["t"] == "permission").await;
+    chat.send(Cmd::Interrupt { then: None });
+    let r = wait_for(&mut rx, |v| v["t"] == "resolved").await;
+    assert_eq!((r["id"].clone(), r["outcome"].as_str()), (p["rid"].clone(), Some("cancelled")));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert!(!chat.is_open(p["rid"].as_str().unwrap()));
+    assert_eq!(chat.meta().pending, None);
+}
+
+#[tokio::test]
+async fn questions_of_several_parts_and_plans_are_answered_and_switch_the_mode() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat =
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("plan".into())).await.unwrap();
+    assert_eq!(chat.describe()["permission_mode"], "plan");
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("ASK me"));
+    let q = wait_for(&mut rx, |v| v["t"] == "question").await;
+    assert_eq!((q["prompt"].as_str(), q["options"].as_array().map(Vec::len)), (Some("Which config?"), Some(2)));
+    assert_eq!(
+        (q["questions"][1]["header"].as_str(), q["questions"][1]["multi"].as_bool()),
+        (Some("Targets"), Some(true))
+    );
+    let qid = q["qid"].as_str().unwrap().to_string();
+    assert_eq!(chat.meta().pending, Some(Pending::Question));
+    assert!(chat.claim(&qid, &[Pending::Question]).is_some());
+    let answers: BTreeMap<String, String> =
+        [("Which config?".into(), "release".into()), ("Which targets?".into(), "mac".into())].into();
+    chat.send(Cmd::Answer { qid: qid.clone(), text: "release".into(), answers: Some(answers), by: person("laptop") });
+    let r = wait_for(&mut rx, |v| v["t"] == "resolved").await;
+    assert_eq!((r["id"].as_str(), r["outcome"].as_str()), (Some(qid.as_str()), Some("answered")));
+    let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    assert_eq!(end["final_text"], "allowed {Which config?:release,Which targets?:mac}");
+
+    // A plan approved to go on accepting edits: the mode follows.
+    chat.send(input("PLAN it"));
+    let p = wait_for(&mut rx, |v| v["t"] == "plan_review").await;
+    assert_eq!(p["plan"], "## Plan: build it");
+    let rid = p["rid"].as_str().unwrap().to_string();
+    assert_eq!(chat.meta().pending, Some(Pending::Plan));
+    chat.claim(&rid, &[Pending::Permission, Pending::Plan]).unwrap();
+    chat.send(Cmd::Permit {
+        rid,
+        decision: Decision::Once,
+        message: None,
+        mode: Some("acceptEdits".into()),
+        by: person("laptop"),
+    });
+    // (The switch is confirmed after the turn's end here.)
+    wait_for(&mut rx, |v| v["t"] == "mode" && v["mode"] == "acceptEdits").await;
+    assert_eq!(chat.meta().permission_mode.as_deref(), Some("acceptEdits"));
+
+    // Switched by a person, the agent confirms it.
+    chat.send(Cmd::SetMode { mode: "default".into(), by: person("laptop") });
+    wait_for(&mut rx, |v| v["t"] == "mode" && v["mode"] == "default").await;
+    chat.send(Cmd::SetMode { mode: "yolo".into(), by: person("laptop") });
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "mode_rejected");
+}
+
+#[tokio::test]
+async fn titles_come_from_the_agent_unless_a_person_named_the_session() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("Fix the build please"));
+    // The title may come before the turn's end or after it (the stand-in answers after).
+    let t = wait_for(&mut rx, |v| v["t"] == "title").await;
+    assert_eq!((t["title"].as_str(), t["source"].as_str()), (Some("Fake title"), Some("agent")));
+    for _ in 0..50 {
+        if chat.meta().last_status.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let d = chat.describe();
+    assert_eq!((d["title"].as_str(), d["first_text"].as_str()), (Some("Fake title"), Some("Fix the build please")));
+    assert_eq!(
+        (d["last_status"].as_str(), d["permission_mode"].as_str()),
+        (Some("completed"), Some("bypassPermissions"))
+    );
+    assert_eq!(d["last_seq"], d["seq"]);
+    // Renamed, pinned, archived.
+    let d = m.update(&chat.id, Some("My build".into()), Some(true), Some(true), &creator()).unwrap();
+    assert_eq!(
+        (d["title"].as_str(), d["title_source"].as_str(), d["pinned"].as_bool()),
+        (Some("My build"), Some("user"), Some(true))
+    );
+    let t = wait_for(&mut rx, |v| v["t"] == "title").await;
+    assert_eq!(t["source"], "user");
+    assert!(m.list(Some(false)).iter().all(|s| s["id"] != chat.id.as_str()));
+    assert!(m.list(Some(true)).iter().any(|s| s["id"] == chat.id.as_str()));
+    let d = m.update(&chat.id, None, None, Some(false), &creator()).unwrap();
+    assert_eq!(d["title"], "My build");
+    assert!(m.update(&chat.id, Some("x".repeat(201)), None, None, &creator()).is_err());
+    // Empty: back to none (the first message shows).
+    let d = m.update(&chat.id, Some(" ".into()), None, None, &creator()).unwrap();
+    assert!(d.get("title").is_none() && d.get("title_source").is_none());
+}
+
+#[tokio::test]
+async fn an_edit_carries_its_line_numbers_and_modes_are_claude_codes_alone() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("EDIT"));
+    let u = wait_for(&mut rx, |v| v["t"] == "tool_update").await;
+    assert_eq!(u["content"][0]["hunks"][0]["lines"], json!([" a = 1", "-b = 2", "+b = 20", " c = 3"]));
+    assert_eq!(u["content"][0]["hunks"][0]["old_start"], 1);
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+
+    let codex = m
+        .start(creator(), "fake-codex", f.work.to_str().unwrap(), None, false, None, Some("plan".into()))
+        .await
+        .unwrap();
+    assert!(codex.describe().get("permission_mode").is_none(), "only Claude Code has modes");
+    let (_, _, mut rx) = codex.follow(0);
+    codex.send(Cmd::SetMode { mode: "plan".into(), by: person("laptop") });
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "mode_rejected");
+    // Nothing is asked: an answer finds nothing to take.
+    assert!(codex.claim("q1", &[Pending::Question]).is_none());
+    let bad = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("yolo".into())).await;
+    assert!(bad.is_err());
+}
+
+#[tokio::test]
+async fn an_older_hosts_session_gains_its_first_message_and_last_outcome() {
+    let f = fixture();
+    let dir = f.root.join("chat").join("cold");
+    std::fs::create_dir_all(&dir).unwrap();
+    let meta = json!({
+        "id": "cold", "runtime": "fake", "name": "Fake", "cwd": f.work, "by": {"device": "laptop"},
+        "started_at": 1, "state": "parked", "turns": 2, "last_activity": 1,
+    });
+    std::fs::write(dir.join("meta.json"), meta.to_string()).unwrap();
+    let by = json!({"device": "laptop"});
+    let events = [
+        json!({"seq": 1, "ts": 1, "turn": 0, "t": "user", "input_id": "u1", "by": by, "text": "  first ask  "}),
+        json!({"seq": 2, "ts": 1, "turn": 1, "t": "turn_start"}),
+        json!({"seq": 3, "ts": 1, "turn": 1, "t": "turn_end", "status": "completed", "duration_ms": 1}),
+        json!({"seq": 4, "ts": 1, "turn": 1, "t": "user", "input_id": "u2", "by": by, "text": "second"}),
+        json!({"seq": 5, "ts": 1, "turn": 2, "t": "turn_end", "status": "failed", "duration_ms": 1, "reason": "401"}),
+    ];
+    // Written as the host writes them: compact, the envelope first.
+    let text: String = events.iter().map(|e| format!("{}\n", serde_json::to_string(e).unwrap())).collect();
+    std::fs::write(dir.join("events.jsonl"), text).unwrap();
+    let (m, _audit) = manager(&f);
+    let d = m.get("cold").unwrap().describe();
+    assert_eq!((d["first_text"].as_str(), d["last_status"].as_str()), (Some("first ask"), Some("failed")));
+    assert_eq!((d["last_reason"].as_str(), d["permission_mode"].as_str()), (Some("401"), Some("bypassPermissions")));
+    assert_eq!((d["pinned"].as_bool(), d["archived"].as_bool()), (Some(false), Some(false)));
+    // Written back: the next host finds them in meta.json.
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).unwrap()).unwrap();
+    assert_eq!(saved["first_text"], "first ask");
+}
+
+/// The next event of type `what` (or the turn's end, which comes instead when it is not asked),
+/// printing what passes.
+async fn wait(rx: &mut broadcast::Receiver<Arc<str>>, what: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let line = tokio::time::timeout_at(deadline, rx.recv()).await.expect(what).expect("open");
+        eprintln!("{}", line.chars().take(300).collect::<String>());
+        let v: Value = serde_json::from_str(&line).unwrap();
+        if v["t"] == what || v["t"] == "turn_end" {
+            return v;
+        }
+    }
+}
+
+/// The permission flows against a real Claude Code (its sign-in and a little of its quota):
+///
+///   AR_REAL_CLAUDE=$(command -v claude) cargo test -p ar-host --lib real_claude -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "needs a signed-in Claude Code in AR_REAL_CLAUDE"]
+async fn real_claude_asks_titles_and_switches_modes() {
+    let Ok(program) = std::env::var("AR_REAL_CLAUDE") else { return };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"claude\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let chat =
+        m.start(creator(), "real", work, Some("haiku".into()), true, None, Some("default".into())).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input(
+        "Use the AskUserQuestion tool to ask me ONE question: which color I prefer, options red and blue. After I \
+         answer, reply with exactly: YOU CHOSE <color>.",
+    ));
+    let q = wait(&mut rx, "question").await;
+    assert_eq!(q["t"], "question", "{q}");
+    let qid = q["qid"].as_str().unwrap().to_string();
+    let question = q["questions"][0]["question"].as_str().unwrap().to_string();
+    chat.claim(&qid, &[Pending::Question]).unwrap();
+    let answers = [(question, "blue".to_string())].into();
+    chat.send(Cmd::Answer { qid, text: "blue".into(), answers: Some(answers), by: person("laptop") });
+    let end = wait(&mut rx, "turn_end").await;
+    assert!(end["final_text"].as_str().is_some_and(|t| t.to_lowercase().contains("blue")), "{end}");
+    assert!(chat.meta().title.is_some(), "the agent named the session: {:?}", chat.meta());
+
+    chat.send(input(
+        "Run exactly this shell command with the Bash tool and report its output: \
+         curl -s -o /dev/null -w %{http_code} https://example.com",
+    ));
+    let p = wait(&mut rx, "permission").await;
+    assert_eq!((p["t"].as_str(), p["tool"].as_str()), (Some("permission"), Some("Bash")), "{p}");
+    let rid = p["rid"].as_str().unwrap().to_string();
+    chat.claim(&rid, &[Pending::Permission]).unwrap();
+    chat.send(Cmd::Permit { rid, decision: Decision::Session, message: None, mode: None, by: person("laptop") });
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    assert!(!f.work.join(".claude/settings.local.json").exists(), "a session rule is not written to the project");
+
+    chat.send(Cmd::SetMode { mode: "plan".into(), by: person("laptop") });
+    let mode = wait(&mut rx, "mode").await;
+    assert_eq!(mode["mode"], "plan", "{mode}");
+    chat.send(Cmd::End { reason: "done".into() });
 }

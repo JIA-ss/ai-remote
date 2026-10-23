@@ -3,6 +3,7 @@
 // Pure functions over plain data: only `import type`, so tools/desktop-nav.test.mjs runs it in a vm.
 
 import type { ChatTarget } from "../ui/AgentChat";
+import type { Place } from "./workspace";
 
 export type Section = "general" | "agents" | "device" | "network" | "approvals" | "about";
 export type ComputerTab = "overview" | "access" | "tools" | "agents";
@@ -22,7 +23,13 @@ export type Route =
   | { page: "pair" }
   | { page: "settings"; sec: Section }
   | { page: "computer"; host: string; tab: ComputerTab }
-  | { page: "session"; host: string; panel?: "chat"; chat?: ChatTarget | null };
+  | { page: "session"; host: string; panel?: "chat"; chat?: ChatTarget | null }
+  /** The agents workspace (it takes the whole window, with its own sidebar): one session on a computer,
+   *  or the new-session page; `place` pre-fills that page (it does not make a different place). */
+  | { page: "agents"; host?: string; session?: string; place?: Place | null };
+
+/** The two halves of the window: the paired computers (the shell) or the agents workspace. */
+export type AppMode = "computers" | "agents";
 
 /** `stack[i]` is the current route. */
 export interface History {
@@ -52,11 +59,17 @@ export const isComputerTab = (v: unknown): v is ComputerTab => COMPUTER_TABS.inc
  * The route a URL opens (`?view=…`, the deep links screenshots and the e2e scripts use).
  * `explicit`: the URL named a page, so the first-run welcome does not replace it.
  * `welcomed`: `view=welcome` / `view=empty` force the first-run state (undefined: use the stored one).
+ * `mode`: the half the window was last in; with no `view` at all, the agents workspace opens again.
  */
-export function parseRoute(search: string, mem: Memory = DEFAULT_MEMORY): { route: Route; explicit: boolean; welcomed?: boolean } {
+export function parseRoute(
+  search: string,
+  mem: Memory = DEFAULT_MEMORY,
+  mode: AppMode = "computers",
+): { route: Route; explicit: boolean; welcomed?: boolean } {
   const q = new URLSearchParams(search);
   const view = q.get("view");
   const host = q.get("host");
+  if (view === null && mode === "agents") return { route: { page: "agents" }, explicit: false };
   switch (view) {
     case "devices":
     case "approvals":
@@ -76,6 +89,12 @@ export function parseRoute(search: string, mem: Memory = DEFAULT_MEMORY): { rout
     case "session":
       if (!host) break;
       return { route: q.get("panel") === "chat" ? { page: "session", host, panel: "chat" } : { page: "session", host }, explicit: true };
+    case "agents": {
+      // a session needs its computer; without one the session id is dropped
+      const session = host ? q.get("session") : null;
+      const route: Route = host && session ? { page: "agents", host, session } : host ? { page: "agents", host } : { page: "agents" };
+      return { route, explicit: true };
+    }
     case "welcome":
       return { route: { page: "welcome" }, explicit: false, welcomed: false };
     case "empty":
@@ -96,6 +115,8 @@ export function same(a: Route, b: Route): boolean {
       return a.host === (b as typeof a).host && a.tab === (b as typeof a).tab;
     case "session":
       return a.host === (b as typeof a).host && (a.panel ?? null) === ((b as typeof a).panel ?? null);
+    case "agents":
+      return (a.host ?? null) === ((b as typeof a).host ?? null) && (a.session ?? null) === ((b as typeof a).session ?? null);
     default:
       return true;
   }
@@ -131,6 +152,9 @@ export function parentOf(r: Route, mem: Memory = DEFAULT_MEMORY): Route | null {
     case "pair":
     case "settings":
       return { page: "devices" };
+    case "agents":
+      // a session's parent is the workspace's new-session page, the top of the workspace
+      return r.session ? { page: "agents" } : null;
     default:
       return null;
   }
@@ -149,10 +173,16 @@ export function forward(h: History): History {
 export const canBack = (h: History, mem: Memory = DEFAULT_MEMORY): boolean => h.i > 0 || parentOf(current(h), mem) !== null;
 export const canForward = (h: History): boolean => h.i < h.stack.length - 1;
 
-/** The window went to the tray: a live view must not go on unseen, so a session becomes its computer. */
+/**
+ * The window went to the tray: a live view must not go on unseen. A session opened from the agents
+ * workspace goes back to it (the session entry is dropped, so › does not reopen the picture); any
+ * other session becomes its computer.
+ */
 export function hidden(h: History, mem: Memory = DEFAULT_MEMORY): History {
   const r = current(h);
-  return r.page === "session" ? replace(h, { page: "computer", host: r.host, tab: mem.tab }) : h;
+  if (r.page !== "session") return h;
+  if (h.i > 0 && h.stack[h.i - 1].page === "agents") return { stack: h.stack.slice(0, h.i), i: h.i - 1 };
+  return replace(h, { page: "computer", host: r.host, tab: mem.tab });
 }
 
 /**
@@ -173,6 +203,7 @@ export function navKey(r: Route): NavKey | null {
     case "session":
       return { computer: r.host };
     case "welcome":
+    case "agents":
       return null;
     default:
       return r.page;
@@ -185,6 +216,33 @@ export function routeOfNav(n: NavKey | "home", mem: Memory = DEFAULT_MEMORY): Ro
   if (typeof n === "object") return { page: "computer", host: n.computer, tab: mem.tab };
   if (n === "settings") return { page: "settings", sec: mem.sec };
   return { page: n };
+}
+
+/**
+ * Where the mode switch's "agents" goes: the workspace route you were last on in this history (the
+ * session you came from, a page you went back past), else its new-session page.
+ */
+export function lastAgents(h: History): Route {
+  for (let i = h.i; i >= 0; i--) if (h.stack[i].page === "agents") return h.stack[i];
+  for (let i = h.i + 1; i < h.stack.length; i++) if (h.stack[i].page === "agents") return h.stack[i];
+  return { page: "agents" };
+}
+
+/**
+ * The half of the window a route belongs to, to open there again next time: the workspace or the
+ * computers; null for the routes both halves reach (Settings, a live session) and the first run.
+ */
+export function modeOf(r: Route): AppMode | null {
+  switch (r.page) {
+    case "agents":
+      return "agents";
+    case "settings":
+    case "session":
+    case "welcome":
+      return null;
+    default:
+      return "computers";
+  }
 }
 
 /** What a route teaches the memory: the section and tab you were last on. */
