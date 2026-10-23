@@ -5,12 +5,16 @@ import Foundation
 // two in step. Pure, so it runs and is tested on macOS (tools/test-phone-chat-model.sh); the views are
 // in PhoneCodexRows.swift.
 //
-// A turn there is: the user's message on the right; the agent's work as a short list of one-line
-// units — consecutive tool calls folded into one line that names what is happening now ("Running
-// `npm test`", "Reading app.ts") and, once done, what was done ("Edited files, read files, and ran
-// commands"), with the agent's remarks between them; then, once the answer starts, all of that folds
-// behind "Worked for 1m 23s", the answer follows, and the files the turn changed close it. The layout
-// was studied from Codex's app; the code and wording here are this project's own.
+// A turn there is: the user's message on the right; "Working for …" over a hairline once the work
+// starts; the agent's work as a short list of one-line units — consecutive tool calls folded into one
+// line that names what is happening now ("Running `npm test`", "Reading app.ts") and, once done, what
+// was done ("Edited files, read files, ran commands"), with the agent's remarks between them; a line
+// saying what it is at while nothing else does (its reasoning's title, or "Thinking"); then, once the
+// answer starts, all of that folds behind "Worked for 1m 23s", the answer follows, and the files the
+// turn changed close it. Reasoning is not a step, the plan shows above the composer, and questions are
+// asked in a card in place of the composer, leaving one "Asked 2 questions" line once answered. Ported
+// up to the desktop's feat/codex-chat-view d937c69. The layout was studied from Codex's app; the code
+// and wording here are this project's own.
 
 /// Whether a session's agent is Codex: by its protocol, or (hosts that do not say) its id or name.
 public func phoneIsCodexRuntime(id: String?, name: String?, protocolName: String?) -> Bool {
@@ -427,6 +431,8 @@ public struct PhoneFileChange: Equatable, Sendable {
     public var lines: [PhoneDiffLine]
     /// The host cut its diff short (a very large change).
     public var truncated = false
+    /// Several edits of the file put together: their hunks count from different versions of it.
+    public var merged = false
 }
 
 /// Whether a "diff" is a unified diff, rather than the content Codex sends for an added or deleted file.
@@ -592,6 +598,13 @@ public func phoneTurnChanges(_ turn: PhoneChatTurn, cwd: String? = nil) -> [Phon
             // Deleted then written again: it changed; deleted at the end: it is gone. An added file stays added.
             out[i].kind = out[i].kind == "delete" && f.kind == "add" ? "update" : f.kind == "delete" ? "delete" : out[i].kind
             if f.truncated { out[i].truncated = true }
+            // The edits' hunks count from different versions of the file: shown in turn, never a patch.
+            out[i].merged = true
+            // A file the turn created has, in the end, the lines it was created with and those added since.
+            if out[i].kind == "add" {
+                out[i].add -= f.del
+                out[i].del = 0
+            }
         }
     }
     return out
@@ -601,7 +614,7 @@ public func phoneTurnChanges(_ turn: PhoneChatTurn, cwd: String? = nil) -> [Phon
 /// diffs carry no line numbers.
 public func phoneFilePatch(_ f: PhoneFileChange, cwd: String?) -> String? {
     let changed = f.lines.filter { $0.kind != .hunk }
-    if changed.isEmpty || f.truncated || changed.contains(where: { $0.old == nil && $0.new == nil }) { return nil }
+    if changed.isEmpty || f.truncated || f.merged || changed.contains(where: { $0.old == nil && $0.new == nil }) { return nil }
     func rel(_ p: String) -> String {
         phoneRelPath(p, cwd).replacingOccurrences(of: "\\", with: "/").replacingOccurrences(of: "^/+", with: "", options: .regularExpression)
     }
@@ -639,20 +652,11 @@ public enum PhoneCodexAct: Equatable, Sendable, Identifiable {
     case patch(PhoneChatTool, [PhoneFileChange])
     case web(PhoneChatTool, query: String)
     case tool(PhoneChatTool)
-    /// Reasoning between two tool calls of a group.
-    case thought(PhoneThought)
 
     public var id: String { key }
-    public var key: String {
+    public var key: String { "k:\(tool.callID)" }
+    public var tool: PhoneChatTool {
         switch self {
-        case .thought(let t): "t:\(t.id)"
-        case .exec(let x, _), .patch(let x, _), .web(let x, _), .tool(let x): "k:\(x.callID)"
-        }
-    }
-    /// The tool call (nil for reasoning).
-    public var tool: PhoneChatTool? {
-        switch self {
-        case .thought: nil
         case .exec(let x, _), .patch(let x, _), .web(let x, _), .tool(let x): x
         }
     }
@@ -663,10 +667,10 @@ public enum PhoneCodexUnit: Equatable, Sendable, Identifiable {
     case group(key: String, acts: [PhoneCodexAct], live: Bool)
     /// What the agent said between steps.
     case message(key: String, text: String, streaming: Bool)
-    case thought(key: String, PhoneThought, live: Bool)
     /// A sub-agent the agent started.
     case agent(key: String, PhoneChatTool)
-    case question(key: String, PhoneQuestion)
+    /// Questions the agent asked (one request), once they are answered or closed.
+    case asked(key: String, [PhoneQuestion])
     case notice(key: String, level: String, code: String, text: String)
     /// A message the user added to the running turn.
     case steer(key: String, text: String, by: String, ts: Double, extra: PhoneUserExtra)
@@ -674,17 +678,15 @@ public enum PhoneCodexUnit: Equatable, Sendable, Identifiable {
     public var id: String { key }
     public var key: String {
         switch self {
-        case .group(let k, _, _), .message(let k, _, _), .thought(let k, _, _), .agent(let k, _), .question(let k, _),
-             .notice(let k, _, _, _), .steer(let k, _, _, _, _): k
+        case .group(let k, _, _), .message(let k, _, _), .agent(let k, _), .asked(let k, _), .notice(let k, _, _, _), .steer(let k, _, _, _, _): k
         }
     }
     public var kind: String {
         switch self {
         case .group: "group"
         case .message: "message"
-        case .thought: "thought"
         case .agent: "agent"
-        case .question: "question"
+        case .asked: "asked"
         case .notice: "notice"
         case .steer: "steer"
         }
@@ -696,6 +698,8 @@ public struct PhoneCodexAnswer: Equatable, Sendable {
     public let id: String
     public let text: String
     public let streaming: Bool
+    /// When it started (a message folded before hosts said so has none).
+    public var startedMs: Double?
 }
 
 public struct PhoneCodexTurn: Equatable, Sendable {
@@ -707,9 +711,11 @@ public struct PhoneCodexTurn: Equatable, Sendable {
     public var status: String
     /// The agent is thinking now (nothing else shows that it is working).
     public var thinking: Bool
+    /// The title of the agent's latest reasoning (its summary's last line), said while it works.
+    public var title: String?
     /// A question waits for the user's answer.
     public var asking: Bool
-    /// The turn's plan as last updated (shown above its work, not as a step of it).
+    /// The turn's plan as last updated (shown above the composer, not as a step of the work).
     public var plan: [PhonePlanEntry]?
     public var changes: [PhoneFileChange]
 }
@@ -742,12 +748,12 @@ private func answerIndex(_ turn: PhoneChatTurn) -> Int? {
         }
     }
     while last >= 0, trailing(b[last]) { last -= 1 }
-    guard last >= 0, case .text(_, let text, let phase) = b[last], !trimmed(text).isEmpty else { return nil }
+    guard last >= 0, case .text(_, let text, let phase, _) = b[last], !trimmed(text).isEmpty else { return nil }
     if phase == "final_answer" { return last }
     if phase == "commentary" { return nil }
     // A host that does not say: the last text of a turn that completed, after all its work (a turn that
     // failed or was stopped has no answer, only what it said on the way).
-    let phased = b.contains { if case .text(_, _, let p) = $0 { p != nil } else { false } }
+    let phased = b.contains { if case .text(_, _, let p, _) = $0 { p != nil } else { false } }
     return !phased && turn.status == "completed" ? last : nil
 }
 
@@ -761,57 +767,56 @@ public func phoneCodexTurn(_ turn: PhoneChatTurn, cwd: String? = nil) -> PhoneCo
     // The open group, as an index into units.
     var group: Int?
     var plan: [PhonePlanEntry]?
-    func groupable(_ i: Int) -> Bool {
-        guard i < b.count, case .tool(let x) = b[i] else { return false }
-        return !phoneCodexIsAgent(x)
-    }
-    func addToGroup(_ act: PhoneCodexAct) {
-        guard let g = group, case .group(let key, var acts, let l) = units[g] else { return }
-        acts.append(act)
-        units[g] = .group(key: key, acts: acts, live: l)
-    }
+    var title: String?
     for i in b.indices {
         if i == ans { continue }
         let x = b[i]
-        if case .plan(let entries) = x {
+        switch x {
+        case .plan(let entries):
             // A plan update is not a step: it neither shows in the work nor splits a group.
             plan = entries
             continue
-        }
-        if groupable(i), case .tool(let tool) = x {
+        case .thought(let thought):
+            // Reasoning is not a step either (as in Codex's app): only its title says what the agent is at.
+            title = phoneReasoningTitle(thought.text) ?? title
+            continue
+        case .tool(let tool) where !phoneCodexIsAgent(tool):
             if group == nil {
                 units.append(.group(key: "g\(n):\(tool.callID)", acts: [], live: false))
                 group = units.count - 1
             }
-            addToGroup(actOf(tool))
-            continue
-        }
-        if case .thought(let thought) = x {
-            // Reasoning between two tool calls stays in their group, and so does reasoning after the last one
-            // while the turn runs (the next call may follow; the group's line must not come apart meanwhile).
-            // Anywhere else it is a line of its own.
-            var next = i + 1
-            while next < b.count {
-                if case .thought = b[next] { next += 1; continue }
-                if case .plan = b[next] { next += 1; continue }
-                break
+            if let g = group, case .group(let key, var acts, let l) = units[g] {
+                acts.append(actOf(tool))
+                units[g] = .group(key: key, acts: acts, live: l)
             }
-            if group != nil, groupable(next) || (live && next >= b.count) {
-                addToGroup(.thought(thought))
-                continue
-            }
-            group = nil
-            if !trimmed(thought.text).isEmpty { units.append(.thought(key: "t\(n):\(thought.id)", thought, live: false)) }
             continue
+        case .question(let q) where live && !q.answered:
+            // A question still waiting is asked in its own card, in place of the composer.
+            continue
+        default:
+            break
         }
         group = nil
         switch x {
-        case .text(let id, let text, _):
+        case .text(let id, let text, _, _):
             if !trimmed(text).isEmpty { units.append(.message(key: "m\(n):\(id)", text: text, streaming: false)) }
         case .tool(let tool):
             units.append(.agent(key: "a\(n):\(tool.callID)", tool))
         case .question(let q):
-            units.append(.question(key: "q\(n):\(q.qid)", q))
+            // One line per request (an older host does not say: questions in a row are one request).
+            let same: Int? = if let request = q.request {
+                units.firstIndex { if case .asked(_, let qs) = $0 { qs.first?.request == request } else { false } }
+            } else if let last = units.indices.last, case .asked(_, let qs) = units[last], qs.first?.request == nil {
+                last
+            } else {
+                nil
+            }
+            if let same, case .asked(let k, var qs) = units[same] {
+                qs.append(q)
+                units[same] = .asked(key: k, qs)
+            } else {
+                units.append(.asked(key: "q\(n):\(q.request ?? q.qid)", [q]))
+            }
         case .notice(let level, let code, let text):
             units.append(.notice(key: "n\(n):\(i)", level: level, code: code, text: text))
         case .user(let text, let by, let ts):
@@ -821,15 +826,15 @@ public func phoneCodexTurn(_ turn: PhoneChatTurn, cwd: String? = nil) -> PhoneCo
         }
     }
     let lastIsText = { if case .text = b.last { true } else { false } }()
-    let lastIsThought = { if case .thought = b.last { true } else { false } }()
     let asking = live && b.contains { if case .question(let q) = $0 { !q.answered } else { false } }
     var thinking = false
     if live {
         for u in units.indices {
             if case .group(let k, let acts, _) = units[u] {
-                units[u] = .group(key: k, acts: acts, live: acts.contains { $0.tool?.running == true })
+                units[u] = .group(key: k, acts: acts, live: acts.contains { $0.tool.running })
             }
         }
+        // The last group stays the live line until something else follows it (the next call may come).
         if let last = units.indices.last, ans == nil {
             switch units[last] {
             case .group(let k, let acts, _): units[last] = .group(key: k, acts: acts, live: true)
@@ -837,13 +842,10 @@ public func phoneCodexTurn(_ turn: PhoneChatTurn, cwd: String? = nil) -> PhoneCo
             default: break
             }
         }
-        if let last = units.indices.last, case .thought(let k, let t, _) = units[last], lastIsThought {
-            units[last] = .thought(key: k, t, live: true)
-        }
         // Nothing on screen says the agent is busy: it is thinking.
         let busy = units.contains { u in
             switch u {
-            case .group(_, _, let l), .thought(_, _, let l): l
+            case .group(_, let acts, _): acts.contains { $0.tool.running }
             case .message(_, _, let streaming): streaming
             case .agent(_, let tool): tool.running
             default: false
@@ -852,28 +854,64 @@ public func phoneCodexTurn(_ turn: PhoneChatTurn, cwd: String? = nil) -> PhoneCo
         thinking = !busy && !asking
     }
     var answer: PhoneCodexAnswer?
-    if let ans, case .text(let id, let text, _) = b[ans] {
-        answer = PhoneCodexAnswer(id: id, text: text, streaming: live && ans == b.count - 1)
+    if let ans, case .text(let id, let text, _, let started) = b[ans] {
+        answer = PhoneCodexAnswer(id: id, text: text, streaming: live && ans == b.count - 1, startedMs: started)
     }
     let status = live ? "working" : turn.status == "interrupted" ? "stopped" : turn.status == "failed" ? "failed" : "worked"
     return PhoneCodexTurn(
         units: units,
         answer: answer,
-        // Reasoning alone is not work worth folding away.
-        foldable: answer != nil && turn.status != "interrupted" && units.contains { $0.kind != "thought" },
+        // A compaction alone is not work worth folding away.
+        foldable: answer != nil && turn.status != "interrupted"
+            && units.contains { if case .notice(_, _, let code, _) = $0 { code != "compacted" } else { true } },
         status: status,
         thinking: thinking,
+        title: live ? title : nil,
         asking: asking,
         plan: plan,
         changes: live ? [] : phoneTurnChanges(turn, cwd: cwd))
 }
 
-/// What a group did, by kind, in the order Codex names them: edits, reads, commands, web searches, tools,
+/// What a group did, by kind, in the order Codex names them: tools, edits, reads, commands, web searches,
 /// and last the edits that failed.
 public struct PhoneSummaryPart: Equatable, Sendable {
-    /// edited, read, ran, web, tools or failed.
+    /// tools, edited, read, ran, web or failed.
     public let part: String
     public let n: Int
+}
+
+/// A command that only fetches a page off the internet (`curl https://…`), which Codex counts as a web search.
+public func phoneIsWebFetch(_ info: PhoneExecInfo) -> Bool {
+    // One plain curl that only reads: no pipe, chain or redirection, nothing written, sent or run.
+    guard let list = commandList(info.command), list.count == 1, list[0].count == 1 else { return false }
+    let words = phoneSplitWords(list[0][0])
+    guard program(words.first ?? "") == "curl" else { return false }
+    let writes = { (w: String) in
+        phoneMatches(w, "^--(request|data|json|form|upload|output|remote-name|remote-header-name|config|create-dirs)") || phoneMatches(w, "^-[A-Za-z]*[XdFToOKJ]")
+    }
+    guard !words.dropFirst().contains(where: writes),
+          let url = words.first(where: { phoneMatches($0, "^https?://", caseInsensitive: true) }) else { return false }
+    let host = url.replacingOccurrences(of: "^https?://(\\[[^\\]]*\\]|[^/:?#]*).*$", with: "$1", options: [.regularExpression, .caseInsensitive]).lowercased()
+    return !phoneMatches(host, "^(localhost|127\\.\\d+\\.\\d+\\.\\d+|\\[::1\\]|0\\.0\\.0\\.0)$") && !host.hasSuffix(".localhost")
+}
+
+/// A web search's words for its line: the query, with the sites it is limited to after a bar.
+public func phoneWebDetail(_ query: String) -> String {
+    var sites: [String] = []
+    var rest = ""
+    let ns = query as NSString
+    var at = 0
+    if let re = try? NSRegularExpression(pattern: "\\bsite:(\\S+)", options: [.caseInsensitive]) {
+        for m in re.matches(in: query, range: NSRange(location: 0, length: ns.length)) {
+            rest += ns.substring(with: NSRange(location: at, length: m.range.location - at)) + " "
+            sites.append(ns.substring(with: m.range(at: 1)).replacingOccurrences(of: "^www\\.", with: "", options: [.regularExpression, .caseInsensitive]))
+            at = m.range.location + m.range.length
+        }
+    }
+    rest += ns.substring(from: at)
+    rest = trimmed(rest.replacingOccurrences(of: "\\s+OR\\s+", with: " ", options: .regularExpression)
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression))
+    return sites.isEmpty ? rest : trimmed("\(rest) | \(sites.joined(separator: " · "))")
 }
 
 public func phoneGroupSummary(_ acts: [PhoneCodexAct]) -> (parts: [PhoneSummaryPart], add: Int, del: Int) {
@@ -891,8 +929,10 @@ public func phoneGroupSummary(_ acts: [PhoneCodexAct]) -> (parts: [PhoneSummaryP
                 add += f.add
                 del += f.del
             }
-        case .exec(_, let info):
-            if info.explore {
+        case .exec(let x, let info):
+            if phoneIsWebFetch(info) && (x.running || info.exitCode == 0) {
+                web += 1
+            } else if info.explore {
                 explored += 1
                 for x in info.actions { if case .read(let path, _) = x, !read.contains(path) { read.append(path) } }
             } else {
@@ -900,15 +940,14 @@ public func phoneGroupSummary(_ acts: [PhoneCodexAct]) -> (parts: [PhoneSummaryP
             }
         case .web: web += 1
         case .tool: tools += 1
-        case .thought: break
         }
     }
     var parts: [PhoneSummaryPart] = []
+    if tools > 0 { parts.append(PhoneSummaryPart(part: "tools", n: tools)) }
     if !edited.isEmpty { parts.append(PhoneSummaryPart(part: "edited", n: edited.count)) }
     if explored > 0 { parts.append(PhoneSummaryPart(part: "read", n: max(read.count, 1))) }
     if ran > 0 { parts.append(PhoneSummaryPart(part: "ran", n: ran)) }
     if web > 0 { parts.append(PhoneSummaryPart(part: "web", n: web)) }
-    if tools > 0 { parts.append(PhoneSummaryPart(part: "tools", n: tools)) }
     // Edits that did not apply are said last, so a group of only those still has words.
     if !failed.isEmpty { parts.append(PhoneSummaryPart(part: "failed", n: failed.count)) }
     return (parts, add, del)
@@ -916,40 +955,342 @@ public func phoneGroupSummary(_ acts: [PhoneCodexAct]) -> (parts: [PhoneSummaryP
 
 /// The act a live group's line names: the one running now, else the last one.
 public func phoneActiveAct(_ acts: [PhoneCodexAct]) -> PhoneCodexAct? {
-    if let a = acts.last(where: { $0.tool?.running == true }) { return a }
-    return acts.last { $0.tool != nil }
+    acts.last(where: { $0.tool.running }) ?? acts.last
 }
 
-/// How long a turn worked, from its start to its end (or now).
+/// How long a turn worked: up to the moment its answer started (the answer is not work), else to its
+/// end, or to now while it runs.
 public func phoneWorkedMs(_ turn: PhoneChatTurn, now: Double) -> Double {
-    if let d = turn.durationMs, turn.status != "running" { return d }
     let start = turn.startedMs ?? (turn.userText != nil ? turn.userTs : now)
+    // A turn stopped or failed while answering says how long it ran in all.
+    if let ans = answerIndex(turn), case .text(_, _, _, let answered?) = turn.blocks[ans], turn.status == "completed" || turn.status == "running" {
+        return max(0, answered - start)
+    }
+    if let d = turn.durationMs, turn.status != "running" { return d }
     return max(0, now - start)
 }
 
-/// "8s", "1m 23s", "2h 5m" (Codex's way), or the Chinese equivalent.
-public func phoneCodexDuration(_ ms: Double, zh: Bool = false) -> String {
-    let s = Int(max(0, (ms / 1000).rounded(.down)))
-    if s < 60 { return zh ? "\(s) 秒" : "\(s)s" }
-    let m = s / 60
-    if m < 60 { return zh ? "\(m) 分 \(s % 60) 秒" : "\(m)m \(s % 60)s" }
-    return zh ? "\(m / 60) 小时 \(m % 60) 分" : "\(m / 60)h \(m % 60)m"
+/// Inline Markdown as the plain text it shows (`code`, *emphasis* and links lose their marks).
+func phoneInlineText(_ s: String) -> String {
+    (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? s
 }
 
-/// A command's run time for its line ("in 2.4s"): under a second it is not worth saying.
-public func phoneCodexElapsed(_ ms: Double?, zh: Bool = false) -> String? {
+/// The title reasoning gives itself: its summary's last line (bold, or as plain text), without comments.
+public func phoneReasoningTitle(_ text: String) -> String? {
+    let bare = text.replacingOccurrences(of: "<!--[\\s\\S]*?(-->|$)", with: "", options: .regularExpression)
+    guard let line = bare.components(separatedBy: "\n").map(trimmed).last(where: { !$0.isEmpty }) else { return nil }
+    let title = trimmed(phoneFirstMatch(line, "^\\*\\*(.+)\\*\\*$")?.groups.first.flatMap { $0 } ?? phoneInlineText(line))
+    return title.isEmpty ? nil : title
+}
+
+/// A duration in units of days, hours, minutes and seconds, each as the language writes it ("1m", "1分钟").
+private func durationParts(_ ms: Double, _ lang: PhoneCodexLang) -> [(n: Int, text: String)] {
+    let locale = Locale(identifier: lang == .zh ? "zh-CN" : "en")
+    var s = Int(max(0, (ms / 1000).rounded(.down)))
+    let units: [(Duration.UnitsFormatStyle.Unit, Int)] = [(.days, 86_400), (.hours, 3_600), (.minutes, 60), (.seconds, 1)]
+    return units.map { unit, size in
+        let n = s / size
+        s -= n * size
+        let style = Duration.UnitsFormatStyle(allowedUnits: [unit], width: .narrow, zeroValueUnits: .show(length: 1)).locale(locale)
+        return (n, Duration.seconds(n * size).formatted(style))
+    }
+}
+
+/// A command's run time, as its line says it ("12s", "1m 0s", "1h 0m 3s"): every unit from the largest
+/// one on; nil under a second.
+public func phoneDurationA(_ ms: Double?, lang: PhoneCodexLang = .current) -> String? {
     guard let ms, ms >= 1000 else { return nil }
-    if ms < 10_000 { return String(format: zh ? "%.1f 秒" : "%.1fs", ms / 1000) }
-    return phoneCodexDuration(ms, zh: zh)
+    let p = durationParts(ms, lang)
+    let first = p.firstIndex { $0.n > 0 } ?? p.count - 1
+    return p[first...].map(\.text).joined(separator: " ")
 }
 
-/// The step of a plan the agent is on, for the plan's line ("Step 2 / 5").
+/// How long a turn worked ("0s", "1m", "1h 5s"): the units that are not zero.
+public func phoneDurationB(_ ms: Double, lang: PhoneCodexLang = .current) -> String {
+    let p = durationParts(ms, lang).filter { $0.n > 0 }
+    return p.isEmpty ? durationParts(0, lang)[3].text : p.map(\.text).joined(separator: " ")
+}
+
+/// The step of a plan the agent is on ("Step 2 / 5"): the one in progress, else the first not done, else the last.
 public func phonePlanStep(_ entries: [PhonePlanEntry]) -> (step: Int, total: Int, done: Int, current: PhonePlanEntry?) {
     let done = entries.filter { $0.status == "completed" }.count
-    let at = entries.firstIndex { $0.status == "in_progress" }
-    let current = at.map { entries[$0] } ?? entries.first { $0.status != "completed" }
-    let step = at.map { $0 + 1 } ?? min(done + 1, entries.count)
-    return (step, entries.count, done, current)
+    let at = entries.firstIndex { $0.status == "in_progress" } ?? entries.firstIndex { $0.status != "completed" }
+    return (at.map { $0 + 1 } ?? entries.count, entries.count, done, at.map { entries[$0] })
+}
+
+/// The running turn's plan as last updated, if it has one (shown above the composer).
+public func phoneLivePlan(_ turns: [PhoneChatTurn]) -> [PhonePlanEntry]? {
+    guard let turn = turns.last, turn.status == "running" else { return nil }
+    for b in turn.blocks.reversed() { if case .plan(let entries) = b { return entries.isEmpty ? nil : entries } }
+    return nil
+}
+
+/// Questions that wait for the user's answer: the latest request of the running turn.
+public struct PhoneCodexRequest: Equatable, Sendable {
+    public let turn: Int
+    /// Nil from an older host, which names no request (all the turn's open questions are one).
+    public let request: String?
+    public let questions: [PhoneQuestion]
+}
+
+public func phonePendingRequest(_ turns: [PhoneChatTurn]) -> PhoneCodexRequest? {
+    guard let turn = turns.last(where: { $0.status == "running" }) else { return nil }
+    let open = turn.blocks.compactMap { b -> PhoneQuestion? in if case .question(let q) = b, !q.answered { q } else { nil } }
+    guard let last = open.last else { return nil }
+    return PhoneCodexRequest(turn: turn.n, request: last.request, questions: open.filter { $0.request == last.request })
+}
+
+/// An option's label without Codex's " (Recommended)" mark, and whether it had it.
+public func phoneSplitRecommended(_ label: String) -> (label: String, recommended: Bool) {
+    if let m = phoneFirstMatch(label, "^(.*\\S)\\s+\\(Recommended\\)$"), let inner = m.groups.first ?? nil { return (inner, true) }
+    return (label, false)
+}
+
+/// What was chosen and typed so far in a request's card: the question on show, the option picked per
+/// question (none: a typed answer, or nothing), the text typed per question. The first option is
+/// picked from the start.
+public struct PhoneCodexDraft: Equatable, Sendable {
+    public var at = 0
+    public var picks: [String: Int] = [:]
+    public var texts: [String: String] = [:]
+    /// The questions it is for.
+    public let qids: [String]
+    public init(_ questions: [PhoneQuestion]) {
+        qids = questions.map(\.qid)
+        for q in questions where !q.options.isEmpty { picks[q.qid] = 0 }
+    }
+    /// A draft kept from before, if it is for exactly these questions; anything else starts afresh.
+    public static func restore(_ had: PhoneCodexDraft?, for questions: [PhoneQuestion]) -> PhoneCodexDraft {
+        guard var had, had.qids.sorted() == questions.map(\.qid).sorted(), !questions.isEmpty else { return PhoneCodexDraft(questions) }
+        had.at = min(had.at, questions.count - 1)
+        return had
+    }
+    /// A question's answer: the option chosen, else what was typed, else nothing (skipped).
+    public func answer(_ q: PhoneQuestion) -> String {
+        if let k = picks[q.qid], q.options.indices.contains(k) { return trimmed(q.options[k]) }
+        return trimmed(texts[q.qid] ?? "")
+    }
+    /// Every question's answer, an empty one for a skipped question: one `answer` command each.
+    public func answers(_ questions: [PhoneQuestion]) -> [(qid: String, text: String)] {
+        questions.map { ($0.qid, answer($0)) }
+    }
+}
+
+/// A run of terminal output in one style (from its ANSI escapes).
+public struct PhoneAnsiRun: Equatable, Sendable {
+    public var text: String
+    /// Colors: an index into the 16 terminal colors ("c3"), or "rgb(r g b)" for 256-color and true color.
+    public var fg: String?
+    public var bg: String?
+    public var bold = false
+    public var dim = false
+    public var italic = false
+    public var underline = false
+    public var strike = false
+    public var hidden = false
+    public init(text: String, fg: String? = nil, bg: String? = nil, bold: Bool = false, dim: Bool = false, italic: Bool = false,
+                underline: Bool = false, strike: Bool = false, hidden: Bool = false) {
+        self.text = text; self.fg = fg; self.bg = bg; self.bold = bold; self.dim = dim; self.italic = italic
+        self.underline = underline; self.strike = strike; self.hidden = hidden
+    }
+}
+
+/// The 256-color palette beyond the 16 named colors: a 6×6×6 cube, then 24 grays.
+private func color256(_ n: Int) -> String? {
+    if n < 16 { return "c\(n % 8)" }
+    if n < 232 {
+        let k = n - 16
+        func v(_ x: Int) -> Int { x == 0 ? 0 : 55 + x * 40 }
+        return "rgb(\(v(k / 36)) \(v((k / 6) % 6)) \(v(k % 6)))"
+    }
+    if n < 256 {
+        let g = 8 + (n - 232) * 10
+        return "rgb(\(g) \(g) \(g))"
+    }
+    return nil
+}
+
+/// An escape sequence at `i` (styles, cursor and erase commands, titles and links): its length, one
+/// piece that takes no room.
+private func escapeLength(_ c: [Character], _ i: Int) -> Int {
+    guard i + 1 < c.count else { return 1 }
+    func letter(_ x: Character) -> Bool { x.isASCII && x.isLetter }
+    switch c[i + 1] {
+    case "[":
+        var j = i + 2
+        while j < c.count, "0123456789;?".contains(c[j]) { j += 1 }
+        return j < c.count && letter(c[j]) ? j + 1 - i : 2
+    case "]":
+        var j = i + 2
+        while j < c.count, c[j] != "\u{7}", c[j] != "\u{1b}" { j += 1 }
+        if j < c.count, c[j] == "\u{7}" { return j + 1 - i }
+        if j + 1 < c.count, c[j] == "\u{1b}", c[j + 1] == "\\" { return j + 2 - i }
+        return 2
+    case "(", ")":
+        return i + 2 < c.count && c[i + 2].isASCII && (c[i + 2].isLetter || c[i + 2].isNumber) ? 3 : 2
+    case "\r", "\u{2028}", "\u{2029}":
+        return 1
+    default:
+        return 2
+    }
+}
+
+/// One line as a terminal leaves it: `\r` goes back to its start and what follows writes over it,
+/// `\b` steps back one character (at the end of the line it takes that character away, as Codex shows
+/// it), ESC[K / ESC[1K / ESC[2K erase to its end / from its start / all of it. Escapes take no room:
+/// they stay with the character that follows them.
+private func editLine(_ line: String) -> String {
+    guard line.contains("\r") || line.contains("\u{8}") else { return line }
+    struct Cell { var pre: String; var ch: Character; var erased = false }
+    let c = Array(line)
+    var cells: [Cell] = []
+    var pending = ""
+    var at = 0
+    var i = 0
+    while i < c.count {
+        let ch = c[i]
+        if ch == "\u{1b}" {
+            let n = escapeLength(c, i)
+            let seq = String(c[i..<(i + n)])
+            i += n
+            guard let how = phoneFirstMatch(seq, "^\\u001B\\[([012]?)K$").map({ $0.groups.first.flatMap { $0 } ?? "" }) else {
+                pending += seq
+                continue
+            }
+            let kind = how.isEmpty ? "0" : how
+            if kind == "0" {
+                if cells.count > at { cells.removeLast(cells.count - at) }
+            } else {
+                var k = kind == "2" ? cells.count - 1 : min(at, cells.count - 1)
+                while k >= 0 {
+                    cells[k] = Cell(pre: cells[k].pre, ch: " ", erased: true)
+                    k -= 1
+                }
+            }
+            if kind == "2", cells.count > at { cells.removeLast(cells.count - at) }
+            continue
+        }
+        i += 1
+        if ch == "\r" {
+            at = 0
+        } else if ch == "\u{8}" {
+            at = max(0, at - 1)
+            if at == cells.count - 1 {
+                pending = cells[at].pre + pending
+                cells.removeLast()
+            }
+        } else {
+            while cells.count < at { cells.append(Cell(pre: "", ch: " ")) }
+            if at < cells.count { cells[at] = Cell(pre: cells[at].pre + pending, ch: ch) } else { cells.append(Cell(pre: pending, ch: ch)) }
+            pending = ""
+            at += 1
+        }
+    }
+    // What an erase left blank at the end is not text.
+    while let last = cells.last, last.erased {
+        pending = last.pre + pending
+        cells.removeLast()
+    }
+    return cells.map { $0.pre + String($0.ch) }.joined() + pending
+}
+
+/// Terminal output as styled runs: SGR colors (16, 256 and true color, front and back), bold, dim,
+/// italic, underline, strikethrough, hidden; `\r` rewrites the line it is on, `\b` takes back a
+/// character; other escapes are dropped. Text only, never markup.
+public func phoneParseAnsi(_ input: String) -> [PhoneAnsiRun] {
+    // An escape cut off at the end (output still streaming, or cut by the host) waits for its rest.
+    // Line ends are \n (a \r\n line end is not a return to the line's start).
+    let text = input.replacingOccurrences(of: "\\u001B(?:\\[[0-9;?]*|\\][^\\u0007\\u001B]*|[()])?\\z", with: "", options: .regularExpression)
+        .replacingOccurrences(of: "\r+\n", with: "\n", options: .regularExpression)
+        .components(separatedBy: "\n").map(editLine).joined(separator: "\n") as NSString
+    var runs: [PhoneAnsiRun] = []
+    var style = PhoneAnsiRun(text: "")
+    func push(_ t: String) {
+        guard !t.isEmpty else { return }
+        if var last = runs.last {
+            last.text = ""
+            if last == style {
+                runs[runs.count - 1].text += t
+                return
+            }
+        }
+        var run = style
+        run.text = t
+        runs.append(run)
+    }
+    let pattern = "\\u001B\\[([0-9;]*)m|\\u001B\\[[0-9;?]*[A-Za-z]|\\u001B\\][^\\u0007\\u001B]*(\\u0007|\\u001B\\\\)|\\u001B[()][A-Za-z0-9]|\\u001B."
+    guard let re = try? NSRegularExpression(pattern: pattern) else { return [PhoneAnsiRun(text: text as String)] }
+    var at = 0
+    for m in re.matches(in: text as String, range: NSRange(location: 0, length: text.length)) {
+        push(text.substring(with: NSRange(location: at, length: m.range.location - at)))
+        at = m.range.location + m.range.length
+        guard m.range(at: 1).location != NSNotFound else { continue }
+        let sgr = text.substring(with: m.range(at: 1))
+        let codes = sgr.isEmpty ? [0] : sgr.components(separatedBy: ";").map { Int($0) ?? 0 }
+        var i = 0
+        while i < codes.count {
+            let c = codes[i]
+            switch c {
+            case 0: style = PhoneAnsiRun(text: "")
+            case 1: style.bold = true
+            case 2: style.dim = true
+            case 3: style.italic = true
+            case 4: style.underline = true
+            case 8: style.hidden = true
+            case 9: style.strike = true
+            case 22: style.bold = false; style.dim = false
+            case 23: style.italic = false
+            case 24: style.underline = false
+            case 28: style.hidden = false
+            case 29: style.strike = false
+            case 30...37, 90...97: style.fg = "c\(c % 10)"
+            case 39: style.fg = nil
+            case 40...47, 100...107: style.bg = "c\(c % 10)"
+            case 49: style.bg = nil
+            case 38, 48:
+                let code = { (k: Int) in k < codes.count ? codes[k] : nil }
+                if code(i + 1) == 5 {
+                    let col = color256(code(i + 2) ?? -1)
+                    if c == 38 { style.fg = col } else { style.bg = col }
+                    i += 2
+                } else if code(i + 1) == 2 {
+                    let rgb = [code(i + 2), code(i + 3), code(i + 4)].map { max(0, min(255, $0 ?? 0)) }
+                    let col = "rgb(\(rgb[0]) \(rgb[1]) \(rgb[2]))"
+                    if c == 38 { style.fg = col } else { style.bg = col }
+                    i += 4
+                }
+            default: break
+            }
+            i += 1
+        }
+    }
+    push(text.substring(from: at))
+    return runs
+}
+
+/// How long until a question goes on without an answer, as the card says it ("1:45").
+public func phoneCodexClock(_ ms: Double) -> String {
+    let s = Int(max(0, (ms / 1000).rounded(.up)))
+    return "\(s / 60):" + (s % 60 < 10 ? "0" : "") + "\(s % 60)"
+}
+
+/// When a message was sent, as its line says it: the time today, the weekday this week, else the date.
+public func phoneFormatMsgTime(_ ts: Double, now: Double, lang: PhoneCodexLang = .current, calendar: Calendar = .current) -> String {
+    let locale = Locale(identifier: lang == .zh ? "zh-CN" : "en")
+    let d = Date(timeIntervalSince1970: ts / 1000)
+    func format(_ template: String) -> String {
+        let f = DateFormatter()
+        f.locale = locale
+        f.calendar = calendar
+        f.timeZone = calendar.timeZone
+        f.setLocalizedDateFormatFromTemplate(template)
+        return f.string(from: d)
+    }
+    let time = format("jmm")
+    let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: Date(timeIntervalSince1970: now / 1000))).day ?? 0
+    if days <= 0 { return time }
+    if days <= 6 { return "\(format("EEEE")) \(time)" }
+    return "\(format("MMMd")) \(time)"
 }
 
 // MARK: - Words
@@ -980,22 +1321,23 @@ public func phoneCodexPlural(_ key: String, _ n: Int, lang: PhoneCodexLang = .cu
     phoneCodexText("\(key)_\(n == 1 ? "one" : "many")", ["n": "\(n)"], lang: lang)
 }
 
-/// A finished group's sentence: "Edited files, read files, and ran commands" / "编辑了文件、读取了文件和运行了命令".
+/// A finished group's sentence: what it did first, then the rest ("Edited files, read files, ran a
+/// command" / "编辑了文件，读取了文件，运行了命令"); "Completed" when it did nothing to name.
 public func phoneCodexSummarySentence(_ acts: [PhoneCodexAct], lang: PhoneCodexLang = .current) -> String {
     let parts = phoneGroupSummary(acts).parts.enumerated().map { i, p in
         phoneCodexPlural("cdx_s_\(p.part)\(i == 0 ? "_lead" : "")", p.n, lang: lang)
     }
-    let f = ListFormatter()
-    f.locale = Locale(identifier: lang == .zh ? "zh-CN" : "en-US")
-    return f.string(from: parts) ?? parts.joined(separator: ", ")
+    if parts.isEmpty { return phoneCodexText("cdx_s_done", lang: lang) }
+    return parts.joined(separator: lang == .zh ? "，" : ", ")
 }
 
+// The desktop's words (apps/desktop/src/lib/strings/en.ts and zh.ts), the keys this view uses; cdx_collapse / cdx_expand are
+// the phone's own (a line's accessibility value).
 enum PhoneCodexStrings {
     static let en: [String: String] = [
         "hc_cut": "Cut here; the whole output is in the host's transcript.",
         "hc_failed": "Failed",
         "hc_st_stopping": "Stopping…",
-        "hc_tokens": "{n}k tokens",
         "hc_stopped_lede": "You stopped this turn.",
         "hc_continue": "Continue",
         "cdx_worked_for": "Worked for {t}",
@@ -1004,8 +1346,7 @@ enum PhoneCodexStrings {
         "cdx_stopped_after": "You stopped after {t}",
         "cdx_failed_after": "Failed after {t}",
         "cdx_thinking": "Thinking",
-        "cdx_thought": "Thought",
-        "cdx_thought_for": "Thought for {t}",
+        "cdx_s_done": "Completed",
         "cdx_s_edited_lead_one": "Edited a file",
         "cdx_s_edited_lead_many": "Edited files",
         "cdx_s_edited_one": "edited a file",
@@ -1056,8 +1397,8 @@ enum PhoneCodexStrings {
         "cdx_d_in": "in {p}",
         "cdx_d_files": "files",
         "cdx_d_files_in": "files in {p}",
-        "cdx_d_command": "command",
         "cdx_d_to": "to {p}",
+        "cdx_after_time": "after {t}",
         "cdx_in_time": "in {t}",
         "cdx_shell": "Shell",
         "cdx_success": "Success",
@@ -1068,16 +1409,36 @@ enum PhoneCodexStrings {
         "cdx_copy_cmd": "Copy command",
         "cdx_copy_output": "Copy output",
         "cdx_copy_patch": "Copy patch",
-        "cdx_files_changed_one": "{n} file changed",
-        "cdx_files_changed_many": "{n} files changed",
+        "cdx_edited_file": "Edited {name}",
+        "cdx_edited_files": "Edited {n} files",
+        "cdx_review": "Review",
+        "cdx_review_changes": "Review changes",
+        "cdx_collapse_files": "Collapse files",
+        "cdx_too_large_inline": "Too large to show inline",
         "cdx_show_more_files_one": "Show {n} more file",
         "cdx_show_more_files_many": "Show {n} more files",
         "cdx_plan": "Plan",
         "cdx_plan_step": "Step {s} / {n}",
-        "cdx_plan_done": "{d} out of {n} tasks completed",
         "cdx_copy_response": "Copy response",
         "cdx_compacted": "Context automatically compacted",
         "cdx_subagent": "Subagent",
+        "cdx_q_asked": "Asked",
+        "cdx_q_n_one": "{n} question",
+        "cdx_q_n_many": "{n} questions",
+        "cdx_q_no_answer": "No answer provided",
+        "cdx_q_page": "{i} / {n}",
+        "cdx_q_prev": "Previous question",
+        "cdx_q_next": "Next question",
+        "cdx_q_close": "Close",
+        "cdx_q_skip": "Skip",
+        "cdx_q_next_btn": "Next",
+        "cdx_q_other_ph": "No, and tell Codex what to do differently",
+        "cdx_q_type_here": "Type here",
+        "cdx_q_recommended": "Recommended",
+        "cdx_q_expires": "Codex goes on without an answer in {t}",
+        "cdx_q_secret_ph": "Type the answer (not shown)",
+        "cdx_exit_unknown": "Exit code unknown",
+        "cdx_show_all": "Show all",
         "cdx_waiting_answer": "Waiting for your answer",
         "cdx_too_large": "Too large to show here",
         "cdx_more_lines": "{n} more lines",
@@ -1088,17 +1449,15 @@ enum PhoneCodexStrings {
         "hc_cut": "此处已截断，完整输出在被控端的会话记录里。",
         "hc_failed": "失败",
         "hc_st_stopping": "正在停止…",
-        "hc_tokens": "{n}k tokens",
         "hc_stopped_lede": "你停止了这一轮。",
         "hc_continue": "继续",
-        "cdx_worked_for": "工作了 {t}",
-        "cdx_working_for": "已工作 {t}",
-        "cdx_working": "工作中",
+        "cdx_worked_for": "用时 {t}",
+        "cdx_working_for": "已处理 {t}",
+        "cdx_working": "处理中",
         "cdx_stopped_after": "你在 {t} 后停止了",
         "cdx_failed_after": "{t} 后失败",
         "cdx_thinking": "思考中",
-        "cdx_thought": "思考",
-        "cdx_thought_for": "思考了 {t}",
+        "cdx_s_done": "已完成",
         "cdx_s_edited_lead_one": "编辑了文件",
         "cdx_s_edited_lead_many": "编辑了文件",
         "cdx_s_edited_one": "编辑了文件",
@@ -1149,8 +1508,8 @@ enum PhoneCodexStrings {
         "cdx_d_in": "（{p}）",
         "cdx_d_files": "文件",
         "cdx_d_files_in": "{p} 中的文件",
-        "cdx_d_command": "命令",
         "cdx_d_to": "到 {p}",
+        "cdx_after_time": "· {t}后",
         "cdx_in_time": "用时 {t}",
         "cdx_shell": "终端",
         "cdx_success": "成功",
@@ -1161,16 +1520,36 @@ enum PhoneCodexStrings {
         "cdx_copy_cmd": "复制命令",
         "cdx_copy_output": "复制输出",
         "cdx_copy_patch": "复制补丁",
-        "cdx_files_changed_one": "{n} 个文件已更改",
-        "cdx_files_changed_many": "{n} 个文件已更改",
+        "cdx_edited_file": "已编辑 {name}",
+        "cdx_edited_files": "已编辑 {n} 个文件",
+        "cdx_review": "审阅",
+        "cdx_review_changes": "查看更改",
+        "cdx_collapse_files": "收起文件",
+        "cdx_too_large_inline": "太大，无法内联显示",
         "cdx_show_more_files_one": "再显示 {n} 个文件",
         "cdx_show_more_files_many": "再显示 {n} 个文件",
         "cdx_plan": "计划",
         "cdx_plan_step": "第 {s} / {n} 步",
-        "cdx_plan_done": "已完成 {d} / {n} 项",
         "cdx_copy_response": "复制回答",
         "cdx_compacted": "上下文已自动压缩",
         "cdx_subagent": "子智能体",
+        "cdx_q_asked": "已询问",
+        "cdx_q_n_one": "{n} 个问题",
+        "cdx_q_n_many": "{n} 个问题",
+        "cdx_q_no_answer": "未提供答案",
+        "cdx_q_page": "{i} / {n}",
+        "cdx_q_prev": "上一题",
+        "cdx_q_next": "下一题",
+        "cdx_q_close": "关闭",
+        "cdx_q_skip": "跳过",
+        "cdx_q_next_btn": "下一步",
+        "cdx_q_other_ph": "不，并告诉 Codex 该怎么做",
+        "cdx_q_type_here": "在此输入",
+        "cdx_q_recommended": "推荐",
+        "cdx_q_expires": "{t} 后 Codex 会不等回答继续",
+        "cdx_q_secret_ph": "输入答案（不显示）",
+        "cdx_exit_unknown": "退出码未知",
+        "cdx_show_all": "显示全部",
         "cdx_waiting_answer": "等你回答",
         "cdx_too_large": "太大，这里不显示",
         "cdx_more_lines": "还有 {n} 行",

@@ -187,5 +187,52 @@ extension PhoneChatStore {
             fixtureEvent(e)
         }
     }
+
+    /// A Codex turn that stops to ask (`-ui-codex-ask`): its reasoning and a search, then one request of
+    /// two questions — the first with a header, a recommended option, descriptions and room for an answer
+    /// of one's own; the second plain. Neither blocks the turn (Codex's default mode): the host would
+    /// answer with nothing after two minutes. Request names are the host's ("<process start ms>-<id>").
+    func fixtureCodexAsk() {
+        let s = Self.self
+        func t(_ v: String) -> JSONValue { .string(v) }
+        let n = Double((log.turns.last?.n ?? 0) + 1)
+        let k = Int(n)
+        let events: [[String: JSONValue]] = [
+            ["t": t("state"), "turn": .number(n - 1), "state": t("running"), "queued": .array([])],
+            ["t": t("user"), "turn": .number(n - 1), "input_id": t("cu\(k)"), "by": .object(["device": t("home-laptop")]), "text": t("The monthly report has the same bug, doesn't it?")],
+            ["t": t("turn_start"), "turn": .number(n)],
+            ["t": t("thought"), "turn": .number(n), "id": t("r\(k)"), "text": t("**Checking the monthly report**")],
+            ["t": t("tool_call"), "turn": .number(n), "call_id": t("a\(k)"), "title": t("Shell rg -n \", 30\\)\" -g '*.py'"), "kind": t("execute"), "status": t("in_progress"),
+             "input": s.cmd("rg -n \", 30\\)\" -g '*.py'", [.object(["type": t("search"), "command": t("rg"), "query": t(", 30\\)"), "path": .null])])],
+            ["t": t("tool_update"), "turn": .number(n), "call_id": t("a\(k)"), "status": t("completed"), "content": s.out("report/monthly.py:14:    end = date(year, month, 30)"),
+             "exit_code": .number(0), "duration_ms": .number(300)],
+            ["t": t("question"), "turn": .number(n), "qid": t("scope"), "request": t("1761206400000-\(k)"), "item_id": t("i\(k)"), "header": t("Scope"),
+             "prompt": t("report/monthly.py builds month ends by hand too. Fix it in this change?"),
+             "options": .array([t("Fix both (Recommended)"), t("Only the quarterly export")]),
+             "descriptions": .array([t("Same bug: day 30 is wrong for 31-day months"), t("Leave report/monthly.py for a separate change")]),
+             "other": .bool(true), "blocking": .bool(false), "expires_in_ms": .number(120_000)],
+            ["t": t("question"), "turn": .number(n), "qid": t("years"), "request": t("1761206400000-\(k)"), "item_id": t("i\(k)"),
+             "prompt": t("Which years should the new tests cover?"),
+             "options": .array([t("2024 and 2026"), t("Every year from 2000 to 2030")]),
+             "descriptions": .array([t("One leap year and one common year"), t("")]), "blocking": .bool(false), "expires_in_ms": .number(120_000)],
+        ]
+        for e in events { fixtureEvent(e) }
+    }
+
+    /// What the host does with the `answer` commands of a request: once every question of it has one,
+    /// it closes the request with the answers that are not empty (all empty: skipped); the turn goes on.
+    func fixtureAnswer(_ answer: JSONValue, turn n: Double) {
+        guard let qid = answer["qid"].string else { return }
+        let text = answer["text"].string ?? ""
+        let questions = log.turns.flatMap { turn in turn.blocks.compactMap { b -> PhoneQuestion? in if case .question(let q) = b { q } else { nil } } }
+        guard let q = questions.last(where: { $0.qid == qid && $0.how == nil }), let request = q.request else { return }
+        fixtureAnswers[request, default: [:]][qid] = text
+        guard questions.filter({ $0.request == request }).allSatisfy({ fixtureAnswers[request]?[$0.qid] != nil }) else { return }
+        var answers: [String: JSONValue] = [:]
+        for (k, v) in fixtureAnswers.removeValue(forKey: request) ?? [:] where !v.isEmpty { answers[k] = .array([.string(v)]) }
+        fixtureEvent(["t": .string("question_done"), "turn": .number(n), "request": .string(request), "answers": .object(answers),
+                      "how": .string(answers.isEmpty ? "skipped" : "answered")])
+        fixtureEvent(["t": .string("thought"), "turn": .number(n), "id": .string("after-\(request)"), "text": .string("**Fixing both month ends**")])
+    }
 }
 #endif
