@@ -119,3 +119,13 @@ design system… Do not edit here"，生成器（`bin/build_tokens.py` / `tokens
   页面布局 / 浮条要等几秒（或一次输入事件）才画出来；均衡档（1080p）2.5 s 内就稳定。透明 / 不透明窗口一样，`setFocus`
   唤醒没有用。
 - 窗口截图：`app_screenshot` 对这个窗口时好时坏，可靠的做法是整屏截图再按窗口位置裁。
+
+## 7. 玻璃层（2026-10-23，取代第 2 节"内容区不透明"那部分）
+
+用户要求所有界面主打毛玻璃。做法：整窗一层原生材质（macOS `sidebar` NSVisualEffectView / Windows 11 Mica），
+`html/body/#root/.win` 透明，内容面是半透明着色（不做 CSS 模糊，磨砂来自原生层）；只有工具栏胶囊、菜单、对话框这类浮层用
+CSS `backdrop-filter` + 高光描边；会话舞台上不做任何模糊。开关是 `<html data-material="native|preview|none">`，
+`none`（减少透明度、增强对比、强制颜色、Windows 10）时回到第 3 节令牌表的不透明外观。样式在 `src/styles/glass/`，
+加载在 `native.css` 之后。导航改成常驻外壳（设置、会话也在里面，侧栏展开 240 / 图标栏 72）。
+决定、实测和没做的事见 `AGENTS.md`"桌面端毛玻璃重做 · 第一阶段"。
+
