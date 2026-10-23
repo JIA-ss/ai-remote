@@ -176,15 +176,16 @@ test("real zero-detail pointer releases click; drag and cancelled pointers do no
   assert.equal(calls.length, 2);
 });
 
-function videoFixture() {
+function videoFixture(options = {}) {
   const timers = clock();
   const instances = [];
   const stats = [];
+  const logs = [];
   let now = 0, requested = 0, drawn = 0;
   class MockDecoder {
     constructor(callbacks) { this.callbacks = callbacks; this.state = "unconfigured"; this.decodeQueueSize = 0; this.decoded = []; instances.push(this); }
-    configure(config) { this.config = config; this.state = "configured"; }
-    decode(chunk) { this.decoded.push(chunk); }
+    configure(config) { this.config = config; options.configure?.(this, config); this.state = "configured"; }
+    decode(chunk) { options.decode?.(this, chunk); this.decoded.push(chunk); }
     close() { this.state = "closed"; }
     output(width = 1920, height = 1080) {
       let closed = false;
@@ -195,22 +196,161 @@ function videoFixture() {
   const codec = module("../apps/desktop/src/lib/codec.ts", {}, timers);
   const exports = module("../apps/desktop/src/lib/video.ts", { "../bindings": { commands: {} }, "./codec": codec, "./hops": { hop() {}, drawTime() {} } }, timers, "", {
     performance: { now: () => now }, VideoDecoder: MockDecoder, EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
+    console: { info: (text) => logs.push(text), error: (text) => logs.push(text) },
   });
   const canvas = { width: 0, height: 0, getContext: () => ({ drawImage() { drawn++; } }) };
   const decoder = exports.createDecoder(canvas, () => { requested++; }, () => {}, (value) => stats.push(value));
   // Frames 1/60 s apart in stream time, as a 60 fps host sends them.
   let ts = 0n;
-  const packet = (key = false) => {
-    const payload = new Uint8Array([0, 0, 0, 1, key ? 0x67 : 0x61, 0x42, 0, 0x28]);
+  const packet = (key = false, { width = 1920, height = 1080, profile = 0x42 } = {}) => {
+    const payload = new Uint8Array([0, 0, 0, 1, key ? 0x67 : 0x61, profile, 0, 0x28]);
     const buffer = new ArrayBuffer(18 + payload.length);
     const head = new DataView(buffer);
-    head.setUint8(0, 1); head.setUint8(1, key ? 1 : 0); head.setUint16(2, 1920); head.setUint16(4, 1080); head.setUint32(14, payload.length);
+    head.setUint8(0, 1); head.setUint8(1, key ? 1 : 0); head.setUint16(2, width); head.setUint16(4, height); head.setUint32(14, payload.length);
     head.setBigUint64(6, ts); ts += 16_667n;
     new Uint8Array(buffer, 18).set(payload);
     return buffer;
   };
-  return { ...exports, decoder, instances, stats, timers, packet, advance: (n) => { now += n; }, requested: () => requested, drawn: () => drawn };
+  return { ...exports, decoder, instances, stats, logs, canvas, timers, packet, advance: (n) => { now += n; }, requested: () => requested, drawn: () => drawn };
 }
+
+const videoError = (name) => Object.assign(new Error("controlled decoder failure"), { name });
+const fallbackLogs = (s) => s.logs.filter((text) => text === "Live video: retrying decoder with default acceleration");
+
+test("decoder starts with hardware preference and retries synchronous configuration failures on the next keyframe", () => {
+  for (const name of ["OperationError", "NotSupportedError"]) {
+    let first = true;
+    const s = videoFixture({ configure() { if (first) { first = false; throw videoError(name); } } });
+    s.decoder.push(s.packet(true));
+    assert.equal(s.instances[0].config.hardwareAcceleration, "prefer-hardware");
+    assert.equal(s.instances[0].state, "closed");
+    assert.equal(s.requested(), 1);
+    assert.equal(fallbackLogs(s).length, 1);
+    s.decoder.push(s.packet());
+    assert.equal(s.instances.length, 1, "a delta cannot configure the fallback decoder");
+    s.decoder.push(s.packet(true));
+    const fallback = s.instances[1];
+    assert.equal(fallback.config.hardwareAcceleration, "no-preference");
+    assert.equal(fallback.decoded.length, 1);
+    fallback.output();
+    assert.equal(s.canvas.width, 1920);
+    assert.equal(s.canvas.height, 1080);
+    assert.equal(s.drawn(), 1, "the fallback presents decoded output normally");
+    s.decoder.close();
+    fallback.output(640, 480);
+    assert.equal(s.drawn(), 1);
+    assert.equal(s.canvas.width, 1920);
+    assert.equal(fallback.state, "closed");
+    assert.equal(s.timers.pending.size, 0);
+  }
+});
+
+test("asynchronous hardware failures keep the same tuple on default acceleration across resets", () => {
+  for (const name of ["OperationError", "NotSupportedError"]) {
+    const s = videoFixture();
+    s.decoder.push(s.packet(true));
+    const hardware = s.instances[0];
+    assert.equal(hardware.config.hardwareAcceleration, "prefer-hardware");
+    hardware.callbacks.error(videoError(name));
+    assert.equal(hardware.state, "closed");
+    assert.equal(s.requested(), 1);
+    s.decoder.push(s.packet(true));
+    assert.equal(s.instances[1].config.hardwareAcceleration, "no-preference");
+    // A browser-selected path can still fail: preserve reset/IDR recovery, without returning to HW.
+    s.instances[1].callbacks.error(videoError(name));
+    s.decoder.push(s.packet(true));
+    assert.equal(s.instances[2].config.hardwareAcceleration, "no-preference");
+    assert.equal(fallbackLogs(s).length, 1, "one transition is logged for a remembered tuple");
+    s.instances[2].output();
+    assert.equal(s.drawn(), 1);
+    s.decoder.close();
+    const count = s.instances.length;
+    s.instances[2].callbacks.error(videoError(name));
+    s.decoder.push(s.packet(true));
+    assert.equal(s.instances.length, count);
+    assert.equal(fallbackLogs(s).length, 1);
+    assert.equal(s.timers.pending.size, 0);
+  }
+});
+
+test("only hardware capability failures change acceleration; packet and state errors retain hardware preference", () => {
+  for (const name of ["DataError", "EncodingError", "InvalidStateError", "TypeError"]) {
+    for (const path of ["configure", "decode", "async"]) {
+      let first = true;
+      const s = videoFixture(path === "async" ? {} : {
+        [path]() { if (first) { first = false; throw videoError(name); } },
+      });
+      s.decoder.push(s.packet(true));
+      if (path === "async") s.instances[0].callbacks.error(videoError(name));
+      assert.equal(s.instances[0].state, "closed");
+      s.decoder.push(s.packet(true));
+      assert.equal(s.instances[1].config.hardwareAcceleration, "prefer-hardware", `${path} ${name}`);
+      assert.equal(fallbackLogs(s).length, 0);
+      s.decoder.close();
+    }
+  }
+});
+
+test("a synchronous hardware decode failure selects default acceleration for the next keyframe", () => {
+  let first = true;
+  const s = videoFixture({ decode() { if (first) { first = false; throw videoError("OperationError"); } } });
+  s.decoder.push(s.packet(true));
+  assert.equal(s.instances[0].state, "closed");
+  s.decoder.push(s.packet(true));
+  assert.equal(s.instances[1].config.hardwareAcceleration, "no-preference");
+  s.instances[1].output();
+  assert.equal(s.drawn(), 1);
+  assert.equal(fallbackLogs(s).length, 1);
+  s.decoder.close();
+});
+
+test("retired decoder errors cannot affect a live decoder or poison a future configuration", () => {
+  const s = videoFixture();
+  s.decoder.push(s.packet(true));
+  const retired = s.instances[0];
+  s.decoder.push(s.packet(true, { width: 1280, height: 720 }));
+  const current = s.instances[1];
+  retired.callbacks.error(videoError("OperationError"));
+  retired.callbacks.error(videoError("NotSupportedError"));
+  assert.equal(current.state, "configured");
+  assert.equal(s.requested(), 0);
+  assert.equal(fallbackLogs(s).length, 0);
+  s.decoder.push(s.packet(true));
+  assert.equal(s.instances[2].config.hardwareAcceleration, "prefer-hardware");
+  s.decoder.close();
+});
+
+test("hardware fallback is scoped to the codec and both coded dimensions", () => {
+  const s = videoFixture();
+  s.decoder.push(s.packet(true));
+  s.instances[0].callbacks.error(videoError("OperationError"));
+  for (const changed of [{ width: 1280 }, { height: 720 }, { profile: 0x64 }]) {
+    s.decoder.push(s.packet(true, changed));
+    assert.equal(s.instances.at(-1).config.hardwareAcceleration, "prefer-hardware");
+  }
+  s.decoder.push(s.packet(true));
+  assert.equal(s.instances.at(-1).config.hardwareAcceleration, "no-preference");
+  assert.equal(fallbackLogs(s).length, 1);
+  s.decoder.close();
+});
+
+test("decoder fallback history retains the most recent 16 failed configurations", () => {
+  const s = videoFixture();
+  for (let i = 0; i < 17; i++) {
+    s.decoder.push(s.packet(true, { width: 1920 + i }));
+    assert.equal(s.instances.at(-1).config.hardwareAcceleration, "prefer-hardware");
+    s.instances.at(-1).callbacks.error(videoError("OperationError"));
+  }
+  s.decoder.push(s.packet(true, { width: 1921 }));
+  assert.equal(s.instances.at(-1).config.hardwareAcceleration, "no-preference", "the retained oldest tuple stays on fallback");
+  s.instances.at(-1).callbacks.error(videoError("OperationError"));
+  s.decoder.push(s.packet(true, { width: 1936 }));
+  assert.equal(s.instances.at(-1).config.hardwareAcceleration, "no-preference", "repeated fallback failures do not evict history");
+  s.decoder.push(s.packet(true));
+  assert.equal(s.instances.at(-1).config.hardwareAcceleration, "prefer-hardware", "a tuple outside the bounded recent history can probe hardware again");
+  assert.equal(fallbackLogs(s).length, 17);
+  s.decoder.close();
+});
 
 test("video packets reject truncated payloads and telemetry counts displayed frames, not requests", async () => {
   const s = videoFixture();

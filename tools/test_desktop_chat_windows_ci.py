@@ -168,6 +168,63 @@ vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTE
     def screen_line(self, payload):
         return '     (live screen diagnostic ' + json.dumps(payload) + ')'
 
+    def ownership_observation(self):
+        return dict(schema=1, checkpoints=[{'phase': phase, **{flag: True for flag in ci.OWNERSHIP_FLAGS}}
+                                          for phase in ci.OWNERSHIP_PHASES], host_metadata_unchanged=True)
+
+    def ownership_line(self, payload):
+        return '     (workspace ownership diagnostic ' + json.dumps(payload) + ')'
+
+    def test_ownership_diagnostic_separates_metadata_from_dynamic_dots_without_raw_fields(self):
+        valid = self.ownership_observation()
+        valid['checkpoints'][2]['dots_unchanged'] = False
+        raw = {**valid, 'title': 'private-session-title'}
+        raw['checkpoints'] = [{**point, 'keys': ['private-host/id']} for point in valid['checkpoints']]
+        parsed = ci.parse_log(self.ownership_line(raw), '')
+        self.assertEqual(parsed['ownership_diagnostics'], [valid])
+        for secret in ('private-session-title', 'private-host/id'):
+            self.assertNotIn(secret, json.dumps(parsed))
+        good = {**self.good(), 'suite': 'workspace', 'screen_diagnostics': [self.screen_observation()],
+                'ownership_diagnostics': [valid]}
+        self.assertTrue(ci.accepted(good), 'a dot change is not a title/pin/archive mutation')
+        self.assertFalse(ci.accepted({**good, 'ownership_diagnostics': [{**valid, 'host_metadata_unchanged': False}]}))
+
+    def test_ownership_diagnostic_keeps_invalid_duplicate_and_missing_slots_as_failure(self):
+        valid = self.ownership_observation()
+        invalid = [None, [], {**valid, 'schema': True}, {**valid, 'host_metadata_unchanged': 1},
+                   {**valid, 'checkpoints': valid['checkpoints'][:-1]},
+                   {**valid, 'checkpoints': list(reversed(valid['checkpoints']))},
+                   {**valid, 'checkpoints': [{**point, 'flow_ok': 1} for point in valid['checkpoints']]}]
+        for payload in invalid:
+            self.assertEqual(ci.parse_log(self.ownership_line(payload), '')['ownership_diagnostics'], [None])
+        for line in ('     (workspace ownership diagnostic {bad})', self.ownership_line(valid) + ' trailing'):
+            self.assertEqual(ci.parse_log(line, '')['ownership_diagnostics'], [None])
+        good = {**self.good(), 'suite': 'workspace', 'screen_diagnostics': [self.screen_observation()]}
+        for observations in (None, [], [None], [valid, valid], [valid, None]):
+            self.assertFalse(ci.accepted({**good, 'ownership_diagnostics': observations}))
+
+    def test_ownership_driver_emits_the_schema_consumed_by_the_runner(self):
+        source = Path(__file__).with_name('desktop-workspace-e2e.js').read_text()
+        start = source.index('      const checkpoint = ')
+        block = source[start:source.index('      try {', start)]
+        start = source.index('        await say("e2e", `     (workspace ownership diagnostic ')
+        emission = source[start:source.index('\n', start)]
+        script = r'''
+const vm=require('node:vm'), emitted=[];
+const context={checkpoints:[],hostMetadataUnchanged:true,metadata:()=>"same",before:"same",
+ dots:()=>"same",beforeDots:"same",currentKey:()=>"fixture",kq:"fixture",$:()=>null,
+ originalInert:null,isInert:false,say:async(level,message)=>emitted.push(message)};
+context.aside={hasAttribute:()=>context.isInert,getAttribute:()=>context.isInert?"":null};
+vm.createContext(context);
+const body=BLOCK+'checkpoint("screen",true,true,true);isInert=true;checkpoint("dom-inert",true,true,true);'
+ +'isInert=false;checkpoint("restored",true,true,true);checkpoint("escaped",true,true,true);'+EMISSION;
+vm.runInContext('(async()=>{'+body+'})()',context).then(()=>process.stdout.write(JSON.stringify(emitted)));
+'''.replace('BLOCK', json.dumps(block)).replace('EMISSION', json.dumps(emission))
+        process = subprocess.run(['node', '-'], input=script, text=True, capture_output=True, check=True)
+        emitted = json.loads(process.stdout)
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(ci.parse_log(emitted[0], '')['ownership_diagnostics'], [self.ownership_observation()])
+
     def test_screen_diagnostic_keeps_only_typed_fields_and_invalid_slots(self):
         valid = self.screen_observation()
         parsed = ci.parse_log(self.screen_line({**valid, 'text': r'C:\Users\Alice\auth.secret'}), '')
@@ -186,7 +243,8 @@ vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTE
 
     def test_workspace_requires_exactly_one_successful_frame_observation(self):
         valid = self.screen_observation()
-        good = {**self.good(), 'suite': 'workspace', 'screen_diagnostics': [valid]}
+        good = {**self.good(), 'suite': 'workspace', 'screen_diagnostics': [valid],
+                'ownership_diagnostics': [self.ownership_observation()]}
         self.assertTrue(ci.accepted(good))
         for observations in (None, [], [None], [valid, valid], [valid, None]):
             self.assertFalse(ci.accepted({**good, 'screen_diagnostics': observations}))

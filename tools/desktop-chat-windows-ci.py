@@ -27,6 +27,25 @@ SUITES = (
 )
 KIND_ALLOWLIST = {"stream_workspace_ui", "stream_chat_rail", "preview_dialog", "workspace_ui", "devices_ui"}
 SCREEN_ERROR_CODES = {"stream_terminal", "wgc_unsupported", "wgc_start", "dda_start", "capture_start", "monitor_unavailable", "other"}
+OWNERSHIP_PHASES = ("screen", "dom-inert", "restored", "escaped")
+OWNERSHIP_FLAGS = ("flow_ok", "selection_ok", "current_ok", "metadata_ok", "dots_unchanged", "menu_closed", "focus_ok", "inert_ok")
+
+
+def ownership_diagnostic(payload):
+    """Export observed booleans, never session keys, titles, dot values or event text."""
+    if (not isinstance(payload, dict) or type(payload.get("schema")) is not int or payload["schema"] != 1
+            or type(payload.get("host_metadata_unchanged")) is not bool):
+        return None
+    checkpoints = payload.get("checkpoints")
+    if not isinstance(checkpoints, list) or len(checkpoints) != len(OWNERSHIP_PHASES):
+        return None
+    observations = []
+    for phase, point in zip(OWNERSHIP_PHASES, checkpoints):
+        if (not isinstance(point, dict) or point.get("phase") != phase
+                or any(type(point.get(flag)) is not bool for flag in OWNERSHIP_FLAGS)):
+            return None
+        observations.append({"phase": phase, **{flag: point[flag] for flag in OWNERSHIP_FLAGS}})
+    return {"schema": 1, "checkpoints": observations, "host_metadata_unchanged": payload["host_metadata_unchanged"]}
 
 
 def screen_diagnostic(payload):
@@ -79,6 +98,7 @@ def native_stream_evidence(raw_dir):
             "native_first_packet": "[video] sent first frame:",
             "decoder_configured": "Live video: decoder configured:",
             "decoder_caught_up": "Live video: decoder caught up",
+            "decoder_default_fallback": "Live video: retrying decoder with default acceleration",
             "stream_start_error": "Cannot start live video:",
         },
     }
@@ -142,8 +162,18 @@ def parse_log(raw, source):
     checks, exits, geometries = [], [], []
     motion_preferences = []
     screen_diagnostics = []
+    ownership_diagnostics = []
     all_passed, failed_summaries, reported_checks, storage = 0, [], [], False
     for line in raw.splitlines():
+        if line.startswith("     (workspace ownership diagnostic "):
+            observation = None
+            match = re.fullmatch(r"     \(workspace ownership diagnostic (\{.*\})\)", line)
+            if match:
+                try:
+                    observation = ownership_diagnostic(json.loads(match[1]))
+                except ValueError:
+                    pass
+            ownership_diagnostics.append(observation)
         if line.startswith("     (live screen diagnostic "):
             observation = None
             match = re.fullmatch(r"     \(live screen diagnostic (\{.*\})\)", line)
@@ -196,6 +226,7 @@ def parse_log(raw, source):
             "failed_summary_counts": failed_summaries, "reported_check_counts": reported_checks, "app_exit_codes": exits,
             "motion_preferences": motion_preferences,
             "screen_diagnostics": screen_diagnostics,
+            "ownership_diagnostics": ownership_diagnostics,
             "isolated_storage": storage, "isolated_placement": bool(geometries) and all(offscreen(x) for x in geometries)}
 
 
@@ -293,6 +324,10 @@ def accepted(record):
                         or type(preference["appReduce"]) is str and preference["appReduce"] in ("true", "false"))):
             return False
     if record.get("suite") == "workspace":
+        ownership = record.get("ownership_diagnostics")
+        if (not isinstance(ownership, list) or len(ownership) != 1 or ownership_diagnostic(ownership[0]) is None
+                or not ownership[0]["host_metadata_unchanged"]):
+            return False
         observations = record.get("screen_diagnostics")
         if not isinstance(observations, list) or len(observations) != 1 or observations[0] is None:
             return False

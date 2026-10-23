@@ -887,10 +887,36 @@
       const screen = $(".nt-live-workspace .nt-stage");
       const pair = [k1, k2], watchKeys = [...batchKeys, kq];
       if (!pane || !aside || !screen || aside.hasAttribute("inert")) throw sceneError("batch ownership: live panes are unavailable");
-      const state = () => JSON.stringify(watchKeys.map((key) => ({
-        key, title: rowTitle(key), dot: dotOf(key), pinned: pinnedRow(key), archived: rowOf(key)?.hasAttribute("data-archived"),
+      const metadata = () => JSON.stringify(watchKeys.map((key) => ({
+        key, title: rowTitle(key), pinned: pinnedRow(key), archived: rowOf(key)?.hasAttribute("data-archived"),
       })));
-      const before = state();
+      // Status dots follow independently refreshed turn/read state, not the host's editable metadata.
+      const dots = () => JSON.stringify(watchKeys.map((key) => dotOf(key)));
+      // idle() observes the conversation footer; the independently polled list may still show the
+      // first-message title. Start the key probes only after this host snapshot is drawn by the UI.
+      const ownershipDeadline = Date.now() + 10000;
+      const ownershipBaseline = await batchHost("ownership metadata ready", (xs) => watchKeys.every((key) => {
+        const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id);
+        return meta && (key !== kq || (typeof meta.title === "string" && !!meta.title.trim()));
+      }));
+      const shownHostTitle = (meta) => {
+        const title = typeof meta.title === "string" ? meta.title.trim() : "";
+        if (title) return title;
+        const first = (meta.first_text ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+        const firstLine = first.length > 80 ? `${first.slice(0, 79).trimEnd()}…` : first;
+        return firstLine || (meta.name ?? "").trim();
+      };
+      const remaining = ownershipDeadline - Date.now();
+      const ready = ownershipBaseline && remaining > 0 && await until("ownership host metadata drawn in the list", () =>
+        watchKeys.every((key) => {
+          const id = key.slice(key.indexOf("/") + 1), meta = ownershipBaseline.sessions.find((x) => x.id === id), row = rowOf(key);
+          return meta && row?.isConnected && rowTitle(key) === shownHostTitle(meta)
+            && pinnedRow(key) === !!meta.pinned && row.hasAttribute("data-archived") === !!meta.archived;
+        }), remaining);
+      if (!ready) throw sceneError("batch ownership: host metadata did not reach the list within the shared readiness budget");
+      const before = metadata(), beforeDots = dots();
+      const checkpoints = [];
+      let hostMetadataUnchanged = false;
       const shortcuts = [
         { key: "F2", code: "F2" }, { key: "Escape", code: "Escape" },
         ...["metaKey", "ctrlKey"].flatMap((modifier) => ["P", "U", "A", "R"].map((letter) =>
@@ -914,25 +940,40 @@
       const allowed = (rows) => rows.every((x) => !x.prevented && x.targetReached && x.documentReached);
       const blocked = (rows) => rows.every((x) => x.prevented && !x.targetReached && !x.documentReached);
       const originalTabIndex = screen.getAttribute("tabindex"), originalInert = aside.getAttribute("inert");
+      const checkpoint = (phase, flowOk, selectionOk, focusOk) => {
+        const result = {
+          phase, flow_ok: flowOk, selection_ok: selectionOk, current_ok: currentKey() === kq,
+          metadata_ok: metadata() === before, dots_unchanged: dots() === beforeDots,
+          menu_closed: !$(".ws-menu"), focus_ok: focusOk,
+          inert_ok: phase === "dom-inert" ? aside.hasAttribute("inert") : aside.getAttribute("inert") === originalInert,
+        };
+        checkpoints.push(result);
+        return result;
+      };
       try {
         // Focus the stage itself, not RemoteInput: these synthetic probes must never send host keys.
         // No pointerdown is dispatched, because a real unmodified outside pointer clears selection.
         screen.setAttribute("tabindex", "-1");
         screen.focus({ preventScroll: true });
-        await check("screen focus keeps the two-row batch selected and releases workspace keyboard ownership",
-          document.activeElement === screen && pane.dataset.keyboardActive === "false" && sameKeys(selectedKeys(), pair));
+        const screenFocusOk = document.activeElement === screen && pane.dataset.keyboardActive === "false" && sameKeys(selectedKeys(), pair);
         const left = probe(screen, shortcuts);
+        await check("screen focus keeps the two-row batch selected and releases workspace keyboard ownership",
+          screenFocusOk);
         await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "screen", probes: left })}`);
-        await check("the screen's F2, Escape and both modifier shortcut sets pass the workspace capture handlers", allowed(left)
-          && sameKeys(selectedKeys(), pair) && currentKey() === kq && state() === before && !$(".ws-menu"));
+        const screenResult = checkpoint("screen", allowed(left), sameKeys(selectedKeys(), pair),
+          document.activeElement === screen && pane.dataset.keyboardActive === "false");
+        await check("the screen's F2, Escape and both modifier shortcut sets pass the workspace capture handlers", screenResult.flow_ok
+          && screenResult.selection_ok && screenResult.current_ok && screenResult.metadata_ok && screenResult.menu_closed);
         try {
           // Offscreen-safe DOM boundary probe for the inert pane used by immersive mode. This does
           // not enter OS full screen or claim that physical immersive keyboard input was exercised.
           aside.setAttribute("inert", "");
           const inert = probe(pane, shortcuts);
           await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "dom-inert", probes: inert })}`);
-          await check("an inert workspace does not capture F2, Escape or either modifier shortcut set", allowed(inert)
-            && sameKeys(selectedKeys(), pair) && currentKey() === kq && state() === before && !$(".ws-menu"));
+          const inertResult = checkpoint("dom-inert", allowed(inert), sameKeys(selectedKeys(), pair),
+            document.activeElement === screen && pane.dataset.keyboardActive === "false");
+          await check("an inert workspace does not capture F2, Escape or either modifier shortcut set", inertResult.flow_ok
+            && inertResult.selection_ok && inertResult.current_ok && inertResult.metadata_ok && inertResult.menu_closed);
         } finally {
           if (originalInert === null) aside.removeAttribute("inert");
           else aside.setAttribute("inert", originalInert);
@@ -940,23 +981,34 @@
         const rowButton = $(".ws-row-main", rowOf(k1));
         rowButton.focus({ preventScroll: true });
         const owned = probe(rowButton, shortcuts.filter((x) => x.key !== "Escape"));
+        const restoredResult = checkpoint("restored", blocked(owned), sameKeys(selectedKeys(), pair),
+          pane.dataset.keyboardActive === "true");
         await check("restoring workspace ownership blocks single-row shortcuts while two rows remain selected",
-          aside.getAttribute("inert") === originalInert && pane.dataset.keyboardActive === "true" && blocked(owned)
-            && sameKeys(selectedKeys(), pair) && state() === before && !$(".ws-menu"));
+          restoredResult.inert_ok && restoredResult.focus_ok && restoredResult.flow_ok
+            && restoredResult.selection_ok && restoredResult.metadata_ok && restoredResult.menu_closed);
         const escape = probe(rowButton, [shortcuts[1]]);
-        await check("Escape owned by the workspace clears the batch and is consumed", blocked(escape)
-          && !!(await until("owned batch Escape clears selection", () => !selectedKeys().length, 3000)));
+        const escapeFlowOk = blocked(escape);
+        const escapeSelectionOk = escapeFlowOk
+          ? !!(await until("owned batch Escape clears selection", () => !selectedKeys().length, 3000))
+          : !selectedKeys().length;
+        const escapedResult = checkpoint("escaped", escapeFlowOk, !!escapeSelectionOk, pane.dataset.keyboardActive === "true");
+        await check("Escape owned by the workspace clears the batch and is consumed", escapedResult.flow_ok && escapedResult.selection_ok);
+        // Always query the host, even when the DOM metadata comparison fails, to distinguish the two.
+        hostMetadataUnchanged = !!(await batchHost("ownership probes did not mutate session metadata", (xs) =>
+          watchKeys.every((key) => {
+            const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id), original = ownershipBaseline.sessions.find((x) => x.id === id);
+            return meta && original && !!meta.pinned === !!original.pinned && !!meta.archived === !!original.archived && meta.title === original.title;
+          })));
+        // This final phase also records the DOM half of the metadata check after the host query.
+        escapedResult.metadata_ok = metadata() === before;
         await check("ownership key probes leave every test session's pin, archive and title metadata unchanged",
-          state() === before && !!(await batchHost("ownership probes did not mutate session metadata", (xs) =>
-            watchKeys.every((key) => {
-              const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id), original = baseline.sessions.find((x) => x.id === id);
-              return meta && original && !!meta.pinned === !!original.pinned && !!meta.archived === !!original.archived && meta.title === original.title;
-            }))));
+          escapedResult.metadata_ok && hostMetadataUnchanged);
       } finally {
         if (originalInert === null) aside.removeAttribute("inert");
         else aside.setAttribute("inert", originalInert);
         if (originalTabIndex === null) screen.removeAttribute("tabindex");
         else screen.setAttribute("tabindex", originalTabIndex);
+        await say("e2e", `     (workspace ownership diagnostic ${JSON.stringify({ schema: 1, checkpoints, host_metadata_unchanged: hostMetadataUnchanged })})`);
       }
     };
     await check("batch starts with all three unpinned and unarchived", [...beforeBatch.values()].every((meta) => !meta.pinned && !meta.archived));
