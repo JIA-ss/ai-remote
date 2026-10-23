@@ -537,14 +537,23 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 | 工具 | 默认 | 作用 |
 |---|---|---|
 | `chat_runtimes` | 允许 | 找到的智能体：`id`、`name`、`version`、`path`、`verdict`（`ok`、`missing`、`below_minimum`、`not_executable`）、`login`（`logged_in` / `logged_out` 及方式，不含账号）、`caps`；另有 `host.can_start`、`host.enabled` |
-| `chat_sessions` | 允许 | 会话列表，最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数；不含对话内容 |
-| `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
+| `chat_sessions` | 允许 | 未归档的会话列表（`archived: true` 时只列已归档的），最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数、`last_seq`、`pinned`、`archived`，有值时还有 `title` / `title_source`（`agent` 或 `user`）、`first_text`（首条消息前 200 字）、`last_status` / `last_reason`、`pending`（`permission` / `question` / `plan`：有东西等人回答）、`branch`（读文件夹的 `.git/HEAD`，不执行 git）和 Claude Code 的 `permission_mode`；不含对话内容 |
+| `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`，Claude Code 还可给 `permission_mode`（`default`、`acceptEdits`、`plan`、`bypassPermissions`，默认 `bypassPermissions`）。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
+| `chat_update` | 允许 | `session` 加 `title`（最多 200 字；空串恢复智能体的标题或首条消息）、`pinned`、`archived` 任意几项。这里起的名字不会被智能体的标题覆盖。返回 `chat_sessions` 里这一行；记审计 |
 | `chat_attach` | 允许 | 参数 `session`。返回票据，可观看会话并给它发消息；任何管理员级别的设备都可以，每条消息记录发送者 |
 | `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
 | `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
 | `chat_file` | 允许 | 参数 `session`、`path`。返回一次性票据（2 分钟内在文件通道上兑换），读取会话里的 HTML、Markdown 或图片文件，供应用内预览：最大 16 MiB，且只能是会话工作目录里的文件（按解析符号链接后的真实路径判断），或智能体自己在本会话里提到过的路径（工具调用的位置、diff 或它的回答） |
 
-`chat_start`、`chat_attach` 和 `chat_file` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+`chat_start`、`chat_attach`、`chat_file` 和 `chat_update` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+
+**审批、计划和提问（Claude Code）。** Claude Code 以 `--permission-prompt-tool stdio` 启动，权限模式要求问人的事都会到会话里：
+`AskUserQuestion`（任何模式，包括 bypass）成为带全部题目（`questions`）的 `question` 事件，`ExitPlanMode`（plan 模式）成为
+`plan_review`，bypass 以外的模式下其他工具成为 `permission`。控制端在对话通道上用 `answer`（按题 `answers`）或 `permit`
+（`once`、`session`、`deny`，可带模型会读到的 `message`，计划还可带批准后的 `mode`）回答；任一设备的第一个回答对所有人生效
+（`resolved` 事件），之后的回答收到错误码 `resolved`，轮次结束时仍未回答的记为 `cancelled`。"本会话允许"只对这个会话有效：
+智能体建议的规则回传时目的地改成会话，不写进项目的 Claude 设置。`mode` 切换权限模式（只限 Claude Code）。每次回答记审计
+（`chat_permission`：谁、哪个请求、结果），不记写了什么。
 
 `chat_file` 不询问机主，因为它没有扩大能力范围：调用的设备已经是管理员级别，本来就能让智能体（以用户身份运行、不询问）把任意文件打印出来。它只限于对话涉及的文件，让一个默认允许的工具读不到更多；仍可以用 `[[rule]]` 把 `chat_file` 改成询问或拒绝。文件在签票时就读取，用的是智能体所属用户的权限（被控端是以 SYSTEM 运行的 Windows 服务时，由用户会话里的 agent runner 去读），票据带着这份字节：预览读不到智能体自己读不到的文件，检查之后被换成链接的文件也不会被读。桌面端预览 HTML 时不执行其中的脚本（`sandbox=""` 的 frame，外加一条不从网络加载任何内容的策略），Markdown 用对话自己的渲染器，图片从内存显示；控制端磁盘上不写任何文件。HTML 预览里的**运行脚本**会在单独的窗口里打开页面，页面由应用在 `127.0.0.1` 上以随机路径提供：这个窗口碰不到应用（对 Tauri 来说它是没有任何 capability 的远程来源），页面可以运行内联脚本，可以从几个公共 CDN（jsDelivr、unpkg、cdnjs、esm.sh、Google Fonts）加载脚本和样式，别的什么都不能请求。
 

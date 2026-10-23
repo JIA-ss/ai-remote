@@ -26,7 +26,12 @@
 | `archived` | bool | 归档（列表默认不显示；被控端仍按原规则清理） |
 | `permission_mode` | string? | Claude 的权限模式：`default`\|`acceptEdits`\|`plan`\|`bypassPermissions` |
 
-`chat_sessions` 增加可选参数 `archived: bool`（默认只返回未归档的）。
+`chat_sessions` 增加可选参数 `archived: bool`（默认只返回未归档的；`true` 只返回已归档的）。
+
+实现说明（2026-10-23，`ws/host-s1`）：`last_seq` 不写进 `meta.json`，`chat_sessions` 按转录的 seq 现算（和旧字段 `seq` 相同）；
+`branch` 也是每次列出时现读，`HEAD` 游离（detached）时不给；没有值的新字段不出现在 `chat_sessions` 里（和旧被控端一样），
+`pinned` / `archived` 总是给。旧 `meta.json` 在被控端启动时补齐：`first_text` 和 `last_status` / `last_reason` 从转录里读，
+Claude 会话的 `permission_mode` 记为 `bypassPermissions`（旧会话都是这么跑的），其他智能体没有 `permission_mode`。
 
 新工具 `chat_update`（admin 级，默认允许，`CHANNEL_TOOLS` 里，不对 MCP 客户端列出）：参数 `session` 加任意几项
 `title`（空串表示恢复自动标题）、`pinned`、`archived`。改标题时 `title_source = "user"`。返回更新后的 meta。
@@ -43,6 +48,7 @@
 ```
 
 - `permission`：智能体要用一个工具、当前权限模式要求问人。`suggestions` 里有 `session` 表示可以"本会话一直允许"。
+  另带可选 `call_id`（对应的 `tool_call`，Claude 的 `tool_use_id`）。
 - `plan_review`：Claude 的 ExitPlanMode，展示计划并让人选接下来的权限模式。
 - `question` 新增 `questions`（多题、带说明、可多选）；旧字段 `prompt` / `options` 保留（第一题），旧控制端照旧能答第一题。
 - `resolved`：审批 / 提问 / 计划被回答（或轮次结束作废）后发出，所有查看者据此收起卡片（先到先得）。
@@ -63,9 +69,11 @@
 {"mode":{"mode":"plan"}}
 ```
 
-- `permit` / `answer` 对已经 `resolved` 的 id 回 `{"t":"error","code":"resolved"}`（另一台设备先答了）。
+- `permit` / `answer` 对已经 `resolved` 的 id 回 `{"t":"error","code":"resolved","id":"…"}`（另一台设备先答了，或轮次已结束）。
+  先到先得在被控端会话里原子地做（第一个回答把它从"等人回答"里取走），只读票据照旧回 `readonly`。
 - `mode` 只对 Claude 有效，其他智能体回通知 `mode_rejected`。
-- hello 增加 `caps.permissions: true`（支持 permit / mode）、`caps.questions_multi: true`。
+- hello 增加 `caps.permissions: true`（支持 permit / mode）、`caps.questions_multi: true`（只有 Claude Code 有；同时 Claude
+  的 `caps.questions` 变成 `true`）。`chat_runtimes` 的 caps 同样带这两项。
 
 ### 1.4 Claude 适配器
 
@@ -75,17 +83,44 @@
   - `AskUserQuestion` → `question`（带 `questions`），回答后回 `allow`，`updatedInput = {questions, answers}`。
   - `ExitPlanMode` → `plan_review`；批准回 `allow` 并发 `set_permission_mode` 到所选模式；要改回 `deny` 带说明。
   - 其他工具：模式是 `bypassPermissions` 时直接 allow（保留现在把 `run_in_background` 改成 false 的处理）；否则发 `permission`，
-    `once` → allow，`session` → allow 并带上请求里的 `permission_suggestions` 作为 `updatedPermissions`，`deny` → deny
-    （带 message 时 `interrupt:false`，模型会看到说明；不带时 `interrupt:true`）。
-  - 轮次被打断或进程退出时，未答的请求全部 `resolved cancelled`。
-- `mode` 命令 → `control_request` `set_permission_mode`。
+    `once` → allow，`session` → allow 并带上请求里的 `permission_suggestions` 作为 `updatedPermissions`，**但每条的
+    `destination` 改成 `session`**（实测：原样回传时建议里写的是 `localSettings`，Claude Code 会把规则写进项目的
+    `.claude/settings.local.json`，下次会话、别人在这个目录里也生效；改成 `session` 后同一会话再跑同一命令不再问，也不写文件），
+    `deny` → deny（带 message 时 `interrupt:false`，模型会看到说明；不带时 `interrupt:true`）。
+  - 轮次被打断或进程退出时，未答的请求全部 `resolved cancelled`。打断时适配器先对未答的请求回 deny（`interrupt:true`），再发
+    `interrupt`，免得 Claude Code 一直等这些回答；Claude Code 发 `control_cancel_request` 收回某个请求时也按 `cancelled` 处理。
+  - 不再持有的请求（已被收回）收到 `permit` 时发通知 `permission_expired`。
+- `mode` 命令 → `control_request` `set_permission_mode`。模式变化以 Claude Code 自己说的为准：`system` 行（`init`、`status`）
+  里的 `permissionMode` 一变就发 `mode`；`set_permission_mode` 失败回通知 `mode_rejected`。会话没有进程时 `mode` 命令直接改
+  `meta.permission_mode` 并发 `mode`，下次启动用它。
 - 标题：首条消息被接受后发 `control_request` `generate_session_title`（`description` = 首条消息，`persist:false`），
-  回应里的 `title` → `title` 事件（`source:"agent"`）；不回或失败就不发（界面用首条消息兜底）。
+  回应里的 `title` → `title` 事件（`source:"agent"`）；不回或失败就不发（界面用首条消息兜底）。用户用 `chat_update` 改过名后，
+  智能体的标题不再覆盖；改名本身也发一条 `title`（`source:"user"`）。
 - diff：读 user 消息顶层的 `tool_use_result.structuredPatch`，作为对应 tool_call 的 `tool_update` 里带 `hunks` 的 diff。
+  只在该 user 消息恰好有一个 `tool_result` 时读（`tool_use_result` 是消息级字段）；新建文件的 `structuredPatch` 是空数组，不出 diff。
+
+实测（2026-10-23，本机 Claude Code 2.1.308，`--model haiku`，`--permission-prompt-tool stdio`，每项 1 次）：
+
+| 问题 | 结果 |
+|---|---|
+| bypass 下 AskUserQuestion 还走 `can_use_tool` 吗 | 走。请求带 `tool_use_id`、`requires_user_interaction:true`，input 是 `{questions:[{question,header,options:[{label,description}],multiSelect}]}` |
+| 回 allow + `updatedInput {questions, answers}` 后模型拿到答案吗 | 拿到。工具结果是 `The user answered: "<问题>"="blue"…`，模型回 `YOU CHOSE blue` |
+| plan 模式下 ExitPlanMode | 走 `can_use_tool`，input 是 `{plan, planFilePath}`（assistant 消息里的 tool_use input 是空的，计划只在这个请求里）；回 allow 后工具结果是 "User has approved your plan" |
+| default 模式 Bash | 只读命令（`echo`）不问；`curl …` 问，带 `permission_suggestions:[{type:addRules, rules:[{toolName:"Bash",ruleContent:"<命令>"}], behavior:"allow", destination:"localSettings"}]`、`decision_reason`、`description` |
+| default 模式 Edit | 问，`permission_suggestions:[{type:"setMode", mode:"acceptEdits", destination:"session"}]` |
+| deny 带 message、`interrupt:false` | 工具结果是 message、`is_error:true`，轮次继续（模型可能不照 message 里的话做，只当作说明） |
+| `set_permission_mode` | 回 `{mode}`，随后一行 `system` `status` 带新 `permissionMode`；不认识的模式回 error `invalid_mode`（Claude 还认 `auto`、`dontAsk`，我们只放四个） |
+| `generate_session_title` | 回 `{title}`，约 2–3 s；标题语言跟用户设置走（本机全局设置要求中文，英文描述也得到中文标题） |
+| `structuredPatch` | user 消息顶层 `tool_use_result.structuredPatch: [{oldStart, oldLines, newStart, newLines, lines:[" a","-b","+c"]}]`，同级还有 `filePath`、`oldString`、`newString`、`originalFile` |
+| 我们写回的 `control_response` | 会被原样回显一次（`--replay-user-messages`），按 `request_id` 不是我们发的请求，忽略即可 |
+
+另用真实 Claude Code 跑过整条会话链（`real_claude_asks_titles_and_switches_modes`，忽略的单测）：标题、提问按题回答、Bash 本会话允许（目录里没写出
+`settings.local.json`）、切到 plan 模式，1 次全过。
 
 ### 1.5 runner（服务模式）
 
 管道协议同步扩展：`LiveCmd::Permit`、`LiveCmd::SetMode`、`Answer` 带 `answers`；新事件经 `Out::Ev` 原样传。
+另加 `LiveCmd::GenerateTitle`（首条消息后要标题），`launch` 请求带 `permission_mode`。
 
 ## 2. 桌面端结构
 
