@@ -152,7 +152,9 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
           if (scrollKey(e.key, e.shiftKey) === "up") stick.current = false;
         }}
         onScroll={(e) => {
-          if (quote) setQuote(null);
+          // Programmatic scrolling (find, layout, smooth scrolling) must not discard a valid
+          // selection. Keep the Quote action attached to it, as in the shared transcript.
+          if (quote) pickQuote();
           const el = e.currentTarget;
           const d = el.scrollHeight - el.scrollTop - el.clientHeight;
           // Up past the end lets go (a drag of the scroll bar has no wheel); back at the end follows again.
