@@ -176,6 +176,7 @@
   }
   // Workspace startup: reuse its existing CLI chip, project picker, model and first-message composer.
   const folderShown = () => text($(".ws-chip-folder .nt-folder-lbl .fn"));
+  const folderPath = () => $(".ws-chip-folder .nt-folder-lbl")?.title ?? "";
   async function prepareWorkspace() {
     const pane = await until("complete workspace", workspacePanel, 30000);
     if (!pane) throw new Error("the complete workspace did not appear");
@@ -202,17 +203,17 @@
   }
   async function typeFolder(path) {
     const name = path.split(/[\\/]/).filter(Boolean).pop();
-    if (folderShown() === name) return;
+    if (folderShown() === name && folderPath() === path) return;
     $(".ws-chip-folder .nt-folder-btn").click();
     const field = await until("folder search box", () => $("#ag-folder-q"));
     if (!field) throw new Error("workspace folder picker did not open");
     setValue(field, path);
     await until("open-path row", () => $(".nt-folder-list .row.open"));
     keyDown(field, "Enter");
-    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-crumbs .cur")?.title === path && $(".nt-folder-ft .btn.primary:not(:disabled)"));
     if (!use) throw new Error(`workspace folder picker did not list ${path}`);
     use.click();
-    if (!(await until("folder chosen", () => folderShown() === name && !$(".nt-folder-pop"), 5000)))
+    if (!(await until("folder chosen", () => folderShown() === name && folderPath() === path && !$(".nt-folder-pop"), 5000)))
       throw new Error(`workspace did not keep the chosen folder ${path}`);
   }
   const running = () => !!$(".nt-compose .round.stop");
@@ -239,7 +240,7 @@
     await prepareWorkspace();
     await check(`${CFG.agent} is offered`, await pickAgent(CFG.agent));
     await typeFolder(CFG.work);
-    await check("the work folder is chosen", folderShown() === CFG.work.split(/[\\/]/).pop(), folderShown());
+    await check("the work folder is chosen", folderShown() === CFG.work.split(/[\\/]/).pop() && folderPath() === CFG.work, `${folderShown()} | ${folderPath()}`);
     // E2E_MODEL picks the model (the account's default may not be one this Codex can use).
     if (CFG.model) {
       $(".ws-model > .ws-chip").click();

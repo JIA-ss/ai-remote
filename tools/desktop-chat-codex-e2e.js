@@ -253,6 +253,7 @@
   }
   // Workspace startup: reuse its existing CLI chip, project picker, model and first-message composer.
   const folderShown = () => text($(".ws-chip-folder .nt-folder-lbl .fn"));
+  const folderPath = () => $(".ws-chip-folder .nt-folder-lbl")?.title ?? "";
   async function prepareWorkspace() {
     const pane = await until("complete workspace", workspacePanel, 30000);
     if (!pane) throw new Error("the complete workspace did not appear");
@@ -279,17 +280,17 @@
   }
   async function typeFolder(path) {
     const name = path.split(/[\\/]/).filter(Boolean).pop();
-    if (folderShown() === name) return;
+    if (folderShown() === name && folderPath() === path) return;
     $(".ws-chip-folder .nt-folder-btn").click();
     const field = await until("folder search box", () => $("#ag-folder-q"));
     if (!field) throw new Error("workspace folder picker did not open");
     setValue(field, path);
     await until("open-path row", () => $(".nt-folder-list .row.open"));
     keyDown(field, "Enter");
-    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-crumbs .cur")?.title === path && $(".nt-folder-ft .btn.primary:not(:disabled)"));
     if (!use) throw new Error(`workspace folder picker did not list ${path}`);
     use.click();
-    if (!(await until("folder chosen", () => folderShown() === name && !$(".nt-folder-pop"), 5000)))
+    if (!(await until("folder chosen", () => folderShown() === name && folderPath() === path && !$(".nt-folder-pop"), 5000)))
       throw new Error(`workspace did not keep the chosen folder ${path}`);
   }
   const sceneError = (reason, detail = {}) => new Error(`${reason}; ${JSON.stringify({ ...detail, scene: detailedNavigationState() })}`);
@@ -355,7 +356,7 @@
     await check("the workspace offers the Codex stand-in", await pickAgent("Codex fake"));
     await typeFolder(CFG.work);
     const work = CFG.work.split(/[\\/]/).pop();
-    await check("the work folder is chosen", folderShown() === work, folderShown());
+    await check("the work folder is chosen", folderShown() === work && folderPath() === CFG.work, `${folderShown()} | ${folderPath()}`);
     setValue($(".ws-new .ws-composer textarea"), "EXPLORE fix the quarter export");
     const startButton = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"), 5000);
     if (!startButton) throw new Error("the first Codex message did not become ready");

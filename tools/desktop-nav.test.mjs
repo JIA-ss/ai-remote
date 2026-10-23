@@ -374,6 +374,24 @@ test("the Agents switch restores the latest complete live workspace from either 
     "the new-session project selection is restored too");
 });
 
+test("Devices to Agents restores a newer legacy chat selection without reusing its first attachment ticket", () => {
+  const older = { page: "agents", host: "a", session: "older" };
+  const latest = { page: "session", host: "b", chat: { session: "just-started", ticket: "first-use" } };
+  const wanted = { page: "agents", host: "b", session: "just-started" };
+  const h = hist(older, latest, { page: "devices" });
+  assert.deepEqual(plain(nav.lastAgents(h)), wanted, "the current complete workspace wins over an older agents route");
+  assert.deepEqual(plain(nav.lastAgents(hist(latest, { page: "devices" }))), wanted);
+  assert.deepEqual(plain(nav.lastAgents(nav.back(hist({ page: "devices" }, latest)))), wanted,
+    "a legacy workspace in forward history is restored too");
+  assert.equal(h.stack[1].chat.ticket, "first-use", "normalization does not mutate the original history");
+  assert.ok(!JSON.stringify(nav.lastAgents(h)).includes("first-use"));
+  const plainScreen = { page: "session", host: "c" };
+  assert.deepEqual(plain(nav.lastAgents(hist(latest, plainScreen, { page: "devices" }))), wanted,
+    "a later screen with no selected conversation does not replace it");
+  assert.deepEqual(plain(nav.lastAgents(hist(plainScreen, { page: "devices" }))), { page: "agents" },
+    "a plain screen alone does not invent a selected workspace");
+});
+
 test("opening a computer from a workspace conversation preserves that session through history", () => {
   const ws = { page: "agents", host: "lab-pc", session: "current-session" };
   const screen = nav.screenRoute(ws.host, ws.session);

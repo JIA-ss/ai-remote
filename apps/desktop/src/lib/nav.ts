@@ -254,9 +254,21 @@ export function routeOfNav(n: NavKey | "home", mem: Memory = DEFAULT_MEMORY): Ro
  * session you came from, a page you went back past), else its new-session page.
  */
 export function lastAgents(h: History): Route {
-  const isWorkspace = (r: Route) => r.page === "agents" || (r.page === "session" && r.workspace !== undefined);
-  for (let i = h.i; i >= 0; i--) if (isWorkspace(h.stack[i])) return h.stack[i];
-  for (let i = h.i + 1; i < h.stack.length; i++) if (isWorkspace(h.stack[i])) return h.stack[i];
+  const workspace = (r: Route): Route | null => {
+    if (r.page === "agents" || (r.page === "session" && r.workspace !== undefined)) return r;
+    // Computer-page chat_start and older screen links also open the complete workspace. Remember
+    // their selection without taking a first-use attachment ticket into the next mount.
+    if (r.page === "session" && r.chat?.session) return { page: "agents", host: r.host, session: r.chat.session };
+    return null;
+  };
+  for (let i = h.i; i >= 0; i--) {
+    const r = workspace(h.stack[i]);
+    if (r) return r;
+  }
+  for (let i = h.i + 1; i < h.stack.length; i++) {
+    const r = workspace(h.stack[i]);
+    if (r) return r;
+  }
   return { page: "agents" };
 }
 
