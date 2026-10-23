@@ -9,6 +9,7 @@ import { bodyKind, contentStat, diffLines, inputLines, inputOf, readText, toolNa
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { CopyButton, Markdown } from "../chat/Markdown";
+import { PreviewButton } from "../chat/Preview";
 import { dur } from "./text";
 
 type Diff = Extract<ToolContent, { type: "diff" }>;
@@ -89,7 +90,7 @@ function ReadBody({ x, st }: { x: ToolItem; st: ToolState }) {
 }
 
 /** One file's change: a header with the name and counts, then the lines (numbered from hunks). */
-export const DiffView = memo(function DiffView({ c, head = true }: { c: Diff; head?: boolean }) {
+export const DiffView = memo(function DiffView({ c, head = true, preview = false }: { c: Diff; head?: boolean; preview?: boolean }) {
   const { rows, numbered } = diffLines(c);
   const st = contentStat(c);
   const created = c.old === null || c.old === "";
@@ -103,6 +104,7 @@ export const DiffView = memo(function DiffView({ c, head = true }: { c: Diff; he
             <span className="add">+{st.add}</span>
             <span className="del">−{st.del}</span>
           </span>
+          {preview && <PreviewButton path={c.path} />}
         </div>
       )}
       <div className={cx("cl-diff-rows", numbered && "numbered")} tabIndex={0}>
@@ -173,13 +175,14 @@ function GenericBody({ x, st }: { x: ToolItem; st: ToolState }) {
 }
 
 /** The body of an opened tool row. */
-export function ToolBody({ x, st, now }: { x: ToolItem; st: ToolState; now: number }) {
+export function ToolBody({ x, st, now, previewedPath }: { x: ToolItem; st: ToolState; now: number; previewedPath?: string | null }) {
   const kind = bodyKind(x);
   return (
     <div className="cl-tool-bd">
       {kind === "bash" && <BashBody x={x} st={st} now={now} />}
       {kind === "read" && <ReadBody x={x} st={st} />}
-      {kind === "diff" && x.content.map((c, i) => (c.type === "diff" ? <DiffView key={i} c={c} /> : null))}
+      {kind === "diff" && x.content.map((c, i) => (c.type === "diff" ? <DiffView key={i} c={c}
+        preview={x.status !== "failed" && c.path !== previewedPath && !(c.new === "" && c.old)} /> : null))}
       {kind === "todo" && <TodoBody x={x} />}
       {kind === "plan" && <PlanBody x={x} st={st} />}
       {kind === "generic" && <GenericBody x={x} st={st} />}

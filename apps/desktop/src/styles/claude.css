@@ -81,6 +81,9 @@
 
 /* ---- one line of tool work (TC-14, TC-15) -------------------------------------------- */
 .cl-tool, .cl-agent { min-width: 0; }
+.cl-tool.has-preview { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
+.cl-tool.has-preview > .cl-tool-bd { grid-column: 1 / -1; }
+.cl-tool > .nt-pv-btn { flex: none; }
 .cl-tool-hd, .cl-group-hd { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 0; border: 0; background: none; text-align: left;
   font: inherit; font-size: 13px; line-height: 20px; color: var(--cl-muted); cursor: pointer; min-width: 0; }
 .cl-tool-hd:disabled { cursor: default; }

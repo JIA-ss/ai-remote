@@ -30,8 +30,10 @@ import {
   type ToolState,
 } from "../../lib/claude";
 import { t } from "../../lib/i18n";
+import { previewKind } from "../../lib/preview";
 import { cx } from "../util";
 import { CopyButton, StreamingMarkdown } from "../chat/Markdown";
+import { PreviewButton, TurnFiles } from "../chat/Preview";
 import { NoticeRow } from "../chat/Rows";
 import { ToolBody } from "./ToolBody";
 import { countOf, dur, SentenceView, ToolLabel } from "./text";
@@ -183,6 +185,14 @@ function hasBody(x: ToolItem): boolean {
   return toolName(x) === "Bash" || x.tool === "execute";
 }
 
+/** The first previewable file the tool read or changed, as in the shared transcript. */
+function previewTarget(x: ToolItem): string | null {
+  if (x.status === "failed" || x.tool === "delete") return null;
+  const diffs = x.content.filter((c) => c.type === "diff");
+  const deleted = new Set(diffs.filter((c) => c.new === "" && c.old).map((c) => c.path));
+  return [...x.locations, ...diffs.map((c) => c.path)].find((p) => !deleted.has(p) && previewKind(p)) ?? null;
+}
+
 /** One tool call: a line that opens to its command and output, a file, a diff, … (TC-14, TC-15). */
 const ToolRow = memo(function ToolRow({ x, st, now, store, nested }: { x: ToolItem; st: ToolState; now: number; store: Map<string, boolean>; nested?: boolean }) {
   const [open, toggle] = useOpen(store, `t:${x.callId}`, false);
@@ -190,8 +200,9 @@ const ToolRow = memo(function ToolRow({ x, st, now, store, nested }: { x: ToolIt
   const body = hasBody(x);
   const elapsed = shown === "busy" ? now - x.startedTs : 0;
   const stat = shown !== "busy" && x.content.some((c) => c.type === "diff") ? groupStat([x]) : null;
+  const file = previewTarget(x);
   return (
-    <div className={cx("cl-tool", nested && "nested", open && "open")} data-state={shown}>
+    <div className={cx("cl-tool", nested && "nested", open && "open", file && "has-preview")} data-state={shown}>
       <button type="button" className="cl-tool-hd" aria-expanded={body ? open : undefined} disabled={!body} onClick={toggle}>
         <ChevronRight size={12} className="chev" aria-hidden />
         <span className={cx("cl-line", shown === "busy" && "shimmer")}>
@@ -202,7 +213,8 @@ const ToolRow = memo(function ToolRow({ x, st, now, store, nested }: { x: ToolIt
         <Stat s={stat} />
         {elapsed >= 2000 && <span className="cl-tm tnum">{dur(elapsed)}</span>}
       </button>
-      {open && body && <ToolBody x={x} st={shown} now={now} />}
+      {file && <PreviewButton path={file} />}
+      {open && body && <ToolBody x={x} st={shown} now={now} previewedPath={file} />}
     </div>
   );
 });
@@ -374,6 +386,7 @@ function TurnFoot({ turn, stopped, onContinue, readonly }: { turn: Turn; stopped
   const reply = replyOf(turn);
   return (
     <>
+      <TurnFiles turn={turn} />
       {turn.status === "failed" && (
         <div className="cl-fail" role="status">
           <CircleAlert size={14} aria-hidden />
