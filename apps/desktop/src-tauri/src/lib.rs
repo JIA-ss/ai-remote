@@ -1630,12 +1630,13 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
     }
 }
 
-/// AppKit's top-left placement keeps a strip of the title bar on screen. Smoke snapshots need
-/// the whole window outside every display; moving its frame origin avoids that title-bar policy.
+/// Smoke captures webview content, not platform caption controls. AppKit constrains titled windows
+/// to keep a caption strip on screen, so the default smoke window is untitled before moving it.
 #[cfg(debug_assertions)]
 fn place_smoke_offscreen(w: &tauri::WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        use objc2_app_kit::NSWindowStyleMask;
         use objc2_foundation::NSPoint;
         use objc2_web_kit::WKWebView;
 
@@ -1644,6 +1645,7 @@ fn place_smoke_offscreen(w: &tauri::WebviewWindow) -> Result<(), String> {
         w.with_webview(move |webview| unsafe {
             let view = &*webview.inner().cast::<WKWebView>();
             let result = view.window().ok_or_else(|| "smoke webview has no window".to_string()).map(|window| {
+                window.setStyleMask(window.styleMask() & !NSWindowStyleMask::Titled);
                 window.setFrameOrigin(NSPoint::new(-8000.0, -8000.0));
             });
             let _ = tx.send(result);
