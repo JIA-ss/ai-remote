@@ -17,6 +17,8 @@ import tempfile
 import threading
 import time
 
+from ui_fixture_state import read_fixture_state
+
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -131,8 +133,8 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
                     fixture=subprocess.Popen(['powershell.exe','-NoProfile','-STA','-File',str(ROOT/'tools/ui-fixture.ps1'),'-OutputPath',str(state_file)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 else: raise RuntimeError('native UI acceptance supports macOS and Windows')
                 wait_for(lambda:state_file.exists() and json.loads(state_file.read_text(encoding="utf-8")).get('pid'),'fixture ready')
-                pid=json.loads(state_file.read_text(encoding="utf-8"))['pid']
-                def state():return json.loads(state_file.read_text(encoding="utf-8"))
+                pid=read_fixture_state(state_file)['pid']
+                def state():return read_fixture_state(state_file)
                 def tree(**args):return bridge.call('ui_tree',{'pid':pid,**args})
                 def action(t,n,a,value=None,error=False):
                     args={'snapshot_id':t['snapshot_id'],'element_id':n['id'],'action':a}

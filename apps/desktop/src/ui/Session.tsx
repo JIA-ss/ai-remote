@@ -1,7 +1,7 @@
 // The live session: the remote screen is the subject, edge to edge on a black stage, never scaled
 // past 1:1 device pixels. A floating bar says who drives and holds the actions, a corner HUD shows
-// what arrives. The rail shows the same coding-agent conversations as the workspace, with a pending
-// host approval above the conversation. Full screen (⌃⌘F) keeps only the stage; the bars come back on movement and leave after 3 s.
+// what arrives. LiveWorkspace places the complete workspace and host approvals beside this screen.
+// Full screen (⌃⌘F) keeps only the stage; the bars come back on movement and leave after 3 s.
 // While you drive, only the top and bottom edges, or the small tab under the bottom bar, bring them back.
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,8 +19,6 @@ import { preferredCodecs } from "../lib/codec";
 import { createPointerLayer, type PointerLayer } from "../lib/pointer";
 import { createRateController } from "../lib/rate";
 import { createDecoder, type VideoStats } from "../lib/video";
-import { AgentChat, type ChatTarget } from "./AgentChat";
-import { DecisionCard } from "./Decide";
 import { RemoteInput, type ScreenRect } from "./RemoteInput";
 import { watchFileDrop } from "../lib/drop";
 import { Glyph, Pointer } from "./glyphs";
@@ -387,17 +385,22 @@ export function SessionPage({
   waiting,
   onBack,
   onNav,
-  chat: chatTarget = null,
+  active = true,
+  approvalRef,
+  approvalVisible = true,
+  onImmersiveChange,
 }: {
   c: Computer;
   device: string;
   waiting: number;
   onBack: () => void;
   onNav: (n: Nav | "home") => void;
-  /** A coding-agent session to show beside the screen (just started, or picked elsewhere). */
-  chat?: ChatTarget | null;
-  /** Legacy deep links may name the chat panel; the rail always shows it now. */
-  panel?: "chat";
+  /** A hidden window must not keep watching, even when the workspace is its current route. */
+  active?: boolean;
+  /** The host approval beside the screen, owned by the shared live/workspace frame. */
+  approvalRef?: React.RefObject<HTMLDivElement | null>;
+  approvalVisible?: boolean;
+  onImmersiveChange?: (immersive: boolean) => void;
 }) {
   void waiting;
   void onNav;
@@ -424,12 +427,6 @@ export function SessionPage({
   // Concrete limits ("auto" follows this display), fixed while the quality stays the same.
   const limits = useMemo(() => resolveQuality(quality), [quality]);
   const [stats, setStats] = useState<VideoStats | null>(null);
-  const [chatOpen, setChatOpen] = useState<ChatTarget | null>(chatTarget);
-  useEffect(() => {
-    if (chatTarget) {
-      setChatOpen(chatTarget);
-    }
-  }, [chatTarget?.session]);
   const [handNote, setHandNote] = useState("");
   const [mayWatch, setMayWatch] = useState(false);
   const [driverOptions, setDriverOptions] = useState(false);
@@ -448,7 +445,9 @@ export function SessionPage({
   // In full screen the bars show on movement and leave after 3 s of quiet.
   const [chrome, setChrome] = useState(true);
   const chromeTimer = useRef<number | null>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
+  const ownCardRef = useRef<HTMLDivElement>(null);
+  const cardRef = approvalRef ?? ownCardRef;
+  useEffect(() => { onImmersiveChange?.(immersive); }, [immersive, onImmersiveChange]);
 
   const resetVideo = () => {
     setHasFrame(false);
@@ -458,12 +457,11 @@ export function SessionPage({
   };
 
   useEffect(() => {
-    if (c.online === false) resetVideo();
-  }, [c.online]);
+    if (c.online === false || !active) resetVideo();
+  }, [c.online, active]);
 
   const bar = barOf(c, hasFrame);
   const pending = c.feed.pending[0];
-  const askedStep = pending ? c.feed.steps.find((s) => s.approvalId === pending.id) : undefined;
   const driving = bar === "you";
 
   // Full screen: ours (⌃⌘F, the button) and the window's (the green button) end in the same state.
@@ -530,11 +528,11 @@ export function SessionPage({
   }, [driving]);
   // Wait for the rail to mount after leaving full screen before locating the approval.
   useEffect(() => {
-    if (!reviewApproval || immersive) return;
+    if (!reviewApproval || immersive || !approvalVisible) return;
     cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     cardRef.current?.focus({ preventScroll: true });
     setReviewApproval(false);
-  }, [reviewApproval, immersive]);
+  }, [reviewApproval, immersive, approvalVisible]);
 
   // The picture: contained in the stage (the letterbox on one axis only), keeps the remote's aspect,
   // its edges on whole device pixels so nothing is resampled at the border.
@@ -707,7 +705,7 @@ export function SessionPage({
           onMouseDown={() => immersive && !driving && touch()}
         >
           <div className={cx("nt-picture", bar === "offline" && "desat")} style={{ left, top, width: sw, height: sh }}>
-            {c.online !== false && (
+            {c.online !== false && active && (
               <Stream
                 host={host}
                 monitor={monitor}
@@ -732,7 +730,7 @@ export function SessionPage({
                 onPointerShown={setPointerShown}
               />
             )}
-            {driving && hasFrame && screen !== null && (
+            {active && driving && hasFrame && screen !== null && (
               <RemoteInput
                 host={host}
                 screen={screen}
@@ -878,16 +876,6 @@ export function SessionPage({
             </div>
           )}
         </section>
-        {!immersive && (
-          <aside className="nt-rail wide">
-            {pending && (
-              <div className="nt-chat-approval" ref={cardRef} tabIndex={-1}>
-                <DecisionCard p={pending} host={host} agent={agent} askedMs={askedStep?.startedMs} escapeScope={cardRef} />
-              </div>
-            )}
-            <AgentChat host={host} target={chatOpen} onTarget={setChatOpen} />
-          </aside>
-        )}
       </div>
     </div>
   );

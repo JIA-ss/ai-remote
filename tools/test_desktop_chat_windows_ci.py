@@ -216,6 +216,85 @@ vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTE
                 self.assertEqual(cropped.getpixel((0, 0))[0], 0)
             self.assertNotIn('Alice', json.dumps(records))
 
+    def live_workspace_layout(self, mode='visible', inert=False):
+        tree = ast.parse(Path(__file__).with_name('desktop-chat-e2e.py').read_text())
+        hook = next(node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'SMOKE_CI_CAPTURE_LAYOUT'
+                            for target in node.targets))
+        script = """
+const vm = require('node:vm');
+const scene = SCENE, events = [], internals = {};
+const node = (rect, visibility='visible') => ({getBoundingClientRect:()=>rect,visibility});
+const whole = node({x:0,y:0,width:784,height:448});
+const video = node({x:0,y:0,width:400,height:448});
+const pane = node(scene.mode === 'zero' ? {x:400,y:0,width:0,height:0}
+  : {x:400,y:0,width:384,height:448}, scene.mode === 'hidden' ? 'hidden' : 'visible');
+pane.inert = scene.inert;
+// The embedded workspace is a child of the pane; the video is its sibling, never its parent.
+const embedded = node({x:400,y:36,width:384,height:412});
+whole.children = [video,pane]; pane.children = [embedded];
+const choices = new Map([
+ ['.nt-live-workspace',whole], ['.nt-live-workspace > .nt-workspace-pane',pane],
+ ['.nt-rail',pane], ['.nt-rail:not(.nt-workspace-pane)',null],
+ ['.ws',embedded], ['.ws:not([data-embedded="true"])',null],
+]);
+Object.defineProperty(internals,'invoke',{value:async(command,args)=>events.push({command,...args})});
+const window = {__TAURI_INTERNALS__:internals,__smokePrepareShot:async()=>{}};
+const context = {window,document:{querySelector:(selector)=>choices.get(selector)??null},
+ innerWidth:784,innerHeight:448,devicePixelRatio:1,
+ getComputedStyle:(el)=>({visibility:el.visibility,borderTopLeftRadius:'0',borderTopRightRadius:'0',
+   borderBottomLeftRadius:'0',borderBottomRightRadius:'0'})};
+vm.createContext(context); vm.runInContext(HOOK,context);
+window.__smokePrepareShot('case').then(()=>process.stdout.write(
+ events.find(event=>event.level==='ci-capture-layout').message)).catch(()=>process.exit(1));
+""".replace('SCENE', json.dumps({'mode': mode, 'inert': inert})).replace('HOOK', json.dumps(hook))
+        result = subprocess.run(['node', '-'], input=script, text=True, capture_output=True, check=True)
+        return json.loads(result.stdout)
+
+    def test_live_workspace_exports_the_complete_pane_without_video_sibling_pixels(self):
+        for inert in (False, True):
+            with self.subTest(visible_inert=inert), tempfile.TemporaryDirectory() as tmp:
+                raw = Path(tmp)/'raw'; out = Path(tmp)/'out'; raw.mkdir()
+                layout = self.live_workspace_layout(inert=inert)
+                self.assertEqual(layout['kind'], 'stream_workspace_ui')
+                self.assertEqual(layout['rect'], {'x': 400, 'y': 0, 'width': 384, 'height': 448})
+                # Sensitive video/caption pixels are red; only the entire test pane has red=0.
+                image = Image.new('RGB', (800, 480), (255, 0, 0))
+                gradient = Image.linear_gradient('L').resize((384, 448))
+                safe = Image.merge('RGB', (Image.new('L', gradient.size), gradient, gradient.transpose(Image.Transpose.FLIP_TOP_BOTTOM)))
+                image.paste(safe, (408, 24)); image.save(raw/'case.png')
+                (raw/'ci-layout.json').write_text(json.dumps({
+                    'native': {'original_size': [800, 480], 'client_box': [8, 24, 792, 472]},
+                    'shots': {'case': layout}}))
+                before = ci.digest(raw/'case.png')
+                record, = ci.collect_images(raw, out)
+                self.assertEqual(record['crop_status'], 'saved_test_ui_only')
+                self.assertEqual(record['crop_box'], [408, 24, 792, 472])
+                self.assertEqual(record['crop_size'], [384, 448], 'include sidebar and approval space, not only chat')
+                with Image.open(out/'case.png') as cropped:
+                    self.assertEqual(cropped.getchannel('R').tobytes().count(b'\xff'), 0,
+                                     'no synthetic video/caption pixel may be exported')
+                    self.assertEqual(cropped.getchannel('R').getextrema(), (0, 0))
+                self.assertEqual(ci.digest(raw/'case.png'), before)
+
+    def test_unavailable_live_pane_never_falls_back_to_video_parent_or_embedded_workspace(self):
+        for mode in ('hidden', 'zero'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                raw = Path(tmp)/'raw'; out = Path(tmp)/'out'; raw.mkdir()
+                layout = self.live_workspace_layout(mode=mode)
+                self.assertEqual(layout['kind'], 'unavailable')
+                self.assertIsNone(layout['rect'], 'visible parent/embedded geometry is not a safe fallback')
+                image = Image.merge('RGB', (Image.new('L', (800, 480), 255),
+                    Image.linear_gradient('L').resize((800, 480)), Image.new('L', (800, 480))))
+                image.save(raw/'case.png')
+                (raw/'ci-layout.json').write_text(json.dumps({
+                    'native': {'original_size': [800, 480], 'client_box': [8, 24, 792, 472]},
+                    'shots': {'case': layout}}))
+                record, = ci.collect_images(raw, out)
+                self.assertEqual(record['crop_status'], 'omitted_no_reliable_layout')
+                self.assertNotIn('crop_file', record)
+                self.assertFalse(out.exists())
+
     def test_missing_layout_and_flat_or_invalid_captures_are_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw = Path(tmp)/'raw'; out = Path(tmp)/'out'; raw.mkdir()

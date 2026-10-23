@@ -25,7 +25,7 @@ SUITES = (
     ("codex", "desktop-chat-codex-e2e.js", 360),
     ("workspace", "desktop-workspace-e2e.js", 600),
 )
-KIND_ALLOWLIST = {"stream_chat_rail", "preview_dialog", "workspace_ui", "devices_ui"}
+KIND_ALLOWLIST = {"stream_workspace_ui", "stream_chat_rail", "preview_dialog", "workspace_ui", "devices_ui"}
 
 
 def digest(path):

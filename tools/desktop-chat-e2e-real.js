@@ -87,9 +87,9 @@
   };
   // The folder picker (ui/chat/FolderPicker.tsx): open it, type a path, Enter browses it, the footer takes it.
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  const folderShown = () => $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
   async function typeFolder(path) {
-    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
+    if (!$(".nt-folder-pop")) $(".ws-chip-folder .nt-folder-btn").click();
     const q = await until("folder search box", () => $("#ag-folder-q"));
     setValue(q, path);
     await until("open-path row", () => $(".nt-folder-list .row.open"));
@@ -107,17 +107,38 @@
   }
   const idle = (ms) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
 
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 60000);
+  }
   try {
-    await until("start form", () => $(".nt-chat-start"), 30000);
-    const pick = $$(".nt-chat-pick .opt").find((b) => b.querySelector(".nm")?.textContent === CFG.agent);
-    await check(`${CFG.agent} is offered`, !!pick, $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
-    pick.click();
+    await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
+    await check(`${CFG.agent} is offered`, !!(await pickAgent(CFG.agent)), $(".ws-env-trail .ws-chip-text")?.textContent);
     await typeFolder(CFG.work);
     await check("the folder picker takes a typed path", folderShown() === CFG.work.split(/[\\/]/).pop(), folderShown());
-    setValue($("#ag-prompt"), "Create a file named hello.txt containing the single line: hi from ai-remote. Then run `cat hello.txt` in the shell. Answer with one short sentence.");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await check("the real agent starts", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 60000)));
+    await check("the real agent starts", !!(await startSession("Create a file named hello.txt containing the single line: hi from ai-remote. Then run `cat hello.txt` in the shell. Answer with one short sentence.")));
     await check("its first turn finishes", !!(await idle(180000)));
     const t1 = lastTurn();
     openGroups(t1);

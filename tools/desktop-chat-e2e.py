@@ -30,8 +30,8 @@ the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s l
 CODEDETAILS emits successful terminal output and an ANSI Markdown fence; ASKDETAILS asks one formatted
 question and echoes its raw answer as JSON (tools/desktop-claude-details-e2e.js).
 
-Every home gets `[network] quiet = true` for the host and controller roles. The app window stays off
-screen; screenshots land in --out.
+Every home gets `[network] quiet = true` for the host and controller roles. The default app window
+stays off screen; --visible requests a visible window instead. Screenshots land in --out.
 Screenshots settle finite entrance/exit animations at their terminal state; infinite live indicators
 stay active. This verifies screenshot content, not animation timing or performance.
 
@@ -166,13 +166,19 @@ SMOKE_CI_CAPTURE_LAYOUT = r'''(() => {
   let checks = 0;
   window.__smokePrepareShot = async (name) => {
     await prepare(name);
-    const visible = (el) => el && el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== "hidden";
+    const visible = (el) => el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0
+      && getComputedStyle(el).visibility !== "hidden";
     const modal = document.querySelector(".nt-pv-dlg");
-    const rail = document.querySelector(".nt-rail");
-    const workspace = document.querySelector(".ws");
+    // LiveWorkspace's video SessionPage is a sibling of this complete workspace pane. Never
+    // capture their common parent, and do not fall back to an embedded child when the pane hides.
+    const liveWorkspace = document.querySelector(".nt-live-workspace > .nt-workspace-pane");
+    const rail = document.querySelector(".nt-rail:not(.nt-workspace-pane)");
+    const workspace = document.querySelector('.ws:not([data-embedded="true"])');
     const devices = document.querySelector('.win[data-route="devices"]');
-    const element = visible(modal) ? modal : visible(rail) ? rail : visible(workspace) ? workspace : visible(devices) ? devices : null;
-    const kind = !element ? "unavailable" : element === modal ? "preview_dialog" : element === rail ? "stream_chat_rail" : element === workspace ? "workspace_ui" : "devices_ui";
+    const element = visible(modal) ? modal : visible(liveWorkspace) ? liveWorkspace : visible(rail) ? rail
+      : visible(workspace) ? workspace : visible(devices) ? devices : null;
+    const kind = !element ? "unavailable" : element === modal ? "preview_dialog" : element === liveWorkspace ? "stream_workspace_ui"
+      : element === rail ? "stream_chat_rail" : element === workspace ? "workspace_ui" : "devices_ui";
     const rect = element?.getBoundingClientRect();
     const style = element && getComputedStyle(element);
     await nativeInvoke("log_from_page", { level: "ci-capture-layout", message: JSON.stringify({
@@ -208,7 +214,7 @@ parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-
 parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "desktop-chat-e2e")
 parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
 parser.add_argument("--visible", action="store_true", help="show the app window and let it take focus (needed by "
-                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js; Windows only)")
+                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js)")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
                     "panel lists it, e.g. 'Claude Code'): a small file task, a / command, an image and a steer; uses its sign-in and quota")
@@ -503,6 +509,8 @@ for exe in (options.cli, options.app):
 options.out.mkdir(parents=True, exist_ok=True)
 for old in options.out.glob("*.png"):
     old.unlink()
+# Never mistake a previous run's host audit for this run when startup fails before its log exists.
+(options.out / "host-audit.jsonl").unlink(missing_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_errors": True} if sys.version_info >= (3, 10) else {})) as tmp:
     base = Path(tmp)
@@ -596,7 +604,12 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
                    # E2E_QUERY: another page to start on (and `shotlang` / `shottheme` to pin the look).
-                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or f"view=session&host={name}&panel=chat",
+                   # The default chat suite begins with a genuinely missing workspace target, then
+                   # uses its existing New action. Legacy rail preferences no longer select this UI.
+                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or (
+                       f"view=agents&host={name}&session=missing-session-for-e2e"
+                       if source.name == "desktop-chat-e2e.js" and not options.real
+                       else f"view=session&host={name}&panel=chat"),
                    # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
                    "WEBVIEW2_USER_DATA_FOLDER": str(webview)}
@@ -702,8 +715,16 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             host.wait(timeout=10)
         except subprocess.TimeoutExpired:
             host.kill()
+            host.wait(timeout=10)
         log.close()
         shutil.copyfile(base / "host.log", options.out / "host.log")
+        # Only this harness-created --home is read, after its host has stopped and flushed the log.
+        # Preserve the original JSONL, including failures and view_start/view_end, for replay checks.
+        audit = host_home / "host" / "audit.jsonl"
+        if audit.is_file() and not audit.is_symlink():
+            shutil.copyfile(audit, options.out / "host-audit.jsonl")
+        else:
+            print("the isolated test host did not produce an audit.jsonl")
         stderr_log.close()
         if ci_layout:
             (options.out / "ci-layout.json").write_text(json.dumps({"native": ci_native, "shots": ci_shots}), encoding="utf-8")

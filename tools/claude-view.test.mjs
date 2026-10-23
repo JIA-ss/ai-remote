@@ -34,6 +34,16 @@ function load() {
 }
 
 const { chat, cl, input, output } = load();
+function workspaceParts(Node, document) {
+  const source = readFileSync(new URL("../apps/desktop/src/ui/workspace/parts.tsx", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, { exports, Node, document,
+    require: (name) => name === "../../lib/platform" ? { detectOs: () => "mac" } : {} });
+  return exports;
+}
 const plain = (v) => JSON.parse(JSON.stringify(v));
 let seq = 0;
 const ev = (turn, e) => ({ seq: ++seq, ts: 1000 + seq * 100, turn, ...e });
@@ -461,6 +471,148 @@ test("modes, the queue's preview and scroll keys", () => {
   assert.equal(cl.scrollKey(" ", true), "up");
   assert.equal(cl.scrollKey(" ", false), "down");
   assert.equal(cl.scrollKey("a", false), null);
+});
+
+test("embedded Claude cards ignore the remote pane's keys and still handle their own composer and popups", () => {
+  const listeners = new Set();
+  const cleanups = [];
+  class TestNode {}
+  const remote = new TestNode(), composer = new TestNode(), popup = new TestNode();
+  const document = { body: new TestNode(), documentElement: new TestNode(), activeElement: null };
+  let inert = false;
+  const pane = { contains: (node) => node === composer || node === popup, dataset: { keyboardActive: "false" }, closest: () => inert ? {} : null };
+  const parts = workspaceParts(TestNode, document);
+  let embedded = true, called = 0;
+  const box = { current: { closest: () => embedded ? pane : null } };
+  const source = readFileSync(new URL("../apps/desktop/src/ui/claude/Cards.tsx", import.meta.url), "utf8")
+    + "\nexport const testCardKeys = useCardKeys;\n";
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports, Node: TestNode,
+    window: {
+      addEventListener: (name, listener) => { assert.equal(name, "keydown"); listeners.add(listener); },
+      removeEventListener: (_name, listener) => listeners.delete(listener),
+    },
+    require: (name) => name === "react"
+      ? { useRef: (value) => ({ current: value }), useEffect: (run) => cleanups.push(run()) }
+      : name === "../../lib/platform" ? { detectOs: () => "mac" } : name === "../workspace/parts" ? parts : {},
+  });
+  exports.testCardKeys(() => { called++; return true; }, true, box);
+  const press = (target, key = "Escape", defaultPrevented = false) => {
+    const event = { target, key, defaultPrevented, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
+    for (const listener of listeners) listener(event);
+    return event;
+  };
+  for (const key of ["Escape", "Enter", "1"]) {
+    const event = press(remote, key);
+    assert.equal(event.prevented, false, `${key} continues to the remote computer`);
+    assert.equal(event.stopped, false);
+  }
+  assert.equal(called, 0, "remote input never reaches approval, plan or question handlers");
+  assert.equal(press(composer).prevented, true);
+  assert.equal(press(popup, "Enter").stopped, true, "the workspace's own popup remains in scope");
+  assert.equal(called, 2);
+  assert.equal(press(composer, "Escape", true).prevented, false, "a consumed event stays consumed");
+  assert.equal(press({}).prevented, false, "window-dispatched events have no pane owner");
+  assert.equal(press(document.body).prevented, false, "unowned body input is not donated to the workspace");
+  pane.dataset.keyboardActive = "true";
+  assert.equal(press(document.body).prevented, true, "a removed right-side control retains logical keyboard ownership");
+  assert.equal(press(remote).prevented, false, "concrete remote targets override remembered ownership");
+  document.activeElement = remote;
+  assert.equal(press(document.body).prevented, false, "a concrete remote focus overrides stale body events");
+  document.activeElement = null;
+  inert = true;
+  assert.equal(press(composer).prevented, false, "fullscreen inert workspace cannot answer cards");
+  assert.equal(press(document.body).prevented, false);
+  inert = false;
+  embedded = false;
+  assert.equal(press(remote).prevented, true, "the standalone workspace keeps its existing window shortcuts");
+  assert.equal(called, 4);
+  for (const cleanup of cleanups) cleanup?.();
+  assert.equal(listeners.size, 0);
+});
+
+test("the embedded Claude mode menu leaves remote Escape alone while its own Escape closes it", () => {
+  const slots = [], effects = [], listeners = new Map();
+  let cursor = 0, embedded = true;
+  class TestNode {}
+  const remote = new TestNode(), field = new TestNode();
+  const document = { body: new TestNode(), documentElement: new TestNode(), activeElement: null };
+  const pane = { contains: (node) => node === field, dataset: { keyboardActive: "false" }, closest: () => null };
+  const parts = workspaceParts(TestNode, document);
+  const box = { closest: () => embedded ? pane : null, contains: (node) => node === field };
+  const state = (value) => {
+    const i = cursor++;
+    slots[i] ??= { value: typeof value === "function" ? value() : value };
+    return [slots[i].value, (next) => { slots[i].value = typeof next === "function" ? next(slots[i].value) : next; }];
+  };
+  const effect = (run, deps) => {
+    const i = cursor++, previous = slots[i];
+    if (previous?.deps && deps?.every((value, index) => Object.is(value, previous.deps[index]))) return;
+    effects.push(() => { previous?.cleanup?.(); slots[i] = { deps, cleanup: run() }; });
+  };
+  const events = (prefix) => ({
+    addEventListener: (name, listener) => {
+      const key = `${prefix}:${name}`;
+      if (!listeners.has(key)) listeners.set(key, new Set());
+      listeners.get(key).add(listener);
+    },
+    removeEventListener: (name, listener) => listeners.get(`${prefix}:${name}`)?.delete(listener),
+  });
+  const jsx = (type, props, key) => ({ type, props, key });
+  const dependencies = {
+    react: { useState: state, useEffect: effect, useRef: (value) => { const i = cursor++; slots[i] ??= { current: value }; return slots[i]; } },
+    "react/jsx-runtime": { jsx, jsxs: jsx }, "lucide-react": {},
+    "../../lib/claude": cl, "../../lib/i18n": { t: (key) => key },
+    "../util": { cx: (...values) => values.filter(Boolean).join(" ") }, "./text": {}, "../workspace/parts": parts,
+  };
+  const source = readFileSync(new URL("../apps/desktop/src/ui/claude/Dock.tsx", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
+  } }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, { exports, Node: TestNode, window: events("window"), document: { ...document, ...events("document") },
+    require: (name) => { assert.ok(name in dependencies, name); return dependencies[name]; } });
+  const render = () => {
+    cursor = 0;
+    const tree = exports.ModePicker({ mode: "default", busy: false, agent: "Claude", host: "test-host", folder: "/work", disabled: false, onPick: () => {} });
+    tree.props.ref.current = box;
+    while (effects.length) effects.shift()();
+    const chip = tree.props.children[0];
+    return { open: chip.props["aria-expanded"], toggle: () => chip.props.onClick({ stopPropagation() {} }) };
+  };
+  const escape = (target, defaultPrevented = false) => {
+    const event = { target, key: "Escape", defaultPrevented, stopped: false, stopPropagation() { this.stopped = true; } };
+    for (const listener of listeners.get("window:keydown") ?? []) listener(event);
+    return event;
+  };
+  assert.equal(render().open, false);
+  render().toggle();
+  assert.equal(render().open, true);
+  assert.equal(escape(remote).stopped, false, "Tab into the remote picture does not donate Escape to the mode menu");
+  assert.equal(render().open, true);
+  assert.equal(escape(field, true).stopped, false, "an already handled Escape is left alone");
+  assert.equal(render().open, true);
+  assert.equal(escape(field).stopped, true);
+  assert.equal(render().open, false, "the right pane's Escape closes its menu");
+  assert.equal(listeners.get("window:keydown").size, 0);
+  render().toggle();
+  assert.equal(render().open, true);
+  assert.equal(escape(document.body).stopped, false);
+  assert.equal(render().open, true, "body by itself does not establish right-side ownership");
+  pane.dataset.keyboardActive = "true";
+  assert.equal(escape(document.body).stopped, true);
+  assert.equal(render().open, false, "a removed right-side control keeps Escape usable");
+  embedded = false;
+  render().toggle();
+  assert.equal(render().open, true);
+  assert.equal(escape(remote).stopped, true, "standalone mode keeps the original window Escape behavior");
+  assert.equal(render().open, false);
+  assert.equal(listeners.get("document:mousedown").size, 0);
 });
 
 test("a Claude selection remains quotable after scrolling and clears when the selection is cancelled", () => {

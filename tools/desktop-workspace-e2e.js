@@ -230,7 +230,7 @@
   }
 
   // What this run changes in the webview's storage (shared with an installed app): put back at the end.
-  const KEEP = /^ai-remote\.(mode$|ws\.)/;
+  const KEEP = /^ai-remote\.(mode$|ws\.|live\.split$)/;
   // Leftovers of earlier runs (hosts named e2e-<pid>, gone now) are dropped from it first.
   const leftover = (x) => typeof x === "string" && /^e2e-\d+(\/|$)/.test(x);
   for (const k of Object.keys(localStorage).filter((k) => KEEP.test(k))) {
@@ -270,8 +270,15 @@
     const sw = await until("the computers page's switch", () => $(".ws-modes [data-mode=agents]"), 30000);
     await check("the computers page has the computers / agents switch", !!sw && !$(".ws"));
     sw.click();
-    const ws = await until("workspace", () => $(".ws .ws-new"), 10000);
+    const ws = await until("workspace", () => $(".nt-live-workspace .ws .ws-new"), 10000);
     await check("the switch opens the agents workspace on a new session", !!ws && localStorage.getItem("ai-remote.mode") === "agents", localStorage.getItem("ai-remote.mode"));
+    await check("Agents opens the complete workspace beside one live screen", $$(".nt-live-workspace .nt-stage canvas.rd-holder").length === 1
+      && $$(".nt-live-workspace .ws[data-embedded=true]").length === 1);
+    // Give the existing sidebar enough space for the data-flow checks below. A narrow pane's overlay
+    // intentionally unmounts its rows on selection; container folding is checked at the end.
+    const split = await until("live workspace divider", () => $(".nt-live-divider"));
+    for (let i = 0; i < 12; i++) { keyDown(split, "ArrowLeft"); await sleep(20); }
+    await until("workspace sidebar docked", () => $(".ws")?.dataset.side === "docked", 5000);
     await check("the sidebar is docked at 288 px", $(".ws")?.dataset.side === "docked" && Math.round($(".ws-side").getBoundingClientRect().width) === 288,
       `${$(".ws")?.dataset.side} ${$(".ws-side")?.getBoundingClientRect().width}`);
 
@@ -776,22 +783,19 @@
     await check("the one taken back never ran", !$$(".ws-main .nt-user").some((u) => u.textContent.includes("撤回我")));
     await shot("b09-after-queue");
 
-    // The live view uses this same conversation. Opening it must carry the session ID, rather than
-    // silently taking an unrelated session remembered by the former side panel.
-    $(".ws-tb-end .ws-ib").click();
+    // The current conversation already shares the live screen. The same computer's conversations,
+    // projects and history change only the right side of the window.
     const rail = await until("this conversation beside the live view", () => {
-      const el = $(".win[data-route=session] .nt-rail .nt-chat");
+      const el = $(".nt-live-workspace .ws[data-embedded=true] .nt-chat");
       return el && el.textContent.includes("SLOW 排队测试") && el.textContent.includes("you said: 排队一条（已改）") && el;
     }, 30000);
-    await check("Watch opens the current conversation beside the live view", !!rail && rail.classList.contains("cl-root"));
+    await check("the current conversation is still beside the live view", !!rail && rail.classList.contains("cl-root"));
     await check("the live view has no old steps or agent-perspective tabs", !$(".nt-rail > .seg"));
     await shot("c03-watch-current-session");
-    $(".gl-toolbar .back:not(:disabled)").click();
-    await check("Back returns to the same workspace session", !!(await until("workspace session again", () => $(".ws-session") && currentKey() === kq)));
-
 
     // ===== D. Batch actions use the mounted UI and the real host's stored metadata =====
     // Keep the current conversation out of the batch: opening it would automatically mark it read.
+    // Reuse A's k1/k2 and the already-ended Codex k3; this section starts no additional agent.
     const batchKeys = [k1, k2, k3];
     const batchIds = batchKeys.map((key) => key.slice(key.indexOf("/") + 1));
     const selectedKeys = () => $$(".ws-row[data-multi-selected]").map((row) => row.dataset.rowKey);
@@ -877,6 +881,84 @@
       const meta = xs.find((x) => x.id === id), before = beforeBatch.get(id);
       return meta && !!meta.pinned === !!before.pinned && !!meta.archived === !!before.archived && meta.title === before.title;
     });
+    const checkBatchOwnership = async () => {
+      const pane = $('.nt-live-workspace .ws[data-embedded="true"]');
+      const aside = pane?.closest("aside.nt-workspace-pane");
+      const screen = $(".nt-live-workspace .nt-stage");
+      const pair = [k1, k2], watchKeys = [...batchKeys, kq];
+      if (!pane || !aside || !screen || aside.hasAttribute("inert")) throw sceneError("batch ownership: live panes are unavailable");
+      const state = () => JSON.stringify(watchKeys.map((key) => ({
+        key, title: rowTitle(key), dot: dotOf(key), pinned: pinnedRow(key), archived: rowOf(key)?.hasAttribute("data-archived"),
+      })));
+      const before = state();
+      const shortcuts = [
+        { key: "F2", code: "F2" }, { key: "Escape", code: "Escape" },
+        ...["metaKey", "ctrlKey"].flatMap((modifier) => ["P", "U", "A", "R"].map((letter) =>
+          ({ key: letter.toLowerCase(), code: `Key${letter}`, altKey: true, [modifier]: true }))),
+      ];
+      const probe = (target, keys) => keys.map((options) => {
+        const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...options });
+        let targetReached = false, documentReached = false;
+        const atTarget = (e) => { if (e === event) targetReached = true; };
+        const atDocument = (e) => { if (e === event) documentReached = true; };
+        target.addEventListener("keydown", atTarget);
+        document.addEventListener("keydown", atDocument);
+        try {
+          target.dispatchEvent(event);
+          return { ...options, prevented: event.defaultPrevented, targetReached, documentReached };
+        } finally {
+          target.removeEventListener("keydown", atTarget);
+          document.removeEventListener("keydown", atDocument);
+        }
+      });
+      const allowed = (rows) => rows.every((x) => !x.prevented && x.targetReached && x.documentReached);
+      const blocked = (rows) => rows.every((x) => x.prevented && !x.targetReached && !x.documentReached);
+      const originalTabIndex = screen.getAttribute("tabindex"), originalInert = aside.getAttribute("inert");
+      try {
+        // Focus the stage itself, not RemoteInput: these synthetic probes must never send host keys.
+        // No pointerdown is dispatched, because a real unmodified outside pointer clears selection.
+        screen.setAttribute("tabindex", "-1");
+        screen.focus({ preventScroll: true });
+        await check("screen focus keeps the two-row batch selected and releases workspace keyboard ownership",
+          document.activeElement === screen && pane.dataset.keyboardActive === "false" && sameKeys(selectedKeys(), pair));
+        const left = probe(screen, shortcuts);
+        await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "screen", probes: left })}`);
+        await check("the screen's F2, Escape and both modifier shortcut sets pass the workspace capture handlers", allowed(left)
+          && sameKeys(selectedKeys(), pair) && currentKey() === kq && state() === before && !$(".ws-menu"));
+        try {
+          // Offscreen-safe DOM boundary probe for the inert pane used by immersive mode. This does
+          // not enter OS full screen or claim that physical immersive keyboard input was exercised.
+          aside.setAttribute("inert", "");
+          const inert = probe(pane, shortcuts);
+          await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "dom-inert", probes: inert })}`);
+          await check("an inert workspace does not capture F2, Escape or either modifier shortcut set", allowed(inert)
+            && sameKeys(selectedKeys(), pair) && currentKey() === kq && state() === before && !$(".ws-menu"));
+        } finally {
+          if (originalInert === null) aside.removeAttribute("inert");
+          else aside.setAttribute("inert", originalInert);
+        }
+        const rowButton = $(".ws-row-main", rowOf(k1));
+        rowButton.focus({ preventScroll: true });
+        const owned = probe(rowButton, shortcuts.filter((x) => x.key !== "Escape"));
+        await check("restoring workspace ownership blocks single-row shortcuts while two rows remain selected",
+          aside.getAttribute("inert") === originalInert && pane.dataset.keyboardActive === "true" && blocked(owned)
+            && sameKeys(selectedKeys(), pair) && state() === before && !$(".ws-menu"));
+        const escape = probe(rowButton, [shortcuts[1]]);
+        await check("Escape owned by the workspace clears the batch and is consumed", blocked(escape)
+          && !!(await until("owned batch Escape clears selection", () => !selectedKeys().length, 3000)));
+        await check("ownership key probes leave every test session's pin, archive and title metadata unchanged",
+          state() === before && !!(await batchHost("ownership probes did not mutate session metadata", (xs) =>
+            watchKeys.every((key) => {
+              const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id), original = baseline.sessions.find((x) => x.id === id);
+              return meta && original && !!meta.pinned === !!original.pinned && !!meta.archived === !!original.archived && meta.title === original.title;
+            }))));
+      } finally {
+        if (originalInert === null) aside.removeAttribute("inert");
+        else aside.setAttribute("inert", originalInert);
+        if (originalTabIndex === null) screen.removeAttribute("tabindex");
+        else screen.setAttribute("tabindex", originalTabIndex);
+      }
+    };
     await check("batch starts with all three unpinned and unarchived", [...beforeBatch.values()].every((meta) => !meta.pinned && !meta.archived));
     if ([...beforeBatch.values()].some((meta) => meta.pinned || meta.archived)) throw sceneError("batch: unexpected original flags");
     await clearBatch();
@@ -884,6 +966,9 @@
     await check("Cmd-click selects without opening the session", sameKeys(selectedKeys(), [k1]) && currentKey() === kq, selectedKeys().join(", "));
     await selectBatchRow(k2, { ctrlKey: true });
     await check("Ctrl-click adds another session", sameKeys(selectedKeys(), [k1, k2]) && currentKey() === kq, selectedKeys().join(", "));
+    await checkBatchOwnership();
+    await selectBatchRow(k1, { metaKey: true });
+    await selectBatchRow(k2, { ctrlKey: true });
     await selectBatchRow(k1, { metaKey: true });
     await check("another modifier click toggles the row off", sameKeys(selectedKeys(), [k2]), selectedKeys().join(", "));
     await clearBatch();
@@ -956,6 +1041,106 @@
     await check("the real host's archived query no longer contains these three sessions", !!(await batchHost("archive Undo persisted", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)), { archived: true })));
     await check("batch actions finish with no selection and the same current conversation", !selectedKeys().length && !$(".ws-menu") && currentKey() === kq);
     await shot("d02-batch-restored");
+    // The same live workspace stays mounted after the batch metadata checks. Exercise main's
+    // conversation/project history with the batch restored before its expendable session is ended.
+    await check("the live view reuses one complete workspace and one screen", $$(".nt-live-workspace .ws[data-embedded=true]").length === 1
+      && $$(".nt-live-workspace .nt-stage").length === 1 && !$$(".nt-live-workspace .nt-chat-picker").length);
+    const embedded = () => $(".nt-live-workspace .ws[data-embedded=true]");
+    const liveCanvas = $(".nt-live-workspace .nt-stage canvas.rd-holder");
+    await check("the real screen canvas is mounted beside the workspace", !!liveCanvas);
+    // Stream zeroes its drawing size at start; only VideoDecoder's real output restores dimensions.
+    // A DOM canvas alone (with the HTML default 300x150) is not proof that the host sent a frame.
+    const decodedFrame = await until("a decoded frame from the isolated test host", () => liveCanvas?.isConnected
+      && liveCanvas.width > 0 && liveCanvas.height > 0 && !$(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"), 30000);
+    await check("a real decoded screen frame has arrived without a capture error", !!decodedFrame,
+      `${liveCanvas?.width}x${liveCanvas?.height}; ${text($(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"))}`);
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "begin", ts: Date.now(), host: CFG.host,
+      decoded: !!decodedFrame, width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    const originalWorkspace = embedded();
+    let canvasRemoved = false;
+    const screenObserver = new MutationObserver(() => { if (!liveCanvas?.isConnected) canvasRemoved = true; });
+    screenObserver.observe(document.body, { childList: true, subtree: true });
+    const sameScreen = () => !canvasRemoved && !!liveCanvas?.isConnected
+      && $(".nt-live-workspace .nt-stage canvas.rd-holder") === liveCanvas && embedded() === originalWorkspace;
+    const paneSidebar = async () => {
+      if (!$(".ws-side", embedded())) $(".ws-corner .ws-ib", embedded())?.click();
+      return until("embedded session sidebar", () => $(".ws-side", embedded()), 5000);
+    };
+    await paneSidebar();
+    await check("the existing session and project management is available beside the screen", !!rowOf(k1) && !!rowOf(kq)
+      && !!$(".ws-side .ws-nav", embedded()) && !!$(".ws-sec", embedded()));
+    $(".ws-row-main", rowOf(k1))?.click();
+    await check("selecting another session changes the conversation in the same pane", !!(await until("other live-workspace session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("switching sessions on one computer keeps its screen canvas and workspace mounted", sameScreen());
+    await paneSidebar();
+    $(".ws-side .ws-nav", embedded())?.click();
+    await check("New opens the existing CLI, project and first-message composer beside the screen", !!(await until("embedded new session", () =>
+      $(".ws-new .ws-composer textarea", embedded()) && $(".ws-env-trail .ws-chip", embedded()), 10000)));
+    await check("choosing a project on the same computer keeps its screen canvas mounted", sameScreen());
+    await check("the embedded new-session page offers the existing CLI selector", await pickAgent("Rich fake"));
+    await check("the embedded project picker uses the existing recent project", !!(await pickRecent(workName)), folderShown());
+    // The isolated host permits four agents. Keep the two sessions used by the history checks, and
+    // retire this run's unused renamed session before testing another real first-message creation.
+    if (!k2?.startsWith(`${CFG.host}/`)) throw new Error("the expendable test session does not belong to this isolated host");
+    const unusedSession = k2.slice(CFG.host.length + 1);
+    await hostCall("chat_end", { session: unusedSession });
+    let unusedEnded = false;
+    const endDeadline = Date.now() + 30000;
+    while (Date.now() < endDeadline) {
+      const report = await hostCall("chat_sessions");
+      if (report.sessions.some((session) => session.id === unusedSession && session.state === "ended")) { unusedEnded = true; break; }
+      await sleep(250);
+    }
+    await check("the run's unused session has ended before another first message starts", unusedEnded);
+    if (!unusedEnded) throw new Error("the unused test session never ended, so creating another would exceed the host's agent limit");
+    // D did not add a session. B ended k3 before kq started; only k2 is retired here, after its
+    // batch/Undo metadata was verified. Keep k1, kb and kq, including the IDs needed by C's Back flow.
+    const capacity = await hostCall("chat_sessions");
+    const retainedIds = [k1, kb, kq].map((key) => {
+      if (!key.startsWith(`${CFG.host}/`)) throw new Error("a retained test session belongs to another host");
+      return key.slice(CFG.host.length + 1);
+    });
+    const activeIds = capacity.sessions.filter((session) => session.state !== "ended").map((session) => session.id);
+    const capacityReady = sameKeys(activeIds, retainedIds) && activeIds.length <= 3
+      && capacity.sessions.some((session) => k3.endsWith(`/${session.id}`) && session.state === "ended")
+      && (!Number.isFinite(capacity.live) || capacity.live <= 3);
+    await check("the four-agent host retains only the three required sessions before C creates its fourth", capacityReady,
+      JSON.stringify({ activeIds, retainedIds, live: capacity.live, endedUnused: unusedSession }));
+    if (!capacityReady) throw new Error("the isolated host has no verified free slot for C's new session");
+    const firstInPane = $(".ws-new .ws-composer textarea", embedded());
+    setValue(firstInPane, "实时画面旁直接开始一个新会话");
+    const sendFirst = await until("embedded first message ready", () => $(".ws-new .ws-send:not(:disabled)", embedded()), 5000);
+    sendFirst?.click();
+    await check("the first message starts a real session without leaving the screen", !!(await until("embedded first-message reply", () => {
+      const chat = $(".ws-session .nt-chat", embedded());
+      return chat?.textContent.includes("you said: 实时画面旁直接开始一个新会话") && chat;
+    }, 30000)));
+    await check("starting a session keeps the current computer's screen and workspace mounted", sameScreen());
+    // The workspace's own history buttons remain available even when its sidebar is folded.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the embedded new-session page", !!(await until("embedded history new page", () =>
+      $(".ws-new .ws-composer textarea", embedded()), 10000)));
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back selects the previous conversation inside the live workspace", !!(await until("embedded history session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("conversation history keeps the live screen mounted", sameScreen());
+    screenObserver.disconnect();
+    await shot("c03-live-workspace-history");
+    // Back to the conversation this sequence started from; there is no separate Watch page.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the original conversation beside the same screen", !!(await until("initial live-workspace conversation", () =>
+      $(".ws-session .nt-chat", embedded())?.textContent.includes("SLOW 排队测试"), 30000)) && sameScreen());
+    await check("Back returns to the same workspace session", currentKey() === kq && !!readyConversation(kq),
+      `${currentKey()} vs ${kq}`);
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "end", ts: Date.now(), host: CFG.host,
+      sameCanvas: sameScreen(), width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    keyDown($(".nt-live-divider"), "Home");
+    const paneFolded = await until("sidebar folded inside its narrower pane", () => embedded()?.dataset.side === "hidden", 5000);
+    await check("the sidebar folds by workspace pane width even in a wide app window", !!paneFolded, `${innerWidth} / ${embedded()?.clientWidth}`);
+    await paneSidebar();
+    await check("the existing toggle opens session and project management over the narrow pane", embedded()?.dataset.side === "float" && !!rowOf(kq));
+    await shot("c04-live-workspace-narrow-sidebar");
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }

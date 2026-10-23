@@ -90,8 +90,13 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const text = (el) => el?.textContent ?? "";
-  const turns = () => $$(".nt-chat.cl-root .cl-turn");
-  const connected = () => $(".nt-chat.cl-root") && !$(".nt-chat-status, .cl-loading");
+  const workspacePanel = () => $(".ws[data-embedded=true]") ?? $(".ws");
+  const conversation = () => $(".ws-session .nt-chat.cl-root", workspacePanel());
+  const turns = () => $$(".cl-turn", conversation());
+  const connected = () => {
+    const panel = conversation();
+    return panel && !$(".nt-chat-status, .cl-loading", panel) && panel;
+  };
   const successful = (turn) => connected() && turn?.isConnected && !$(".nt-compose .round.stop")
     && !!$(".cl-foot.completed", turn) && !$(".cl-fail, .cl-stopped", turn);
   const required = async (what, fn, ms = 20000) => {
@@ -101,18 +106,18 @@
   };
   async function send(message) {
     await required("connected Claude conversation", connected);
-    const panel = $(".nt-chat.cl-root"), area = $(".nt-compose textarea", panel);
+    const panel = conversation(), area = $(".nt-compose textarea", panel);
     const before = new Set(turns().map((turn) => turn.dataset.turn));
     setValue(area, message);
     const button = await required("enabled Send", () => $(".nt-compose .round.send:not(:disabled)", panel));
-    if (!panel.isConnected || panel !== $(".nt-chat.cl-root") || area !== $(".nt-compose textarea", panel)) throw new Error("conversation changed before Send");
+    if (!panel.isConnected || panel !== conversation() || area !== $(".nt-compose textarea", panel)) throw new Error("conversation changed before Send");
     button.click();
-    return required("the submitted message in a new turn", () => area.value === "" && panel === $(".nt-chat.cl-root")
+    return required("the submitted message in a new turn", () => area.value === "" && panel === conversation()
       && turns().find((turn) => !before.has(turn.dataset.turn) && text($(".cl-user .txt", turn)) === message));
   }
   async function show(name, target) {
     if (!target?.isConnected) throw new Error(`${name}: screenshot target is disconnected`);
-    const feed = $(".nt-chat-body");
+    const feed = $(".nt-chat-body", conversation());
     feed?.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, bubbles: true }));
     target.scrollIntoView({ block: "start", behavior: "auto" });
     await required(`${name} target in viewport`, () => {
@@ -156,23 +161,40 @@
         `expected ${expected.length} characters; got ${copies.at(-1)?.length}`);
     };
 
-    const form = await required("the real start form", () => $(".nt-chat-start"), 30000);
-    const agent = $$(".nt-chat-pick .opt", form).find((el) => text(el).includes("Rich fake"));
+    const pane = await required("the complete workspace", workspacePanel, 30000);
+    if ($(".ws-session", pane)) {
+      if (!$(".ws-side", pane)) {
+        const toggle = await required("workspace sidebar toggle", () => $(".ws-corner .ws-ib", workspacePanel()));
+        toggle.click();
+      }
+      const newSession = await required("workspace New action", () => $(".ws-side .ws-nav", workspacePanel()));
+      newSession.click();
+    }
+    const form = await required("the workspace new-session form", () => $(".ws-new", workspacePanel())
+      && $(".ws-new .ws-composer textarea", workspacePanel()) && $(".ws-new", workspacePanel()), 30000);
+    await required("the isolated workspace host", () => text($(".ws-chip-location .ws-chip-text", form)) === CFG.host);
+    const agentChip = await required("the workspace agent selector", () => $(".ws-env-trail .ws-chip:not(:disabled)", form));
+    agentChip.click();
+    const agent = await until("Rich fake in the workspace agent menu", () => $$(".ws-menu .ws-menu-item", workspacePanel())
+      .find((el) => text($(".ws-menu-label", el)).trim() === "Rich fake"));
     await check("the start form offers the isolated Rich fake", !!agent);
     if (!agent) throw new Error("Rich fake is unavailable");
     agent.click();
-    $(".nt-folder-btn", form).click();
+    await required("Rich fake is chosen", () => text($(".ws-env-trail .ws-chip .ws-chip-text", form)).trim() === "Rich fake");
+    $(".ws-chip-folder .nt-folder-btn", form).click();
     const query = await required("folder search", () => $("#ag-folder-q"));
     setValue(query, CFG.work);
     await required("typed work folder", () => $(".nt-folder-list .row.open"));
     query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     const folder = CFG.work.split(/[\\/]/).filter(Boolean).at(-1);
-    const use = await required("the listed work folder", () => text($(".nt-folder-crumbs .cur")) === folder && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    const use = await required("the listed work folder", () => text($(".nt-folder-crumbs .cur")) === folder
+      && $(".nt-folder-crumbs .cur")?.title === CFG.work && $(".nt-folder-ft .btn.primary:not(:disabled)"));
     use.click();
-    await check("the chosen folder is the isolated work directory", !!(await until("folder chosen", () => text($(".nt-folder-btn .fn", form)) === folder)));
-    setValue($("#ag-prompt"), "CODEDETAILS");
-    (await required("enabled Start", () => $(".nt-chat-start .btn.primary:not(:disabled)"))).click();
-    const first = await required("the CODEDETAILS conversation", () => $(".nt-chat.cl-root")
+    await check("the chosen folder is the isolated work directory", !!(await until("folder chosen", () => text($(".ws-chip-folder .fn", form)) === folder
+      && $(".ws-chip-folder .nt-folder-lbl", form)?.title === CFG.work && !$(".nt-folder-pop"))));
+    setValue($(".ws-composer textarea", form), "CODEDETAILS");
+    (await required("enabled first-message Send", () => $(".ws-new .ws-send:not(:disabled)", workspacePanel()))).click();
+    const first = await required("the CODEDETAILS conversation", () => connected()
       && turns().find((turn) => text($(".cl-user .txt", turn)) === "CODEDETAILS"));
     await required("the successful CODEDETAILS turn", () => successful(first), 30000);
     await check("CODEDETAILS runs in the Claude conversation", !!first && !!$(".nt-chat.cl-root") && !$(".nt-chat.cdx"));

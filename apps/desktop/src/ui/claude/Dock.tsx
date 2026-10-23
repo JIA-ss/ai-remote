@@ -23,6 +23,7 @@ import {
 import { t, type Key } from "../../lib/i18n";
 import { cx } from "../util";
 import { countOf, dur, tokensLabel } from "./text";
+import { workspaceOwnsEvent } from "../workspace/parts";
 
 // ---------------------------------------------------------------------------------------------
 // The status line
@@ -163,6 +164,9 @@ export function ModePicker({ mode, busy, agent, host, folder, disabled, onPick }
     if (!open) return;
     const away = (e: MouseEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
     const esc = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const pane = box.current?.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (pane && !workspaceOwnsEvent(pane, e)) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);

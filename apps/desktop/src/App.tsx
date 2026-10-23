@@ -3,9 +3,9 @@
 // Finder-like history (‹ ›, ⌘[ ⌘]). Settings, the live session, the first-run welcome and pairing are
 // routes of this shell, not windows of their own. Routing is lib/nav.ts, keys are lib/shortcuts.ts.
 //
-// The agents workspace is a route too ({ page: "agents" }), but it takes the whole window with its own
-// sidebar (ui/workspace/Workspace.tsx). The computers / agents switch at the top of either sidebar moves
-// between the halves as ordinary history entries; the half you were last in opens next time.
+// The agents workspace and a computer's live screen share one view. Its complete existing workspace
+// stays on the right while the selected computer streams on the left; one history selects sessions,
+// projects and computers without a separate start form or a second set of controls.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "./lib/api";
@@ -29,6 +29,7 @@ import {
   replace,
   routeOfNav,
   screenRoute,
+  screenWorkspaceRoute,
   sidebarState,
   type History,
   type Memory,
@@ -44,7 +45,7 @@ import type { AgentStatus, TrayIntent } from "./lib/types";
 import { DevicesPage } from "./ui/Devices";
 import { Icon } from "./ui/Icon";
 import { ActivityPage, activityComputers, ApprovalsPage, ComputerPage, ComputerTabStrip, MissingComputer, PairPage, WelcomePage } from "./ui/Pages";
-import { SessionPage } from "./ui/Session";
+import { LiveWorkspace } from "./ui/LiveWorkspace";
 import { SettingsPage, SettingsTabs, settingsTitle } from "./ui/Settings";
 import { computerFacts, Facts, ShellContext, Sidebar, TitleBar, type ShellApi } from "./ui/Shell";
 import { cx, useNow } from "./ui/util";
@@ -74,6 +75,7 @@ export default function App() {
   // The tray menu's "Open Settings", "Show Pairing Code" and "Recent Activity" land here.
   const [intent, setIntent] = useState<TrayIntent | null>(null);
   const [query, setQuery] = useState("");
+  const [screenActive, setScreenActive] = useState(true);
   const [sidebarPref, setSidebarPref] = useState<SidebarPref>(() => parseSidebarPref(localStorage.getItem(SIDEBAR)));
   // Read once: the narrow-window default must not flip while the window is being resized.
   const [startWidth] = useState(() => window.innerWidth);
@@ -155,7 +157,11 @@ export default function App() {
         setIntent({ ...to, n: Date.now() });
       }).then(keep);
       // A live view must not go on unseen.
-      void listen("window-hidden", () => setHist((h) => hidden(h, memRef.current))).then(keep);
+      void listen("window-hidden", () => {
+        setScreenActive(false);
+        setHist((h) => hidden(h, memRef.current));
+      }).then(keep);
+      void listen("tauri://focus", () => setScreenActive(true)).then(keep);
     });
     return () => {
       gone = true;
@@ -217,7 +223,7 @@ export default function App() {
   const actRef = useRef(act);
   actRef.current = act;
   const sessionRef = useRef(false);
-  sessionRef.current = route.page === "session";
+  sessionRef.current = route.page === "session" || (route.page === "agents" && snap.computers.length > 0);
   const agentsRef = useRef(false);
   agentsRef.current = route.page === "agents";
   useEffect(() => {
@@ -228,7 +234,7 @@ export default function App() {
         inChat: !!el?.closest(".nt-chat"),
         modal: !!document.documentElement.dataset.modal,
         session: sessionRef.current,
-        agents: agentsRef.current,
+        agents: agentsRef.current || !!el?.closest(".nt-workspace-pane"),
       };
     };
     const onKey = (e: KeyboardEvent) => {
@@ -278,6 +284,26 @@ export default function App() {
 
   const device = status ? (status.device.startsWith("eid:demo") ? "home-laptop" : status.device.slice(0, 12)) : "this device";
 
+  // Watching and working are one view. Keep the workspace beside the screen even on its new-session
+  // page; only the screen child is keyed by computer, so switching sessions never restarts the video.
+  const screenHost = route.page === "session" ? route.host : route.page === "agents"
+    ? route.host ?? route.place?.host ?? snap.computers.find((c) => c.online === true)?.host.name ?? snap.computers[0]?.host.name : null;
+  const screenComputer = screenHost ? snap.computers.find((c) => c.host.name === screenHost) : undefined;
+  if (screenComputer && (route.page === "agents" || route.page === "session")) {
+    const liveRoute: Extract<Route, { page: "session" }> = route.page === "session" ? route
+      : { page: "session", host: screenComputer.host.name, workspace: { host: route.host, session: route.session, place: route.place } };
+    return (
+      <ShellContext.Provider value={shell}>
+        <div className="win gl-win" data-route={route.page} data-live-workspace="true" style={{ width: "100vw", height: "100vh" }}>
+          <LiveWorkspace c={screenComputer} computers={snap.computers} device={status?.name ?? device} waiting={waiting} active={screenActive}
+            route={liveRoute} onRoute={(r, replacing) => go(screenWorkspaceRoute(liveRoute, r), replacing ? "replace" : "push")}
+            back={shell.canBack ? back : null} forward={shell.canForward ? forward : null} onNav={nav}
+            onPair={() => nav("pair")} onSettings={() => nav("settings")} onMode={() => go({ page: "devices" })} />
+        </div>
+      </ShellContext.Provider>
+    );
+  }
+
   // The agents workspace: the whole window, its own sidebar; its pages are entries of this history.
   if (route.page === "agents") {
     return (
@@ -301,24 +327,10 @@ export default function App() {
   }
 
   const computerOf = (host: string) => snap.computers.find((c) => c.host.name === host);
-  const sessionComputer = route.page === "session" ? computerOf(route.host) : undefined;
   const toolbar = toolbarFor(route, snap, go);
 
   let content: ReactNode;
-  if (sessionComputer && route.page === "session") {
-    content = (
-      <SessionPage
-        key={sessionComputer.host.name}
-        c={sessionComputer}
-        device={device}
-        waiting={waiting}
-        onBack={back}
-        onNav={nav}
-        chat={route.chat ?? null}
-        panel={route.chat || route.panel === "chat" ? "chat" : undefined}
-      />
-    );
-  } else {
+  {
     let page: ReactNode;
     if (route.page === "settings")
       page = <SettingsPage sec={route.sec} status={status} onStatus={() => setStatusRound((n) => n + 1)} intent={intent} />;

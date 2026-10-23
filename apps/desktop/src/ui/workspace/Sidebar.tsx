@@ -43,7 +43,7 @@ import {
 import { cx } from "../util";
 import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { ModeSwitch, type AppMode } from "./ModeSwitch";
-import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
+import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, workspaceOwnsEvent, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
 import { workspace } from "./useWorkspace";
 
 const COLLAPSED = "ai-remote.ws.collapsed";
@@ -81,7 +81,8 @@ function useSessionJumps(list: RefObject<HTMLDivElement | null>, disabled: boole
       return a instanceof HTMLElement && (a.isContentEditable || !!a.closest("input, textarea, select, [role=textbox]"));
     };
     const down = (e: globalThis.KeyboardEvent) => {
-      if (e.isComposing || editing() || document.hidden || !sessionJumpChord(e)) {
+      const pane = list.current?.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (e.defaultPrevented || (pane && !workspaceOwnsEvent(pane, e)) || e.isComposing || editing() || document.hidden || !sessionJumpChord(e)) {
         held = false;
         hide();
         return;
@@ -303,7 +304,9 @@ export function Sidebar(p: SidebarProps) {
   useEffect(() => {
     if (!selection.keys.length) return;
     const escape = (e: globalThis.KeyboardEvent) => {
-      if (e.isComposing) return;
+      if (!side.current) return;
+      const pane = side.current.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (e.defaultPrevented || e.isComposing || (pane && !workspaceOwnsEvent(pane, e))) return;
       // Single-row shortcuts never silently act on one member of a multi-selection. Menu
       // letters stay local to PopMenu; Ctrl+Shift+digits still belong to the jump handler.
       if (selection.keys.length > 1 && ((e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey)

@@ -585,41 +585,48 @@ test("a turn stopped while answering says how long it ran in all", () => {
 
 function navigationFixture(file, scenario) {
   const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
-  const start = source.indexOf("  const navigationState = ");
-  const end = source.indexOf(file.includes("-real") ? "  const running = " : "  const lines = ", start);
-  assert.ok(start >= 0 && end > start, "run the script's navigation helper itself");
-  const state = { chat: true, picker: false, form: false, sessions: 0, menu: false, route: "session", time: 0, clicks: 0 };
+  const start = source.indexOf("  // Workspace navigation:");
+  const end = source.indexOf("  // Workspace startup:", start);
+  assert.ok(start >= 0 && end > start, "run the script's workspace navigation helpers themselves");
+  const state = { chat: true, newPage: false, formReady: false, sidebar: true, sessions: 2,
+    selected: "test-host/old", route: "session", time: 0, clicks: 0, rowClicks: 0 };
   const checks = [], logs = [], waits = [], events = [];
   const later = (ms, run) => { events.push({ at: state.time + ms, run }); events.sort((a, b) => a.at - b.at); };
-  const trigger = { click: () => { state.menu = true; } };
-  const item = { isConnected: true, click() {
-    state.menu = false;
+  const pane = { isConnected: true, dataset: { side: "docked" } };
+  const create = { isConnected: true, click() {
     state.clicks++;
-    if (scenario === "recover" && state.clicks === 1) return;
+    if (scenario === "missed-first") return;
     later(50, () => {
       state.chat = false;
       state.route = scenario === "wrong-route" ? "devices" : "session";
-      state.picker = scenario !== "wrong-route";
-      state.sessions = state.picker ? 1 : 0;
-      state.form = scenario === "recover";
+      state.newPage = scenario !== "wrong-route";
+      state.formReady = false;
     });
-    if (scenario === "delayed-form") later(12000, () => { state.form = true; });
+    if (scenario === "delayed-form") later(12000, () => { state.formReady = true; });
   } };
-  const $ = (sel) => {
+  const row = { isConnected: true, dataset: { rowKey: "test-host/exact" } };
+  const rowButton = { isConnected: true, click() {
+    state.rowClicks++;
+    if (scenario !== "row-misses") later(50, () => { state.chat = true; state.newPage = false; state.selected = row.dataset.rowKey; });
+  } };
+  const $ = (sel, root) => {
+    if (root === null) return null;
+    if (sel === ".ws[data-embedded=true]" || sel === ".ws") return state.route === "session" ? pane : null;
     if (sel === ".win") return { dataset: { route: state.route } };
-    if (sel === ".nt-chat") return state.chat ? { className: "nt-chat cdx" } : null;
-    if (sel === ".nt-chat-picker") return state.picker ? {} : null;
-    if (sel === ".nt-chat-start") return state.form ? {} : null;
-    if (sel === ".nt-chat-menu") return state.menu ? {} : null;
+    if (sel === ".nt-chat" || sel === ".ws-session .nt-chat") return state.chat ? { className: "nt-chat cdx" } : null;
+    if (sel === ".ws-new") return state.newPage ? {} : null;
+    if (sel === ".ws-menu") return null;
+    if (sel === ".ws-row[data-selected]") return state.selected ? { dataset: { rowKey: state.selected } } : null;
+    if (sel === ".ws-side") return state.sidebar ? {} : null;
+    if (sel === ".ws-side .ws-nav") return create;
+    if (sel === ".ws-row-main") return root === row ? rowButton : null;
     throw new Error(`unexpected selector ${sel}`);
   };
   const $$ = (sel) => {
-    if (sel === ".nt-chat-hd .ico") return state.chat ? [trigger] : [];
-    if (sel === ".nt-chat-menu [role=menuitem]") return state.menu ? [item] : [];
-    if (sel === ".nt-sessions .sess") return Array(state.sessions).fill({});
+    if (sel === ".ws-row") return scenario === "row-missing" ? [] : [row];
     throw new Error(`unexpected selector ${sel}`);
   };
-  const context = { $, $$, document: { hidden: false, activeElement: { className: "ico" } },
+  const context = { $, $$, document: { hidden: false, activeElement: { className: "ws-nav" } },
     Date: class extends Date { static now() { return state.time; } },
     check: async (name, ok) => { checks.push({ name, ok }); },
     say: async (_level, text) => { logs.push(text); },
@@ -637,41 +644,59 @@ function navigationFixture(file, scenario) {
       return null;
     },
   };
-  vm.runInNewContext(source.slice(start, end) + "\nglobalThis.leave = leaveSession;", context);
-  return { state, checks, logs, waits, leave: () => context.leave("the start form opens", () => state.form) };
+  vm.runInNewContext(source.slice(start, end) + "\nglobalThis.navigation = { leaveSession, openWorkspaceSession };", context);
+  return { state, checks, logs, waits, leave: () => context.navigation.leaveSession("the new-session page opens", () => state.formReady),
+    open: () => context.navigation.openWorkspaceSession("test-host/exact") };
 }
 
 for (const file of ["desktop-chat-codex-e2e.js", "desktop-chat-codex-real.js"]) {
-  test(`e2e navigation (${file}): a picker before its delayed form needs one click`, async () => {
+  test(`e2e navigation (${file}): a new page before its delayed composer needs one New click`, async () => {
     const s = navigationFixture(file, "delayed-form");
     await s.leave();
     assert.equal(s.state.clicks, 1);
-    assert.equal(s.state.form, true);
+    assert.equal(s.state.formReady, true);
     assert.equal(s.checks.filter((c) => !c.ok).length, 0);
     assert.ok(s.waits.some((w) => w.ms === 30000), "content has its own 30-second loading budget");
     assert.ok(s.logs.some((l) => /waiting for.*after leaving/.test(l)));
     assert.ok(!s.logs.some((l) => l.includes("navigation failure")));
   });
-  test(`e2e navigation (${file}): a missed first click remains failed after recovery`, async () => {
-    const s = navigationFixture(file, "recover");
-    await s.leave();
-    assert.equal(s.state.clicks, 2);
+  test(`e2e navigation (${file}): a missed first New click fails without a retry`, async () => {
+    const s = navigationFixture(file, "missed-first");
+    await assert.rejects(s.leave(), /first New click did not leave/);
+    assert.equal(s.state.clicks, 1);
     assert.equal(s.checks.filter((c) => !c.ok).length, 1);
     assert.equal(s.logs.filter((l) => l.includes("navigation failure")).length, 1);
   });
-  test(`e2e navigation (${file}): content failing to load never clicks the menu again`, async () => {
+  test(`e2e navigation (${file}): content failing to load never clicks New again`, async () => {
     const s = navigationFixture(file, "load-fails");
     await assert.rejects(s.leave(), /left the conversation but.*did not load/);
     assert.equal(s.state.clicks, 1);
     assert.ok(s.checks.some((c) => !c.ok));
-    assert.ok(s.logs.some((l) => l.includes("picker loading failure")));
+    assert.ok(s.logs.some((l) => l.includes("workspace loading failure")));
     assert.ok(!s.logs.some((l) => l.includes("navigation failure")));
   });
-  test(`e2e navigation (${file}): reaching the devices page cannot count as leaving to the picker`, async () => {
+  test(`e2e navigation (${file}): reaching Devices cannot count as opening workspace New`, async () => {
     const s = navigationFixture(file, "wrong-route");
-    await assert.rejects(s.leave(), /menu button missing/);
+    await assert.rejects(s.leave(), /first New click did not leave/);
     assert.equal(s.state.route, "devices");
+    assert.equal(s.state.clicks, 1);
     assert.ok(s.checks.some((c) => !c.ok));
     assert.ok(s.logs.some((l) => l.includes("navigation failure")));
+  });
+  test(`e2e navigation (${file}): reopening clicks the exact session key once`, async () => {
+    const s = navigationFixture(file, "row-opens");
+    await s.open();
+    assert.equal(s.state.rowClicks, 1);
+    assert.equal(s.state.selected, "test-host/exact");
+    assert.equal(s.checks.filter((c) => !c.ok).length, 0);
+  });
+  test(`e2e navigation (${file}): a missing or missed exact row cannot reopen another session`, async () => {
+    const missing = navigationFixture(file, "row-missing");
+    await assert.rejects(missing.open(), /exact session row is missing/);
+    assert.equal(missing.state.rowClicks, 0);
+    const missed = navigationFixture(file, "row-misses");
+    await assert.rejects(missed.open(), /first row click did not open/);
+    assert.equal(missed.state.rowClicks, 1);
+    assert.ok(missed.checks.some((c) => !c.ok));
   });
 }

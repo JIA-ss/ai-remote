@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs tools/live-workspace.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,63 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 并行主干整合与重新验收（2026-10-24，PR #48）
+
+- 并行会话已把 PR #49、#50 合入 main `1ddacb1`。其中包含 MCP 元数据与原生夹具报告修正，以及推流旁的完整工作区、新路由、菜单、卡片焦点与对应 E2E。此前只 fetch 后推送、未及时检查 origin/main 是否为本分支祖先，漏查了合并冲突，导致 PR 的 pull_request CI 没有生成检查记录；不是工作流被禁用。
+- 本次先整合主干，再保留本批多选/批量/撤销、动效回退、摘要语义等待与 Windows 证据入口。共享菜单按可见后聚焦；嵌入侧栏的多选快捷键应遵循工作区键盘归属，画面接管或 pane inert 时不能截走按键。
+  Windows 证据只裁完整工作区 pane 或安全对话框，不能把 LiveWorkspace 的视频半边当作测试 UI。四份 quiet 配置、只读 invoke 兼容、失败保留与精确计数仍是门槛。
+- 旧 `40005026321` 聊天运行及手动触发的旧 `4bcc35e` core/chat 运行因整合主干而主动取消，不能记整合版成功或产品失败。原生 `40007638843` 另保留自身的实际结果；即使通过也不替代新合并树验收。
+- **整合态静态/便携实测**：TypeScript、fmt、全量 Node 416 项（415 过、1 平台跳过）通过；Windows runner 16 项在本机 14 过、2 个 Win32 探针跳过，fixture reader 4 项通过。新增 pane 测试确认导出的视频色块为 0、隐藏/零矩形时拒绝父层回退；这些不替代真实 WebView2 或原生像素验收。
+- 整合前的 macOS 图集与 Windows 图审均按各自源码/二进制/脚本基准保留，不追认为 `1ddacb1` 合入后的结果。新合并树的门槛、本机替身两轮、真实 Codex、Windows 矩阵及全部新图仍待完成；真实 Claude 登录与开发机安装边界不变。
+
+## 实时画面与完整智能体工作区并排（2026-10-24，PR #50）
+
+- 用户明确要复用现有完整工作区：左实时画面，右侧保留 CLI、工程、会话、新建和对话；不再增加顶部选择条，也不跳另一套配置页。
+  有已配对电脑时，智能体和看电脑入口都进入同一并排视图；工作区选择电脑时同步左侧，选择同机项目/会话只改变右侧。
+- `LiveWorkspace` 让左 `SessionPage` 与右 `Workspace embedded` 成为兄弟节点，只给左侧按 host 加 key；中间可调整宽度。
+  工作区按自身容器测宽并使用原侧栏/抽屉，保留完整 computers 给全局 store。新建地点回报不清草稿、不循环；已有首句和一次性 ticket 仍用原流程。
+- 快捷键限右侧，Claude 审批/计划/问答、数字会话导航及模式菜单不截左侧远程输入；右侧已聚焦控件卸载、焦点回 body 时仍保留其按键归属，
+  左侧指针/焦点动作立即接回。全屏隐藏右侧但保留会话，Review 等父层解除 inert 后才聚焦。
+  隐藏应用停止画面与远程输入，重新显示后等新几何和首帧再恢复；不能因工作区默认并排而在后台重新观看。
+- 从电脑页打开的旧 `chat.session` 也按最近工作区恢复；切到设备页再回来保留当前会话，旧 ticket 不复用。
+  已打开的会话断线时保留正文、草稿、未送达和重试；首次离线、权限拒绝和会话不存在仍显示原有明确状态。
+- **门槛实测**：本次界面源码 `b8068e9`，之后本分支只改测试和记录。Rust fmt、全工作区/all-targets Clippy、Rust 439 过 / 9 忽略、
+  TypeScript、CLI / Tauri debug 构建与 release app 打包通过；全量前端 399 项，398 过 / 1 平台项跳过。
+  本地 Rust 全量在本分支初始基准通过，后续同步 main 只带 Windows fixture 诊断的 Rust 差异；最终两平台 CI 另行核对，不把 Mac 当 Windows 现场。
+- **最终本机原生 E2E**：同一份最终 debug 应用、隔离 quiet 被控端和控制端，经真实 QUIC 与替身/真实 CLI，以下每套各一轮全过；
+  请求 `--visible`，实际 1280×800 CSS 窗口、DPR 2，文档报告 hidden / focused。默认完全离屏首轮因显示器枚举空被硬门槛拒绝，
+  本轮不冒称完全离屏或物理键鼠验证。
+
+  | 脚本 | 通过项 |
+  |---|---:|
+  | workspace | 129 |
+  | Codex 替身 | 121 |
+  | Claude 默认 | 74 |
+  | render | 12 |
+  | preview | 31 |
+  | offline | 7 |
+  | 真实 Codex | 24 |
+
+  真实 Codex 0.159.2、ChatGPT 已登录、`gpt-6-luna`，覆盖真实修改、命令、改动卡、插话、停止与按原 ID 重开；
+  校验返回 2026 年四个正确季度末日期。工作区关键同机新建/切换/历史段实测 1417 ms，已解码 3840×1620、同一画布，原始审计无 view_start/view_end；
+  此前两个阶段另有 129/129 各一轮通过，单独保留，不混成最终源码三连。Camofox headless 深浅主题、1440 / 1280 窗宽、窄左画面及跨机画布切换已看过，未见文档横溢出。
+- **保留的失败与修复**：早期原生第 1 轮在 51 项中有 2 项快捷键归属失败，修复 body 焦点归属；第 2 轮 128 项有 2 项失败，
+  原因是新测试创建第 5 个智能体撞既有 4 个额度，改为先结束本轮自建空闲会话，未放宽服务上限。
+  Codex 初轮 101 项中有 3 项菜单/停止失败：菜单首次在隐藏测量阶段聚焦无效，改为可见提交后聚焦；新增真实组件回归在旧码失败、新码通过。
+  Claude 初轮 72 项虽通过，逐图仍发现目录弹层被玻璃卡片样式变半透明、输入框文字透出；恢复原不透明弹层，最终两处 computed alpha 均 255 / opacity 1。
+  preview 初轮 29 过 / 2 失败是驱动从旧存储键取不到 session，已改读取实际选中工作区会话；原两条安全拒绝断言完整保留。
+  两个 Codex 驱动同时按完整工程路径确认选择；所有旧失败日志/截图留在仓库外，不删除、不追认为通过。
+- **视觉复核**：最终七套 73 个 PNG 文件清单、SHA-256 与逐图结论均已核对，未见剩余确证遮挡/溢出；旧的两张目录透字图单独保留。
+  历史返回的一张截图拍在加载阶段，只证明绘制状态，不能写成回放追平或终态；完整回放另由 Codex / Claude 套件的内容与轮数断言验证。
+- **安装与边界**：最终 release 桌面端已原子替换 `/Applications/ai-remote.app`，安装前核对旧版指纹，安装后 deep/strict 签名与三个可执行文件 SHA-256 均核对，
+  旧 app 留作本地备份；未迁移或重启既有被控端服务。本轮只测本机，Windows 现场、真实 Claude 登录、物理键鼠/IME/VoiceOver 未测；无 iOS 改动。
+  安装版实际打开，智能体入口和新建页正常；正式配置当时 0 台已配对电脑，显示配对提示，没有将这次启动当作正式配置里的实时画面验收。
+  独立 worktree 实现，主检出其它会话的页面美化和 iPad 改动未纳入。
+- **本地合入**：PR head `8571970` 的两平台 test/native 四项检查全成功（Desktop/core `40001419318`、Native structured UI `40001419198`）。
+  推送前发现 main 新增 `c9d03ec`（MCP 元数据及 fixture reader），重新在临时 worktree 从它 `merge --no-ff`，完整保留两边记录；
+  界面文件与 `b8068e9` 完全相同，合并态另跑 fmt / workspace Clippy、Rust 440 过 / 9 忽略、13 项 mounts 检查与 reader 4 项回归均通过。
+  这批独立元数据变化没有改会话或推流，未将七套界面验收无意义地重复计数；main 合入后的自动 CI 单独核对。
 
 ## 智能体工作区第二阶段 · 第三段：列表多选与批量操作（2026-10-23 ~ 24）
 
@@ -111,6 +168,21 @@
 - PR #47 诊断运行 `39987649385` 的 Windows real UIA fixture 步骤已实际连续两轮通过（原生单测每轮 1 项），
   远端 UIA 冒烟与全部必需检查仍以该运行最终结果为准；未因后来的通过删除首次失败。
   下一步据新 CI 的阶段与留存状态判断具体路径，再决定修复；不单靠扩大超时或重跑消红。
+
+## MCP 聚合入口元数据（2026-10-24）
+
+- `list_hosts` 明确声明只读、非破坏性、幂等；`use_host` 会改本会话的默认被控端，所以不是只读，重复选择同一端是幂等的。
+  两者均可能查询已配对的外部主机，`openWorldHint = true`。这些是客户端提示，不改变原有配对、等级、审批与审计门禁。
+- 新增真实 rmcp `tools/list` 协议回归：全新临时 profile、未配对、LAN-only、关闭发现和映射，不使用机主设备或本机服务。
+  测试先在原代码上因缺 annotations 失败，再补齐两项本地工具的四个布尔 hint。根 `glama.json` 仅声明维护者供目录核对。
+- 中英 README 的 20 px 紧凑 M8ven badge 保留平台本次领取的公开所有权核对参数；这不是 Live 声明，项目的平台 WIP / pre-alpha 边界不变。
+- 首次本机 macOS（`9851dbe`）：Rust fmt / workspace Clippy 通过；workspace tests 440 过、9 忽略；规定的 Node 测试 361 过、1 跳过，TypeScript 通过。
+  这些验证只覆盖协议元数据和回归检查，没有把它们当成真机远程操作或平台安全认证。
+- PR #49 首轮 Windows native CI 的 11 项已记录断言均符合预期，但最后收集 fixture JSON 时失败；Windows fixture 每 100 ms 原位重写，
+  最后的直接读取可能撞上写入空窗。保留首轮产物，未声称捕获了当时的空文件本体。`ui_fixture_state.py` 只有限重读新数据，
+  不缓存旧状态、不重复 UI 动作；空/半写/UTF-8 截断后完成、持续损坏明确超时与不复用上次结果均有先红后绿的回归，native CI 同跑。
+- 随后接到 main `1aefe9f`：完整保留 PR #47 的诊断章节、原生两轮采样和产物路径；仅在本节做并列记录。
+  新基准本机 fmt / workspace Clippy、Rust 440 过 / 9 忽略、Node 374 过 / 1 跳过、TypeScript、fixture reader 4 项回归通过；新 head 的 CI 单独等待。
 
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
