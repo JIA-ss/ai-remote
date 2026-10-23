@@ -894,7 +894,9 @@
       const dots = () => JSON.stringify(watchKeys.map((key) => dotOf(key)));
       // idle() observes the conversation footer; the independently polled list may still show the
       // first-message title. Start the key probes only after this host snapshot is drawn by the UI.
-      const ownershipDeadline = Date.now() + 10000;
+      // A hidden workspace legitimately polls every 20 s. This is a derived readiness budget,
+      // not measured title latency; the independent decoded-frame check remains 30 s.
+      const ownershipDeadline = Date.now() + (document.hidden ? 25000 : 10000);
       const ownershipBaseline = await batchHost("ownership metadata ready", (xs) => watchKeys.every((key) => {
         const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id);
         return meta && (key !== kq || (typeof meta.title === "string" && !!meta.title.trim()));
