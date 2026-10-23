@@ -14,7 +14,7 @@ import type { Computer } from "../../lib/store";
 import { isRunning, keepOrder, lastSeq, normalizeMeta, recentPlaces, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
 import { FolderPicker, type Listing } from "../chat/FolderPicker";
 import { cx } from "../util";
-import { ComputerMark, modKey, modLabel, PopMenu, type MenuAt, type MenuLine, type Toast } from "./parts";
+import { ComputerMark, isMac, modKey, modLabel, PopMenu, type MenuAt, type MenuLine, type Toast } from "./parts";
 import { titleOf } from "./Sidebar";
 import { call, workspace } from "./useWorkspace";
 
@@ -157,6 +157,17 @@ export function NewSession({
   const [summary, setSummary] = useState<{ steps: Step[]; at: MenuAt } | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const folderBox = useRef<HTMLDivElement>(null);
+  const cardsBox = useRef<HTMLDivElement>(null);
+  const envCard = useRef<HTMLElement>(null);
+  const stepsCard = useRef<HTMLElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
+  // NS-03: the cards stand halfway down the room from the top to 2.75rem above the composer's bottom,
+  // counting the environment card and one next step (3.25rem; 2.5rem without the card). Where even that
+  // does not fit, next steps that do not stop sending are left out (the card too, when none is left).
+  const [spacer, setSpacer] = useState(0);
+  const [tight, setTight] = useState(false);
+  const tightRef = useRef(false);
+  const stepsFull = useRef(0);
   const hostState = host ? snap.hosts[host] : undefined;
   const oldHost = hostState?.update === false;
   const claude = runtime?.protocol === "claude-stream-json";
@@ -201,7 +212,53 @@ export function NewSession({
       : []),
   ].filter((s) => !dismissed.includes(key(s)));
   const folderStep: Step[] = host && online && !cwd.trim() ? [{ kind: "folder" }] : [];
-  const seats = seatSteps<Step>([folderStep, blocked], 3);
+  const seats = tight ? (folderStep.length ? [{ shown: folderStep, rest: [] as Step[] }] : []) : seatSteps<Step>([folderStep, blocked], 3);
+  useLayoutEffect(() => {
+    const box = cardsBox.current;
+    if (!box) return;
+    const measure = () => {
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const top = box.getBoundingClientRect().top;
+      const bottom = composer.current ? composer.current.getBoundingClientRect().bottom - 2.75 * rem : box.getBoundingClientRect().bottom;
+      const env = envCard.current?.offsetHeight ?? 0;
+      const nominal = env ? env + 2 + 3.25 * rem : 2.5 * rem;
+      const room = Math.max(0, (bottom - top - nominal) / 2);
+      setSpacer(room);
+      // The next steps as they are when all shown (kept while some are left out, so it does not flip back).
+      if (!tightRef.current && stepsCard.current) stepsFull.current = stepsCard.current.offsetHeight;
+      const next = stepsFull.current > 0 && room + env + 12 + stepsFull.current + 24 > box.clientHeight;
+      tightRef.current = next;
+      setTight(next);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    if (envCard.current) ro.observe(envCard.current);
+    if (composer.current) ro.observe(composer.current);
+    if (stepsCard.current) ro.observe(stepsCard.current);
+    return () => ro.disconnect();
+  }, [busy, computers.length > 0, seats.length > 0]);
+
+  // NS-19: ⌘⌥1–9 (Alt+1–9 elsewhere) picks the environment menu's computers in order, ⌘⌥0 pairs another
+  // one; physical digit keys, not while composing, held keys do nothing, AltGr is not Alt.
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || !/^Digit[0-9]$/.test(e.code)) return;
+      const chord = isMac ? e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey : e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+      if (!chord) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      const n = Number(e.code.slice(5));
+      setMenu(null);
+      if (n === 0) onPair();
+      else {
+        const x = computers[n - 1];
+        if (x?.online === true) pickHost(x.host.name);
+      }
+    };
+    window.addEventListener("keydown", on, true);
+    return () => window.removeEventListener("keydown", on, true);
+  });
   const dismiss = (s: Step) => {
     const next = [...dismissed.filter((k) => k !== key(s)), key(s)].slice(-100);
     setDismissed(next);
@@ -271,9 +328,10 @@ export function NewSession({
 
   const envMenu: MenuLine[] = [
     { heading: t("ws_computers") },
-    ...computers.map((x) => ({
+    ...computers.map((x, i) => ({
       key: x.host.name,
       label: x.host.name,
+      letter: i < 9 ? String(i + 1) : undefined,
       icon: <ComputerMark os={x.os} online={x.online} />,
       checked: x.host.name === host,
       disabled: x.online !== true,
@@ -281,7 +339,7 @@ export function NewSession({
       run: () => pickHost(x.host.name),
     })),
     "sep",
-    { key: "pair", label: t("ws_pair_more"), run: onPair },
+    { key: "pair", label: t("ws_pair_more"), letter: "0", run: onPair },
   ];
   const modeMenu: MenuLine[] = [
     { heading: t("ws_perm_title") },
@@ -305,11 +363,12 @@ export function NewSession({
         <div className="ws-frame-room" />
       </header>
       <div className="ws-new-body">
-        <div className="ws-new-cards">
+        <div className="ws-new-cards" ref={cardsBox}>
+          <div className="ws-new-spacer" style={{ height: spacer }} />
           {!busy && (
             <div className="ws-cards">
               {computers.length > 0 && (
-                <section className="ws-card ws-env-card" aria-label={t("ws_recent_places")}>
+                <section className="ws-card ws-env-card" ref={envCard} aria-label={t("ws_recent_places")}>
                   {places.length > 0 && (
                     <ul className="ws-env-rows">
                       {places.map((pl) => {
@@ -362,7 +421,7 @@ export function NewSession({
                 </section>
               )}
               {seats.length > 0 && (
-                <section className="ws-card ws-steps" aria-label={t("ws_next_steps")}>
+                <section className="ws-card ws-steps" ref={stepsCard} aria-label={t("ws_next_steps")}>
                   {seats.flatMap((g, gi) => [
                     ...g.shown.map((s) => <StepRow key={key(s)} step={s} onOpen={onOpen} onFolder={() => openFolder()} onDismiss={() => dismiss(s)} />),
                     ...(g.rest.length
@@ -390,7 +449,7 @@ export function NewSession({
           )}
         </div>
         <div className="ws-new-bottom">
-          <div className={cx("ws-composer", busy && "busy")}>
+          <div className={cx("ws-composer", busy && "busy")} ref={composer}>
             <textarea
               ref={area}
               rows={1}

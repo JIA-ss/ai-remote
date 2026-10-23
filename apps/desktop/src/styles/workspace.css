@@ -246,9 +246,9 @@
 /* ---- 6. New-session page (NS-02..NS-34) ---- */
 .ws-new-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 32px 16px; }
 @container (max-width: 560px) { .ws-new-body { padding: 0 16px 12px; } }
-.ws-new-cards { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 24px 0; }
-/* the cards sit halfway down the room above the composer (NS-03) */
-.ws-new-cards::before, .ws-new-cards::after { content: ""; flex: 1 1 0; }
+.ws-new-cards { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; display: flex; flex-direction: column; align-items: center; padding: 0 0 24px; }
+/* the cards sit halfway down the room above the composer: the spacer's height is measured (NS-03) */
+.ws-new-spacer { flex: none; width: 100%; }
 .ws-cards { flex: none; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 1px; max-width: 100%; }
 .ws-card { width: 320px; max-width: 100%; flex: none; display: flex; flex-direction: column; border-radius: 12px; box-shadow: var(--ws-ring); }
 .ws-env-rows { list-style: none; margin: 0; padding: 0; }
