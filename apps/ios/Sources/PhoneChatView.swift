@@ -202,7 +202,6 @@ public struct PhoneChatView: View {
                             PhoneCodexTurnView(turn: turn, cwd: session.cwd, readonly: readonly, stopped: turn.n == stopped,
                                                stopping: chat.log.state == "interrupting" && turn.status == "running",
                                                opened: codexOpened("\(session.id):\(turn.n)"),
-                                               answer: { qid, text in Task { await chat.answer(qid, text: text) } },
                                                resume: { Task { await chat.continueStopped() } }) {
                                 PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks))
                             }
@@ -243,6 +242,11 @@ public struct PhoneChatView: View {
     }
 
     @PhoneViewState private var previewing: PhonePreviewTarget?
+
+    /// What was chosen and typed in a Codex question card (kept by the store while the app runs).
+    private func codexDraft(_ id: String, _ req: PhoneCodexRequest) -> Binding<PhoneCodexDraft> {
+        Binding(get: { PhoneCodexDraft.restore(chat.codexDrafts[id], for: req.questions) }, set: { chat.codexDrafts[id] = $0 })
+    }
 
     /// Whether a Codex turn's work is open behind "Worked for …" (kept while the app runs).
     private func codexOpened(_ key: String) -> Binding<Bool> {
@@ -300,7 +304,11 @@ public struct PhoneChatView: View {
     // MARK: Footer
 
     @ViewBuilder private func footer(_ session: PhoneChatSession) -> some View {
+        // Codex: a question waits in a card in place of the composer; the running turn's plan sits above it.
+        let pending = chat.connected && chat.disconnected == nil ? chat.codexPending : nil
+        let plan = chat.isCodex && pending == nil ? phoneLivePlan(chat.log.turns) : nil
         VStack(spacing: 8) {
+            if let plan { PhoneCodexPlanPill(plan: plan) }
             if !chat.log.queued.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(chat.log.queued) { q in queuedCard(q) }
@@ -317,7 +325,12 @@ public struct PhoneChatView: View {
             // A container keeps its own id; on a plain stack it would overwrite the ring's.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat-state")
-            if let reason = chat.disconnected {
+            if let pending {
+                PhoneCodexRequestCard(req: pending.request, draft: codexDraft(pending.id, pending.request), readonly: !chat.canWrite,
+                                      submit: { answers in Task { await chat.answerRequest(pending.request, id: pending.id, answers: answers) } },
+                                      dismiss: { Task { await chat.dismissRequest(id: pending.id) } })
+                    .id(pending.id)
+            } else if let reason = chat.disconnected {
                 HStack {
                     Text(reason).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
@@ -401,7 +414,7 @@ public struct PhoneChatView: View {
             if !chat.attachments.isEmpty { draftImages }
             HStack(alignment: .bottom, spacing: 6) {
                 attachButton
-                PhoneChatField(text: $chat.draft, composing: $composing, caret: $caret, setCaret: $setCaret) { Task { await chat.send() } }
+                PhoneChatField(text: $chat.draft, composing: $composing, caret: $caret, setCaret: $setCaret, focus: $chat.focusComposer) { Task { await chat.send() } }
                     .frame(minHeight: 36)
                     .accessibilityIdentifier("chat-input")
                     .overlay(alignment: .leading) {
@@ -586,6 +599,8 @@ struct PhoneChatField: UIViewRepresentable {
     /// Where the caret is (UTF-16 offset), for the `/` and `@` menus; `setCaret` moves it once.
     @Binding var caret: Int
     @Binding var setCaret: Int?
+    /// Take the keyboard once (back from a Codex question card).
+    @Binding var focus: Bool
     let submit: () -> Void
 
     func makeUIView(context: Context) -> UITextView {
@@ -608,6 +623,13 @@ struct PhoneChatField: UIViewRepresentable {
         if let at = setCaret, view.markedTextRange == nil {
             view.selectedRange = NSRange(location: min(at, (view.text as NSString).length), length: 0)
             DispatchQueue.main.async { setCaret = nil }
+        }
+        if focus {
+            // Once the field is on screen (it may be showing again just now).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                focus = false
+                view.becomeFirstResponder()
+            }
         }
     }
 
@@ -655,9 +677,11 @@ struct PhoneChatField: View {
     @Binding var composing: Bool
     @Binding var caret: Int
     @Binding var setCaret: Int?
+    @Binding var focus: Bool
     let submit: () -> Void
     var body: some View {
         TextField("给智能体的消息", text: $text, axis: .vertical).lineLimit(1...5).onSubmit(submit)
+            .onAppear { focus = false }
             .onChange(of: text) { _, t in caret = (t as NSString).length }
     }
 }

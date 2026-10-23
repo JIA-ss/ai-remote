@@ -20,6 +20,13 @@ import SwiftUI
     public var runtimeFor: String?
     /// Codex turns whose work the person opened ("Worked for …"), by session and turn.
     public var codexOpened: Set<String> = []
+    /// What was chosen and typed in Codex's question card, by request (see `codexPending`); a request
+    /// that is over (answered here or elsewhere, closed, expired, its turn ended) leaves no draft.
+    public var codexDrafts: [String: PhoneCodexDraft] = [:]
+    /// The request whose card the person closed (which stops the turn): not asked again meanwhile.
+    public var codexClosed: String?
+    /// The composer takes the keyboard when it next shows (after a question card it stood in for).
+    public var focusComposer = false
     /// What the agent can do (`caps` of the channel's hello); nil before the channel opens.
     public var caps: PhoneChatCaps?
     public var connected = false
@@ -63,6 +70,8 @@ import SwiftUI
     var fixtureRefuse = false
     /// The fixture shows a Codex session: a new message starts a Codex-shaped turn.
     var fixtureCodex = false
+    /// Answers to the fixture's Codex questions so far, by request and question (the host combines them).
+    var fixtureAnswers: [String: [String: String]] = [:]
     private var fixtureSeq = 1000
     func fixtureEvent(_ fields: [String: JSONValue]) {
         fixtureSeq += 1
@@ -70,6 +79,7 @@ import SwiftUI
         event["seq"] = .number(Double(fixtureSeq))
         if event["ts"] == nil { event["ts"] = .number(Date().timeIntervalSince1970 * 1000) }
         log.apply(.object(event))
+        forgetDrafts()
     }
     #endif
 
@@ -289,7 +299,9 @@ import SwiftUI
     func received(_ line: String) {
         guard let m = try? JSONValue.parse(line) else { return }
         switch phoneChatLineKind(m) {
-        case "event"?: log.apply(m)
+        case "event"?:
+            log.apply(m)
+            forgetDrafts()
         case "commands"?: log.knownCommands(m["commands"].array)
         case "reply"?:
             if let rid = m["rid"].string ?? m["rid"].number.map({ String(Int($0)) }), let waiter = waiting.removeValue(forKey: rid) {
@@ -428,6 +440,40 @@ import SwiftUI
         for c in phoneEditQueued(queuedID: id, newID: UUID().uuidString, text: value) { guard await command(c) else { return } }
     }
 
+    /// The Codex questions waiting for an answer, in a card in place of the composer, with the key
+    /// their draft is kept under (session, turn and request: a request belongs to its turn).
+    public var codexPending: (id: String, request: PhoneCodexRequest)? {
+        guard isCodex, let session = current, let req = phonePendingRequest(log.turns) else { return nil }
+        let id = "\(session.id):\(req.turn):\(req.request ?? "")"
+        return id == codexClosed ? nil : (id, req)
+    }
+
+    /// Forgets the drafts of requests that are no longer waiting.
+    private func forgetDrafts() {
+        guard !codexDrafts.isEmpty else { return }
+        let id = codexPending?.id
+        if codexDrafts.keys.contains(where: { $0 != id }) { codexDrafts = codexDrafts.filter { $0.key == id } }
+    }
+
+    /// Answers a Codex request: one `answer` per question (an empty text skips it; the host combines
+    /// them and answers Codex once the request is complete).
+    public func answerRequest(_ req: PhoneCodexRequest, id: String, answers: [(qid: String, text: String)]) async {
+        for a in answers {
+            guard await command(["answer": .object(["qid": .string(a.qid), "text": .string(a.text)])]) else { return }
+            log.markAnswered(a.qid, answer: a.text, request: req.request, turn: req.turn)
+        }
+        codexDrafts[id] = nil
+        focusComposer = canWrite
+    }
+
+    /// Closes a Codex request's card: Codex waits on the answer, so the turn stops.
+    public func dismissRequest(id: String) async {
+        codexClosed = id
+        codexDrafts[id] = nil
+        focusComposer = canWrite
+        await interrupt()
+    }
+
     /// Answers the agent's question.
     public func answer(_ qid: String, text: String) async {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -491,7 +537,13 @@ import SwiftUI
                                   "kind": .string("execute"), "status": .string("in_progress")])
                 }
             }
+        } else if let answer = command["answer"] {
+            fixtureAnswer(answer, turn: n)
         } else if command["interrupt"] != nil {
+            // A stopped turn closes the questions it asked, as the host does.
+            for request in Set(log.turns.last?.blocks.compactMap { b -> String? in if case .question(let q) = b, !q.answered { q.request } else { nil } } ?? []) {
+                fixtureEvent(["t": .string("question_done"), "turn": .number(n), "request": .string(request), "how": .string("dismissed")])
+            }
             fixtureEvent(["t": .string("turn_end"), "turn": .number(n), "status": .string("interrupted"), "duration_ms": .number(1200)])
             let queued = log.queued.map { JSONValue.object(["id": .string($0.id), "text": .string($0.text)]) }
             fixtureEvent(["t": .string("state"), "turn": .number(n), "state": .string("idle"), "queued": .array(queued)])

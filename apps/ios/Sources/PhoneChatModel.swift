@@ -134,16 +134,28 @@ public struct PhonePlanEntry: Equatable, Sendable {
     public let status: String
 }
 
+/// The agent's question. Codex's carry their `request` (its questions are answered together), the item
+/// that asked, a `header`, a description per option (aligned with `options`), whether a free answer is
+/// welcome besides the options (`other`), whether it is a `secret`, whether the turn waits on it; once
+/// the request is over, the `answers` given and `how` it ended (answered, skipped, resolved, dismissed).
 public struct PhoneQuestion: Equatable, Sendable {
     public let qid: String
     public let prompt: String
     public let options: [String]
     public var answered = false
     public var answer: String?
-    /// The request it belongs to (Codex); `question_done` closes all of a request's questions.
-    public var request: String? = nil
+    public var request: String?
+    public var itemID: String?
+    public var header: String?
+    public var descriptions: [String] = []
+    public var other = false
+    public var secret = false
+    public var blocking: Bool?
+    /// When the agent goes on without an answer (the host's clock), for a question that does not block the turn.
+    public var expiresAt: Double?
+    public var answers: [String]?
     /// How the request ended (`question_done`): answered, skipped, expired, resolved, dismissed.
-    public var how: String? = nil
+    public var how: String?
 
     /// What its line says once it is no longer waiting.
     public var outcome: String {
@@ -164,8 +176,9 @@ public struct PhoneQueued: Equatable, Sendable, Identifiable {
 /// One block of a turn, in the order it happened.
 public enum PhoneChatBlock: Equatable, Sendable {
     /// `phase`: where the agent says a message belongs (Codex): `commentary` (said between steps) or
-    /// `final_answer` (its answer to the turn); nil when it does not say.
-    case text(id: String, text: String, phase: String? = nil)
+    /// `final_answer` (its answer to the turn); nil when it does not say. `startedMs`: when its first
+    /// piece came.
+    case text(id: String, text: String, phase: String? = nil, startedMs: Double? = nil)
     case thought(PhoneThought)
     case tool(PhoneChatTool)
     case plan([PhonePlanEntry])
@@ -220,7 +233,7 @@ public struct PhoneChatTurn: Identifiable, Equatable, Sendable {
     /// The agent's last words, for copying.
     public var reply: String {
         if let finalText, !finalText.isEmpty { return finalText }
-        for block in blocks.reversed() { if case .text(_, let text, _) = block { return text } }
+        for block in blocks.reversed() { if case .text(_, let text, _, _) = block { return text } }
         return ""
     }
 }
@@ -352,7 +365,7 @@ public struct PhoneChatLog: Equatable, Sendable {
             let id = e["id"].string ?? "", text = e["text"].string ?? "", delta = e["delta"] == .bool(true)
             let at = turns[i].blocks.firstIndex { block in
                 switch block {
-                case .text(let x, _, _): t == "message" && x == id
+                case .text(let x, _, _, _): t == "message" && x == id
                 case .thought(let x): t == "thought" && x.id == id
                 default: false
                 }
@@ -361,7 +374,8 @@ public struct PhoneChatLog: Equatable, Sendable {
             let phase = t == "message" ? e["phase"].string : nil
             if let at {
                 switch turns[i].blocks[at] {
-                case .text(_, let old, let had): turns[i].blocks[at] = .text(id: id, text: delta ? old + text : text, phase: phase ?? had)
+                case .text(_, let old, let had, let started):
+                    turns[i].blocks[at] = .text(id: id, text: delta ? old + text : text, phase: phase ?? had, startedMs: started)
                 case .thought(var x):
                     x.text = delta ? x.text + text : text
                     x.endedMs = ts
@@ -369,7 +383,7 @@ public struct PhoneChatLog: Equatable, Sendable {
                 default: break
                 }
             } else if t == "message" {
-                turns[i].blocks.append(.text(id: id, text: text, phase: phase))
+                turns[i].blocks.append(.text(id: id, text: text, phase: phase, startedMs: ts))
             } else {
                 turns[i].blocks.append(.thought(PhoneThought(id: id, text: text, startedMs: ts, endedMs: ts)))
             }
@@ -401,20 +415,30 @@ public struct PhoneChatLog: Equatable, Sendable {
                 turns[i].blocks.append(.plan(entries))
             }
         case "question":
-            turns[i].blocks.append(.question(PhoneQuestion(qid: e["qid"].string ?? "", prompt: e["prompt"].string ?? "",
-                                                           options: e["options"].array.compactMap(\.string), request: e["request"].string)))
+            var q = PhoneQuestion(qid: e["qid"].string ?? "", prompt: e["prompt"].string ?? "", options: e["options"].array.compactMap(\.string))
+            q.request = e["request"].string
+            q.itemID = e["item_id"].string
+            if let header = e["header"].string, !header.isEmpty { q.header = header }
+            q.descriptions = e["descriptions"].array.map { $0.string ?? "" }
+            q.other = e["other"] == .bool(true)
+            q.secret = e["secret"] == .bool(true)
+            if case .bool(let b) = e["blocking"] { q.blocking = b }
+            if let wait = e["expires_in_ms"].number { q.expiresAt = ts + wait }
+            turns[i].blocks.append(.question(q))
         case "question_done":
-            // The request is over (answered, or Codex went on without an answer): its questions wait no more.
+            // Every question of the request, in the turn that asked it (a request ends with its turn).
             guard let request = e["request"].string else { break }
-            for (k, block) in turns[i].blocks.enumerated() {
-                if case .question(var q) = block, q.request == request {
-                    let given = e["answers"][q.qid].array.compactMap(\.string)
-                    q.answered = true
-                    q.how = e["how"].string
-                    // What the host says reached Codex wins over what this phone thought it sent.
-                    q.answer = given.isEmpty ? nil : given.joined(separator: ", ")
-                    turns[i].blocks[k] = .question(q)
-                }
+            let how = e["how"].string ?? ""
+            for b in turns[i].blocks.indices {
+                guard case .question(var q) = turns[i].blocks[b], q.request == request else { continue }
+                let answers = e["answers"][q.qid].array.compactMap(\.string)
+                q.answered = true
+                q.answers = answers
+                // What the host says reached Codex wins over what this phone thought it sent.
+                let joined = answers.joined(separator: ", ")
+                q.answer = joined.isEmpty ? nil : joined
+                q.how = how
+                turns[i].blocks[b] = .question(q)
             }
         case "turn_diff":
             turns[i].diff = PhoneTurnDiff(text: e["diff"].string ?? "", truncated: e["truncated"] == .bool(true))
@@ -446,14 +470,15 @@ public struct PhoneChatLog: Equatable, Sendable {
         if let event = try? JSONValue.parse(line) { apply(event) }
     }
 
-    /// Marks a question answered (the answer goes to the host separately).
-    public mutating func markAnswered(_ qid: String, answer: String?) {
-        for t in turns.indices {
+    /// Marks a question answered (the answer goes to the host separately): the open question of that id
+    /// (with `request`, of that request; with `turn`, in that turn). A question already answered keeps
+    /// its answer.
+    public mutating func markAnswered(_ qid: String, answer: String?, request: String? = nil, turn: Int? = nil) {
+        for t in turns.indices where turn == nil || turns[t].n == turn {
             for b in turns[t].blocks.indices {
-                if case .question(var q) = turns[t].blocks[b], q.qid == qid, !q.answered {
-                    q.answered = true; q.answer = answer
-                    turns[t].blocks[b] = .question(q)
-                }
+                guard case .question(var q) = turns[t].blocks[b], q.qid == qid, !q.answered, request == nil || q.request == request else { continue }
+                q.answered = true; q.answer = answer
+                turns[t].blocks[b] = .question(q)
             }
         }
     }
@@ -586,7 +611,7 @@ public func phoneTurnRows(_ turn: PhoneChatTurn) -> [PhoneChatRow] {
         }
         run = nil
         switch x {
-        case .text(let id, let text, _):
+        case .text(let id, let text, _, _):
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { rows.append(.text(key: "m\(turn.n):\(id)", text: text, streaming: false)) }
         case .tool(let tool):
             rows.append(.agent(key: "a\(turn.n):\(tool.callID)", tool))

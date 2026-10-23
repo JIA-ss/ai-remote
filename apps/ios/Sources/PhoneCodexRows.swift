@@ -1,17 +1,24 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 // A Codex turn on the phone, laid out the way Codex's own app shows one (PhoneCodexModel.swift has the
-// structure): the user's message on the right; the agent's work as quiet one-line units that open in
-// place — a command opens to its shell output, an edit to its diff with line numbers — with what the
-// agent said between them; "Worked for …" folding all of that once the answer starts; the answer; and
-// the files the turn changed, each opening to its diff. The phone version of the desktop's
-// apps/desktop/src/ui/codex/CodexTurn.tsx and styles/codex.css: the same measures (ink at 60 % for
-// activity and 45 % for details, a faint ground for shells and diffs, green and red diff rows), with a
-// tap where the desktop has a hover, so chevrons always show (dimmer until opened).
+// structure): the user's message on the right; "Working for …" over a hairline once the work starts,
+// held as "Worked for …" once the answer starts and then the toggle that folds the work; the agent's
+// work as quiet one-line units that open in place — a command opens to its shell output, an edit to
+// its diff with line numbers — with what the agent said between them; a line saying what it is at
+// while nothing else does (its reasoning's title, or "Thinking"); the answer; the files the turn
+// changed ("Edited 3 files", Review opening every diff); copying the answer and when it came. The
+// phone version of the desktop's apps/desktop/src/ui/codex/CodexTurn.tsx and styles/codex.css: the
+// same measures (ink at 60 % for activity and 45 % for details, a faint ground for shells and diffs,
+// green and red diff rows, Codex's terminal colors), with a tap where the desktop has a hover, so
+// chevrons always show (dimmer until opened). The plan and the question card sit above the composer
+// (PhoneCodexComposer.swift).
 
 /// The view's words in the phone's language (PhoneCodexLang).
+func phoneCodexWord(_ key: String, _ vars: [String: String] = [:]) -> String { phoneCodexText(key, vars) }
 private func w(_ key: String, _ vars: [String: String] = [:]) -> String { phoneCodexText(key, vars) }
-private var zh: Bool { PhoneCodexLang.current == .zh }
 
 /// The desktop's codex.css colors: ink, its 60 / 45 / 35 % shades, hairlines, faint grounds, diff colors.
 enum PhoneCodexInk {
@@ -19,6 +26,7 @@ enum PhoneCodexInk {
     static let s60 = Color.primary.opacity(0.6)
     static let s45 = Color.primary.opacity(0.45)
     static let s35 = Color.primary.opacity(0.35)
+    static let s30 = Color.primary.opacity(0.3)
     static let prose = Color.primary.opacity(0.92)
     static let line = Color.primary.opacity(0.1)
     static let ground = Color.primary.opacity(0.035)
@@ -28,31 +36,65 @@ enum PhoneCodexInk {
     static let del = Color(red: 0.86, green: 0.25, blue: 0.24)
     static let addBG = Color.green.opacity(0.14)
     static let delBG = Color.red.opacity(0.13)
+    /// The page itself (the dot of a chosen option, the text of a filled button).
+    #if os(iOS)
+    static let canvas = Color(uiColor: .systemBackground)
+    #else
+    static let canvas = Color(nsColor: .windowBackgroundColor)
+    #endif
+    /// The plan ring's done part and a created file's dot (Codex's accent).
+    static let accent = Color(red: 0x33 / 255, green: 0x9c / 255, blue: 0xff / 255)
+
+    /// The eight terminal colors of a command's output (bright ones share them), dark and light.
+    static func ansi(_ i: Int, dark: Bool) -> Color {
+        let darkHex: [UInt32] = [0xffffff, 0xf67576, 0x85df7b, 0xfa994c, 0x3d8dff, 0xb06dff, 0x6dcbf4, 0x999999]
+        let lightHex: [UInt32] = [0x000000, 0xd53538, 0x008809, 0xbd5800, 0x001bcb, 0x751ed9, 0x0071ea, 0x666666]
+        let hex = (dark ? darkHex : lightHex)[max(0, min(7, i))]
+        return Color(red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255, blue: Double(hex & 0xff) / 255)
+    }
+
+    /// A run's color: "c3" (a terminal color) or "rgb(r g b)".
+    static func ansi(_ spec: String?, dark: Bool) -> Color? {
+        guard let spec else { return nil }
+        if spec.hasPrefix("c"), let i = Int(spec.dropFirst()) { return ansi(i, dark: dark) }
+        let n = spec.replacingOccurrences(of: "[^0-9 ]", with: "", options: .regularExpression).split(separator: " ").compactMap { Double($0) }
+        return n.count == 3 ? Color(red: n[0] / 255, green: n[1] / 255, blue: n[2] / 255) : nil
+    }
 }
 private typealias Ink = PhoneCodexInk
 
 // MARK: - Pieces
 
-/// Text that shimmers while the agent works on it: a brighter band sweeps across it.
+/// Text the agent is at now shimmers: a brighter band sweeps across it. `cadenced` (Codex's way for
+/// what it is doing now): 600 ms after it shows and then every 4 s, one sweep of a second; otherwise
+/// (a sub-agent at work, a shell still running) all the time. None with reduced motion.
 private struct CodexShimmer: ViewModifier {
     let on: Bool
+    var cadenced = true
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @PhoneViewState private var start = Date()
     func body(content: Content) -> some View {
         if on && !reduce {
             content.overlay {
                 TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-                    let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.2) / 2.2
+                    let t = context.date.timeIntervalSince(start)
+                    let phase: Double? = cadenced
+                        ? (t < 0.6 ? nil : { let c = (t - 0.6).truncatingRemainder(dividingBy: 4); return c < 1 ? c : nil }())
+                        : t.truncatingRemainder(dividingBy: 2.2) / 2.2
                     GeometryReader { g in
-                        let band = max(48, g.size.width * 0.35)
-                        LinearGradient(colors: [.clear, Color.primary.opacity(0.9), .clear], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: band)
-                            .offset(x: -band + (g.size.width + band) * phase)
+                        if let phase {
+                            let band = max(48, g.size.width * 0.35)
+                            LinearGradient(colors: [.clear, Color.primary.opacity(0.9), .clear], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: band)
+                                .offset(x: -band + (g.size.width + band) * phase)
+                        }
                     }
                 }
                 .mask(content)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
+            .onAppear { start = Date() }
         } else {
             content
         }
@@ -60,7 +102,7 @@ private struct CodexShimmer: ViewModifier {
 }
 
 extension View {
-    fileprivate func codexShimmer(_ on: Bool) -> some View { modifier(CodexShimmer(on: on)) }
+    fileprivate func codexShimmer(_ on: Bool, cadenced: Bool = true) -> some View { modifier(CodexShimmer(on: on, cadenced: cadenced)) }
 }
 
 private struct Chevron: View {
@@ -74,7 +116,7 @@ private struct Chevron: View {
 }
 
 /// A small copy button; it shows a check for a moment after copying.
-private struct CopyButton: View {
+struct PhoneCodexCopyButton: View {
     let text: String
     let label: String
     @PhoneViewState private var copied = false
@@ -90,6 +132,7 @@ private struct CopyButton: View {
         .accessibilityLabel(label)
     }
 }
+private typealias CopyButton = PhoneCodexCopyButton
 
 /// A line's words: a verb, details in a lighter shade, commands in monospace, a diff's counts.
 private struct Words {
@@ -116,14 +159,14 @@ private struct Words {
         x.foregroundColor = Ink.del
         text += x
     }
-    mutating func stat(add: Int, del: Int) {
+    mutating func stat(add: Int, del: Int, lead: String = "  ") {
         if add > 0 {
-            var x = AttributedString("  +\(add)")
+            var x = AttributedString(lead + "+\(add)")
             x.font = Font.footnote.monospacedDigit(); x.foregroundColor = Ink.add
             text += x
         }
         if del > 0 {
-            var x = AttributedString((add > 0 ? " " : "  ") + "−\(del)")
+            var x = AttributedString((add > 0 ? " " : lead) + "−\(del)")
             x.font = Font.footnote.monospacedDigit(); x.foregroundColor = Ink.del
             text += x
         }
@@ -133,9 +176,11 @@ private struct Words {
 /// A one-line activity: its words, and (when it has any) details that open below it on a tap.
 private struct ActLine<Details: View, Trailing: View>: View {
     let label: AttributedString
+    /// An icon before the words (a finished group's: what it did first).
+    var icon: String?
     var live = false
-    /// Reasoning reads quieter than work.
-    var quiet = false
+    /// Live, it shimmers all the time (a sub-agent at work) rather than now and then.
+    var steady = false
     let opens: Bool
     var id: String
     var indent: CGFloat = 0
@@ -151,9 +196,10 @@ private struct ActLine<Details: View, Trailing: View>: View {
                     withAnimation(.easeOut(duration: 0.2)) { open.toggle() }
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        if let icon { Image(systemName: icon).font(.footnote).foregroundStyle(open ? Ink.full : Ink.s60).accessibilityHidden(true) }
                         Text(label).font(.subheadline).lineLimit(1).truncationMode(.tail)
-                            .foregroundStyle(open ? (quiet ? Ink.s60 : Ink.full) : (quiet ? Ink.s45 : Ink.s60))
-                            .codexShimmer(live)
+                            .foregroundStyle(open ? Ink.full : Ink.s60)
+                            .codexShimmer(live, cadenced: !steady)
                         if opens { Chevron(open: open) }
                     }
                     .padding(.vertical, 3)
@@ -175,9 +221,9 @@ private struct ActLine<Details: View, Trailing: View>: View {
 }
 
 extension ActLine where Trailing == EmptyView {
-    init(label: AttributedString, live: Bool = false, quiet: Bool = false, opens: Bool, id: String, indent: CGFloat = 0,
+    init(label: AttributedString, icon: String? = nil, live: Bool = false, steady: Bool = false, opens: Bool, id: String, indent: CGFloat = 0,
          @ViewBuilder details: @escaping () -> Details) {
-        self.init(label: label, live: live, quiet: quiet, opens: opens, id: id, indent: indent, details: details, trailing: { EmptyView() })
+        self.init(label: label, icon: icon, live: live, steady: steady, opens: opens, id: id, indent: indent, details: details, trailing: { EmptyView() })
     }
 }
 
@@ -219,7 +265,7 @@ private func execWords(_ info: PhoneExecInfo, _ x: PhoneChatTool, cwd: String?) 
     }
     words.verb(w(!done ? "cdx_v_running" : x.stopped ? "cdx_v_stopped" : "cdx_v_ran")); words.plain(" ")
     words.code(oneLine(info.command))
-    if done, let took = phoneCodexElapsed(info.durationMs, zh: zh) { words.detail(" " + w("cdx_in_time", ["t": took])) }
+    if done, let took = phoneDurationA(info.durationMs) { words.detail(" " + w(x.stopped ? "cdx_after_time" : "cdx_in_time", ["t": took])) }
     if done, !x.stopped, let code = info.exitCode, code != 0 { words.bad(" · " + w("cdx_exit_short", ["n": "\(code)"])) }
     return words
 }
@@ -240,13 +286,6 @@ private func fileWords(_ f: PhoneFileChange, _ x: PhoneChatTool) -> Words {
     return words
 }
 
-/// A thought's first line, without its Markdown marks.
-private func thoughtHead(_ text: String) -> String {
-    let first = text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first ?? ""
-    let bare = first.replacingOccurrences(of: "^[#>\\s*_]+|[*_]+$", with: "", options: .regularExpression)
-    return (try? AttributedString(markdown: bare)).map { String($0.characters) } ?? bare
-}
-
 /// The words of an act as its line says them (present tense while it runs).
 private func actWords(_ a: PhoneCodexAct, cwd: String?) -> Words {
     switch a {
@@ -261,7 +300,7 @@ private func actWords(_ a: PhoneCodexAct, cwd: String?) -> Words {
     case .web(let x, let query):
         var words = Words()
         words.verb(w(running(x) ? "cdx_v_web_ing" : "cdx_v_web"))
-        if !query.isEmpty { words.detail(" " + w("cdx_d_for", ["q": query])) }
+        if !query.isEmpty { words.detail(": " + phoneWebDetail(query)) }
         return words
     case .tool(let x):
         var words = Words()
@@ -269,33 +308,95 @@ private func actWords(_ a: PhoneCodexAct, cwd: String?) -> Words {
         let title = x.title.trimmingCharacters(in: .whitespacesAndNewlines)
         words.code(title.isEmpty ? "tool" : title)
         return words
-    case .thought(let t):
-        var words = Words()
-        words.verb(w("cdx_thought")); words.plain(" ")
-        words.detail(thoughtHead(t.text))
-        return words
     }
 }
 
 // MARK: - Details: a command's shell, an edit's diff, a tool's input and output
 
-/// Lines of output shown before "N more lines".
-private let outputLines = 40
+#if os(iOS)
+private let outputLine = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium).lineHeight
+#else
+private let outputLine: CGFloat = 13.5
+#endif
+/// How tall a command's output box grows before it scrolls (as on the desktop).
+private let outputMax: CGFloat = 144
+
+/// A command's output in its terminal colors (ANSI escapes), as one attributed text.
+private func ansiText(_ output: String, dark: Bool) -> AttributedString {
+    var out = AttributedString()
+    for run in phoneParseAnsi(output) {
+        var x = AttributedString(run.text)
+        if let fg = PhoneCodexInk.ansi(run.fg, dark: dark) { x.foregroundColor = run.dim ? fg.opacity(0.6) : fg }
+        else if run.dim { x.foregroundColor = Ink.s60.opacity(0.6) }
+        if let bg = PhoneCodexInk.ansi(run.bg, dark: dark) { x.backgroundColor = bg }
+        if run.bold { x.font = Font.system(size: 11, weight: .bold, design: .monospaced) }
+        if run.italic { x.font = (x.font ?? Font.system(size: 11, weight: .medium, design: .monospaced)).italic() }
+        if run.underline { x.underlineStyle = .single }
+        if run.strike { x.strikethroughStyle = .single }
+        if run.hidden { x.foregroundColor = .clear }
+        out += x
+    }
+    return out
+}
+
+/// A command's output: its end in view (the box starts scrolled to the bottom), the rest a scroll
+/// away, long lines scrolling sideways; the top fades when there is more above.
+private struct OutputBox: View {
+    let text: String
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        let lines = CGFloat(text.components(separatedBy: "\n").count)
+        let full = lines * outputLine + 4
+        let height = min(outputMax, full)
+        ScrollView([.horizontal, .vertical], showsIndicators: false) {
+            Text(ansiText(text, dark: scheme == .dark))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Ink.s60)
+                .fixedSize()
+                .padding(.horizontal, 10).padding(.vertical, 2)
+                .textSelection(.enabled)
+                .accessibilityIdentifier("codex-shell-output")
+        }
+        .defaultScrollAnchor(.bottomLeading)
+        .frame(height: height)
+        .mask {
+            if full > outputMax {
+                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / outputMax), .init(color: .black, location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            } else {
+                Color.black
+            }
+        }
+    }
+}
+
+/// A command, two lines at most until tapped.
+private struct CommandLine: View {
+    let command: String
+    @PhoneViewState private var all = false
+    var body: some View {
+        let long = command.components(separatedBy: "\n").count > 2 || command.count > 160
+        var prompt = AttributedString("$ ")
+        prompt.foregroundColor = Ink.s35
+        var text = AttributedString(command)
+        text.foregroundColor = Color.primary.opacity(0.8)
+        return Text(prompt + text).font(.footnote.monospaced())
+            .lineLimit(long && !all ? 2 : nil)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { if long { all.toggle() } }
+            .accessibilityHint(long && !all ? w("cdx_show_all") : "")
+    }
+}
 
 private struct ShellCard: View {
     let info: PhoneExecInfo
     let tool: PhoneChatTool
-    @PhoneViewState private var all = false
 
     var body: some View {
         var out = info.output
         while out.hasSuffix("\n") { out.removeLast() }
-        let lines = out.isEmpty ? [] : out.components(separatedBy: "\n")
-        let shown = all || lines.count <= outputLines ? out : lines.suffix(outputLines).joined(separator: "\n")
-        var prompt = AttributedString("$ ")
-        prompt.foregroundColor = Ink.s35
-        var command = AttributedString(info.command)
-        command.foregroundColor = Ink.full
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 2) {
                 Text(w("cdx_shell")).font(.caption).foregroundStyle(Ink.s45)
@@ -305,45 +406,43 @@ private struct ShellCard: View {
             }
             .padding(.leading, 10).padding(.trailing, 4).frame(height: 30)
             VStack(alignment: .leading, spacing: 4) {
-                Text(prompt + command).font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                if !all && lines.count > outputLines {
-                    Button(w("cdx_more_lines", ["n": "\(lines.count - outputLines)"])) { all = true }
-                        .font(.caption).foregroundStyle(Ink.s45).buttonStyle(.plain)
-                }
+                CommandLine(command: info.command).padding(.horizontal, 10)
                 if !out.isEmpty {
-                    Text(shown).font(.caption.monospaced()).foregroundStyle(Ink.s60).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    OutputBox(text: out)
                 } else if !tool.running {
-                    Text(w("cdx_no_output")).font(.caption).foregroundStyle(Ink.s35)
+                    Text(w("cdx_no_output")).font(.caption).foregroundStyle(Ink.s35).padding(.horizontal, 10)
                 }
-                if tool.truncated { Text(w("hc_cut")).font(.caption).foregroundStyle(Ink.s35) }
+                if tool.truncated { Text(w("hc_cut")).font(.caption).foregroundStyle(Ink.s35).padding(.horizontal, 10) }
             }
-            .padding(.horizontal, 10).padding(.bottom, 4)
+            .padding(.bottom, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // How it ended, in the same quiet gray whatever it was; nothing yet while it runs.
             HStack(spacing: 4) {
                 Spacer(minLength: 0)
                 footer
             }
-            .font(.caption).padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 7)
+            .font(.caption).foregroundStyle(Ink.s45)
+            .frame(minHeight: 14)
+            .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 7)
         }
-        .background(Ink.ground, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line))
+        .background(Ink.ground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("codex-shell")
     }
 
     @ViewBuilder private var footer: some View {
         if tool.running {
-            Text(w("cdx_v_running")).foregroundStyle(Ink.s45).codexShimmer(true)
+            EmptyView()
         } else if tool.stopped {
-            Text(w("cdx_stopped")).foregroundStyle(Ink.s45)
+            Text(w("cdx_stopped"))
         } else if info.exitCode == 0 {
-            Image(systemName: "checkmark.circle").foregroundStyle(Ink.s45)
-            Text(w("cdx_success")).foregroundStyle(Ink.s45)
+            Image(systemName: "checkmark.circle").accessibilityHidden(true)
+            Text(w("cdx_success"))
         } else if let code = info.exitCode {
-            Text(w("cdx_exit_code", ["n": "\(code)"])).foregroundStyle(Ink.del)
-        } else if tool.status == "failed" {
-            Text(w("hc_failed")).foregroundStyle(Ink.del)
+            Text(w("cdx_exit_code", ["n": "\(code)"]))
+        } else {
+            Text(w("cdx_exit_unknown"))
         }
     }
 }
@@ -497,13 +596,14 @@ private struct ActRow: View {
                     }
                 }
             }
-        case .web(let x, _), .tool(let x):
+        case .web(let x, let query):
+            // A web search is one line that does not open; one without a query says nothing.
+            if x.running || !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                ActLine(label: actWords(act, cwd: cwd).text, live: x.running, opens: false, id: "codex-act-\(x.callID)") { EmptyView() }
+            }
+        case .tool(let x):
             ActLine(label: actWords(act, cwd: cwd).text, live: x.running, opens: ToolDetails.has(x), id: "codex-act-\(x.callID)") {
                 ToolDetails(tool: x)
-            }
-        case .thought(let t):
-            ActLine(label: actWords(act, cwd: cwd).text, quiet: true, opens: t.text.contains("\n") || t.text.count > 80, id: "codex-act-thought") {
-                PhoneMarkdownText(text: t.text, font: .footnote, color: Ink.s45)
             }
         }
     }
@@ -511,56 +611,69 @@ private struct ActRow: View {
 
 // MARK: - Units
 
-/// Tool calls in a row: one line naming what runs now, or what was done; opens to each call.
+/// What a finished group did first, as an icon before its sentence.
+private func partIcon(_ part: String) -> String {
+    switch part {
+    case "tools": "powerplug"
+    case "edited", "failed": "square.and.pencil"
+    case "read": "doc.text"
+    case "ran": "terminal"
+    case "web": "globe"
+    default: "checkmark.circle"
+    }
+}
+
+/// Tool calls in a row: one line naming what runs now (or, between calls, what the agent is at), or
+/// what was done; opens to each call. A live line holds each label for at least a second, so a quick
+/// run of calls does not flicker past.
 private struct GroupRow: View {
     let acts: [PhoneCodexAct]
     let live: Bool
     let cwd: String?
+    /// The title of the agent's latest reasoning, said while no call runs.
+    let title: String?
+    @PhoneViewState private var shown: (key: String, label: AttributedString)?
+    @PhoneViewState private var shownAt = Date.distantPast
+
     var body: some View {
-        let calls = acts.filter { $0.tool != nil }
         // A single call is its own line, live or done (the line does not change while it runs).
-        if calls.count == 1, !isMultiFile(calls[0]) {
-            ActRow(act: calls[0], cwd: cwd)
+        if acts.count == 1, !isMultiFile(acts[0]) {
+            ActRow(act: acts[0], cwd: cwd)
         } else {
-            ActLine(label: label, live: live, opens: true, id: "codex-group-\(calls.first?.tool?.callID ?? "")") {
+            let now = liveLabel
+            let parts = phoneGroupSummary(acts).parts
+            ActLine(label: live ? (shown?.label ?? now.label) : AttributedString(phoneCodexSummarySentence(acts)),
+                    icon: live ? nil : partIcon(parts.first?.part ?? ""), live: live, opens: true, id: "codex-group-\(acts.first?.tool.callID ?? "")") {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(acts) { a in ActRow(act: a, cwd: cwd) }
                 }
                 .padding(.leading, 10)
                 .overlay(alignment: .leading) { Rectangle().fill(Ink.line).frame(width: 1) }
             }
+            .task(id: live ? now.key : "") {
+                guard live else { return }
+                if let shown, shown.key != now.key {
+                    let wait = shownAt.addingTimeInterval(1).timeIntervalSinceNow
+                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                    if Task.isCancelled { return }
+                }
+                shown = (now.key, liveLabel.label)
+                shownAt = Date()
+            }
         }
     }
 
     private func isMultiFile(_ a: PhoneCodexAct) -> Bool { if case .patch(_, let files) = a { files.count > 1 } else { false } }
 
-    private var label: AttributedString {
-        if !live {
-            var words = Words()
-            words.plain(phoneCodexSummarySentence(acts))
-            let s = phoneGroupSummary(acts)
-            words.stat(add: s.add, del: s.del)
-            return words.text
+    /// Live: the call running now; between calls, the reading the agent is in the middle of, its
+    /// reasoning's title, or "Thinking".
+    private var liveLabel: (key: String, label: AttributedString) {
+        if let active = phoneActiveAct(acts) {
+            let explore = { if case .exec(_, let info) = active { info.explore } else { false } }()
+            if active.tool.running || explore { return ("a:\(active.key):\(active.tool.running)", actWords(active, cwd: cwd).text) }
         }
-        // Live: the call running now; between calls, the reading the agent is in the middle of, or "Thinking".
-        if let active = phoneActiveAct(acts), let x = active.tool {
-            if x.running { return actWords(active, cwd: cwd).text }
-            if case .exec(_, let info) = active, info.explore { return actWords(active, cwd: cwd).text }
-        }
-        return AttributedString(w("cdx_thinking"))
-    }
-}
-
-private struct ThoughtRow: View {
-    let thought: PhoneThought
-    let live: Bool
-    var body: some View {
-        let took = thought.endedMs - thought.startedMs
-        let label = live ? w("cdx_thinking") : took >= 1000 ? w("cdx_thought_for", ["t": phoneCodexDuration(took, zh: zh)]) : w("cdx_thought")
-        ActLine(label: AttributedString(label), live: live, quiet: true, opens: !thought.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                id: "codex-thought") {
-            PhoneMarkdownText(text: thought.text, font: .footnote, color: Ink.s45)
-        }
+        if let title { return ("t:\(title)", AttributedString(title)) }
+        return ("thinking", AttributedString(w("cdx_thinking")))
     }
 }
 
@@ -572,7 +685,7 @@ private struct AgentRow: View {
         var words = Words()
         words.verb(w("cdx_subagent"), failed: tool.status == "failed"); words.plain(" ")
         words.detail(tool.title.replacingOccurrences(of: "^agent\\s*", with: "", options: [.regularExpression, .caseInsensitive]))
-        return ActLine(label: words.text, live: tool.running, opens: !out.isEmpty || prompt != nil, id: "codex-agent-\(tool.callID)") {
+        return ActLine(label: words.text, live: tool.running, steady: true, opens: !out.isEmpty || prompt != nil, id: "codex-agent-\(tool.callID)") {
             VStack(alignment: .leading, spacing: 6) {
                 if let prompt { PhoneMarkdownText(text: prompt, font: .footnote, color: Ink.s45) }
                 if !out.isEmpty { PhoneMarkdownText(text: out, font: .subheadline) }
@@ -581,63 +694,28 @@ private struct AgentRow: View {
     }
 }
 
-private struct PlanCard: View {
-    let entries: [PhonePlanEntry]
-    let live: Bool
-    /// Open while the turn runs, folded once it is done, unless the reader chose otherwise.
-    @PhoneViewState private var chosen: Bool?
+/// Questions the agent asked (one request), once answered or closed: "Asked 2 questions", opening to
+/// each with its answer.
+private struct AskedRow: View {
+    let questions: [PhoneQuestion]
     var body: some View {
-        let open = chosen ?? live
-        let st = phonePlanStep(entries)
-        VStack(alignment: .leading, spacing: 8) {
-            Button { withAnimation(.easeOut(duration: 0.2)) { chosen = !open } } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "checklist").font(.footnote)
-                    Text(w("cdx_plan")).font(.subheadline)
-                    Text(st.done == st.total ? w("cdx_plan_done", ["d": "\(st.done)", "n": "\(st.total)"]) : w("cdx_plan_step", ["s": "\(st.step)", "n": "\(st.total)"]))
-                        .font(.caption.monospacedDigit()).padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(Ink.hover, in: Capsule())
-                    if !open, let current = st.current, st.done < st.total {
-                        Text(current.content).font(.subheadline).foregroundStyle(Ink.s45).lineLimit(1)
+        var words = Words()
+        words.verb(w("cdx_q_asked")); words.plain(" ")
+        words.detail(phoneCodexPlural("cdx_q_n", questions.count))
+        return ActLine(label: words.text, icon: "bubble.left.and.text.bubble.right", opens: true, id: "codex-asked-\(questions.first?.request ?? questions.first?.qid ?? "")") {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(questions, id: \.qid) { q in
+                    let given = q.answers ?? (q.answer.map { $0.isEmpty ? [] : [$0] } ?? [])
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(q.prompt).foregroundStyle(Ink.s60)
+                        Text(given.isEmpty ? w("cdx_q_no_answer") : q.secret ? "••••••" : given.joined(separator: ", ")).foregroundStyle(Ink.s30)
                     }
-                    Chevron(open: open)
+                    .font(.footnote)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("codex-asked-\(q.qid)")
                 }
-                .foregroundStyle(Ink.s60)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("codex-plan")
-            if open {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { _, e in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: e.status == "completed" ? "checkmark.circle" : e.status == "in_progress" ? "circle.dotted.circle" : "circle")
-                                .font(.footnote)
-                                .foregroundStyle(e.status == "completed" ? Ink.add : e.status == "in_progress" ? Ink.full : Ink.s35)
-                            Text(e.content).font(.subheadline)
-                                .strikethrough(e.status == "completed", color: Ink.s35)
-                                .foregroundStyle(e.status == "completed" ? Ink.s45 : e.status == "in_progress" ? Ink.full : Ink.s60)
-                        }
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Ink.ground, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line))
-                .transition(.opacity)
-            }
-        }
-    }
-}
-
-/// A line across with words in the middle ("You stopped after 12s", "Context automatically compacted").
-private struct CodexDivider: View {
-    let text: String
-    var body: some View {
-        HStack(spacing: 10) {
-            Rectangle().fill(Ink.line).frame(height: 1)
-            Text(text).font(.caption.monospacedDigit()).foregroundStyle(Ink.s45).fixedSize()
-            Rectangle().fill(Ink.line).frame(height: 1)
         }
     }
 }
@@ -645,17 +723,19 @@ private struct CodexDivider: View {
 private struct UnitView: View {
     let unit: PhoneCodexUnit
     let cwd: String?
-    let readonly: Bool
-    let answer: (String, String) -> Void
+    let title: String?
     var body: some View {
         switch unit {
-        case .group(_, let acts, let live): GroupRow(acts: acts, live: live, cwd: cwd)
+        case .group(_, let acts, let live): GroupRow(acts: acts, live: live, cwd: cwd, title: title)
         case .message(_, let text, _): PhoneMarkdownText(text: text, color: Ink.prose)
-        case .thought(_, let thought, let live): ThoughtRow(thought: thought, live: live)
         case .agent(_, let tool): AgentRow(tool: tool)
-        case .question(_, let q): PhoneQuestionCard(question: q, readonly: readonly, answer: answer)
+        case .asked(_, let questions): AskedRow(questions: questions)
         case .notice(_, let level, let code, let text):
-            if code == "compacted" { CodexDivider(text: w("cdx_compacted")) } else { PhoneNoticeRow(level: level, text: phoneNoticeText(code: code, text: text)) }
+            if code == "compacted" {
+                Label(w("cdx_compacted"), systemImage: "arrow.down.right.and.arrow.up.left").font(.footnote).foregroundStyle(Ink.s45)
+            } else {
+                PhoneNoticeRow(level: level, text: phoneNoticeText(code: code, text: text))
+            }
         case .steer(_, let text, let by, let ts, let extra): PhoneUserRow(text: text, by: by, ts: ts, extra: extra, bubble: Ink.bubble, radius: 16)
         }
     }
@@ -663,39 +743,82 @@ private struct UnitView: View {
 
 // MARK: - The changes a turn made
 
-/// Files shown before "Show N more files".
-private let filesShown = 6
+/// Files listed before "Show N more files".
+private let filesShown = 3
+/// A diff longer than this is not drawn inline.
+private let inlineLines = 5000
 
+/// The files the turn changed, as Codex sums them up under its answer: "Edited 3 files" with their
+/// counts beside a diff icon, Review opening every diff at once; with several files a short list of
+/// them (three, then the rest on request), each opening to its own diff.
 private struct ChangesCard: View {
     let files: [PhoneFileChange]
     let cwd: String?
     @PhoneViewState private var more = false
+    @PhoneViewState private var review = false
     var body: some View {
         let add = files.reduce(0) { $0 + $1.add }, del = files.reduce(0) { $0 + $1.del }
-        var title = Words()
-        title.plain(phoneCodexPlural("cdx_files_changed", files.count))
-        title.stat(add: add, del: del)
+        let single = files.count == 1 ? files[0] : nil
+        let title = single.map { w("cdx_edited_file", ["name": phoneBaseName($0.movePath ?? $0.path)]) } ?? w("cdx_edited_files", ["n": "\(files.count)"])
+        var stat = Words()
+        stat.stat(add: add, del: del, lead: "")
+        let patches = files.compactMap { phoneFilePatch($0, cwd: cwd) }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "doc.badge.plus").font(.footnote).foregroundStyle(Ink.s60)
-                Text(title.text).font(.subheadline.weight(.medium)).foregroundStyle(Ink.full)
-                Spacer(minLength: 0)
-                let patches = files.compactMap { phoneFilePatch($0, cwd: cwd) }
+                Button { withAnimation(.easeOut(duration: 0.2)) { review.toggle() } } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus.forwardslash.minus").font(.body).foregroundStyle(Ink.s60)
+                            .frame(width: 40, height: 40)
+                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(Ink.full).lineLimit(1)
+                            if add > 0 || del > 0 { Text(stat.text).font(.footnote) }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("codex-changes-title")
                 if !patches.isEmpty { CopyButton(text: patches.joined(), label: w("cdx_copy_patch")) }
+                Button(w("cdx_review")) { withAnimation(.easeOut(duration: 0.2)) { review.toggle() } }
+                    .font(.footnote).foregroundStyle(Ink.full).buttonStyle(.plain)
+                    .padding(.horizontal, 12).frame(height: 28)
+                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.16)))
+                    .accessibilityIdentifier("codex-review")
+                    .accessibilityValue(review ? w("cdx_collapse") : w("cdx_expand"))
             }
-            .padding(.leading, 12).padding(.trailing, 6).padding(.vertical, 8)
-            ForEach(more ? files : Array(files.prefix(filesShown)), id: \.path) { f in
-                Rectangle().fill(Ink.line).frame(height: 1)
-                ChangedFile(f: f, cwd: cwd)
-            }
-            if !more && files.count > filesShown {
-                Rectangle().fill(Ink.line).frame(height: 1)
-                Button(phoneCodexPlural("cdx_show_more_files", files.count - filesShown)) { more = true }
-                    .font(.footnote).foregroundStyle(Ink.s45).buttonStyle(.plain)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.leading, 8).padding(.trailing, 10).padding(.vertical, 8)
+            if let single {
+                if review {
+                    Rectangle().fill(Ink.line).frame(height: 1)
+                    PhoneCodexDiffView(lines: single.lines, flush: true).transition(.opacity)
+                }
+            } else {
+                ForEach(more ? files : Array(files.prefix(filesShown)), id: \.path) { f in
+                    Rectangle().fill(Ink.line).frame(height: 1)
+                    ChangedFile(f: f, cwd: cwd, all: review)
+                }
+                if files.count > filesShown {
+                    Rectangle().fill(Ink.line).frame(height: 1)
+                    Button { withAnimation(.easeOut(duration: 0.2)) { more.toggle() } } label: {
+                        HStack(spacing: 4) {
+                            Text(more ? w("cdx_collapse_files") : phoneCodexPlural("cdx_show_more_files", files.count - filesShown))
+                            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).rotationEffect(.degrees(more ? -90 : 90))
+                        }
+                        .font(.footnote).foregroundStyle(Ink.s45)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("codex-more-files")
+                }
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("codex-changes")
     }
@@ -704,7 +827,10 @@ private struct ChangesCard: View {
 private struct ChangedFile: View {
     let f: PhoneFileChange
     let cwd: String?
-    @PhoneViewState private var open = false
+    /// Review opened (or closed) every file.
+    let all: Bool
+    /// Opened or closed by hand, until Review opens or closes them all.
+    @PhoneViewState private var own: Bool?
     var body: some View {
         let rel = phoneRelPath(f.movePath ?? f.path, cwd)
         let name = phoneBaseName(rel)
@@ -712,22 +838,26 @@ private struct ChangedFile: View {
         path.foregroundColor = Ink.s45
         var leaf = AttributedString(name)
         leaf.foregroundColor = Ink.full
+        let big = f.lines.count > inlineLines
+        let can = !f.lines.isEmpty && !big
+        let open = can && (own ?? all)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Button {
-                    guard !f.lines.isEmpty else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { open.toggle() }
+                    guard can else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { own = !open }
                 } label: {
                     HStack(spacing: 6) {
                         // A file without lines (an older host's edit) has nothing to open: no chevron, same indent.
-                        Chevron(open: open).opacity(f.lines.isEmpty ? 0 : 1)
-                        Text(path + leaf).font(.subheadline).lineLimit(1).truncationMode(.head)
+                        Chevron(open: open).opacity(can ? 1 : 0)
+                        Text(path + leaf).font(.footnote).lineLimit(1).truncationMode(.head)
                         Spacer(minLength: 4)
-                        if f.kind == "add" { tag("A", Ink.add, Ink.addBG) }
-                        if f.kind == "delete" { tag("D", Ink.del, Ink.delBG) }
+                        if big { Text(w("cdx_too_large_inline")).font(.caption).foregroundStyle(Ink.s45) }
                         Text(statText).font(.footnote.monospacedDigit())
+                        if f.kind == "add" { Circle().fill(Ink.accent.opacity(0.7)).frame(width: 6, height: 6).accessibilityLabel(w("cdx_v_created")) }
+                        if f.kind == "delete" { Circle().fill(Ink.del.opacity(0.7)).frame(width: 6, height: 6).accessibilityLabel(w("cdx_v_deleted")) }
                     }
-                    .padding(.leading, 12).padding(.vertical, 9)
+                    .padding(.leading, 12).frame(minHeight: 36)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -735,22 +865,72 @@ private struct ChangedFile: View {
                 if f.kind != "delete" { PhonePreviewButton(path: f.movePath ?? f.path) }
             }
             .padding(.trailing, 10)
+            .background(Ink.ground)
             if open {
                 Rectangle().fill(Ink.line).frame(height: 1)
                 PhoneCodexDiffView(lines: f.lines, flush: true).transition(.opacity)
             }
         }
+        .onChange(of: all) { _, _ in own = nil }
     }
-    private var statText: AttributedString { var words = Words(); words.stat(add: f.add, del: f.del); return words.text }
-    private func tag(_ s: String, _ fg: Color, _ bg: Color) -> some View {
-        Text(s).font(.caption2.weight(.semibold)).foregroundStyle(fg).padding(.horizontal, 5).padding(.vertical, 1)
-            .background(bg, in: RoundedRectangle(cornerRadius: 4))
-    }
+    private var statText: AttributedString { var words = Words(); words.stat(add: f.add, del: f.del, lead: ""); return words.text }
 }
 
 // MARK: - The turn
 
-/// One Codex turn: the user's message, the plan, "Worked for …" over the work, the work, how it stands,
+/// "Working for 12s" over a hairline once the work starts, held still once the answer starts ("Worked
+/// for 1m 23s", then the toggle that folds the work); a stopped or failed turn says after how long.
+private struct TimerDivider: View {
+    let turn: PhoneChatTurn
+    let v: PhoneCodexTurn
+    let stopping: Bool
+    @Binding var opened: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if v.foldable {
+                Button { withAnimation(.easeOut(duration: 0.22)) { opened.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Text(label(now: Date())).monospacedDigit()
+                        Chevron(open: opened)
+                    }
+                    .font(.footnote).foregroundStyle(opened ? Ink.full : Ink.s60)
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("codex-worked")
+                .accessibilityValue(opened ? w("cdx_collapse") : w("cdx_expand"))
+            } else if turn.status == "running" && v.answer == nil && !stopping {
+                // Ticking while it works.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(label(now: context.date)).monospacedDigit()
+                        .font(.footnote).foregroundStyle(Ink.s60)
+                        .accessibilityIdentifier("codex-worked")
+                }
+            } else {
+                Text(label(now: Date())).monospacedDigit()
+                    .font(.footnote).foregroundStyle(Ink.s60)
+                    .accessibilityIdentifier("codex-worked")
+            }
+            Rectangle().fill(Ink.line).frame(height: 1)
+        }
+    }
+
+    private func label(now: Date) -> String {
+        let ms = phoneWorkedMs(turn, now: now.timeIntervalSince1970 * 1000)
+        let t = phoneDurationB(ms)
+        if stopping { return w("hc_st_stopping") }
+        switch v.status {
+        case "stopped": return w("cdx_stopped_after", ["t": t])
+        case "failed": return w("cdx_failed_after", ["t": t])
+        case "worked": return w("cdx_worked_for", ["t": t])
+        default: return v.answer != nil ? w("cdx_worked_for", ["t": t]) : ms >= 1000 ? w("cdx_working_for", ["t": t]) : w("cdx_working")
+        }
+    }
+}
+
+/// One Codex turn: the user's message, "Working for …" over the work, the work, what the agent is at,
 /// the answer, how it ended, the files it changed, and copying or continuing under it.
 struct PhoneCodexTurnView<Files: View>: View {
     let turn: PhoneChatTurn
@@ -762,7 +942,6 @@ struct PhoneCodexTurnView<Files: View>: View {
     var stopping = false
     /// The work is open behind "Worked for …" (kept by the conversation so it survives scrolling).
     @Binding var opened: Bool
-    let answer: (String, String) -> Void
     let resume: () -> Void
     /// What else shows under a finished turn (the files it wrote, as preview cards).
     @ViewBuilder let files: () -> Files
@@ -771,57 +950,28 @@ struct PhoneCodexTurnView<Files: View>: View {
         let v = phoneCodexTurn(turn, cwd: cwd)
         let folded = v.foldable && !opened
         let running = turn.status == "running"
+        let divider = !v.units.isEmpty || v.status == "stopped"
         VStack(alignment: .leading, spacing: 16) {
             if let text = turn.userText {
                 PhoneUserRow(text: text, by: turn.userBy, ts: turn.userTs,
                              extra: PhoneUserExtra(inputID: turn.userInputID, attachments: turn.userAttachments), bubble: Ink.bubble, radius: 16)
             }
-            if let plan = v.plan { PlanCard(entries: plan, live: running) }
-            if v.foldable {
-                VStack(alignment: .leading, spacing: 6) {
-                    Button { withAnimation(.easeOut(duration: 0.22)) { opened.toggle() } } label: {
-                        HStack(spacing: 5) {
-                            elapsedText { w("cdx_worked_for", ["t": $0]) }
-                                .font(.subheadline).foregroundStyle(opened ? Ink.full : Ink.s60)
-                            Chevron(open: opened)
-                        }
-                        .padding(.vertical, 2)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("codex-worked")
-                    .accessibilityValue(opened ? w("cdx_collapse") : w("cdx_expand"))
-                    Rectangle().fill(Ink.line).frame(height: 1)
-                }
-            }
+            if divider { TimerDivider(turn: turn, v: v, stopping: stopping, opened: $opened) }
             // What the user added to the running turn stays in view when the work folds (as in Codex).
             if folded {
-                ForEach(v.units.filter { $0.kind == "steer" }) { u in UnitView(unit: u, cwd: cwd, readonly: readonly, answer: answer) }
+                ForEach(v.units.filter { $0.kind == "steer" }) { u in UnitView(unit: u, cwd: cwd, title: v.title) }
             } else {
                 ForEach(v.units) { u in
-                    UnitView(unit: u, cwd: cwd, readonly: readonly, answer: answer)
+                    UnitView(unit: u, cwd: cwd, title: v.title)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("codex-unit-\(u.kind)")
                 }
             }
-            if v.thinking && !stopping {
-                Text(w("cdx_thinking")).font(.subheadline).foregroundStyle(Ink.s60).codexShimmer(true)
-                    .accessibilityIdentifier("codex-thinking")
-            }
-            if v.status == "working" && (stopping || v.answer == nil) {
-                elapsedText { stopping ? w("hc_st_stopping") : v.asking ? w("cdx_waiting_answer") : w("cdx_working_for", ["t": $0]) }
-                    .font(.footnote).foregroundStyle(Ink.s45)
-                    .accessibilityIdentifier("codex-status")
-            }
+            if running { statusLine(v, divider: divider) }
             if let a = v.answer {
                 PhoneMarkdownText(text: a.text, color: Ink.prose)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("codex-answer")
-            }
-            if v.status == "stopped" {
-                CodexDivider(text: w("cdx_stopped_after", ["t": phoneCodexDuration(phoneWorkedMs(turn, now: Date().timeIntervalSince1970 * 1000), zh: zh)]))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("codex-stopped")
             }
             if v.status == "failed" {
                 PhoneNoticeRow(level: "error", text: turn.reason.map { "\(w("hc_failed")): \($0)" } ?? w("hc_failed"))
@@ -834,20 +984,27 @@ struct PhoneCodexTurnView<Files: View>: View {
         .accessibilityIdentifier("codex-turn-\(turn.n)")
     }
 
-    /// Words with how long the turn has worked, ticking while it runs.
-    @ViewBuilder private func elapsedText(_ words: @escaping (String) -> String) -> some View {
-        if turn.status == "running" {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let ms = phoneWorkedMs(turn, now: context.date.timeIntervalSince1970 * 1000)
-                Text(ms >= 1000 || turn.status != "running" ? words(phoneCodexDuration(ms, zh: zh)) : w("cdx_working"))
-                    .monospacedDigit()
-            }
-        } else {
-            Text(words(phoneCodexDuration(phoneWorkedMs(turn, now: Date().timeIntervalSince1970 * 1000), zh: zh))).monospacedDigit()
+    /// At the turn's end while it runs: waiting for an answer, stopping, or what the agent is at
+    /// (its reasoning's title, or "Thinking") when nothing else shows it working.
+    @ViewBuilder private func statusLine(_ v: PhoneCodexTurn, divider: Bool) -> some View {
+        if v.asking {
+            Label(w("cdx_waiting_answer"), systemImage: "bubble.left.and.exclamationmark.bubble.right")
+                .font(.subheadline).foregroundStyle(Ink.s60)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("codex-status")
+        } else if stopping {
+            if !divider { Text(w("hc_st_stopping")).font(.subheadline).foregroundStyle(Ink.s60).accessibilityIdentifier("codex-status") }
+        } else if v.thinking {
+            let words = v.title ?? w("cdx_thinking")
+            Text(words).font(.subheadline).foregroundStyle(Ink.s60).lineLimit(1)
+                .codexShimmer(true)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(words)
+                .accessibilityIdentifier("codex-thinking")
         }
     }
 
-    /// Under a finished turn: continuing a stopped one, or copying the answer and the turn's numbers.
+    /// Under a finished turn: continuing a stopped one, or copying the answer and when it came.
     @ViewBuilder private func foot(_ v: PhoneCodexTurn) -> some View {
         if stopped && !readonly {
             HStack(spacing: 10) {
@@ -862,22 +1019,17 @@ struct PhoneCodexTurnView<Files: View>: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Ink.line))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat-stopped-\(turn.n)")
-        } else {
-            let text = v.answer?.text ?? ""
-            let tokens = turn.usage?.output.map { (((turn.usage?.input ?? 0) + $0) / 100).rounded() / 10 }
-            if !text.isEmpty || tokens != nil || (!v.foldable && v.status == "worked") {
-                HStack(spacing: 8) {
-                    if !text.isEmpty { CopyButton(text: text, label: w("cdx_copy_response")) }
-                    if !v.foldable && v.status == "worked" {
-                        Text(w("cdx_worked_for", ["t": phoneCodexDuration(phoneWorkedMs(turn, now: 0), zh: zh)])).monospacedDigit()
-                    }
-                    if let tokens { Text(w("hc_tokens", ["n": tokens == tokens.rounded() ? "\(Int(tokens))" : "\(tokens)"])).monospacedDigit() }
+        } else if let a = v.answer, !a.text.isEmpty {
+            HStack(spacing: 6) {
+                CopyButton(text: a.text, label: w("cdx_copy_response"))
+                if let started = a.startedMs {
+                    Text(phoneFormatMsgTime(started, now: Date().timeIntervalSince1970 * 1000)).monospacedDigit()
                 }
-                .font(.caption).foregroundStyle(Ink.s45)
-                .padding(.top, -8)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("codex-foot-\(turn.n)")
             }
+            .font(.caption).foregroundStyle(Ink.s45)
+            .padding(.top, -8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("codex-foot-\(turn.n)")
         }
     }
 }
