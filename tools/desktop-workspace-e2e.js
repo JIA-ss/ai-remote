@@ -896,6 +896,32 @@
     const bulkMenu = await batchMenu();
     await check("right-clicking a selected row opens the three-session batch menu", /3/.test(bulkMenu.getAttribute("aria-label") ?? "") && $$(".ws-menu-item", bulkMenu).length === 3);
     await check("the batch menu receives keyboard focus", bulkMenu.contains(document.activeElement), text(document.activeElement));
+    // Resource evidence from WK itself: fonts.check can succeed through fallback. The shared
+    // five-second deadline is only a waiting budget, not a measured font-loading duration.
+    const fontBudgetMs = 5000;
+    let fontTimer, fontsReady = false, fontEvidence;
+    try {
+      fontEvidence = await Promise.race([
+        (async () => {
+          await document.fonts.ready;
+          fontsReady = true;
+          const faces = await document.fonts.load('12px "Geist Mono"');
+          return { faces: faces.map((face) => ({ family: face.family, status: face.status })) };
+        })(),
+        new Promise((_, reject) => { fontTimer = setTimeout(() => reject(new Error("font resource check exceeded its waiting budget")), fontBudgetMs); }),
+      ]);
+    } catch (e) {
+      fontEvidence = { faces: [], error: String(e && e.message || e) };
+    } finally {
+      clearTimeout(fontTimer);
+    }
+    const geistFaces = fontEvidence.faces.filter((face) => face.family.replace(/["']/g, "").trim() === "Geist Mono");
+    const fontReport = { budget_ms: fontBudgetMs, ready: fontsReady, ...fontEvidence };
+    await note(`WK bundled font resource: ${JSON.stringify(fontReport)}`);
+    await check("WK loads the bundled Geist Mono FontFace before the batch screenshots", fontsReady && !fontEvidence.error
+      && geistFaces.length > 0 && geistFaces.every((face) => face.status === "loaded"),
+      JSON.stringify(fontReport));
+    // This proves that WK can load the bundled resource, not which font exclusively paints a glyph.
     await shot("d01-batch-menu");
     const pinToast = await batchAction("P", /^置顶 3 个会话|^Pin 3 sessions/);
     await check("batch Pin moves all three rows into Pinned", !!(await until("three pinned rows", () => batchKeys.every(pinnedRow), 5000)));
