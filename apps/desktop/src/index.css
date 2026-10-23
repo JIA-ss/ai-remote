@@ -6,6 +6,7 @@
 @import "./styles/app.css";
 @import "./styles/native.css";
 @import "./styles/glass/index.css";
+/* the Codex view after the panel: its rules are scoped to .cdx and win over the panel's */
 @import "./styles/codex.css";
 @import "./styles/workspace.css";
 @import "./styles/claude.css";

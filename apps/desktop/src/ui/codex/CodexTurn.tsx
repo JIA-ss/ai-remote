@@ -8,7 +8,7 @@
 // "Asked" line once answered. The look was studied from Codex's app; the components are this
 // project's own, on this app's Markdown and previews.
 
-import { ChevronRight, CircleCheck, FileDiff, MessageCircleQuestion, Play } from "lucide-react";
+import { ChevronRight, CircleCheck, FileDiff, FilePen, FileText, Globe, MessageCircleQuestion, Minimize2, Play, Plug, Terminal } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { baseName, type QuestionBlock, type ToolItem, type Turn } from "../../lib/chat";
 import {
@@ -18,6 +18,9 @@ import {
   durationB,
   groupSummary,
   filePatch,
+  formatMsgTime,
+  parseAnsi,
+  webDetail,
   relPath,
   workedMs,
   type Act,
@@ -30,7 +33,8 @@ import {
 import { currentLang, t, type Key } from "../../lib/i18n";
 import { cx } from "../util";
 import { CodeBlock, CopyButton, Highlighted, Markdown } from "../chat/Markdown";
-import { PreviewButton, TurnFiles } from "../chat/Preview";
+import { PreviewButton, TurnFiles, usePreview } from "../chat/Preview";
+import { previewKind } from "../../lib/preview";
 import { NoticeRow, UserRow } from "../chat/Rows";
 
 const zh = () => currentLang() === "zh";
@@ -107,9 +111,11 @@ function Reveal({ open, children, className, quiet }: { open: boolean; children:
 }
 
 /** A one-line activity: its words, and (when it has any) details that open below it. */
-function ActLine({ label, live, failed, details, defaultOpen = false, className, trailing }: {
+function ActLine({ label, live, steady, failed, details, defaultOpen = false, className, trailing }: {
   label: ReactNode;
   live?: boolean;
+  /** Live, it shimmers all the time (a secondary label, as a sub-agent at work) instead of now and then. */
+  steady?: boolean;
   failed?: boolean;
   details?: (() => ReactNode) | null;
   defaultOpen?: boolean;
@@ -122,7 +128,7 @@ function ActLine({ label, live, failed, details, defaultOpen = false, className,
     <div className={cx("cdx-act", open && "open", live && "is-live", failed && "failed", className)}>
       <div className="x-hd">
         <button type="button" className="x-ln" onClick={() => can && setOpen((v) => !v)} aria-expanded={can ? open : undefined} disabled={!can}>
-          <span className="x-tx"><Cadenced on={!!live}>{label}</Cadenced></span>
+          <span className="x-tx">{steady ? <Shimmer on={!!live}>{label}</Shimmer> : <Cadenced on={!!live}>{label}</Cadenced>}</span>
           {can && <Chevron open={open} />}
         </button>
         {trailing}
@@ -250,7 +256,7 @@ function actWords(a: Act, cwd: string | null): ReactNode {
       return (
         <>
           <Verb k={toolRunning(a.tool) ? "cdx_v_web_ing" : "cdx_v_web"} />
-          {a.query && <Detail> {t("cdx_d_for", { q: a.query })}</Detail>}
+          {a.query && <Detail>: {webDetail(a.query)}</Detail>}
         </>
       );
     case "tool":
@@ -283,10 +289,30 @@ function OutputBox({ text }: { text: string }) {
     setEdges((e) => (e.up === next.up && e.down === next.down ? e : next));
   };
   useLayoutEffect(measure, [text]);
+  const runs = useMemo(() => parseAnsi(text), [text]);
   return (
     <div ref={box} className="x-out-box" data-up={edges.up || undefined} data-down={edges.down || undefined} onScroll={measure} tabIndex={0}>
-      <pre className="x-out">{text}</pre>
+      <pre className="x-out">
+        {runs.length === 1 && Object.keys(runs[0]).length === 1 ? runs[0].text : runs.map((r, i) => (
+          <span key={i} className={cx(r.fg?.startsWith("c") && `x-f${r.fg.slice(1)}`, r.bg?.startsWith("c") && `x-b${r.bg.slice(1)}`, r.bold && "x-bo",
+            r.dim && "x-dim", r.italic && "x-it", r.underline && "x-un", r.strike && "x-st", r.hidden && "x-hid")}
+            style={r.fg?.startsWith("rgb") || r.bg?.startsWith("rgb") ? { color: r.fg?.startsWith("rgb") ? r.fg : undefined, background: r.bg?.startsWith("rgb") ? r.bg : undefined } : undefined}>
+            {r.text}
+          </span>
+        ))}
+      </pre>
     </div>
+  );
+}
+
+/** A command, two lines at most until clicked. */
+function CommandLine({ command }: { command: string }) {
+  const [all, setAll] = useState(false);
+  const long = command.split("\n").length > 2 || command.length > 160;
+  return (
+    <pre className={cx("x-cmd", long && !all && "x-clamp")} onClick={() => long && setAll((v) => !v)} title={long && !all ? t("cdx_show_all") : undefined}>
+      <span className="x-ps">$ </span><Highlighted code={command} lang="sh" />
+    </pre>
   );
 }
 
@@ -303,16 +329,17 @@ function ShellCard({ info, x }: { info: ExecInfo; x: ToolItem }) {
         </span>
       </div>
       <div className="x-sh-bd">
-        <pre className="x-cmd"><span className="x-ps">$ </span><Highlighted code={info.command} lang="sh" /></pre>
+        <CommandLine command={info.command} />
         {out ? <OutputBox text={out} /> : !running && <div className="x-none">{t("cdx_no_output")}</div>}
         {x.truncated && <div className="x-none">{t("hc_cut")}</div>}
       </div>
-      <div className={cx("x-sh-ft", !running && !x.stopped && info.exitCode !== null && info.exitCode !== 0 && "x-bad")}>
-        {running ? <Shimmer on>{t("cdx_v_running")}</Shimmer>
+      {/* How it ended, in the same quiet gray whatever it was; nothing yet while it runs. */}
+      <div className="x-sh-ft">
+        {running ? "\u00a0"
           : x.stopped ? t("cdx_stopped")
-            : info.exitCode === 0 ? <><CircleCheck size={12} aria-hidden /> {t("cdx_success")}</>
+            : info.exitCode === 0 ? <><CircleCheck size={10} aria-hidden /> {t("cdx_success")}</>
               : info.exitCode !== null ? t("cdx_exit_code", { n: info.exitCode })
-                : x.status === "failed" ? t("hc_failed") : null}
+                : t("cdx_exit_unknown")}
       </div>
     </div>
   );
@@ -388,7 +415,9 @@ function ActRow({ a, cwd }: { a: Act; cwd: string | null }): ReactNode {
         </>
       );
     case "web":
-      return <ActLine label={actWords(a, cwd)} live={toolRunning(a.tool)} details={hasToolDetails(a.tool) ? () => <ToolDetails x={a.tool} /> : null} />;
+      // A web search is one line that does not open; one without a query says nothing.
+      if (!a.query.trim() && !toolRunning(a.tool)) return null;
+      return <ActLine label={actWords(a, cwd)} live={toolRunning(a.tool)} />;
     case "tool":
       return <ActLine label={actWords(a, cwd)} live={toolRunning(a.tool)} failed={a.tool.status === "failed" && !a.tool.stopped}
         details={hasToolDetails(a.tool) ? () => <ToolDetails x={a.tool} /> : null} />;
@@ -409,19 +438,45 @@ function FileButtons({ f, cwd, x }: { f: FileChange; cwd: string | null; x: Tool
 // ---------------------------------------------------------------------------------------------
 // Units
 
+const PART_ICON = { tools: Plug, edited: FilePen, failed: FilePen, read: FileText, ran: Terminal, web: Globe } as const;
+
+/** A group's line once done: an icon for what it did first, then all it did as one list ("Edited files, read files, ran a command"). */
 function summarySentence(acts: Act[]): ReactNode {
   const s = groupSummary(acts);
+  if (!s.parts.length) return t("cdx_s_done");
   const words = s.parts.map((p, i) => plural(`cdx_s_${p.part}${i === 0 ? "_lead" : ""}`, p.n));
-  let text = words.join(", ");
-  try {
-    text = new Intl.ListFormat(zh() ? "zh-CN" : "en", { type: "conjunction" }).format(words);
-  } catch {
-    // An engine without ListFormat keeps the plain list.
+  let text = words.join(zh() ? "，" : ", ");
+  if (!zh()) {
+    try {
+      text = new Intl.ListFormat("en", { type: "unit" }).format(words);
+    } catch {
+      // An engine without ListFormat keeps the plain list.
+    }
   }
+  const Icon = PART_ICON[s.parts[0].part];
   return (
     <>
-      {text} <Stat add={s.add} del={s.del} />
+      <Icon size={14} className="x-ic" aria-hidden />
+      {text}
     </>
+  );
+}
+
+/** A list that fades at an edge where there is more to scroll to. */
+function ScrollList({ children }: { children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ up: false, down: false });
+  const measure = () => {
+    const el = box.current;
+    if (!el) return;
+    const next = { up: el.scrollTop > 1, down: el.scrollHeight - el.clientHeight - el.scrollTop > 1 };
+    setEdges((e) => (e.up === next.up && e.down === next.down ? e : next));
+  };
+  useLayoutEffect(measure);
+  return (
+    <div ref={box} className="cdx-list" data-up={edges.up || undefined} data-down={edges.down || undefined} onScroll={measure}>
+      {children}
+    </div>
   );
 }
 
@@ -465,9 +520,9 @@ const GroupRow = memo(function GroupRow({ u, cwd, title }: { u: Extract<Unit, { 
   return (
     <ActLine className="group" label={u.live ? label : summarySentence(acts)} live={u.live} failed={!u.live && failed}
       details={() => (
-        <div className="cdx-list">
+        <ScrollList>
           {u.acts.map((a) => <ActRow key={a.key} a={a} cwd={cwd} />)}
-        </div>
+        </ScrollList>
       )} />
   );
 });
@@ -476,7 +531,7 @@ function AgentRow({ x }: { x: ToolItem }) {
   const out = x.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n").trim();
   const prompt = (x.input as { prompt?: unknown } | undefined)?.prompt;
   return (
-    <ActLine label={<><Verb k="cdx_subagent" /> <Detail>{x.title.replace(/^agent\s*/i, "")}</Detail></>} live={toolRunning(x)} failed={x.status === "failed"}
+    <ActLine label={<><Verb k="cdx_subagent" /> <Detail>{x.title.replace(/^agent\s*/i, "")}</Detail></>} live={toolRunning(x)} steady failed={x.status === "failed"}
       details={out || typeof prompt === "string" ? () => (
         <div className="cdx-tool">
           {typeof prompt === "string" && <Markdown text={prompt} className="cdx-thought-md" />}
@@ -517,7 +572,7 @@ function UnitView({ u, cwd, title }: { u: Unit; cwd: string | null; title: strin
     case "asked":
       return <AskedRow questions={u.questions} />;
     case "notice":
-      if (u.code === "compacted") return <div className="cdx-divider"><span>{t("cdx_compacted")}</span></div>;
+      if (u.code === "compacted") return <div className="cdx-compact"><Minimize2 size={14} aria-hidden /><span>{t("cdx_compacted")}</span></div>;
       return <NoticeRow level={u.level} code={u.code} text={u.text} />;
     case "steer":
       return <UserRow row={{ kind: "user", key: u.key, text: u.block.text, by: u.block.by, ts: u.block.ts, steer: true, inputId: u.block.inputId, attachments: u.block.attachments }} />;
@@ -527,51 +582,88 @@ function UnitView({ u, cwd, title }: { u: Unit; cwd: string | null; title: strin
 // ---------------------------------------------------------------------------------------------
 // The changes a turn made
 
-/** Files shown before "Show N more files". */
-const FILES_SHOWN = 6;
+/** Files listed before "Show N more files". */
+const FILES_SHOWN = 3;
+/** A diff longer than this is not drawn inline. */
+const INLINE_LINES = 5000;
 
+/**
+ * The files the turn changed, as Codex sums them up under its answer: "Edited 3 files" with their
+ * counts beside a diff icon, Review opening every diff at once; with several files a short list of
+ * them (three, then the rest on request), each opening to its own diff.
+ */
 function ChangesCard({ files, cwd }: { files: FileChange[]; cwd: string | null }) {
   const [more, setMore] = useState(false);
+  const [review, setReview] = useState(false);
   const patches = useMemo(() => files.map((f) => filePatch(f, cwd)).filter((p): p is string => p !== null), [files, cwd]);
   const add = files.reduce((n, f) => n + f.add, 0);
   const del = files.reduce((n, f) => n + f.del, 0);
+  const single = files.length === 1 ? files[0] : null;
   const shown = more ? files : files.slice(0, FILES_SHOWN);
+  const title = single ? t("cdx_edited_file", { name: baseName(single.movePath ?? single.path) }) : t("cdx_edited_files", { n: files.length });
   return (
-    <div className="cdx-changes">
+    <div className={cx("cdx-changes", review && "x-review")}>
       <div className="x-hd">
-        <FileDiff size={13} aria-hidden />
-        <span className="x-ti">{plural("cdx_files_changed", files.length)}</span>
-        <Stat add={add} del={del} />
+        <button type="button" className="x-hd-ln" onClick={() => setReview((v) => !v)} aria-expanded={review}>
+          <span className="x-sq" aria-hidden><FileDiff size={24} /></span>
+          <span className="x-hd-tx">
+            <span className="x-ti">{title}</span>
+            <span className="x-sub"><Stat add={add} del={del} /></span>
+            <span className="x-sub x-alt">{t("cdx_review_changes")} ›</span>
+          </span>
+        </button>
         <span className="x-acts">
           {patches.length > 0 && <CopyButton text={patches.join("")} label={t("cdx_copy_patch")} />}
+          <button type="button" className="btn sm x-outline" onClick={() => setReview((v) => !v)}>{t("cdx_review")}</button>
         </span>
       </div>
-      {shown.map((f) => <ChangedFile key={f.path} f={f} cwd={cwd} />)}
-      {!more && files.length > FILES_SHOWN && (
-        <button type="button" className="x-more" onClick={() => setMore(true)}>{plural("cdx_show_more_files", files.length - FILES_SHOWN)}</button>
+      {single ? (
+        <Reveal open={review}><div className="x-one"><DiffView lines={single.lines} /></div></Reveal>
+      ) : (
+        <div className="x-files">
+          {shown.map((f) => <ChangedFile key={f.path} f={f} cwd={cwd} all={review} />)}
+          {files.length > FILES_SHOWN && (
+            <button type="button" className="x-more" onClick={() => setMore((v) => !v)} aria-expanded={more}>
+              <span>{more ? t("cdx_collapse_files") : plural("cdx_show_more_files", files.length - FILES_SHOWN)}</span>
+              <ChevronRight size={12} className={cx("cdx-chev", "x-on", more && "x-up")} aria-hidden />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function ChangedFile({ f, cwd }: { f: FileChange; cwd: string | null }) {
-  const [open, setOpen] = useState(false);
+function ChangedFile({ f, cwd, all }: { f: FileChange; cwd: string | null; all: boolean }) {
+  // Opened or closed by hand, until Review opens or closes them all.
+  const [own, setOwn] = useState<boolean | null>(null);
+  useEffect(() => setOwn(null), [all]);
+  const preview = usePreview();
+  const target = f.movePath ?? f.path;
+  const viewable = !!preview && f.kind !== "delete" && !!previewKind(target);
+  const big = f.lines.length > INLINE_LINES;
+  const can = f.lines.length > 0 && !big;
+  const open = can && (own ?? all);
   const rel = relPath(f.movePath ?? f.path, cwd);
   return (
     <div className={cx("x-file", open && "open")}>
       <div className="x-row">
-        <button type="button" className="x-ln" onClick={() => f.lines.length && setOpen((v) => !v)} aria-expanded={f.lines.length ? open : undefined}
-          disabled={!f.lines.length}>
-          {f.lines.length > 0 ? <Chevron open={open} /> : <span className="x-chev-gap" aria-hidden />}
+        <button type="button" className="x-ln" aria-expanded={can ? open : undefined} disabled={!can && !viewable}
+          onClick={(e) => {
+            // ⌘ / Ctrl + click opens the file; a click opens its diff.
+            if ((e.metaKey || e.ctrlKey || !can) && viewable) preview!.open(target);
+            else if (can) setOwn(!open);
+          }}>
           <span className="x-path" title={rel}>
             <span className="x-dir">{rel.slice(0, rel.length - baseName(rel).length)}</span>
             <span className="x-nm">{baseName(rel)}</span>
           </span>
-          {f.kind === "add" && <span className="x-tag">A</span>}
-          {f.kind === "delete" && <span className="x-tag x-del">D</span>}
+          {big && <span className="x-big">{t("cdx_too_large_inline")}</span>}
           <Stat add={f.add} del={f.del} />
+          {f.kind === "add" && <i className="x-dot x-new" title={t("cdx_v_created")} />}
+          {f.kind === "delete" && <i className="x-dot x-gone" title={t("cdx_v_deleted")} />}
         </button>
-        {f.kind !== "delete" && <PreviewButton path={f.movePath ?? f.path} />}
+        {f.kind !== "delete" && <PreviewButton path={target} />}
       </div>
       <Reveal open={open}><DiffView lines={f.lines} /></Reveal>
     </div>
@@ -605,7 +697,6 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
   const ms = workedMs(turn, now);
   const time = durationB(ms, lang());
   const answerText = v.answer?.block.text ?? "";
-  const tokens = turn.usage?.output != null ? Math.round(((turn.usage.input ?? 0) + turn.usage.output) / 100) / 10 : null;
   const work = v.units;
   // The work folds by itself once the answer starts (at once); the reader's own clicks animate it.
   const byReader = useRef(false);
@@ -678,10 +769,12 @@ export const CodexTurnView = memo(function CodexTurnView({ turn, session, now, r
             {t("hc_continue")}
           </button>
         </div>
-      ) : (answerText || tokens != null) && (
+      ) : answerText && (
         <div className="cdx-foot">
-          {answerText && <CopyButton text={answerText} label={t("cdx_copy_response")} />}
-          {tokens != null && <span className="x-meta tnum">{t("hc_tokens", { n: tokens })}</span>}
+          <CopyButton text={answerText} label={t("cdx_copy_response")} />
+          {v.answer?.block.startedTs !== undefined && (
+            <span className="x-meta tnum" title={new Date(v.answer.block.startedTs).toLocaleString()}>{formatMsgTime(v.answer.block.startedTs, Date.now(), lang())}</span>
+          )}
         </div>
       ))}
     </section>

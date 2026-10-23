@@ -306,6 +306,8 @@ test("copied patches apply with git", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "cdx-patch-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: dir });
+    // Git for Windows turns LF into CRLF on checkout by default; the patch is about content.
+    execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: dir });
     mkdirSync(join(dir, "src"));
     writeFileSync(join(dir, "src", "m.py"), "a\nb\nc\n");
     writeFileSync(join(dir, "old.txt"), "bye\n");
@@ -479,4 +481,45 @@ test("a message remembers when it started", () => {
   const m = c.turns[0].blocks[0];
   assert.equal(m.text, "ab");
   assert.equal(m.startedTs, 1200);
+});
+
+test("terminal colors: SGR runs, 256 and true color, carriage returns and backspaces", () => {
+  assert.deepEqual(plain(codex.parseAnsi("\x1b[31mred\x1b[0m ok")), [{ text: "red", fg: "c1" }, { text: " ok" }]);
+  assert.deepEqual(plain(codex.parseAnsi("abc\rxy")), [{ text: "xyc" }]);
+  assert.deepEqual(plain(codex.parseAnsi("ab\b")), [{ text: "a" }]);
+  assert.deepEqual(plain(codex.parseAnsi("10%\r100%\nnext")), [{ text: "100%\nnext" }]);
+  assert.deepEqual(plain(codex.parseAnsi("\x1b[38;5;196mX\x1b[48;2;1;2;3mY")), [{ text: "X", fg: "rgb(255 0 0)" }, { text: "Y", fg: "rgb(255 0 0)", bg: "rgb(1 2 3)" }]);
+  assert.deepEqual(plain(codex.parseAnsi("\x1b[1;4mB\x1b[22mU\x1b[0m\x1b[92mg")), [{ text: "B", bold: true, underline: true }, { text: "U", underline: true }, { text: "g", fg: "c2" }]);
+  assert.deepEqual(plain(codex.parseAnsi("\x1b]0;title\x07plain\x1b[2K")), [{ text: "plain" }], "other escapes are dropped");
+});
+
+test("web searches: the query with its sites; a curl of a page off the internet counts as one", () => {
+  assert.equal(codex.webDetail("foo site:www.a.com OR site:b.com"), "foo | a.com · b.com");
+  assert.equal(codex.webDetail("python calendar monthrange"), "python calendar monthrange");
+  const info = (command) => ({ command, cwd: null, actions: [{ type: "unknown" }], explore: false, output: "", exitCode: 0, durationMs: null });
+  assert.equal(codex.isWebFetch(info("curl -sL https://example.com/docs")), true);
+  assert.equal(codex.isWebFetch(info("curl http://localhost:3000/api")), false);
+  assert.equal(codex.isWebFetch(info("curl -X POST https://example.com")), false);
+  assert.equal(codex.isWebFetch(info("wget https://example.com")), false);
+});
+
+test("a group's sentence names tools, edits, reads, commands, then the web", () => {
+  const t = (over) => tool({ status: "completed", ...over });
+  const acts = [
+    { kind: "web", key: "w", tool: t({ tool: "fetch", title: "search x" }), query: "x" },
+    { kind: "exec", key: "e", tool: t({ tool: "execute" }), info: { command: "npm test", actions: [{ type: "unknown" }], explore: false, exitCode: 0 } },
+    { kind: "exec", key: "c", tool: t({ tool: "execute" }), info: { command: "curl https://example.com", actions: [{ type: "unknown" }], explore: false, exitCode: 0 } },
+    { kind: "patch", key: "p", tool: t({}), files: [{ path: "/a", kind: "update", add: 1, del: 0, lines: [] }] },
+    { kind: "tool", key: "m", tool: t({ tool: "other", title: "mcp" }) },
+  ];
+  assert.deepEqual(plain(codex.groupSummary(acts).parts.map((p) => [p.part, p.n])), [["tools", 1], ["edited", 1], ["ran", 1], ["web", 2]]);
+  assert.deepEqual(plain(codex.groupSummary([]).parts), []);
+});
+
+test("message times: today the time, this week the weekday, else the date", () => {
+  const now = new Date(2026, 9, 23, 15, 0).getTime();
+  assert.match(codex.formatMsgTime(new Date(2026, 9, 23, 9, 5).getTime(), now, "en"), /^9:05\s?AM$/);
+  assert.match(codex.formatMsgTime(new Date(2026, 9, 21, 9, 5).getTime(), now, "en"), /^Wednesday 9:05\s?AM$/);
+  assert.match(codex.formatMsgTime(new Date(2026, 8, 30, 14, 2).getTime(), now, "en"), /^Sep 30 2:02\s?PM$/);
+  assert.equal(codex.formatMsgTime(new Date(2026, 9, 23, 14, 2).getTime(), now, "zh-CN"), "14:02");
 });

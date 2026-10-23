@@ -781,8 +781,32 @@ export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
   };
 }
 
-/** What a group did, by kind, in the order Codex names them: edits, reads, commands, web searches, tools. */
-export type SummaryPart = "edited" | "read" | "ran" | "web" | "tools" | "failed";
+/** What a group did, by kind, in the order Codex names them: tools, edits, reads, commands, web searches. */
+export type SummaryPart = "tools" | "edited" | "read" | "ran" | "web" | "failed";
+
+/** A command that only fetches a page off the internet (`curl https://…`), which Codex counts as a web search. */
+export function isWebFetch(info: ExecInfo): boolean {
+  const words = splitWords(info.command);
+  if (program(words[0] ?? "") !== "curl" || words.some((w) => /^(-X|--request|-d|--data.*|-F|--form|-T|--upload-file|-o|--output)$/.test(w))) return false;
+  const url = words.find((w) => /^https?:\/\//i.test(w));
+  if (!url) return false;
+  const host = url.replace(/^https?:\/\/(\[[^\]]*\]|[^/:?#]*).*$/i, "$1").toLowerCase();
+  return !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$/.test(host) && !host.endsWith(".localhost");
+}
+
+/** A web search's words for its line: the query, with the sites it is limited to after a bar. */
+export function webDetail(query: string): string {
+  const sites: string[] = [];
+  const rest = query
+    .replace(/\bsite:(\S+)/gi, (_m, d: string) => {
+      sites.push(d.replace(/^www\./i, ""));
+      return " ";
+    })
+    .replace(/\s+OR\s+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sites.length ? `${rest} | ${sites.join(" · ")}`.trim() : rest;
+}
 
 export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n: number }>; add: number; del: number } {
   const edited = new Set<string>();
@@ -806,7 +830,9 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
         del += f.del;
       }
     } else if (a.kind === "exec") {
-      if (a.info.explore) {
+      if (isWebFetch(a.info) && (running(a.tool) || a.info.exitCode === 0)) {
+        web++;
+      } else if (a.info.explore) {
         explored++;
         for (const x of a.info.actions) if (x.type === "read") read.add(x.path);
       } else ran++;
@@ -814,11 +840,11 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
     else if (a.kind === "tool") tools++;
   }
   const parts: Array<{ part: SummaryPart; n: number }> = [];
+  if (tools) parts.push({ part: "tools", n: tools });
   if (edited.size) parts.push({ part: "edited", n: edited.size });
   if (explored) parts.push({ part: "read", n: Math.max(read.size, 1) });
   if (ran) parts.push({ part: "ran", n: ran });
   if (web) parts.push({ part: "web", n: web });
-  if (tools) parts.push({ part: "tools", n: tools });
   // Edits that did not apply are said last, so a group of only those still has words.
   if (failed.size) parts.push({ part: "failed", n: failed.size });
   return { parts, add, del };
@@ -915,6 +941,119 @@ export function pendingRequest(chat: Pick<Chat, "turns">): { turn: number; reque
 export function splitRecommended(label: string): { label: string; recommended: boolean } {
   const m = /^(.*\S)\s+\(Recommended\)$/.exec(label);
   return m ? { label: m[1], recommended: true } : { label, recommended: false };
+}
+
+/** A run of terminal output in one style (from its ANSI escapes). */
+export interface AnsiRun {
+  text: string;
+  /** Colors: an index into the 16 terminal colors ("c3"), or a CSS color for 256-color and true color. */
+  fg?: string;
+  bg?: string;
+  bold?: boolean;
+  dim?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  hidden?: boolean;
+}
+
+/** The 256-color palette beyond the 16 named colors: a 6×6×6 cube, then 24 grays. */
+function color256(n: number): string | undefined {
+  if (n < 16) return `c${n % 8}`;
+  if (n < 232) {
+    const k = n - 16;
+    const v = (x: number) => (x === 0 ? 0 : 55 + x * 40);
+    return `rgb(${v(Math.floor(k / 36))} ${v(Math.floor(k / 6) % 6)} ${v(k % 6)})`;
+  }
+  if (n < 256) {
+    const g = 8 + (n - 232) * 10;
+    return `rgb(${g} ${g} ${g})`;
+  }
+  return undefined;
+}
+
+/**
+ * Terminal output as styled runs: SGR colors (16, 256 and true color, front and back), bold, dim,
+ * italic, underline, strikethrough, hidden; `\r` rewrites the line it is on, `\b` takes back a
+ * character; other escapes are dropped. Text only, never markup.
+ */
+export function parseAnsi(input: string): AnsiRun[] {
+  // First the line edits: each line keeps what its last carriage return left.
+  const lines = input.split("\n").map((line) => {
+    if (!line.includes("\r") && !line.includes("\b")) return line;
+    let out = "";
+    for (const piece of line.split("\r")) {
+      let cur = "";
+      for (const ch of piece) cur = ch === "\b" ? cur.slice(0, -1) : cur + ch;
+      // A carriage return goes back to the line's start; what follows writes over it (and "erase to end
+      // of line" clears the rest).
+      const erase = /\x1b\[0?K/.test(cur);
+      const visible = cur.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+      const outVisible = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+      out = erase || visible.length >= outVisible.length ? cur : cur + outVisible.slice(visible.length);
+    }
+    return out;
+  });
+  const text = lines.join("\n");
+  const runs: AnsiRun[] = [];
+  let style: Omit<AnsiRun, "text"> = {};
+  const re = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b./g;
+  let at = 0;
+  const push = (t: string) => {
+    if (!t) return;
+    const last = runs[runs.length - 1];
+    if (last && JSON.stringify({ ...last, text: "" }) === JSON.stringify({ ...style, text: "" })) last.text += t;
+    else runs.push({ text: t, ...style });
+  };
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    push(text.slice(at, m.index));
+    at = m.index + m[0].length;
+    if (m[1] === undefined) continue;
+    const codes = m[1] === "" ? [0] : m[1].split(";").map((c) => Number(c || 0));
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      const next = { ...style };
+      if (c === 0) style = {};
+      else if (c === 1) style = { ...next, bold: true };
+      else if (c === 2) style = { ...next, dim: true };
+      else if (c === 3) style = { ...next, italic: true };
+      else if (c === 4) style = { ...next, underline: true };
+      else if (c === 8) style = { ...next, hidden: true };
+      else if (c === 9) style = { ...next, strike: true };
+      else if (c === 22) style = { ...next, bold: undefined, dim: undefined };
+      else if (c === 23) style = { ...next, italic: undefined };
+      else if (c === 24) style = { ...next, underline: undefined };
+      else if (c === 28) style = { ...next, hidden: undefined };
+      else if (c === 29) style = { ...next, strike: undefined };
+      else if ((c >= 30 && c <= 37) || (c >= 90 && c <= 97)) style = { ...next, fg: `c${c % 10}` };
+      else if (c === 39) style = { ...next, fg: undefined };
+      else if ((c >= 40 && c <= 47) || (c >= 100 && c <= 107)) style = { ...next, bg: `c${c % 10}` };
+      else if (c === 49) style = { ...next, bg: undefined };
+      else if ((c === 38 || c === 48) && codes[i + 1] === 5) {
+        const col = color256(codes[i + 2] ?? -1);
+        style = { ...next, [c === 38 ? "fg" : "bg"]: col };
+        i += 2;
+      } else if ((c === 38 || c === 48) && codes[i + 1] === 2) {
+        const [r, g, b] = [codes[i + 2], codes[i + 3], codes[i + 4]].map((x) => Math.max(0, Math.min(255, x ?? 0)));
+        style = { ...next, [c === 38 ? "fg" : "bg"]: `rgb(${r} ${g} ${b})` };
+        i += 4;
+      }
+      for (const k of Object.keys(style) as Array<keyof typeof style>) if (style[k] === undefined) delete style[k];
+    }
+  }
+  push(text.slice(at));
+  return runs;
+}
+
+/** When a message was sent, as its line says it: the time today, the weekday this week, else the date. */
+export function formatMsgTime(ts: number, now: number, lang: string): string {
+  const d = new Date(ts);
+  const time = new Intl.DateTimeFormat(lang, { hour: "numeric", minute: "2-digit" }).format(d);
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(new Date(now)) - day(d)) / 86_400_000);
+  if (days <= 0) return time;
+  if (days <= 6) return `${new Intl.DateTimeFormat(lang, { weekday: "long" }).format(d)} ${time}`;
+  return `${new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" }).format(d)} ${time}`;
 }
 
 export type { MessagePhase };

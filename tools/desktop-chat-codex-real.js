@@ -106,12 +106,11 @@
     await check("the work folded while the answer streamed (or at the end)", folded || (!!$(".cdx-worked", t1) && !$(".cdx-work", t1)));
     await check("'Worked for' and the answer", /Worked for|用时/.test(text($(".cdx-worked", t1))) && text($(".cdx-answer", t1)).length > 10, text($(".cdx-answer", t1)).slice(0, 200));
     const changes = $(".cdx-changes", t1);
-    await check("the turn's changes list export.py", !!changes && $$(".x-file", changes).some((f) => text(f).includes("export.py")), text(changes));
+    await check("the turn's changes name export.py", !!changes && /export\.py/.test(text(changes)), text(changes));
     if (changes) {
-      const f = $$(".x-file", changes).find((x) => text(x).includes("export.py"));
-      $(".x-ln", f).click();
-      const d = await until("diff", () => $(".cdx-diff", f), 3000);
-      await check("its diff has line numbers and added lines", !!d && $$(".x-dl.x-add", d).length > 0 && $$(".x-no", d).some((n) => /^\d+$/.test(n.textContent)));
+      $(".x-hd .btn", changes).click();
+      const d = await until("diff", () => $(".cdx-diff", changes), 3000);
+      await check("Review shows its diff, with line numbers and added lines", !!d && $$(".x-dl.x-add", d).length > 0 && $$(".x-no", d).some((n) => /^\d+$/.test(n.textContent)));
     }
     await shot("r01-fix");
     const l1 = await openAll(t1);

@@ -181,17 +181,23 @@
     await check("the answer renders Markdown: bold, table, code block", !!answer && !!$("strong", answer) && !!$("table", answer) && !!$(".nt-cb", answer), text(answer).slice(0, 120));
     await check("the plan leaves with the turn: no pill, nothing in the transcript", !$(".cdx-live") && !$(".cdx-plan, .cdx-plan-pill", t1));
     const changes = $(".cdx-changes", t1);
-    await check("the turn's changes: 2 files with their counts", !!changes && /2 files changed|2 个文件已更改/.test(text($(".x-hd", changes)))
-      && /\+11/.test(text($(".x-hd .cdx-stat", changes))) && /−1/.test(text($(".x-hd .cdx-stat", changes))), text($(".x-hd", changes)));
+    await check("the turn's changes: 'Edited 2 files' with their counts, and Review", !!changes && /Edited 2 files|已编辑 2 个文件/.test(text($(".x-hd .x-ti", changes)))
+      && /\+11/.test(text($(".x-hd .cdx-stat", changes))) && /−1/.test(text($(".x-hd .cdx-stat", changes))) && /^(Review|审阅)$/.test(text($(".x-hd .btn", changes))),
+      text($(".x-hd", changes)));
     const fileRows = $$(".x-file", changes);
     await check("each changed file is listed by its path, the new one marked", fileRows.length === 2 && text(fileRows[0]).includes("export.py")
-      && text(fileRows[1]).includes("tests/test_quarters.py") && !!$(".x-tag", fileRows[1]), fileRows.map(text).join(" | "));
+      && text(fileRows[1]).includes("tests/test_quarters.py") && !!$(".x-dot.x-new", fileRows[1]) && !$(".x-dot", fileRows[0]), fileRows.map(text).join(" | "));
     $(".x-ln", fileRows[0]).click();
     const fileDiff = await until("file diff", () => $(".cdx-diff", fileRows[0]), 3000);
     await check("a changed file opens to its diff with line numbers",
       !!fileDiff && $$(".x-dl.x-add", fileDiff).length === 2 && $$(".x-dl.x-del", fileDiff).length === 1 && $$(".x-no", fileDiff).some((n) => /^\d+$/.test(n.textContent)),
       fileDiff && `${$$(".x-dl.x-add", fileDiff).length}+ ${$$(".x-dl.x-del", fileDiff).length}-`);
-    await check("the answer can be copied", !!$(".cdx-foot .nt-ib", t1));
+    await check("the answer can be copied, and says when it came", !!$(".cdx-foot .nt-ib", t1) && /\d{1,2}:\d{2}/.test(text($(".cdx-foot .x-meta", t1))) && !/tokens/.test(text($(".cdx-foot", t1))),
+      text($(".cdx-foot", t1)));
+    $(".x-hd .btn", changes).click();
+    await check("Review opens every file's diff", !!(await until("all diffs", () => $$(".x-file .cdx-diff", changes).length === 2, 3000)));
+    $(".x-hd .btn", changes).click();
+    await check("and closes them all again", !!(await until("diffs closed", () => $$(".x-file .cdx-diff", changes).length === 0, 3000)));
 
     // 4. Opening the work: the remarks and two groups summed up in a sentence.
     const w = await openWork(t1);
@@ -223,7 +229,7 @@
     await check("edits read as Edited / Created with their counts",
       g2.some((l) => /^(Edited|编辑了) export\.py \+2 ?−1$/.test(l)) && g2.some((l) => /^(Created|创建了) test_quarters\.py \+9$/.test(l)), g2.join(" | "));
     await check("a passing command says how long it ran", g2.some((l) => /python3 -m pytest -q (in 2s|用时 2秒)/.test(l)), g2.join(" | "));
-    await check("the web search reads as one", g2.some((l) => /(Searched the web|搜索了网页) .*python calendar monthrange/.test(l)), g2.join(" | "));
+    await check("the web search reads as one", g2.some((l) => /(Searched the web|搜索了网页): python calendar monthrange/.test(l)), g2.join(" | "));
     const edit = g2acts.find((a) => /export\.py/.test(text(a)) && /Edited|编辑了/.test(text(a)));
     await openLine(edit);
     const diff = await until("edit diff", () => $(".cdx-diff", edit), 3000);
@@ -339,11 +345,11 @@
     await sendTurn("MANY rename helpers");
     await idle();
     const many = $(".cdx-changes", lastTurn());
-    await check("eight files changed, six listed", !!many && /8 files changed|8 个文件已更改/.test(text($(".x-hd", many))) && $$(".x-file", many).length === 6, text($(".x-hd", many)));
-    const more = $(":scope > .x-more", many);
-    await check("'Show 2 more files' lists the rest", !!more && /2/.test(text(more)));
+    await check("eight files changed, three listed", !!many && /Edited 8 files|已编辑 8 个文件/.test(text($(".x-hd .x-ti", many))) && $$(".x-file", many).length === 3, text($(".x-hd", many)));
+    const more = $(".x-files > .x-more", many);
+    await check("'Show 5 more files' lists the rest", !!more && /5/.test(text(more)));
     more.click();
-    await check("all eight are listed then", !!(await until("all files", () => $$(".x-file", many).length === 8, 3000)));
+    await check("all eight are listed then, and they fold back", !!(await until("all files", () => $$(".x-file", many).length === 8, 3000)) && /Collapse files|收起文件/.test(text(more)));
     const constants = $$(".x-file", many).find((f) => text(f).includes("constants.py"));
     $(".x-ln", constants).click();
     const longDiff = await until("long diff", () => $(".cdx-diff", constants), 3000);
@@ -381,15 +387,17 @@
     await sendTurn("COMPACT now");
     await idle();
     await openWork(lastTurn());
-    await check("a compaction shows as a divider", $$(".cdx-divider", lastTurn()).some((d) => /Context automatically compacted|上下文已自动压缩/.test(text(d))), text(lastTurn()).slice(-160));
+    await check("a compaction shows as a quiet line", $$(".cdx-compact", lastTurn()).some((d) => /Context automatically compacted|上下文已自动压缩/.test(text(d))), text(lastTurn()).slice(-160));
 
     // 10b. One file edited twice, a scratch file created then deleted: the changes are the turn's net diff.
     await sendTurn("REEDIT the readme");
     await idle();
     const ch = $(".cdx-changes", lastTurn());
     await check("edits of one file count once, by the turn's net diff; a scratch file is gone",
-      !!ch && $$(".x-file", ch).length === 1 && text($(".x-file", ch)).includes("README.md") && /\+4/.test(text($(".x-file", ch))) && !/−/.test(text($(".x-file", ch))),
+      !!ch && !$(".x-file", ch) && /^(Edited README\.md|已编辑 README\.md)$/.test(text($(".x-hd .x-ti", ch))) && /\+4/.test(text($(".x-hd .cdx-stat", ch))) && !/−/.test(text($(".x-hd .cdx-stat", ch))),
       ch && text(ch));
+    $(".x-hd .btn", ch).click();
+    await check("a one-file change opens its diff with Review", !!(await until("one diff", () => $(".x-one .cdx-diff", ch), 3000)));
     const wr = await openWork(lastTurn());
     for (const g of $$(".cdx-act.group", wr)) await openLine(g);
     const rl = $$(".cdx-act:not(.group) > .x-hd > .x-ln", wr).map(text);
@@ -474,9 +482,11 @@
     await shot("c08-later-turns");
 
     // 12. A Claude Code session keeps its own rows.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("picker", () => $(".nt-chat-start"));
+    for (let tries = 0; tries < 2 && !$(".nt-chat-start"); tries++) {
+      $$(".nt-chat-hd .ico").at(-1).click();
+      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]))?.click();
+      await until("picker", () => $(".nt-chat-start"), 8000);
+    }
     $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
     setValue($("#ag-prompt"), "RICH check the export");
     await sleep(200);
@@ -507,7 +517,7 @@
     await until("first turn folded", () => !$(".cdx-work", t1), 3000);
     await check("the first turn is folded again, with its changes", WORKED.test(text($(".cdx-worked", t1))) && !$(".cdx-work", t1) && !!$(".cdx-changes", t1));
     const rre = turns().find((t) => /REEDIT/.test(text($(".nt-user", t))));
-    await check("the replayed net diff is the same", !!rre && /\+4/.test(text($(".cdx-changes .x-file", rre))) && $$(".cdx-changes .x-file", rre).length === 1, rre && text($(".cdx-changes", rre)));
+    await check("the replayed net diff is the same", !!rre && /\+4/.test(text($(".cdx-changes .x-hd .cdx-stat", rre))) && /README\.md/.test(text($(".cdx-changes .x-ti", rre))), rre && text($(".cdx-changes", rre)));
     const w1 = await openWork(t1);
     await openLine($$(".cdx-act.group", w1)[0]);
     const again = lines($(".cdx-list", $$(".cdx-act.group", w1)[0]));
