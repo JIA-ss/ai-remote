@@ -1258,6 +1258,52 @@ impl EventFeed {
 mod tests {
     use super::*;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_list_hosts_and_use_host_declare_complete_behavior_hints() {
+        use rmcp::{ServiceExt, model::ClientCapabilities, model::ClientConfig, model::Implementation};
+
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile::at(dir.path()).unwrap();
+        // A new, unpaired LAN-only controller: no user identity, devices, discovery or public relays.
+        std::fs::write(
+            profile.controller_config_path().unwrap(),
+            "[network]\nmode = \"lan\"\nquiet = true\nlan_discovery = \"off\"\nport_mapping = false\n",
+        )
+        .unwrap();
+        let controller = EmbeddedController::start(&profile).await.unwrap();
+        let aggregator = Aggregator::new(controller.state().unwrap());
+        let (client_pipe, server_pipe) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(async move {
+            let running = ServiceExt::serve(aggregator, server_pipe).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let client = ClientConfig::new(ClientCapabilities::default(), Implementation::new("metadata-test", "0"))
+            .serve(client_pipe)
+            .await
+            .unwrap();
+        let tools = client.list_all_tools().await.unwrap();
+        let descriptions = serde_json::to_value(&tools).unwrap();
+        // Close transports and the isolated controller before asserting, including on a red test.
+        client.cancel().await.unwrap();
+        server.await.unwrap();
+        controller.close().await.unwrap();
+
+        assert_eq!(tools.len(), 2, "an unpaired controller only offers its two local tools");
+        for (name, read_only) in [("list_hosts", true), ("use_host", false)] {
+            let tool = descriptions.as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap();
+            assert_eq!(
+                tool["annotations"],
+                json!({
+                    "readOnlyHint": read_only,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": true,
+                }),
+                "{name}: explicit wire hints must describe host inspection versus session selection",
+            );
+        }
+    }
+
     #[test]
     fn retries_only_an_unreachable_host_and_only_while_there_is_time() {
         let s = Duration::from_secs;

@@ -31,6 +31,16 @@
   首次失败的根因仍未知；后续成功也不追认它为已查明。
   下一步据新 CI 的阶段与留存状态判断具体路径，再决定修复；不单靠扩大超时或重跑消红。
 
+## MCP 聚合入口元数据（2026-10-24）
+
+- `list_hosts` 明确声明只读、非破坏性、幂等；`use_host` 会改本会话的默认被控端，所以不是只读，重复选择同一端是幂等的。
+  两者均可能查询已配对的外部主机，`openWorldHint = true`。这些是客户端提示，不改变原有配对、等级、审批与审计门禁。
+- 新增真实 rmcp `tools/list` 协议回归：全新临时 profile、未配对、LAN-only、关闭发现和映射，不使用机主设备或本机服务。
+  测试先在原代码上因缺 annotations 失败，再补齐两项本地工具的四个布尔 hint。根 `glama.json` 仅声明维护者供目录核对。
+- 中英 README 的 20 px 紧凑 M8ven badge 保留平台本次领取的公开所有权核对参数；这不是 Live 声明，项目的平台 WIP / pre-alpha 边界不变。
+- 本机 macOS：Rust fmt / workspace Clippy 通过；workspace tests 440 过、9 忽略；规定的 Node 测试 361 过、1 跳过，TypeScript 通过。
+  这些验证只覆盖协议元数据和回归检查，没有把它们当成真机远程操作或平台安全认证。
+
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
 从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。
