@@ -233,8 +233,15 @@
       !$("a, button, input, textarea, select, [tabindex], [role=button]", $(".lb", option)))
       && !!$('.ds [title="https://example.com/notes"]', options[0]));
     await check("the question's accessible name is plain text", question.getAttribute("aria-label") === "Pick output for sample.txt");
-    await check("question and option text allow native selection", [$(".cl-qc-hd .q", question), ...options.map((option) => $(".lb", option))]
-      .every((el) => el && getComputedStyle(el).userSelect === "text"));
+    const selectionSupport = { standard: CSS.supports("user-select", "text"), webkit: CSS.supports("-webkit-user-select", "text") };
+    const selectionStyles = [$(".cl-qc-hd .q", question), ...options.map((option) => $(".lb", option))].map((el) => {
+      const style = el && getComputedStyle(el);
+      return { present: !!el, className: el?.className, userSelect: style?.getPropertyValue("user-select") ?? null,
+        webkitUserSelect: style?.getPropertyValue("-webkit-user-select") ?? null };
+    });
+    await say("e2e", `     (selection CSS: ${JSON.stringify({ support: selectionSupport, nodes: selectionStyles })})`);
+    await check("question and option text allow native selection", selectionStyles.every((style) => style.present
+      && (selectionSupport.standard ? style.userSelect === "text" : selectionSupport.webkit && style.webkitUserSelect === "text")));
     select($(".ds", options[0]));
     options[0].dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
     await check("detail=1 activation after text selection does not choose this option", await remains(() =>
