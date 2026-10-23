@@ -1,0 +1,25 @@
+/* The glass layer, loaded after native.css (src/index.css). Each work package writes only its own
+   file; the order is fixed so later files win ties without !important:
+   tokens → material → surfaces → shell → pages → settings → overlays → chat → stage → platform → fallbacks.
+
+   Three layers, bottom up: the window's native material (macOS "sidebar" vibrancy, Windows 11 Mica;
+   a static stand-in behind the browser preview) → content surfaces painted as translucent tints
+   with no CSS blur (the native layer already blurs) → functional glass (.gl-glass: toolbar
+   capsules, menus, popovers, sheets, toasts) with backdrop-filter and a highlight rim. Nothing on
+   the live stage is ever blurred.
+
+   <html data-material> decides it: native | preview turn the layer on, none (Reduce transparency,
+   higher contrast, Windows 10) leaves today's opaque native.css look untouched. Selectors that only
+   apply with the material on start with :root:is([data-material="native"], [data-material="preview"])
+   (specificity 0,2,0), written out each time: no nesting, macOS 13's WebKit does not have it. */
+@import "./tokens.css";
+@import "./material.css";
+@import "./surfaces.css";
+@import "./shell.css";
+@import "./pages.css";
+@import "./settings.css";
+@import "./overlays.css";
+@import "./chat.css";
+@import "./stage.css";
+@import "./platform.css";
+@import "./fallbacks.css";

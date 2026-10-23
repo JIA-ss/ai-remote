@@ -1,0 +1,12 @@
+/* glass/platform.css: per-OS differences that do not fit a token. Loaded after every component
+   file, so an equal-specificity rule here wins. */
+
+/* Windows: tauri-plugin-frame puts a fixed, full-width strip (z-index 100) with the caption buttons
+   over the top of the page. Let clicks fall through to our toolbar and sidebar strip, which carry
+   their own data-tauri-drag-region, and keep the caption buttons themselves clickable (Snap Layouts
+   is a native overlay on the maximize button and is not affected). Not verified on a real machine. */
+[data-tauri-frame-tb] { pointer-events: none; }
+[data-tauri-frame-tb] [id^="frame-tb-"] { pointer-events: auto; }
+
+/* Windows: Fluent draws no highlight rim; the inner 1 px stroke comes from --gl-rim-in. */
+:root[data-os="windows"] :is(.gl-glass, .cdlg, .menu)::before { display: none; }

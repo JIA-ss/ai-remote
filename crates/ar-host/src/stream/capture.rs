@@ -175,29 +175,36 @@ impl Drop for Capture {
     }
 }
 
-/// Monitors as (index, width, height, is primary), in the capture API's order.
-pub fn monitors() -> Result<Vec<(usize, u32, u32, bool)>> {
-    #[cfg(windows)]
+/// One monitor of the live view's list. `index` is what a request's `monitor` takes; the rect is in
+/// screen coordinates (physical pixels on Windows, points on macOS), the space of the reply's `screen`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorInfo {
+    pub index: usize,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+/// The monitors in `system_info`'s order. Windows enumerates the same `EnumDisplayMonitors` list
+/// here and for capture (`win::monitor`), so an index means the same monitor in both.
+pub fn monitors() -> Result<Vec<MonitorInfo>> {
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        use windows_capture::monitor::Monitor;
-        let primary = Monitor::primary().ok().and_then(|m| m.name().ok());
-        let list = Monitor::enumerate().map_err(|e| anyhow!("list monitors: {e}"))?;
+        let list = xcap::Monitor::all().map_err(|e| anyhow!("list monitors: {e}"))?;
         Ok(list
             .iter()
             .enumerate()
-            .map(|(i, m)| {
-                let is_primary = primary.is_some() && m.name().ok() == primary;
-                (i, m.width().unwrap_or(0), m.height().unwrap_or(0), is_primary)
+            .map(|(index, m)| MonitorInfo {
+                index,
+                x: m.x().unwrap_or(0),
+                y: m.y().unwrap_or(0),
+                width: m.width().unwrap_or(0),
+                height: m.height().unwrap_or(0),
+                primary: m.is_primary().unwrap_or(false),
             })
             .collect())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        xcap::Monitor::all()?
-            .iter()
-            .enumerate()
-            .map(|(i, m)| Ok((i, m.width()?, m.height()?, m.is_primary()?)))
-            .collect()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     Err(anyhow!("live view is not available on this platform yet"))

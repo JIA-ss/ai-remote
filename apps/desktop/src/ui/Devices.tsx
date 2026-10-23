@@ -25,12 +25,13 @@ function connectionText(c: Computer): string {
   return c.host.path === "direct" || c.host.path === "relay" ? routeLabel(c.host) : t("devices_path_unknown");
 }
 
-/** A workspace overview built only from paired hosts and their live feeds. */
+/** A workspace overview built only from paired hosts and their live feeds. Its title, count and
+ *  "Pair a computer" live in the shell's toolbar; the sidebar's field (⌘F) searches it. */
 export function DevicesPage({
   computers,
   now,
   query,
-  onQuery,
+  onClearQuery,
   onPair,
   onApprovals,
   onDetails,
@@ -38,8 +39,10 @@ export function DevicesPage({
 }: {
   computers: Computer[];
   now: number;
+  /** The sidebar's search. */
   query: string;
-  onQuery: (query: string) => void;
+  onClearQuery: () => void;
+  /** Only the empty state's button (the toolbar has the main one). */
   onPair: () => void;
   onApprovals: () => void;
   onDetails: (host: string) => void;
@@ -56,19 +59,7 @@ export function DevicesPage({
     .sort((a, b) => rank[groupOf(a, now)] - rank[groupOf(b, now)] || a.host.name.localeCompare(b.host.name));
 
   return (
-    <section className="devices-page" aria-labelledby="devices-title">
-      <header className="devices-header">
-        <div>
-          <div className="devices-kicker">{t("devices_kicker")}</div>
-          <h1 id="devices-title">{t("devices")}</h1>
-          <p>{t("devices_sub")}</p>
-        </div>
-        <button type="button" className="btn primary" onClick={onPair}>
-          <Icon name="add" size={16} />
-          {t("pair")}
-        </button>
-      </header>
-
+    <section className="devices-page" aria-label={t("devices")}>
       <div className="devices-summary">
         <div className="summary-item">
           <span><Icon name="monitor" size={16} />{t("devices_online")}</span>
@@ -89,11 +80,6 @@ export function DevicesPage({
 
       <div className="devices-toolbar">
         <h2>{t("devices_your_computers")} <span className="device-count">{matched.length}</span></h2>
-        <div className="device-search">
-          <Icon name="search" size={16} />
-          <input type="search" value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("search_computers")} aria-label={t("search_computers")} />
-          {query && <button type="button" className="search-clear" onClick={() => onQuery("")} aria-label={t("clear_search")}><Icon name="x" size={14} /></button>}
-        </div>
       </div>
 
       {matched.length > 0 ? (
@@ -145,7 +131,7 @@ export function DevicesPage({
           <Icon name={computers.length > 0 ? "search" : "monitor"} size={32} />
           <h2>{t(computers.length > 0 ? "search_no_matches" : "no_computers_short")}</h2>
           <p>{t(computers.length > 0 ? "devices_search_hint" : "devices_empty_hint")}</p>
-          <button type="button" className="btn" onClick={computers.length > 0 ? () => onQuery("") : onPair}>{t(computers.length > 0 ? "clear_search" : "pair")}</button>
+          <button type="button" className="btn" onClick={computers.length > 0 ? onClearQuery : onPair}>{t(computers.length > 0 ? "clear_search" : "pair")}</button>
         </div>
       )}
       <p className="devices-connection-note"><Icon name="lock" size={12} />{t("devices_security_note")}</p>

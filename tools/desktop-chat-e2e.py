@@ -46,6 +46,8 @@ parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{
 parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
 parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "desktop-chat-e2e")
 parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
+parser.add_argument("--visible", action="store_true", help="show the app window and let it take focus (needed by "
+                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js; Windows only)")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
                     "panel lists it, e.g. 'Claude Code'): a small file task, a / command, an image and a steer; uses its sign-in and quota")
@@ -292,6 +294,8 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                    # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
                    "WEBVIEW2_USER_DATA_FOLDER": str(webview)}
+        if options.visible:
+            app_env["AI_REMOTE_SMOKE_VISIBLE"] = "1"
         app = subprocess.Popen([str(options.app)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                encoding="utf-8", errors="replace", env=app_env)
         passed = None
@@ -310,6 +314,13 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
                         host.wait(timeout=20)
                     except subprocess.TimeoutExpired:
                         host.kill()
+                elif text.startswith("(action) input "):
+                    # Real key and mouse events (tools/win_input.py), e.g. to type through an input method.
+                    import win_input
+                    try:
+                        print("     ", win_input.act(app.pid, json.loads(text[len("(action) input "):])))
+                    except Exception as e:  # the page sees nothing happen and reports it
+                        print("      input failed:", e)
                 elif text.strip() == "(action) start-host":
                     host = subprocess.Popen([str(options.cli), "--home", str(host_home), "host", "--no-pair-code"],
                                             stdout=log, stderr=log, env=env)
