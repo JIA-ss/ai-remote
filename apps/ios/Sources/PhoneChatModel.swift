@@ -142,6 +142,18 @@ public struct PhoneQuestion: Equatable, Sendable {
     public var answer: String?
     /// The request it belongs to (Codex); `question_done` closes all of a request's questions.
     public var request: String? = nil
+    /// How the request ended (`question_done`): answered, skipped, expired, resolved, dismissed.
+    public var how: String? = nil
+
+    /// What its line says once it is no longer waiting.
+    public var outcome: String {
+        switch how {
+        case "expired", "resolved": "未回答，Codex 已自行继续"
+        case "dismissed": "已停止"
+        case "skipped": "已跳过"
+        default: answer.map { "已回答：\($0)" } ?? "已回答"
+        }
+    }
 }
 
 public struct PhoneQueued: Equatable, Sendable, Identifiable {
@@ -398,7 +410,9 @@ public struct PhoneChatLog: Equatable, Sendable {
                 if case .question(var q) = block, q.request == request {
                     let given = e["answers"][q.qid].array.compactMap(\.string)
                     q.answered = true
-                    if !given.isEmpty { q.answer = given.joined(separator: ", ") }
+                    q.how = e["how"].string
+                    // What the host says reached Codex wins over what this phone thought it sent.
+                    q.answer = given.isEmpty ? nil : given.joined(separator: ", ")
                     turns[i].blocks[k] = .question(q)
                 }
             }

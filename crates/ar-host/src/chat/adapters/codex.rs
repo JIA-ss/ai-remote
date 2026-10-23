@@ -567,6 +567,8 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                             expires_in_ms: waits.then_some(QUESTION_WAIT.as_millis() as u64),
                         }));
                     }
+                    // A new request with a question of the same name: an answer for that name is for it now.
+                    st.closed.retain(|q| !qids.contains(q));
                     if qids.is_empty() {
                         writes.push(jsonrpc::response(&id, json!({"answers": {}})));
                     } else {
@@ -1628,6 +1630,9 @@ mod tests {
         // An answer that comes now finds nothing to answer, and the request is known to have closed.
         assert!(answer(&mut st, "name".into(), "late".into()).is_none());
         assert!(st.closed.contains(&"name".to_string()));
+        // A new request asks a question of the same name: an answer for it is not late any more.
+        ask(&mut st, json!(5), json!([{"id": "name", "question": "Name again?"}]));
+        assert!(!st.closed.contains(&"name".to_string()));
     }
 
     #[test]

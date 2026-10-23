@@ -229,6 +229,8 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
   const codexRef = useRef(codexView);
   codexRef.current = codexView;
   const leftAt = useRef(-Infinity);
+  /** Where the reader has the list (its scrollTop), as of their last scroll or the last resize. */
+  const readerTop = useRef(0);
   const jumping = useRef<number | null>(null);
   const touchY = useRef<number | null>(null);
   const letGo = () => {
@@ -269,8 +271,10 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
       height = el.clientHeight;
       if (stick.current) el.scrollTop = el.scrollHeight;
       // The list itself got shorter or taller (the composer, a question card): what was at its bottom
-      // edge stays there. Content growing below the reader moves nothing.
-      else if (codexRef.current && resized) el.scrollTop += was - el.clientHeight;
+      // edge stays there, counted from where the reader had it (the browser has already clamped the
+      // scroll to the new size). Content growing below the reader moves nothing.
+      else if (codexRef.current && resized) el.scrollTop = readerTop.current + was - el.clientHeight;
+      readerTop.current = el.scrollTop;
     });
     ro.observe(inner);
     ro.observe(el);
@@ -364,6 +368,7 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
           if (quote) pickQuote();
           const el = e.currentTarget;
           const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+          readerTop.current = el.scrollTop;
           if (codexView) {
             if (jumping.current !== null) return;
             if (dist <= 24) {

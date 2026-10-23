@@ -987,10 +987,12 @@ test("a question request that is over waits no more, whoever ended it") {
     ])
     check(c.phase.what == "asking", "it waits")
     c.apply(ev(1, ["t": s("question_done"), "request": s("7-0"), "how": s("expired")]))
-    if case .question(let q) = c.turns[0].blocks[0] { check(q.answered && q.answer == nil, "expired: over, no answer") } else { check(false, "question") }
+    if case .question(let q) = c.turns[0].blocks[0] {
+        check(q.answered && q.answer == nil && q.outcome == "未回答，Codex 已自行继续", "expired: over, no answer, said so")
+    } else { check(false, "question") }
     if case .question(let q) = c.turns[0].blocks[1] { check(!q.answered, "the other request still waits") } else { check(false, "question") }
     c.apply(ev(1, ["t": s("question_done"), "request": s("7-1"), "answers": .object(["old": .array([s("yes")])]), "how": s("answered")]))
-    if case .question(let q) = c.turns[0].blocks[1] { check(q.answered && q.answer == "yes", "answered elsewhere") } else { check(false, "question") }
+    if case .question(let q) = c.turns[0].blocks[1] { check(q.answered && q.answer == "yes" && q.outcome == "已回答：yes", "answered elsewhere") } else { check(false, "question") }
     check(c.phase.what != "asking", "nothing waits")
     c.markAnswered("old", answer: "no")
     if case .question(let q) = c.turns[0].blocks[1] { check(q.answer == "yes", "an answered question keeps its answer") } else { check(false, "question") }
