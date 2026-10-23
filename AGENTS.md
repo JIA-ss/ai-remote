@@ -17,6 +17,24 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 智能体工作区第二阶段 · 环境接手阻塞（2026-10-23）
+
+**缺规格**：约定的用户主目录下 `ar-refs/spec/` 不存在。按本轮要求“没有就停在这一步”，停在第 0 阶段，
+没有进入 CI 排查、全量 E2E 或第二阶段实现；没有读取或逆向官方应用，也没有用旧笔记补造洁净室规格。
+
+- **做了什么**：只读核对系统、空间、现有工具链与仓库；拉取 `origin/main` 后基线仍为 `3e69f81`，
+  在独立 worktree 的 `docs/workspace-stage2-spec-blocked` 分支记录本次阻塞。已有仓库与工具无需重复安装；
+  本地提交身份已核对，原工作区的其他修改没有改动。
+- **实测**（本次 macOS 环境盘点，不是产品验收）：macOS 27.0.1、arm64；仓库所在外置盘可用约 1.6 TiB；
+  rustup 1.29.1、rustc 1.95.0，锁定工具链已安装；Node.js 25.5.0、Python 3.14.2、gh 2.86.0；
+  Xcode Command Line Tools 可用。当前 shell 的 PATH 未包含 Cargo 可执行文件目录，恢复测试前需加载 Rust 环境。
+- **未测 / 未做**：完整 Xcode 与 iOS 编译；`npm ci`；fmt、Clippy、Rust 测试、前端测试、TypeScript 门槛；
+  main 的 CI 与 iPhone workflow 取消原因；调试构建、替身与真实智能体 E2E、截图验收、Windows 原生窗口验收。
+  本轮没有测试通过数量或性能推导值，不能作为“上线就能直接用”的验收结果。
+- **装机状态**：本轮没有新增 main 产品提交，也未给 Mac 或 Windows 开发机安装；现有 main `3e69f81` 的两端安装状态未核实。
+- **下一步**：洁净室规格到位后，先核对 Claude 的 SB / NS / SP / TR / TC / CP / VS / GAPS、Codex 的 X 系列及两张截图；
+  加载 Rust 环境并安装桌面依赖，完成基线，再按 CI 排障 → 全量 E2E → 第二阶段实现推进。每段通过约定检查后再合入 main。
+
 ## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
 
 main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口里的路由（`lib/nav.ts` + 历史），本分支的智能体工作区原来挂在旧
