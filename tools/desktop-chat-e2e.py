@@ -66,9 +66,16 @@ SMOKE_TRACE_UI = r'''
   const log = (type, value) => window.__TAURI_INTERNALS__.invoke('log_from_page',
     { level: 'e2e', message: `     ui-trace ${type}: ${JSON.stringify(value)}` }).catch(() => {});
   document.addEventListener('click', (event) => {
-    const el = event.target instanceof Element ? event.target.closest('.nt-rail .seg [role=tab], .nt-chat-menu [role=menuitem], .nt-chat-menu-btn, .nt-anchor .b') : null;
+    const el = event.target instanceof Element ? event.target.closest('.nt-rail .seg [role=tab], .nt-chat-menu [role=menuitem], .nt-chat-menu-btn, .nt-anchor .b, .ws-menu-item, .ws-modes button, .ws-row-more, .ws-tb button') : null;
     if (el) void log('click', { text: el.textContent.trim(), classes: el.className, trusted: event.isTrusted,
       state: state(), stack: String(new Error().stack).replace(/\n/g, ' | ').slice(0, 900) });
+  }, true);
+  for (const type of ['keydown', 'mouseup']) document.addEventListener(type, (event) => {
+    if (type === 'keydown' && !(event.metaKey || event.ctrlKey || event.altKey || ['Escape','ArrowLeft','ArrowRight','Enter'].includes(event.key))) return;
+    if (type === 'mouseup' && event.button < 3) return;
+    void log(type, { key: event.key, code: event.code, button: event.button, meta: event.metaKey, ctrl: event.ctrlKey,
+      alt: event.altKey, shift: event.shiftKey, trusted: event.isTrusted, state: state(),
+      target: event.target instanceof Element ? event.target.outerHTML.slice(0, 300) : null });
   }, true);
   new MutationObserver(() => {
     const current = state(), signature = JSON.stringify(current);
