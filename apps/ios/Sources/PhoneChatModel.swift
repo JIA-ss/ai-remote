@@ -111,7 +111,15 @@ public struct PhoneChatTool: Equatable, Sendable {
     /// A finished command's exit code and how long the tool ran, when the agent reports them (Codex).
     public var exitCode: Int?
     public var durationMs: Double?
+    /// The agent never said it ended: the end of its turn closed it.
+    public var endedByTurn = false
     public var running: Bool { status == "in_progress" || status == "pending" }
+}
+
+/// Everything a turn changed as one unified diff, when the agent reports it (Codex's `turn_diff`).
+public struct PhoneTurnDiff: Equatable, Sendable {
+    public let text: String
+    public let truncated: Bool
 }
 
 public struct PhoneThought: Equatable, Sendable {
@@ -180,6 +188,8 @@ public struct PhoneChatTurn: Identifiable, Equatable, Sendable {
     public var reason: String?
     public var durationMs: Double?
     public var usage: PhoneChatUsage?
+    /// Everything the turn changed, when the agent reports it as one diff (Codex).
+    public var diff: PhoneTurnDiff?
     public init(n: Int) { self.n = n }
 
     /// The turn's end in words, or nil while it runs.
@@ -379,6 +389,8 @@ public struct PhoneChatLog: Equatable, Sendable {
         case "question":
             turns[i].blocks.append(.question(PhoneQuestion(qid: e["qid"].string ?? "", prompt: e["prompt"].string ?? "",
                                                            options: e["options"].array.compactMap(\.string))))
+        case "turn_diff":
+            turns[i].diff = PhoneTurnDiff(text: e["diff"].string ?? "", truncated: e["truncated"] == .bool(true))
         case "usage":
             let window = e["context_window"].number, used = e["context_used"].number
             turns[i].usage = PhoneChatUsage(input: e["input_tokens"].number, output: e["output_tokens"].number, contextWindow: window, contextUsed: used)
@@ -394,6 +406,7 @@ public struct PhoneChatLog: Equatable, Sendable {
                 if case .tool(var tool) = block, tool.running {
                     tool.status = status == "completed" ? "completed" : "failed"
                     tool.endedMs = ts
+                    tool.endedByTurn = true
                     if status == "interrupted" { tool.stopped = true }
                     turns[i].blocks[k] = .tool(tool)
                 }

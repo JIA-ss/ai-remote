@@ -187,15 +187,26 @@ public struct PhoneChatView: View {
     private func conversation(_ session: PhoneChatSession) -> some View {
         let stopped = chat.log.stoppedTurn?.n
         let readonly = !chat.canWrite
+        // Codex conversations are laid out the way Codex's own app shows them; others keep these rows.
+        let codex = chat.isCodex
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: codex ? 28 : 14) {
                     Text(session.cwd).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
                         .textSelection(.enabled)
                     ForEach(Array(chat.log.notices.enumerated()), id: \.offset) { _, notice in
                         PhoneNoticeRow(level: notice.level, text: phoneNoticeText(code: notice.code, text: notice.text))
                     }
                     ForEach(chat.log.turns) { turn in
+                        if codex {
+                            PhoneCodexTurnView(turn: turn, cwd: session.cwd, readonly: readonly, stopped: turn.n == stopped,
+                                               stopping: chat.log.state == "interrupting" && turn.status == "running",
+                                               opened: codexOpened("\(session.id):\(turn.n)"),
+                                               answer: { qid, text in Task { await chat.answer(qid, text: text) } },
+                                               resume: { Task { await chat.continueStopped() } }) {
+                                PhoneTurnPreviews(chat: chat, files: phoneTurnFiles(turn.blocks))
+                            }
+                        } else {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(phoneTurnRows(turn)) { row in
                                 PhoneChatRowView(row: row, readonly: readonly) { qid, text in Task { await chat.answer(qid, text: text) } }
@@ -205,6 +216,7 @@ public struct PhoneChatView: View {
                             if turn.status == "running", turn.n == chat.log.turns.last?.n, chat.log.busy {
                                 PhoneWorkingRow(label: workingLabel, since: chat.log.phase.since)
                             }
+                        }
                         }
                     }
                     if chat.log.busy, chat.log.turns.last?.status != "running" {
@@ -231,6 +243,13 @@ public struct PhoneChatView: View {
     }
 
     @PhoneViewState private var previewing: PhonePreviewTarget?
+
+    /// Whether a Codex turn's work is open behind "Worked for …" (kept while the app runs).
+    private func codexOpened(_ key: String) -> Binding<Bool> {
+        Binding(get: { chat.codexOpened.contains(key) }, set: { open in
+            if open { chat.codexOpened.insert(key) } else { chat.codexOpened.remove(key) }
+        })
+    }
 
     /// A message on its way: "发送中…", or why it did not arrive with 重新发送 / 丢弃.
     private func outgoingRow(_ o: PhoneOutgoing) -> some View {

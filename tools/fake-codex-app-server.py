@@ -6,13 +6,20 @@ the host's Codex adapter sends (initialize, thread/start and /resume, skills/lis
 
   EXPLORE  reasoning, a remark, a search, a read and a listing, a failing command, an edit of two files
            (one new) that it really writes, a passing command, a web search, plan updates, the answer
-  ASK      asks the user (item/tool/requestUserInput) and answers with the choice
+  ASK      asks the user two questions in one request (item/tool/requestUserInput: one with options,
+           descriptions and room for another answer, one plain) and answers with what it got
+  RESOLVED asks a question, then closes it itself (serverRequest/resolved) and goes on
   SLOW     runs `sleep 30` until Stop; a message sent meanwhile (turn/steer) is acknowledged
   STEERME  runs a command until a message is sent meanwhile (up to 20 s), takes it, and answers
   FAIL     the provider refuses: an `error` notification, then the turn fails
   MANY     eight files changed, a long command output and a long diff
   NOPHASE  messages without a phase, as older Codex versions send them
   COMPACT  the conversation is compacted, then a short answer
+  REEDIT   edits README.md twice and creates then deletes a scratch file, sending the turn's whole diff
+           (turn/diff/updated) after each change, as current Codex versions do
+  BADPATCH an edit that does not apply (the file change fails), then the answer
+  LATEPHASE a remark and the answer whose phase only arrives when they complete
+  DRAWL    a command, then a long answer streamed slowly (about 8 s)
   anything else: a short answer
 
 `--version` and `login status` answer like codex-cli, so the host's detection accepts it.
@@ -32,7 +39,7 @@ if "login" in sys.argv:
 
 lock = threading.Lock()
 THREAD = "th-fake-0001"
-state = {"turn": None, "n": 0, "cwd": os.getcwd(), "next_id": 1000}
+state = {"turn": None, "n": 0, "cwd": os.getcwd(), "next_id": 1000, "base": {}}
 interrupted = threading.Event()
 steers = []
 answers = {}
@@ -66,26 +73,31 @@ def pause(s):
     return not interrupted.wait(s)
 
 
-def message(mid, text, phase="final_answer", chunk=24, delay=0.03):
-    started = {"type": "agentMessage", "id": mid, "text": "", "phase": phase, "memoryCitation": None}
-    if phase is None:
-        started["phase"] = None
+def message(mid, text, phase="final_answer", chunk=24, delay=0.03, late=False):
+    """An agent message; `late` leaves its phase out until it completes."""
+    started = {"type": "agentMessage", "id": mid, "text": "", "phase": None if late else phase, "memoryCitation": None}
     item_started(started)
     for i in range(0, len(text), chunk):
         note("item/agentMessage/delta", {"itemId": mid, "delta": text[i:i + chunk]})
         if not pause(delay):
             return False
-    item_completed({**started, "text": text})
+    item_completed({**started, "text": text, "phase": phase})
     return True
 
 
 def reasoning(rid, summary):
+    """Reasoning as Codex streams it: a summary part per paragraph (and raw reasoning text, which
+    clients do not show)."""
+    parts = summary.split("\n\n")
     item_started({"type": "reasoning", "id": rid, "summary": [], "content": []})
-    for i in range(0, len(summary), 20):
-        note("item/reasoning/summaryTextDelta", {"itemId": rid, "delta": summary[i:i + 20], "summaryIndex": 0})
-        if not pause(0.02):
-            return False
-    item_completed({"type": "reasoning", "id": rid, "summary": [summary], "content": []})
+    for k, part in enumerate(parts):
+        note("item/reasoning/summaryPartAdded", {"itemId": rid, "summaryIndex": k})
+        for i in range(0, len(part), 20):
+            note("item/reasoning/summaryTextDelta", {"itemId": rid, "delta": part[i:i + 20], "summaryIndex": k})
+            if not pause(0.02):
+                return False
+        note("item/reasoning/textDelta", {"itemId": rid, "delta": "RAW REASONING, NOT SHOWN ", "contentIndex": 0})
+    item_completed({"type": "reasoning", "id": rid, "summary": parts, "content": ["RAW REASONING, NOT SHOWN"]})
     return True
 
 
@@ -129,15 +141,29 @@ def unified(path, old, new):
     return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), "a/" + path, "b/" + path, n=3))
 
 
-def file_change(fid, changes):
-    """Writes the files, then reports the change as Codex does (unified diffs; a new file's diff is its content)."""
+def read(rel):
+    path = os.path.join(state["cwd"], rel)
+    return open(path, encoding="utf-8").read() if os.path.exists(path) else None
+
+
+def file_change(fid, changes, fails=False, turn_diff=False):
+    """Writes the files (new content None deletes one), then reports the change as Codex does (unified
+    diffs; a new or deleted file's diff is its content). `fails`: the patch does not apply and nothing is
+    written. `turn_diff`: then sends the turn's whole diff, as current Codex versions do."""
     items = []
     for rel, new in changes:
         path = os.path.join(state["cwd"], rel)
-        old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        open(path, "w", encoding="utf-8").write(new)
-        if old is None:
+        old = read(rel)
+        state["base"].setdefault(rel, old)
+        if not fails:
+            if new is None:
+                os.remove(path)
+            else:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w", encoding="utf-8").write(new)
+        if new is None:
+            items.append({"path": path, "kind": {"type": "delete"}, "diff": old})
+        elif old is None:
             items.append({"path": path, "kind": {"type": "add"}, "diff": new})
         else:
             body = unified(rel, old, new)
@@ -147,8 +173,30 @@ def file_change(fid, changes):
     item_started(base)
     if not pause(0.3):
         return False
-    item_completed({**base, "status": "completed"})
+    item_completed({**base, "status": "failed" if fails else "completed"})
+    if turn_diff:
+        send_turn_diff()
     return True
+
+
+def send_turn_diff():
+    """The turn's whole diff, from where its files were when it started (git's format, paths from the work folder)."""
+    out = []
+    for rel, old in sorted(state["base"].items()):
+        new = read(rel)
+        if old == new:
+            continue
+        if old is None:
+            lines = new.splitlines(True)
+            out.append(f"diff --git a/{rel} b/{rel}\nnew file mode 100644\n--- /dev/null\n+++ b/{rel}\n"
+                       f"@@ -0,0 +1,{len(lines)} @@\n" + "".join("+" + l for l in lines))
+        elif new is None:
+            lines = old.splitlines(True)
+            out.append(f"diff --git a/{rel} b/{rel}\ndeleted file mode 100644\n--- a/{rel}\n+++ /dev/null\n"
+                       f"@@ -1,{len(lines)} +0,0 @@\n" + "".join("-" + l for l in lines))
+        else:
+            out.append(f"diff --git a/{rel} b/{rel}\n" + unified(rel, old, new))
+    note("turn/diff/updated", {"turnId": state["turn"], "diff": "".join(out)})
 
 
 OLD = "import calendar\nfrom datetime import date\n\n\ndef quarter_end(year, q):\n    return date(year, q * 3, 31)\n"
@@ -173,7 +221,7 @@ All 5 tests pass."""
 def explore(n):
     k = lambda x: f"{x}{n}"
     cwd = state["cwd"]
-    if not reasoning(k("r"), "**Locating the date math**\n\nThe error says the day is out of range, so the quarter end is probably built with a fixed day."):
+    if not reasoning(k("r"), "**Locating the date math**\n\nThe error says the day is out of range, so the quarter end is probably built with a fixed day.\n\n**Reading the export code**"):
         return end("interrupted")
     if not message(k("m"), "I'll find where the quarter end is computed, then reproduce the crash.", "commentary"):
         return end("interrupted")
@@ -216,21 +264,38 @@ def explore(n):
 
 
 def ask(n):
-    if not message(f"m{n}", "Before I change anything I need one decision.", "commentary"):
+    if not message(f"m{n}", "Before I change anything I need two decisions.", "commentary"):
         return end("interrupted")
     answered.clear()
     answers.clear()
     rid = state["next_id"] = state["next_id"] + 1
     send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
-        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}",
-        "questions": [{"id": "scope", "header": "Scope", "question": "Should I fix report/monthly.py too?", "isOther": True, "isSecret": False,
-                       "options": [{"label": "Fix it too", "description": "Same bug, same fix"}, {"label": "Only export.py", "description": "Keep the change small"}]}]}})
+        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": True,
+        "questions": [
+            {"id": "scope", "header": "Scope", "question": "Should I fix report/monthly.py too?", "isOther": True, "isSecret": False,
+             "options": [{"label": "Fix it too (Recommended)", "description": "Same bug, same fix"},
+                         {"label": "Only export.py", "description": "Keep the change small"}]},
+            {"id": "tests", "header": "Tests", "question": "Add a test for every quarter?", "isOther": False, "isSecret": False,
+             "options": [{"label": "Yes", "description": ""}, {"label": "No", "description": ""}]}]}})
     state["asking"] = rid
     while not answered.wait(0.2):
         if interrupted.is_set():
             return end("interrupted")
-    choice = (answers.get("scope") or {}).get("answers", ["?"])[0]
-    if not message(f"a{n}", f"Going with **{choice}**. Nothing else needed changing.", "final_answer"):
+    got = lambda q: ", ".join((answers.get(q) or {}).get("answers", [])) or "no answer"
+    if not message(f"a{n}", f"Going with **{got('scope')}**; tests: {got('tests')}. Answered: {', '.join(sorted(answers)) or 'none'}.", "final_answer"):
+        return end("interrupted")
+    end()
+
+
+def resolved(n):
+    rid = state["next_id"] = state["next_id"] + 1
+    send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
+        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": False,
+        "questions": [{"id": "name", "header": "Name", "question": "What should the report be called?", "isOther": False, "isSecret": False, "options": None}]}})
+    if not pause(2.5):
+        return end("interrupted")
+    note("serverRequest/resolved", {"requestId": rid})
+    if not message(f"a{n}", "No answer came, so I kept the name **report.csv**.", "final_answer"):
         return end("interrupted")
     end()
 
@@ -320,6 +385,55 @@ def compact(n):
     end()
 
 
+def reedit(n):
+    if not message(f"m{n}", "Adding a usage section to the README, then tidying it.", "commentary"):
+        return end("interrupted")
+    readme = read("README.md") or "# Report tool\n"
+    first = readme + "\n## Usage\n\nRun `python3 export.py --quarter Q1`.\n"
+    if not file_change(f"p{n}", [("README.md", first)], turn_diff=True):
+        return end("interrupted")
+    if not file_change(f"q{n}", [("scratch.txt", "notes while editing\n")], turn_diff=True):
+        return end("interrupted")
+    second = readme + "\n## Usage\n\nRun `python3 export.py --quarter Q1` (or Q2 to Q4).\n"
+    if not file_change(f"r{n}", [("README.md", second)], turn_diff=True):
+        return end("interrupted")
+    if not file_change(f"s{n}", [("scratch.txt", None)], turn_diff=True):
+        return end("interrupted")
+    if not message(f"a{n}", "Added a **Usage** section to the README.", "final_answer"):
+        return end("interrupted")
+    end()
+
+
+def badpatch(n):
+    if not message(f"m{n}", "Renaming the export function.", "commentary"):
+        return end("interrupted")
+    old = read("export.py") or OLD
+    if not file_change(f"p{n}", [("export.py", old.replace("quarter_end", "end_of_quarter"))], fails=True):
+        return end("interrupted")
+    if not message(f"a{n}", "The edit did not apply, so `export.py` is unchanged.", "final_answer"):
+        return end("interrupted")
+    end()
+
+
+def latephase(n):
+    if not message(f"m{n}", "Checking the README first.", "commentary", late=True):
+        return end("interrupted")
+    if not command(f"c{n}", "cat README.md", [{"type": "read", "command": "cat README.md", "name": "README.md", "path": os.path.join(state["cwd"], "README.md")}], read("README.md") or "", 0, 0.2):
+        return end("interrupted")
+    if not message(f"a{n}", "LATE ANSWER: the README describes the report tool.", "final_answer", late=True):
+        return end("interrupted")
+    end()
+
+
+def drawl(n):
+    if not command(f"c{n}", "ls", [{"type": "listFiles", "command": "ls", "path": None}], "README.md\nexport.py\n", 0, 0.2):
+        return end("interrupted")
+    text = "".join(f"Paragraph {i}: the report tool exports one file per quarter, and each file is checked.\n\n" for i in range(1, 25))
+    if not message(f"a{n}", text, "final_answer", 24, 0.08):
+        return end("interrupted")
+    end()
+
+
 def short(n):
     if not reasoning(f"r{n}", "**Answering directly**"):
         return end("interrupted")
@@ -328,7 +442,8 @@ def short(n):
     end()
 
 
-SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact)]
+SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact), ("RESOLVED", resolved),
+           ("REEDIT", reedit), ("BADPATCH", badpatch), ("LATEPHASE", latephase), ("DRAWL", drawl)]
 
 
 def run_turn(text):
@@ -336,6 +451,7 @@ def run_turn(text):
     n = state["n"]
     interrupted.clear()
     steers.clear()
+    state["base"] = {}
     for word, fn in SCRIPTS:
         if word in text:
             return fn(n)
@@ -376,7 +492,8 @@ for line in sys.stdin:
             steers.append(text_of(params.get("input") or []))
             result(rid, {"turnId": state["turn"]})
     elif method == "turn/interrupt":
-        interrupted.set()
+        # Codex takes a moment to stop what runs; so does the stand-in, so "Stopping…" can be seen.
+        threading.Timer(0.8, interrupted.set).start()
         result(rid, {})
     elif method == "thread/backgroundTerminals/list":
         result(rid, {"data": [], "nextCursor": None})

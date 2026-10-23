@@ -309,7 +309,7 @@ function QuestionReceipt({ row }: { row: Extract<ClRow, { kind: "question" }> })
   if (!b.answered && !b.outcome) return null;
   const parts = questionParts(b);
   const answerOf = (q: string, i: number): string | null => {
-    const a = b.answers?.[q] ?? (i === 0 ? b.answer : undefined);
+    const a = b.partAnswers?.[q] ?? (i === 0 ? b.answer : undefined);
     if (a === undefined || a === "") return null;
     if (a === NO_PREFERENCE) return t("cl_q_no_pref");
     return a.replace(OTHER_EMPTY, t("cl_q_other_empty"));

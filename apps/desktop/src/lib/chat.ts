@@ -111,7 +111,12 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
   | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean; exit_code?: number; duration_ms?: number }
   | { t: "plan"; entries: PlanEntry[] }
-  | { t: "question"; qid: string; prompt: string; options?: string[]; questions?: QuestionItem[] }
+  /** `questions`: every part of a question that asks several at once (Claude). Codex also says which
+   *  request it belongs to (its questions are answered together) and more about it. */
+  | { t: "question"; qid: string; prompt: string; options?: string[]; questions?: QuestionItem[]; request?: string; item_id?: string;
+      header?: string; descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean }
+  /** A question request is over (Codex), with the answers given. */
+  | { t: "question_done"; request: string; answers?: Record<string, string[]>; how: string }
   /** The session's title (the agent's summary of the first message, or a name the user gave it). */
   | { t: "title"; title: string; source?: "auto" | "agent" | "user" }
   /** The agent wants to use a tool and its permission mode says to ask first. */
@@ -125,6 +130,8 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
       cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
+  /** Everything the turn changed as one unified diff (Codex), sent just before its end. */
+  | { t: "turn_diff"; diff: string; truncated?: boolean }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
   | { t: "commands"; commands: SlashCommand[] }
@@ -232,17 +239,24 @@ export interface ToolItem {
   /** A finished command's exit code and how long the tool ran, when the agent reports them (Codex). */
   exitCode?: number;
   durationMs?: number;
+  /** The agent never said it ended: the end of its turn closed it. */
+  endedByTurn?: boolean;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
-export type TextBlock = { kind: "text"; id: string; text: string; phase?: MessagePhase };
-export type QuestionBlock = {
-  kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string;
-  /** The parts of a question from a host that asks several at once (with when it came, `seq`). */
-  questions?: QuestionItem[]; seq?: number;
-  /** The answers per part as sent, and how it was settled (`resolved`). */
-  answers?: Record<string, string>; outcome?: Outcome;
-};
+/** `startedTs`: when its first piece came (an older chat restored from storage may lack it). */
+export type TextBlock = { kind: "text"; id: string; text: string; phase?: MessagePhase; startedTs?: number };
+/**
+ * The agent's question. Claude's may have several parts (`questions`, with when it came, `seq`), answered
+ * per part (`partAnswers`, as sent) and settled by `resolved` (`outcome`). Codex's carry their `request`
+ * (answered together), a `header`, a description per option, whether a free answer is welcome (`other`),
+ * whether it is a `secret`; once the request is over, `answers` and `how` (answered, skipped, resolved,
+ * dismissed).
+ */
+export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string;
+  questions?: QuestionItem[]; seq?: number; partAnswers?: Record<string, string>; outcome?: Outcome;
+  request?: string; header?: string; descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean;
+  answers?: string[]; how?: string };
 
 /** How a request was settled: the outcome, which device answered, and when. */
 export interface Resolution {
@@ -293,6 +307,8 @@ export interface Turn {
   durationMs: number | null;
   reason: string | null;
   usage: Usage | null;
+  /** Everything the turn changed, when the agent reports it as one diff (Codex). */
+  diff?: { text: string; truncated: boolean };
 }
 
 export interface Chat {
@@ -440,7 +456,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       } else if (kind === "thought") {
         b.push({ kind: "thought", id: e.id, text: e.text, startedTs: e.ts, endedTs: e.ts });
       } else {
-        b.push({ kind: "text", id: e.id, text: e.text, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) });
+        b.push({ kind: "text", id: e.id, text: e.text, startedTs: e.ts, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) });
       }
       break;
     }
@@ -470,7 +486,22 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
     }
     case "question":
       b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false,
-        ...(e.questions?.length ? { questions: e.questions, seq: e.seq } : {}) });
+        ...(e.questions?.length ? { questions: e.questions, seq: e.seq } : {}),
+        ...(e.request !== undefined ? { request: e.request } : {}), ...(e.header ? { header: e.header } : {}),
+        ...(e.descriptions?.length ? { descriptions: e.descriptions } : {}), ...(e.other ? { other: true } : {}),
+        ...(e.secret ? { secret: true } : {}), ...(typeof e.blocking === "boolean" ? { blocking: e.blocking } : {}) });
+      break;
+    case "question_done":
+      // Every question of the request, in whichever turn asked it.
+      for (let k = 0; k < c.turns.length; k++) {
+        const t = c.turns[k];
+        if (!t.blocks.some((x) => x.kind === "question" && x.request === e.request)) continue;
+        c.turns[k] = { ...t, blocks: t.blocks.map((x) => {
+          if (x.kind !== "question" || x.request !== e.request) return x;
+          const answers = e.answers?.[x.qid] ?? [];
+          return { ...x, answered: true, answers, answer: answers.join(", ") || x.answer, how: e.how };
+        }) };
+      }
       break;
     case "usage": {
       turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
@@ -482,6 +513,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       }
       break;
     }
+    case "turn_diff":
+      turn.diff = { text: e.diff, truncated: !!e.truncated };
+      break;
     case "turn_end":
       turn.status = e.status;
       turn.finalText = e.final_text ?? null;
@@ -491,7 +525,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       for (let i = 0; i < b.length; i++) {
         const x = b[i];
         if (x.kind === "tool" && (x.status === "in_progress" || x.status === "pending")) {
-          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, ...(e.status === "interrupted" ? { stopped: true } : {}) };
+          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, endedByTurn: true, ...(e.status === "interrupted" ? { stopped: true } : {}) };
         }
       }
       // What the turn still asked about falls away with it (a host says so with `resolved` too).
@@ -572,13 +606,21 @@ export function answerCommand(qid: string, text: string, answers?: Record<string
   return { answer: { qid, text, ...(answers && Object.keys(answers).length ? { answers } : {}) } };
 }
 
-/** Marks a question answered (the answer goes to the host separately); `answers` keeps each part's. */
-export function markAnswered(prev: Chat, qid: string, answer?: string, answers?: Record<string, string>): Chat {
+/**
+ * Marks a question answered (the answer goes to the host separately). The last argument is Codex's
+ * `request` (only that request's question of that id; a question already answered keeps its answer),
+ * or Claude's answers per part (`partAnswers`).
+ */
+export function markAnswered(prev: Chat, qid: string, answer?: string, extra?: string | Record<string, string>): Chat {
+  const request = typeof extra === "string" ? extra : undefined;
+  const partAnswers = typeof extra === "object" ? extra : undefined;
+  const hit = (b: Block): b is QuestionBlock =>
+    b.kind === "question" && b.qid === qid && (request !== undefined ? b.request === request : partAnswers ? true : !b.answered);
   return {
     ...prev,
     turns: prev.turns.map((t) =>
-      t.blocks.some((b) => b.kind === "question" && b.qid === qid)
-        ? { ...t, blocks: t.blocks.map((b) => (b.kind === "question" && b.qid === qid ? { ...b, answered: true, answer, ...(answers ? { answers } : {}) } : b)) }
+      t.blocks.some(hit)
+        ? { ...t, blocks: t.blocks.map((b) => (hit(b) ? { ...b, answered: true, answer, ...(partAnswers ? { partAnswers } : {}) } : b)) }
         : t,
     ),
   };

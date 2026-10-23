@@ -169,6 +169,9 @@ struct PhoneUserRow: View {
     let by: String
     let ts: Double
     var extra = PhoneUserExtra()
+    /// The bubble's ground and corner (the Codex view draws it in faint ink, as Codex's app does).
+    var bubble = Color.blue.opacity(0.15)
+    var radius: CGFloat = 14
     @Environment(\.phoneSentImages) private var sent
     @PhoneViewState private var open = false
     private var long: Bool { text.components(separatedBy: "\n").count > 12 || text.count > 1200 }
@@ -186,7 +189,7 @@ struct PhoneUserRow: View {
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+                .background(bubble, in: RoundedRectangle(cornerRadius: radius))
                 }
                 HStack(spacing: 6) {
                     if !by.isEmpty { Text(by) }

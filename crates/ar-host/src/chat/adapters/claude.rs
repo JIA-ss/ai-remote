@@ -432,6 +432,13 @@ fn can_use_tool(st: &mut State, request: Value, req: &Value, writes: &mut Vec<St
                 prompt: first.question.clone(),
                 options: first.options.iter().map(|o| o.label.clone()).collect(),
                 questions: questions.clone(),
+                request: None,
+                item_id: None,
+                header: None,
+                descriptions: Vec::new(),
+                other: false,
+                secret: false,
+                blocking: None,
             }));
             st.asks.insert(qid, ask(input));
         }
@@ -1137,7 +1144,9 @@ mod tests {
         ]});
         let (w, outs) = run_lines(&mut st, &[can_use("r1", "AskUserQuestion", input.clone(), json!({}))]);
         assert!(w.is_empty(), "nothing is answered until a person does");
-        let Some(Out::Ev(Ev::Question { qid, prompt, options, questions })) = outs.first() else { panic!("{outs:?}") };
+        let Some(Out::Ev(Ev::Question { qid, prompt, options, questions, .. })) = outs.first() else {
+            panic!("{outs:?}")
+        };
         assert_eq!((prompt.as_str(), options.len(), questions.len()), ("Which config?", 2, 2));
         assert_eq!(questions[0].options[0].description.as_deref(), Some("fast"));
         assert!(questions[1].multi && !questions[0].multi);

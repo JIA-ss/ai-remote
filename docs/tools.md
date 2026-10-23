@@ -697,12 +697,21 @@ each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user` (`s
 joined the running turn, numbered with it; `attachments`: name, type and size of the images sent
 with it, whose bytes are not kept), `turn_start`,
 `message` / `thought` (`id`, `text`, `delta`: continues message `id`; a Codex `message` also says its
-`phase`, `commentary` between steps or `final_answer`), `tool_call` (`call_id`,
+`phase`, `commentary` between steps or `final_answer`; a Codex `thought` is the reasoning summary
+only, its parts separated by a blank line), `tool_call` (`call_id`,
 `title`, `kind`: read, edit, delete, move, search, execute, think, fetch, other; `status`; `input`;
 `locations`; `content`; `parent`: the sub-agent call that made it, for Claude Code's sub-agents), `tool_update` (`call_id`, `status`, `content`: text or
 `{type:"diff",path,old,new}`, `truncated`; without `status`, a piece of a running command's output;
-Codex also gives a finished command's `exit_code` and the tool's `duration_ms`),
-`plan`, `question` (`qid`, `prompt`, `options`), `usage` (tokens, cost, and when the agent reports
+Codex also gives a finished command's `exit_code` and the tool's `duration_ms`; a Codex command's
+`input` is `{command, cwd, actions}`, its command without the shell around it and Codex's reading of
+it, and an edit's is `{files: [{path, kind, move_path, diff, truncated}]}`),
+`plan`, `turn_diff` (Codex: the turn's whole change since it started as one git-style diff, `diff`,
+`truncated` past 512 KiB; sent just before `turn_end`), `question` (`qid`, `prompt`, `options`; a Codex question also has `request`, the request it
+belongs to, whose questions are answered together with one `answer` per question, an empty text
+skipping it; `item_id`, `header`, `descriptions` aligned with `options`, `other` when a free answer
+is welcome besides the options, `secret`, `blocking`), `question_done` (Codex: `request`, `answers`
+by question id, `how`: answered, skipped, resolved — Codex closed it or its turn ended — or
+dismissed — its turn was stopped), `usage` (tokens, cost, and when the agent reports
 them `context_window`, `context_used`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`),
 `turn_end` (`status`: completed, failed, interrupted; `final_text`, `duration_ms`, `reason`), `state`
 (`state`, `queued`), `commands` (the agent's slash commands and skills, all of them, sent when the

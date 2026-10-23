@@ -38,7 +38,7 @@ import {
   type RuntimesReport,
   type SessionInfo,
 } from "../lib/chat";
-import { isCodexRuntime } from "../lib/codex";
+import { codexTurn, isCodexRuntime, pendingRequest } from "../lib/codex";
 import { t } from "../lib/i18n";
 import { quoteText, rememberImages } from "../lib/chat-input";
 import { Search } from "lucide-react";
@@ -47,6 +47,8 @@ import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/Fol
 import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
+import { CodexLiveStrip, livePlan } from "./codex/CodexLiveStrip";
+import { CodexRequestCard, requestKey } from "./codex/CodexRequestCard";
 import { Icon } from "./Icon";
 import { ClaudeConversation } from "./claude/ClaudeConversation";
 import { cx } from "./util";
@@ -532,6 +534,45 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
     setChat((c) => markAnswered(c, qid, value));
     setFollow((n) => n + 1);
   }, [setChat]);
+  // Codex asks in a card in place of the composer; a request the reader closed (which stops the turn)
+  // is not asked again while the stop takes effect.
+  const pending = codex ? pendingRequest(chat) : null;
+  const pendingId = pending ? requestKey(host, target.session, pending) : null;
+  const [closed, setClosed] = useState<string | null>(null);
+  const asking = pending && pendingId !== closed ? pending : null;
+  const plan = codex && !asking ? livePlan(chat.turns) : null;
+  const onAnswers = (request: string | null, answers: Array<[string, string]>) => {
+    for (const [qid, text] of answers) sendRef.current({ answer: { qid, text } });
+    setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, request ?? undefined), c));
+    setFollow((n) => n + 1);
+  };
+  // Codex: Esc twice within 2 s stops the turn (the first press shows "Esc" on the Stop button); a
+  // message sent while the answer is already coming waits for the turn to end.
+  const [escArmed, setEscArmed] = useState(false);
+  const escTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const runningTurn = running ? [...chat.turns].reverse().find((x) => x.status === "running") : undefined;
+  const disarm = () => {
+    clearTimeout(escTimer.current);
+    setEscArmed(false);
+  };
+  useEffect(disarm, [runningTurn?.n, running]);
+  const answering = useMemo(() => codex && !!runningTurn && codexTurn(runningTurn).answer !== null, [codex, runningTurn]);
+  const onEsc = (e: React.KeyboardEvent) => {
+    if (!codex || e.key !== "Escape" || e.repeat || !running || readonly || asking || e.nativeEvent.isComposing) return;
+    const at = e.target as HTMLElement;
+    if (document.querySelector(".nt-chat .nt-ac") || at.closest(".nt-findbar, .nt-qd.editing, [role=dialog], [role=menu]")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (escArmed) {
+      disarm();
+      send({ interrupt: {} });
+      (document.querySelector(".nt-chat .nt-compose textarea") as HTMLTextAreaElement | null)?.focus();
+    } else {
+      setEscArmed(true);
+      clearTimeout(escTimer.current);
+      escTimer.current = setTimeout(() => setEscArmed(false), 2000);
+    }
+  };
   const onContinue = useCallback(() => {
     sendRef.current(inputCommand(newId(), t("hc_continue_prompt")));
     setFollow((n) => n + 1);
@@ -559,6 +600,7 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
     <div
       className={cx("nt-chat", codex && "cdx")}
       onKeyDownCapture={(e) => {
+        onEsc(e);
         // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
           e.preventDefault();
@@ -575,7 +617,8 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
           <span className="nm">{agent}</span>
           {hello?.cwd ? <FolderLabel host={host} path={hello.cwd} className="cwd" /> : <span className="cwd" />}
         </div>
-        {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
+        {/* A Codex turn says itself how long it works (its "Working for" line). */}
+        {running && ph.since && !codex && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
         <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
           <Search size={14} />
@@ -617,8 +660,21 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
         variant={codex ? "codex" : "default"}
         session={target.session}
         cwd={hello?.cwd ?? null}
+        loading={!hello || chat.seq < hello.seq}
       />
       </PreviewProvider>
+      {plan && <CodexLiveStrip plan={plan} />}
+      {asking && pendingId && (
+        <div className="cdx-reqs">
+          <CodexRequestCard key={pendingId} req={asking} id={pendingId} readonly={readonly}
+            onSubmit={(answers) => onAnswers(asking.request, answers)}
+            onDismiss={() => {
+              setClosed(pendingId);
+              send({ interrupt: {} });
+            }} />
+        </div>
+      )}
+      <div className="nt-compose-slot" hidden={!!asking}>
       <Composer
         agent={agent}
         host={host}
@@ -628,8 +684,18 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
         context={chat.context}
         queued={chat.queued}
         history={history}
-        onSend={sendText}
-        onStop={() => send({ interrupt: {} })}
+        onSend={(text, mode, images) => {
+          disarm();
+          sendText(text, mode, images);
+        }}
+        onStop={() => {
+          disarm();
+          send({ interrupt: {} });
+        }}
+        variant={codex ? "codex" : "default"}
+        stopping={chat.state === "interrupting"}
+        forceQueue={answering}
+        escArmed={escArmed}
         onDequeue={(id) => send({ dequeue: { id } })}
         onEditQueued={(id, text) => {
           for (const c of editQueued(id, newId(), text)) send(c);
@@ -644,6 +710,7 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
           send(inputCommand(newId(), text, "steer"));
         }}
       />
+      </div>
     </div>
   );
 }

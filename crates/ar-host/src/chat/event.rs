@@ -8,6 +8,8 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -15,6 +17,11 @@ use serde_json::Value;
 pub const PREVIEW: usize = 8 * 1024;
 /// Most text kept of either side of a diff.
 pub const DIFF_SIDE: usize = 64 * 1024;
+/// Most text kept of a turn's whole diff.
+pub const TURN_DIFF: usize = 512 * 1024;
+/// Most text all the diffs of one tool call may take together, so one event stays well under what a
+/// controller reads as one line (4 MiB).
+pub const DIFF_TOTAL: usize = 2 * 1024 * 1024;
 
 /// What a tool does, for the icon and the summary line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,8 +261,9 @@ pub enum Ev {
     Plan {
         entries: Vec<PlanEntry>,
     },
-    /// The agent asks the user; answered with an `answer` command. `prompt` and `options` are the
-    /// first part, for controllers that know only one; `questions` has every part.
+    /// The agent asks the user; answered with an `answer` command (one per question). `prompt` and
+    /// `options` are the first part, for controllers that know only one; `questions` has every part
+    /// (Claude's AskUserQuestion).
     Question {
         qid: String,
         prompt: String,
@@ -263,6 +271,34 @@ pub enum Ev {
         options: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         questions: Vec<QuestionItem>,
+        /// Codex: the request the question belongs to (its questions are answered together; an
+        /// empty answer skips one), the item that asked, the question's short header, a description
+        /// per option (aligned with `options`, empty where it has none), whether a free answer is
+        /// welcome besides the options, whether it is a secret (typed but not shown), and whether
+        /// the turn waits on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        descriptions: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        other: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocking: Option<bool>,
+    },
+    /// A question request is over (Codex): `how` is `answered`, `skipped` (every answer empty),
+    /// `resolved` (Codex closed it, or its turn ended unanswered) or `dismissed` (its turn was
+    /// stopped); `answers` are the non-empty answers by question id.
+    QuestionDone {
+        request: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        answers: BTreeMap<String, Vec<String>>,
+        how: String,
     },
     /// The session's title: the agent's summary of the first message, or a name someone gave it.
     Title {
@@ -347,6 +383,13 @@ pub enum Ev {
     /// (an ACP agent that takes no images).
     Agent {
         images: bool,
+    },
+    /// Everything the turn changed, as one unified diff over all files, where the agent reports it
+    /// (Codex): repeated edits of a file show as their net result. Cut to [`TURN_DIFF`].
+    TurnDiff {
+        diff: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
     /// The commands and skills the agent offers now (all of them; the list replaces the last one).
     Commands {

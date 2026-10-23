@@ -9,7 +9,8 @@
 // module turns the events of a turn (lib/chat.ts) into that structure. The layout was studied from
 // Codex's app; the code and wording here are this project's own.
 
-import { baseName, diffRows, type Block, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ThoughtBlock, type ToolItem, type Turn } from "./chat";
+import { baseName, diffRows, type Block, type Chat, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ToolItem, type Turn } from "./chat";
+import { inlineText, parseInline } from "./markdown";
 
 /** Whether a session's agent is Codex: by its protocol, or (hosts that do not say) its id or name. */
 export function isCodexRuntime(runtime: { id?: string; name?: string; protocol?: string | null } | null | undefined): boolean {
@@ -97,19 +98,24 @@ export function unwrapShell(raw: string): string {
   return raw.trim();
 }
 
-/** Splits a command line at `&&`, `||`, `;` and `|` outside quotes; `|` ends a segment's own command. */
-function segments(cmd: string): string[][] {
+/**
+ * A command line's commands (split at `&&`, `||`, `;` and newlines outside quotes), each as its pipeline's
+ * stages. Null when the line does what a plain reading cannot follow: a redirection (`>`, `<`, `2>&1`),
+ * a command substitution, a background job. Such a line shows as a command, never as a read.
+ */
+function commandList(cmd: string): string[][] | null {
   const out: string[][] = [[]];
   let cur = "";
   let quote: string | null = null;
-  const push = (newSegment: boolean) => {
+  const end = (next: boolean) => {
     out[out.length - 1].push(cur.trim());
     cur = "";
-    if (newSegment) out.push([]);
+    if (next) out.push([]);
   };
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
     if (quote) {
+      if (quote === '"' && (c === "`" || (c === "$" && cmd[i + 1] === "("))) return null;
       cur += c;
       if (c === "\\" && quote === '"' && i + 1 < cmd.length) cur += cmd[++i];
       else if (c === quote) quote = null;
@@ -118,25 +124,34 @@ function segments(cmd: string): string[][] {
     if (c === "'" || c === '"') {
       quote = c;
       cur += c;
+    } else if (c === "`" || (c === "$" && cmd[i + 1] === "(") || c === ">" || c === "<") {
+      return null;
     } else if ((c === "&" && cmd[i + 1] === "&") || (c === "|" && cmd[i + 1] === "|")) {
-      push(true);
+      end(true);
       i++;
+    } else if (c === "&") {
+      return null;
     } else if (c === ";" || c === "\n") {
-      push(true);
+      end(true);
     } else if (c === "|") {
-      push(false);
+      end(false);
     } else {
       cur += c;
     }
   }
-  push(false);
+  end(false);
   return out.map((s) => s.filter(Boolean)).filter((s) => s.length);
 }
+
+/** Commands that only reshape what comes down a pipe (and so may follow a read or a search). */
+const PIPE_FILTERS = new Set(["head", "tail", "wc", "sort", "uniq", "nl", "cut", "tr", "column", "fold", "fmt", "grep", "egrep", "fgrep",
+  "rg", "sed", "jq", "cat", "less", "more", "select-object", "select", "select-string", "sort-object", "measure-object", "format-table",
+  "out-string", "ft", "sls"]);
 
 /** Options of search tools that take a value (so the value is not the pattern). */
 const SEARCH_VALUE_FLAGS = new Set(["-g", "--glob", "-t", "--type", "-T", "--type-not", "-m", "--max-count", "-A", "-B", "-C",
   "--context", "--after-context", "--before-context", "-f", "--file", "--max-depth", "-d", "--include", "--exclude",
-  "--exclude-dir", "--color", "--colors", "-j", "--threads", "-M", "--max-columns", "--sort", "--sortr", "--type-add"]);
+  "--exclude-dir", "--color", "--colors", "-j", "--threads", "-M", "--max-columns", "--sort", "--sortr", "--type-add", "-e", "--regexp"]);
 
 function positional(words: string[], valueFlags: Set<string> = new Set()): string[] {
   const out: string[] = [];
@@ -155,18 +170,49 @@ function positional(words: string[], valueFlags: Set<string> = new Set()): strin
   return out;
 }
 
-/** What one command does (the first command of a pipeline decides). */
+/** PowerShell's parameters (`-Path x`, case-insensitive) and the words that are not parameters. */
+const PS_SWITCHES = new Set(["-recurse", "-force", "-raw", "-wait", "-casesensitive", "-simplematch", "-list", "-name", "-file",
+  "-directory", "-hidden", "-quiet", "-notmatch", "-allmatches", "-asbytestream"]);
+function psArgs(words: string[]): { params: Map<string, string | true>; rest: string[] } {
+  const params = new Map<string, string | true>();
+  const rest: string[] = [];
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (/^-[A-Za-z]/.test(w)) {
+      const name = w.toLowerCase();
+      if (!PS_SWITCHES.has(name) && i + 1 < words.length && !/^-[A-Za-z]/.test(words[i + 1])) params.set(name, words[++i]);
+      else params.set(name, true);
+    } else {
+      rest.push(w);
+    }
+  }
+  return { params, rest };
+}
+
+/** Whether a command writes, deletes or runs something else although its program usually only reads. */
+function changesThings(p: string, words: string[]): boolean {
+  if (p === "sed") return words.some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith("--in-place"));
+  if (p === "find") return words.some((w) => ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"].includes(w));
+  if (p === "fd" || p === "fdfind") return words.some((w) => ["-x", "-X", "--exec", "--exec-batch"].includes(w));
+  if (p === "rg") return words.some((w) => w === "--pre" || w.startsWith("--pre="));
+  return false;
+}
+
+/** What one command does. */
 function actionOf(words: string[]): CmdAction[] | "noop" {
+  const p = program(words[0] ?? "");
+  if (changesThings(p, words)) return [{ type: "unknown" }];
   const one = actionOfOne(words);
   if (one === "noop" || one.type !== "read") return one === "noop" ? one : [one];
   // `cat a b` reads both.
-  const p = program(words[0] ?? "");
   if (["cat", "bat", "batcat", "less", "more", "nl"].includes(p)) {
     const files = positional(words);
     if (files.length > 1) return files.map((f) => ({ type: "read", path: f, name: baseName(f) }));
   }
   return [one];
 }
+
+const read = (path: string): CmdAction => ({ type: "read", path, name: baseName(path) });
 
 function actionOfOne(words: string[]): CmdAction | "noop" {
   const p = program(words[0] ?? "");
@@ -178,7 +224,6 @@ function actionOfOne(words: string[]): CmdAction | "noop" {
     case "true":
     case "pwd":
     case ":":
-      return "noop";
     case "cd":
       return "noop";
     case "cat":
@@ -187,32 +232,42 @@ function actionOfOne(words: string[]): CmdAction | "noop" {
     case "less":
     case "more":
     case "nl":
-    case "head":
-    case "tail":
-    case "get-content":
     case "type":
-      if (p === "head" || p === "tail") {
-        const files = positional(words, new Set(["-n", "-c", "--lines", "--bytes"]));
-        return files.length ? { type: "read", path: files.at(-1)!, name: baseName(files.at(-1)!) } : { type: "unknown" };
-      }
-      return last ? { type: "read", path: last, name: baseName(last) } : { type: "unknown" };
+      return last ? read(last) : { type: "unknown" };
+    case "head":
+    case "tail": {
+      const files = positional(words, new Set(["-n", "-c", "--lines", "--bytes"]));
+      return files.length ? read(files.at(-1)!) : { type: "unknown" };
+    }
+    case "get-content":
+    case "gc": {
+      const { params, rest } = psArgs(words);
+      const path = params.get("-path") ?? params.get("-literalpath") ?? rest[0];
+      return typeof path === "string" ? read(path) : { type: "unknown" };
+    }
     case "sed": {
       // `sed -n '1,80p' file` prints part of a file.
       if (!words.includes("-n") || args.length < 2 || !/^\d*,?\d*p$/.test(args[0])) return { type: "unknown" };
-      return { type: "read", path: last!, name: baseName(last!) };
+      return read(last!);
     }
     case "rg":
     case "grep":
     case "egrep":
     case "fgrep":
     case "ag":
-    case "ack":
-    case "select-string": {
-      if (words.includes("--files")) return { type: "list_files", path: positional(words, SEARCH_VALUE_FLAGS)[0] ?? null };
-      const e = words.findIndex((w) => w === "-e" || w === "--regexp");
+    case "ack": {
       const pos = positional(words, SEARCH_VALUE_FLAGS);
-      if (e > 0) return { type: "search", query: words[e + 1] ?? null, path: pos.find((w) => w !== words[e + 1]) ?? null };
+      if (words.includes("--files")) return { type: "list_files", path: pos[0] ?? null };
+      const e = words.findIndex((w) => w === "-e" || w === "--regexp");
+      if (e > 0) return { type: "search", query: words[e + 1] ?? null, path: pos[0] ?? null };
       return { type: "search", query: pos[0] ?? null, path: pos[1] ?? null };
+    }
+    case "select-string":
+    case "sls": {
+      const { params, rest } = psArgs(words);
+      const query = params.get("-pattern") ?? rest[0];
+      const path = params.get("-path") ?? params.get("-literalpath") ?? (params.has("-pattern") ? rest[0] : rest[1]);
+      return { type: "search", query: typeof query === "string" ? query : null, path: typeof path === "string" ? path : null };
     }
     case "git":
       if (words[1] === "grep") {
@@ -231,13 +286,18 @@ function actionOfOne(words: string[]): CmdAction | "noop" {
       const root = words[1] && !words[1].startsWith("-") ? words[1] : null;
       return name > 0 ? { type: "search", query: words[name + 1] ?? null, path: root } : { type: "list_files", path: root };
     }
-    case "ls":
+    case "get-childitem":
+    case "gci":
+    case "dir":
+    case "ls": {
+      if (p === "ls" || p === "dir") return { type: "list_files", path: last };
+      const { params, rest } = psArgs(words);
+      const path = params.get("-path") ?? params.get("-literalpath") ?? rest[0];
+      return { type: "list_files", path: typeof path === "string" ? path : null };
+    }
     case "tree":
     case "eza":
     case "exa":
-    case "dir":
-    case "get-childitem":
-    case "gci":
       return { type: "list_files", path: last };
     default:
       return { type: "unknown" };
@@ -246,9 +306,17 @@ function actionOfOne(words: string[]): CmdAction | "noop" {
 
 /** Codex's reading of a command where the host did not send one: reads, searches and listings, else unknown. */
 export function parseCommand(cmd: string): CmdAction[] {
+  const commands = commandList(cmd);
+  if (!commands) return [{ type: "unknown" }];
   const out: CmdAction[] = [];
-  for (const seg of segments(cmd)) {
-    const a = actionOf(splitWords(seg[0]));
+  for (const stages of commands) {
+    // What comes after the first command of a pipeline may only reshape its output.
+    for (const stage of stages.slice(1)) {
+      const w = splitWords(stage);
+      const p = program(w[0] ?? "");
+      if (!PIPE_FILTERS.has(p) || changesThings(p, w)) return [{ type: "unknown" }];
+    }
+    const a = actionOf(splitWords(stages[0]));
     if (a === "noop") continue;
     out.push(...a);
   }
@@ -304,7 +372,8 @@ function readExec(x: ToolItem): ExecInfo {
     output = output.slice(0, m.index);
     exitCode ??= Number(m[1]);
   }
-  if (exitCode === null && x.status === "completed" && !x.stopped) exitCode = 0;
+  // Completed without a code: it succeeded, unless it was only closed by the end of its turn.
+  if (exitCode === null && x.status === "completed" && !x.stopped && !x.endedByTurn) exitCode = 0;
   const durationMs = typeof x.durationMs === "number" ? x.durationMs : x.endedTs !== null ? x.endedTs - x.startedTs : null;
   return { command, cwd: typeof input.cwd === "string" ? input.cwd : null, actions, explore, exitCode, durationMs, output };
 }
@@ -334,6 +403,13 @@ export interface FileChange {
   add: number;
   del: number;
   lines: DiffLine[];
+  /** The host cut its diff short (a very large change). */
+  truncated?: boolean;
+}
+
+/** Whether a "diff" is a unified diff, rather than the content Codex sends for an added or deleted file. */
+function looksLikeDiff(diff: string): boolean {
+  return /^(@@ -\d|--- |diff --git )/.test(diff.replace(/^\s*\n/, ""));
 }
 
 /** The lines of a unified diff with their line numbers (a new file's "diff" may be its content). */
@@ -343,7 +419,7 @@ export function parseUnifiedDiff(diff: string, kind: FileChange["kind"] = "updat
   const lines: DiffLine[] = [];
   let add = 0;
   let del = 0;
-  if (!raw.some((l) => l.startsWith("@@"))) {
+  if (kind !== "update" ? !looksLikeDiff(diff) : !raw.some((l) => /^@@ -\d/.test(l))) {
     // No hunks: an added file comes as its content, a deleted one as what it held.
     raw.forEach((text, i) => {
       if (kind === "delete") {
@@ -392,12 +468,23 @@ export function fileChanges(x: ToolItem): FileChange[] {
 function readFiles(x: ToolItem): FileChange[] {
   const files = (x.input as { files?: unknown } | undefined)?.files;
   if (Array.isArray(files) && files.length) {
+    const fromContent = contentFiles(x);
     return files.map((f: Record<string, unknown>) => {
       const kind = f.kind === "add" || f.kind === "delete" ? f.kind : "update";
-      const parsed = parseUnifiedDiff(typeof f.diff === "string" ? f.diff : "", kind);
-      return { path: String(f.path ?? ""), movePath: typeof f.move_path === "string" ? f.move_path : null, kind, ...parsed };
+      const path = String(f.path ?? "");
+      const movePath = typeof f.move_path === "string" ? f.move_path : null;
+      const diff = typeof f.diff === "string" ? f.diff : "";
+      // Past the host's budget a file comes without its diff: what the call's content has of it.
+      const fallback = !diff && f.truncated ? fromContent.find((c) => c.path === path) : undefined;
+      if (fallback) return { ...fallback, kind, movePath, truncated: true };
+      return { path, movePath, kind, ...parseUnifiedDiff(diff, kind), ...(f.truncated ? { truncated: true } : {}) };
     });
   }
+  return contentFiles(x);
+}
+
+/** The files of an edit from its per-hunk diffs (older hosts), merged per path, without line numbers. */
+function contentFiles(x: ToolItem): FileChange[] {
   const out: FileChange[] = [];
   for (const c of x.content) {
     if (c.type !== "diff") continue;
@@ -425,8 +512,51 @@ function readFiles(x: ToolItem): FileChange[] {
   return out;
 }
 
-/** The files a whole turn changed, merged per path in the order first changed. */
-export function turnChanges(turn: Turn): FileChange[] {
+/** A path joined to the folder it is relative to (a path that is absolute already stays as it is). */
+export function joinPath(cwd: string | null | undefined, rel: string): string {
+  if (!cwd || /^([A-Za-z]:[\\/]|[\\/])/.test(rel)) return rel;
+  const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
+  return `${cwd.replace(/[\\/]+$/, "")}${sep}${sep === "\\" ? rel.replace(/\//g, "\\") : rel}`;
+}
+
+/** The files of a whole-turn diff (`diff --git a/x b/x` sections, as git and Codex write them). */
+export function parseTurnDiff(text: string, cwd?: string | null): FileChange[] {
+  const out: FileChange[] = [];
+  const sections = text.replace(/\r\n/g, "\n").split(/^(?=diff --git )/m).filter((s) => s.startsWith("diff --git "));
+  for (const sec of sections) {
+    const lines = sec.split("\n");
+    const head = /^diff --git a\/(.+?) b\/(.+)$/.exec(lines[0]);
+    let from = head?.[1] ?? null;
+    let to = head?.[2] ?? null;
+    let kind: FileChange["kind"] = "update";
+    const at = lines.findIndex((l) => l.startsWith("@@"));
+    for (const l of lines.slice(1, at < 0 ? lines.length : at)) {
+      if (l.startsWith("new file mode")) kind = "add";
+      else if (l.startsWith("deleted file mode")) kind = "delete";
+      else if (l.startsWith("rename from ")) from = l.slice(12);
+      else if (l.startsWith("rename to ")) to = l.slice(10);
+      else if (l === "--- /dev/null") kind = "add";
+      else if (l === "+++ /dev/null") kind = "delete";
+    }
+    if (!from && !to) continue;
+    const body = at < 0 ? "" : lines.slice(at).join("\n");
+    const parsed = body ? parseUnifiedDiff(body, "update") : { lines: [], add: 0, del: 0 };
+    const path = joinPath(cwd, (kind === "add" ? to : from) ?? to ?? "");
+    const moved = kind === "update" && from && to && from !== to ? joinPath(cwd, to) : null;
+    out.push({ path, movePath: moved, kind, ...parsed });
+  }
+  return out;
+}
+
+/**
+ * The files a whole turn changed: Codex's own diff of the turn where the host passes it on (each file
+ * once, as its net change), otherwise each edit's files merged per path in the order first changed.
+ */
+export function turnChanges(turn: Turn, cwd?: string | null): FileChange[] {
+  if (turn.diff && !turn.diff.truncated) {
+    const fromDiff = parseTurnDiff(turn.diff.text, cwd);
+    if (fromDiff.length) return fromDiff;
+  }
   const out = new Map<string, FileChange>();
   for (const b of turn.blocks) {
     if (b.kind !== "tool" || !isEditTool(b) || b.status === "failed") continue;
@@ -436,14 +566,47 @@ export function turnChanges(turn: Turn): FileChange[] {
         out.set(f.path, { ...f, lines: f.lines.slice() });
         continue;
       }
+      // Created then deleted in the same turn: nothing is left of it.
+      if (have.kind === "add" && f.kind === "delete") {
+        out.delete(f.path);
+        continue;
+      }
       have.add += f.add;
       have.del += f.del;
       have.lines.push(...f.lines);
       have.movePath = f.movePath ?? have.movePath;
-      if (f.kind === "delete") have.kind = "delete";
+      // Deleted then written again: it changed; deleted at the end: it is gone. An added file stays added.
+      have.kind = have.kind === "delete" && f.kind === "add" ? "update" : f.kind === "delete" ? "delete" : have.kind;
+      if (f.truncated) have.truncated = true;
     }
   }
   return [...out.values()];
+}
+
+/**
+ * A file's change as a patch git applies (`git apply`), or null when it cannot be one: an older host's
+ * diffs carry no line numbers.
+ */
+export function filePatch(f: FileChange, cwd: string | null | undefined): string | null {
+  const changed = f.lines.filter((l): l is Exclude<DiffLine, { kind: "hunk" }> => l.kind !== "hunk");
+  if (!changed.length || f.truncated || changed.some((l) => l.old === null && l.new === null)) return null;
+  const rel = (p: string) => relPath(p, cwd).replace(/\\/g, "/").replace(/^\/+/, "");
+  const a = rel(f.path);
+  const b = rel(f.movePath ?? f.path);
+  const head = [`diff --git a/${a} b/${b}`];
+  if (f.kind === "add") head.push("new file mode 100644", "--- /dev/null", `+++ b/${b}`);
+  else if (f.kind === "delete") head.push("deleted file mode 100644", `--- a/${a}`, "+++ /dev/null");
+  else head.push(`--- a/${a}`, `+++ b/${b}`);
+  const body: string[] = [];
+  // The content of an added or deleted file comes without a hunk header of its own.
+  if (!f.lines.some((l) => l.kind === "hunk" && /^@@ -\d/.test(l.text))) {
+    body.push(f.kind === "delete" ? `@@ -1,${changed.length} +0,0 @@` : `@@ -0,0 +1,${changed.length} @@`);
+  }
+  for (const l of f.lines) {
+    if (l.kind === "hunk") body.push(l.text);
+    else body.push(`${l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}${l.text}`);
+  }
+  return `${[...head, ...body].join("\n")}\n`;
 }
 
 export function isEditTool(x: ToolItem): boolean {
@@ -458,19 +621,17 @@ export type Act =
   | { kind: "exec"; key: string; tool: ToolItem; info: ExecInfo }
   | { kind: "patch"; key: string; tool: ToolItem; files: FileChange[] }
   | { kind: "web"; key: string; tool: ToolItem; query: string }
-  | { kind: "tool"; key: string; tool: ToolItem }
-  /** Reasoning between two tool calls of a group. */
-  | { kind: "thought"; key: string; block: ThoughtBlock };
+  | { kind: "tool"; key: string; tool: ToolItem };
 
 export type Unit =
   /** Tool calls in a row, shown as one line. */
   | { kind: "group"; key: string; acts: Act[]; live: boolean }
   /** What the agent said between steps. */
   | { kind: "message"; key: string; block: TextBlock; streaming: boolean }
-  | { kind: "thought"; key: string; block: ThoughtBlock; live: boolean }
   /** A sub-agent the agent started. */
   | { kind: "agent"; key: string; tool: ToolItem }
-  | { kind: "question"; key: string; block: QuestionBlock }
+  /** Questions the agent asked (one request), once they are answered or closed. */
+  | { kind: "asked"; key: string; questions: QuestionBlock[] }
   | { kind: "notice"; key: string; level: string; code: string; text: string }
   /** A message the user added to the running turn. */
   | { kind: "steer"; key: string; block: Extract<Block, { kind: "user" }> };
@@ -484,6 +645,8 @@ export interface CodexTurn {
   status: "working" | "worked" | "stopped" | "failed";
   /** The agent is thinking now (nothing else shows that it is working). */
   thinking: boolean;
+  /** The title of the agent's latest reasoning (its summary's last line), said while it works. */
+  title: string | null;
   /** A question waits for the user's answer. */
   asking: boolean;
   /** The turn's plan as last updated (shown above its work, not as a step of it). */
@@ -519,19 +682,21 @@ function answerIndex(turn: Turn): number {
   if (!x || x.kind !== "text" || !x.text.trim()) return -1;
   if (x.phase === "final_answer") return last;
   if (x.phase === "commentary") return -1;
-  // A host that does not say: the last text of a finished turn, after all its work.
+  // A host that does not say: the last text of a turn that completed, after all its work (a turn that
+  // failed or was stopped has no answer, only what it said on the way).
   const phased = b.some((y) => y.kind === "text" && y.phase);
-  return !phased && turn.status !== "running" ? last : -1;
+  return !phased && turn.status === "completed" ? last : -1;
 }
 
-/** The units of a turn, its answer, and how its work is summed up. */
-export function codexTurn(turn: Turn): CodexTurn {
+/** The units of a turn, its answer, and how its work is summed up (`cwd`: what the turn's diff is relative to). */
+export function codexTurn(turn: Turn, cwd?: string | null): CodexTurn {
   const live = turn.status === "running";
   const b = turn.blocks;
   const ans = answerIndex(turn);
   const units: Unit[] = [];
   let group: Extract<Unit, { kind: "group" }> | null = null;
   let plan: PlanEntry[] | null = null;
+  let title: string | null = null;
   const groupable = (x: Block | undefined) => x?.kind === "tool" && !isAgentTool(x);
   for (let i = 0; i < b.length; i++) {
     if (i === ans) continue;
@@ -539,6 +704,11 @@ export function codexTurn(turn: Turn): CodexTurn {
     if (x.kind === "plan") {
       // A plan update is not a step: it neither shows in the work nor splits a group.
       plan = x.entries;
+      continue;
+    }
+    if (x.kind === "thought") {
+      // Reasoning is not a step either (as in Codex's app): only its title says what the agent is at.
+      title = reasoningTitle(x.text) ?? title;
       continue;
     }
     if (groupable(x)) {
@@ -550,18 +720,8 @@ export function codexTurn(turn: Turn): CodexTurn {
       group.acts.push(actOf(tool));
       continue;
     }
-    if (x.kind === "thought") {
-      // Reasoning between two tool calls stays in their group; anywhere else it is a line of its own.
-      let next = i + 1;
-      while (next < b.length && (b[next].kind === "thought" || b[next].kind === "plan")) next++;
-      if (group && groupable(b[next])) {
-        group.acts.push({ kind: "thought", key: `t:${x.id}`, block: x });
-        continue;
-      }
-      group = null;
-      if (x.text.trim()) units.push({ kind: "thought", key: `t${turn.n}:${x.id}`, block: x, live: false });
-      continue;
-    }
+    // A question still waiting is asked in its own card, in place of the composer.
+    if (x.kind === "question" && live && !x.answered) continue;
     group = null;
     switch (x.kind) {
       case "text":
@@ -570,9 +730,16 @@ export function codexTurn(turn: Turn): CodexTurn {
       case "tool":
         units.push({ kind: "agent", key: `a${turn.n}:${x.callId}`, tool: x });
         break;
-      case "question":
-        units.push({ kind: "question", key: `q${turn.n}:${x.qid}`, block: x });
+      case "question": {
+        // One line per request (an older host does not say: questions in a row are one request).
+        const prev = units[units.length - 1];
+        const same = x.request !== undefined
+          ? units.find((u): u is Extract<Unit, { kind: "asked" }> => u.kind === "asked" && u.questions[0].request === x.request)
+          : prev?.kind === "asked" && prev.questions[0].request === undefined ? prev : undefined;
+        if (same) same.questions.push(x);
+        else units.push({ kind: "asked", key: `q${turn.n}:${x.request ?? x.qid}`, questions: [x] });
         break;
+      }
       case "notice":
         units.push({ kind: "notice", key: `n${turn.n}:${i}`, level: x.level, code: x.code, text: x.text });
         break;
@@ -587,13 +754,14 @@ export function codexTurn(turn: Turn): CodexTurn {
   let thinking = false;
   if (live) {
     for (const u of units) {
-      if (u.kind === "group") u.live = u.acts.some((a) => a.kind !== "thought" && running(a.tool));
+      if (u.kind === "group") u.live = u.acts.some((a) => running(a.tool));
     }
+    // The last group stays the live line until something else follows it (the next call may come).
     if (lastUnit?.kind === "group" && ans < 0) lastUnit.live = true;
     if (lastUnit?.kind === "message" && ans < 0 && lastBlock?.kind === "text") lastUnit.streaming = true;
-    if (lastUnit?.kind === "thought" && lastBlock?.kind === "thought") lastUnit.live = true;
     // Nothing on screen says the agent is busy: it is thinking.
-    const busy = units.some((u) => (u.kind === "group" && u.live) || (u.kind === "thought" && u.live) || (u.kind === "message" && u.streaming))
+    const busy = units.some((u) => (u.kind === "group" && u.acts.some((a) => running(a.tool))) || (u.kind === "message" && u.streaming)
+      || (u.kind === "agent" && running(u.tool)))
       || (ans >= 0 && lastBlock === b[ans]);
     thinking = !busy && !asking;
   }
@@ -602,21 +770,23 @@ export function codexTurn(turn: Turn): CodexTurn {
   return {
     units,
     answer,
-    // Reasoning alone is not work worth folding away.
-    foldable: answer !== null && turn.status !== "interrupted" && units.some((u) => u.kind !== "thought"),
+    // A compaction alone is not work worth folding away.
+    foldable: answer !== null && turn.status !== "interrupted" && units.some((u) => !(u.kind === "notice" && u.code === "compacted")),
     status,
     thinking,
+    title: live ? title : null,
     asking,
     plan,
-    changes: live ? [] : turnChanges(turn),
+    changes: live ? [] : turnChanges(turn, cwd),
   };
 }
 
 /** What a group did, by kind, in the order Codex names them: edits, reads, commands, web searches, tools. */
-export type SummaryPart = "edited" | "read" | "ran" | "web" | "tools" | "agents";
+export type SummaryPart = "edited" | "read" | "ran" | "web" | "tools" | "failed";
 
 export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n: number }>; add: number; del: number } {
   const edited = new Set<string>();
+  const failed = new Set<string>();
   const read = new Set<string>();
   let explored = 0;
   let ran = 0;
@@ -626,7 +796,10 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
   let del = 0;
   for (const a of acts) {
     if (a.kind === "patch") {
-      if (a.tool.status === "failed") continue;
+      if (a.tool.status === "failed" && !a.tool.stopped) {
+        for (const f of a.files) failed.add(f.path);
+        continue;
+      }
       for (const f of a.files) {
         edited.add(f.path);
         add += f.add;
@@ -646,6 +819,8 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
   if (ran) parts.push({ part: "ran", n: ran });
   if (web) parts.push({ part: "web", n: web });
   if (tools) parts.push({ part: "tools", n: tools });
+  // Edits that did not apply are said last, so a group of only those still has words.
+  if (failed.size) parts.push({ part: "failed", n: failed.size });
   return { parts, add, del };
 }
 
@@ -653,42 +828,93 @@ export function groupSummary(acts: Act[]): { parts: Array<{ part: SummaryPart; n
 export function activeAct(acts: Act[]): Act | null {
   for (let i = acts.length - 1; i >= 0; i--) {
     const a = acts[i];
-    if (a.kind !== "thought" && running(a.tool)) return a;
+    if (running(a.tool)) return a;
   }
-  for (let i = acts.length - 1; i >= 0; i--) if (acts[i].kind !== "thought") return acts[i];
-  return null;
+  return acts.at(-1) ?? null;
 }
 
-/** How long a turn worked, from its start to its end (or now). */
+/**
+ * How long a turn worked: up to the moment its answer started (the answer is not work), else to its
+ * end, or to now while it runs.
+ */
 export function workedMs(turn: Turn, now: number): number {
-  if (turn.durationMs !== null && turn.status !== "running") return turn.durationMs;
   const start = turn.startedTs ?? turn.user?.ts ?? now;
+  const ans = answerIndex(turn);
+  const answered = ans >= 0 ? (turn.blocks[ans] as TextBlock).startedTs : undefined;
+  if (answered !== undefined) return Math.max(0, answered - start);
+  if (turn.durationMs !== null && turn.status !== "running") return turn.durationMs;
   return Math.max(0, now - start);
 }
 
-/** "8s", "1m 23s", "2h 5m" (Codex's way), or the Chinese equivalent. */
-export function duration(ms: number, zh = false): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return zh ? `${s} 秒` : `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return zh ? `${m} 分 ${s % 60} 秒` : `${m}m ${s % 60}s`;
-  return zh ? `${Math.floor(m / 60)} 小时 ${m % 60} 分` : `${Math.floor(m / 60)}h ${m % 60}m`;
+/** The title reasoning gives itself: its summary's last line (bold, or as plain text), without comments. */
+export function reasoningTitle(text: string): string | null {
+  const lines = text.replace(/<!--[\s\S]*?(-->|$)/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const line = lines.at(-1);
+  if (!line) return null;
+  const bold = /^\*\*(.+)\*\*$/.exec(line);
+  const title = (bold ? bold[1] : inlineText(parseInline(line))).trim();
+  return title || null;
 }
 
-/** A command's run time for its line ("in 2.4s"): under a second it is not worth saying. */
-export function elapsed(ms: number | null, zh = false): string | null {
+function units(lang: string): Array<[number, Intl.NumberFormat]> {
+  const f = (unit: string) => new Intl.NumberFormat(lang, { style: "unit", unit, unitDisplay: "narrow" });
+  return [[86400, f("day")], [3600, f("hour")], [60, f("minute")], [1, f("second")]];
+}
+const unitCache = new Map<string, Array<[number, Intl.NumberFormat]>>();
+function parts(ms: number, lang: string): Array<{ n: number; text: string }> {
+  let fmts = unitCache.get(lang);
+  if (!fmts) unitCache.set(lang, (fmts = units(lang)));
+  let s = Math.max(0, Math.floor(ms / 1000));
+  return fmts.map(([size, f]) => {
+    const n = Math.floor(s / size);
+    s -= n * size;
+    return { n, text: f.format(n) };
+  });
+}
+
+/**
+ * A command's run time, as its line says it ("12s", "1m 0s", "1h 0m 3s"): every unit from the
+ * largest one on; null under a second.
+ */
+export function durationA(ms: number | null, lang: string): string | null {
   if (ms === null || ms < 1000) return null;
-  if (ms < 10_000) return zh ? `${(ms / 1000).toFixed(1)} 秒` : `${(ms / 1000).toFixed(1)}s`;
-  return duration(ms, zh);
+  const p = parts(ms, lang);
+  const first = p.findIndex((x) => x.n > 0);
+  return p.slice(first).map((x) => x.text).join(" ");
 }
 
-/** The step of a plan the agent is on, for the plan's line ("Step 2 / 5"). */
+/** How long a turn worked ("0s", "1m", "1h 5s"): units that are not zero. */
+export function durationB(ms: number, lang: string): string {
+  const p = parts(ms, lang).filter((x) => x.n > 0);
+  return p.length ? p.map((x) => x.text).join(" ") : parts(0, lang)[3].text;
+}
+
+/** The step of a plan the agent is on ("Step 2 / 5"): the one in progress, else the first not done. */
 export function planStep(entries: PlanEntry[]): { step: number; total: number; done: number; current: PlanEntry | null } {
   const done = entries.filter((e) => e.status === "completed").length;
-  const at = entries.findIndex((e) => e.status === "in_progress");
-  const current = at >= 0 ? entries[at] : entries.find((e) => e.status !== "completed") ?? null;
-  const step = at >= 0 ? at + 1 : Math.min(done + 1, entries.length);
-  return { step, total: entries.length, done, current };
+  let at = entries.findIndex((e) => e.status === "in_progress");
+  if (at < 0) at = entries.findIndex((e) => e.status !== "completed");
+  const current = at >= 0 ? entries[at] : null;
+  return { step: at >= 0 ? at + 1 : entries.length, total: entries.length, done, current };
+}
+
+/**
+ * The questions waiting for the user's answer: the latest request of the running turn (an older host
+ * names no request: all the turn's open questions).
+ */
+export function pendingRequest(chat: Pick<Chat, "turns">): { turn: number; request: string | null; questions: QuestionBlock[] } | null {
+  const turn = [...chat.turns].reverse().find((t) => t.status === "running");
+  if (!turn) return null;
+  const open = turn.blocks.filter((b): b is QuestionBlock => b.kind === "question" && !b.answered);
+  if (!open.length) return null;
+  const request = open[open.length - 1].request ?? null;
+  return { turn: turn.n, request, questions: request === null ? open.filter((q) => q.request === undefined) : open.filter((q) => q.request === request) };
+}
+
+/** An option's label without Codex's " (Recommended)" mark, and whether it had it. */
+export function splitRecommended(label: string): { label: string; recommended: boolean } {
+  const m = /^(.*\S)\s+\(Recommended\)$/.exec(label);
+  return m ? { label: m[1], recommended: true } : { label, recommended: false };
 }
 
 export type { MessagePhase };

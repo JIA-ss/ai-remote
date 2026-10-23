@@ -94,7 +94,7 @@
     while (Date.now() < end) {
       const t = lastTurn();
       if (t) {
-        for (const s of $$(".cdx-shimmer", t)) live.add(text(s));
+        for (const s of $$(".cdx-act.is-live .cdx-cad > .x-base, .cdx-thinking", t)) live.add(text(s));
         if ($(".cdx-answer.streaming", t) && $(".cdx-worked", t) && !$(".cdx-work", t)) folded = true;
         if (!t.classList.contains("running") && !running()) break;
       }
@@ -104,7 +104,7 @@
     await check("the first turn finishes without failing", !!t1 && !t1.classList.contains("running") && !$(".nt-notice.error", t1), text(t1).slice(-300));
     await check("live lines named what Codex was doing", live.size > 0 && ![...live].some((l) => SHELL.test(l)), [...live].join(" | "));
     await check("the work folded while the answer streamed (or at the end)", folded || (!!$(".cdx-worked", t1) && !$(".cdx-work", t1)));
-    await check("'Worked for' and the answer", /Worked for|工作了/.test(text($(".cdx-worked", t1))) && text($(".cdx-answer", t1)).length > 10, text($(".cdx-answer", t1)).slice(0, 200));
+    await check("'Worked for' and the answer", /Worked for|用时/.test(text($(".cdx-worked", t1))) && text($(".cdx-answer", t1)).length > 10, text($(".cdx-answer", t1)).slice(0, 200));
     const changes = $(".cdx-changes", t1);
     await check("the turn's changes list export.py", !!changes && $$(".x-file", changes).some((f) => text(f).includes("export.py")), text(changes));
     if (changes) {
@@ -130,7 +130,7 @@
     const n2 = turns().length;
     await send("Run these as separate shell commands, one at a time, and nothing else: sleep 3, then echo one, then sleep 3, then echo two, then sleep 3, then echo three, then sleep 3, then echo four. Then reply with the last word you echoed.");
     await until("turn 2", () => turns().length > n2 && running(), 30000);
-    await until("a command runs", () => $$(".cdx-shimmer", lastTurn()).some((s) => /sleep|echo/.test(text(s))), 60000);
+    await until("a command runs", () => $$(".cdx-act.is-live", lastTurn()).some((s) => /sleep|echo/.test(text(s))), 60000);
     await send("Change of plan: stop after echo two and reply DONE.");
     const steer = await until("steer bubble", () => $$(".nt-user", lastTurn()).find((u) => u.textContent.includes("Change of plan")), 15000);
     await check("the steer joins the running turn", !!steer && steer.dataset.steer === "1");
@@ -143,10 +143,10 @@
     const n3 = turns().length;
     await send("Run exactly this shell command and nothing else: sleep 120");
     await until("turn 3", () => turns().length > n3, 30000);
-    const sl = await until("sleep runs", () => $$(".cdx-shimmer", lastTurn()).some((s) => /sleep 120/.test(text(s))), 90000);
+    const sl = await until("sleep runs", () => $$(".cdx-act.is-live", lastTurn()).some((s) => /sleep 120/.test(text(s))), 90000);
     await check("the long command shows running", !!sl, text(lastTurn()).slice(-200));
     $(".nt-compose .round.stop").click();
-    const stopped = await until("stopped", () => $(".cdx-divider.x-stop", lastTurn()), 30000);
+    const stopped = await until("stopped", () => $(".cdx-worked.x-stop", lastTurn()), 30000);
     await check("Stop ends the turn and says so", !!stopped, text(lastTurn()).slice(-200));
     await check("it offers to continue", !!$(".nt-stopped .btn", lastTurn()));
     await shot("r04-stopped");

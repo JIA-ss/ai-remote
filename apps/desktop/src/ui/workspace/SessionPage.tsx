@@ -11,7 +11,8 @@ import { folderName } from "../../lib/chat";
 import { t } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
 import { sessionKey, type WsItem, type WsSnapshot } from "../../lib/workspace";
-import { Conversation, type ChatTarget } from "../AgentChat";
+import type { ChatTarget } from "../AgentChat";
+import { ClaudeConversation } from "../claude/ClaudeConversation";
 import { CodexConversation, isCodexRuntime } from "../codex/CodexConversation";
 import { Later, PopMenu, type MenuLine, type Toast } from "./parts";
 import { RenameField, titleOf } from "./Sidebar";
@@ -112,10 +113,13 @@ export function SessionPage({
     );
   } else {
     const codex = isCodexRuntime({ id: item.meta.runtime, name: item.meta.name });
-    const View = codex ? CodexConversation : Conversation;
     body = (
       <div className="ws-convo">
-        <View key={key} host={host} target={target} onLeave={() => onLeave()} />
+        {codex ? (
+          <CodexConversation key={key} host={host} target={target} onLeave={() => onLeave()} />
+        ) : (
+          <ClaudeConversation key={key} host={host} target={target} onLeave={() => onLeave()} variant="page" />
+        )}
       </div>
     );
   }

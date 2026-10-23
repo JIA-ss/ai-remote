@@ -354,7 +354,7 @@ test("a question in parts keeps its parts; resolved answers it, cancelled does n
   assert.deepEqual(plain(chat.openRequests(c).map((r) => [r.kind, r.qid, r.turn])), [["question", "q1", 1]]);
   // Answered here: the parts' answers are kept for the receipt.
   const mine = chat.markAnswered(c, "q1", "release", { "Which config?": "release", "Which targets?": "linux, mac" });
-  assert.deepEqual(plain(mine.turns[0].blocks.find((b) => b.kind === "question").answers), { "Which config?": "release", "Which targets?": "linux, mac" });
+  assert.deepEqual(plain(mine.turns[0].blocks.find((b) => b.kind === "question").partAnswers), { "Which config?": "release", "Which targets?": "linux, mac" });
   assert.equal(chat.openRequests(mine).length, 0);
   // Answered on another device.
   const there = chat.reduceChat(c, ev(1, { t: "resolved", id: "q1", outcome: "answered", by: { device: "phone" } }));
