@@ -1,10 +1,12 @@
 """Portable behavior checks for Windows CI evidence, without starting any native process."""
+import ast
 import contextlib
 import io
 import importlib.util
 import json
 import os
 import sys
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -27,6 +29,37 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("Alice", stdout.getvalue())
 
+    def test_ci_done_prepares_final_safe_layout_then_reports_count_before_forwarding(self):
+        harness = Path(__file__).with_name('desktop-chat-e2e.py').read_text()
+        hook = next(node.value.value for node in ast.parse(harness).body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'SMOKE_CI_CAPTURE_LAYOUT' for target in node.targets))
+        script = """
+const vm = require('node:vm');
+const events = [];
+const window = { __smokePrepareShot: async(name) => events.push({prepare:name}),
+  __TAURI_INTERNALS__: {invoke: async(command,args) => {events.push({command,...args}); return 17}} };
+const devices = {getBoundingClientRect:() => ({x:0,y:0,width:1280,height:800})};
+const document = {querySelector:(selector) => selector === '.win[data-route="devices"]' ? devices : null};
+vm.runInNewContext(HOOK, {window,document,innerWidth:1280,innerHeight:800,devicePixelRatio:1,
+  getComputedStyle:() => ({visibility:'visible',borderTopLeftRadius:'0',borderTopRightRadius:'0',borderBottomLeftRadius:'0',borderBottomRightRadius:'0'})});
+(async()=>{
+ const invoke = window.__TAURI_INTERNALS__.invoke;
+ await invoke('log_from_page',{level:'e2e',message:'ok    first'});
+ await invoke('log_from_page',{level:'e2e',message:'FAIL  second'});
+ const result = await invoke('log_from_page',{level:'done',message:'1'});
+ process.stdout.write(JSON.stringify({events,result}));
+})().catch(()=>process.exit(1));
+""".replace('HOOK', json.dumps(hook))
+        process = subprocess.run(['node', '-'], input=script, text=True, capture_output=True, check=True)
+        evidence = json.loads(process.stdout)
+        self.assertEqual(evidence['result'], 17)
+        final = evidence['events'][2:]
+        self.assertEqual(final[0], {'prepare': 'zz-final'})
+        self.assertEqual(json.loads(final[1]['message'])['kind'], 'devices_ui')
+        self.assertEqual(json.loads(final[1]['message'])['name'], 'zz-final')
+        self.assertEqual(final[2]['message'], '2 checks')
+        self.assertEqual(final[3]['level'], 'done')
+
     def test_log_counts_are_exact_and_raw_detail_is_not_exported(self):
         source = 'await check("a case (with parentheses)", true); await check("another", true);'
         raw = '\n'.join(['ok    a case (with parentheses)  (C:\\Users\\Alice\\auth.secret)',
@@ -45,7 +78,8 @@ class EvidenceTests(unittest.TestCase):
     def good(self):
         return dict(harness_exit=0, cleanup_ok=True, timed_out=False, runner_error_stage=None,
                     all_passed_count=1, ok_count=12, fail_count=0, failed_summary_counts=[],
-                    app_exit_codes=[0], isolated_storage=True, isolated_placement=True, images=[{'valid': True}])
+                    app_exit_codes=[0], isolated_storage=True, isolated_placement=True, reported_check_counts=[12],
+                    images=[{'valid': True, 'crop_status': 'saved_test_ui_only'}])
 
     def test_success_requires_harness_app_isolation_assertions_and_cleanup(self):
         self.assertTrue(ci.accepted(self.good()))
@@ -53,7 +87,7 @@ class EvidenceTests(unittest.TestCase):
                        {'all_passed_count': 0}, {'all_passed_count': 2}, {'ok_count': 0}, {'fail_count': 1},
                        {'failed_summary_counts': [1]}, {'cleanup_ok': False}, {'timed_out': True},
                        {'isolated_storage': False}, {'isolated_placement': False}, {'images': []},
-                       {'images': [{'valid': False}]}, {'runner_error_stage': 'read_process_exit'}, {'reported_check_counts': [99]}):
+                       {'images': [{'valid': False}]}, {'images': [{'valid': True, 'crop_status': 'omitted_no_reliable_layout'}]}, {'reported_check_counts': []}, {'runner_error_stage': 'read_process_exit'}, {'reported_check_counts': [99]}):
             with self.subTest(change=change):
                 self.assertFalse(ci.accepted({**self.good(), **change}))
 

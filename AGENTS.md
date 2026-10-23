@@ -52,8 +52,8 @@
   Job Object 先纳管暂停的 harness 再恢复，整体超时或正常退出后清掉该 scope 的残留进程，不按进程名清理其他任务。
 - 上传产物仅字段白名单摘要与安全测试 UI 裁图。裁框来自截图前 DOM 和同一进程的原生客户区物理坐标；流式桌面只保留聊天栏，预览只保留对话框并遮掉圆角外像素，工作区保留测试 UI。
   原 PNG、原日志、sessions、homes/auth、WebView 与 drive.js 不上传，也不把 harness 原文送到 Actions console。
-  没有可靠布局的自动终帧等会明确记为未上传/未目视；有效像素检查不等于图审，Windows 裁图须下载后逐张验收。Actions artifact 不称为私有。
-- **本地实测**：7 项便携 runner 行为测试、Python/JS 语法、布局 hook 语法和 YAML 解析通过；前端 391 项（390 过、1 跳过）。
+  CI 模式在发出 done 前采集自动终帧布局及独立断言计数；每张命名/终态截图都须有可靠裁图，缺失时明确未验并使该套失败。有效像素检查不等于图审，Windows 裁图须下载后逐张验收。Actions artifact 不称为私有。
+- **本地实测**：8 项便携 runner 行为测试、Python/JS 语法、布局 hook 语法和 YAML 解析通过；前端 391 项（390 过、1 跳过）。
   2 项 Win32 Job 运行探针只在 Windows 执行，本机跳过；未运行 Windows、Tauri、Cargo、浏览器或 Actions，不能据此记 Windows 已通过。
 
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）

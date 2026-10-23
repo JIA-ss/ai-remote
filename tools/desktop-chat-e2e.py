@@ -162,21 +162,35 @@ window.__smokePrepareShot = async (name) => {
 # screenshot; the normal harness and product do not use this metadata or change their behavior.
 SMOKE_CI_CAPTURE_LAYOUT = r'''(() => {
   const prepare = window.__smokePrepareShot;
+  const nativeInvoke = window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
+  let checks = 0;
   window.__smokePrepareShot = async (name) => {
     await prepare(name);
     const visible = (el) => el && el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== "hidden";
     const modal = document.querySelector(".nt-pv-dlg");
     const rail = document.querySelector(".nt-rail");
     const workspace = document.querySelector(".ws");
-    const element = visible(modal) ? modal : visible(rail) ? rail : visible(workspace) ? workspace : null;
-    const kind = !element ? "unavailable" : element === modal ? "preview_dialog" : element === rail ? "stream_chat_rail" : "workspace_ui";
+    const devices = document.querySelector('.win[data-route="devices"]');
+    const element = visible(modal) ? modal : visible(rail) ? rail : visible(workspace) ? workspace : visible(devices) ? devices : null;
+    const kind = !element ? "unavailable" : element === modal ? "preview_dialog" : element === rail ? "stream_chat_rail" : element === workspace ? "workspace_ui" : "devices_ui";
     const rect = element?.getBoundingClientRect();
     const style = element && getComputedStyle(element);
-    await window.__TAURI_INTERNALS__.invoke("log_from_page", { level: "ci-capture-layout", message: JSON.stringify({
+    await nativeInvoke("log_from_page", { level: "ci-capture-layout", message: JSON.stringify({
       name, kind, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
       rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
       radius: style ? Math.max(...["borderTopLeftRadius", "borderTopRightRadius", "borderBottomLeftRadius", "borderBottomRightRadius"].map((key) => parseFloat(style[key]) || 0)) : 0
     }) });
+  };
+  // The driver captures invoke after this CI-only hook. Forward every real IPC unchanged;
+  // only delay done until the final layout and independently counted checks are recorded.
+  window.__TAURI_INTERNALS__.invoke = (command, args, ...rest) => {
+    if (command === "log_from_page" && args?.level === "e2e" && /^(?:ok  |FAIL\s)/.test(args.message)) checks++;
+    if (command === "log_from_page" && args?.level === "done") return (async () => {
+      await window.__smokePrepareShot("zz-final");
+      await nativeInvoke("log_from_page", { level: "e2e", message: `${checks} checks` });
+      return nativeInvoke(command, args, ...rest);
+    })();
+    return nativeInvoke(command, args, ...rest);
   };
 })();'''
 

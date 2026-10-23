@@ -164,4 +164,4 @@ E2E_SCRIPT=tools/desktop-workspace-e2e.js E2E_QUERY='view=devices&shotlang=zh&sh
 新增独立 Windows 2025 PR/手动 CI，固定工具版本并复用 restore-only 依赖缓存；既有 required jobs 不变。
 CLI 与 Tauri debug/no-bundle 构建后，六套替身各两遍，逐套保存真实 harness/App 退出码、精确检查计数、隔离与超时状态；失败不会靠后续通过覆盖。
 公开 artifact 只含摘要和按真实 DOM/客户区几何裁出的测试 UI，原始屏幕、日志及认证/临时 home 不上传。
-不可靠裁框明确未上传，截图有效性不替代后续逐图 QA。该入口目前仅有本地便携测试与语法检查，Windows 云端尚未运行，历史测试数字保留。
+CI 模式在 done 前采集终帧布局并独立报告检查数；每张命名/终帧均须有可靠裁图，不可靠者明确未上传且该套失败，截图有效性不替代后续逐图 QA。该入口目前仅有本地便携测试与语法检查，Windows 云端尚未运行，历史测试数字保留。

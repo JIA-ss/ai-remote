@@ -25,7 +25,7 @@ SUITES = (
     ("codex", "desktop-chat-codex-e2e.js", 360),
     ("workspace", "desktop-workspace-e2e.js", 600),
 )
-KIND_ALLOWLIST = {"stream_chat_rail", "preview_dialog", "workspace_ui"}
+KIND_ALLOWLIST = {"stream_chat_rail", "preview_dialog", "workspace_ui", "devices_ui"}
 
 
 def digest(path):
@@ -187,9 +187,10 @@ def accepted(record):
             and record.get("runner_error_stage") is None
             and record.get("all_passed_count") == 1 and record.get("ok_count", 0) > 0 and record.get("fail_count") == 0
             and not record.get("failed_summary_counts") and record.get("app_exit_codes") == [0]
-            and all(count == record["ok_count"] + record["fail_count"] for count in record.get("reported_check_counts", []))
+            and bool(record.get("reported_check_counts"))
+            and all(count == record["ok_count"] + record["fail_count"] for count in record["reported_check_counts"])
             and record.get("isolated_storage") and record.get("isolated_placement")
-            and bool(record.get("images")) and all(x.get("valid") for x in record["images"]))
+            and bool(record.get("images")) and all(x.get("valid") and x.get("crop_status") == "saved_test_ui_only" for x in record["images"]))
 
 
 def run_one(suite, round_number, private_root, output, cli, app):
@@ -253,7 +254,7 @@ def main():
     report = {"schema": 1, "platform": "windows-2025", "engine": "WebView2", "fake_only": True,
               "rounds_per_suite": 2, "automatic_retries": 0, "runs": [], "visual_qa": "pending_downloaded_crops",
               "limits": ["Only DOM-observed test UI crops are exported; streaming desktop pixels, raw images/logs, auth and homes are excluded.",
-                         "Automatic final screenshots without matching layout metadata remain omitted and visually unverified.",
+                         "Every named/final screenshot requires a reliable test-UI crop; an omitted crop is unverified and fails the run.",
                          "Pixel checks detect invalid/flat captures and do not replace per-image visual QA."]}
     if not cli.is_file() or not app.is_file():
         report.update(passed=False, error_stage="missing_built_binaries")
