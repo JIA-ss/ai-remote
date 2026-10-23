@@ -221,7 +221,19 @@
     // 2. What the turn shows (the Claude view): reasoning and tool calls folded into one sentence, the task
     // list as a call, an edit with its counts, Markdown, context usage.
     const t1 = lastTurn();
+    // The terminal footer can precede the group header's finite minimum dwell. Wait for the
+    // finished sentence in this same turn, then keep its content and failure-count checks separate.
+    const initialSummaryPresent = !!$(".cl-group .cl-sent", t1)?.textContent.trim();
+    const summaryWaitStarted = performance.now();
+    await until("the first turn's finished tool group sentence", () => t1?.isConnected
+      && !!$(".cl-group .cl-sent", t1)?.textContent.trim());
     const group = $(".cl-group", t1);
+    await say("e2e", `     first_turn_summary_wait: ${JSON.stringify({
+      initial_summary_present: initialSummaryPresent,
+      resolved_after_ms: Math.round(performance.now() - summaryWaitStarted),
+      terminal_footer: !!$(".cl-foot, .cl-stopped", t1),
+      resolved_summary_present: !!group && !!$(".cl-sent", group)?.textContent.trim(),
+    })}`);
     await check("reasoning and tool calls fold into one group with a sentence", !!group && $(".cl-sent", group)?.textContent.length > 0, group?.textContent);
     await check("the sentence counts the failed command", !!group && /1 failed|1 个失败/.test($(".cl-sent", group)?.textContent ?? ""), $(".cl-sent", group)?.textContent);
     await check("the group sums up the edit", !!group && /\+2/.test($(".cl-group-hd .cl-stat .add", group)?.textContent ?? "") && /1/.test($(".cl-group-hd .cl-stat .del", group)?.textContent ?? ""),
