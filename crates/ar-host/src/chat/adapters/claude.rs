@@ -286,6 +286,7 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                                 id,
                                 text: d["text"].as_str().unwrap_or("").into(),
                                 delta: true,
+                                phase: None,
                             }));
                         }
                         "thinking_delta" => {
@@ -322,6 +323,7 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                         id,
                         text: block["text"].as_str().unwrap_or("").into(),
                         delta: false,
+                        phase: None,
                     })),
                     "thinking" if !streamed => outs.push(Out::Ev(Ev::Thought {
                         id,
@@ -377,6 +379,8 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                     status: Some(if failed { ToolStatus::Failed } else { ToolStatus::Completed }),
                     content: if text.is_empty() { vec![] } else { vec![ToolContent::Text { text }] },
                     truncated,
+                    exit_code: None,
+                    duration_ms: None,
                 }));
             }
         }

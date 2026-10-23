@@ -207,12 +207,16 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
     };
     let (backlog, upto, mut live) = chat.follow(since);
     let meta = chat.meta();
-    let caps = host.chat().runtimes(false).await["runtimes"]
+    let runtime = host.chat().runtimes(false).await["runtimes"]
         .as_array()
-        .and_then(|rs| rs.iter().find(|r| r["id"] == meta.runtime.as_str()).map(|r| r["caps"].clone()))
+        .and_then(|rs| rs.iter().find(|r| r["id"] == meta.runtime.as_str()).cloned())
         .unwrap_or(Value::Null);
+    let caps = runtime["caps"].clone();
     let hello = json!({
-        "ok": true, "session": chat.id, "role": role, "runtime": {"id": meta.runtime, "name": meta.name},
+        "ok": true, "session": chat.id, "role": role,
+        // The protocol tells a controller which agent it is (a custom agent has its own id), so it can
+        // show the conversation the way that agent's own app does.
+        "runtime": {"id": meta.runtime, "name": meta.name, "protocol": runtime["protocol"]},
         "cwd": meta.cwd, "state": meta.state, "seq": upto, "caps": caps, "by": meta.by,
         // Every input is answered with an `ack` (or an `error` naming it).
         "acks": true,

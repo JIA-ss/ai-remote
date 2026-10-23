@@ -7,13 +7,14 @@
 // request), finished turns skip layout and paint while off screen (`content-visibility`), and a turn
 // re-renders only when its own events arrive (each turn is memoized on its object).
 
-import { ArrowDown, ChevronDown, ChevronUp, Quote, RotateCcw, X } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronUp, LoaderCircle, Quote, RotateCcw, X } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { findMatches, stepMatch } from "../../lib/chat-input";
 import { phase, stoppedTurn, turnRows, type Block, type Chat, type Outgoing, type Turn } from "../../lib/chat";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { NoticeRow, RowView, TurnFoot, WorkingRow } from "./Rows";
+import { CodexTurnView } from "../codex/CodexTurn";
 
 /** Turns mounted at first; "show earlier" adds this many more each time. */
 const WINDOW = 30;
@@ -190,8 +191,15 @@ function FindBar({ root, focus, onShow, onClose }: { root: React.RefObject<HTMLE
   );
 }
 
-export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote }: {
+export function Transcript({ chat, now, readonly, empty, workingLabel, follow, outgoing = [], onRetry, onDiscard, onAnswer, onContinue, finding = false, findFocus = 0, onCloseFind, onQuote, variant = "default", session = "", cwd = null, loading = false }: {
   chat: Chat;
+  /** The conversation so far is still coming (shown as loading, not as empty). */
+  loading?: boolean;
+  /** `codex`: turns laid out the way Codex's own app shows them (ui/codex). */
+  variant?: "default" | "codex";
+  /** The session (keys what a Codex turn keeps open) and the folder the agent works in. */
+  session?: string;
+  cwd?: string | null;
   /** The find bar is open; `findFocus` changes when ⌘F asks for its field again. */
   finding?: boolean;
   findFocus?: number;
@@ -213,6 +221,24 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [away, setAway] = useState(false);
+  // Codex's way of following the end: any move up by the reader (wheel, drag, keys) lets go at once;
+  // the list takes hold again only at the very end (24 px) and not within a second of such a move. A
+  // jump to the end runs over 260 ms; what the page scrolls itself is no move of the reader's.
+  const codexView = variant === "codex";
+  // The panel knows it is a Codex session only once the session says so (after this list mounted).
+  const codexRef = useRef(codexView);
+  codexRef.current = codexView;
+  const leftAt = useRef(-Infinity);
+  const jumping = useRef<number | null>(null);
+  const touchY = useRef<number | null>(null);
+  const letGo = () => {
+    if (!codexRef.current) return;
+    leftAt.current = performance.now();
+    if (jumping.current !== null) cancelAnimationFrame(jumping.current);
+    jumping.current = null;
+    stick.current = false;
+    setAway(true);
+  };
   const [shown, setShown] = useState(WINDOW);
   const running = chat.state === "running" || chat.state === "starting" || chat.state === "interrupting";
   const stopped = stoppedTurn(chat);
@@ -230,15 +256,24 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
-  // Content that grows without an event (a code block opening, fonts loading) keeps the end in view.
+  // Content that grows without an event (a code block opening, fonts loading) keeps the end in view;
+  // the list itself changing height (the composer growing) keeps the reader where they were.
   useLayoutEffect(() => {
     const el = scroller.current;
     const inner = el?.firstElementChild;
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
+    let height = el.clientHeight;
+    const ro = new ResizeObserver((entries) => {
+      const resized = entries.some((e) => e.target === el) && el.clientHeight !== height;
+      const was = height;
+      height = el.clientHeight;
       if (stick.current) el.scrollTop = el.scrollHeight;
+      // The list itself got shorter or taller (the composer, a question card): what was at its bottom
+      // edge stays there. Content growing below the reader moves nothing.
+      else if (codexRef.current && resized) el.scrollTop += was - el.clientHeight;
     });
     ro.observe(inner);
+    ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
@@ -286,7 +321,25 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
     if (!el) return;
     stick.current = true;
     setAway(false);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (!codexView) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      return;
+    }
+    // Over 260 ms, easing out, aiming each frame at the end as it is then (it may grow meanwhile); at
+    // once with reduced motion, from near the end, or in a hidden window (no frames come there).
+    const start = el.scrollTop;
+    const end = () => el.scrollHeight - el.clientHeight;
+    if (document.hidden || end() - start <= 24 || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / 260);
+      el.scrollTop = start + (end() - start) * (1 - (1 - p) ** 3);
+      jumping.current = p < 1 ? requestAnimationFrame(step) : null;
+    };
+    jumping.current = requestAnimationFrame(step);
   };
 
   return (
@@ -306,11 +359,40 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
         onMouseUp={() => setTimeout(pickQuote, 0)}
         onKeyUp={(e) => e.shiftKey && pickQuote()}
         onScroll={(e) => {
-          if (quote) setQuote(null);
+          // The Quote button follows its selection (a scroll the page makes itself, e.g. to a find
+          // match, must not take it away).
+          if (quote) pickQuote();
           const el = e.currentTarget;
-          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+          if (codexView) {
+            if (jumping.current !== null) return;
+            if (dist <= 24) {
+              if (performance.now() - leftAt.current < 1000) return;
+              stick.current = true;
+              if (away) setAway(false);
+            } else {
+              stick.current = false;
+              if (!away) setAway(true);
+            }
+            return;
+          }
+          const atEnd = dist < 48;
           stick.current = atEnd;
           if (atEnd === away) setAway(!atEnd);
+        }}
+        tabIndex={codexView ? -1 : undefined}
+        onWheel={(e) => e.deltaY < 0 && letGo()}
+        onTouchStart={(e) => {
+          touchY.current = e.touches[0]?.clientY ?? null;
+          if (jumping.current !== null) letGo();
+        }}
+        onTouchMove={(e) => {
+          const y = e.touches[0]?.clientY;
+          if (touchY.current !== null && y !== undefined && y - touchY.current > 8) letGo();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowUp" || e.key === "Home" || e.key === "PageUp" || (e.key === " " && e.shiftKey)) letGo();
+          else if (jumping.current !== null) letGo();
         }}
       >
         <div className="nt-chat-inner" ref={inner}>
@@ -322,28 +404,57 @@ export function Transcript({ chat, now, readonly, empty, workingLabel, follow, o
           {chat.notices.map((n, i) => (
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
-          {chat.turns.length === 0 && !running && outgoing.length === 0 && <div className="nt-chat-empty">{empty}</div>}
-          {visible.map((turn, i) => (
-            <TurnView
-              key={turn.n}
-              turn={turn}
-              now={turn.status === "running" ? now : 0}
-              readonly={readonly}
-              stopped={stopped === turn}
-              onAnswer={onAnswer}
-              onContinue={onContinue}
-              far={i < visible.length - 2}
-            />
-          ))}
+          {chat.turns.length === 0 && !running && outgoing.length === 0 && (loading ? (
+            <div className="cdx-loading" role="status" aria-live="polite">
+              <LoaderCircle size={12} className="spin" aria-hidden />
+              <span>{t("cdx_loading")}</span>
+            </div>
+          ) : <div className="nt-chat-empty">{empty}</div>)}
+          {visible.map((turn, i) =>
+            variant === "codex" ? (
+              <CodexTurnView
+                key={turn.n}
+                turn={turn}
+                session={session}
+                stopping={chat.state === "interrupting" && turn.status === "running"}
+                cwd={cwd}
+                now={turn.status === "running" ? now : 0}
+                readonly={readonly}
+                stopped={stopped === turn}
+                onContinue={onContinue}
+                far={i < visible.length - 2}
+              />
+            ) : (
+              <TurnView
+                key={turn.n}
+                turn={turn}
+                now={turn.status === "running" ? now : 0}
+                readonly={readonly}
+                stopped={stopped === turn}
+                onAnswer={onAnswer}
+                onContinue={onContinue}
+                far={i < visible.length - 2}
+              />
+            ),
+          )}
           {outgoing.map((o) => (
             <OutgoingRow key={o.id} o={o} onRetry={(x) => onRetry?.(x)} onDiscard={(id) => onDiscard?.(id)} />
           ))}
-          {running && <WorkingRow label={workingLabel} since={ph.since} now={now} />}
+          {/* A Codex turn says itself that it works; the line is for the time before its turn exists. */}
+          {running && (variant !== "codex" || !visible.some((t) => t.status === "running")) && <WorkingRow label={workingLabel} since={ph.since} now={now} />}
         </div>
       </div>
-      <button type="button" className="nt-jump" data-shown={away} inert={!away} aria-hidden={!away || undefined} onMouseDown={(e) => e.preventDefault()} onClick={jump}>
-        <ArrowDown size={13} aria-hidden />
-        <span>{t("hc_jump")}</span>
+      <button type="button" className="nt-jump" data-shown={away} inert={!away} aria-hidden={!away || undefined} onMouseDown={(e) => e.preventDefault()} onClick={jump}
+        aria-label={codexView ? t("hc_jump") : undefined} title={codexView ? t("hc_jump") : undefined}>
+        {codexView ? (
+          // While the agent works, three dots wave in place of the arrow.
+          running ? <span className="x-wave" aria-hidden><i /><i /><i /></span> : <ArrowDown size={16} aria-hidden />
+        ) : (
+          <>
+            <ArrowDown size={13} aria-hidden />
+            <span>{t("hc_jump")}</span>
+          </>
+        )}
       </button>
     </div>
   );

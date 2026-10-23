@@ -66,6 +66,8 @@ export interface SessionInfo {
 }
 
 export type ToolContent = { type: "text"; text: string } | { type: "diff"; path: string; old: string | null; new: string };
+/** Where the agent says a message belongs (Codex): said between steps, or its answer to the turn. */
+export type MessagePhase = "commentary" | "final_answer";
 export interface PlanEntry {
   content: string;
   status: string;
@@ -75,15 +77,21 @@ export interface PlanEntry {
 export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "user"; input_id: string; by: { device: string }; text: string; steer?: boolean; attachments?: Attachment[] }
   | { t: "turn_start" }
-  | { t: "message"; id: string; text: string; delta: boolean }
+  | { t: "message"; id: string; text: string; delta: boolean; phase?: MessagePhase }
   | { t: "thought"; id: string; text: string; delta: boolean }
   | { t: "tool_call"; call_id: string; parent?: string; title: string; kind: ToolKind; status: ToolStatus; input?: unknown; locations?: string[]; content?: ToolContent[] }
-  | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean }
+  | { t: "tool_update"; call_id: string; status?: ToolStatus; content?: ToolContent[]; truncated?: boolean; exit_code?: number; duration_ms?: number }
   | { t: "plan"; entries: PlanEntry[] }
-  | { t: "question"; qid: string; prompt: string; options?: string[] }
+  /** Codex also says which request it belongs to (its questions are answered together) and more about it. */
+  | { t: "question"; qid: string; prompt: string; options?: string[]; request?: string; item_id?: string; header?: string;
+      descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean; expires_in_ms?: number }
+  /** A question request is over (Codex), with the answers given. */
+  | { t: "question_done"; request: string; answers?: Record<string, string[]>; how: string }
   | { t: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number; context_window?: number; context_used?: number;
       cache_read_tokens?: number; cache_write_tokens?: number; reasoning_tokens?: number }
   | { t: "turn_end"; status: TurnStatus; final_text?: string; duration_ms: number; reason?: string }
+  /** Everything the turn changed as one unified diff (Codex), sent just before its end. */
+  | { t: "turn_diff"; diff: string; truncated?: boolean }
   | { t: "state"; state: ChatState; queued: Array<{ id: string; text: string }> }
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
   | { t: "commands"; commands: SlashCommand[] }
@@ -157,7 +165,7 @@ export function chatLineKind(m: unknown): "closed" | "event" | "commands" | "rep
 export interface ChatHello {
   session: string;
   role: "rw" | "ro";
-  runtime: { id: string; name: string };
+  runtime: { id: string; name: string; protocol?: string | null };
   cwd: string;
   state: ChatState;
   seq: number;
@@ -188,14 +196,30 @@ export interface ToolItem {
   stopped?: boolean;
   /** The sub-agent call that made this one (shown inside that sub-agent's row). */
   parent?: string;
+  /** A finished command's exit code and how long the tool ran, when the agent reports them (Codex). */
+  exitCode?: number;
+  durationMs?: number;
+  /** The agent never said it ended: the end of its turn closed it. */
+  endedByTurn?: boolean;
 }
 
 export type ThoughtBlock = { kind: "thought"; id: string; text: string; startedTs: number; endedTs: number };
-export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string };
+/** `startedTs`: when its first piece came (an older chat restored from storage may lack it). */
+export type TextBlock = { kind: "text"; id: string; text: string; phase?: MessagePhase; startedTs?: number };
+/**
+ * The agent's question. Codex's carry their `request` (answered together), a `header`, a description
+ * per option, whether a free answer is welcome (`other`), whether it is a `secret`; once the request
+ * is over, `answers` and `how` (answered, skipped, resolved, dismissed).
+ */
+export type QuestionBlock = { kind: "question"; qid: string; prompt: string; options: string[]; answered: boolean; answer?: string;
+  request?: string; header?: string; descriptions?: string[]; other?: boolean; secret?: boolean; blocking?: boolean;
+  /** When the agent goes on without an answer (the host's clock), for a question that does not block the turn. */
+  expiresAt?: number;
+  answers?: string[]; how?: string };
 
 /** One block of a turn, in the order it happened. */
 export type Block =
-  | { kind: "text"; id: string; text: string }
+  | TextBlock
   | ThoughtBlock
   | ToolItem
   | { kind: "plan"; entries: PlanEntry[] }
@@ -225,6 +249,8 @@ export interface Turn {
   durationMs: number | null;
   reason: string | null;
   usage: Usage | null;
+  /** Everything the turn changed, when the agent reports it as one diff (Codex). */
+  diff?: { text: string; truncated: boolean };
 }
 
 export interface Chat {
@@ -337,11 +363,11 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
         const old = b[i] as Extract<Block, { kind: "text" | "thought" }>;
         b[i] = kind === "thought"
           ? { ...(old as ThoughtBlock), text: e.delta ? old.text + e.text : e.text, endedTs: e.ts }
-          : { ...old, text: e.delta ? old.text + e.text : e.text };
+          : { ...old, text: e.delta ? old.text + e.text : e.text, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) };
       } else if (kind === "thought") {
         b.push({ kind: "thought", id: e.id, text: e.text, startedTs: e.ts, endedTs: e.ts });
       } else {
-        b.push({ kind: "text", id: e.id, text: e.text });
+        b.push({ kind: "text", id: e.id, text: e.text, startedTs: e.ts, ...(e.t === "message" && e.phase ? { phase: e.phase } : {}) });
       }
       break;
     }
@@ -357,7 +383,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       const status = e.status ?? old.status;
       b[i] = { ...old, status, content: e.content?.length ? [...old.content, ...e.content] : old.content,
         truncated: old.truncated || !!e.truncated,
-        endedTs: status === "completed" || status === "failed" ? e.ts : old.endedTs };
+        endedTs: status === "completed" || status === "failed" ? e.ts : old.endedTs,
+        ...(typeof e.exit_code === "number" ? { exitCode: e.exit_code } : {}),
+        ...(typeof e.duration_ms === "number" ? { durationMs: e.duration_ms } : {}) };
       break;
     }
     case "plan": {
@@ -368,7 +396,20 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       break;
     }
     case "question":
-      b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false });
+      b.push({ kind: "question", qid: e.qid, prompt: e.prompt, options: e.options ?? [], answered: false,
+        ...(e.request !== undefined ? { request: e.request } : {}), ...(e.header ? { header: e.header } : {}),
+        ...(e.descriptions?.length ? { descriptions: e.descriptions } : {}), ...(e.other ? { other: true } : {}),
+        ...(e.secret ? { secret: true } : {}), ...(typeof e.blocking === "boolean" ? { blocking: e.blocking } : {}),
+        ...(typeof e.expires_in_ms === "number" ? { expiresAt: e.ts + e.expires_in_ms } : {}) });
+      break;
+    case "question_done":
+      // Every question of the request, in the turn that asked it (a request ends with its turn).
+      for (let i = 0; i < b.length; i++) {
+        const x = b[i];
+        if (x.kind !== "question" || x.request !== e.request) continue;
+        const answers = e.answers?.[x.qid] ?? [];
+        b[i] = { ...x, answered: true, answers, answer: answers.join(", ") || x.answer, how: e.how };
+      }
       break;
     case "usage": {
       turn.usage = { input: e.input_tokens, output: e.output_tokens, cost: e.cost_usd, contextWindow: e.context_window, contextUsed: e.context_used,
@@ -380,6 +421,9 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       }
       break;
     }
+    case "turn_diff":
+      turn.diff = { text: e.diff, truncated: !!e.truncated };
+      break;
     case "turn_end":
       turn.status = e.status;
       turn.finalText = e.final_text ?? null;
@@ -389,7 +433,7 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       for (let i = 0; i < b.length; i++) {
         const x = b[i];
         if (x.kind === "tool" && (x.status === "in_progress" || x.status === "pending")) {
-          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, ...(e.status === "interrupted" ? { stopped: true } : {}) };
+          b[i] = { ...x, status: e.status === "completed" ? "completed" : "failed", endedTs: e.ts, endedByTurn: true, ...(e.status === "interrupted" ? { stopped: true } : {}) };
         }
       }
       break;
@@ -399,13 +443,19 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
   return c;
 }
 
-/** Marks a question answered (the answer goes to the host separately). */
-export function markAnswered(prev: Chat, qid: string, answer?: string): Chat {
+/**
+ * Marks a question answered (the answer goes to the host separately): the open question of that id
+ * (with `request`, of that request; with `turn`, in that turn). A question already answered keeps
+ * its answer.
+ */
+export function markAnswered(prev: Chat, qid: string, answer?: string, request?: string, turn?: number): Chat {
+  const hit = (b: Block): b is QuestionBlock =>
+    b.kind === "question" && b.qid === qid && !b.answered && (request === undefined || b.request === request);
   return {
     ...prev,
     turns: prev.turns.map((t) =>
-      t.blocks.some((b) => b.kind === "question" && b.qid === qid)
-        ? { ...t, blocks: t.blocks.map((b) => (b.kind === "question" && b.qid === qid ? { ...b, answered: true, answer } : b)) }
+      (turn === undefined || t.n === turn) && t.blocks.some(hit)
+        ? { ...t, blocks: t.blocks.map((b) => (hit(b) ? { ...b, answered: true, answer } : b)) }
         : t,
     ),
   };

@@ -13,6 +13,13 @@ import SwiftUI
     /// `rw` for the device that started the session, `ro` (watch only) for every other device.
     public var role: String?
     public var runtimeName = ""
+    /// The agent's id and protocol from the channel's hello (`runtime.id`, `runtime.protocol`), and the
+    /// session that hello was for; before it arrives the session's own runtime id and name decide.
+    public var runtimeID: String?
+    public var runtimeProtocol: String?
+    public var runtimeFor: String?
+    /// Codex turns whose work the person opened ("Worked for …"), by session and turn.
+    public var codexOpened: Set<String> = []
     /// What the agent can do (`caps` of the channel's hello); nil before the channel opens.
     public var caps: PhoneChatCaps?
     public var connected = false
@@ -54,11 +61,14 @@ import SwiftUI
     /// Simulator UI acceptance (`-ui-chat-fixture`): no host; what would go to it is folded in locally.
     var fixture = false
     var fixtureRefuse = false
+    /// The fixture shows a Codex session: a new message starts a Codex-shaped turn.
+    var fixtureCodex = false
     private var fixtureSeq = 1000
     func fixtureEvent(_ fields: [String: JSONValue]) {
         fixtureSeq += 1
         var event = fields
-        event["seq"] = .number(Double(fixtureSeq)); event["ts"] = .number(Date().timeIntervalSince1970 * 1000)
+        event["seq"] = .number(Double(fixtureSeq))
+        if event["ts"] == nil { event["ts"] = .number(Date().timeIntervalSince1970 * 1000) }
         log.apply(.object(event))
     }
     #endif
@@ -135,6 +145,15 @@ import SwiftUI
     }
 
     public var canWrite: Bool { role == "rw" && connected && log.state != "ended" }
+
+    /// The open conversation is with Codex: it is laid out the way Codex's own app shows one.
+    public var isCodex: Bool {
+        guard let session = current else { return false }
+        if runtimeFor == session.id {
+            return phoneIsCodexRuntime(id: runtimeID, name: runtimeName.isEmpty ? session.name : runtimeName, protocolName: runtimeProtocol)
+        }
+        return phoneIsCodexRuntime(id: session.runtime, name: session.name, protocolName: nil)
+    }
 
     public func loadSessions() async {
         #if DEBUG
@@ -236,6 +255,9 @@ import SwiftUI
             role = hello["role"].string
             caps = PhoneChatCaps(hello["caps"])
             runtimeName = hello["runtime"]["name"].string ?? session.name
+            runtimeID = hello["runtime"]["id"].string
+            runtimeProtocol = hello["runtime"]["protocol"].string
+            runtimeFor = session.id
             hostAcks = hello["acks"] == .bool(true)
             if case .array(let list) = hello["commands"] { log.knownCommands(list) }
             if case .bool(let b) = hello["images"] { log.images = b }
@@ -462,8 +484,12 @@ import SwiftUI
                 fixtureEvent(["t": .string("user"), "turn": .number(n), "text": .string(text), "by": me, "input_id": input["id"], "attachments": attachments])
                 fixtureEvent(["t": .string("turn_start"), "turn": .number(n + 1)])
                 fixtureEvent(["t": .string("state"), "turn": .number(n + 1), "state": .string("running")])
-                fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("Bash sleep 600"),
-                              "kind": .string("execute"), "status": .string("in_progress")])
+                if fixtureCodex {
+                    fixtureCodexTurn(n + 1)
+                } else {
+                    fixtureEvent(["t": .string("tool_call"), "turn": .number(n + 1), "call_id": .string("f\(n)"), "title": .string("Bash sleep 600"),
+                                  "kind": .string("execute"), "status": .string("in_progress")])
+                }
             }
         } else if command["interrupt"] != nil {
             fixtureEvent(["t": .string("turn_end"), "turn": .number(n), "status": .string("interrupted"), "duration_ms": .number(1200)])

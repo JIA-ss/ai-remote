@@ -8,6 +8,8 @@
 //! only by the session (see [`super::Chat`]), so a viewer that reconnects asks for what came after
 //! the last `seq` it saw.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -15,6 +17,11 @@ use serde_json::Value;
 pub const PREVIEW: usize = 8 * 1024;
 /// Most text kept of either side of a diff.
 pub const DIFF_SIDE: usize = 64 * 1024;
+/// Most text kept of a turn's whole diff.
+pub const TURN_DIFF: usize = 512 * 1024;
+/// Most text all the diffs of one tool call may take together, so one event stays well under what a
+/// controller reads as one line (4 MiB).
+pub const DIFF_TOTAL: usize = 2 * 1024 * 1024;
 
 /// What a tool does, for the icon and the summary line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +146,10 @@ pub enum Ev {
         id: String,
         text: String,
         delta: bool,
+        /// Where the agent says the message belongs, when it says: `commentary` (said between
+        /// steps) or `final_answer` (its answer to the turn). Codex only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
     },
     /// The agent's reasoning, shown folded.
     Thought {
@@ -170,16 +181,55 @@ pub enum Ev {
         content: Vec<ToolContent>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
+        /// A finished command's exit code, when the agent reports it (Codex).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i64>,
+        /// How long the tool ran, as the agent measured it (Codex).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     Plan {
         entries: Vec<PlanEntry>,
     },
-    /// The agent asks the user; answered with an `answer` command.
+    /// The agent asks the user; answered with an `answer` command (one per question).
     Question {
         qid: String,
         prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        /// Codex: the request the question belongs to (its questions are answered together; an
+        /// empty answer skips one), the item that asked, the question's short header, a description
+        /// per option (aligned with `options`, empty where it has none), whether a free answer is
+        /// welcome besides the options, whether it is a secret (typed but not shown), and whether
+        /// the turn waits on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        descriptions: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        other: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocking: Option<bool>,
+        /// A question that does not block the turn is answered with nothing after this long (from
+        /// the event's time): the agent then goes on by itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_in_ms: Option<u64>,
+    },
+    /// A question request is over (Codex): `how` is `answered`, `skipped` (every answer empty),
+    /// `expired` (nobody answered in time; the agent went on by itself), `resolved` (Codex closed it,
+    /// or its turn ended unanswered) or `dismissed` (its turn was stopped); `answers` are the
+    /// non-empty answers by question id.
+    QuestionDone {
+        request: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        answers: BTreeMap<String, Vec<String>>,
+        how: String,
     },
     Usage {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,6 +270,13 @@ pub enum Ev {
     /// (an ACP agent that takes no images).
     Agent {
         images: bool,
+    },
+    /// Everything the turn changed, as one unified diff over all files, where the agent reports it
+    /// (Codex): repeated edits of a file show as their net result. Cut to [`TURN_DIFF`].
+    TurnDiff {
+        diff: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
     /// The commands and skills the agent offers now (all of them; the list replaces the last one).
     Commands {
@@ -293,6 +350,7 @@ const NOTICE_WORDS: &[&str] = &[
     "api_retry",
     "context_lost",
     "killed",
+    "late_answer",
     "no_question",
     "paused",
     "queue_full",
@@ -344,13 +402,19 @@ mod tests {
 
     #[test]
     fn events_serialize_with_their_type() {
-        let ev = Ev::Message { id: "m1".into(), text: "hi".into(), delta: true };
+        let ev = Ev::Message { id: "m1".into(), text: "hi".into(), delta: true, phase: None };
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"t":"message","id":"m1","text":"hi","delta":true})
         );
-        let ev =
-            Ev::ToolUpdate { call_id: "k".into(), status: Some(ToolStatus::Failed), content: vec![], truncated: false };
+        let ev = Ev::ToolUpdate {
+            call_id: "k".into(),
+            status: Some(ToolStatus::Failed),
+            content: vec![],
+            truncated: false,
+            exit_code: None,
+            duration_ms: None,
+        };
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"t":"tool_update","call_id":"k","status":"failed"})

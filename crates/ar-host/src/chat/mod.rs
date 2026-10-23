@@ -973,6 +973,8 @@ struct Turn {
     tools: BTreeMap<&'static str, u32>,
     /// Messages that joined this turn.
     steers: u32,
+    /// Question requests waiting for the user: the turn is quiet because of them, not stuck.
+    asking: HashSet<String>,
 }
 
 struct Driver {
@@ -1284,6 +1286,7 @@ impl Driver {
             started: Instant::now(),
             last_event: Instant::now(),
             interrupt_deadline: None,
+            asking: HashSet::new(),
             then: None,
             tools: BTreeMap::new(),
             steers: 0,
@@ -1359,6 +1362,15 @@ impl Driver {
     async fn handle(&mut self, out: Out) -> Option<Out> {
         if let Some(t) = self.turn.as_mut() {
             t.last_event = Instant::now();
+            match &out {
+                Out::Ev(Ev::Question { qid, request, .. }) => {
+                    t.asking.insert(request.clone().unwrap_or_else(|| qid.clone()));
+                }
+                Out::Ev(Ev::QuestionDone { request, .. }) => {
+                    t.asking.remove(request);
+                }
+                _ => {}
+            }
         }
         match out {
             Out::Ev(Ev::Agent { images }) => {
@@ -1460,6 +1472,7 @@ impl Driver {
                         started,
                         last_event: Instant::now(),
                         interrupt_deadline: None,
+                        asking: HashSet::new(),
                         then: None,
                         tools: BTreeMap::new(),
                         steers: 0,
@@ -1517,19 +1530,21 @@ impl Driver {
                 status: None,
                 content: vec![ToolContent::Text { text: joined }],
                 truncated: false,
+                exit_code: None,
+                duration_ms: None,
             };
             return (ev, held);
         }
-        let (is_thought, id, mut text) = match first {
-            Ev::Message { id, text, .. } => (false, id, text),
-            Ev::Thought { id, text, .. } => (true, id, text),
+        let (is_thought, id, mut text, phase) = match first {
+            Ev::Message { id, text, phase, .. } => (false, id, text, phase),
+            Ev::Thought { id, text, .. } => (true, id, text, None),
             other => return (other, None),
         };
         let mut held = None;
         if let Some(rx) = self.out.as_mut() {
             while text.len() < 16 * 1024 {
                 match rx.try_recv() {
-                    Ok(Out::Ev(Ev::Message { id: i, text: t, delta: true })) if !is_thought && i == id => {
+                    Ok(Out::Ev(Ev::Message { id: i, text: t, delta: true, .. })) if !is_thought && i == id => {
                         text.push_str(&t)
                     }
                     Ok(Out::Ev(Ev::Thought { id: i, text: t, delta: true })) if is_thought && i == id => {
@@ -1543,7 +1558,11 @@ impl Driver {
                 }
             }
         }
-        let ev = if is_thought { Ev::Thought { id, text, delta: true } } else { Ev::Message { id, text, delta: true } };
+        let ev = if is_thought {
+            Ev::Thought { id, text, delta: true }
+        } else {
+            Ev::Message { id, text, delta: true, phase }
+        };
         (ev, held)
     }
 
@@ -1634,7 +1653,8 @@ impl Driver {
                 self.stop_process("stopped by force after an interrupt").await;
                 return;
             }
-            if t.interrupt_deadline.is_none() && t.last_event.elapsed() >= QUIET_TURN {
+            // A turn waiting for the user's answer is quiet, not stuck.
+            if t.interrupt_deadline.is_none() && t.asking.is_empty() && t.last_event.elapsed() >= QUIET_TURN {
                 self.chat.emit(Ev::Notice {
                     input_id: None,
                     level: "warn",
@@ -1652,10 +1672,12 @@ impl Driver {
 /// A piece of a running tool's output (a tool update with only text): its call and the text.
 fn output_chunk(ev: &Ev) -> Option<(&str, &str)> {
     match ev {
-        Ev::ToolUpdate { call_id, status: None, content, truncated: false } => match content.as_slice() {
-            [ToolContent::Text { text }] => Some((call_id, text)),
-            _ => None,
-        },
+        Ev::ToolUpdate { call_id, status: None, content, truncated: false, exit_code: None, duration_ms: None } => {
+            match content.as_slice() {
+                [ToolContent::Text { text }] => Some((call_id, text)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

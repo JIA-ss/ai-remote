@@ -233,6 +233,8 @@
     await check("Esc closes the find bar", !!(await until("closed", () => !$(".nt-findbar"), 3000)));
     // Quote a selection from a reply.
     const para = $$(".nt-reply p", t1).find((p) => p.textContent.length > 10);
+    para.scrollIntoView({ block: "center" });
+    await sleep(300);
     const range = document.createRange();
     range.selectNodeContents(para);
     getSelection().removeAllRanges();

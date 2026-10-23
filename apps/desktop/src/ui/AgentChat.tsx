@@ -38,6 +38,7 @@ import {
   type RuntimesReport,
   type SessionInfo,
 } from "../lib/chat";
+import { codexTurn, isCodexRuntime, pendingRequest } from "../lib/codex";
 import { t } from "../lib/i18n";
 import { quoteText, rememberImages } from "../lib/chat-input";
 import { Search } from "lucide-react";
@@ -46,6 +47,8 @@ import { FolderGlyph, FolderLabel, FolderPicker, type Listing } from "./chat/Fol
 import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
+import { CodexLiveStrip, livePlan } from "./codex/CodexLiveStrip";
+import { CodexRequestCard, dropDraft, requestKey } from "./codex/CodexRequestCard";
 import { Icon } from "./Icon";
 import { cx } from "./util";
 
@@ -470,13 +473,29 @@ const newId = () => `u${Date.now().toString(36)}${Math.random().toString(36).sli
 /** Sent messages per session, for ↑ / ↓ (kept for this run of the app). */
 const sentBySession = new Map<string, string[]>();
 
-function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
+/**
+ * One session's conversation: header, find, the transcript, the composer. Codex sessions lay their turns
+ * out the way Codex's own app does (ui/codex); `CodexConversation` is the same panel for them.
+ */
+export function Conversation({ host, target, onLeave }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void }) {
   const { chat, setChat, hello, error, connected, gone, send, outgoing, sendInput, retry, discard, listFiles } = useConversation(host, target);
   // A remembered session the host no longer has (it restarted): forget it and show the list.
   useEffect(() => {
     if (gone) onLeave(true);
   }, [gone]);
   const [menu, setMenu] = useState(false);
+  // The ⋯ menu closes with Esc or a click elsewhere.
+  useEffect(() => {
+    if (!menu) return;
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setMenu(false);
+    const down = (e: MouseEvent) => !(e.target as Element | null)?.closest(".nt-chat-menu, .nt-chat-menu-btn") && setMenu(false);
+    document.addEventListener("keydown", key);
+    document.addEventListener("mousedown", down);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("mousedown", down);
+    };
+  }, [menu]);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [insert, setInsert] = useState<{ text: string; n: number } | null>(null);
@@ -487,6 +506,8 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
   const readonly = hello?.role === "ro";
   const ended = chat.state === "ended";
   const agent = hello?.runtime.name ?? t("hc_agent");
+  // Codex conversations are laid out the way Codex's own app shows them; others keep this panel's rows.
+  const codex = isCodexRuntime(hello?.runtime);
   const canSteer = !!hello?.caps?.steer;
   const ph = phase(chat);
   const sendRef = useRef(send);
@@ -512,6 +533,60 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
     setChat((c) => markAnswered(c, qid, value));
     setFollow((n) => n + 1);
   }, [setChat]);
+  // Codex asks in a card in place of the composer; a request the reader closed (which stops the turn)
+  // is not asked again while the stop takes effect.
+  const pending = codex ? pendingRequest(chat) : null;
+  const pendingId = pending ? requestKey(host, target.session, pending) : null;
+  const [closed, setClosed] = useState<string | null>(null);
+  const asking = pending && pendingId !== closed ? pending : null;
+  const plan = codex && !asking ? livePlan(chat.turns) : null;
+  // A request that is over (answered here or elsewhere, closed by Codex, its turn ended) leaves no draft.
+  const lastPending = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastPending.current && lastPending.current !== pendingId) dropDraft(lastPending.current);
+    lastPending.current = pendingId;
+  }, [pendingId]);
+  /** Back to the composer once the card is gone (it had the keyboard). */
+  const backToComposer = () =>
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body || a.closest(".cdx-reqs")) (document.querySelector(".nt-chat .nt-compose textarea") as HTMLTextAreaElement | null)?.focus();
+    }, 0);
+  const onAnswers = (req: { request: string | null; turn: number }, answers: Array<[string, string]>) => {
+    for (const [qid, text] of answers) sendRef.current({ answer: { qid, text } });
+    setChat((c) => answers.reduce((acc, [qid, text]) => markAnswered(acc, qid, text, req.request ?? undefined, req.turn), c));
+    setFollow((n) => n + 1);
+    backToComposer();
+  };
+  // Codex: Esc twice within 2 s stops the turn (the first press shows "Esc" on the Stop button); a
+  // message sent while the answer is already coming waits for the turn to end.
+  const [escArmed, setEscArmed] = useState(false);
+  const escTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const runningTurn = running ? [...chat.turns].reverse().find((x) => x.status === "running") : undefined;
+  const disarm = () => {
+    clearTimeout(escTimer.current);
+    setEscArmed(false);
+  };
+  useEffect(disarm, [runningTurn?.n, running]);
+  const answering = useMemo(() => codex && !!runningTurn && codexTurn(runningTurn).answer !== null, [codex, runningTurn]);
+  const onEsc = (e: React.KeyboardEvent) => {
+    if (!codex || e.key !== "Escape" || e.repeat || !running || readonly || asking || e.nativeEvent.isComposing) return;
+    const at = e.target as HTMLElement;
+    // Esc closes what is open first (a menu, a popover, the find bar) and is not a press toward stopping.
+    if (document.querySelector(".nt-chat .nt-ac, .nt-chat .nt-chat-menu, .nt-chat .nt-usage, [role=dialog], [role=menu]")
+      || at.closest(".nt-findbar, .nt-qd.editing")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (escArmed) {
+      disarm();
+      send({ interrupt: {} });
+      (document.querySelector(".nt-chat .nt-compose textarea") as HTMLTextAreaElement | null)?.focus();
+    } else {
+      setEscArmed(true);
+      clearTimeout(escTimer.current);
+      escTimer.current = setTimeout(() => setEscArmed(false), 2000);
+    }
+  };
   const onContinue = useCallback(() => {
     sendRef.current(inputCommand(newId(), t("hc_continue_prompt")));
     setFollow((n) => n + 1);
@@ -537,8 +612,9 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
 
   return (
     <div
-      className="nt-chat"
+      className={cx("nt-chat", codex && "cdx")}
       onKeyDownCapture={(e) => {
+        onEsc(e);
         // ⌘F / Ctrl+F finds in the conversation while the panel has the focus.
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
           e.preventDefault();
@@ -555,12 +631,13 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
           <span className="nm">{agent}</span>
           {hello?.cwd ? <FolderLabel host={host} path={hello.cwd} className="cwd" /> : <span className="cwd" />}
         </div>
-        {running && ph.since && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
+        {/* A Codex turn says itself how long it works (its "Working for" line). */}
+        {running && ph.since && !codex && <span className="hd-tm tnum">{secs(now - ph.since)}</span>}
         {readonly && <span className="cap c3">{t("hc_readonly")}</span>}
         <button type="button" className="ico" aria-label={t("hc_find_open")} title={t("hc_find_open")} onClick={() => setFinding((v) => !v)}>
           <Search size={14} />
         </button>
-        <button type="button" className="ico" aria-label={t("hc_menu")} onClick={() => setMenu((v) => !v)}>
+        <button type="button" className="ico nt-chat-menu-btn" aria-label={t("hc_menu")} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>
           <Icon name="more" size={14} />
         </button>
         {menu && (
@@ -594,8 +671,25 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         findFocus={findFocus}
         onCloseFind={() => setFinding(false)}
         onQuote={(text) => setInsert((q) => ({ text: quoteText(text), n: (q?.n ?? 0) + 1 }))}
+        variant={codex ? "codex" : "default"}
+        session={target.session}
+        cwd={hello?.cwd ?? null}
+        loading={!hello || chat.seq < hello.seq}
       />
       </PreviewProvider>
+      {plan && <CodexLiveStrip plan={plan} />}
+      {asking && pendingId && (
+        <div className="cdx-reqs">
+          <CodexRequestCard key={pendingId} req={asking} id={pendingId} readonly={readonly} now={now}
+            onSubmit={(answers) => onAnswers(asking, answers)}
+            onDismiss={() => {
+              setClosed(pendingId);
+              send({ interrupt: {} });
+              backToComposer();
+            }} />
+        </div>
+      )}
+      <div className="nt-compose-slot" hidden={!!asking}>
       <Composer
         agent={agent}
         host={host}
@@ -605,8 +699,18 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
         context={chat.context}
         queued={chat.queued}
         history={history}
-        onSend={sendText}
-        onStop={() => send({ interrupt: {} })}
+        onSend={(text, mode, images) => {
+          disarm();
+          sendText(text, mode, images);
+        }}
+        onStop={() => {
+          disarm();
+          send({ interrupt: {} });
+        }}
+        variant={codex ? "codex" : "default"}
+        stopping={chat.state === "interrupting"}
+        forceQueue={answering}
+        escArmed={escArmed}
         onDequeue={(id) => send({ dequeue: { id } })}
         onEditQueued={(id, text) => {
           for (const c of editQueued(id, newId(), text)) send(c);
@@ -621,6 +725,7 @@ function Conversation({ host, target, onLeave }: { host: string; target: ChatTar
           send(inputCommand(newId(), text, "steer"));
         }}
       />
+      </div>
     </div>
   );
 }

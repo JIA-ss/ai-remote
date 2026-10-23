@@ -277,7 +277,7 @@ export const demoBackend: Backend = {
     if (!s) throw new Error("unknown or already used chat ticket; ask for a new one");
     demoTickets.delete(ticket);
     const log = demoLogs.get(s.id) ?? [];
-    const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name }, cwd: s.cwd, state: s.state,
+    const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name, protocol: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.protocol ?? null }, cwd: s.cwd, state: s.state,
       seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host };
     const commands = s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))];
     onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "commands", commands });
@@ -599,6 +599,8 @@ const t0 = Date.now() - 6 * minute;
 const demoSessions: SessionInfo[] = [
   { id: "c3f9a1e7b2c4d", runtime: "claude", name: "Claude Code", cwd: "D:\\work\\report-tool", state: "idle", by: { device: "home-laptop" },
     started_at: t0, turns: 2, last_activity: t0 + 90_000, seq: 0 },
+  { id: "x5d0c7e2a9f1b", runtime: "codex", name: "Codex", cwd: "D:\\work\\report-tool", state: "idle", by: { device: "home-laptop" },
+    started_at: t0 - 4 * minute, turns: 2, last_activity: t0 + 60_000, seq: 0 },
 ];
 
 const EXPORT_OLD = [
@@ -738,7 +740,94 @@ function demoLog(): ChatEvent[] {
   const evs = [...turn1.map((e) => ({ e, turn: e.t === "state" || e.t === "user" ? 0 : 1 })), ...turn2.map((e) => ({ e, turn: (e.t === "state" || e.t === "user") && !e.steer ? 1 : 2 }))];
   return evs.map(({ e, turn }, i) => ({ seq: i + 1, ts: t0 + i * 2400, turn, ...e }) as unknown as ChatEvent);
 }
-const demoLogs = new Map<string, ChatEvent[]>([["c3f9a1e7b2c4d", demoLog()]]);
+// The Codex session, as a Codex host sends it (adapters/codex.rs): remarks and answers say their phase,
+// commands carry the command without its shell and Codex's reading of it, edits name their files with
+// unified diffs, and finished commands their exit code and run time.
+const W = "D:\\work\\report-tool";
+const codexCmd = (command: string, actions: Array<Record<string, unknown>>) => ({ command, cwd: W, actions });
+const read = (rel: string) => ({ type: "read", command: `sed -n '1,120p' ${rel}`, name: rel.split("/").pop(), path: `${W}\\${rel.replace(/\//g, "\\")}` });
+const EXPORT_DIFF = `@@ -4,9 +4,10 @@ from datetime import date
+ 
+ def quarter_range(year: int, quarter: int) -> tuple[date, date]:
+     start = date(year, quarter * 3 - 2, 1)
+-    end = date(year, quarter * 3, 31)
++    last = calendar.monthrange(year, quarter * 3)[1]
++    end = date(year, quarter * 3, last)
+     return start, end
+ 
+ 
+ def export(year: int, quarter: int, out: str) -> None:
+     start, end = quarter_range(year, quarter)
+     rows = load_rows(start, end)
+-    render_pdf(rows, out)
++    render_pdf(rows, out, title=f"Q{quarter} {year}")
+`;
+const TEST_NEW = `import pytest
+from datetime import date
+
+from export import quarter_range
+
+
+@pytest.mark.parametrize("quarter, last", [(1, 31), (2, 30), (3, 30), (4, 31)])
+def test_quarter_end(quarter, last):
+    assert quarter_range(2026, quarter)[1] == date(2026, quarter * 3, last)
+`;
+const CODEX_ANSWER_1 = `Fixed — \`quarter_range\` always used **day 31** as the quarter's last day, which does not exist for June and September, so Q2 and Q3 raised \`ValueError\`.
+
+**What changed**
+- \`export.py\`: the end date now comes from \`calendar.monthrange\`, and the PDF title names the quarter.
+- \`tests/test_quarters.py\`: one case per quarter of 2026.
+
+\`\`\`powershell
+python -m pytest -q
+\`\`\`
+
+All 16 tests pass.`;
+
+function codexDemoLog(): ChatEvent[] {
+  const turn1: Array<Record<string, unknown>> = [
+    { t: "state", state: "running", queued: [] },
+    { t: "user", input_id: "cu1", by: { device: "home-laptop" }, text: "The Q3 export crashes with a date error. Find the cause, fix it and add a test." },
+    { t: "turn_start" },
+    { t: "thought", id: "cr1", text: "**Locating the date math**\n\nThe error mentions a day out of range, so the quarter end is probably built with a fixed day.", delta: false },
+    { t: "message", id: "cm1", text: "I'll find where the quarter dates are computed, then reproduce the crash.", delta: false, phase: "commentary" },
+    { t: "tool_call", call_id: "cc1", title: "Shell rg -n \"quarter_range|date\\(\" -g '*.py'", kind: "execute", status: "in_progress",
+      input: codexCmd("rg -n \"quarter_range|date\\(\" -g '*.py'", [{ type: "search", command: "rg -n ...", query: "quarter_range|date\\(", path: null }]) },
+    { t: "tool_update", call_id: "cc1", status: "completed", content: [{ type: "text", text: "export.py:5:def quarter_range(year: int, quarter: int) -> tuple[date, date]:\nexport.py:6:    start = date(year, quarter * 3 - 2, 1)\nexport.py:7:    end = date(year, quarter * 3, 31)\nexport.py:12:    start, end = quarter_range(year, quarter)" }], exit_code: 0, duration_ms: 140 },
+    { t: "tool_call", call_id: "cc2", title: "Shell sed -n '1,120p' export.py", kind: "execute", status: "in_progress", input: codexCmd("sed -n '1,120p' export.py", [read("export.py")]) },
+    { t: "tool_update", call_id: "cc2", status: "completed", content: [{ type: "text", text: EXPORT_OLD }], exit_code: 0, duration_ms: 60 },
+    { t: "tool_call", call_id: "cc3", title: "Shell ls tests", kind: "execute", status: "in_progress", input: codexCmd("ls tests", [{ type: "listFiles", command: "ls tests", path: "tests" }]) },
+    { t: "tool_update", call_id: "cc3", status: "completed", content: [{ type: "text", text: "test_export.py\ntest_rows.py" }], exit_code: 0, duration_ms: 40 },
+    { t: "tool_call", call_id: "cc4", title: "Shell python export.py --quarter Q3", kind: "execute", status: "in_progress", input: codexCmd("python export.py --quarter Q3", [{ type: "unknown", command: "python export.py --quarter Q3" }]) },
+    { t: "tool_update", call_id: "cc4", status: "failed", content: [{ type: "text", text: "Traceback (most recent call last):\n  File \"D:\\work\\report-tool\\export.py\", line 7, in quarter_range\n    end = date(year, quarter * 3, 31)\nValueError: day is out of range for month\n" }, { type: "text", text: "(exit code 1)" }], exit_code: 1, duration_ms: 1_340 },
+    { t: "plan", entries: [{ content: "Reproduce the Q3 crash", status: "completed" }, { content: "Use each month's real last day", status: "in_progress" }, { content: "Add a test per quarter", status: "pending" }, { content: "Run the suite", status: "pending" }] },
+    { t: "message", id: "cm2", text: "Reproduced: the end date is always day 31. I'll take the real last day from `calendar.monthrange` and cover every quarter in a test.", delta: false, phase: "commentary" },
+    { t: "tool_call", call_id: "cf1", title: `edit ${W}\\export.py, ${W}\\tests\\test_quarters.py`, kind: "edit", status: "in_progress",
+      input: { files: [{ path: `${W}\\export.py`, kind: "update", diff: EXPORT_DIFF }, { path: `${W}\\tests\\test_quarters.py`, kind: "add", diff: TEST_NEW }] },
+      content: [{ type: "diff", path: `${W}\\export.py`, old: EXPORT_OLD, new: EXPORT_NEW }, { type: "diff", path: `${W}\\tests\\test_quarters.py`, old: null, new: TEST_NEW }],
+      locations: [`${W}\\export.py`, `${W}\\tests\\test_quarters.py`] },
+    { t: "tool_update", call_id: "cf1", status: "completed" },
+    { t: "tool_call", call_id: "cc5", title: "Shell python -m pytest -q", kind: "execute", status: "in_progress", input: codexCmd("python -m pytest -q", [{ type: "unknown", command: "python -m pytest -q" }]) },
+    { t: "tool_update", call_id: "cc5", status: "completed", content: [{ type: "text", text: "................                                                   [100%]\n16 passed in 1.84s\n" }], exit_code: 0, duration_ms: 2_410 },
+    { t: "plan", entries: [{ content: "Reproduce the Q3 crash", status: "completed" }, { content: "Use each month's real last day", status: "completed" }, { content: "Add a test per quarter", status: "completed" }, { content: "Run the suite", status: "completed" }] },
+    { t: "message", id: "cm3", text: CODEX_ANSWER_1, delta: false, phase: "final_answer" },
+    { t: "usage", input_tokens: 24_100, output_tokens: 1_120, context_window: 258_000, context_used: 38_900, reasoning_tokens: 480 },
+    { t: "turn_end", status: "completed", final_text: CODEX_ANSWER_1, duration_ms: 83_400 },
+    { t: "state", state: "idle", queued: [] },
+  ];
+  const turn2: Array<Record<string, unknown>> = [
+    { t: "state", state: "running", queued: [] },
+    { t: "user", input_id: "cu2", by: { device: "home-laptop" }, text: "Does monthrange handle leap years?" },
+    { t: "turn_start" },
+    { t: "thought", id: "cr2", text: "**Recalling monthrange semantics**", delta: false },
+    { t: "message", id: "cm4", text: "Yes. `calendar.monthrange(year, month)` returns the weekday of the 1st and the number of days in that month, and it knows leap years: `monthrange(2024, 2)` is `(3, 29)`, `monthrange(2026, 2)` is `(6, 28)`. Quarters never end in February, so the export is not affected either way.", delta: false, phase: "final_answer" },
+    { t: "turn_end", status: "completed", duration_ms: 6_100 },
+    { t: "state", state: "idle", queued: [] },
+  ];
+  const evs = [...turn1.map((e) => ({ e, turn: e.t === "state" || e.t === "user" ? 0 : 1 })), ...turn2.map((e) => ({ e, turn: e.t === "state" || e.t === "user" ? 1 : 2 }))];
+  return evs.map(({ e, turn }, i) => ({ seq: i + 1, ts: t0 - 4 * minute + i * 3300, turn, ...e }) as unknown as ChatEvent);
+}
+const demoLogs = new Map<string, ChatEvent[]>([["c3f9a1e7b2c4d", demoLog()], ["x5d0c7e2a9f1b", codexDemoLog()]]);
 
 /** What a scripted turn is doing, so messages and Stop can reach it. */
 interface DemoRun {
@@ -786,6 +875,7 @@ async function step(s: SessionInfo, run: DemoRun, ms: number) {
 }
 
 async function demoReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
+  if (s.runtime.startsWith("codex")) return demoCodexReply(s, text, inputId, attachments);
   const run: DemoRun = { stopped: false, steers: [], answer: null };
   demoRuns.set(s.id, run);
   setState(s, "running");
@@ -828,6 +918,72 @@ async function demoReply(s: SessionInfo, text: string, inputId: string, attachme
   const used = 52_300 + s.turns * 9_000;
   push(s, { t: "usage", input_tokens: 21_000, output_tokens: 640, context_window: 200_000, context_used: used });
   push(s, { t: "turn_end", status: "completed", duration_ms: Date.now() - started });
+  demoRuns.delete(s.id);
+  const next = (demoQueues.get(s.id) ?? []).shift();
+  setState(s, "idle");
+  if (next) void demoReply(s, next.text, next.id);
+}
+
+/** A Codex turn as a Codex host streams it: thinking, a remark, reads and searches, a failing then
+ * passing command, an edit with its unified diff, a web search, a question, and the answer. */
+async function demoCodexReply(s: SessionInfo, text: string, inputId: string, attachments?: Array<{ name: string; mime: string; bytes: number }>) {
+  const run: DemoRun = { stopped: false, steers: [], answer: null };
+  demoRuns.set(s.id, run);
+  setState(s, "running");
+  push(s, { t: "user", input_id: inputId, by: { device: "home-laptop" }, text, ...(attachments?.length ? { attachments } : {}) });
+  s.turns += 1;
+  const started = Date.now();
+  push(s, { t: "turn_start" });
+  const n = s.seq;
+  const k = (x: string) => `${x}${n}`;
+  const cmd = async (id: string, command: string, actions: Array<Record<string, unknown>>, ms: number, output: string, exit = 0) => {
+    push(s, { t: "tool_call", call_id: k(id), title: `Shell ${command}`, kind: "execute", status: "in_progress", input: codexCmd(command, actions) });
+    if (!(await step(s, run, ms))) return false;
+    push(s, { t: "tool_update", call_id: k(id), status: exit === 0 ? "completed" : "failed",
+      content: output ? [{ type: "text", text: output }] : [], exit_code: exit, duration_ms: ms });
+    return true;
+  };
+  await stream(s, run, "thought", k("r"), "**Checking February handling**\n\nLeap years change February's length; the report also has a monthly mode that may build month ends by hand.", 45);
+  if (!(await step(s, run, 300))) return;
+  await stream(s, run, "message", k("m"), "I'll look for other places that build month ends by hand before changing anything.", 60);
+  if (!(await step(s, run, 200))) return;
+  if (!(await cmd("a", "rg -n \"monthrange|, 31\\)|, 30\\)\" -g '*.py'", [{ type: "search", command: "rg", query: "monthrange|, 31\\)|, 30\\)", path: null }], 700,
+    "export.py:8:    last = calendar.monthrange(year, quarter * 3)[1]\nreport/monthly.py:14:    end = date(year, month, 30)"))) return;
+  if (!(await cmd("b", "sed -n '1,80p' report/monthly.py", [read("report/monthly.py")], 500,
+    "from datetime import date\n\n\ndef month_range(year: int, month: int) -> tuple[date, date]:\n    start = date(year, month, 1)\n    end = date(year, month, 30)\n    return start, end\n"))) return;
+  push(s, { t: "plan", entries: [{ content: "Find hand-built month ends", status: "completed" }, { content: "Fix report/monthly.py", status: "in_progress" }, { content: "Test February in 2024 and 2026", status: "pending" }] });
+  push(s, { t: "tool_call", call_id: k("w"), title: "search python calendar.monthrange leap year", kind: "fetch", status: "in_progress", input: { query: "python calendar.monthrange leap year" } });
+  if (!(await step(s, run, 900))) return;
+  push(s, { t: "tool_update", call_id: k("w"), status: "completed", content: [{ type: "text", text: "searched python calendar.monthrange leap year" }] });
+  if (!(await cmd("c", "python -m pytest -q tests/test_monthly.py", [{ type: "unknown", command: "python -m pytest -q tests/test_monthly.py" }], 1800,
+    "F.                                                                   [100%]\n=================================== FAILURES ===================================\n_______________________________ test_february ________________________________\n>       assert month_range(2026, 2)[1] == date(2026, 2, 28)\nE       ValueError: day is out of range for month\n1 failed, 1 passed in 0.41s\n", 1))) return;
+  if (!demoAsked.has(s.id)) {
+    demoAsked.add(s.id);
+    push(s, { t: "question", qid: k("q"), prompt: "`report/monthly.py` has the same bug. Should I fix it here too, or keep this change to the quarterly export?", options: ["Fix it here too", "Only the quarterly export"] });
+    const answer = await new Promise<string>((resolve) => (run.answer = resolve));
+    run.answer = null;
+    if (run.stopped) return;
+    push(s, { t: "message", id: k("ans"), text: `Going with: ${answer}.`, delta: false, phase: "commentary" });
+  }
+  const diff = "@@ -1,7 +1,9 @@\n+import calendar\n from datetime import date\n \n \n def month_range(year: int, month: int) -> tuple[date, date]:\n     start = date(year, month, 1)\n-    end = date(year, month, 30)\n+    last = calendar.monthrange(year, month)[1]\n+    end = date(year, month, last)\n     return start, end\n";
+  push(s, { t: "tool_call", call_id: k("f"), title: `edit ${W}\\report\\monthly.py`, kind: "edit", status: "in_progress",
+    input: { files: [{ path: `${W}\\report\\monthly.py`, kind: "update", diff }] },
+    content: [{ type: "diff", path: `${W}\\report\\monthly.py`, old: "from datetime import date\n\n\ndef month_range(year: int, month: int) -> tuple[date, date]:\n    start = date(year, month, 1)\n    end = date(year, month, 30)\n    return start, end\n",
+      new: "import calendar\nfrom datetime import date\n\n\ndef month_range(year: int, month: int) -> tuple[date, date]:\n    start = date(year, month, 1)\n    last = calendar.monthrange(year, month)[1]\n    end = date(year, month, last)\n    return start, end\n" }],
+    locations: [`${W}\\report\\monthly.py`] });
+  if (!(await step(s, run, 500))) return;
+  push(s, { t: "tool_update", call_id: k("f"), status: "completed" });
+  push(s, { t: "plan", entries: [{ content: "Find hand-built month ends", status: "completed" }, { content: "Fix report/monthly.py", status: "completed" }, { content: "Test February in 2024 and 2026", status: "in_progress" }] });
+  if (!(await cmd("d", "python -m pytest -q", [{ type: "unknown", command: "python -m pytest -q" }], 2100, "..................                                                 [100%]\n18 passed in 1.97s\n"))) return;
+  push(s, { t: "plan", entries: [{ content: "Find hand-built month ends", status: "completed" }, { content: "Fix report/monthly.py", status: "completed" }, { content: "Test February in 2024 and 2026", status: "completed" }] });
+  const answer = "Leap years are handled now in both places.\n\n- `report/monthly.py` built every month end as **day 30**, so February crashed and 31-day months lost a day. It now uses `calendar.monthrange` like the quarterly export.\n- `tests/test_monthly.py` already had a February case; it passes for **2024 (29 days)** and **2026 (28 days)**.\n\nThe full suite passes: 18 tests.";
+  for (let i = 0; i < answer.length; i += 18) {
+    if (run.stopped) return;
+    push(s, { t: "message", id: k("fin"), text: answer.slice(i, i + 18), delta: true, phase: "final_answer" });
+    await wait(45);
+  }
+  push(s, { t: "usage", input_tokens: 31_000, output_tokens: 820, context_window: 258_000, context_used: 52_000 + s.turns * 7_000 });
+  push(s, { t: "turn_end", status: "completed", final_text: answer, duration_ms: Date.now() - started });
   demoRuns.delete(s.id);
   const next = (demoQueues.get(s.id) ?? []).shift();
   setState(s, "idle");

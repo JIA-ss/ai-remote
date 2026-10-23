@@ -429,7 +429,7 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
                 st.text.clear();
             }
             st.text.push_str(&text);
-            outs.push(Out::Ev(Ev::Message { id, text, delta: true }));
+            outs.push(Out::Ev(Ev::Message { id, text, delta: true, phase: None }));
         }
         "agent_thought_chunk" => {
             outs.push(Out::Ev(Ev::Thought {
@@ -462,6 +462,8 @@ fn update(st: &mut State, u: &Value, outs: &mut Vec<Out>) {
                 status: status(u["status"].as_str()),
                 content,
                 truncated,
+                exit_code: None,
+                duration_ms: None,
             }));
         }
         "plan" => {

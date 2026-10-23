@@ -1,0 +1,388 @@
+/* ======================================================================================
+   The Codex conversation view (ui/codex): a Codex session's chat panel, laid out the way
+   Codex's own desktop app shows a thread — quiet one-line activity at 60 % ink that brightens on
+   hover, chevrons that only show on hover, 16 px between units and 4 px inside a group, the user's
+   message in a 5 % ink bubble, "Worked for …" over a hairline, shell output and diffs on a faint
+   ground. Values were measured from that app; everything is scoped to `.cdx`.
+   ====================================================================================== */
+.nt-chat.cdx {
+  /* Codex's seeds (dark): ink, accent, added / removed; every shade below is mixed from them */
+  --x-ink: #dfdfdf;
+  --x-accent: #339cff;
+  --x-accent-text: #83c3ff;
+  --x-add: #40c977;
+  --x-del: #fa423e;
+  --x-desc: color-mix(in srgb, var(--x-ink) 70%, transparent);
+  --x-2nd: color-mix(in srgb, var(--x-ink) 65%, transparent);
+  --x-60: color-mix(in srgb, var(--x-ink) 60%, transparent);
+  --x-40: color-mix(in srgb, var(--x-ink) 40%, transparent);
+  --x-3rd: rgb(255 255 255 / .498);
+  --x-45: var(--x-3rd);
+  --x-35: var(--x-3rd);
+  --x-border-light: color-mix(in srgb, var(--x-ink) 4.2%, transparent);
+  --x-line: color-mix(in srgb, var(--x-ink) 8.4%, transparent);
+  --x-border-heavy: color-mix(in srgb, var(--x-ink) 15.6%, transparent);
+  --x-hover: color-mix(in srgb, var(--x-ink) 7.8%, transparent);
+  --x-btn2: color-mix(in srgb, var(--x-ink) 5.2%, transparent);
+  --x-ground: color-mix(in srgb, var(--x-ink) 3%, transparent);
+  --x-bubble: color-mix(in srgb, var(--x-ink) 5%, transparent);
+  --x-add-bg: color-mix(in srgb, var(--x-add) 23%, transparent);
+  --x-del-bg: color-mix(in srgb, var(--x-del) 23%, transparent);
+  --x-gap: 16px;
+  --x-grouped-gap: 4px;
+  color: var(--x-ink);
+}
+:root[data-theme="light"] .nt-chat.cdx {
+  --x-ink: #1a1c1f;
+  --x-accent-text: #339cff;
+  --x-add: #00a240;
+  --x-del: #ba2623;
+  --x-3rd: color-mix(in srgb, var(--x-ink) 49.5%, transparent);
+  --x-border-light: color-mix(in srgb, var(--x-ink) 4.9%, transparent);
+  --x-line: color-mix(in srgb, var(--x-ink) 7.8%, transparent);
+  --x-border-heavy: color-mix(in srgb, var(--x-ink) 11.7%, transparent);
+  --x-hover: color-mix(in srgb, var(--x-ink) 5.35%, transparent);
+  --x-btn2: color-mix(in srgb, var(--x-ink) 4.9%, transparent);
+  --x-add-bg: color-mix(in srgb, var(--x-add) 15%, transparent);
+  --x-del-bg: color-mix(in srgb, var(--x-del) 15%, transparent);
+}
+.cdx .nt-chat-inner { gap: 16px; padding: 32px 11px 32px; }
+.cdx .nt-chat-body { scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--x-line) transparent; }
+.cdx .nt-chat-body:hover { scrollbar-color: var(--x-border-heavy) transparent; }
+.cdx ::selection { background: color-mix(in srgb, var(--x-accent-text) 30%, transparent); }
+.cdx :focus-visible { outline-color: color-mix(in srgb, var(--x-accent-text) 76%, transparent); }
+.cdx-turn { display: flex; flex-direction: column; gap: var(--x-gap); min-width: 0; }
+.cdx-turn.far { content-visibility: auto; contain-intrinsic-size: auto 280px; }
+.cdx-work { display: flex; flex-direction: column; gap: var(--x-gap); min-width: 0; }
+.cdx-unit { min-width: 0; }
+
+/* the user's message: a soft bubble on the right */
+.cdx .nt-user .bubble { max-width: 70%; padding: 10px 16px; border-radius: 22px; border-color: transparent; background: var(--x-bubble); color: var(--x-ink); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.cdx .nt-sending.failed .bubble { border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.cdx .nt-user .x-meta { margin-right: 2px; }
+
+/* prose: remarks between steps and the answer */
+.cdx-md { color: var(--x-ink); }
+/* Codex's Markdown rhythm: 14 px on 22.75 px; a space of 3.5 px (a quarter of the size) sets the gaps */
+.cdx .nt-md { font-size: 14px; line-height: 22.75px; color: var(--x-ink); }
+.cdx .nt-md p { margin: 0; }
+.cdx .nt-md > * + * { margin-top: 7px; }
+.cdx .nt-md > p + p { margin-top: 14px; }
+.cdx .nt-md :is(h1, h2, h3, h4, h5, h6) { font-weight: 600; color: var(--x-ink); }
+.cdx .nt-md .md-h1 { font-size: 21px; line-height: 28px; margin: 0 0 7px; }
+.cdx .nt-md .md-h2 { font-size: 17.5px; line-height: 24.5px; margin: 14px 0 3.5px; }
+.cdx .nt-md .md-h3 { font-size: 15.75px; line-height: 24.5px; margin: 14px 0 3.5px; }
+.cdx .nt-md :is(.md-h4, .md-h5, .md-h6) { font-size: 14px; margin: 14px 0 3.5px; }
+.cdx .nt-md strong { color: var(--x-ink); }
+.cdx .nt-md :is(ul, ol) { margin-bottom: 0; padding-left: 22.75px; }
+.cdx .nt-md li { margin: 0; padding-left: 5.25px; }
+.cdx .nt-md li::marker { font-weight: 600; color: var(--x-60); }
+.cdx .nt-md blockquote { position: relative; margin-bottom: 0; padding: 7px 0 7px 21px; border-left: 0; line-height: 21px; color: var(--x-2nd); }
+.cdx .nt-md blockquote::after { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3.5px; border-radius: 1.75px; background: var(--x-border-heavy); }
+.cdx .nt-md hr { margin: 24.5px 0; border-top-color: var(--x-border-heavy); }
+.cdx .nt-md .nt-cb { margin: 17.5px 0; }
+.cdx .nt-md .md-table { margin-bottom: 0; border-color: var(--x-line); }
+.cdx .nt-md table { font-size: 12.25px; }
+.cdx .nt-md th { background: var(--x-btn2); color: var(--x-ink); }
+.cdx .nt-md :is(th, td) { border-bottom-color: var(--x-line); }
+.cdx .nt-md code { font-size: 12.25px; font-weight: 500; padding: 2.1px 4.2px; border: 0; border-radius: 6px; background: var(--x-btn2); color: var(--x-ink);
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; overflow-wrap: anywhere; }
+.cdx .nt-md .md-a { color: var(--x-accent-text); text-decoration-color: color-mix(in srgb, var(--x-accent-text) 40%, transparent); }
+.cdx-md.cdx-answer { margin-top: 2px; }
+
+/* one line of activity */
+.cdx-act { min-width: 0; font-size: 14px; line-height: 22px; }
+.cdx-act .x-hd { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.cdx-act .x-ln { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 0; border-radius: 6px; color: var(--x-60); text-align: left; cursor: pointer; transition: color .12s; }
+.cdx-act .x-ln:disabled { cursor: default; }
+.cdx-act .x-ln:focus-visible { outline: 2px solid color-mix(in srgb, var(--x-ink) 30%, transparent); outline-offset: 2px; }
+.cdx-act .x-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-act .x-v { color: inherit; }
+.cdx-act .x-d { color: var(--x-45); }
+.cdx-act .x-path { color: inherit; }
+.cdx-act .x-cmd { font-family: var(--font-data); font-size: 13px; color: var(--x-40); background: none; border: 0; padding: 0; }
+.cdx-act .x-bad { color: var(--x-del); }
+.cdx-act .x-sep { color: var(--x-45); }
+.cdx-act .x-ln:not(:disabled):hover, .cdx-act.open > .x-hd > .x-ln { color: var(--x-ink); }
+.cdx-act .x-ln:not(:disabled):hover .x-d, .cdx-act.open > .x-hd > .x-ln .x-d { color: var(--x-60); }
+.cdx-act.failed > .x-hd > .x-ln .x-v { color: var(--x-del); }
+.cdx-act .x-btns { display: inline-flex; gap: 1px; opacity: 0; transition: opacity .12s; margin: -2px 0; }
+.cdx-act .x-btns .nt-ib { width: 22px; height: 22px; }
+.cdx-act .x-hd:hover .x-btns, .cdx-act .x-btns:focus-within { opacity: 1; }
+.cdx-chev { flex: none; color: var(--x-40); opacity: 0; transition: transform .3s cubic-bezier(.19, 1, .22, 1), opacity .12s; }
+.cdx-chev.open { transform: rotate(90deg); opacity: 1; }
+.cdx-act .x-ln:hover .cdx-chev, .cdx-act .x-ln:focus-visible .cdx-chev, .cdx-worked .x-tg .cdx-chev, .cdx-changes .x-file .cdx-chev { opacity: 1; }
+.cdx-act > .x-bd { padding: 8px 0 4px 24px; min-width: 0; }
+.cdx-act.group > .x-bd { padding: 6px 0 2px; }
+.cdx-act .x-ic { flex: none; display: inline-block; vertical-align: -2px; margin-right: 6px; color: var(--x-60); }
+.cdx-list { display: flex; flex-direction: column; gap: var(--x-grouped-gap); max-height: 224px; overflow-y: auto; scrollbar-width: thin; }
+.cdx-list[data-up] { -webkit-mask-image: linear-gradient(transparent, #000 24px); mask-image: linear-gradient(transparent, #000 24px); }
+.cdx-list[data-down] { -webkit-mask-image: linear-gradient(#000 calc(100% - 24px), transparent); mask-image: linear-gradient(#000 calc(100% - 24px), transparent); }
+.cdx-list[data-up][data-down] { -webkit-mask-image: linear-gradient(transparent, #000 24px, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(transparent, #000 24px, #000 calc(100% - 24px), transparent); }
+.cdx-list:has(.cdx-act.open) { max-height: 420px; }
+[data-os="windows"] .cdx-list, [data-os="windows"] .cdx-shell .x-out-box, [data-os="windows"] .cdx-diff { scrollbar-color: var(--stroke-2) transparent; }
+.cdx-thought-md { color: var(--x-45); font-size: 12.5px; }
+.cdx-thought-md strong { color: var(--x-60); }
+
+/* opening in place */
+.cdx-reveal.x-in { animation: cdx-in .22s cubic-bezier(.33, 1, .68, 1); }
+.cdx-reveal.x-out { animation: cdx-out .15s ease forwards; pointer-events: none; }
+@keyframes cdx-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@keyframes cdx-out { to { opacity: 0; transform: translateY(-4px); } }
+.cdx-work.cdx-reveal { display: flex; }
+
+/* shimmering text while the agent works on it */
+.cdx-shimmer {
+  color: transparent; display: inline;
+  background: linear-gradient(90deg, var(--x-60) 0%, var(--x-60) 35%, var(--x-ink) 50%, var(--x-60) 65%, var(--x-60) 100%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text;
+  animation: cdx-shimmer 2.2s linear infinite;
+}
+.cdx-shimmer * { color: transparent !important; }
+@keyframes cdx-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+
+/* what the agent is at now: dim text that a band of light sweeps over once in a while (600 ms after it
+   shows, then every 4 s; 1 s in 48 steps); the band is a copy of the text in ink, moved under a mask */
+.cdx-cad { position: relative; display: inline-block; max-width: 100%; vertical-align: top; overflow: hidden; }
+.cdx-cad > .x-base { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-cad > .x-sweep {
+  position: absolute; inset: 0; pointer-events: none; user-select: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 20%, #000 30%, transparent 50%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 20%, #000 30%, transparent 50%);
+}
+.cdx-cad > .x-sweep > .x-hi { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-cad > .x-sweep > .x-hi, .cdx-cad > .x-sweep > .x-hi * { color: var(--x-ink) !important; }
+.cdx-cad > .x-sweep { animation: cdx-sweep 1s steps(48, end) 1 both; }
+.cdx-cad > .x-sweep > .x-hi { animation: cdx-sweep-hi 1s steps(48, end) 1 both; }
+@keyframes cdx-sweep { from { transform: translateX(-50%); } to { transform: translateX(125%); } }
+@keyframes cdx-sweep-hi { from { transform: translateX(50%); } to { transform: translateX(-125%); } }
+@media (prefers-reduced-motion: reduce) {
+  .cdx-shimmer { animation: none; color: var(--x-60); }
+  .cdx-reveal.x-in, .cdx-reveal.x-out, .cdx-cad > .x-sweep, .cdx-cad > .x-sweep > .x-hi, .cdx-worked.x-new, .cdx-req .x-body { animation: none; }
+}
+
+/* "Working for 12s" over a hairline at the top of the work, still once the answer starts ("Worked for",
+   then the fold's toggle); "You stopped after 4s" */
+.cdx-worked { display: flex; flex-direction: column; gap: 8px; }
+.cdx-worked.x-new { animation: cdx-grow .3s cubic-bezier(.19, 1, .22, 1); overflow: hidden; }
+@keyframes cdx-grow { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 48px; } }
+.cdx-worked .x-tg { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; line-height: 20px; color: var(--x-60); border-radius: 6px; }
+.cdx-worked button.x-tg:hover { color: var(--x-ink); }
+.cdx-worked .x-tg .cdx-chev { color: var(--x-35); }
+.cdx-worked .x-rule { border-top: 1px solid var(--x-line); }
+/* the line at the end of a running turn: the reasoning's title or "Thinking"; waiting for an answer */
+.cdx-thinking { font-size: 14px; line-height: 22px; color: var(--x-60); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-thinking.x-ask { display: flex; align-items: center; gap: 6px; }
+.cdx-thinking.x-ask svg { flex: none; }
+.cdx-compact { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; color: var(--x-45); }
+.cdx-compact svg { flex: none; }
+
+/* questions once answered: "Asked 2 questions", opening to each with its answer */
+.cdx-asked { display: flex; flex-direction: column; gap: 12px; }
+.cdx-asked .x-q { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 20px; }
+.cdx-asked .x-qt { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--x-60); }
+.cdx-asked .x-qa { color: color-mix(in srgb, var(--x-ink) 30%, transparent); overflow-wrap: anywhere; }
+
+/* a command's shell */
+.cdx-shell { border: 1px solid var(--x-border-heavy); border-radius: 12.5px; background: var(--x-btn2); overflow: hidden; min-width: 0;
+  --x-ansi-0: #fff; --x-ansi-1: #f67576; --x-ansi-2: #85df7b; --x-ansi-3: #fa994c; --x-ansi-4: #3d8dff; --x-ansi-5: #b06dff; --x-ansi-6: #6dcbf4; --x-ansi-7: #999; }
+:root[data-theme="light"] .cdx-shell { --x-ansi-0: #000; --x-ansi-1: #d53538; --x-ansi-2: #008809; --x-ansi-3: #bd5800; --x-ansi-4: #001bcb; --x-ansi-5: #751ed9; --x-ansi-6: #0071ea; --x-ansi-7: #666; }
+.cdx-shell .x-sh-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 28px; padding: 0 4px 0 10px; font-size: 11.5px; color: var(--x-45); }
+.cdx-shell .x-sh-hd .x-acts { display: inline-flex; gap: 1px; opacity: 0; transition: opacity .12s; }
+.cdx-shell:hover .x-sh-hd .x-acts, .cdx-shell .x-sh-hd .x-acts:focus-within { opacity: 1; }
+.cdx-shell .x-sh-bd { padding: 0 0 4px; min-width: 0; }
+.cdx-shell pre { margin: 0; font-family: var(--font-data); font-size: 12px; line-height: 1.55; }
+/* the command stays put above its output, at most a few lines of it */
+.cdx-shell pre.x-cmd { color: var(--x-desc); font-size: 13px; padding: 8px 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow-y: auto; scrollbar-width: thin; }
+.cdx-shell pre.x-cmd.x-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
+.cdx-shell pre.x-cmd .x-ps { color: var(--x-3rd); user-select: none; }
+.cdx-shell .x-out-box { display: flex; flex-direction: column-reverse; max-height: 144px; overflow: auto; margin-top: 4px; scrollbar-width: thin; outline: none; }
+.cdx-shell .x-out-box[data-up] { -webkit-mask-image: linear-gradient(transparent, #000 32px); mask-image: linear-gradient(transparent, #000 32px); }
+.cdx-shell .x-out-box[data-down] { -webkit-mask-image: linear-gradient(#000 calc(100% - 32px), transparent); mask-image: linear-gradient(#000 calc(100% - 32px), transparent); }
+.cdx-shell .x-out-box[data-up][data-down] { -webkit-mask-image: linear-gradient(transparent, #000 32px, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+.cdx-shell pre.x-out { color: var(--x-60); font-size: 11px; font-weight: 500; white-space: pre; overflow-wrap: normal; padding: 0 10px; width: max-content; min-width: 100%; box-sizing: border-box; }
+.cdx-shell pre.x-out :is(.x-f0, .x-f1, .x-f2, .x-f3, .x-f4, .x-f5, .x-f6, .x-f7) { color: var(--x-ansi-c); }
+.cdx-shell pre.x-out .x-f0 { --x-ansi-c: var(--x-ansi-0); } .cdx-shell pre.x-out .x-f1 { --x-ansi-c: var(--x-ansi-1); }
+.cdx-shell pre.x-out .x-f2 { --x-ansi-c: var(--x-ansi-2); } .cdx-shell pre.x-out .x-f3 { --x-ansi-c: var(--x-ansi-3); }
+.cdx-shell pre.x-out .x-f4 { --x-ansi-c: var(--x-ansi-4); } .cdx-shell pre.x-out .x-f5 { --x-ansi-c: var(--x-ansi-5); }
+.cdx-shell pre.x-out .x-f6 { --x-ansi-c: var(--x-ansi-6); } .cdx-shell pre.x-out .x-f7 { --x-ansi-c: var(--x-ansi-7); }
+.cdx-shell pre.x-out .x-b0 { background: var(--x-ansi-0); } .cdx-shell pre.x-out .x-b1 { background: var(--x-ansi-1); }
+.cdx-shell pre.x-out .x-b2 { background: var(--x-ansi-2); } .cdx-shell pre.x-out .x-b3 { background: var(--x-ansi-3); }
+.cdx-shell pre.x-out .x-b4 { background: var(--x-ansi-4); } .cdx-shell pre.x-out .x-b5 { background: var(--x-ansi-5); }
+.cdx-shell pre.x-out .x-b6 { background: var(--x-ansi-6); } .cdx-shell pre.x-out .x-b7 { background: var(--x-ansi-7); }
+.cdx-shell pre.x-out .x-bo { font-weight: 700; } .cdx-shell pre.x-out .x-dim { opacity: .6; } .cdx-shell pre.x-out .x-it { font-style: italic; }
+.cdx-shell pre.x-out .x-un { text-decoration: underline; } .cdx-shell pre.x-out .x-st { text-decoration: line-through; } .cdx-shell pre.x-out .x-hid { visibility: hidden; }
+.cdx-shell .x-none { font-size: 12px; color: var(--x-35); padding: 2px 10px; }
+.cdx-shell .x-sh-ft { display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 2px 10px 4px; font-size: 12px; color: var(--x-3rd); }
+
+/* diffs, with line numbers */
+.cdx-diff { font-family: var(--font-data); font-size: 12px; line-height: 1.6; border: 1px solid var(--x-line); border-radius: 10px; background: var(--x-ground); overflow: auto; max-height: 380px; scrollbar-width: thin; min-width: 0; }
+.cdx-diff.x-empty { font-family: inherit; color: var(--x-45); padding: 8px 10px; }
+.cdx-diff .x-dl { display: grid; grid-template-columns: auto auto 14px 1fr; min-width: max-content; }
+/* every line's numbers take the same width (--x-nw, from the diff's largest number) */
+.cdx-diff .x-no { box-sizing: content-box; width: var(--x-nw, 3ch); padding: 0 6px 0 4px; text-align: right; color: var(--x-35); user-select: none; font-variant-numeric: tabular-nums; }
+.cdx-diff .x-sg { color: var(--x-35); user-select: none; text-align: center; }
+.cdx-diff .x-tx { white-space: pre; padding-right: 12px; color: color-mix(in srgb, var(--x-ink) 82%, transparent); }
+.cdx-diff .x-dl.x-add { background: var(--x-add-bg); }
+.cdx-diff .x-dl.x-add .x-sg, .cdx-diff .x-dl.x-add .x-no.x-n { color: var(--x-add); }
+.cdx-diff .x-dl.x-del { background: var(--x-del-bg); }
+.cdx-diff .x-dl.x-del .x-sg, .cdx-diff .x-dl.x-del .x-no.x-o { color: var(--x-del); }
+.cdx-diff .x-hunk { padding: 2px 10px; color: var(--x-45); background: var(--x-hover); font-size: 11.5px; min-width: max-content; }
+.cdx-diff .x-hunk:first-child:empty { display: none; }
+.cdx-diff > .x-more { display: block; width: 100%; text-align: center; padding: 4px; border: 0; font-family: inherit; font-size: 11.5px; color: var(--x-45); background: none; }
+.cdx-diff > .x-more:hover { color: var(--x-ink); }
+.cdx-stat { display: inline-flex; gap: 5px; font-size: 12px; font-family: var(--font-data); }
+.cdx-stat .x-add { color: var(--x-add); }
+.cdx-stat .x-del { color: var(--x-del); }
+
+/* a tool's input and output */
+.cdx-tool { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cdx-tool pre.x-out { margin: 0; padding: 8px 10px; border: 1px solid var(--x-line); border-radius: 10px; background: var(--x-ground); font-family: var(--font-data); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--x-60); max-height: 280px; overflow: auto; }
+
+/* above the composer while a turn runs: the plan as a pill that lists its steps on hover */
+.cdx-live { display: flex; justify-content: center; align-items: center; height: 32px; flex: none; }
+.cdx-plan-pill { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 999px;
+  font-size: 12.5px; color: var(--x-60); background: color-mix(in srgb, var(--x-ink) 5%, transparent); cursor: default; outline: none; }
+.cdx-plan-pill:hover, .cdx-plan-pill:focus-visible { color: var(--x-ink); }
+.cdx-plan-pill .x-ring { flex: none; transform: rotate(-90deg); }
+.cdx-plan-pill .x-ring circle { fill: none; stroke-width: 2; }
+.cdx-plan-pill .x-track { stroke: color-mix(in srgb, var(--x-ink) 15%, transparent); }
+.cdx-plan-pill .x-done { stroke: #339cff; stroke-linecap: round; transition: stroke-dashoffset .4s ease; }
+.cdx-plan-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; z-index: 20; width: max-content; max-width: min(24rem, calc(100vw - 32px));
+  padding: 10px 14px; border-radius: 12px; background: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .18), 0 0 0 1px var(--x-line);
+  opacity: 0; transform: translate(-50%, 4px); pointer-events: none; transition: opacity .15s ease-out, transform .15s ease-out; }
+.cdx-plan-pop.open { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.cdx-plan-pop ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-width: 320px; max-height: 280px; overflow-y: auto; scrollbar-width: thin; }
+.cdx-plan-pop li { display: flex; align-items: flex-start; gap: 8px; max-width: 288px; font-size: 13px; line-height: 18px; color: color-mix(in srgb, var(--x-ink) 65%, transparent); }
+.cdx-plan-pop li svg { flex: none; margin-top: 2px; }
+.cdx-plan-pop li.completed { color: var(--x-45); }
+.cdx-plan-pop li.completed svg { color: #339cff; }
+.cdx-plan-pop li.in_progress { color: var(--x-ink); }
+
+/* the agent's question, in place of the composer */
+.nt-compose-slot { display: contents; }
+.nt-compose-slot[hidden] { display: none; }
+.cdx-reqs { flex: none; }
+.cdx-req { display: flex; flex-direction: column; overflow: hidden; border-radius: 20px; outline: none; container: request-card / inline-size;
+  background: color-mix(in srgb, var(--x-ink) 5%, var(--canvas)); box-shadow: 0 8px 24px rgba(0, 0, 0, .12), 0 0 0 1px var(--x-line); }
+.cdx-req:focus-visible { box-shadow: 0 8px 24px rgba(0, 0, 0, .12), 0 0 0 2px color-mix(in srgb, var(--x-ink) 30%, transparent); }
+.cdx-req .x-hd { display: flex; align-items: flex-start; gap: 8px; padding: 16px 12px 8px 16px; }
+.cdx-req .x-ti { flex: 1; min-width: 0; font-size: 13px; line-height: 20px; font-weight: 500; color: var(--x-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cdx-req .x-pager { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 20px; font-size: 12px; color: var(--x-60); }
+.cdx-req .x-ib { flex: none; width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 6px; color: var(--x-60); }
+.cdx-req .x-ib:hover:not(:disabled) { background: var(--x-hover); color: var(--x-ink); }
+.cdx-req .x-ib:disabled { opacity: .35; cursor: default; }
+.cdx-req .x-expires { margin: -4px 16px 6px; font-size: 12px; line-height: 16px; color: var(--x-45); }
+.cdx-req .x-body { display: flex; flex-direction: column; padding-bottom: 8px; }
+.cdx-req .x-body.x-in { animation: cdx-fade .3s ease; }
+@keyframes cdx-fade { from { opacity: 0; } to { opacity: 1; } }
+.cdx-req .x-opts { display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
+.cdx-req .x-opt { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 12px; background: none; text-align: left; color: var(--x-ink); }
+.cdx-req .x-opt:hover:not(:disabled), .cdx-req .x-opt.on, .cdx-req button.x-opt:focus-visible { background: var(--x-hover); }
+.cdx-req .x-opt:disabled { cursor: default; }
+.cdx-req .x-mk { flex: none; width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 50%; border: 1px solid var(--x-line);
+  background: color-mix(in srgb, var(--x-ink) 5%, transparent); font-size: 12px; color: var(--x-60); transition: background .18s, border-color .18s; }
+.cdx-req .x-flash .x-mk { background: var(--x-ink); border-color: var(--x-ink); }
+.cdx-req .x-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--canvas); }
+.cdx-req .x-lb { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cdx-req .x-l1 { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; line-height: 20px; font-weight: 500; }
+.cdx-req .x-badge { font-size: 12px; font-weight: 400; line-height: 16px; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--x-ink) 5%, transparent); color: var(--x-60); }
+.cdx-req .x-desc { font-size: 12px; line-height: 18px; color: var(--x-45); }
+.cdx-req .x-go { flex: none; color: var(--x-45); opacity: 0; }
+.cdx-req .x-opt:hover .x-go, .cdx-req .x-opt.on .x-go, .cdx-req .x-opt:focus-visible .x-go { opacity: 1; }
+.cdx-req .x-other { border-radius: 16px; cursor: text; }
+.cdx-req .x-other:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--x-ink) 25%, transparent); }
+.cdx-req .x-other textarea, .cdx-req .x-other input { flex: 1; min-width: 0; max-height: 128px; resize: none; border: 0; outline: none; background: none; padding: 4px 0;
+  font: inherit; font-size: 13px; line-height: 20px; color: var(--x-ink); }
+.cdx-req .x-free { padding: 0 16px; }
+.cdx-req .x-free textarea, .cdx-req .x-free input { width: 100%; box-sizing: border-box; resize: none; border: 1px solid var(--x-line); border-radius: 12px; outline: none;
+  background: transparent; padding: 8px 10px; font: inherit; font-size: 13px; line-height: 20px; color: var(--x-ink); }
+.cdx-req .x-free textarea:focus, .cdx-req .x-free input:focus { border-color: color-mix(in srgb, var(--x-ink) 28%, transparent); }
+.cdx-req textarea::placeholder, .cdx-req input::placeholder { color: var(--x-45); }
+.cdx-req .x-acts { display: flex; justify-content: flex-end; padding: 6px 8px 0; }
+.cdx-req .btn.sm { flex: none; height: 28px; padding: 0 12px; border-radius: 999px; }
+.cdx-req .btn.x-outline { background: transparent; border: 1px solid color-mix(in srgb, var(--x-ink) 16%, transparent); color: var(--x-ink); }
+.cdx-req .btn.x-outline:hover:not(:disabled) { background: var(--x-hover); }
+.cdx-req .btn.primary { background: var(--x-ink); color: var(--canvas); border-color: transparent; }
+
+/* the files a turn changed: "Edited 3 files" beside a diff icon, Review; a short list of the files */
+.cdx-changes { border: 1px solid var(--x-line); border-radius: 12.5px; overflow: hidden; font-size: 14px; margin-bottom: 8px; }
+.cdx-changes > .x-hd { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 8px; }
+.cdx-changes .x-hd-ln { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 2px; border-radius: 10px; text-align: left; color: var(--x-ink); }
+.cdx-changes .x-hd-ln:hover, .cdx-changes .x-hd-ln:focus-visible { background: color-mix(in srgb, var(--x-hover) 30%, transparent); }
+.cdx-changes .x-sq { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 8px; background: color-mix(in srgb, var(--x-ink) 6%, transparent); color: var(--x-60); }
+.cdx-changes .x-hd-tx { min-width: 0; display: flex; flex-direction: column; }
+.cdx-changes .x-ti { font-weight: 500; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx-changes .x-sub { font-size: 13px; line-height: 18px; color: var(--x-60); }
+.cdx-changes .x-sub.x-alt { display: none; }
+.cdx-changes .x-hd-ln:is(:hover, :focus-visible) .x-sub { display: none; }
+.cdx-changes .x-hd-ln:is(:hover, :focus-visible) .x-sub.x-alt { display: block; }
+.cdx-changes > .x-hd .x-acts { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.cdx-changes .btn.sm { height: 28px; padding: 0 12px; border-radius: 999px; }
+.cdx-changes .btn.x-outline { background: transparent; border: 1px solid color-mix(in srgb, var(--x-ink) 16%, transparent); color: var(--x-ink); }
+.cdx-changes .btn.x-outline:hover { background: var(--x-hover); }
+.cdx-changes .x-one .cdx-diff { border: 0; border-top: 1px solid var(--x-line); border-radius: 0; }
+.cdx-changes .x-files { border-top: 1px solid var(--x-line); }
+.cdx-changes .x-file + .x-file { border-top: 1px solid var(--x-line); }
+.cdx-changes .x-file .x-row { display: flex; align-items: center; gap: 2px; padding-right: 6px; background: color-mix(in srgb, var(--x-ground) 70%, transparent); }
+.cdx-changes .x-file .x-row:hover { background: var(--x-hover); }
+.cdx-changes .x-file .x-ln { flex: 1; min-width: 0; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 12px; text-align: left; color: var(--x-60); font-size: 13px; }
+/* a long path gives way from its folders, never its file name */
+.cdx-changes .x-file .x-path { min-width: 0; flex: 1; display: flex; overflow: hidden; white-space: nowrap; }
+.cdx-changes .x-file .x-dir { color: var(--x-45); min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.cdx-changes .x-file .x-nm { color: var(--x-ink); flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.cdx-changes .x-file .x-ln:disabled { cursor: default; }
+.cdx-changes .x-file .x-big { flex: none; font-size: 12px; color: var(--x-45); }
+@container (max-width: 720px) { .cdx-changes .x-file .x-big { display: none; } }
+.cdx-changes .x-file .x-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.cdx-changes .x-file .x-dot.x-new { background: color-mix(in srgb, var(--x-accent) 70%, transparent); }
+.cdx-changes .x-file .x-dot.x-gone { background: color-mix(in srgb, var(--x-del) 70%, transparent); }
+.cdx-changes .x-file .cdx-diff { border: 0; border-top: 1px solid var(--x-line); border-radius: 0; }
+.cdx-changes .x-files > .x-more { width: 100%; display: flex; align-items: center; gap: 4px; text-align: left; padding: 8px 12px; border-top: 1px solid var(--x-line); font-size: 13px; color: var(--x-45); }
+.cdx-changes .x-files > .x-more:hover { color: var(--x-ink); background: var(--x-hover); }
+.cdx-changes .x-files > .x-more .cdx-chev { opacity: 1; transform: rotate(90deg); }
+.cdx-changes .x-files > .x-more .cdx-chev.x-up { transform: rotate(-90deg); }
+
+/* under the answer: copy and the turn's numbers, shown on hover */
+.cdx-foot { display: flex; align-items: center; gap: 6px; margin-top: -8px; min-height: 24px; opacity: 0; transition: opacity .12s; }
+.cdx-turn:hover .cdx-foot, .cdx-foot:focus-within { opacity: 1; }
+.cdx-turn:last-child .cdx-foot { opacity: 1; }
+.cdx-foot .x-meta { font-size: 11.5px; color: var(--x-45); }
+
+/* the composer: a soft rounded field, as in Codex */
+.cdx .nt-compose { border: 0; border-radius: 22px; background: color-mix(in srgb, var(--x-ink) 5%, transparent); padding: 6px 6px 6px 6px; box-shadow: none; }
+.cdx .nt-compose:focus-within { border: 0; background: color-mix(in srgb, var(--x-ink) 7%, transparent); box-shadow: none; }
+.cdx .nt-compose .line textarea { padding: 5px 4px; }
+.cdx .nt-qd { border-radius: 14px; }
+
+/* the composer's one round button: Send / Steer / Queue in ink, Stop, "Esc" after one press, a spinner
+   while it stops */
+.cdx .nt-compose .round { width: 28px; height: 28px; }
+.cdx .nt-compose .round.send { background: var(--x-ink); color: var(--canvas); }
+.cdx .nt-compose .round.send svg { width: 16px; height: 16px; }
+.cdx .nt-compose .round:disabled { opacity: .5; cursor: default; }
+.cdx .nt-compose .round.stop { background: var(--x-ink); color: var(--canvas); }
+.cdx .nt-compose .round.stop .x-esc { font-size: 10px; font-weight: 600; letter-spacing: -.01em; }
+.cdx .spin { animation: cdx-spin 1s linear infinite; }
+@keyframes cdx-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cdx .spin { animation-duration: 3s; } }
+
+/* the list: back to the end in one round button (three waving dots while the agent works); loading */
+.cdx .nt-jump { width: 32px; height: 32px; padding: 0; justify-content: center; bottom: 24px; border-radius: 50%; border: 1px solid var(--stroke-2);
+  background: var(--canvas); color: var(--x-ink); box-shadow: none; transition: opacity .15s; transform: translate(-50%, 0); }
+.cdx .nt-jump[data-shown="false"] { opacity: 0; transform: translate(-50%, 0); }
+.cdx .nt-jump:hover { background: color-mix(in srgb, var(--x-ink) 6%, var(--canvas)); }
+.cdx .nt-jump .x-wave { display: inline-flex; align-items: center; gap: 4px; }
+.cdx .nt-jump .x-wave i { width: 4px; height: 4px; border-radius: 50%; background: color-mix(in srgb, var(--x-ink) 70%, transparent); animation: cdx-wave 1s ease-in-out infinite; }
+.cdx .nt-jump .x-wave i:nth-child(2) { animation-delay: .1s; }
+.cdx .nt-jump .x-wave i:nth-child(3) { animation-delay: .2s; }
+@keyframes cdx-wave { 0%, 10%, 100% { transform: none; } 25% { transform: translateY(1.2px); } 55% { transform: translateY(-2px); } 70% { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .cdx .nt-jump .x-wave i { animation: none; } }
+.cdx .nt-chat-body:focus { outline: none; }
+.cdx-loading { margin-top: auto; align-self: center; display: inline-flex; align-items: center; gap: 8px; padding: 4px 16px; font-size: 13px;
+  color: color-mix(in srgb, var(--x-ink) 60%, transparent); }
+.cdx-loading .spin { animation: cdx-spin 1s linear infinite; }
+
+/* the answer streams without a caret, as in Codex */
+.cdx .nt-md.streaming > :last-child::after { content: none; }
+.cdx-changes { container-type: inline-size; }

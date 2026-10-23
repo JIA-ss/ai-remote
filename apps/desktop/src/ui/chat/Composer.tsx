@@ -7,7 +7,7 @@
 // under the text, a round send button that turns into Stop), NativeChatQueuedMessageCard /
 // NativeChatQueuedMessageEditor and NativeChatContextUsageRing. Rewritten for this app's commands.
 
-import { ArrowUp, FileText, ListEnd, Plus, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
+import { ArrowUp, FileText, ListEnd, LoaderCircle, Plus, Package, Pencil, Slash, Square, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browseHistory, sendMode, type Caps, type InputMode } from "../../lib/chat";
 import {
@@ -293,7 +293,20 @@ export interface ComposerProps {
   insert?: { text: string; n: number } | null;
   /** Files in the session's folder matching a query, for the `@` menu. */
   listFiles?: (query: string) => Promise<{ files: string[]; truncated?: boolean }>;
+  /**
+   * Codex's way: one round button (Stop while the turn runs and nothing is typed, else Send / Steer /
+   * Queue), Esc twice to stop (handled by the panel; `escArmed` after the first), ⌘/Ctrl+Enter queues
+   * a message for after the turn, ⌥Enter is a new line.
+   */
+  variant?: "default" | "codex";
+  /** Stop was pressed and the turn has not ended yet. */
+  stopping?: boolean;
+  /** Messages wait for the turn to end (its answer is already coming). */
+  forceQueue?: boolean;
+  escArmed?: boolean;
 }
+
+const isMac = () => document.documentElement.dataset.os !== "windows" && !/Win/.test(navigator.platform);
 
 export function Composer(p: ComposerProps) {
   const [text, setText] = useState("");
@@ -302,7 +315,8 @@ export function Composer(p: ComposerProps) {
   const area = useRef<HTMLTextAreaElement>(null);
   // As the agent itself does it: Claude Code and Codex take a message into the turn they are working
   // on; agents that cannot are sent it after the turn. There is no separate "add to this turn" action.
-  const mode: InputMode | undefined = sendMode(p.running, { steer: p.canSteer } as Caps);
+  const codex = p.variant === "codex";
+  const mode: InputMode | undefined = codex && p.running && p.forceQueue ? "queue" : sendMode(p.running, { steer: p.canSteer } as Caps);
 
   useEffect(() => setAt(p.history.length), [p.history.length]);
   // A quoted selection goes below what is typed, with the caret after it.
@@ -402,10 +416,10 @@ export function Composer(p: ComposerProps) {
   };
   const imageFiles = (list: FileList | null | undefined) => [...(list ?? [])].filter((f) => f.type.startsWith("image/"));
 
-  const submit = (interrupt = false) => {
+  const submit = (how: "interrupt" | "queue" | null = null) => {
     const v = text.trim();
     if ((!v && !images.length) || p.disabled) return;
-    p.onSend(v, interrupt && p.running ? "interrupt" : mode, images);
+    p.onSend(v, how && p.running ? how : mode, images);
     setText("");
     setImages([]);
     setImageNote(null);
@@ -537,27 +551,55 @@ export function Composer(p: ComposerProps) {
                   return;
                 }
               }
-              if (e.key === "Escape" && p.running && !text) {
+              // Codex: Esc twice stops (the panel counts the presses).
+              if (e.key === "Escape" && p.running && !text && !codex) {
                 e.preventDefault();
                 p.onStop();
                 return;
               }
               // An input method's Enter confirms the composition; it must not send.
               if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
+              if (codex && e.altKey) {
+                // ⌥Enter: a new line where the caret is.
+                e.preventDefault();
+                const at0 = el.selectionStart, at1 = el.selectionEnd;
+                const next = `${text.slice(0, at0)}\n${text.slice(at1)}`;
+                setText(next);
+                requestAnimationFrame(() => el.setSelectionRange(at0 + 1, at0 + 1));
+                return;
+              }
               e.preventDefault();
-              submit(e.altKey);
+              if (codex) submit((isMac() ? e.metaKey : e.ctrlKey) ? "queue" : null);
+              else submit(e.altKey ? "interrupt" : null);
             }}
           />
           <div className="right">
-            {p.running && !p.disabled && (
-              <button type="button" className="round stop" onClick={(e) => { e.stopPropagation(); p.onStop(); }} aria-label={t("hc_stop")} title={t("hc_stop_k")}>
-                <Square size={12} fill="currentColor" />
-              </button>
-            )}
-            {(!p.running || ready) && (
-              <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!ready || !!p.disabled}>
-                <ArrowUp size={15} />
-              </button>
+            {codex ? (
+              // One round button: Stop while the turn runs and nothing is typed, else what sending does.
+              p.running && !ready && !p.disabled ? (
+                <button type="button" className={cx("round stop", p.stopping && "is-stopping")} disabled={p.stopping}
+                  onClick={(e) => { e.stopPropagation(); p.onStop(); }} aria-label={t("cdx_btn_stop")}>
+                  {p.stopping ? <LoaderCircle size={14} className="spin" aria-hidden /> : p.escArmed ? <span className="x-esc">Esc</span> : <Square size={10} fill="currentColor" aria-hidden />}
+                </button>
+              ) : (
+                <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} disabled={!ready || !!p.disabled}
+                  aria-label={!p.running ? t("cdx_btn_send") : mode === "steer" ? t("cdx_btn_steer") : t("cdx_btn_queue")}>
+                  <ArrowUp size={16} aria-hidden />
+                </button>
+              )
+            ) : (
+              <>
+                {p.running && !p.disabled && (
+                  <button type="button" className="round stop" onClick={(e) => { e.stopPropagation(); p.onStop(); }} aria-label={t("hc_stop")} title={t("hc_stop_k")}>
+                    <Square size={12} fill="currentColor" />
+                  </button>
+                )}
+                {(!p.running || ready) && (
+                  <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!ready || !!p.disabled}>
+                    <ArrowUp size={15} />
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -566,7 +608,9 @@ export function Composer(p: ComposerProps) {
         <div className="nt-compose-ft">
           <span className="hint-l">
             {imageNote && <span className="hint warn">{imageNote}</span>}
-            {!imageNote && p.running && ready && !p.disabled && <span className="hint">{t("hc_hint_alt")}</span>}
+            {!imageNote && p.running && ready && !p.disabled && (
+              <span className="hint">{codex ? t("cdx_hint_queue", { k: isMac() ? "⌘" : "Ctrl+" }) : t("hc_hint_alt")}</span>
+            )}
           </span>
           {p.context && <ContextRing used={p.context.used} window={p.context.window} usage={p.usage} />}
         </div>

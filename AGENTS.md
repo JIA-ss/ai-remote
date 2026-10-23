@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/desktop-nav.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,108 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## Codex 会话按 Codex 自家应用的样子显示（2026-10-22 ~ 23，分支 `feat/codex-chat-view`，worktree `../ai-remote-codex-view`）
+
+用户要求：拆 ChatGPT 桌面应用（本机 `/Applications/ChatGPT.app`，包名 `com.openai.codex`，26.825，Electron）的 Codex 对话，
+把它的对话和界面完整复刻到我们的 Codex 对话展示；Claude 和 Codex 分开实现、分开表现。
+
+**怎么拆的**：`npx @electron/asar extract app.asar` 后对话界面就在 `webview/assets`（不像 Claude.app 那样从网上加载），没有
+source map，用 prettier 展开后读：`split-items-into-render-groups`（一轮分成用户消息 / 工作条目 / 最终回答 / 改动 / 计划 / 审批）、
+`agent-activity-units`（连续工具调用并成一组，单个且已结束的组退回成一行；组的摘要句按"改文件、读文件、跑命令、搜网页、调工具"
+的顺序拼）、`conversation-blocks`（"Worked for 1m 23s"：最终回答一开始就把工作折起来，停止的轮次不折；插话消息折起后仍可见）、
+`tool-activity-disclosure`（一行文字 60% 墨色，悬停变全色，箭头只在悬停时出现，展开动画）、`exec-shell-container`
+（Shell 卡片：`$ 命令`、输出、右下角 Success / Exit code N）、样式变量（单元间距 16 px、组内 4 px、用户气泡 5% 墨色圆角 16）。
+文案对照它的英文原文。**只借结构和视觉，不抄代码**（它是专有软件，我们是 AGPL）；拆出来的东西只在 `/tmp`，没进仓库。
+
+**做了什么**：
+- 被控端 Codex 适配器（`adapters/codex.rs`），全是可选字段 / 新事件，老被控端不发：
+  - 命令的 `tool_call.input = {command, cwd, actions}`（去掉 `/bin/zsh -lc '…'` / `powershell.exe -Command …` 外壳的命令、
+    Codex 自己对命令的解读：read / listFiles / search / unknown），标题改成 `Shell <命令>`；`tool_update.exit_code` / `duration_ms`。
+  - 改文件的 `input.files`（逐文件 path、kind、move_path、统一 diff，新建文件的 diff 就是内容；整次调用共用 512 KiB、最多 1000 个
+    文件，超出的文件 `diff` 为空、`truncated: true`，桌面端退回用调用的 content）；新事件 `turn_diff`（Codex 的 `turn/diff/updated`：
+    整轮相对开始时的净改动，git 格式，512 KiB 截断，`turn_end` 之前发），改动卡片优先用它（同一文件改两次只算净变化，建了又删的
+    文件不出现）。网页搜索不再带 `input.query`（标题已有查询词）。
+  - `message.phase`（commentary / final_answer；结束时才说阶段的，补一条空 delta 带上阶段，不重发正文）。推理只转发摘要
+    （`summaryTextDelta`），各段之间空一行；原始推理文本（`textDelta`）不转发，和 Codex 自家应用一样。
+  - 提问：`question` 带 `request`（JSON-RPC 请求 id，一个请求里的题一起答）、`item_id`、`header`、`descriptions`（与 options 对齐）、
+    `other`、`secret`、`blocking`；`prompt` 只放问题本身。同时可以有多个请求在等。仍用老的 `answer` 命令逐题回答，空串表示跳过，
+    凑齐一个请求后只把非空答案回给 Codex（全跳过回 `{answers:{}}`）——**没加新命令**，因为 runner 进程会比被控端活得久，
+    老 runner 不认识新命令会把回答丢掉。新事件 `question_done{request, answers, how}`：answered / skipped / resolved
+    （Codex 发 `serverRequest/resolved`，或轮次结束时还没答）/ dismissed（轮次被停）。启动参数加了
+    `-c features.default_mode_request_user_input=true`（0.137 和 0.150 都有这个开关；不认识的 `features.*` 键 Codex 也不报错，实测），
+    让 Codex 在默认模式下也能提问。**默认模式的提问不阻塞**（`isBlocking: false`）：Codex 自家应用约 1.5~2.5 分钟没人答就用空答案放行，
+    模型自己拿主意；适配器照做，`QUESTION_WAIT` 120 秒后回 `{answers:{}}`、发 `question_done{how:"expired"}`，提问事件带
+    `expires_in_ms`，卡片上显示倒计时。不这样做的话命令行（`chat run` / `send --wait` 没法作答）发起的任务会一直挂着。
+    会话层的"30 分钟没有事件就停止"看门狗在有提问等着时不计时。
+  - 提问的 `request` 名是"进程启动毫秒-JSON-RPC id"：Codex 每个进程的服务端请求 id 都从 0 开始，而一个会话会跨多个进程
+    （空闲 20 分钟收进程、`thread/resume`），只用 id 会让新提问和老提问撞名。回复 Codex 时仍用原始 id。
+  - 对话 hello 的 `runtime` 多了 `protocol`；轮次自己的错误信息原来把服务商 JSON 原样显示，改成取里面的 message。
+  - **老控制端**：`turn_diff`、`question_done`、`phase` 忽略；提问显示时少了 header；只有移动没改内容的编辑没有 content，老控制端
+    会把 `input.files` 当 JSON 显示一块。
+- 桌面端（`lib/codex.ts` 纯函数投影；`ui/codex/` 组件；`styles/codex.css` 全部限定在 `.cdx` 里，类名加 `cdx-` / `x-` 前缀——
+  `.live`、`.hd`、`.row` 是全局类，第一次截图就被 `v2.css` 串了样式）。`AgentChat` 按 `runtime.protocol`（老被控端退回看 id /
+  名字）给 Codex 会话加 `.cdx` 并换 `Transcript` 的 `variant="codex"`；Claude Code 和 ACP 智能体照旧走 Orca 那套行。按 Codex 的样子：
+  - 一轮：用户气泡（70% 宽、圆角 22）→ 出现第一个工作项后顶部一条"处理中 / 已处理 12秒"计时分隔（答案一开始就定格成"用时 X"并成为
+    折叠开关；停止写"你在 X 后停止了"）→ 工作（连续工具调用并成一组：进行中组头写当前在做什么，至少停留 1 秒；完成后写
+    "工具→编辑→读取→运行→网页"顺序的一句摘要，前面一个图标；单个已完成的组退回成一行）→ 轮末一行状态（推理标题，没有就
+    "思考中"；有待答提问时"等你回答"）→ 答案（一开始就把工作折起来，停止的轮次不折，插话折起后仍可见）→ 改动卡片 → 复制和时间。
+  - 推理不成行，只把摘要最后一行（整行加粗取粗体里的字）当状态文字。计划不进对话，在输入框上方显示成"第 2 / 5 步"胶囊（环形进度，
+    悬停列出全部步骤）。提问在输入框位置换成卡片（输入框保持挂载，草稿不丢）：一次一题、`1 / 2` 翻页、编号选项（默认选第一个）带说明和
+    "推荐"徽标、"其他"行、跳过 / 下一步、数字键和方向键、X 或 Esc 关闭即停止本轮；答完后流里留一行"已询问 N 个问题"可展开看答案。
+  - 进行中的文字用节拍闪烁（出现 600 ms 后扫一次，之后每 4 秒一次；扫光层只在扫的那 1 秒存在，查找和复制只看到一份文字）；
+    子智能体行用连续闪烁。
+  - Shell 卡片：命令最多两行点开看全；输出 11px，盒子 144 px 高、用 `column-reverse` 不靠脚本就钉在底部、长行横向滚、可滚方向有渐隐，
+    不再截 40 行；ANSI 颜色（16 / 256 / 真彩、`\r` 覆盖、`\b` 退格）；页脚统一灰色，Codex 没说退出码时写"退出码未知"。
+  - 改动卡片："已编辑 3 个文件" + 统计 + 审阅（一次展开全部 diff）；多文件先列 3 个，新建 / 删除文件一个小圆点，⌘ 点击打开预览。
+    diff 带行号，"复制补丁"只给 `git apply` 能用的补丁（老被控端的 diff 没有行号就不给）。
+  - 输入框只一个圆按钮：运行中且没输入是停止，否则是发送 / 插话 / 排队；连按两次 Esc（2 秒内）停止，第一次按下按钮显示"Esc"；
+    答案已经在流的时候发送改为排队；⌘/Ctrl+Enter 排队，⌥Enter 换行。
+  - 列表跟随：读者任何向上的动作（滚轮、拖、方向键）立刻放手，只在离底 24 px 内且 1 秒内没有向上动作时才重新跟随；回到底部的
+    圆按钮 260 ms 动画，运行中按钮里三个点在动。回放追平之前显示"正在加载对话…"（两种视图都是），不再闪一下"空对话"。
+  - 字号颜色：Codex 的种子色（墨色、强调色、增删色，深浅两套），正文 14px、行高 22.75px，段距按字号四分之一的倍数。
+  - 时长两种格式（Intl 单位格式，跟随界面语言）：命令行用"12s / 1m 0s / 1h 0m 3s"，计时分隔用"0s / 1m / 1h 5s"。
+- iOS（`apps/ios/Sources/PhoneCodex*.swift`）跟到了 dbfdfbd 的样子（折叠、Shell 卡、diff、改动卡、停止中），**还没跟上**上面的提问卡、
+  推理标题、计时分隔、计划胶囊等。iOS 处理 `question_done`（请求结束就不再显示"等你回答"）；其他新事件忽略。**老版桌面端**不认
+  `question_done`：Codex 的非阻塞提问被被控端 120 秒后放行以后，它仍显示提问，这时再答会收到一条 `late_answer` 提醒（"回答到达时
+  Codex 已经自己继续"），答案不会送出。
+- 演示后端（`lib/demo.ts`）有一个 Codex 会话和一段 Codex 形状的实时回复，`?view=session&host=office-pc&panel=chat` 打开后在
+  会话列表里选 Codex。
+
+**测试与实测**（2026-10-23，本机 macOS，debug 包）：
+- 单测：`tools/chat-codex.test.mjs` 37 项（`git apply --check` 验证复制出的补丁、ANSI、时长、提问分组等）；`cargo test -p ar-host --lib chat`
+  73 项（Windows 上同一命令 58 项，部分测试只在 Unix 编译）；`cargo test --workspace` 420 项、`clippy -D warnings`、全部前端测试过。
+- `tools/fake-codex-app-server.py`：Codex app-server 的 JSON-RPC 替身（走真实的被控端适配器和 runner），按关键词演一轮：EXPLORE、
+  ASK（一个请求两道题）、RESOLVED（Codex 自己关掉提问）、STEERME、SLOW（收到中断后 0.8 秒才停，像真 Codex）、FAIL、MANY、NOPHASE、
+  COMPACT、REEDIT（同一文件改两次 + 建了又删，发 `turn/diff/updated`）、BADPATCH、LATEPHASE、DRAWL（慢慢流 8 秒的答案）。
+- `E2E_SCRIPT=tools/desktop-chat-codex-e2e.js python3 tools/desktop-chat-e2e.py`：真实桌面应用 + 隔离被控端 + 替身，111 项全过
+  （104 项那一版在 Mac 连续 2 次、win-dev 上 3 次全过；109 项那一版 win-dev 上也全过）。这一轮抓到并修掉的真问题：停止时"正在停止…"一闪而过（替身停得太快，两条事件同批到达——替身改成像真 Codex 那样稍等）、
+  "审阅"收起时收不回单独点开的文件、提问卡首屏依赖淡入动画（后台窗口里动画可能不走，改成只在翻题时淡入）、引用按钮被页面自己的
+  平滑滚动清掉（改成跟着选区移动，Claude 视图同样受益）。
+- 回归：Claude 视图的 `desktop-chat-e2e.js` 多次全过；最后一轮 3 次里有 1 次第一项"记住的会话已不存在时回到会话列表并提示"
+  超时（面板回到了新会话页，但没有提示；判定在 `useConversation` 的连接错误分类里，这次没改那部分），另外 2 次全过，判为偶发。
+- 真实 Codex：`E2E_MODEL=gpt-5.6-luna E2E_CODEX=/Applications/ChatGPT.app/Contents/Resources/codex E2E_SCRIPT=tools/desktop-chat-codex-real.js
+  python3 tools/desktop-chat-e2e.py --real "Codex (path)"`（codex-cli 0.150.0-alpha）全过：读文件、改 export.py、跑校验命令、折叠与改动
+  卡片、插话被采纳、停止 `sleep 120`、重开回放。**坑**：本机 `~/.codex/config.toml` 的默认模型 `gpt-5.5` 在 ChatGPT 账号下 0.137 和
+  0.150 都报"不支持"，要在开始表单的模型里填账号能用的（`~/.codex/models_cache.json` 里列着）。
+- e2e 偶发点（已处理）：60 ms 轮询在后台窗口里赶不上不到 1 秒的流式窗口，相关检查改用 MutationObserver。
+- 合并前做了一轮对抗式审查（3 个方向各自找问题、每条再由独立 agent 试图推翻），确认 16 项，全部修掉并补了单测或 e2e：
+  非阻塞提问没人放行（见上）；请求 id 跨进程撞名导致新提问卡不出现、旧答案被改写（`question_done` 现在只改本轮，草稿和"已关闭"
+  按轮次记）；正在输入框打字时卡片抢焦点、下一个数字键 / 回车替用户作答（卡片首次渲染时记下焦点，在输入框里就不抢；输入框被隐藏
+  会把焦点挪走，挂载后再看已经晚了）；焦点在面板任意按钮上按回车会被卡片当作作答（现在只从对话列表本身转发按键）；关卡片后焦点
+  掉到 body；上下文弹层开着时 Esc 被当作停止的第一下；`\r\n` 行尾丢掉颜色、退格和擦行不认转义、半截转义显示成乱码；
+  `curl … | sh` 之类被算成"搜索网页"；没有整轮 diff 时"新建再修改"给出 git 不认的补丁；答案开始后再停止，时长只算到答案开始；
+  Codex 视图的列表尺寸观察在 hello 之前挂载时取不到 Codex 标记。
+- 对这批修复再审查一轮，又确认 4 项（都已修，附测试）：iOS / 老桌面端不认 `question_done`，过期后仍显示提问且之后的回答被悄悄丢掉
+  （iOS 补上处理，迟到的回答发 `late_answer` 提醒）；截止前一刻的回答可能输给自己的截止时间（`select!` 改成 `biased`，命令优先）；
+  读者往上翻、内容继续流入后列表变矮，视图会往前跳（改成按容器高度差移动）；⋯ 菜单没有 Esc / 点外面关闭，开着时 Esc 停不了。
+
+**没做 / 没验证**（按收益排序，规格里的 Should / Later）：
+- 输入框整体外形（两行布局、"完全访问"标签、上下文环弹层、队列托盘、读图等待、历史）、头部（文件夹按钮 + 标题 + ⋯ 菜单、连接横幅、
+  hello 之前就用 Codex 外观）、Codex 重试提示、撤销 / 重新应用（需要被控端 `git apply` 命令）、编辑最后一条消息（`thread/rollback`）、
+  代码块换行开关、用户长消息折叠、时间分隔条、复制为 Markdown。
+- 审批卡片（我们 Codex 跑在免审批模式）、分叉、子智能体面板、MCP 应用嵌入、图片生成预览没有对应功能，没做。
+- Windows 上真实 Codex 的 `command` 字段长什么样没实测，只按 shlex 拼接推断并写了单测。
 
 ## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
 
