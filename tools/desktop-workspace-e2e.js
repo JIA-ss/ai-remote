@@ -101,9 +101,21 @@
   const pageTitle = () => text($(".ws-tb .ws-title"));
   /** A folder group's name (its label is "folder · computer" for another computer). */
   const groupName = (key) => text($(".ws-gh-label", rowOf(key)?.closest(".ws-sec"))).split(" · ")[0];
+  const conversation = (key) => currentKey() === key && rowOf(key) && $(".ws-session .nt-chat");
+  const readyConversation = (key) => {
+    const panel = conversation(key);
+    return panel?.isConnected && !$(".nt-chat-status, .cl-loading, .cdx-loading", panel)
+      && $(".nt-compose textarea:not(:disabled)", panel) && panel;
+  };
+  const sceneError = (reason, detail = {}) => new Error(`${reason}: ${JSON.stringify({
+    ...detail, current: currentKey(), route: $("[data-route]")?.dataset.route,
+    status: text($(".ws-main .nt-chat-status")), outgoing: $$(".ws-main [data-out]").map((el) => ({ state: el.dataset.out, text: text(el) })),
+  })}`);
   async function openRow(key) {
     $(".ws-row-main", rowOf(key))?.click();
-    return until(`session ${key} open`, () => currentKey() === key && $(".ws-session"));
+    const panel = await until(`session ${key} connected and replayed`, () => readyConversation(key));
+    if (!panel) throw sceneError("openRow: session never became ready", { key });
+    return panel;
   }
   /** Opens a row's menu. A menu closes when the window loses the focus (another app took it): opened again then. */
   async function rowMenu(key) {
@@ -133,16 +145,27 @@
   const turns = () => $$(".ws-main .cl-turn");
   const lastTurn = () => turns().at(-1);
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".ws-main .cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
-  async function send(t) {
-    // Opening a row mounts its composer before the new chat attachment has finished connecting.
-    // Sending in that gap deliberately creates an undelivered message instead of reaching the agent.
-    const ta = await until("connected composer", () => !$(".ws-main .nt-chat-status, .ws-main .cl-loading") && composer());
-    if (!ta) throw new Error(`the conversation did not connect: ${text($(".ws-main .nt-chat-status"))}`);
+  async function send(t, { newTurn = false } = {}) {
+    const key = currentKey();
+    const panel = await until("connected conversation", () => readyConversation(key));
+    const ta = $(".nt-compose textarea", panel);
+    if (!key || !panel?.isConnected || !ta?.isConnected) throw sceneError("send: no connected composer", { key, message: t });
+    const priorTurns = new Set($$(".cl-turn", panel).map((turn) => turn.dataset.turn));
+    const priorUsers = new Set($$(".cl-user .txt, .nt-qd .tx", panel));
     setValue(ta, t);
-    const button = await until("message ready to send", () => $(".ws-main .nt-compose .round.send:not(:disabled)"));
-    if (!button) throw new Error("the composer never enabled Send");
+    const button = await until("message ready to send", () => $(".nt-compose .round.send:not(:disabled)", panel));
+    if (!button?.isConnected || button.disabled || readyConversation(key) !== panel || composer() !== ta) {
+      throw sceneError("send: conversation changed before Send", { key, message: t });
+    }
     button.click();
-    await until("composer cleared", () => composer().value === "", 5000);
+    const accepted = await until(newTurn ? "the submitted message's new turn" : "the submitted message accepted or queued", () => {
+      if (conversation(key) !== panel || composer() !== ta || ta.value !== "") return false;
+      const candidates = newTurn
+        ? $$(".cl-turn", panel).filter((turn) => !priorTurns.has(turn.dataset.turn)).flatMap((turn) => $$(".cl-user .txt", turn))
+        : $$(".cl-user .txt, .nt-qd .tx", panel);
+      return candidates.find((el) => !priorUsers.has(el) && text(el) === t.trim());
+    }, 15000);
+    if (!accepted) throw sceneError("send: submitted message was not accepted by the same session", { key, message: t, newTurn });
   }
   const said = (t, ms = 20000) => until(`reply "${t}"`, () => lastTurn()?.textContent.includes(t), ms);
 
@@ -312,17 +335,33 @@
       })}`);
     };
     await failedSnapshot("before-send");
-    await send("FAIL 这一轮会失败");
+    await send("FAIL 这一轮会失败", { newTurn: true });
     await failedSnapshot("sent");
     await check("a failed turn shows a red dot", !!(await until("failed dot", () => dotOf(k2) === "failed", 20000)), dotOf(k2));
     await failedSnapshot("after-dot-wait");
     await shot("a04-failed");
     await rowMenu(k2);
     const done = byLetter("U");
-    await check("its menu offers Mark as done", !!done && /标记为完成|Mark as done/.test(text(done)), text(done));
-    done?.click();
-    await check("Mark as done clears the red dot", !!(await until("done", () => dotOf(k2) === null, 5000)), dotOf(k2));
-    await check("and says so in a toast", !!(await until("toast", () => $(".ws-toast"), 3000)));
+    const offersDone = !!done?.isConnected && /标记为完成|Mark as done/.test(text(done));
+    await check("its menu offers Mark as done", offersDone, text(done));
+    if (!offersDone) throw sceneError("Mark as done: expected action is unavailable", { key: k2 });
+    const donePanel = conversation(k2);
+    const priorToasts = new Set($$(".ws-toast"));
+    let leftDonePage = !donePanel;
+    const sameDonePage = () => conversation(k2) === donePanel && !!donePanel?.isConnected;
+    const donePageWatch = new MutationObserver(() => { if (!sameDonePage()) leftDonePage = true; });
+    donePageWatch.observe(document.body, { childList: true, subtree: true });
+    if (!done.isConnected || !sameDonePage() || !/标记为完成|Mark as done/.test(text(done))) {
+      donePageWatch.disconnect();
+      throw sceneError("Mark as done: menu or conversation changed before the click", { key: k2 });
+    }
+    done.click();
+    const cleared = await until("done on the same session page", () => !leftDonePage && sameDonePage() && rowOf(k2) && dotOf(k2) === null, 5000);
+    await check("Mark as done clears the red dot", !!cleared && !leftDonePage, dotOf(k2));
+    const doneToast = await until("Mark as done toast on the same session page", () => !leftDonePage && sameDonePage()
+      && $$(".ws-toast").find((el) => !priorToasts.has(el) && /已把.*标记为完成|marked as done/.test(text(el)) && $(".ws-toast-act", el)), 3000);
+    donePageWatch.disconnect();
+    await check("and says so in a toast", !!doneToast && !leftDonePage);
 
     // A4. Pin and unpin.
     await rowMenu(k1);
@@ -346,7 +385,8 @@
     keyDown(field, "Enter");
     await check("Enter keeps the new name", !!(await until("renamed", () => rowTitle(k2) === name2 && pageTitle() === name2, 10000)), `${rowTitle(k2)} | ${pageTitle()}`);
     await sleep(5000); // a poll
-    await check("renaming does not bring back the red dot put aside with Mark as done", dotOf(k2) !== "failed", dotOf(k2));
+    await check("renaming does not bring back the red dot put aside with Mark as done", !!doneToast && !leftDonePage && !!rowOf(k2)
+      && conversation(k2) === donePanel && dotOf(k2) !== "failed", dotOf(k2));
     const listed = await hostCall("chat_sessions").catch((e) => ({ error: String(e) }));
     await check("the host has the new name (chat_update)", JSON.stringify(listed).includes(name2), JSON.stringify(listed).slice(0, 200));
     await rowMenu(k1);

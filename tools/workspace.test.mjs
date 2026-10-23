@@ -496,6 +496,34 @@ test("'Mark as done' puts a failure aside until something new happens, and can b
   assert.equal(ws.isAcked(x().meta, 2), false);
 });
 
+test("a marked failure stays put aside through chat_update, polling and a workspace remount", async () => {
+  let current = meta({ id: "n1", turns: 2, last_status: "failed", last_seq: 7 });
+  const answers = {
+    "new chat_sessions": () => ({ sessions: [current] }),
+    "new chat_update": (patch) => {
+      current = { ...current, title: patch.title, title_source: "user", last_seq: current.last_seq + 1 };
+      return { meta: current };
+    },
+  };
+  const opts = { computers: [{ name: "new", online: true, local: false }] };
+  const { store, storage } = storeWith(answers, opts);
+  await store.refreshAll();
+  store.setCurrent("new/n1");
+  store.markDone("new/n1");
+  assert.equal(store.dot(store.find("new", "n1")), null);
+  await store.update("new", "n1", { title: "Renamed" });
+  await store.refreshAll();
+  assert.equal(store.title(store.find("new", "n1")), "Renamed");
+  assert.equal(store.dot(store.find("new", "n1")), null);
+  const reopened = storeWith(answers, { ...opts, storage }).store;
+  await reopened.refreshAll();
+  assert.equal(reopened.acked(reopened.find("new", "n1")), true);
+  assert.notEqual(reopened.dot(reopened.find("new", "n1")), "failed");
+  current = { ...current, turns: 3, last_seq: 12 };
+  await reopened.refreshAll();
+  assert.equal(reopened.dot(reopened.find("new", "n1")), "failed", "a genuinely later failed turn still needs attention");
+});
+
 test("archived sessions are asked for and kept only while the list shows them", async () => {
   const { store, calls } = storeWith(
     {

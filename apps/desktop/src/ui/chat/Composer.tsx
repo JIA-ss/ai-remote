@@ -275,6 +275,8 @@ export interface ComposerProps {
   /** The agent can take a message mid-turn (`caps.steer`). */
   canSteer: boolean;
   disabled: "ended" | "readonly" | null;
+  /** The first connection is still opening; keep the draft editable without submitting it. */
+  disabledSend?: boolean;
   context: { used: number; window: number } | null;
   queued: Array<{ id: string; text: string }>;
   history: string[];
@@ -427,7 +429,7 @@ export function Composer(p: ComposerProps) {
 
   const submit = (how: "interrupt" | "queue" | null = null) => {
     const v = text.trim();
-    if ((!v && !images.length) || p.disabled) return;
+    if ((!v && !images.length) || p.disabled || p.disabledSend) return;
     p.onSend(v, how && p.running ? how : mode, images);
     setText("");
     setImages([]);
@@ -595,7 +597,7 @@ export function Composer(p: ComposerProps) {
                   {p.stopping ? <LoaderCircle size={14} className="spin" aria-hidden /> : p.escArmed ? <span className="x-esc">Esc</span> : <Square size={10} fill="currentColor" aria-hidden />}
                 </button>
               ) : (
-                <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} disabled={!ready || !!p.disabled}
+                <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} disabled={!ready || !!p.disabled || p.disabledSend}
                   aria-label={!p.running ? t("cdx_btn_send") : mode === "steer" ? t("cdx_btn_steer") : t("cdx_btn_queue")}>
                   <ArrowUp size={16} aria-hidden />
                 </button>
@@ -608,7 +610,7 @@ export function Composer(p: ComposerProps) {
                   </button>
                 )}
                 {(!p.running || ready) && (
-                  <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!ready || !!p.disabled}>
+                  <button type="button" className="round send" onClick={(e) => { e.stopPropagation(); submit(); }} aria-label={t("send")} disabled={!ready || !!p.disabled || p.disabledSend}>
                     <ArrowUp size={15} />
                   </button>
                 )}
