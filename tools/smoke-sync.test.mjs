@@ -282,3 +282,58 @@ test("injected screenshot preparation surfaces finish errors instead of pretendi
   assert.deepEqual(f.calls, ["log before", "finish cdx-in"]);
   assert.equal(f.logs.length, 1, "retain the before sample when preparation fails");
 });
+
+function inputIsolation(visible) {
+  const harness = readFileSync(new URL("./desktop-chat-e2e.py", import.meta.url), "utf8");
+  const source = /SMOKE_INPUT_ISOLATION = r'''([\s\S]*?)'''/.exec(harness)?.[1];
+  assert.ok(source);
+  const listeners = new Map();
+  vm.runInNewContext(source.replace("__ALLOW_NATIVE_INPUT__", String(visible)), {
+    document: { addEventListener: (type, listener, options) => { assert.equal(options.capture, true); assert.equal(options.passive, false); listeners.set(type, listener); } },
+    window: { __TAURI_INTERNALS__: { invoke: async () => {} } },
+  });
+  return listeners;
+}
+
+test("off-screen smoke isolates native activation without blocking injected actions or real layout notifications", () => {
+  const listeners = inputIsolation(false);
+  for (const type of ["click", "pointerdown", "keydown", "wheel"]) {
+    let prevented = 0, stopped = 0;
+    const event = { type, isTrusted: false, preventDefault: () => prevented++, stopImmediatePropagation: () => stopped++ };
+    listeners.get(type)(event);
+    assert.equal(prevented + stopped, 0, `${type}: injected input remains usable`);
+    listeners.get(type)({ ...event, isTrusted: true });
+    assert.equal(prevented, 1); assert.equal(stopped, 1);
+  }
+  for (const type of ["scroll", "resize", "selectionchange", "focus", "input", "change"])
+    assert.equal(listeners.has(type), false, `${type}: browser layout and control notifications are preserved`);
+});
+
+test("explicit visible smoke retains the native keyboard and pointer path", () => {
+  assert.equal(inputIsolation(true).size, 0);
+});
+
+test("off-screen geometry rejects a visible strip and checks every display", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const code = `import ast,sys
+from pathlib import Path
+source=Path(sys.argv[1]).read_text(encoding='utf-8')
+function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='outside_displays')
+namespace={}
+exec(compile(ast.Module(body=[function],type_ignores=[]),'geometry-fixture','exec'),namespace)
+check=namespace['outside_displays']
+screen={'x':0,'y':0,'width':5120,'height':2160}
+def window(x,y,w=2560,h=1600): return {'x':x,'y':y,'width':w,'height':h}
+assert not check({'window':window(-2480,1906),'screens':[screen]}), 'an 80px strip is still on screen'
+assert check({'window':window(-16000,16560),'screens':[screen]})
+assert check({'window':window(-2560,0),'screens':[screen]}), 'touching an edge is not overlap'
+assert not check({'window':window(-2560,0),'screens':[screen,window(-2560,0)]}), 'check other monitors too'
+assert not check({'window':window(-16000,16560),'screens':[]})
+assert not check({'window':window(-16000,16560,0),'screens':[screen]})
+assert not check({'window':None,'screens':[screen]})
+print('geometry cases passed')`;
+  const output = execFileSync(process.platform === "win32" ? "python" : "python3",
+    ["-c", code, fileURLToPath(new URL("./desktop-chat-e2e.py", import.meta.url))], { encoding: "utf8" });
+  assert.match(output, /geometry cases passed/);
+});
