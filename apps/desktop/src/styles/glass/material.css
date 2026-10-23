@@ -1,0 +1,65 @@
+/* glass/material.css: the one implementation of functional glass.
+
+   Components compose it (`gl-cap gl-glass thin`, `cdlg gl-sheet gl-glass thick`); nothing else in
+   the app writes a backdrop-filter. Rules a glass element must keep:
+   - it is a leaf: no glass inside glass, and no ancestor with opacity < 1, filter, mask, clip-path or
+     will-change (each makes that ancestor the backdrop root, and the glass then blurs only it);
+   - radius, background and backdrop-filter sit on the same element (display block / flex);
+   - the prefixed declaration carries literal values first (some WebKit builds ignore var() there);
+   - only one blurred layer animates at a time, and the blur radius itself never animates;
+   - never inside .nt-stage (the 75 fps picture would be re-blurred every frame).
+
+   Without the material (data-material="none") the alphas are 1 and nothing is blurred: menus and
+   dialogs then look exactly as today's opaque --raised surfaces. */
+
+.gl-glass {
+  position: relative;
+  isolation: isolate;
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-regular));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+  transition: background-color var(--gl-dur) ease, box-shadow var(--gl-dur) ease;
+}
+.gl-glass.thin { background: rgb(var(--gl-g-rgb) / var(--gl-g-thin)); }
+.gl-glass.thick { background: rgb(var(--gl-g-rgb) / var(--gl-g-thick)); }
+
+/* Surfaces from before the redesign that are functional glass by nature: dialogs and menus. They
+   keep their own position (absolute / fixed), so only the paint is taken from the recipe. */
+.cdlg, .menu { isolation: isolate; }
+:root:is([data-material="native"], [data-material="preview"]) :is(.cdlg, .menu) {
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet);
+}
+:root:is([data-material="native"], [data-material="preview"]) .menu { box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float); }
+
+/* the blur: on with the material only */
+:root:is([data-material="native"], [data-material="preview"]) .gl-glass {
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+}
+:root:is([data-material="native"], [data-material="preview"]) :is(.gl-glass.thick, .cdlg, .menu) {
+  -webkit-backdrop-filter: blur(36px) saturate(160%);
+  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+}
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.gl-glass, .cdlg, .menu) {
+  -webkit-backdrop-filter: blur(30px) saturate(125%);
+  backdrop-filter: blur(30px) saturate(125%);
+}
+
+/* the rim: a 1 px highlight, bright at the top edge, drawn as a masked ring (::before has no
+   backdrop-filter of its own, so its mask creates no backdrop root) */
+:root:is([data-material="native"], [data-material="preview"]) :is(.gl-glass, .cdlg, .menu)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: var(--gl-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  transition: opacity var(--gl-dur) ease;
+}
+:root[data-window-active="false"] :is(.gl-glass, .cdlg, .menu)::before { opacity: .4; }

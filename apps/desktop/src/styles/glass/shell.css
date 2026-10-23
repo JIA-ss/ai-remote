@@ -1,0 +1,179 @@
+/* glass/shell.css: the persistent window. The sidebar (expanded 240 px, compact 72 px, gone only in
+   immersive full screen), the transparent toolbar strip with glass capsules, the scroll edge, and
+   how each route sits in the content column. Session.tsx is untouched: its toolbar and stage are
+   adapted here and through TitleBar's ShellContext.
+
+   The sidebar toggle never moves (muscle memory): fixed right of the macOS traffic lights (x 16-68,
+   centre y 24 with trafficLightPosition {16, 24}); in the compact state it lands on the toolbar's
+   left end, so the toolbar leaves room for it. On Windows it sits inside the strip in both states. */
+
+/* ---- window and columns ---- */
+.gl-win { width: 100vw; height: 100vh; }
+.gl-win > .body-row { min-height: 0; }
+.gl-win .gl-main { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.gl-win .gl-main > .nt-content { flex: 1; min-height: 0; }
+
+/* ---- sidebar ---- */
+.gl-win .side { flex: none; position: relative; transition: width var(--gl-dur) var(--gl-ease), padding var(--gl-dur) var(--gl-ease); }
+.gl-win[data-sidebar="compact"] .side { width: var(--side-w-compact); padding: 0 12px 8px; }
+/* the stage's geometry is recomputed on every size change: no animation while a session is open */
+.gl-win[data-route="session"] .side { transition: none; }
+.gl-win:has(.nt-session.immersive) .side { display: none; }
+.gl-win:has(.nt-session.immersive) > .body-row > .page { box-shadow: none; }
+
+.gl-side-top { position: relative; }
+.gl-sidetoggle {
+  position: fixed; left: 76px; top: 10px; z-index: 30;
+  width: 28px; height: 28px; border-radius: 14px; display: grid; place-items: center;
+  color: var(--text-2);
+}
+.gl-sidetoggle:hover { background: var(--gl-hover); color: var(--text-1); }
+.gl-sidetoggle:focus-visible { outline-offset: -2px; }
+[data-os="windows"] .gl-sidetoggle { left: 22px; border-radius: 4px; }
+.gl-appname { position: absolute; left: 58px; top: 0; height: var(--tb-h); display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+
+/* search: a capsule field (⌘F), an icon button when compact */
+.gl-win .side .search { border-radius: 14px; margin: 0 0 8px; }
+.gl-win .side .search .k { margin-left: auto; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.gl-win .side .search:focus-within .k { display: none; }
+.gl-side-search { display: none; }
+
+/* rows: icons in the accent colour (macOS 27 sidebars), grey while the window is inactive */
+[data-os="mac"] .gl-win .side .nv > :is(svg, .fi, .g) { color: var(--agent); }
+:root[data-window-active="false"] .gl-win .side .nv > :is(svg, .fi, .g) { color: var(--text-2); }
+.gl-win .side .nv .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gl-win .side .side-h .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the offline group folds */
+.gl-win .side button.side-h { width: 100%; display: flex; align-items: center; gap: 4px; text-align: left; font: inherit; font-size: 11px; line-height: 16px; font-weight: 600; color: var(--text-3); border-radius: var(--gl-r-row); }
+.gl-win .side button.side-h:hover { color: var(--text-2); }
+.gl-win .side button.side-h:focus-visible { outline-offset: -2px; }
+.gl-win .side .gl-chev { transition: transform var(--gl-dur) ease; flex: none; }
+.gl-win .side .gl-disclosure[aria-expanded="true"] .gl-chev { transform: rotate(90deg); }
+.gl-win .side .side-devices { -webkit-mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); }
+
+/* compact: the same rows, icons only; names and shortcuts are in each row's title */
+.gl-win[data-sidebar="compact"] .side :is(.search, .nv > .lbl, .nv > .end.device-count, .pc .tx, .pc .mini, .side-h > *, .empty-note, .gl-appname) { display: none; }
+.gl-win[data-sidebar="compact"] .side .gl-side-search {
+  display: grid; place-items: center; width: 48px; height: 32px; margin: 0 0 8px; border-radius: var(--gl-r-row); color: var(--text-2);
+}
+.gl-win[data-sidebar="compact"] .side .gl-side-search:hover { background: var(--gl-hover); color: var(--text-1); }
+.gl-win[data-sidebar="compact"] .side .nv { position: relative; width: 48px; height: 36px; justify-content: center; padding: 0; margin: 1px 0; }
+.gl-win[data-sidebar="compact"] .side .nv > .end.badge { position: absolute; top: 6px; right: 11px; min-width: 0; width: 8px; height: 8px; padding: 0; border-radius: 50%; font-size: 0; }
+.gl-win[data-sidebar="compact"] .side .pc { width: 48px; padding: 6px 0; grid-template-columns: 1fr; justify-items: center; }
+.gl-win[data-sidebar="compact"] .side .pc .tile { grid-row: auto; align-self: center; }
+.gl-win[data-sidebar="compact"] .side .side-h { height: 9px; padding: 0; margin: 4px 0; pointer-events: none; }
+.gl-win[data-sidebar="compact"] .side .side-h::after { content: ""; display: block; margin: 4px 14px 0; height: var(--gl-hair); background: var(--gl-sep); }
+
+/* ---- toolbar: a transparent strip; the groups on it are glass capsules ---- */
+.gl-win .tb.gl-toolbar { height: var(--tb-h); gap: 12px; padding: 0 12px; background: transparent; border: 0; flex: none; }
+.gl-win .gl-main > .tb.gl-toolbar { position: absolute; inset: 0 0 auto 0; z-index: 20; }
+[data-os="mac"] .gl-win .tb.gl-toolbar { padding-left: 12px; }
+[data-os="mac"] .gl-win[data-sidebar="compact"] .tb.gl-toolbar { padding-left: 40px; }
+.gl-toolbar .drag { flex: 1 1 0; min-width: 8px; align-self: stretch; height: auto; }
+.gl-toolbar .gl-center + .drag { flex: 0 0 8px; }
+.gl-toolbar .gl-caption-space { width: var(--tauri-frame-controls-width, 0px); flex: none; align-self: stretch; }
+.gl-toolbar .nt-tb-end { margin-left: 0; }
+
+.gl-toolbar .gl-titles { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 0 1 auto; }
+.gl-toolbar h1.title { margin: 0; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 15px; line-height: 18px; font-weight: 600; letter-spacing: -.01em; color: var(--text-1); white-space: nowrap; }
+.gl-toolbar h1.title .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gl-toolbar .gl-sub { display: flex; gap: 10px; min-width: 0; margin-top: 1px; font-size: 11px; line-height: 14px; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+.gl-toolbar .gl-sub > span { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.gl-toolbar .gl-sub .g, .gl-toolbar .gl-sub .fi { color: var(--text-3); }
+.gl-toolbar .gl-center { flex: 1 1 auto; min-width: 0; display: flex; justify-content: center; }
+.gl-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.gl-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--success); }
+.gl-dot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.gl-dot.wait { background: var(--idle); }
+
+/* capsules */
+.gl-cap { display: inline-flex; align-items: center; gap: 2px; height: var(--gl-cap-h); padding: 2px; border-radius: calc(var(--gl-cap-h) / 2); flex: none; }
+.gl-cap.gl-glass { box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-cap); }
+/* without the material a capsule is the plain segmented track, like today's .seg */
+:root[data-material="none"] .gl-cap.gl-glass { background: var(--fill-1); box-shadow: none; }
+.gl-cap > :is(button, .btn, .nt-iconbtn), .gl-cap .gl-segbtn {
+  height: calc(var(--gl-cap-h) - 4px); min-width: calc(var(--gl-cap-h) - 4px); padding: 0 8px; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: calc(var(--gl-cap-h) / 2 - 2px); background: transparent; box-shadow: none;
+  font-size: 12px; color: var(--text-1); white-space: nowrap;
+}
+.gl-cap > :is(button, .btn, .nt-iconbtn):not(:disabled):hover, .gl-cap .gl-segbtn:not(.sel):hover { background: var(--fill-1); color: var(--text-1); }
+.gl-cap > :is(button, .btn):not(:disabled):active { background: var(--fill-2); }
+.gl-cap > :is(button, .btn):disabled { opacity: .35; }
+.gl-cap > :is(button, .btn, .nt-iconbtn):focus-visible, .gl-cap .gl-segbtn:focus-visible, .gl-cap select:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.gl-toolbar .gl-nav > button { width: calc(var(--gl-cap-h) - 4px); padding: 0; color: var(--text-1); }
+.gl-cap .nt-select-wrap { display: inline-flex; }
+.gl-cap select.nt-select {
+  appearance: none; -webkit-appearance: none; border: 0; outline: 0; font: inherit; font-size: 12px; color: var(--text-1);
+  height: calc(var(--gl-cap-h) - 4px); padding: 0 26px 0 10px; max-width: 220px; text-overflow: ellipsis;
+  border-radius: calc(var(--gl-cap-h) / 2 - 2px); background: transparent; cursor: default;
+}
+.gl-cap select.nt-select:hover { background: var(--fill-1); }
+.gl-cap .nt-select-wrap > svg, .gl-cap .nt-select-wrap > .fi { right: 9px; }
+
+/* segmented controls in the toolbar (settings sections, computer tabs) */
+.gl-toolbar .snav { width: auto; padding: 0; border: 0; border-radius: inherit; background: transparent; box-shadow: none; overflow: visible; flex-direction: row; gap: 2px; }
+.gl-seg { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.gl-cap .gl-segbtn { padding: 0 12px; color: var(--text-2); }
+.gl-cap .gl-segbtn > :is(svg, .fi, .g) { color: currentColor; flex: none; }
+.gl-cap .gl-segbtn.sel { color: var(--text-1); font-weight: 500; background: rgb(255 255 255 / .14); }
+:root[data-theme="light"] .gl-cap .gl-segbtn.sel { background: #FFFFFF; box-shadow: 0 1px 2px rgb(0 0 0 / .10), 0 0 0 .5px rgb(0 0 0 / .05); }
+:root[data-material="none"][data-theme="dark"] .gl-cap .gl-segbtn.sel { background: var(--raised); box-shadow: 0 1px 2px rgb(0 0 0 / .18); }
+
+/* the one tinted action */
+.gl-primary { flex: none; display: flex; }
+.gl-primary .btn.primary {
+  height: var(--gl-cap-h); padding: 0 14px; gap: 6px; border-radius: calc(var(--gl-cap-h) / 2); font-size: 13px; font-weight: 600;
+  display: inline-flex; align-items: center;
+  box-shadow: inset 0 .5px 0 rgb(255 255 255 / .35), 0 1px 2px rgb(0 0 0 / .20);
+}
+:root[data-window-active="false"] .gl-primary .btn.primary { filter: saturate(.6); }
+.gl-toolbar .demo-badge { flex: none; }
+
+/* narrow windows: the second line goes first, then the labels of segments and the primary action.
+   (Window media queries, not container queries: a size container would also become the containing
+   block of the fixed dialogs inside the page on some WebKit versions.) */
+@media (max-width: 1180px) { .gl-toolbar .gl-titles:has(+ .gl-center) .gl-sub { display: none; } }
+@media (max-width: 1060px) {
+  .gl-cap .gl-segbtn:has(> :is(svg, .fi, .g)) > .lbl, .gl-primary .btn.primary > .lbl { display: none; }
+  .gl-primary .btn.primary { width: var(--gl-cap-h); padding: 0; justify-content: center; }
+}
+
+/* ---- pages under the toolbar: they start at the top and scroll beneath it ---- */
+.gl-main > .nt-content > :is(.devices-page, .cpage, .ipage, .ppage, .spage) { padding-top: calc(var(--tb-h) + 16px); scroll-padding-top: calc(var(--tb-h) + 12px); }
+.gl-main > .nt-content > .act > :is(.act-list, .insp) { padding-top: calc(var(--tb-h) + 16px); }
+.gl-main > .nt-content > .spread { padding-top: calc(var(--tb-h) + 8px); }
+.gl-main :is(#recent, .grp-h) { scroll-margin-top: calc(var(--tb-h) + 12px); }
+
+/* empty, starting, error and missing-computer states: centred, no card */
+.gl-main .gl-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: var(--tb-h) 24px 24px; text-align: center; color: var(--text-3); }
+.gl-main .gl-empty .ttl { margin-top: 4px; font-size: 17px; line-height: 24px; font-weight: 600; color: var(--text-1); }
+.gl-main .gl-empty .body { max-width: 360px; font-size: 13px; line-height: 20px; }
+.gl-main .gl-empty .btn { margin-top: 6px; }
+.gl-main .gl-starting { color: var(--text-2); font-size: 13px; }
+
+/* ---- the scroll edge: appears once content runs under the toolbar ---- */
+.gl-edge { position: absolute; inset: 0 0 auto 0; height: calc(var(--tb-h) + 16px); z-index: 19; pointer-events: none; opacity: 0; transition: opacity 150ms ease; }
+.gl-main[data-scrolled] > .gl-edge { opacity: 1; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-main[data-edge="soft"] > .gl-edge {
+  background: linear-gradient(to bottom, rgb(var(--gl-edge-rgb) / .80) 0, rgb(var(--gl-edge-rgb) / .55) var(--tb-h), rgb(var(--gl-edge-rgb) / 0) 100%);
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 20px), transparent);
+}
+/* the blur only while it shows: no idle backdrop layer over every page */
+:root:is([data-material="native"], [data-material="preview"]) .gl-main[data-edge="soft"][data-scrolled] > .gl-edge {
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+}
+/* hard edge (activity: a table header follows) and no material: opaque with a hairline */
+.gl-main[data-edge="hard"] > .gl-edge, :root[data-material="none"] .gl-main > .gl-edge {
+  height: var(--tb-h); background: rgb(var(--gl-edge-rgb) / .96); box-shadow: 0 var(--gl-hair) 0 var(--gl-sep);
+  -webkit-backdrop-filter: none; backdrop-filter: none; -webkit-mask-image: none; mask-image: none;
+}
+
+/* ---- the live session inside the shell ---- */
+.gl-win .gl-main > .nt-session { width: auto; height: auto; flex: 1; min-height: 0; min-width: 0; }
+.gl-win .nt-session > .tb.gl-toolbar { position: relative; }
+.gl-win .nt-session.immersive > .tb.gl-toolbar { display: none; }

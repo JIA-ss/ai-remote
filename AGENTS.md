@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/desktop-nav.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,76 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
+
+用户反馈"进了设置只能点返回才能回主页"，要求整体 UI/UX 重做、所有界面主打毛玻璃、页面简洁现代。因为额度不够，
+这次按"阶段性验收"只交付地基：材质层 + 常驻外壳导航。各页面的精修（第 2 段）没做，见"下一步"。
+设计过程：4 路并行摸底（导航结构、样式层、测试依赖的选择器、玻璃平台调研）→ 3 份完整方案（Apple 式 / 简单优先 / 工程稳健）
+→ 主控定稿（以 Apple 式为底，嫁接"会话里侧栏收成 72 px 图标栏"和"Pages.tsx 先拆文件"）。方案原文没进仓库（在本机 `/tmp/glass-design/`）。
+
+### 决定
+
+- **玻璃怎么做才是真的**：CSS `backdrop-filter` 只能模糊网页自己画的像素，永远采不到桌面，所以"全界面毛玻璃"=
+  整窗一层原生材质（macOS NSVisualEffectView `sidebar`；Windows 11 Mica）+ `html/body/#root/.win` 透明 + 内容面画成
+  半透明着色（磨砂由原生层完成，内容区不做 CSS 模糊）；只有浮在已绘制内容上的功能层（工具栏胶囊、菜单、对话框）
+  用 CSS 玻璃 + 1 px 高光描边。**会话舞台（视频）上任何东西都不模糊**（5K@75fps 合成器本来就满）。
+- `<html data-material="native|preview|none">`：App 内 = native（Windows 要 UA-CH 确认是 Windows 11，否则 none，避免 Win10
+  透明窗口直接露出未模糊的桌面）；浏览器预览 = preview（画一张低饱和静态替身底）；设置里"减少透明度"、系统减少透明度 /
+  增强对比 / 强制颜色 = none，回到原来 `native.css` 的不透明外观（逐像素对比 6 个页面，只有时钟文字不同）。
+- 内容面透明度按 WCAG 公式推导：深色 `rgb(30 30 32/.76)`、浅色 `rgb(244 244 247/.74)`，卡片浅色 .78（**推导值，没在屏幕上量过**）。
+- `tauri.conf.json` 的 `windowEffects.effects` 只留 `["sidebar"]`（Tauri 只取第一个，`windowBackground` 从来没生效）。
+  钉住主题时调用 `setTheme`，让原生材质跟着变（新权限 `core:window:allow-set-theme`），不再把侧栏画成实色。没用 `liquidGlass*`
+  （macOS 27 上打包版有 AppKit 崩溃报告，window-vibrancy#229）。
+- **常驻外壳**：设置、会话、欢迎、配对都是外壳里的路由，侧栏一直在（只有沉浸全屏用 `:has()` 藏起来）；同一时刻只挂一个页面。
+  `lib/nav.ts`（纯函数）：路由模型、全部旧深链（`?view/&sec/&tab/&host/&panel=chat/welcome/empty`）、Finder 式历史
+  （‹ › 前进后退，没历史时回逻辑上级）、托盘意图（仍是"路由 + intent 同一次渲染"，HostPanel 照旧消费）、`window-hidden`。
+  `lib/shortcuts.ts`：⌘[ ⌘] / Alt+←→、⌘,、⌘1-3、⌘N、⌘F、⌘\ / ⌃⌘S / Ctrl+\；输入法组字、对话框打开、远程画面上的按键一律不拦。
+- **侧栏两种形态**：展开 240 px / 图标栏 72 px，按情境分别记忆（页面默认展开、会话默认图标栏）；开关固定在红绿灯右边。
+  "你在操作"单独成组；离线组可折叠（≥3 台默认折叠）。
+- **工具栏**：透明条 + 玻璃胶囊（‹ ›、本页唯一的 h1 + 副标题、中间槽、操作、唯一一个着色主按钮），不再放应用图标；
+  设置的 6 个分区变成工具栏中间的分段胶囊（仍是 `nav.snav`），电脑页的标签也在工具栏。页面从工具栏下面滚过，滚动后才出现滚动边缘。
+- 页面只做了接入外壳必需的改动：设备页去掉自己的大标题和第二个搜索框；电脑页顶栏并进工具栏、标签受控；活动页可按电脑筛选；
+  欢迎页"设置这台电脑"直接打开应用内的开启对话框（不再给命令行）；找不到的电脑显示"找不到 {host}"。
+- 文案：新键一次加齐在 `back:` 之后的锚定块里，并给后续工作包留了空块（`// glass: pages / computer / settings / overlays`）。
+  改值 5 个：设置的"智能体"→"智能体接入"、"批准"→"批准方式"，电脑页标签→"编程智能体"，本机审计→"本机审计记录"，离线卡按钮→"返回"。
+- `Pages.tsx` 拆成 `ui/pages/*.tsx`（纯搬家，`Pages.tsx` 只 re-export），后续各页可以并行改。
+- **没动**：`Session.tsx`、`RemoteInput.tsx`、`native.css`、生成样式表、`src-tauri/src/**`、`bindings.ts`。新样式全在 `styles/glass/`
+  （固定导入顺序 tokens → material → surfaces → shell → pages → settings → overlays → chat → stage → platform → fallbacks，
+  其中 pages / settings / overlays / chat / stage 是空占位）。
+
+### 踩过的坑
+
+1. Camofox 是 Firefox 无头版，**不渲染 `backdrop-filter`**：浏览器截图里看不到模糊，只能核对计算样式；真效果要看真 App。
+2. 滚动边缘层不显示时也挂着 `backdrop-filter` 等于每页顶部常驻一块模糊层，改成滚动后才模糊。
+3. 对话错误条原来是红底红字（浅色主题下看不见字），旧问题，先在 `surfaces.css` 改成浅红底。
+4. 侧栏开关不能用 `role=switch`：`network-ui-smoke` 要求文档里第一个 switch 是"局域网发现"。
+
+### 实测
+
+全部在本机 macOS 27.0.1，debug 包（`npx tauri build --debug --no-bundle`），HEAD = 本节第 5 个地基提交之后。
+- 静态：`tsc --noEmit` 过；`npm run build` 过；`node --test tools/*.test.mjs` **143 项 141 过 0 失败 2 跳过**（基线 125/123/0/2，
+  新增 `tools/desktop-nav.test.mjs` 18 项：全部深链、历史栈、托盘载荷、两平台快捷键表与守卫）；debug 构建后 `bindings.ts` 无变化。
+  cargo fmt / clippy / test 没在本地跑（Rust 源码没改，只改了 `tauri.conf.json` 和 capabilities，debug 构建通过），交给 CI。
+- e2e（本机隔离被控端，两端 `quiet = true`，替身智能体）：`desktop-chat-e2e.py` **67 项 ×3 次全过**；预览 e2e **31 项 ×2 次全过**；
+  渲染 e2e **10 项 ×1 次全过**；离线 e2e **6 项 ×1 次全过**；`network-ui-smoke.py` **17 项 ×1 次全过**。
+  对照：改动前（main 5d82098）同一台机器对话 e2e 67 项 ×1 次全过。
+- 真 App（真实配置，连着 win-dev）：整屏截图裁窗 1 张（系统深色、一张风景壁纸）：侧栏透出原生磨砂，内容面半透明，没看到透明窗口里
+  CSS 模糊取错色（tauri#12804）；真 WKWebView 里 ⌘2 → 待批准、⌘, → 设置（工具栏分区胶囊）生效。坑：osascript 的 `keystroke ","`
+  在中文输入法下送不到，用 `key code 43 using command down`。
+- **没测**：真 App 浅色外观、窗口失焦外观、会话窗口态 / 沉浸全屏真机清单、`stream-e2e.py` 帧率对比（舞台没加任何模糊、`Session.tsx`
+  没改，但会话旁边现在多了 72 px 图标栏，未量）、Windows（Mica、标题条点击）、不同壁纸下的对比度。
+
+### 没做 / 下一步
+
+- [ ] 第 2 段页面精修（设计里拆好的工作包，文件已拆开可并行）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
+      设置各分区重排（`.hd` 大标题、"我"图块、版本行去重、快捷键分组）；`Modal.tsx` 统一对话框并 portal 到 body（目前对话框仍在页面树里，
+      `data-modal` 还没有地方设置）；决策卡 Esc 只拒绝一张；会话舞台浮条的"舞台玻璃"外观（`stage.css`）；对话面板浮层（`chat.css`）。
+- [ ] 真机验证：原生材质在不同壁纸下的对比度（内容面透明度是推导值）；tauri#12804（透明窗口里 CSS 模糊取到文字颜色）；
+      滚动边缘上 mask + 模糊叠加；`setTheme` 后托盘菜单外观；Windows 11 Mica 是否透出来、plugin-frame 标题条是否挡住工具栏按钮（win-dev 未测）。
+- [ ] `tools/desktop-ui-smoke.py` 已过期（找 `.capsule`、`.stream-request`），应改写成 Camofox REST 版的玻璃巡检（每页一个页面根、
+      一个 h1、舞台内 0 个模糊元素、对话框不在 `.win` 里）。
+- [ ] macOS 系统"减少透明度 / 增强对比度"在 WKWebView 里没有媒体查询，要 Rust 侧用 NSWorkspace 桥接（没做，目前只有应用内开关）。
 
 ## 合并进 main：提交身份统一与一次集成（2026-10-22，分支 `integrate/2026-10-22`）
 
