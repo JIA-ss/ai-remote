@@ -72,7 +72,7 @@
   状态、逐阶段 verifier 记录、fixture stdout/stderr 保存于 `target/ui-validation/native-<pid>-<timestamp>/`，不随临时编译目录删除。
   Windows fixture 另记 bootstrap、assemblies_loaded、form_shown、first_tick；不记录密码框、环境变量或其他应用内容。
 - CI 预先规划同一原生命令连续两轮，每轮写 planned-round 标记并追加日志，第一轮失败立即退出，**两轮都过才通过**；不是失败后重试。
-  保留 15 秒等待、全部业务断言及 provider/Swift 源码。macOS 对诊断提交 `9ee03ec` 的 fmt、全工作区/all-targets Clippy 通过；
+  保留 15 秒等待、全部业务断言及 provider/Swift 源码。macOS 对诊断源码（`a318b07`；原 `9ee03ec` 仅更正作者/提交者署名，文件树完全一致）的 fmt、全工作区/all-targets Clippy 通过；
   `cargo test -p ar-ui --locked` 编译通过、0 项执行 / 1 项原生测试按原设置忽略，不能当作 GUI 实测。新增 Windows 两轮采样等待 CI，
   首次失败的根因仍未知；后续成功也不追认它为已查明。
 - PR #47 诊断运行 `39987649385` 的 Windows real UIA fixture 步骤已实际连续两轮通过（原生单测每轮 1 项），
