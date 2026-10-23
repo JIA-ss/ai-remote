@@ -18,6 +18,9 @@
 //      an edit's diff with its real line numbers, stop and continue, a waiting message edited and taken back.
 //   C. First answer wins: a second connection to the same session answers an approval; the desktop's card
 //      goes when the host says it was resolved.
+//   D. Three idle sessions outside the current conversation: modifier/range selection, the batch
+//      menu's keyboard focus, pin/read/archive and Undo; `chat_sessions` independently confirms the
+//      host's persisted pin/archive fields, including the archived-only query.
 (async () => {
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -785,6 +788,148 @@
     await shot("c03-watch-current-session");
     $(".gl-toolbar .back:not(:disabled)").click();
     await check("Back returns to the same workspace session", !!(await until("workspace session again", () => $(".ws-session") && currentKey() === kq)));
+
+
+    // ===== D. Batch actions use the mounted UI and the real host's stored metadata =====
+    // Keep the current conversation out of the batch: opening it would automatically mark it read.
+    const batchKeys = [k1, k2, k3];
+    const batchIds = batchKeys.map((key) => key.slice(key.indexOf("/") + 1));
+    const selectedKeys = () => $$(".ws-row[data-multi-selected]").map((row) => row.dataset.rowKey);
+    const sameKeys = (actual, expected) => actual.length === expected.length && expected.every((key) => actual.includes(key));
+    const pinnedRow = (key) => rowOf(key)?.closest(".ws-sec")?.dataset.group === "pinned";
+    const batchSummary = (el, undo = false) => undo
+      ? /已撤销 3 个，未撤销 0 个|Undid 3; could not undo 0/.test(text(el))
+      : /已完成 3 个，失败 0 个|Completed 3; failed 0/.test(text(el));
+    const batchHost = async (label, matches, args = {}) => {
+      const end = Date.now() + 10000;
+      let last = null, error = "";
+      do {
+        try {
+          last = await hostCall("chat_sessions", args);
+          if (matches(last.sessions ?? [])) return last;
+        } catch (e) { error = String(e && e.message || e); }
+        await sleep(250);
+      } while (Date.now() < end);
+      await note(`batch host timeout ${label}: ${error || JSON.stringify(last).slice(0, 300)}`);
+      return null;
+    };
+    const clearBatch = async () => {
+      keyDown(document.activeElement ?? document.body, "Escape");
+      if (!await until("batch selection cleared", () => !selectedKeys().length && !$(".ws-menu"), 3000)) {
+        throw sceneError("batch: selection did not clear");
+      }
+    };
+    const selectBatchRow = async (key, modifiers) => {
+      const button = $(".ws-row-main", rowOf(key));
+      if (!button?.isConnected) throw sceneError("batch: a target row disappeared", { key });
+      button.focus({ preventScroll: true });
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers }));
+      await sleep(100);
+    };
+    const selectBatch = async () => {
+      await clearBatch();
+      for (const key of batchKeys) await selectBatchRow(key, { [mac ? "metaKey" : "ctrlKey"]: true });
+      if (!sameKeys(selectedKeys(), batchKeys)) throw sceneError("batch: wrong selected sessions", { selected: selectedKeys(), batchKeys });
+    };
+    const batchMenu = async () => {
+      const row = rowOf(k1);
+      if (!row?.isConnected) throw sceneError("batch: context row is missing");
+      row.scrollIntoView({ block: "nearest" });
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: rect.left + 24, clientY: rect.top + rect.height / 2 }));
+      const menu = await until("batch menu", () => $(".ws-batch-menu"), 3000);
+      if (!menu) throw sceneError("batch: required menu did not open", { selected: selectedKeys() });
+      return menu;
+    };
+    const batchAction = async (letter, label) => {
+      const menu = $(".ws-batch-menu");
+      const button = byLetter(letter);
+      if (!menu?.isConnected || !button?.isConnected || button.disabled || !label.test(text(button))) {
+        throw sceneError("batch: required action is unavailable", { letter, expected: String(label), menu: text(menu) });
+      }
+      if (!menu.contains(document.activeElement)) throw sceneError("batch: menu did not receive keyboard focus", { letter });
+      const previous = new Set($$(".ws-toast"));
+      keyDown(document.activeElement, letter.toLowerCase(), { code: `Key${letter}` });
+      const toast = await until("batch result", () => $$(".ws-toast").find((el) => !previous.has(el) && batchSummary(el)), 10000);
+      if (!toast) throw sceneError("batch: missing three-success result", { letter, toasts: $$(".ws-toast").map(text) });
+      return toast;
+    };
+    const undoBatchToast = async (toast) => {
+      const button = $(".ws-toast-act", toast);
+      if (!button?.isConnected) throw sceneError("batch: Undo disappeared before use");
+      const previous = new Set($$(".ws-toast"));
+      button.click();
+      const undone = await until("batch undone", () => $$(".ws-toast").find((el) => !previous.has(el) && batchSummary(el, true)), 10000);
+      if (!undone) throw sceneError("batch: missing three-success Undo result", { toasts: $$(".ws-toast").map(text) });
+      return undone;
+    };
+    const baseline = await batchHost("three idle non-current sessions", (xs) => batchIds.every((id) => {
+      const meta = xs.find((x) => x.id === id);
+      return meta && !["running", "starting", "interrupting"].includes(meta.state) && !meta.pending;
+    }));
+    await check("batch targets three distinct idle sessions outside the current conversation", !!baseline && new Set(batchKeys).size === 3
+      && !batchKeys.includes(currentKey()) && batchKeys.every((key) => rowOf(key)), JSON.stringify({ batchKeys, current: currentKey() }));
+    if (!baseline || new Set(batchKeys).size !== 3 || batchKeys.includes(currentKey()) || !batchKeys.every((key) => rowOf(key))) {
+      throw sceneError("batch: preconditions failed", { batchKeys });
+    }
+    const beforeBatch = new Map(baseline.sessions.filter((x) => batchIds.includes(x.id)).map((meta) => [meta.id, meta]));
+    const flagsMatch = (xs) => batchIds.every((id) => {
+      const meta = xs.find((x) => x.id === id), before = beforeBatch.get(id);
+      return meta && !!meta.pinned === !!before.pinned && !!meta.archived === !!before.archived && meta.title === before.title;
+    });
+    await check("batch starts with all three unpinned and unarchived", [...beforeBatch.values()].every((meta) => !meta.pinned && !meta.archived));
+    if ([...beforeBatch.values()].some((meta) => meta.pinned || meta.archived)) throw sceneError("batch: unexpected original flags");
+    await clearBatch();
+    await selectBatchRow(k1, { metaKey: true });
+    await check("Cmd-click selects without opening the session", sameKeys(selectedKeys(), [k1]) && currentKey() === kq, selectedKeys().join(", "));
+    await selectBatchRow(k2, { ctrlKey: true });
+    await check("Ctrl-click adds another session", sameKeys(selectedKeys(), [k1, k2]) && currentKey() === kq, selectedKeys().join(", "));
+    await selectBatchRow(k1, { metaKey: true });
+    await check("another modifier click toggles the row off", sameKeys(selectedKeys(), [k2]), selectedKeys().join(", "));
+    await clearBatch();
+    const drawn = $$(".ws-row[data-row-key]").map((row) => row.dataset.rowKey);
+    const rangeStart = Math.min(drawn.indexOf(k1), drawn.indexOf(k2)), rangeEnd = Math.max(drawn.indexOf(k1), drawn.indexOf(k2));
+    await selectBatchRow(drawn[rangeStart], { ctrlKey: true });
+    await selectBatchRow(drawn[rangeEnd], { shiftKey: true });
+    await check("Shift-click selects the range in the drawn list order", sameKeys(selectedKeys(), drawn.slice(rangeStart, rangeEnd + 1)), selectedKeys().join(", "));
+    await selectBatch();
+    const bulkMenu = await batchMenu();
+    await check("right-clicking a selected row opens the three-session batch menu", /3/.test(bulkMenu.getAttribute("aria-label") ?? "") && $$(".ws-menu-item", bulkMenu).length === 3);
+    await check("the batch menu receives keyboard focus", bulkMenu.contains(document.activeElement), text(document.activeElement));
+    await shot("d01-batch-menu");
+    const pinToast = await batchAction("P", /^置顶 3 个会话|^Pin 3 sessions/);
+    await check("batch Pin moves all three rows into Pinned", !!(await until("three pinned rows", () => batchKeys.every(pinnedRow), 5000)));
+    const hostPinned = await batchHost("three pins persisted", (xs) => batchIds.every((id) => xs.some((x) => x.id === id && x.pinned === true)));
+    await check("the real host stores all three batch pins", !!hostPinned);
+    await undoBatchToast(pinToast);
+    await check("pin Undo restores all three rows' original positions", !!(await until("three unpinned rows", () => batchKeys.every((key) => rowOf(key) && !pinnedRow(key)), 5000)));
+    await check("the real host restores only the batch pin fields and retains titles", !!(await batchHost("original pin flags", flagsMatch)));
+
+    // Normalize pre-existing unread marks through the same menu, then verify both U directions.
+    if (batchKeys.some((key) => dotOf(key) === "unread")) {
+      await selectBatch(); await batchMenu();
+      await batchAction("U", /标为已读|as read/);
+    }
+    await check("all three non-current rows start the unread check without a blue dot", !!(await until("initial read marks", () => batchKeys.every((key) => dotOf(key) !== "unread"), 5000)));
+    await selectBatch(); await batchMenu();
+    await batchAction("U", /标为未读|as unread/);
+    await check("batch Unread gives all three non-current rows a blue dot", !!(await until("three unread dots", () => batchKeys.every((key) => dotOf(key) === "unread"), 5000)));
+    await check("marking the batch unread keeps the current conversation", currentKey() === kq);
+    await selectBatch(); await batchMenu();
+    await batchAction("U", /标为已读|as read/);
+    await check("batch Read clears all three blue dots", !!(await until("three read rows", () => batchKeys.every((key) => dotOf(key) === null), 5000)));
+
+    await selectBatch(); await batchMenu();
+    const archiveToast = await batchAction("A", /^归档 3 个会话|^Archive 3 sessions/);
+    await check("batch Archive removes the three rows from the active list", !!(await until("batch rows archived", () => batchKeys.every((key) => !rowOf(key)), 5000)));
+    await check("the real host's archived query contains the three archived sessions", !!(await batchHost("three archived flags", (xs) => batchIds.every((id) => xs.some((x) => x.id === id && x.archived === true)), { archived: true })));
+    await check("the real host's active query omits all three archived sessions", !!(await batchHost("archived absent from active", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)))));
+    await undoBatchToast(archiveToast);
+    await check("archive Undo restores all three active rows", !!(await until("batch rows restored", () => batchKeys.every((key) => rowOf(key) && !rowOf(key).hasAttribute("data-archived")), 5000)));
+    await check("the real host restores the original archive and pin flags without losing titles", !!(await batchHost("original archived flags", flagsMatch)));
+    await check("the real host's archived query no longer contains these three sessions", !!(await batchHost("archive Undo persisted", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)), { archived: true })));
+    await check("batch actions finish with no selection and the same current conversation", !selectedKeys().length && !$(".ws-menu") && currentKey() === kq);
+    await shot("d02-batch-restored");
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }
