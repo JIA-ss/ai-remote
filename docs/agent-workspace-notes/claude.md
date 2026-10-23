@@ -60,7 +60,8 @@
 
 ## 未测 / 没做
 
-- 见 StructuredOutput 的 not_done；主要是：会话页整页形态只在预览页里看过（工作区路由不归本流）；章节、下一步框、密钥遮蔽、ANSI 着色、
+- 本批已实现：ANSI 工具输出与 Claude Markdown 围栏、成功 Bash diff 着色、提问行内 Markdown 和选区保护；定向原生进度见文末。
+- 见 StructuredOutput 的 not_done；仍包括：章节、下一步框、密钥遮蔽、
   Bash 转后台、思考块的“复制为引用”、粘顶提问、历史向上分页没做；按面板可见性节流（33 / 100 / 200 ms）沿用了 `useConversation` 的“每帧或 100 ms”合并，没有再分档。
 
 ## 新增 / 改动的测试与命令
@@ -71,3 +72,15 @@
   `python3 tools/desktop-chat-e2e.py --out /tmp/ws-claude-e2e`、
   `E2E_SCRIPT=tools/desktop-chat-e2e-render.js python3 tools/desktop-chat-e2e.py`、
   `E2E_SCRIPT=tools/desktop-chat-offline-e2e.js python3 tools/desktop-chat-e2e.py`（`CARGO_TARGET_DIR` 不是默认时加 `--cli/--app`）。
+
+## 第二阶段首批追记：输出与提问细节（P2）
+
+- TC-22/23 的 ANSI、反显、CR / BS 覆写、不完整 ESC / OSC 与成功 Bash diff 已实现；终端和可选 Markdown ANSI 渲染共享安全文本解析，
+  不生成 HTML 或可执行链接。围栏默认换行，复制保留原源文本；diff 只在 hunk 的声明行数内着色。
+- 提问题干、选项和说明使用非交互行内 Markdown。选区只阻止该选项的 detail=1 点击，detail=0 激活可继续选择，问题 / 答案值不被渲染改写。
+- 浏览器隔离实际组件 30 项通过，深浅主题共 12 张图已看过；本批定向 Node 三套合计 86 项通过。这些数字与上方历史批次分别记账。
+- `tools/desktop-claude-details-e2e.js` 已走真实调试应用、控制端、QUIC、隔离被控端与替身，修正 WebKit 计算样式 API 的检查后
+  28 项连续两轮通过；12 张新图待逐张验收。首轮标准 `userSelect` 检查失败保留；诊断确认 WebKit 只支持前缀，编译 CSS 的有效值已是 `text`，
+  所以只改测试按引擎支持读取计算样式，没有为迎合断言修改产品。检查仍要求受支持字段为 `text`，并继续验证原始答案回传。
+- 原生脚本使用 DOM Range、合成 detail=1 和 `HTMLElement.click()` 的 detail=0 路径；只在本页拦截复制并在 finally 恢复，不写真实系统剪贴板。
+  这不等于物理拖选、键盘或读屏器验收；真实 Claude 登录与 Windows WebView2 本批全流程仍未测。
