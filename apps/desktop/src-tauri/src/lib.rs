@@ -1494,6 +1494,15 @@ fn smoke(app: &tauri::App) {
                     monitors.into_iter().map(|monitor| (*monitor.position(), *monitor.size())).collect::<Vec<_>>()
                 });
                 eprintln!("[smoke] screen bounds: {screens:?}");
+                let window_geometry = w.outer_position().ok().zip(w.outer_size().ok()).map(|(position, size)| {
+                    json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                });
+                let screen_geometry = screens.ok().map(|screens| {
+                    screens.into_iter().map(|(position, size)| {
+                        json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                    }).collect::<Vec<_>>()
+                });
+                eprintln!("[smoke] geometry {}", json!({"window": window_geometry, "screens": screen_geometry}));
                 let _ = w.eval(script);
             }
         });
