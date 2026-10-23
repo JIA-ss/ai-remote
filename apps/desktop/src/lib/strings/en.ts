@@ -8,6 +8,7 @@ export const en = {
   ws_mode_agents: "Agents",
   ws_sidebar: "Agents workspace",
   ws_toggle_sidebar: "Show or hide the sidebar",
+  live_resize_workspace: "Resize screen and workspace",
   ws_resize_sidebar: "Resize the sidebar (double-click to reset)",
   ws_back: "Back",
   ws_forward: "Forward",

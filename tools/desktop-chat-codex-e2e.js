@@ -12,14 +12,15 @@
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
   const say = (level, message) => invoke("log_from_page", { level, message });
-  let failures = 0;
+  let failures = 0, checks = 0;
   const check = (name, ok, detail = "") => {
+    checks++;
     if (!ok) failures++;
     return say("e2e", `${ok ? "ok  " : "FAIL"}  ${name}${detail ? `  (${String(detail).slice(0, 300)})` : ""}`);
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const $ = (sel, root = document) => root?.querySelector(sel) ?? null;
+  const $$ = (sel, root = document) => root ? Array.from(root.querySelectorAll(sel)) : [];
   async function until(what, fn, ms = 20000) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -184,92 +185,117 @@
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const detailedNavigationState = () => ({
-    route: $(".win")?.dataset.route ?? null,
-    url: window.location.href,
-    chat: $(".nt-chat")?.className ?? null,
-    turnCount: turns().length,
-    recentTurns: turns().slice(-3).map((turn) => ({ key: turn.dataset.turn, connected: turn.isConnected, className: turn.className })),
-    sendButton: (() => { const button = $(".nt-compose .round.send"); return button ? {
-      connected: button.isConnected, disabled: button.disabled, className: button.className, label: button.getAttribute("aria-label"),
-    } : null; })(),
-    stopButton: (() => { const button = $(".nt-compose .round.stop"); return button ? {
-      connected: button.isConnected, disabled: button.disabled, className: button.className,
-    } : null; })(),
-    selectedTabs: $$(".nt-rail .seg [role=tab]").filter((tab) => tab.classList.contains("sel")).map(text),
-    picker: !!$(".nt-chat-picker"),
-    form: !!$(".nt-chat-start"),
-    sessions: $$(".nt-sessions .sess").length,
-    menu: !!$(".nt-chat-menu"),
-    hidden: document.hidden,
-    focus: document.activeElement?.className ?? null,
-  });
+  const detailedNavigationState = () => ({ ...navigationState(), url: window.location.href,
+    turnCount: turns().length, recentTurns: turns().slice(-3).map((turn) => ({ key: turn.dataset.turn, connected: turn.isConnected, className: turn.className })) });
+  // Workspace navigation: the real New action and session rows, with no recovery clicks.
+  const workspacePanel = () => $(".ws[data-embedded=true]") ?? $(".ws");
+  const selectedSession = () => $(".ws-row[data-selected]", workspacePanel())?.dataset.rowKey ?? null;
   const navigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     chat: $(".nt-chat")?.className ?? null,
-    picker: !!$(".nt-chat-picker"),
-    form: !!$(".nt-chat-start"),
-    sessions: $$(".nt-sessions .sess").length,
-    menu: !!$(".nt-chat-menu"),
+    form: !!$(".ws-new", workspacePanel()),
+    sessions: $$(".ws-row", workspacePanel()).length,
+    selected: selectedSession(),
+    sidebar: workspacePanel()?.dataset.side ?? null,
+    menu: !!$(".ws-menu"),
     hidden: document.hidden,
     focus: document.activeElement?.className ?? null,
   });
+  async function workspaceSidebar() {
+    const pane = workspacePanel();
+    if (!pane?.isConnected) throw new Error("workspace is missing or disconnected");
+    if (!$(".ws-side", pane)) {
+      const toggle = $(".ws-corner .ws-ib", pane);
+      if (!toggle?.isConnected) throw new Error("workspace sidebar toggle is missing or disconnected");
+      toggle.click();
+    }
+    const sidebar = await until("workspace session sidebar", () => $(".ws-side", workspacePanel()), 5000);
+    if (!sidebar) throw new Error("workspace sidebar did not open on its first toggle click");
+    return sidebar;
+  }
+  async function leaveSession(what, ready, options = {}) {
+    const state = options.state ?? navigationState;
+    const before = state();
+    await workspaceSidebar();
+    const button = $(".ws-side .ws-nav", workspacePanel());
+    if (!button?.isConnected) {
+      await options.report?.("navigation-failure", { before, reason: "New action missing or disconnected" });
+      throw new Error(`${what}: workspace New action is missing or disconnected`);
+    }
+    button.click();
+    const left = await until("conversation left for workspace New", () => $(".ws-new", workspacePanel()) && !$(".ws-session .nt-chat", workspacePanel()), 8000);
+    const evidence = { before, after: state() };
+    await check(`${what} leaves the conversation on the first New click`, !!left);
+    if (!left) {
+      await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
+      await options.report?.("navigation-failure", evidence);
+      throw new Error(`${what}: the first New click did not leave the conversation`);
+    }
+    if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(state())}`);
+    const loaded = await until(`${what}: workspace content ready`, ready, 30000);
+    await check(`${what} content loads after leaving the conversation`, !!loaded);
+    if (!loaded) {
+      await say("e2e", `     workspace loading failure: ${JSON.stringify(state())}`);
+      await options.report?.("workspace-loading-failure", { before, after: state() });
+      throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+    }
+  }
+  async function openWorkspaceSession(key, what = "the session reopens") {
+    await workspaceSidebar();
+    const row = $$(".ws-row", workspacePanel()).find((candidate) => candidate.dataset.rowKey === key);
+    const button = $(".ws-row-main", row);
+    if (!row?.isConnected || !button?.isConnected) throw new Error(`${what}: the exact session row is missing or disconnected: ${key}`);
+    button.click();
+    const opened = await until("the selected workspace conversation", () => selectedSession() === key && $(".ws-session .nt-chat", workspacePanel()), 30000);
+    await check(`${what} opens on its first row click`, !!opened);
+    if (!opened) throw new Error(`${what}: the first row click did not open ${key}; ${JSON.stringify(navigationState())}`);
+    return opened;
+  }
+  // Workspace startup: reuse its existing CLI chip, project picker, model and first-message composer.
+  const folderShown = () => text($(".ws-chip-folder .nt-folder-lbl .fn"));
+  const folderPath = () => $(".ws-chip-folder .nt-folder-lbl")?.title ?? "";
+  async function prepareWorkspace() {
+    const pane = await until("complete workspace", workspacePanel, 30000);
+    if (!pane) throw new Error("the complete workspace did not appear");
+    const divider = $(".nt-live-divider");
+    if (divider) {
+      // Dock the existing sidebar so its selected row is visible throughout these data-flow checks.
+      for (let i = 0; i < 12; i++) { keyDown(divider, "ArrowLeft"); await sleep(20); }
+      if (!(await until("workspace sidebar docked", () => workspacePanel()?.dataset.side === "docked", 5000)))
+        throw new Error("workspace did not have room for its existing session sidebar");
+    }
+    if ($(".ws-session .nt-chat", pane)) await leaveSession("the new-session page opens", () => $(".ws-new"));
+    if (!(await until("workspace new-session composer", () => $(".ws-new .ws-composer textarea"), 30000)))
+      throw new Error("the workspace new-session composer did not appear");
+  }
+  async function pickAgent(name) {
+    const chip = await until("workspace CLI selector", () => $(".ws-env-trail .ws-chip"));
+    if (!chip?.isConnected) throw new Error("workspace CLI selector is missing");
+    if (text($(".ws-chip-text", chip)) === name) return true;
+    chip.click();
+    const item = await until(`workspace CLI ${name}`, () => $$(".ws-menu .ws-menu-item").find((choice) => text($(".ws-menu-label", choice)) === name), 5000);
+    if (!item?.isConnected) return false;
+    item.click();
+    return !!(await until("workspace CLI chosen", () => text($(".ws-env-trail .ws-chip .ws-chip-text")) === name, 5000));
+  }
+  async function typeFolder(path) {
+    const name = path.split(/[\\/]/).filter(Boolean).pop();
+    if (folderShown() === name && folderPath() === path) return;
+    $(".ws-chip-folder .nt-folder-btn").click();
+    const field = await until("folder search box", () => $("#ag-folder-q"));
+    if (!field) throw new Error("workspace folder picker did not open");
+    setValue(field, path);
+    await until("open-path row", () => $(".nt-folder-list .row.open"));
+    keyDown(field, "Enter");
+    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-crumbs .cur")?.title === path && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    if (!use) throw new Error(`workspace folder picker did not list ${path}`);
+    use.click();
+    if (!(await until("folder chosen", () => folderShown() === name && folderPath() === path && !$(".nt-folder-pop"), 5000)))
+      throw new Error(`workspace did not keep the chosen folder ${path}`);
+  }
   const sceneError = (reason, detail = {}) => new Error(`${reason}; ${JSON.stringify({ ...detail, scene: detailedNavigationState() })}`);
   const sameConversation = (panel, turn) => !!panel?.isConnected && panel === $(".nt-chat.cdx")
     && !!turn?.isConnected && turn === lastTurn();
-  // Navigation and picker data load independently. A recovery click never erases the failed first
-  // click; once the picker has opened, wait for its content without clicking the old conversation.
-  // Real-agent runs add connected-action selection and detailed native/host diagnostics.
-  async function leaveSession(what, ready, options = {}) {
-    const state = options.state ?? navigationState;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const before = state();
-      const button = options.menuButton ? options.menuButton() : $$(".nt-chat-hd .ico").at(-1);
-      if (!button || button.isConnected === false) {
-        if (options.describe) await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
-        await options.report?.("navigation-failure", { attempt, before, reason: "menu button missing or disconnected" });
-        throw new Error(`${what}: menu button missing or disconnected; ${JSON.stringify({ before })}`);
-      }
-      const buttonBeforeClick = options.describe?.(button);
-      button.click();
-      const item = await until("session menu", () => {
-        const choices = $$(".nt-chat-menu [role=menuitem]");
-        return options.pickItem ? options.pickItem(choices) : choices[0];
-      });
-      if (!item || item.isConnected === false) {
-        const evidence = { attempt, before, buttonBeforeClick, buttonAfterClick: options.describe?.(button), after: state() };
-        if (options.describe) await check(`Other sessions is connected on attempt ${attempt}`, false, JSON.stringify(evidence));
-        await options.report?.("navigation-failure", { ...evidence, reason: "no connected Other sessions action; no other action was clicked" });
-        throw new Error(`${what}: no connected Other sessions action; ${JSON.stringify(evidence)}`);
-      }
-      const itemBeforeClick = options.describe?.(item);
-      const connected = item.isConnected;
-      item.click();
-      const clicked = state();
-      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
-      const evidence = { attempt, connected, before, clicked, after: state(), buttonBeforeClick, itemBeforeClick,
-        buttonAfterClick: options.describe?.(button), itemAfterClick: options.describe?.(item) };
-      await options.report?.("attempt", evidence);
-      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
-      if (!left) {
-        await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
-        await options.report?.("navigation-failure", evidence);
-        continue;
-      }
-      const waiting = state(), started = Date.now();
-      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
-      const loaded = await until(`${what}: picker content ready`, ready, 30000);
-      await check(`${what} content loads after leaving the conversation`, !!loaded);
-      if (!loaded) {
-        const evidence = { elapsedMs: Date.now() - started, waiting, after: state() };
-        await say("e2e", `     picker loading failure: ${JSON.stringify(evidence)}`);
-        await options.report?.("picker-loading-failure", evidence);
-        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
-      }
-      return;
-    }
-    throw new Error(`${what}: neither menu click left the conversation`);
-  }
   async function screenshotAt(name, target) {
     const feed = $(".nt-chat-body");
     if (!feed || !target) throw new Error(`${name}: screenshot target or transcript missing`);
@@ -287,7 +313,6 @@
     await shot(name);
   }
   const lines = (root) => $$(".cdx-act > .x-hd > .x-ln", root).map(text);
-  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
   async function send(t) {
     const panel = $(".nt-chat.cdx");
     const ta = await until("composer", composer);
@@ -326,32 +351,15 @@
   const WORKED = /Worked for (\d+[dhms] ?)+|用时 (\d+(天|小时|分钟|秒) ?)+/;
 
   try {
-    // 1. Start Codex fake from the start form, in the work folder.
-    await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
-    if ($(".nt-chat")) {
-      await leaveSession("the start form opens", () => $(".nt-chat-start"));
-    }
-    const form = await until("start form", () => $(".nt-chat-start"), 30000);
-    const pick = $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Codex fake"));
-    await check("the start form offers the Codex stand-in", !!form && !!pick, $$(".nt-chat-pick .opt").map(text).join(" | "));
-    pick.click();
+    // 1. Start Codex from the complete workspace's existing CLI and project controls.
+    await prepareWorkspace();
+    await check("the workspace offers the Codex stand-in", await pickAgent("Codex fake"));
+    await typeFolder(CFG.work);
     const work = CFG.work.split(/[\\/]/).pop();
-    const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
-    if (folderShown() !== work) {
-      $(".nt-chat-start .nt-folder-btn").click();
-      const q = await until("folder field", () => $("#ag-folder-q"));
-      setValue(q, above);
-      await until("open row", () => $(".nt-folder-list .row.open"));
-      keyDown(q, "Enter");
-      const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work));
-      child.click();
-      await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work);
-      (await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
-      await until("chosen", () => folderShown() === work);
-    }
-    await check("the work folder is chosen", folderShown() === work, folderShown());
-    setValue($("#ag-prompt"), "EXPLORE fix the quarter export");
-    await sleep(200);
+    await check("the work folder is chosen", folderShown() === work && folderPath() === CFG.work, `${folderShown()} | ${folderPath()}`);
+    setValue($(".ws-new .ws-composer textarea"), "EXPLORE fix the quarter export");
+    const startButton = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"), 5000);
+    if (!startButton) throw new Error("the first Codex message did not become ready");
     // Observe before starting: the host can already be running a short command while the form's
     // start response and the runtime-specific conversation are still mounting.
     const live = new Set();
@@ -360,8 +368,9 @@
       if (turn) for (const line of $$(".cdx-act.is-live .x-tx .cdx-cad > .x-base", turn)) live.add(text(line));
     });
     liveWatch.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
-    $(".nt-chat-start .btn.primary").click();
-    const panel = await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000);
+    startButton.click();
+    const panel = await until("conversation", () => $(".ws-session .nt-chat.cdx"), 30000);
+    const codexSession = selectedSession();
     await check("starting opens the conversation", !!panel);
     await check("a Codex session gets the Codex view", !!(await until("codex view", () => $(".nt-chat.cdx"))), $(".nt-chat")?.className);
     await check("its header names the agent", /Codex fake/.test(text($(".nt-chat-hd .nm"))), text($(".nt-chat-hd .nm")));
@@ -744,12 +753,12 @@
     setValue(composer(), "");
     await sleep(150);
     const esc = () => composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    // The ⋯ menu closes with Esc, and that Esc is no step toward stopping.
-    $(".nt-chat-hd .nt-chat-menu-btn").click();
-    await until("session menu", () => $(".nt-chat-menu"), 3000);
-    esc();
+    // The existing workspace title menu closes with Esc, and that Esc is no step toward stopping.
+    $(".ws-tb-end .ws-ib[aria-haspopup=menu]").click();
+    await until("session title menu", () => $(".ws-menu"), 3000);
+    keyDown(document.activeElement, "Escape", { cancelable: true });
     await sleep(200);
-    await check("Esc closes the ⋯ menu, and only that", !$(".nt-chat-menu") && text(rounds()[0]) !== "Esc", `${!!$(".nt-chat-menu")} ${text(rounds()[0])}`);
+    await check("Esc closes the session menu, and only that", !$(".ws-menu") && text(rounds()[0]) !== "Esc", `${!!$(".ws-menu")} ${text(rounds()[0])}`);
     // With a popover open, Esc closes it and is no step toward stopping.
     const ring = $("button.nt-ring");
     if (ring) {
@@ -818,12 +827,13 @@
     await until("find closed", () => !$(".nt-findbar"), 3000);
     await shot("c08-later-turns");
 
-    // 12. A Claude Code session keeps its own rows.
-    await leaveSession("the session picker opens", () => $(".nt-chat-start"));
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
-    setValue($("#ag-prompt"), "RICH check the export");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
+    // 12. The same workspace starts Claude through its existing CLI selector.
+    await leaveSession("the new-session page opens", () => $(".ws-new .ws-composer textarea"));
+    if (!(await pickAgent("Rich fake"))) throw new Error("the workspace did not choose Rich fake");
+    setValue($(".ws-new .ws-composer textarea"), "RICH check the export");
+    const claudeStart = await until("Claude first message ready", () => $(".ws-new .ws-send:not(:disabled)"), 5000);
+    if (!claudeStart) throw new Error("the first Claude message did not become ready");
+    claudeStart.click();
     await until("claude conversation", () => $(".nt-chat.cl-root .cl-turn"), 30000);
     await until("claude turn", () => $(".cl-turn .cl-foot, .cl-stopped"), 30000);
     await check("a Claude Code session keeps its own view (Claude's), not Codex's", !$(".nt-chat.cdx") && !!$(".nt-chat.cl-root .cl-turn") && !$(".cdx-turn"),
@@ -836,9 +846,9 @@
       if ($(".nt-chat-empty, .cl-empty")) emptySeen = true;
       if ($(".cdx-loading, .cl-loading")) loadingSeen = true;
     });
-    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 2);
+    await leaveSession("the new-session page opens for replay", () => $$(".ws-row").length >= 2);
     lw.observe(document.body, { subtree: true, childList: true });
-    $$(".nt-sessions .sess").find((s) => s.textContent.includes("Codex fake")).click();
+    await openWorkspaceSession(codexSession, "the original Codex session");
     const replayed = await until("replay", () => $(".nt-chat.cdx") && turns().length === codexTurns && turns()[0].querySelector(".cdx-worked"), 30000);
     lw.disconnect();
     await check("reopening the Codex session replays every turn in the Codex view", !!replayed, `${turns().length} of ${codexTurns} turns`);
@@ -866,6 +876,7 @@
       localStorage.setItem(key, JSON.stringify(all));
     } catch {}
   }
+  await say("e2e", `${checks} checks`);
   await say("e2e", failures ? `${failures} failed` : "all passed");
   await say("done", String(failures));
 })();

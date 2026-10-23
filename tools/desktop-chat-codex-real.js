@@ -7,15 +7,16 @@
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
   const say = (level, message) => invoke("log_from_page", { level, message });
-  let failures = 0;
+  let failures = 0, checks = 0;
   const T0 = Date.now();
   const check = (name, ok, detail = "") => {
+    checks++;
     if (!ok) failures++;
     return say("e2e", `${ok ? "ok  " : "FAIL"}  [${Math.round((Date.now() - T0) / 1000)} s] ${name}${detail ? `  (${String(detail).slice(0, 400)})` : ""}`);
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const $ = (sel, root = document) => root?.querySelector(sel) ?? null;
+  const $$ = (sel, root = document) => root ? Array.from(root.querySelectorAll(sel)) : [];
   async function until(what, fn, ms = 20000) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -65,27 +66,23 @@
   }
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const rememberedSession = () => {
-    try { return JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host] ?? null; }
-    catch { return null; }
-  };
+  const rememberedSession = () => selectedSession();
   const elementLabel = (el) => el ? `${el.tagName ?? "element"}${el.id ? `#${el.id}` : ""}${el.className ? `.${String(el.className).trim().replace(/\s+/g, ".")}` : ""}` : null;
   const elementState = (el) => el ? { element: elementLabel(el), connected: el.isConnected, text: el === document.body ? "" : text(el).slice(0, 160),
     ariaExpanded: el.getAttribute("aria-expanded"), disabled: !!el.disabled, inert: elementLabel(el.closest("[inert]")) } : null;
-  const menuButton = () => $(".nt-chat.cdx .nt-chat-hd .nt-chat-menu-btn");
+  const menuButton = () => $(".ws-tb-end .ws-ib[aria-haspopup=menu]");
   const detailedNavigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     url: window.location.href,
     chat: $(".nt-chat")?.className ?? null,
     chatConnected: $(".nt-chat")?.isConnected ?? false,
     menuButton: elementState(menuButton()),
-    menu: !!$(".nt-chat.cdx .nt-chat-menu"),
-    menuItems: $$(".nt-chat.cdx .nt-chat-menu [role=menuitem]").map(elementState),
-    picker: !!$(".nt-chat-picker"),
-    startForm: !!$(".nt-chat-start"),
-    pickerText: text($(".nt-chat-picker, .nt-chat-start")).slice(0, 500),
-    sessions: $$(".nt-sessions .sess").length,
-    sessionRows: $$(".nt-sessions .sess").map(elementState),
+    menu: !!$(".ws-menu"),
+    menuItems: $$(".ws-menu [role=menuitem]").map(elementState),
+    startForm: !!$(".ws-new"),
+    pickerText: text($(".ws-new")).slice(0, 500),
+    sessions: $$(".ws-row").length,
+    sessionRows: $$(".ws-row").map(elementState),
     rememberedSession: rememberedSession(),
     hidden: document.hidden,
     focused: document.hasFocus(),
@@ -113,84 +110,115 @@
     const hostSessions = await hostSessionsSnapshot();
     await say("e2e", `     navigation failure: ${JSON.stringify({ reason, ...evidence, scene, hostSessions })}`);
   }
+  // Workspace navigation: the real New action and session rows, with no recovery clicks.
+  const workspacePanel = () => $(".ws[data-embedded=true]") ?? $(".ws");
+  const selectedSession = () => $(".ws-row[data-selected]", workspacePanel())?.dataset.rowKey ?? null;
   const navigationState = () => ({
     route: $(".win")?.dataset.route ?? null,
     chat: $(".nt-chat")?.className ?? null,
-    picker: !!$(".nt-chat-picker"),
-    form: !!$(".nt-chat-start"),
-    sessions: $$(".nt-sessions .sess").length,
-    menu: !!$(".nt-chat-menu"),
+    form: !!$(".ws-new", workspacePanel()),
+    sessions: $$(".ws-row", workspacePanel()).length,
+    selected: selectedSession(),
+    sidebar: workspacePanel()?.dataset.side ?? null,
+    menu: !!$(".ws-menu"),
     hidden: document.hidden,
     focus: document.activeElement?.className ?? null,
   });
-  // Navigation and picker data load independently. A recovery click never erases the failed first
-  // click; once the picker has opened, wait for its content without clicking the old conversation.
-  // Real-agent runs add connected-action selection and detailed native/host diagnostics.
+  async function workspaceSidebar() {
+    const pane = workspacePanel();
+    if (!pane?.isConnected) throw new Error("workspace is missing or disconnected");
+    if (!$(".ws-side", pane)) {
+      const toggle = $(".ws-corner .ws-ib", pane);
+      if (!toggle?.isConnected) throw new Error("workspace sidebar toggle is missing or disconnected");
+      toggle.click();
+    }
+    const sidebar = await until("workspace session sidebar", () => $(".ws-side", workspacePanel()), 5000);
+    if (!sidebar) throw new Error("workspace sidebar did not open on its first toggle click");
+    return sidebar;
+  }
   async function leaveSession(what, ready, options = {}) {
     const state = options.state ?? navigationState;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const before = state();
-      const button = options.menuButton ? options.menuButton() : $$(".nt-chat-hd .ico").at(-1);
-      if (!button || button.isConnected === false) {
-        if (options.describe) await check(`the session menu is connected on attempt ${attempt}`, false, JSON.stringify(before));
-        await options.report?.("navigation-failure", { attempt, before, reason: "menu button missing or disconnected" });
-        throw new Error(`${what}: menu button missing or disconnected; ${JSON.stringify({ before })}`);
-      }
-      const buttonBeforeClick = options.describe?.(button);
-      button.click();
-      const item = await until("session menu", () => {
-        const choices = $$(".nt-chat-menu [role=menuitem]");
-        return options.pickItem ? options.pickItem(choices) : choices[0];
-      });
-      if (!item || item.isConnected === false) {
-        const evidence = { attempt, before, buttonBeforeClick, buttonAfterClick: options.describe?.(button), after: state() };
-        if (options.describe) await check(`Other sessions is connected on attempt ${attempt}`, false, JSON.stringify(evidence));
-        await options.report?.("navigation-failure", { ...evidence, reason: "no connected Other sessions action; no other action was clicked" });
-        throw new Error(`${what}: no connected Other sessions action; ${JSON.stringify(evidence)}`);
-      }
-      const itemBeforeClick = options.describe?.(item);
-      const connected = item.isConnected;
-      item.click();
-      const clicked = state();
-      const left = await until("conversation left for the picker", () => $(".nt-chat-picker") && !$(".nt-chat"), 8000);
-      const evidence = { attempt, connected, before, clicked, after: state(), buttonBeforeClick, itemBeforeClick,
-        buttonAfterClick: options.describe?.(button), itemAfterClick: options.describe?.(item) };
-      await options.report?.("attempt", evidence);
-      await check(`${what} leaves the conversation on menu click ${attempt}`, !!left);
-      if (!left) {
-        await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
-        await options.report?.("navigation-failure", evidence);
-        continue;
-      }
-      const waiting = state(), started = Date.now();
-      if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(waiting)}`);
-      const loaded = await until(`${what}: picker content ready`, ready, 30000);
-      await check(`${what} content loads after leaving the conversation`, !!loaded);
-      if (!loaded) {
-        const evidence = { elapsedMs: Date.now() - started, waiting, after: state() };
-        await say("e2e", `     picker loading failure: ${JSON.stringify(evidence)}`);
-        await options.report?.("picker-loading-failure", evidence);
-        throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
-      }
-      return;
+    const before = state();
+    await workspaceSidebar();
+    const button = $(".ws-side .ws-nav", workspacePanel());
+    if (!button?.isConnected) {
+      await options.report?.("navigation-failure", { before, reason: "New action missing or disconnected" });
+      throw new Error(`${what}: workspace New action is missing or disconnected`);
     }
-    throw new Error(`${what}: neither menu click left the conversation`);
+    button.click();
+    const left = await until("conversation left for workspace New", () => $(".ws-new", workspacePanel()) && !$(".ws-session .nt-chat", workspacePanel()), 8000);
+    const evidence = { before, after: state() };
+    await check(`${what} leaves the conversation on the first New click`, !!left);
+    if (!left) {
+      await say("e2e", `     navigation failure: ${JSON.stringify(evidence)}`);
+      await options.report?.("navigation-failure", evidence);
+      throw new Error(`${what}: the first New click did not leave the conversation`);
+    }
+    if (!ready()) await say("e2e", `     waiting for ${what} after leaving: ${JSON.stringify(state())}`);
+    const loaded = await until(`${what}: workspace content ready`, ready, 30000);
+    await check(`${what} content loads after leaving the conversation`, !!loaded);
+    if (!loaded) {
+      await say("e2e", `     workspace loading failure: ${JSON.stringify(state())}`);
+      await options.report?.("workspace-loading-failure", { before, after: state() });
+      throw new Error(`${what}: left the conversation but its content did not load within 30 s`);
+    }
+  }
+  async function openWorkspaceSession(key, what = "the session reopens") {
+    await workspaceSidebar();
+    const row = $$(".ws-row", workspacePanel()).find((candidate) => candidate.dataset.rowKey === key);
+    const button = $(".ws-row-main", row);
+    if (!row?.isConnected || !button?.isConnected) throw new Error(`${what}: the exact session row is missing or disconnected: ${key}`);
+    button.click();
+    const opened = await until("the selected workspace conversation", () => selectedSession() === key && $(".ws-session .nt-chat", workspacePanel()), 30000);
+    await check(`${what} opens on its first row click`, !!opened);
+    if (!opened) throw new Error(`${what}: the first row click did not open ${key}; ${JSON.stringify(navigationState())}`);
+    return opened;
+  }
+  // Workspace startup: reuse its existing CLI chip, project picker, model and first-message composer.
+  const folderShown = () => text($(".ws-chip-folder .nt-folder-lbl .fn"));
+  const folderPath = () => $(".ws-chip-folder .nt-folder-lbl")?.title ?? "";
+  async function prepareWorkspace() {
+    const pane = await until("complete workspace", workspacePanel, 30000);
+    if (!pane) throw new Error("the complete workspace did not appear");
+    const divider = $(".nt-live-divider");
+    if (divider) {
+      // Dock the existing sidebar so its selected row is visible throughout these data-flow checks.
+      for (let i = 0; i < 12; i++) { keyDown(divider, "ArrowLeft"); await sleep(20); }
+      if (!(await until("workspace sidebar docked", () => workspacePanel()?.dataset.side === "docked", 5000)))
+        throw new Error("workspace did not have room for its existing session sidebar");
+    }
+    if ($(".ws-session .nt-chat", pane)) await leaveSession("the new-session page opens", () => $(".ws-new"));
+    if (!(await until("workspace new-session composer", () => $(".ws-new .ws-composer textarea"), 30000)))
+      throw new Error("the workspace new-session composer did not appear");
+  }
+  async function pickAgent(name) {
+    const chip = await until("workspace CLI selector", () => $(".ws-env-trail .ws-chip"));
+    if (!chip?.isConnected) throw new Error("workspace CLI selector is missing");
+    if (text($(".ws-chip-text", chip)) === name) return true;
+    chip.click();
+    const item = await until(`workspace CLI ${name}`, () => $$(".ws-menu .ws-menu-item").find((choice) => text($(".ws-menu-label", choice)) === name), 5000);
+    if (!item?.isConnected) return false;
+    item.click();
+    return !!(await until("workspace CLI chosen", () => text($(".ws-env-trail .ws-chip .ws-chip-text")) === name, 5000));
+  }
+  async function typeFolder(path) {
+    const name = path.split(/[\\/]/).filter(Boolean).pop();
+    if (folderShown() === name && folderPath() === path) return;
+    $(".ws-chip-folder .nt-folder-btn").click();
+    const field = await until("folder search box", () => $("#ag-folder-q"));
+    if (!field) throw new Error("workspace folder picker did not open");
+    setValue(field, path);
+    await until("open-path row", () => $(".nt-folder-list .row.open"));
+    keyDown(field, "Enter");
+    const use = await until("folder listed", () => text($(".nt-folder-crumbs .cur")) === name && $(".nt-folder-crumbs .cur")?.title === path && $(".nt-folder-ft .btn.primary:not(:disabled)"));
+    if (!use) throw new Error(`workspace folder picker did not list ${path}`);
+    use.click();
+    if (!(await until("folder chosen", () => folderShown() === name && folderPath() === path && !$(".nt-folder-pop"), 5000)))
+      throw new Error(`workspace did not keep the chosen folder ${path}`);
   }
   const running = () => !!$(".nt-compose .round.stop");
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
-  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
-  async function typeFolder(path) {
-    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
-    const q = await until("folder search box", () => $("#ag-folder-q"));
-    setValue(q, path);
-    await until("open-path row", () => $(".nt-folder-list .row.open"));
-    keyDown(q, "Enter");
-    const name = path.split(/[\\/]/).filter(Boolean).pop();
-    const use = await until("folder listed", () => $(".nt-folder-crumbs .cur")?.textContent === name && $(".nt-folder-ft .btn.primary:not(:disabled)"));
-    use?.click();
-    await until("picker closed", () => !$(".nt-folder-pop"), 5000);
-  }
   async function send(t) {
     const ta = await until("composer", () => $(".nt-compose textarea"));
     setValue(ta, t);
@@ -209,24 +237,26 @@
   const SHELL = /\/bin\/(ba|z)?sh|\bbash -lc\b|\bzsh -lc\b|powershell(\.exe)? -Command/;
 
   try {
-    await until("start form", () => $(".nt-chat-start"), 30000);
-    const pick = $$(".nt-chat-pick .opt").find((b) => b.querySelector(".nm")?.textContent === CFG.agent);
-    await check(`${CFG.agent} is offered`, !!pick, $$(".nt-chat-pick .opt").map(text).join(" | "));
-    pick.click();
+    await prepareWorkspace();
+    await check(`${CFG.agent} is offered`, await pickAgent(CFG.agent));
     await typeFolder(CFG.work);
-    await check("the work folder is chosen", folderShown() === CFG.work.split(/[\\/]/).pop(), folderShown());
+    await check("the work folder is chosen", folderShown() === CFG.work.split(/[\\/]/).pop() && folderPath() === CFG.work, `${folderShown()} | ${folderPath()}`);
     // E2E_MODEL picks the model (the account's default may not be one this Codex can use).
     if (CFG.model) {
-      if (!$("#ag-model")) $(".nt-chat-start .nt-chat-more")?.click();
-      const m = await until("model field", () => $("#ag-model"), 5000);
-      if (m) setValue(m, CFG.model);
-      await check(`the model is set to ${CFG.model}`, m?.value === CFG.model);
+      $(".ws-model > .ws-chip").click();
+      const model = await until("workspace model field", () => $(".ws-model-pop input"), 5000);
+      if (!model) throw new Error("the existing workspace model field did not open");
+      setValue(model, CFG.model);
+      await until("model draft rendered", () => model.isConnected && model.value === CFG.model, 5000);
+      keyDown(model, "Enter");
+      await check(`the model is set to ${CFG.model}`, !!(await until("model chosen", () => text($(".ws-model .ws-chip-text")) === CFG.model, 5000)));
     }
-    setValue($("#ag-prompt"), "Read export.py with the file-reading tool. Use the apply_patch editing tool to fix quarter_end so it returns the real last day of the quarter's last month, using calendar.monthrange, and add the imports it needs. Do not rewrite files with shell or Python commands: this task tests the editing-tool UI. "
+    setValue($(".ws-new .ws-composer textarea"), "Read export.py with the file-reading tool. Use the apply_patch editing tool to fix quarter_end so it returns the real last day of the quarter's last month, using calendar.monthrange, and add the imports it needs. Do not rewrite files with shell or Python commands: this task tests the editing-tool UI. "
       + "Then check it by running exactly: python3 -c \"import export; print([str(export.quarter_end(2026, q)) for q in range(1, 5)])\". Reply in two short sentences.");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await check("the real Codex starts in the Codex view", !!(await until("conversation", () => $(".nt-chat.cdx .nt-chat-hd"), 60000)), $(".nt-chat")?.className);
+    const startButton = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"), 5000);
+    if (!startButton) throw new Error("the first real Codex message did not become ready");
+    startButton.click();
+    await check("the real Codex starts in the Codex view", !!(await until("conversation", () => $(".ws-session .nt-chat.cdx"), 60000)), $(".nt-chat")?.className);
 
     // 1. A small fix.
     const live = new Set();
@@ -297,26 +327,12 @@
       await navigationFailure("the original session id is missing before leaving");
       throw new Error("cannot verify reopening the original session: no remembered session id");
     }
-    await leaveSession("the session list opens", () => $$(".nt-sessions .sess").length >= 1, {
-      state: detailedNavigationState, menuButton, describe: elementState,
-      pickItem: (choices) => choices.find((choice) => /^(Other sessions|其他会话)$/.test(text(choice))),
-      report: async (phase, evidence) => {
-        if (phase === "attempt") {
-          await say("e2e", `     navigation attempt: ${JSON.stringify(evidence)}`);
-          for (const [step, value] of Object.entries({ before: evidence.before, clicked: evidence.clicked, after: evidence.after }))
-            await say("e2e", `     navigation ${evidence.attempt} ${step}: ${JSON.stringify(value)}`);
-        } else await navigationFailure(phase, evidence);
-      },
+    await leaveSession("the new-session page opens for replay", () => $$(".ws-row").length >= 1, {
+      state: detailedNavigationState, report: navigationFailure,
     });
-    const candidates = $$(".nt-sessions .sess").filter((row) => text($(".nm", row)).split(" · ")[0] === CFG.agent);
-    if (candidates.length !== 1 || !candidates[0].isConnected) {
-      await check("the original agent has one connected session row to reopen", false, `${candidates.length} matches for ${CFG.agent}`);
-      await navigationFailure("the original session row is missing, ambiguous or disconnected", { originalSession,
-        candidates: candidates.map(elementState) });
-      throw new Error("cannot reopen the original session: its session row is missing, ambiguous or disconnected");
-    }
-    const row = candidates[0], rowBeforeClick = elementState(row);
-    row.click();
+    const row = $$(".ws-row").find((candidate) => candidate.dataset.rowKey === originalSession);
+    const rowBeforeClick = elementState(row);
+    await openWorkspaceSession(originalSession, "the original real Codex session");
     const back = await until("replay of the original session", () => rememberedSession() === originalSession
       && $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
     await check("reopening replays it in the Codex view", !!back,
@@ -337,6 +353,7 @@
       localStorage.setItem(key, JSON.stringify(all));
     } catch {}
   }
+  await say("e2e", `${checks} checks`);
   await say("e2e", failures ? `${failures} failed` : "all passed");
   await say("done", String(failures));
 })();

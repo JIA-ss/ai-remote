@@ -10,6 +10,7 @@ export const zh: Record<keyof typeof en, string> = {
   ws_mode_agents: "智能体",
   ws_sidebar: "智能体工作区",
   ws_toggle_sidebar: "显示或隐藏侧栏",
+  live_resize_workspace: "调整画面与工作区宽度",
   ws_resize_sidebar: "拖动调整侧栏宽度（双击复原）",
   ws_back: "后退",
   ws_forward: "前进",

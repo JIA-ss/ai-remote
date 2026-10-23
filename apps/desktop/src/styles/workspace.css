@@ -88,6 +88,12 @@
 .ws-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--ws-accent); opacity: 0; transition: opacity 120ms; }
 .ws-grip:hover::after, .ws-grip:focus-visible::after, .ws.dragging .ws-grip::after { opacity: 1; transition-delay: 100ms; }
 .ws-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--ws-s1); container-type: inline-size; }
+/* The same complete workspace beside the live view: its pane owns its width, while native window
+   controls remain with the outer frame. Floating sidebar / palette layers stay inside this pane. */
+.ws[data-embedded="true"] { min-width: 0; width: 100%; height: 100%; isolation: isolate; }
+.ws[data-embedded="true"] .ws-frame-room { display: none; }
+.ws[data-embedded="true"] .ws-scrim { position: absolute; padding-top: 12%; }
+.ws[data-embedded="true"] .ws-palette { width: min(600px, calc(100% - 32px)); max-height: 80%; }
 
 /* the window's corner: traffic lights (74 px from the window's edge), toggle, back, forward (SB-01) */
 .ws-corner { display: flex; align-items: center; gap: 2px; flex: none; }
@@ -339,6 +345,9 @@
 .ws-chip-folder .nt-folder-btn .nt-folder-lbl .fp { display: none; }
 .ws-chip-folder .nt-folder-btn .nt-folder-glyph { color: inherit; }
 .ws-chip-folder .nt-folder-pop { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; width: 400px; max-width: calc(100vw - 32px); background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
+/* Inside the glass window this workspace keeps its own opaque popup surface: text in the composer
+   beneath the folder list must not show through its footer or rows. No video blur is involved. */
+.gl-win .ws .ws-chip-folder .nt-folder-pop { background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
 .ws-model { position: relative; }
 .ws-model-pop { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30; width: 240px; padding: 6px; border-radius: 10px; background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
 .ws-model-pop input { width: 100%; height: 28px; padding: 0 8px; border: 0; outline: 0; border-radius: 6px; background: var(--ws-hover); color: var(--ws-t1); font-size: 12px; user-select: text; }

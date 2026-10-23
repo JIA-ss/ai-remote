@@ -68,20 +68,45 @@
     await sleep(100);
     $(".nt-compose .round.send").click();
   }
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 30000);
+  }
   try {
     // Start the stand-in in the work folder, typed into the picker.
-    await until("start form", () => $(".nt-chat-start"), 30000);
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
-    $(".nt-chat-start .nt-folder-btn").click();
+    await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
+    await pickAgent("Rich fake");
+    $(".ws-chip-folder .nt-folder-btn").click();
     const q = await until("folder field", () => $("#ag-folder-q"));
     setValue(q, CFG.work);
+    await until("open folder path", () => $(".nt-folder-list .row.open"));
     keyDown(q, "Enter");
     const work = CFG.work.split(/[\\/]/).pop();
     (await until("use button", () => $(".nt-folder-crumbs .cur")?.textContent === work && $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
-    setValue($("#ag-prompt"), "first");
-    await sleep(200);
-    $$(".nt-chat-start .btn.primary").at(-1).click();
+    await startSession("first");
     await check("the conversation starts", !!(await until("first answer", () => document.body.textContent.includes("you said: first"), 30000)));
 
     // The host goes away: the panel loses the chat; a message sent now is not sent.
@@ -100,7 +125,7 @@
 
     // The host comes back; the panel reconnects; Retry sends it, once.
     await say("e2e", "(action) start-host");
-    await check("the panel reconnects", !!(await until("reconnected", () => !$(".nt-chat-status") || !/连接|connect/i.test($(".nt-chat-status").textContent), 60000)),
+    await check("the panel reconnects", !!(await until("reconnected", readyConversation, 60000)),
       $(".nt-chat-status")?.textContent);
     $$(".nt-ib", $(".nt-sending.failed"))[0].click();
     await check("Retry delivers it", !!(await until("delivered", () => !$(".nt-sending") && document.body.textContent.includes("you said: while offline"), 30000)),
