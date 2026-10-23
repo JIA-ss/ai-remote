@@ -371,3 +371,23 @@ test("sessions seen last time are shown before the computers answer", async () =
   assert.equal(again.store.title(x), "From before");
   assert.equal(x.online, false);
 });
+
+test("chat events seen on an open conversation update its title, state, what waits and how it ended", () => {
+  assert.deepEqual(plain(ws.eventPatch({ t: "title", seq: 4, ts: 99, title: " Fix the build ", source: "agent" })), { last_seq: 4, last_activity: 99, title: "Fix the build", title_source: "agent" });
+  assert.equal(ws.eventPatch({ t: "permission", seq: 5 }).pending, "permission");
+  assert.equal(ws.eventPatch({ t: "plan_review", seq: 6 }).pending, "plan");
+  assert.equal(ws.eventPatch({ t: "resolved", seq: 7 }).pending, null);
+  assert.deepEqual(plain(ws.eventPatch({ t: "turn_end", seq: 8, status: "failed", reason: "exit 1" })), { last_seq: 8, pending: null, last_status: "failed", last_reason: "exit 1" });
+  assert.equal(ws.eventPatch({ t: "state", seq: 9, state: "running" }).state, "running");
+  // A line outside the conversation (seq -1) changes nothing.
+  assert.equal(ws.eventPatch({ t: "commands", seq: -1 }), null);
+});
+
+test("leaving a session counts what it said meanwhile as seen", async () => {
+  const { store } = storeWith({ "new chat_sessions": { sessions: [meta({ id: "n1", last_seq: 4 })] }, "old chat_sessions": { sessions: [] } });
+  await store.refreshAll();
+  store.setCurrent("new/n1");
+  store.patchSession("new", "n1", ws.eventPatch({ t: "message", seq: 12, ts: 5 }));
+  store.setCurrent(null);
+  assert.equal(store.unread(store.find("new", "n1")), false);
+});

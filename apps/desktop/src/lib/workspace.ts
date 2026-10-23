@@ -102,6 +102,50 @@ export function isRunning(m: WsMeta): boolean {
   return m.state === "running" || m.state === "starting" || m.state === "interrupting";
 }
 
+/**
+ * What one chat event (design 1.2) changes in its session's metadata, for a session open here: its
+ * title, state, what waits for a person, how the turn ended, its last event. Null: nothing.
+ */
+export function eventPatch(e: { t: string; seq?: number; ts?: number; [k: string]: unknown }): Partial<WsMeta> | null {
+  const p: Partial<WsMeta> = {};
+  if (typeof e.seq === "number" && e.seq > 0) {
+    p.last_seq = e.seq;
+    if (typeof e.ts === "number") p.last_activity = e.ts;
+  }
+  switch (e.t) {
+    case "title":
+      if (typeof e.title === "string" && e.title.trim()) {
+        p.title = e.title.trim();
+        p.title_source = e.source === "user" || e.source === "auto" ? e.source : "agent";
+      }
+      break;
+    case "state":
+      if (typeof e.state === "string") p.state = e.state as ChatState;
+      break;
+    case "permission":
+      p.pending = "permission";
+      break;
+    case "question":
+      p.pending = "question";
+      break;
+    case "plan_review":
+      p.pending = "plan";
+      break;
+    case "resolved":
+      p.pending = null;
+      break;
+    case "turn_end":
+      p.pending = null;
+      if (e.status === "completed" || e.status === "failed" || e.status === "interrupted") p.last_status = e.status;
+      p.last_reason = typeof e.reason === "string" ? e.reason.slice(0, 300) : null;
+      break;
+    case "mode":
+      if (typeof e.mode === "string") p.permission_mode = e.mode;
+      break;
+  }
+  return Object.keys(p).length ? p : null;
+}
+
 /** First line of a message, at most `max` characters (NS-38: 80), or "" for nothing. */
 export function firstLine(text: string | null | undefined, max = 80): string {
   const line = (text ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
@@ -672,9 +716,11 @@ export class WorkspaceStore {
     return displayTitle(x.meta, this.snap.first[x.key]);
   }
 
-  /** The session open in the workspace (null: none); opening one marks it read. */
+  /** The session open in the workspace (null: none); opening one marks it read, and so does leaving it. */
   setCurrent(key: string | null) {
-    if (key === this.snap.current) return;
+    const was = this.snap.current;
+    if (key === was) return;
+    if (was) this.markRead(was);
     this.set({ current: key });
     if (key) this.markRead(key);
   }
