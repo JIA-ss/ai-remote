@@ -307,6 +307,19 @@ test("a changed callback identity does not restart capture, and a late start rep
   assert.equal(s.views[0].view.stops, 1);
 });
 
+test("a different computer retires its old capture before opening the next screen", async () => {
+  const s = streamFixture();
+  s.render(); s.views[0].resolve(s.views[0].view); await tick();
+  s.update({ host: "other-host" }); s.render();
+  assert.equal(s.views.length, 2);
+  assert.equal(s.views[0].view.stops, 1);
+  assert.equal(s.views[1].host, "other-host");
+  s.views[0].options.onEnded("old screen ended late");
+  assert.equal(s.errors.at(-1), null, "the old computer cannot end the new screen");
+  s.close(); s.views[1].resolve(s.views[1].view); await tick();
+  assert.equal(s.views[1].view.stops, 1);
+});
+
 test("terminal events before native start resolves stop the late view and surface a reconnect control", async () => {
   const s = streamFixture();
   s.render();
@@ -370,43 +383,73 @@ test("manual input mounts only for a human driver with a decoded frame and scree
   hooks.close();
 });
 
-test("the live view always shows the existing conversation and keeps approvals reachable after full screen", () => {
+test("hiding a live workspace stops its screen and input, and reopening waits for fresh geometry and a frame", () => {
+  const hooks = hooksFixture();
+  const { SessionPage, Stream, RemoteInput } = sessionModule(hooks, { kind: "tauri" }, () => assert.fail("nested Stream should not execute in the page fixture"));
+  const c = { host: { name: "test-host", path: "direct" }, os: "mac", online: true, feed: {
+    agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null,
+    driver: { state: "person", device: "test-device", since_ms: 1000, agent_may_watch: false },
+  } };
+  const props = { c, active: true, device: "test-device", waiting: 0, onBack() {}, onNav() {} };
+  const render = () => hooks.render(SessionPage, props);
+  let tree = render();
+  const initial = nodes(tree).find((n) => n.type === Stream);
+  initial.props.onFrame(); initial.props.onScreen({ x: 0, y: 0, width: 1600, height: 1000 }); tree = render();
+  assert.ok(nodes(tree).some((n) => n.type === RemoteInput));
+  props.active = false; tree = render();
+  assert.ok(!nodes(tree).some((n) => n.type === Stream || n.type === RemoteInput), "a hidden workspace never reopens an unseen capture");
+  props.active = true; tree = render();
+  const reopened = nodes(tree).find((n) => n.type === Stream);
+  assert.ok(reopened);
+  assert.ok(!nodes(tree).some((n) => n.type === RemoteInput), "old geometry and pixels were discarded on hide");
+  reopened.props.onScreen({ x: -1200, y: 0, width: 1200, height: 1800 }); tree = render();
+  assert.ok(!nodes(tree).some((n) => n.type === RemoteInput), "fresh geometry alone cannot enable input");
+  reopened.props.onFrame(); tree = render();
+  assert.deepEqual(plain(nodes(tree).find((n) => n.type === RemoteInput).props.screen), { x: -1200, y: 0, width: 1200, height: 1800 });
+  hooks.close();
+});
+
+test("the screen stays a stage without a second conversation and Review reaches the workspace approval after full screen", () => {
   const hooks = hooksFixture();
   const { SessionPage, TitleBar, AgentChat, DecisionCard } = sessionModule(hooks, { kind: "demo" }, () => {});
   const c = { host: { name: "test-host", path: "direct" }, os: "mac", online: true, feed: {
     agent: null, pending: [], sessions: {}, steps: [], turns: [], task: null, driver: { state: "agent" },
   } };
-  const chosen = { session: "from-workspace" };
-  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {}, chat: chosen };
+  let focused = 0;
+  const immersive = [];
+  const approvalRef = { current: { scrollIntoView() {}, focus() { focused++; } } };
+  const props = { c, device: "test-device", waiting: 0, onBack() {}, onNav() {}, approvalRef, approvalVisible: true,
+    onImmersiveChange: (value) => immersive.push(value) };
   const render = () => hooks.render(SessionPage, props);
   let tree = render();
-  const rail = nodes(tree).find((node) => node.type === "aside");
-  assert.equal(rail.props.className, "nt-rail wide");
-  assert.equal(nodes(rail).filter((node) => node.type === AgentChat).length, 1);
-  assert.equal(nodes(rail).find((node) => node.type === AgentChat).props.target, chosen);
-  assert.ok(nodes(rail).every((node) => node.props?.role !== "tablist" && node.props?.role !== "tab"));
-  assert.ok(nodes(rail).every((node) => node.props?.className !== "composer-foot"));
+  assert.ok(!nodes(tree).some((node) => node.type === "aside"));
+  assert.ok(!nodes(tree).some((node) => node.type === AgentChat));
   assert.ok(!nodes(tree).some((node) => node.type === DecisionCard));
 
   c.feed.pending = [{ id: "approval-1", tool: "shell", expiresMs: 10_000 }];
   c.feed.steps = [{ approvalId: "approval-1", startedMs: 500 }];
   tree = render();
-  const approval = nodes(tree).find((node) => node.type === DecisionCard);
-  assert.equal(approval.props.p.id, "approval-1");
-  assert.equal(approval.props.askedMs, 500);
-  assert.equal(nodes(tree).find((node) => node.props?.className === "nt-chat-approval").props.ref, approval.props.escapeScope,
-    "the wrapper focused by Review is the card's Escape scope");
-  assert.ok(nodes(tree).indexOf(approval) < nodes(tree).findIndex((node) => node.type === AgentChat), "approval precedes the conversation");
+  assert.ok(!nodes(tree).some((node) => node.type === DecisionCard), "the host card is owned once by LiveWorkspace");
 
   nodes(tree).find((node) => node.type === TitleBar).props.end.props.children.at(-1).props.onClick();
   tree = render();
-  assert.ok(!nodes(tree).some((node) => node.type === "aside"), "full screen keeps the picture clear");
+  assert.equal(immersive.at(-1), true, "the surrounding workspace hears the screen enter full screen");
   const review = nodes(tree).find((node) => node.type === "button" && node.props.children === "review");
   assert.ok(review, "the stage still offers to review the pending action");
+  // A child's exit effect runs before its parent can remove inert from the aside. Retain the Review
+  // request through that render, then focus only after the shared frame reports the pane is usable.
+  props.approvalVisible = false;
   review.props.onClick();
   tree = render();
-  assert.ok(nodes(tree).some((node) => node.type === DecisionCard));
-  assert.ok(nodes(tree).some((node) => node.type === AgentChat));
+  assert.equal(immersive.at(-1), false, "Review restores the existing workspace pane");
+  assert.equal(focused, 0, "an inert parent pane cannot receive focus yet");
+  tree = render();
+  assert.equal(focused, 0, "the focus request waits for the parent instead of being discarded");
+  props.approvalVisible = true; tree = render();
+  assert.equal(focused, 1, "the pending Review request focuses the wrapper after its pane becomes visible");
+  tree = render();
+  assert.equal(focused, 1, "later renders do not focus the approval again");
+  assert.ok(!nodes(tree).some((node) => node.type === DecisionCard || node.type === AgentChat));
   hooks.close();
 });
 

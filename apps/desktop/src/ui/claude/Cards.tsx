@@ -28,6 +28,7 @@ import { detectOs } from "../../lib/platform";
 import { cx } from "../util";
 import { Markdown } from "../chat/Markdown";
 import { DiffView } from "./ToolBody";
+import { workspaceOwnsEvent } from "../workspace/parts";
 
 const MAC = detectOs() === "mac";
 const CMD_ENTER = MAC ? "⌘↵" : "Ctrl+↵";
@@ -92,14 +93,17 @@ function FrontCard({ item, agent, readonly, draft, actions }: { item: OpenItem; 
 
 type CardProps = { box: React.RefObject<HTMLDivElement | null>; agent: string; readonly: boolean; draft: boolean; armed: () => boolean };
 
-/** Keys for the card in front, from anywhere in the window (in the capture phase, before the composer's). */
-function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean) {
+/** Keys for the card in front (before the composer's). A workspace beside the live view owns only
+ *  its own events: remote keyboard input must never approve or dismiss an agent's card. */
+function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean, box: React.RefObject<HTMLElement | null>) {
   const ref = useRef(handler);
   ref.current = handler;
   useEffect(() => {
     if (!on) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      const pane = box.current?.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (pane && !workspaceOwnsEvent(pane, e)) return;
       if (ref.current(e)) {
         e.preventDefault();
         e.stopPropagation();
@@ -107,7 +111,7 @@ function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [on]);
+  }, [on, box]);
 }
 
 function Kbd({ k }: { k: string }) {
@@ -142,7 +146,7 @@ function ApprovalCard({ r, box, agent, readonly, draft, armed, armedAt, actions 
     if (act.act === "button") answer(([`deny`, v.session ? "session" : "once", "once"] as const)[act.index]);
     else answer(act.act);
     return true;
-  }, !readonly);
+  }, !readonly, box);
   const action = t(`cl_ap_a_${v.action}` as Key);
   // "Run the test suite" reads as the action itself in English: "Allow Claude to run the test suite?"
   const own = v.action === "run" && v.description && currentLang() === "en" ? describe(v.description, "failed") : null;
@@ -246,7 +250,7 @@ function PlanCard({ r, box, agent, readonly, draft, armed, actions }: CardProps 
       return true;
     }
     return false;
-  }, !readonly);
+  }, !readonly, box);
   return (
     <div ref={box} className="cl-card cl-pl" role="group" aria-label={t("cl_pl_title", { agent })}
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "none"; }}>
@@ -357,7 +361,7 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
     if (e.repeat || !armed()) return true;
     primary();
     return true;
-  }, !readonly);
+  }, !readonly, box);
   const other = d.other[i];
   const answered = qAnswered(d, i);
   const open = parts.findIndex((_, k) => !qAnswered(d, k));

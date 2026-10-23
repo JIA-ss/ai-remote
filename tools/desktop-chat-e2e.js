@@ -74,7 +74,7 @@
   const lastTurn = () => turns().at(-1);
   // The folder picker (ui/chat/FolderPicker.tsx).
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  const folderShown = () => $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
@@ -88,7 +88,7 @@
   // Diagnostics: say when the panel of the same session is replaced (a remount loses the composer's
   // state). Switching tabs or sessions replaces it on purpose and is not counted.
   let panel = null, panelKey = "";
-  const sessionKey = () => `${$(".nt-chat-hd .cwd")?.textContent ?? ""}|${$(".nt-user")?.textContent ?? ""}`;
+  const sessionKey = () => `${$(".ws-tb-meta")?.title ?? ""}|${$(".nt-user")?.textContent ?? ""}`;
   setInterval(() => {
     const now = $(".nt-chat");
     if (!now) { panel = null; return; }
@@ -97,37 +97,73 @@
     panel = now;
     panelKey = key;
   }, 50);
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 30000);
+  }
+  async function showSessions() {
+    if (!$(".ws-side")) $(".ws-corner .ws-ib").click();
+    return until("workspace sessions sidebar", () => $(".ws-side"), 5000);
+  }
+  async function closeSessions() {
+    if ($(".ws")?.dataset.side === "float") {
+      $(".ws-side .ws-corner .ws-ib").click();
+      await until("workspace drawer closed", () => !$(".ws-side"), 5000);
+    }
+  }
+  async function newSession() {
+    await showSessions();
+    $(".ws-side .ws-nav").click();
+    return until("workspace new-session page", () => $(".ws-new .ws-composer textarea"));
+  }
   try {
-    // 0. A remembered session that is gone from the host (it restarted): the panel goes back to the
-    // sessions and says so, instead of staying on an error with a composer that cannot send.
-    await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
+    // 0. The harness opens an explicit missing session in the ordinary agents route. The workspace
+    // explains the missing target and its New session action recovers to a usable first-message page.
+    const missing = await until("missing workspace session", () => $(".ws-session .ws-state"), 30000);
     await check("the live view shows the agent conversation directly, without the old tabs", !!$(".nt-rail") && !$(".nt-rail > .seg"));
-    localStorage.setItem("ai-remote.chat.last", JSON.stringify({ ...JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}"), [CFG.host]: "c0ffee0000000" }));
-    // Leave and return through the shell so the conversation remounts and reads the stale choice.
-    // The live view has one conversation now; switching a removed steps tab cannot stand in for this.
-    $("#gl-side .nv").click();
-    await until("computers page", () => $(".win")?.dataset.route === "devices");
-    $(".gl-toolbar .back:not(:disabled)").click();
-    const back = await until("back to the sessions", () => $(".nt-chat-start") && $(".nt-chat-picker .nt-chat-note.warn"), 20000);
-    await check("a remembered session that is gone returns to the sessions with a note",
-      !!back && /不在这台电脑上|no longer on the computer/.test(back.textContent),
-      $(".nt-chat-status, .nt-chat-note")?.textContent);
-    await check("and is forgotten", !(JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host]));
+    await check("a missing session has an explicit explanation and a recovery action",
+      !!missing && /找不到|不存在|not found|couldn.t be found|no longer/i.test(missing.textContent) && !!$(".ws-state-acts button", missing), missing?.textContent);
+    $(".ws-state-acts button", missing).click();
+    await check("New session recovers without an unusable conversation composer", !!(await until("missing target recovered", () => $(".ws-new .ws-composer textarea") && !$(".ws-session .nt-chat"))));
     await shot("00-gone");
 
     // 1. The start form: pick the rich stand-in, a folder and a first message.
-    const form = await until("start form", () => $(".nt-chat-start"), 30000);
+    const form = await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
     await check("the chat panel offers to start an agent", !!form);
-    const pick = $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake"));
-    await check("chat_runtimes lists the stand-in agents", !!pick && $$(".nt-chat-pick .opt").some((b) => b.textContent.includes("No-steer fake")),
-      $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
+    const agentChip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip:not(:disabled)"), 30000);
+    agentChip.click();
+    const pick = await until("Rich fake in workspace menu", () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === "Rich fake"));
+    await check("chat_runtimes lists the stand-in agents", !!pick && $$(".ws-menu .ws-menu-item").some((b) => $(".ws-menu-label", b)?.textContent.trim() === "No-steer fake"),
+      $$(".ws-menu .ws-menu-label").map((b) => b.textContent).join(" | "));
     pick.click();
     // 1a. The folder: with nothing recent the picker opens on the host's home (files_list over the real
     // channel); a typed path is browsed, a subfolder entered with a click, and the footer takes it.
     const work = CFG.work.split(/[\\/]/).pop();
     const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
-    await check("with no folder chosen the field asks for one", !!$(".nt-chat-start .nt-folder-lbl.none"), $(".nt-chat-start .nt-folder-btn")?.textContent);
-    $(".nt-chat-start .nt-folder-btn").click();
+    await check("with no folder chosen the field asks for one", !!$(".ws-chip-folder .nt-folder-lbl.none"), $(".ws-chip-folder .nt-folder-btn")?.textContent);
+    $(".ws-chip-folder .nt-folder-btn").click();
     const home = await until("home listing", () => $$(".nt-folder-list .row.child").length > 0 && $(".nt-folder-crumbs"));
     await check("the picker opens on the host's home and lists its folders", !!home && !$(".nt-folder-note.err"),
       `${$(".nt-folder-crumbs")?.textContent} | ${$$(".nt-folder-list .row.child").length} folders | ${$(".nt-folder-note")?.textContent ?? ""}`);
@@ -145,17 +181,18 @@
     await check("the footer offers this folder by name", !!use && use.textContent.includes(work), use?.textContent);
     use.click();
     await check("the chosen folder shows by name, the full path on hover",
-      !!(await until("chosen", () => folderShown() === work)) && $(".nt-chat-start .nt-folder-btn .nt-folder-lbl").title === CFG.work,
-      `${folderShown()} | ${$(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title}`);
-    setValue($("#ag-prompt"), "RICH fix the quarter export");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await check("starting opens the conversation", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)));
-    const hdFolder = await until("header folder", () => $(".nt-chat-hd .nt-folder-lbl"));
-    await check("the header shows the folder's name and where it is", !!hdFolder && $(".fn", hdFolder)?.textContent === work
-      && hdFolder.title === CFG.work && ($(".fp", hdFolder)?.textContent ?? "").length > 0, hdFolder?.textContent);
+      !!(await until("chosen", () => folderShown() === work)) && $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl").title === CFG.work,
+      `${folderShown()} | ${$(".ws-chip-folder .nt-folder-btn .nt-folder-lbl")?.title}`);
+    await check("starting opens the conversation", !!(await startSession("RICH fix the quarter export")));
+    const hdFolder = await until("workspace header folder", () => $(".ws-session .ws-tb-meta"));
+    await check("the header shows the folder's name and where it is", !!hdFolder && hdFolder.textContent.includes(work)
+      && hdFolder.title === CFG.work, `${hdFolder?.textContent} | ${hdFolder?.title}`);
     await check("the first message shows as the user's", !!(await until("user row", () => $$(".nt-user").some((u) => u.textContent.includes("RICH fix the quarter export")))));
     await check("the first turn finishes", !!(await idle(30000)));
+    await showSessions();
+    const firstSessionKey = $(".ws-row[data-selected]")?.dataset.rowKey;
+    if (!firstSessionKey) throw new Error("the first workspace session is not selected in its sidebar");
+    await closeSessions();
 
     // 2. What the turn shows (the Claude view): reasoning and tool calls folded into one sentence, the task
     // list as a call, an edit with its counts, Markdown, context usage.
@@ -328,23 +365,23 @@
 
     // 5. An agent that cannot take a message mid-turn: Send waits for the turn to end; a waiting
     // message can be taken back.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("picker", () => $(".nt-chat-start"));
-    await check("the session list shows the first session", $$(".nt-sessions .sess").length >= 1, $$(".nt-sessions .sess").map((s) => s.textContent).join(" | "));
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("No-steer fake")).click();
+    await newSession();
+    await showSessions();
+    await check("the session list shows the first session", !!$(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`), $$(".ws-row").map((s) => s.textContent).join(" | "));
+    const grouped = $(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`)?.closest(".ws-sec");
+    const groupLabel = $(".ws-gh-label", grouped)?.textContent;
+    await closeSessions();
+    await pickAgent("No-steer fake");
     await check("the last folder is chosen already", folderShown() === work, folderShown());
-    $(".nt-chat-start .nt-folder-btn").click();
+    $(".ws-chip-folder .nt-folder-btn").click();
     const recent = await until("recent list", () => $(".nt-folder-list .row.recent"));
     await check("the picker opens on recent folders, the chosen one marked", !!recent && !!$(".nt-folder-list .row.recent.sel")
       && $$(".nt-folder-list .row.recent").length === 1, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
-    await check("the session list groups sessions under their folder", $$(".nt-sessions .nt-proj-hd .fn").some((x) => x.textContent === work));
+    await check("the session list groups sessions under their folder", groupLabel?.split(" · ")[0] === work, groupLabel);
     await shot("04b-folder-recent");
     recent.click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
-    setValue($("#ag-prompt"), "SLOW job");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
+    await startSession("SLOW job");
     await check("the second agent starts and runs", !!(await until("running", running, 30000)));
     await check("its composer says the message waits for the turn, no switch", !$(".nt-compose .chip") && /本轮结束后|current turn ends/.test(composer().placeholder), composer().placeholder);
     await send("take me back");
@@ -364,11 +401,11 @@
     await shot("05-no-steer");
 
     // 6. Back to the first session: the transcript replays.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("picker", () => $$(".nt-sessions .sess").length >= 2);
-    await check("the session list has both sessions", $$(".nt-sessions .sess").length === 2);
-    $$(".nt-sessions .sess").find((s) => s.textContent.includes("Rich fake")).click();
+    await newSession();
+    await showSessions();
+    await until("both workspace sessions", () => $$(".ws-row[data-row-key]").length >= 2);
+    await check("the session list has both sessions", $$(".ws-row[data-row-key]").length === 2);
+    $(".ws-row-main", $(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`)).click();
     await check("reopening replays the conversation", !!(await until("replay", () => turns().length >= 4 && document.body.textContent.includes("steered: change of plan"))), `${turns().length} turns`);
     await shot("06-replay");
   } catch (e) {

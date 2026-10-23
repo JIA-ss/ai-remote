@@ -429,6 +429,8 @@ for exe in (options.cli, options.app):
 options.out.mkdir(parents=True, exist_ok=True)
 for old in options.out.glob("*.png"):
     old.unlink()
+# Never mistake a previous run's host audit for this run when startup fails before its log exists.
+(options.out / "host-audit.jsonl").unlink(missing_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_errors": True} if sys.version_info >= (3, 10) else {})) as tmp:
     base = Path(tmp)
@@ -516,7 +518,12 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
                    "AI_REMOTE_SMOKE_SECS": str(options.secs), "AI_REMOTE_SMOKE_SCRIPT": str(script),
                    # E2E_QUERY: another page to start on (and `shotlang` / `shottheme` to pin the look).
-                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or f"view=session&host={name}&panel=chat",
+                   # The default chat suite begins with a genuinely missing workspace target, then
+                   # uses its existing New action. Legacy rail preferences no longer select this UI.
+                   "AI_REMOTE_SMOKE_QUERY": os.environ.get("E2E_QUERY") or (
+                       f"view=agents&host={name}&session=missing-session-for-e2e"
+                       if source.name == "desktop-chat-e2e.js" and not options.real
+                       else f"view=session&host={name}&panel=chat"),
                    # Windows: keep the off-screen webview drawing, and a throwaway webview profile.
                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--disable-features=CalculateNativeWinOcclusion",
                    "WEBVIEW2_USER_DATA_FOLDER": str(webview)}
@@ -612,8 +619,16 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
             host.wait(timeout=10)
         except subprocess.TimeoutExpired:
             host.kill()
+            host.wait(timeout=10)
         log.close()
         shutil.copyfile(base / "host.log", options.out / "host.log")
+        # Only this harness-created --home is read, after its host has stopped and flushed the log.
+        # Preserve the original JSONL, including failures and view_start/view_end, for replay checks.
+        audit = host_home / "host" / "audit.jsonl"
+        if audit.is_file() and not audit.is_symlink():
+            shutil.copyfile(audit, options.out / "host-audit.jsonl")
+        else:
+            print("the isolated test host did not produce an audit.jsonl")
         stderr_log.close()
         shutil.rmtree(webview, ignore_errors=True)
     if code:

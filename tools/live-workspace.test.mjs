@@ -1,0 +1,356 @@
+// The complete workspace when it shares the window with a live screen. These fixtures run the
+// actual React component's hooks and handlers; they do not claim decoded video or browser layout.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import vm from "node:vm";
+import ts from "../apps/desktop/node_modules/typescript/lib/typescript.js";
+
+const jsx = (type, props, key) => ({ type, props, key });
+const runtime = { jsx, jsxs: jsx, Fragment: Symbol("Fragment") };
+const plain = (x) => JSON.parse(JSON.stringify(x));
+const nodes = (tree) => !tree || typeof tree !== "object" ? [] : [tree, ...[tree.props?.children].flat(10).flatMap(nodes)];
+
+function compiled(path, dependencies, globals = {}) {
+  const source = readFileSync(new URL(`../apps/desktop/src/${path}`, import.meta.url), "utf8");
+  const text = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
+  } }).outputText;
+  const exports = {};
+  vm.runInNewContext(text, { exports, require(name) {
+    assert.ok(name in dependencies, `unexpected dependency ${name}`);
+    return dependencies[name];
+  }, console, setTimeout, clearTimeout, Map, Set, Date, ...globals }, { filename: path });
+  return exports;
+}
+
+function hooks() {
+  const values = [], pending = [];
+  let index = 0;
+  const effect = (run, deps) => {
+    const at = index++, previous = values[at];
+    if (previous && deps && previous.deps && deps.length === previous.deps.length && deps.every((x, i) => x === previous.deps[i])) return;
+    pending.push(() => { previous?.cleanup?.(); values[at] = { deps, cleanup: run() }; });
+  };
+  const react = {
+    useState(initial) {
+      const at = index++;
+      if (!(at in values)) values[at] = typeof initial === "function" ? initial() : initial;
+      return [values[at], (value) => { values[at] = typeof value === "function" ? value(values[at]) : value; }];
+    },
+    useRef(initial) {
+      const at = index++;
+      if (!(at in values)) values[at] = { current: initial };
+      return values[at];
+    },
+    useCallback: (fn) => fn,
+    useMemo: (fn) => fn(),
+    useEffect: effect, useLayoutEffect: effect,
+  };
+  return {
+    react,
+    render(Component, props, commit = () => {}) {
+      index = 0;
+      const tree = Component(props);
+      commit(tree);
+      for (const run of pending.splice(0)) run();
+      return tree;
+    },
+    close() { for (const value of values) value?.cleanup?.(); },
+  };
+}
+
+class Node {}
+class Element extends Node {
+  constructor(parent = null) { super(); this.parent = parent; this.tagName = "DIV"; this.clientWidth = 800; this.dataset = {}; }
+  contains(node) { for (let el = node; el; el = el.parent) if (el === this) return true; return false; }
+  addEventListener() {}
+  removeEventListener() {}
+  getBoundingClientRect() { return { left: 900, top: 0, width: this.clientWidth, bottom: 800 }; }
+  querySelector() { return null; }
+  closest(selector) {
+    if (selector === "[inert]") for (let at = this; at; at = at.parent) if (at.inert) return at;
+    return null;
+  }
+}
+
+function workspaceFixture({ width = 660, embedded = true, route = {}, initialTarget = null } = {}) {
+  const h = hooks(), listeners = new Map(), documentListeners = new Map(), observers = [], calls = [], storage = new Map();
+  const root = new Element(); root.clientWidth = width;
+  const inside = new Element(root), remote = new Element();
+  const body = new Element(), html = new Element(); body.tagName = "BODY"; html.tagName = "HTML"; html.clientWidth = 1800;
+  const add = (map, name, fn) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(fn); };
+  const remove = (map, name, fn) => map.get(name)?.delete(fn);
+  const document = { activeElement: inside, body, documentElement: html, querySelector: () => null,
+    addEventListener: (name, fn) => add(documentListeners, name, fn), removeEventListener: (name, fn) => remove(documentListeners, name, fn) };
+  const window = { innerWidth: 1800, addEventListener: (name, fn) => add(listeners, name, fn), removeEventListener: (name, fn) => remove(listeners, name, fn) };
+  const NewSession = () => null, SessionPage = () => null, Sidebar = () => null, Palette = () => null;
+  const data = compiled("lib/workspace.ts", { "./chat": compiled("lib/chat.ts", {}, { localStorage: { getItem: () => null } }) }, { localStorage: { getItem: () => null } });
+  const parts = compiled("ui/workspace/parts.tsx", {
+    react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key }, "../../lib/platform": { detectOs: () => "mac" },
+    "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
+    "lucide-react": Object.fromEntries(["ArrowLeft", "ArrowRight", "Check", "Laptop", "LaptopMinimal", "Monitor", "PanelLeft"].map((name) => [name, () => null])),
+  }, { Node, Element, HTMLElement: Element, document, window });
+  const { Workspace } = compiled("ui/workspace/Workspace.tsx", {
+    react: h.react, "react/jsx-runtime": runtime,
+    "../../lib/i18n": { t: (key) => key }, "../../lib/workspace": data,
+    "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
+    "./NewSession": { NewSession }, "./SessionPage": { SessionPage }, "./Sidebar": { Sidebar }, "./Palette": { Palette },
+    "./parts": parts,
+    "./actions": { archive() {}, markDone() {}, togglePin() {}, toggleRead() {}, unarchive() {} },
+    "./useWorkspace": { useWorkspace: () => ({ items: [], loaded: true }), workspace: { items: () => [], dot: () => null } },
+  }, {
+    Node, Element, HTMLElement: Element, HTMLInputElement: class extends Element {},
+    ResizeObserver: class {
+      constructor(fn) { this.fn = fn; observers.push(this); }
+      observe(el) { this.el = el; }
+      disconnect() { this.disconnected = true; }
+    },
+    localStorage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) },
+    window, document,
+  });
+  let props = { computers: [], device: "test-device", route, initialTarget, embedded,
+    onRoute: (r) => calls.push(plain(r)), back: null, forward: null, onMode() {}, onWatch() {}, onPair() {}, onSettings() {} };
+  const render = () => h.render(Workspace, props, (tree) => { tree.props.ref.current = root; });
+  const key = (target, value, mods = {}) => {
+    const e = { target, key: value, code: `Key${value.toUpperCase()}`, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false,
+      defaultPrevented: false, isComposing: false, preventDefault() { this.defaultPrevented = true; }, ...mods };
+    for (const fn of [...(listeners.get("keydown") ?? [])]) fn(e);
+    return e;
+  };
+  const documentEvent = (name, target) => { for (const fn of [...(documentListeners.get(name) ?? [])]) fn({ target, type: name }); };
+  return { render, root, inside, remote, body, document, documentEvent, documentListeners, calls, observers, key, NewSession, SessionPage, Sidebar, Palette,
+    update(next) { props = { ...props, ...next }; }, close: h.close };
+}
+
+function liveFixture() {
+  const h = hooks(), storage = new Map(), opened = [];
+  const nav = compiled("lib/nav.ts", {}, { URLSearchParams });
+  const SessionPage = () => null, Workspace = () => null, DecisionCard = () => null;
+  const { LiveWorkspace } = compiled("ui/LiveWorkspace.tsx", {
+    react: h.react, "react/jsx-runtime": runtime,
+    "../lib/chat": { lastCwd: (host) => `/${host}/project` },
+    "../lib/i18n": { t: (key) => key }, "../lib/nav": nav,
+    "./Session": { SessionPage }, "./workspace/Workspace": { Workspace }, "./Decide": { DecisionCard },
+    "./util": { agentLabel: () => "Agent", cx: (...xs) => xs.filter(Boolean).join(" ") },
+  }, { localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } });
+  const computer = (name) => ({ host: { name }, online: true, feed: { pending: [], steps: [], agent: null } });
+  const computers = [computer("a"), computer("b")];
+  let route = nav.screenRoute("a", "one"), extra = {};
+  const props = () => ({ c: computers.find((c) => c.host.name === route.host), computers, route, device: "test-device", waiting: 0,
+    onRoute(location, replace) { opened.push({ location: plain(location), replace }); route = nav.screenWorkspaceRoute(route, location); },
+    back() {}, forward() {}, onNav() {}, onMode() {}, onPair() {}, onSettings() {}, ...extra });
+  const root = new Element();
+  return { render: () => h.render(LiveWorkspace, props(), (tree) => { tree.props.ref.current = root; }),
+    SessionPage, Workspace, DecisionCard, computers, opened, update(value) { extra = { ...extra, ...value }; }, close: h.close };
+}
+
+test("the complete workspace and its screen are stable siblings while conversations and projects change", () => {
+  const f = liveFixture(); let tree = f.render();
+  const screen = () => nodes(tree).find((n) => n.type === f.SessionPage);
+  const workspace = () => nodes(tree).find((n) => n.type === f.Workspace);
+  const initialScreen = screen(), initialWorkspace = workspace();
+  assert.equal(nodes(tree).filter((n) => n.type === f.SessionPage).length, 1);
+  assert.equal(nodes(tree).filter((n) => n.type === f.Workspace).length, 1);
+  assert.equal(initialWorkspace.props.embedded, true);
+  assert.equal(initialScreen.key, "a");
+  assert.deepEqual(plain(initialWorkspace.props.route), { host: "a", session: "one" });
+  assert.ok(!nodes(tree).some((n) => n.props?.role === "tablist" || n.props?.className === "nt-chat-picker"));
+  for (const location of [{ host: "a", session: "two" }, { place: { host: "a", cwd: "/another-project" } }, { host: "a", session: "one" }]) {
+    workspace().props.onRoute(location); tree = f.render();
+    assert.equal(screen().type, initialScreen.type);
+    assert.equal(screen().key, initialScreen.key, "same-computer session and project changes preserve the screen mount");
+    assert.equal(workspace().type, initialWorkspace.type);
+    assert.equal(workspace().key, initialWorkspace.key, "the full workspace also stays mounted");
+  }
+  workspace().props.onRoute({ host: "b", session: "other" }); tree = f.render();
+  assert.equal(screen().key, "b", "only the screen remounts for the other computer");
+  assert.equal(screen().props.c.host.name, "b");
+  assert.equal(workspace().type, initialWorkspace.type);
+  assert.equal(workspace().key, initialWorkspace.key);
+  workspace().props.onPlaceChange({ host: "a", cwd: "/new" }); tree = f.render();
+  assert.equal(screen().key, "a");
+  assert.deepEqual(f.opened.at(-1), { location: { place: { host: "a", cwd: "/new" } }, replace: true },
+    "choosing the new session's environment updates the picture without adding folder history");
+  f.close();
+});
+
+test("host approval stays above the workspace and immersive mode retains both components", () => {
+  const f = liveFixture();
+  f.computers[0].feed.pending = [{ id: "approval-one", tool: "shell" }];
+  f.computers[0].feed.steps = [{ approvalId: "approval-one", startedMs: 123 }];
+  let tree = f.render();
+  const screen = nodes(tree).find((n) => n.type === f.SessionPage);
+  const approval = nodes(tree).find((n) => n.type === f.DecisionCard);
+  assert.equal(approval.props.p.id, "approval-one");
+  assert.equal(approval.props.askedMs, 123);
+  assert.equal(approval.props.escapeScope, screen.props.approvalRef, "Review focuses the same wrapper that owns Escape");
+  assert.equal(screen.props.approvalVisible, true);
+  assert.ok(nodes(tree).indexOf(approval) < nodes(tree).findIndex((n) => n.type === f.Workspace));
+  screen.props.onImmersiveChange(true); tree = f.render();
+  assert.match(tree.props.className, /immersive/);
+  assert.equal(nodes(tree).find((n) => n.type === "aside").props.inert, true);
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.approvalVisible, false,
+    "the screen waits to focus approvals while their parent pane is inert");
+  assert.equal(nodes(tree).filter((n) => n.type === f.SessionPage).length, 1);
+  assert.equal(nodes(tree).filter((n) => n.type === f.Workspace).length, 1,
+    "full screen hides the existing workspace without destroying its draft or ticket state");
+  nodes(tree).find((n) => n.type === f.SessionPage).props.onImmersiveChange(false); tree = f.render();
+  assert.equal(nodes(tree).find((n) => n.type === "aside").props.inert, false);
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.approvalVisible, true);
+  f.close();
+});
+
+test("an inactive window forwards capture suspension while keeping its workspace mounted", () => {
+  const f = liveFixture(); let tree = f.render();
+  const initial = nodes(tree).find((n) => n.type === f.Workspace);
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.active, true);
+  f.update({ active: false }); tree = f.render();
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.active, false);
+  const kept = nodes(tree).find((n) => n.type === f.Workspace);
+  assert.equal(kept.type, initial.type);
+  assert.equal(kept.key, initial.key);
+  assert.deepEqual(plain(kept.props.route), plain(initial.props.route));
+  f.close();
+});
+
+test("an embedded workspace folds its sidebar at its own width, and observes the pane resizing", () => {
+  const f = workspaceFixture({ width: 660 });
+  f.render();
+  let tree = f.render();
+  assert.equal(tree.props["data-side"], "hidden", "a wide window does not dock a sidebar inside a narrow pane");
+  assert.equal(f.observers.length, 1);
+  assert.equal(f.observers[0].el, f.root);
+  f.key(f.inside, "b"); tree = f.render();
+  assert.equal(tree.props["data-side"], "float", "the existing sidebar opens over the conversation");
+  f.root.clientWidth = 960; f.observers[0].fn(); tree = f.render();
+  assert.equal(tree.props["data-side"], "docked");
+  assert.ok(nodes(tree).some((n) => n.type === f.Sidebar));
+  f.close();
+  assert.equal(f.observers[0].disconnected, true);
+});
+
+test("workspace shortcuts stay inside the embedded pane and leave remote input untouched", () => {
+  const f = workspaceFixture(); f.render(); f.render();
+  for (const key of ["n", "k", "b"]) {
+    assert.equal(f.key(f.remote, key).defaultPrevented, false, `remote ${key} belongs to the computer`);
+  }
+  assert.deepEqual(f.calls, []);
+  assert.ok(!nodes(f.render()).some((n) => n.type === f.Palette));
+  assert.equal(f.key(f.inside, "n").defaultPrevented, true);
+  assert.deepEqual(f.calls, [{ place: null }]);
+  assert.equal(f.key(f.inside, "k").defaultPrevented, true);
+  assert.ok(nodes(f.render()).some((n) => n.type === f.Palette));
+  assert.equal(f.key(f.inside, "b", { isComposing: true }).defaultPrevented, false);
+  f.close();
+});
+
+test("a removed right-pane control keeps workspace shortcuts on body until the person uses the screen", () => {
+  const f = workspaceFixture(); f.render(); f.render();
+  // The focused row or menu was removed by a normal workspace action. The browser falls back to
+  // body; no test driver focuses a replacement control before the person's next shortcut.
+  f.document.activeElement = f.body;
+  f.documentEvent("focusin", f.body);
+  assert.equal(f.key(f.body, "k").defaultPrevented, true, "Search still belongs to the pane used immediately before the fallback");
+  assert.ok(nodes(f.render()).some((n) => n.type === f.Palette));
+  f.documentEvent("pointerdown", f.remote);
+  assert.equal(f.key(f.body, "n").defaultPrevented, false, "using the remote picture clears the workspace's body fallback ownership");
+  assert.deepEqual(f.calls, []);
+  f.document.activeElement = f.inside; f.documentEvent("focusin", f.inside);
+  f.document.activeElement = f.body; f.documentEvent("focusin", f.body);
+  assert.equal(f.key(f.body, "n").defaultPrevented, true);
+  assert.deepEqual(f.calls, [{ place: null }]);
+  // A real focused control outside the pane wins even if its focusin was not observed yet.
+  f.document.activeElement = f.remote;
+  assert.equal(f.key(f.body, "b").defaultPrevented, false);
+  f.document.activeElement = f.body;
+  f.documentEvent("pointerdown", f.body);
+  assert.equal(f.key(f.body, "k").defaultPrevented, false, "an actual click on the page background is not a removed-control fallback");
+  assert.equal(f.key(f.document, "n").defaultPrevented, false, "a synthetic document target does not claim pane ownership");
+  f.close();
+  assert.ok([...f.documentListeners.values()].every((listeners) => listeners.size === 0), "pane ownership listeners are removed on close");
+});
+
+test("an inert workspace never consumes shortcuts from its controls or a remembered body fallback", () => {
+  const f = workspaceFixture(); f.render(); f.render();
+  f.root.inert = true;
+  assert.equal(f.key(f.inside, "k").defaultPrevented, false);
+  f.document.activeElement = f.body; f.documentEvent("focusin", f.body);
+  assert.equal(f.key(f.body, "n").defaultPrevented, false);
+  assert.deepEqual(f.calls, []);
+  assert.ok(!nodes(f.render()).some((n) => n.type === f.Palette));
+  f.close();
+});
+
+test("the existing first-message flow keeps its first attachment ticket for the matching session only", () => {
+  const f = workspaceFixture(); let tree = f.render();
+  const create = nodes(tree).find((n) => n.type === f.NewSession);
+  assert.equal(create.props.embedded, true);
+  create.props.onStarted("test-host", "new-session", "first-ticket");
+  assert.deepEqual(f.calls, [{ host: "test-host", session: "new-session" }], "history gets an id, never the one-use ticket");
+  f.update({ route: f.calls[0] }); tree = f.render();
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.ticket, "first-ticket");
+  f.update({ route: { host: "other-host", session: "new-session" } }); tree = f.render();
+  assert.equal(nodes(tree).find((n) => n.type === f.SessionPage).props.ticket, null, "equal ids on different computers do not share a ticket");
+  f.close();
+
+  const opened = workspaceFixture({ route: { host: "test-host", session: "started-elsewhere" },
+    initialTarget: { host: "test-host", session: "started-elsewhere", ticket: "one-use" } });
+  assert.equal(nodes(opened.render()).find((n) => n.type === opened.SessionPage).props.ticket, "one-use");
+  opened.update({ route: { host: "test-host", session: "another-session" } });
+  assert.equal(nodes(opened.render()).find((n) => n.type === opened.SessionPage).props.ticket, null);
+  opened.close();
+});
+
+test("an opened workspace conversation stays mounted through offline reports, while first-open offline and access errors keep their page states", () => {
+  function fixture({ online = true, status = "ok", found = true } = {}) {
+    const h = hooks();
+    const ClaudeConversation = () => null, CodexConversation = () => null;
+    const computer = { host: { name: "test-host" }, online, since: Date.now() - 60_000, problem: null };
+    const item = { host: "test-host", key: "test-host/session", local: false,
+      meta: { id: "session", runtime: "claude", name: "Claude", title: "A session", cwd: "/project", state: "idle" } };
+    const state = { item: found ? item : null };
+    const snap = { hosts: { "test-host": { status, fetchedAt: Date.now() + 1000 } } };
+    const workspace = { find: () => state.item, setCurrent() {}, refresh: async () => {} };
+    const { SessionPage } = compiled("ui/workspace/SessionPage.tsx", {
+      react: h.react, "react/jsx-runtime": runtime,
+      "lucide-react": { MonitorPlay: () => null, MoreHorizontal: () => null },
+      "../../lib/chat": { folderName: (path) => path.split("/").at(-1) },
+      "../../lib/i18n": { t: (key) => key }, "../../lib/workspace": { sessionKey: (host, id) => `${host}/${id}` },
+      "../claude/ClaudeConversation": { ClaudeConversation },
+      "../codex/CodexConversation": { CodexConversation, isCodexRuntime: (runtime) => runtime.id === "codex" },
+      "./parts": { Later: () => null, PopMenu: () => null },
+      "./Sidebar": { RenameField: () => null, titleOf: (value) => value.meta.title },
+      "./actions": {}, "./useWorkspace": { workspace },
+    });
+    const props = { snap, computers: [computer], host: "test-host", id: "session", ticket: "one-use", corner: null,
+      renaming: false, setRenaming() {}, onWatch() {}, onLeave() {}, onArchived() {}, onNew() {}, toast() {}, embedded: true };
+    return { render: () => h.render(SessionPage, props), computer, snap, state, ClaudeConversation, close: h.close };
+  }
+  const opened = fixture();
+  const first = nodes(opened.render()).find((node) => node.type === opened.ClaudeConversation);
+  assert.ok(first, "a valid online session starts the ordinary conversation component");
+  opened.computer.online = false;
+  const offline = nodes(opened.render()).find((node) => node.type === opened.ClaudeConversation);
+  assert.equal(offline?.type, first.type);
+  assert.equal(offline?.key, first.key, "the connection, draft and pending sends retain their component identity");
+  assert.deepEqual(plain(offline.props.target), plain(first.props.target));
+  assert.ok(!nodes(opened.render()).some((node) => node.props?.title === "ws_disconnected"));
+  opened.computer.online = true;
+  assert.equal(nodes(opened.render()).find((node) => node.type === opened.ClaudeConversation)?.key, first.key,
+    "recovery continues the existing useConversation Retry path");
+  for (const status of ["unsupported", "denied"]) {
+    opened.snap.hosts["test-host"].status = status;
+    const tree = opened.render();
+    assert.ok(!nodes(tree).some((node) => node.type === opened.ClaudeConversation), `${status} still replaces the conversation`);
+    assert.ok(nodes(tree).some((node) => node.props?.title === (status === "denied" ? "ws_denied" : "ws_too_old")));
+  }
+  opened.snap.hosts["test-host"].status = "ok"; opened.state.item = null;
+  assert.ok(nodes(opened.render()).some((node) => node.props?.title === "ws_not_found"), "a genuinely missing session keeps its recovery page");
+  opened.close();
+  const initiallyOffline = fixture({ online: false });
+  const offlinePage = initiallyOffline.render();
+  assert.ok(!nodes(offlinePage).some((node) => node.type === initiallyOffline.ClaudeConversation));
+  assert.ok(nodes(offlinePage).some((node) => node.props?.title === "ws_disconnected"), "opening an already offline computer still explains its offline state");
+  initiallyOffline.close();
+});

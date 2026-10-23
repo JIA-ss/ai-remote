@@ -88,6 +88,12 @@
 .ws-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--ws-accent); opacity: 0; transition: opacity 120ms; }
 .ws-grip:hover::after, .ws-grip:focus-visible::after, .ws.dragging .ws-grip::after { opacity: 1; transition-delay: 100ms; }
 .ws-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--ws-s1); container-type: inline-size; }
+/* The same complete workspace beside the live view: its pane owns its width, while native window
+   controls remain with the outer frame. Floating sidebar / palette layers stay inside this pane. */
+.ws[data-embedded="true"] { min-width: 0; width: 100%; height: 100%; isolation: isolate; }
+.ws[data-embedded="true"] .ws-frame-room { display: none; }
+.ws[data-embedded="true"] .ws-scrim { position: absolute; padding-top: 12%; }
+.ws[data-embedded="true"] .ws-palette { width: min(600px, calc(100% - 32px)); max-height: 80%; }
 
 /* the window's corner: traffic lights (74 px from the window's edge), toggle, back, forward (SB-01) */
 .ws-corner { display: flex; align-items: center; gap: 2px; flex: none; }

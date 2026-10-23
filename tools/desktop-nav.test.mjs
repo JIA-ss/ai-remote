@@ -125,9 +125,13 @@ test("replace swaps the current entry: tabs, sections and filters make no histor
   assert.equal(h.stack[1].tab, "overview", "the old history object is untouched");
 });
 
-test("same() ignores the chat target but not the host, tab, section or filter", () => {
+test("same() ignores legacy panel chrome, but distinguishes the selected conversation and computer", () => {
   assert.equal(nav.same({ page: "session", host: "a" }, { page: "session", host: "a", chat: { id: 1 } }), true);
-  assert.equal(nav.same({ page: "session", host: "a" }, { page: "session", host: "a", panel: "chat" }), false);
+  assert.equal(nav.same({ page: "session", host: "a" }, { page: "session", host: "a", panel: "chat" }), true);
+  assert.equal(nav.same({ page: "session", host: "a", chat: { session: "one", ticket: "first-use" } },
+    { page: "session", host: "a", workspace: { host: "a", session: "one" } }), true);
+  assert.equal(nav.same({ page: "session", host: "a", workspace: { session: "one" } },
+    { page: "session", host: "a", workspace: { session: "two" } }), false);
   assert.equal(nav.same({ page: "session", host: "a" }, { page: "session", host: "b" }), false);
   assert.equal(nav.same({ page: "computer", host: "a", tab: "tools" }, { page: "computer", host: "a", tab: "access" }), false);
   assert.equal(nav.same({ page: "settings", sec: "about" }, { page: "settings", sec: "about" }), true);
@@ -355,6 +359,21 @@ test("agents round trips: the mode switch, a live view, Settings, and back", () 
   assert.deepEqual(plain(nav.lastAgents(hist({ page: "agents" }, { page: "devices" }, ws, { page: "devices" }))), ws);
 });
 
+test("the Agents switch restores the latest complete live workspace from either side of history", () => {
+  const older = { page: "agents", host: "a", session: "one" };
+  const live = { page: "session", host: "b", workspace: { host: "b", session: "two" } };
+  const onDevices = nav.push(hist(older, live), { page: "devices" });
+  assert.deepEqual(plain(nav.lastAgents(onDevices)), live, "Devices to Agents restores both selected computer and conversation");
+  const inFuture = nav.back(hist({ page: "devices" }, live));
+  assert.deepEqual(plain(nav.lastAgents(inFuture)), live, "a live workspace ahead of the current history position is still available");
+  const ordinaryScreen = { page: "session", host: "c" };
+  assert.deepEqual(plain(nav.lastAgents(hist(older, ordinaryScreen, { page: "devices" }))), older,
+    "a plain computer view does not replace the remembered workspace");
+  const create = { page: "session", host: "b", workspace: { place: { host: "b", cwd: "/another-project" } } };
+  assert.deepEqual(plain(nav.lastAgents(hist(live, create, { page: "devices" }))), create,
+    "the new-session project selection is restored too");
+});
+
 test("opening a computer from a workspace conversation preserves that session through history", () => {
   const ws = { page: "agents", host: "lab-pc", session: "current-session" };
   const screen = nav.screenRoute(ws.host, ws.session);
@@ -364,6 +383,36 @@ test("opening a computer from a workspace conversation preserves that session th
   assert.deepEqual(plain(nav.current(nav.back(h))), ws);
   assert.deepEqual(plain(nav.current(nav.forward(nav.back(h)))), plain(screen));
   assert.deepEqual(plain(nav.screenRoute("lab-pc")), { page: "session", host: "lab-pc" }, "a computer without a chosen conversation uses its picker or remembered session");
+});
+
+test("the live workspace follows its selected computer without carrying a one-use ticket into history", () => {
+  const first = { page: "session", host: "a", panel: "chat", chat: { session: "one", ticket: "first-use" } };
+  assert.deepEqual(plain(nav.workspaceOfScreen(first)), { host: "a", session: "one" });
+  const next = nav.screenWorkspaceRoute(first, { host: "a", session: "two" });
+  assert.deepEqual(plain(next), { page: "session", host: "a", workspace: { host: "a", session: "two" } });
+  assert.equal(next.chat, undefined);
+  const other = nav.screenWorkspaceRoute(next, { host: "b", session: "three" });
+  assert.equal(other.host, "b", "the picture changes to the selected session's computer");
+  assert.deepEqual(plain(nav.workspaceOfScreen(other)), { host: "b", session: "three" });
+  const newHere = nav.screenWorkspaceRoute(other, {});
+  assert.equal(newHere.host, "b", "New keeps the current picture while its environment is chosen");
+  const place = nav.screenWorkspaceRoute(newHere, { place: { host: "c", cwd: "/project" } });
+  assert.equal(place.host, "c", "a new session's selected environment moves the picture too");
+  assert.equal(nav.same(place, nav.screenWorkspaceRoute(place, { place: { host: "c", cwd: "/different" } })), true,
+    "a folder prefill does not add another history entry");
+});
+
+test("back and forward select the prior conversation while staying inside the live workspace", () => {
+  const first = nav.screenRoute("a", "one");
+  const second = nav.screenWorkspaceRoute(first, { host: "a", session: "two" });
+  const create = nav.screenWorkspaceRoute(second, { place: { host: "a", cwd: "/new-project" } });
+  const h = nav.push(nav.push(hist(first), second), create);
+  assert.equal(h.stack.length, 3);
+  assert.equal(nav.current(nav.back(h)).host, "a");
+  assert.deepEqual(plain(nav.workspaceOfScreen(nav.current(nav.back(h)))), { host: "a", session: "two" });
+  assert.deepEqual(plain(nav.workspaceOfScreen(nav.current(nav.back(nav.back(h))))), { host: "a", session: "one" });
+  assert.deepEqual(plain(nav.current(nav.forward(nav.back(h)))), plain(create));
+  assert.ok(h.stack.every((r) => r.page === "session"));
 });
 
 test("the window going to the tray: a live view opened from the workspace goes back to it", () => {
@@ -378,6 +427,28 @@ test("the window going to the tray: a live view opened from the workspace goes b
   assert.deepEqual(plain(nav.current(fromPc)), { page: "computer", host: "a", tab: "tools" });
   const onWs = hist(ws);
   assert.equal(nav.hidden(onWs, mem), onWs);
+});
+
+test("hiding the combined view keeps its current conversation or new project and discards attachment tickets", () => {
+  const old = { page: "agents", host: "a", session: "older-conversation" };
+  const cases = [
+    [{ page: "session", host: "a", workspace: { host: "a", session: "current-conversation" } },
+      { page: "agents", host: "a", session: "current-conversation" }],
+    [{ page: "session", host: "b", workspace: { place: { host: "b", cwd: "/current-project" } } },
+      { page: "agents", host: "b", place: { host: "b", cwd: "/current-project" } }],
+    [{ page: "session", host: "b", workspace: {} }, { page: "agents", host: "b" }],
+    [{ page: "session", host: "b", chat: { session: "legacy-current", ticket: "one-use-ticket" } },
+      { page: "agents", host: "b", session: "legacy-current" }],
+  ];
+  for (const [screen, expected] of cases) {
+    const h = hist({ page: "devices" }, old, screen);
+    const after = nav.hidden(h, mem);
+    assert.equal(after.stack.length, 3, "hiding replaces this selection instead of falling back to an older conversation");
+    assert.equal(after.i, h.i);
+    assert.deepEqual(plain(nav.current(after)), expected);
+    assert.equal(nav.current(h), screen, "the original history was not mutated");
+    assert.ok(!JSON.stringify(nav.current(after)).includes("one-use-ticket"));
+  }
 });
 
 test("modeOf: the half each route belongs to, none for the routes both halves reach", () => {

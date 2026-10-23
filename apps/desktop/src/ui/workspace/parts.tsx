@@ -17,11 +17,23 @@ export const modLabel = isMac ? "⌘" : "Ctrl+";
 export const viewWidth = () => document.documentElement.clientWidth || window.innerWidth;
 export const viewHeight = () => document.documentElement.clientHeight || window.innerHeight;
 
+/** Whether an embedded workspace owns a key. Removing a focused row or drawer sends focus back to
+ *  body; keep the last pane's shortcuts working until a real pointer / focus action selects another
+ *  pane. A concrete target outside the workspace always wins over that remembered ownership. */
+export function workspaceOwnsEvent(pane: HTMLElement | null, e: { target: EventTarget | null }): boolean {
+  if (!pane || pane.closest("[inert]")) return false;
+  if (e.target instanceof Node && pane.contains(e.target)) return true;
+  if (e.target !== document.body && e.target !== document.documentElement) return false;
+  const focused = document.activeElement;
+  if (focused && focused !== document.body && focused !== document.documentElement && !pane.contains(focused)) return false;
+  return pane.dataset.keyboardActive === "true";
+}
+
 /** The window's top-left corner: room for the traffic lights (macOS), sidebar toggle, back, forward (SB-01). */
-export function Corner({ onToggle, back, forward }: { onToggle: () => void; back: (() => void) | null; forward: (() => void) | null }) {
+export function Corner({ onToggle, back, forward, embedded = false }: { onToggle: () => void; back: (() => void) | null; forward: (() => void) | null; embedded?: boolean }) {
   return (
     <div className="ws-corner">
-      {isMac && <span className="ws-lights" data-tauri-drag-region />}
+      {isMac && !embedded && <span className="ws-lights" data-tauri-drag-region />}
       <button type="button" className="ws-ib" onClick={onToggle} aria-label={t("ws_toggle_sidebar")} title={`${t("ws_toggle_sidebar")} (${modLabel}B)`}>
         <PanelLeft size={16} strokeWidth={1.5} />
       </button>

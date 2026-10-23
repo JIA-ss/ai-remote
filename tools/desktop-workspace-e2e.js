@@ -227,7 +227,7 @@
   }
 
   // What this run changes in the webview's storage (shared with an installed app): put back at the end.
-  const KEEP = /^ai-remote\.(mode$|ws\.)/;
+  const KEEP = /^ai-remote\.(mode$|ws\.|live\.split$)/;
   // Leftovers of earlier runs (hosts named e2e-<pid>, gone now) are dropped from it first.
   const leftover = (x) => typeof x === "string" && /^e2e-\d+(\/|$)/.test(x);
   for (const k of Object.keys(localStorage).filter((k) => KEEP.test(k))) {
@@ -267,8 +267,15 @@
     const sw = await until("the computers page's switch", () => $(".ws-modes [data-mode=agents]"), 30000);
     await check("the computers page has the computers / agents switch", !!sw && !$(".ws"));
     sw.click();
-    const ws = await until("workspace", () => $(".ws .ws-new"), 10000);
+    const ws = await until("workspace", () => $(".nt-live-workspace .ws .ws-new"), 10000);
     await check("the switch opens the agents workspace on a new session", !!ws && localStorage.getItem("ai-remote.mode") === "agents", localStorage.getItem("ai-remote.mode"));
+    await check("Agents opens the complete workspace beside one live screen", $$(".nt-live-workspace .nt-stage canvas.rd-holder").length === 1
+      && $$(".nt-live-workspace .ws[data-embedded=true]").length === 1);
+    // Give the existing sidebar enough space for the data-flow checks below. A narrow pane's overlay
+    // intentionally unmounts its rows on selection; container folding is checked at the end.
+    const split = await until("live workspace divider", () => $(".nt-live-divider"));
+    for (let i = 0; i < 12; i++) { keyDown(split, "ArrowLeft"); await sleep(20); }
+    await until("workspace sidebar docked", () => $(".ws")?.dataset.side === "docked", 5000);
     await check("the sidebar is docked at 288 px", $(".ws")?.dataset.side === "docked" && Math.round($(".ws-side").getBoundingClientRect().width) === 288,
       `${$(".ws")?.dataset.side} ${$(".ws-side")?.getBoundingClientRect().width}`);
 
@@ -773,18 +780,96 @@
     await check("the one taken back never ran", !$$(".ws-main .nt-user").some((u) => u.textContent.includes("撤回我")));
     await shot("b09-after-queue");
 
-    // The live view uses this same conversation. Opening it must carry the session ID, rather than
-    // silently taking an unrelated session remembered by the former side panel.
-    $(".ws-tb-end .ws-ib").click();
+    // The current conversation already shares the live screen. The same computer's conversations,
+    // projects and history change only the right side of the window.
     const rail = await until("this conversation beside the live view", () => {
-      const el = $(".win[data-route=session] .nt-rail .nt-chat");
+      const el = $(".nt-live-workspace .ws[data-embedded=true] .nt-chat");
       return el && el.textContent.includes("SLOW 排队测试") && el.textContent.includes("you said: 排队一条（已改）") && el;
     }, 30000);
-    await check("Watch opens the current conversation beside the live view", !!rail && rail.classList.contains("cl-root"));
+    await check("the current conversation is still beside the live view", !!rail && rail.classList.contains("cl-root"));
     await check("the live view has no old steps or agent-perspective tabs", !$(".nt-rail > .seg"));
-    await shot("c03-watch-current-session");
-    $(".gl-toolbar .back:not(:disabled)").click();
-    await check("Back returns to the same workspace session", !!(await until("workspace session again", () => $(".ws-session") && currentKey() === kq)));
+    await check("the live view reuses one complete workspace and one screen", $$(".nt-live-workspace .ws[data-embedded=true]").length === 1
+      && $$(".nt-live-workspace .nt-stage").length === 1 && !$$(".nt-live-workspace .nt-chat-picker").length);
+    const embedded = () => $(".nt-live-workspace .ws[data-embedded=true]");
+    const liveCanvas = $(".nt-live-workspace .nt-stage canvas.rd-holder");
+    await check("the real screen canvas is mounted beside the workspace", !!liveCanvas);
+    // Stream zeroes its drawing size at start; only VideoDecoder's real output restores dimensions.
+    // A DOM canvas alone (with the HTML default 300x150) is not proof that the host sent a frame.
+    const decodedFrame = await until("a decoded frame from the isolated test host", () => liveCanvas?.isConnected
+      && liveCanvas.width > 0 && liveCanvas.height > 0 && !$(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"), 30000);
+    await check("a real decoded screen frame has arrived without a capture error", !!decodedFrame,
+      `${liveCanvas?.width}x${liveCanvas?.height}; ${text($(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"))}`);
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "begin", ts: Date.now(), host: CFG.host,
+      decoded: !!decodedFrame, width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    const originalWorkspace = embedded();
+    let canvasRemoved = false;
+    const screenObserver = new MutationObserver(() => { if (!liveCanvas?.isConnected) canvasRemoved = true; });
+    screenObserver.observe(document.body, { childList: true, subtree: true });
+    const sameScreen = () => !canvasRemoved && !!liveCanvas?.isConnected
+      && $(".nt-live-workspace .nt-stage canvas.rd-holder") === liveCanvas && embedded() === originalWorkspace;
+    const paneSidebar = async () => {
+      if (!$(".ws-side", embedded())) $(".ws-corner .ws-ib", embedded())?.click();
+      return until("embedded session sidebar", () => $(".ws-side", embedded()), 5000);
+    };
+    await paneSidebar();
+    await check("the existing session and project management is available beside the screen", !!rowOf(k1) && !!rowOf(kq)
+      && !!$(".ws-side .ws-nav", embedded()) && !!$(".ws-sec", embedded()));
+    $(".ws-row-main", rowOf(k1))?.click();
+    await check("selecting another session changes the conversation in the same pane", !!(await until("other live-workspace session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("switching sessions on one computer keeps its screen canvas and workspace mounted", sameScreen());
+    await paneSidebar();
+    $(".ws-side .ws-nav", embedded())?.click();
+    await check("New opens the existing CLI, project and first-message composer beside the screen", !!(await until("embedded new session", () =>
+      $(".ws-new .ws-composer textarea", embedded()) && $(".ws-env-trail .ws-chip", embedded()), 10000)));
+    await check("choosing a project on the same computer keeps its screen canvas mounted", sameScreen());
+    await check("the embedded new-session page offers the existing CLI selector", await pickAgent("Rich fake"));
+    await check("the embedded project picker uses the existing recent project", !!(await pickRecent(workName)), folderShown());
+    // The isolated host permits four agents. Keep the two sessions used by the history checks, and
+    // retire this run's unused renamed session before testing another real first-message creation.
+    if (!k2?.startsWith(`${CFG.host}/`)) throw new Error("the expendable test session does not belong to this isolated host");
+    const unusedSession = k2.slice(CFG.host.length + 1);
+    await hostCall("chat_end", { session: unusedSession });
+    let unusedEnded = false;
+    const endDeadline = Date.now() + 30000;
+    while (Date.now() < endDeadline) {
+      const report = await hostCall("chat_sessions");
+      if (report.sessions.some((session) => session.id === unusedSession && session.state === "ended")) { unusedEnded = true; break; }
+      await sleep(250);
+    }
+    await check("the run's unused session has ended before another first message starts", unusedEnded);
+    if (!unusedEnded) throw new Error("the unused test session never ended, so creating another would exceed the host's agent limit");
+    const firstInPane = $(".ws-new .ws-composer textarea", embedded());
+    setValue(firstInPane, "实时画面旁直接开始一个新会话");
+    const sendFirst = await until("embedded first message ready", () => $(".ws-new .ws-send:not(:disabled)", embedded()), 5000);
+    sendFirst?.click();
+    await check("the first message starts a real session without leaving the screen", !!(await until("embedded first-message reply", () => {
+      const chat = $(".ws-session .nt-chat", embedded());
+      return chat?.textContent.includes("you said: 实时画面旁直接开始一个新会话") && chat;
+    }, 30000)));
+    await check("starting a session keeps the current computer's screen and workspace mounted", sameScreen());
+    // The workspace's own history buttons remain available even when its sidebar is folded.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the embedded new-session page", !!(await until("embedded history new page", () =>
+      $(".ws-new .ws-composer textarea", embedded()), 10000)));
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back selects the previous conversation inside the live workspace", !!(await until("embedded history session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("conversation history keeps the live screen mounted", sameScreen());
+    screenObserver.disconnect();
+    await shot("c03-live-workspace-history");
+    // Back to the conversation this sequence started from; there is no separate Watch page.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the original conversation beside the same screen", !!(await until("initial live-workspace conversation", () =>
+      $(".ws-session .nt-chat", embedded())?.textContent.includes("SLOW 排队测试"), 30000)) && sameScreen());
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "end", ts: Date.now(), host: CFG.host,
+      sameCanvas: sameScreen(), width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    keyDown($(".nt-live-divider"), "Home");
+    const paneFolded = await until("sidebar folded inside its narrower pane", () => embedded()?.dataset.side === "hidden", 5000);
+    await check("the sidebar folds by workspace pane width even in a wide app window", !!paneFolded, `${innerWidth} / ${embedded()?.clientWidth}`);
+    await paneSidebar();
+    await check("the existing toggle opens session and project management over the narrow pane", embedded()?.dataset.side === "float" && !!rowOf(kq));
+    await shot("c04-live-workspace-narrow-sidebar");
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }

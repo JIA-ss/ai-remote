@@ -79,7 +79,7 @@
   }
   // The folder picker (ui/chat/FolderPicker.tsx): a typed path, Enter browses it, the footer takes it.
   async function typeFolder(path) {
-    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
+    if (!$(".nt-folder-pop")) $(".ws-chip-folder .nt-folder-btn").click();
     const q = await until("folder search box", () => $("#ag-folder-q"));
     setValue(q, path);
     await until("open-path row", () => $(".nt-folder-list .row.open"));
@@ -88,14 +88,37 @@
     (await until("folder listed", () => $(".nt-folder-crumbs .cur")?.textContent === name && $(".nt-folder-ft .btn.primary:not(:disabled)")))?.click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
   }
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 30000);
+  }
   try {
-    await until("start form", () => $(".nt-chat-start"), 30000);
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
+    await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
+    await pickAgent("Rich fake");
     await typeFolder(CFG.work);
-    setValue($("#ag-prompt"), "RICH fix the quarter export");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000);
+    if (!(await startSession("RICH fix the quarter export"))) throw new Error("the workspace did not open its conversation");
     await idle(30000);
 
     // Fonts the page resolves to (the bundled faces, or the platform's).

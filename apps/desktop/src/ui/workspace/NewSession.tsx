@@ -14,7 +14,7 @@ import type { Computer } from "../../lib/store";
 import { isRunning, keepOrder, lastSeq, normalizeMeta, recentPlaces, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
 import { FolderPicker, type Listing } from "../chat/FolderPicker";
 import { cx } from "../util";
-import { ComputerMark, isMac, modKey, modLabel, PopMenu, type MenuAt, type MenuLine, type Toast } from "./parts";
+import { ComputerMark, isMac, modKey, modLabel, PopMenu, workspaceOwnsEvent, type MenuAt, type MenuLine, type Toast } from "./parts";
 import { titleOf } from "./Sidebar";
 import { call, workspace } from "./useWorkspace";
 
@@ -100,6 +100,8 @@ export function NewSession({
   onOpen,
   onPair,
   toast,
+  embedded = false,
+  onPlaceChange,
 }: {
   snap: WsSnapshot;
   computers: Computer[];
@@ -110,6 +112,9 @@ export function NewSession({
   onOpen: (x: WsItem) => void;
   onPair: () => void;
   toast: (t: Omit<Toast, "id">) => void;
+  embedded?: boolean;
+  /** Reports choices made here; external prefill changes never clear the first-message draft. */
+  onPlaceChange?: (place: Place) => void;
 }) {
   const items = useMemo(() => workspace.items().filter((x) => !x.meta.archived), [snap]);
   const [started] = useState(() => readJson<Started[]>(PLACES, []));
@@ -126,6 +131,12 @@ export function NewSession({
   };
   const [host, setHost] = useState<string | null>(() => initial()?.host ?? null);
   const [cwd, setCwd] = useState(() => initial()?.cwd ?? "");
+  const page = useRef<HTMLDivElement>(null);
+  const placeChanged = useRef(onPlaceChange);
+  placeChanged.current = onPlaceChange;
+  useEffect(() => {
+    if (!prefill && host) placeChanged.current?.({ host, cwd });
+  }, []);
   useEffect(() => {
     if (!prefill) return;
     setHost(prefill.host);
@@ -140,6 +151,7 @@ export function NewSession({
     if (!p) return;
     setHost(p.host);
     setCwd(p.cwd);
+    placeChanged.current?.(p);
   }, [known, anyOnline]);
   const c = computer(host);
   const online = c?.online === true;
@@ -188,6 +200,7 @@ export function NewSession({
     if (name === host) return;
     setHost(name);
     setCwd(lastCwd(name));
+    placeChanged.current?.({ host: name, cwd: lastCwd(name) });
     setRuntimeId(null);
     setError(null);
     area.current?.focus();
@@ -243,6 +256,7 @@ export function NewSession({
   // one; physical digit keys, not while composing, held keys do nothing, AltGr is not Alt.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
+      if (embedded && !workspaceOwnsEvent(page.current?.closest<HTMLElement>('.ws[data-embedded="true"]') ?? null, e)) return;
       if (e.defaultPrevented || e.isComposing || !/^Digit[0-9]$/.test(e.code)) return;
       const chord = isMac ? e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey : e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
       if (!chord) return;
@@ -353,7 +367,7 @@ export function NewSession({
   const canSend = !!text.trim() && !busy && !!runtime && online;
 
   return (
-    <div className="ws-page ws-new">
+    <div className="ws-page ws-new" ref={page}>
       <header className="ws-tb" data-tauri-drag-region>
         {corner}
         <h1 className="ws-tb-plain" data-tauri-drag-region>
@@ -385,6 +399,7 @@ export function NewSession({
                               onClick={() => {
                                 setHost(pl.host);
                                 setCwd(pl.cwd);
+                                placeChanged.current?.({ host: pl.host, cwd: pl.cwd });
                                 setRuntimeId(null);
                                 setError(null);
                                 area.current?.focus();
@@ -499,6 +514,7 @@ export function NewSession({
                     browse={(path) => call<Listing>(host, "files_list", { path })}
                     onChange={(path) => {
                       setCwd(path);
+                      placeChanged.current?.({ host, cwd: path });
                       setError(null);
                       area.current?.focus();
                     }}

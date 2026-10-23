@@ -6,7 +6,7 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs tools/live-workspace.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -16,6 +16,16 @@
 - 文档写数字时分清"实测（条件、样本量）/ 推导 / 未测"，不要把请求值写成实测值。
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
+
+## 实时画面与完整智能体工作区并排（2026-10-24，`feat/unified-screen-workspace`）
+
+- 用户明确要复用现有完整工作区：左实时画面，右侧保留 CLI、工程、会话、新建和对话；不再增加顶部选择条，也不跳另一套配置页。
+  有已配对电脑时，智能体和看电脑入口都进入同一并排视图；工作区选择电脑时同步左侧，选择同机项目/会话只改变右侧。
+- `LiveWorkspace` 让左 `SessionPage` 与右 `Workspace embedded` 成为兄弟节点，只给左侧按 host 加 key；中间可调整宽度。
+  工作区按自身容器测宽并使用原侧栏/抽屉，保留完整 computers 给全局 store。新建地点回报不清草稿、不循环；已有首句和一次性 ticket 仍用原流程。
+- 快捷键限右侧，Claude 审批/计划/问答及模式菜单不截左侧远程输入。全屏隐藏右侧但保留会话，Review 等父层解除 inert 后才聚焦。
+  隐藏应用会停止画面及远程输入，重新显示后等新几何和首帧再恢复输入；不能因工作区默认并排而在后台重新观看。
+- 实现于独立 worktree，主检出里其它会话的页面美化和 iPad 改动未纳入。本机原生与浏览器验收进行中，实测数字待回填。
 
 ## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
 
