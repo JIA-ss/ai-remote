@@ -138,11 +138,11 @@ final class PhoneChatUITests: XCTestCase {
 
         // A link in a reply that names a file opens its preview.
         let link = app.links["报告"]
-        if link.waitForExistence(timeout: 3) {
-            link.tap()
-            XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 5), "the link opens the page's preview")
-            app.buttons["chat-preview-done"].tap()
-        }
+        XCTAssertTrue(link.waitForExistence(timeout: 3), "the reply exposes its file link")
+        link.tap()
+        XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 5), "the link opens the page's preview")
+        XCTAssertTrue(app.webViews.firstMatch.staticTexts["构建报告"].waitForExistence(timeout: 5), "the link loads the named file")
+        app.buttons["chat-preview-done"].tap()
 
         // The composer: an image waiting to go, the / menu, the @ menu.
         XCTAssertTrue(app.descendants(matching: .any)["chat-attachments"].exists, "the attached image shows above the field")

@@ -24,7 +24,7 @@ final class PhoneCodexUITests: XCTestCase {
         return app
     }
 
-    func testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs() {
+    func testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs() throws {
         continueAfterFailure = false
         let app = launch()
         defer { app.terminate() }
@@ -105,12 +105,16 @@ final class PhoneCodexUITests: XCTestCase {
         XCTAssertTrue(changed.descendants(matching: .any)["codex-diff"].waitForExistence(timeout: 5), "a changed file opens to its diff")
         bringIntoView(app, changed)
         XCTAssertTrue(text(changed, "end = date(year, quarter * 3, 31)").exists, "a removed line")
+        // Exercise the expanded card through the audit engine used by Accessibility Inspector too.
+        // This is an automated audit, not a VoiceOver navigation test.
+        try app.performAccessibilityAudit(for: [.elementDetection])
         file.tap()
         waitFor("closed again") { changed.descendants(matching: .any).matching(identifier: "codex-diff").count == 0 }
         let review = changed.buttons["codex-review"]
         XCTAssertTrue(scroll(app, to: review, up: true))
         review.tap()
         waitFor("Review opens both files") { changed.descendants(matching: .any).matching(identifier: "codex-diff").count == 2 }
+        try app.performAccessibilityAudit(for: [.elementDetection])
         shot(app, "c05-changes-review")
 
         // Folding again hides the work.

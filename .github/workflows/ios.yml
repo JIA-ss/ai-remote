@@ -3,94 +3,54 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
-  framework:
+  acceptance:
     runs-on: macos-15
-    timeout-minutes: 40
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup toolchain install 1.95.0 --profile minimal
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug/.fingerprint
-            target/debug/build
-            target/debug/deps
-            target/release/.fingerprint
-            target/release/build
-            target/release/deps
-            target/aarch64-apple-ios/release
-            target/aarch64-apple-ios-sim/release
-          key: ios-layout-framework-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ios-rust-1.95-sdk-26.2-${{ hashFiles('Cargo.lock') }}-
-            desktop-rust-1.95-macos-15-${{ hashFiles('Cargo.lock') }}-
-      - run: tools/ios.sh framework
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ios-layout-framework
-          path: apps/ios/Generated/
-          retention-days: 3
-  layout:
-    needs: framework
-    runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        variant: [baseline, no-clip, no-combine, eager-stack, no-anchor]
+        run: [suite, repeated-fold]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-      LAYOUT_VARIANT: ${{ matrix.variant }}
+      UI_RUN: ${{ matrix.run }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: ios-layout-framework
           path: apps/ios/Generated/
-      - name: Apply one diagnostic change
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          v = os.environ['LAYOUT_VARIANT']
-          rows = Path('apps/ios/Sources/PhoneCodexRows.swift')
-          chat = Path('apps/ios/Sources/PhoneChatView.swift')
-          if v in ('no-clip', 'no-combine'):
-              text = rows.read_text()
-              start = text.index('private struct ChangesCard: View')
-              head, card = text[:start], text[start:]
-              if v == 'no-clip':
-                  old = '        .clipShape(RoundedRectangle(cornerRadius: 12))\n'
-              else:
-                  old = '                .accessibilityElement(children: .combine)\n'
-              assert old in card
-              rows.write_text(head + card.replace(old, '', 1))
-          elif v in ('eager-stack', 'no-anchor'):
-              text = chat.read_text()
-              old, new = ('LazyVStack(alignment: .leading, spacing: codex ? 28 : 14)', 'VStack(alignment: .leading, spacing: codex ? 28 : 14)') if v == 'eager-stack' else ('            .defaultScrollAnchor(.bottom)\n', '')
-              assert old in text
-              chat.write_text(text.replace(old, new, 1))
-          PY
+          run-id: 39943578229
+          github-token: ${{ github.token }}
       - run: brew install xcodegen && cd apps/ios && xcodegen generate
-      - name: Run the fold test on an explicit simulator
+      - name: Run UI acceptance on an explicit simulator
         run: |
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for runtime, group in json.load(sys.stdin)["devices"].items() if runtime.endswith(".iOS-26-2") for d in group if d["name"].startswith("iPhone")))')
+          echo "SIMULATOR_UDID=$simulator" >> "$GITHUB_ENV"
           xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b
-          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
-            -destination "id=$simulator" -configuration Debug \
-            -derivedDataPath target/ios-build -resultBundlePath target/layout.xcresult \
-            -only-testing:AIRemoteUITests/PhoneCodexUITests/testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs \
-            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 180 \
-            CODE_SIGNING_ALLOWED=NO test
+          args=(-project apps/ios/AIRemote.xcodeproj -scheme AIRemote -destination "id=$simulator" -configuration Debug -derivedDataPath target/ios-build -test-timeouts-enabled YES -maximum-test-execution-time-allowance 180 CODE_SIGNING_ALLOWED=NO)
+          if [[ "$UI_RUN" == suite ]]; then
+            xcodebuild "${args[@]}" -resultBundlePath target/suite.xcresult \
+              -only-testing:AIRemoteUITests/PhoneCodexUITests -only-testing:AIRemoteUITests/PhoneChatUITests test
+          else
+            xcodebuild "${args[@]}" -resultBundlePath target/fold-1.xcresult \
+              -only-testing:AIRemoteUITests/PhoneCodexUITests/testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs test
+            for n in 2 3; do
+              xcodebuild "${args[@]}" -resultBundlePath "target/fold-$n.xcresult" \
+                -only-testing:AIRemoteUITests/PhoneCodexUITests/testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs test-without-building
+            done
+          fi
+      - name: Inspect accessibility tools available on this Mac
+        if: always()
+        run: |
+          xcrun simctl help 2>&1 | head -60
+          test -d "$DEVELOPER_DIR/Applications/Accessibility Inspector.app" && echo 'Accessibility Inspector is installed'
+          osascript -e 'tell application "System Events" to get UI elements enabled' || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ios-layout-${{ matrix.variant }}
-          path: target/layout.xcresult
+          name: ios-acceptance-${{ matrix.run }}
+          path: target/*.xcresult
           retention-days: 3
