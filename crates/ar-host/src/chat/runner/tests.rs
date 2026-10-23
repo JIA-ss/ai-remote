@@ -64,18 +64,28 @@ mod restart {
     use crate::chat::{Backend, ChatManager, Cmd, Input, State, event::By};
 
     /// Claude Code's protocol, just enough: LATE answers a second later, a message with an image
-    /// answers "image", HOLD takes the next line into the same turn (as Claude Code does with a
+    /// answers "image", HOLD takes the next user line into the same turn (as Claude Code does with a
     /// message written during a turn, echoing both), anything else answers at once with the
     /// process id, so the test can tell one process from another.
     #[cfg(unix)]
     const FAKE: &str = r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+holding=0
 while IFS= read -r line; do
+  if [ "$holding" = 1 ]; then
+    case "$line" in
+      *'"type":"user"'*)
+        echo '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"result":"steered"}'
+        holding=0
+        continue ;;
+    esac
+  fi
   case "$line" in
     *'"subtype":"initialize"'*)
       echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}' ;;
-    *'"subtype":"interrupt"'*) echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
+    *'"subtype":"interrupt"'*) holding=0; echo '{"type":"result","subtype":"error_during_execution","is_error":true}' ;;
     *'"subtype":"set_permission_mode"'*)
       echo '{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}' ;;
     *control_request*) ;;
@@ -92,10 +102,9 @@ while IFS= read -r line; do
     *'"type":"image"'*)
       echo '{"type":"result","subtype":"success","is_error":false,"result":"image"}' ;;
     *HOLD*)
+      holding=1
       echo '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hold"}]}}'
-      IFS= read -r more
-      echo '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
-      echo '{"type":"result","subtype":"success","is_error":false,"result":"steered"}' ;;
+      echo '{"type":"assistant","message":{"id":"holding","content":[{"type":"text","text":"holding for steer"}]}}' ;;
     *LATE*) sleep 1
       echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
       echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"pid $$\"}" ;;
@@ -111,19 +120,28 @@ done
 function Say($s) { [Console]::Out.WriteLine($s); [Console]::Out.Flush() }
 if ($args -contains '--version') { Say '2.1.0 (Claude Code)'; exit 0 }
 Say '{"type":"system","subtype":"init","session_id":"fake-session"}'
+$holding = $false
 while ($null -ne ($line = [Console]::In.ReadLine())) {
+  if ($holding -and $line -like '*"type":"user"*') {
+    Say '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
+    Say '{"type":"result","subtype":"success","is_error":false,"result":"steered"}'
+    $holding = $false
+    continue
+  }
   if ($line -like '*"subtype":"initialize"*') {
     Say '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[]}}}'
   } elseif ($line -like '*"subtype":"interrupt"*') {
+    $holding = $false
     Say '{"type":"result","subtype":"error_during_execution","is_error":true}'
+  } elseif ($line -like '*"subtype":"set_permission_mode"*') {
+    Say '{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}'
   } elseif ($line -like '*control_request*') {
   } elseif ($line -like '*"type":"image"*') {
     Say '{"type":"result","subtype":"success","is_error":false,"result":"image"}'
   } elseif ($line -like '*HOLD*') {
+    $holding = $true
     Say '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hold"}]}}'
-    $more = [Console]::In.ReadLine()
-    Say '{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"more"}]}}'
-    Say '{"type":"result","subtype":"success","is_error":false,"result":"steered"}'
+    Say '{"type":"assistant","message":{"id":"holding","content":[{"type":"text","text":"holding for steer"}]}}'
   } elseif ($line -like '*LATE*') {
     Start-Sleep -Seconds 1
     Say '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"late"}]}}'
@@ -338,6 +356,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         let (_, _, mut rx) = chat.follow(0);
         chat.send(input("HOLD"));
         wait_for(&mut rx, |v| v["t"] == "state" && v["state"] == "running").await;
+        wait_for(&mut rx, |v| v["t"] == "message" && v["text"] == "holding for steer").await;
+        // The runner sends generate_session_title after the first prompt. Control traffic must
+        // not count as the held turn's next user line. A mode reply is a protocol barrier proving
+        // that those controls were processed while the agent still waits for the actual steer.
+        chat.send(Cmd::SetMode { mode: "plan".into(), by: By { device: "laptop".into(), principal: None } });
+        wait_for(&mut rx, |v| v["t"] == "mode" && v["mode"] == "plan").await;
+        assert_eq!(chat.state(), State::Running, "control requests must not complete the held turn");
         chat.send(Cmd::Steer(Input {
             id: "u-more".into(),
             text: "and this too".into(),
