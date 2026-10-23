@@ -42,7 +42,7 @@ export function ModeSwitch({ mode, onMode }: { mode: AppMode; onMode: (mode: App
   return (
     <div
       className="ws-modes"
-      role="radiogroup"
+      role="group"
       aria-label={t("ws_mode")}
       onKeyDown={(e) => {
         if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -57,9 +57,8 @@ export function ModeSwitch({ mode, onMode }: { mode: AppMode; onMode: (mode: App
         <button
           key={m}
           type="button"
-          role="radio"
           data-mode={m}
-          aria-checked={m === mode}
+          aria-pressed={m === mode}
           tabIndex={m === mode ? 0 : -1}
           className={cx("ws-mode", m === mode && "on")}
           aria-label={t(label)}

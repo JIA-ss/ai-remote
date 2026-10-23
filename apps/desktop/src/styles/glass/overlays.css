@@ -1,1 +1,62 @@
-/* glass: menus, popovers, sheets and toasts built on .gl-glass (Modal, Confirm, pair code). Owned by the overlays package; empty in the foundation. */
+/* Sheets are body portals. Their wrapper never animates opacity, filter or mask: the sheet itself
+   is the only backdrop root. Its unblurred scrim is a sibling. */
+.gl-modal-root {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+  padding: 24px; overflow-y: auto; overscroll-behavior: contain;
+}
+.gl-modal-root[inert] { pointer-events: none; }
+.gl-modal-root > .gl-scrim { position: fixed; inset: 0; z-index: 0; background: var(--gl-scrim); }
+.cdlg.gl-sheet {
+  position: relative; z-index: 1; left: auto; top: auto; transform: none; margin: auto;
+  display: flex; flex-direction: column; width: 440px; max-width: 100%;
+  max-height: calc(100dvh - 48px); overflow: hidden; border-radius: var(--gl-r-sheet);
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet);
+}
+.cdlg.gl-sheet.gl-sheet-wide { width: 560px; }
+.cdlg.gl-sheet.nt-pair { width: 480px; }
+.gl-sheet > .b { min-height: 0; padding: 20px 20px 0; overflow-y: auto; overscroll-behavior: contain; }
+.gl-sheet .ttl { font-size: 15px; line-height: 22px; font-weight: 600; }
+.gl-sheet > .b .bd { font-size: 13px; line-height: 20px; }
+:root[data-theme] .gl-sheet > .f {
+  flex: none; display: flex; justify-content: flex-start; flex-direction: row-reverse; gap: 8px;
+  padding: 20px; border: 0; background: transparent;
+}
+:root[data-os="windows"] .gl-sheet > .f { flex-direction: row; justify-content: flex-end; }
+.gl-sheet > .f .btn { border-radius: var(--gl-r-btn); }
+:root[data-os="windows"] .gl-sheet > .f .btn { flex: 1; min-width: 120px; }
+.gl-sheet:focus { outline: none; }
+.gl-sheet :is(.field, .dd, .ta-input, .nt-ticket, .nt-qr.empty) { background: var(--gl-well); }
+.gl-sheet .nt-ticket { overflow-wrap: anywhere; }
+.gl-sheet.nt-pair .nt-pair-body { grid-template-columns: 160px minmax(0, 1fr); gap: 20px; }
+.gl-sheet.nt-pair .nt-qr { width: 160px; height: 160px; border-radius: 12px; }
+.gl-sheet.nt-pair .nt-code { font-size: 40px; line-height: 48px; }
+
+/* Existing menus share the thick recipe in material.css. Keep their rows as simple fills; a
+   blurred submenu inside one would turn the menu into a second backdrop root. */
+.menu { border-radius: var(--gl-r-pop); padding: 6px; min-width: 200px; }
+.menu > :is(button, [role="menuitem"]) { min-height: 26px; padding: 0 10px; border-radius: var(--gl-r-row); font-size: 13px; }
+:root[data-os="mac"] .menu > :is(button, [role="menuitem"]):is(:hover, :focus-visible) { background: var(--agent); color: var(--agent-on); }
+:root[data-os="windows"] .menu { padding: 4px; }
+:root[data-os="windows"] .menu > :is(button, [role="menuitem"]) { min-height: 32px; }
+:root[data-material="none"] .cdlg.gl-sheet { background: var(--raised); }
+
+/* A transform on the sheet, never on its ancestor. The scrim is an unblurred sibling. */
+@media (prefers-reduced-motion: no-preference) {
+  .gl-sheet { animation: gl-sheet-in 240ms var(--gl-ease); }
+  .gl-scrim { animation: gl-scrim-in 200ms ease-out; }
+  .menu { transform-origin: top right; animation: gl-pop-in 160ms var(--gl-ease); }
+}
+@keyframes gl-sheet-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+@keyframes gl-scrim-in { from { opacity: 0; } }
+@keyframes gl-pop-in { from { opacity: 0; transform: scale(.96); } }
+/* Stacked sheets keep one animated glass surface at most. */
+.gl-modal-root[inert] .gl-sheet { animation: none; }
+:root[data-modal] .menu { animation: none; }
+
+@media (max-width: 540px) {
+  .gl-modal-root { padding: 16px; }
+  .cdlg.gl-sheet { max-height: calc(100dvh - 32px); }
+}
+@media (max-width: 420px) {
+  .gl-sheet.nt-pair .nt-pair-body { grid-template-columns: 1fr; justify-items: center; }
+}

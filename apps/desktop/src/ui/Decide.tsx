@@ -62,6 +62,7 @@ export function DecisionCard({
   const [telling, setTelling] = useState(false);
   const [note, setNote] = useState("");
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let live = true;
@@ -107,10 +108,18 @@ export function DecisionCard({
       setApprover("ready");
     });
 
-  // Esc denies, as the button's key hint says.
+  // Esc belongs to the focused card, or the first card when focus is elsewhere. A single key
+  // press must never deny a whole queue, nor escape from an open dialog or menu to a card behind it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !telling && !busy) void deny();
+      if (e.key !== "Escape" || e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229) return;
+      if (e.target instanceof Element && e.target.closest(".nt-picture")) return;
+      if (document.documentElement.hasAttribute("data-modal") || document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')) return;
+      const focused = document.activeElement?.closest(".decide");
+      if ((focused ?? document.querySelector(".decide")) !== cardRef.current || telling || busy) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      void deny();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -143,7 +152,7 @@ export function DecisionCard({
   );
 
   return (
-    <div className="decide">
+    <div className="decide" ref={cardRef}>
       <div className="hdr">
         <span className="w">
           <Pointer who="you" h={12} ui />
@@ -203,7 +212,11 @@ export function DecisionCard({
                 e.preventDefault();
                 void deny(note.trim());
               }
-              if (e.key === "Escape") setTelling(false);
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setTelling(false);
+              }
             }}
           />
           <div className="acts">

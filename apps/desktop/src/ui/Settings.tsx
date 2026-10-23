@@ -30,6 +30,7 @@ import { Confirm } from "./ComputerTabs";
 import { Glyph, Mark, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
 import { PairCodeDialog } from "./PairCode";
+import { Modal } from "./Modal";
 import { clock, cx } from "./util";
 
 
@@ -1265,11 +1266,6 @@ function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose:
       setState("error");
     });
   }, [service]);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === "Escape" && state !== "running" && onClose();
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  });
   const admin = service || !mac;
   const go = async () => {
     setState("running");
@@ -1286,9 +1282,7 @@ function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose:
   // The plan's own blocker ("needs root") is what the administrator prompt answers.
   const steps = plan?.steps ?? [];
   return (
-    <>
-      <div className="smoke" style={{ position: "fixed" }} onClick={() => state !== "running" && onClose()} />
-      <div className="cdlg" role="dialog" aria-modal="true" aria-label={t("en_title")} style={{ position: "fixed", width: 560 }}>
+    <Modal label={t(service ? "en_title_lw" : "en_title")} onClose={onClose} dismissible={state !== "running"} size="wide">
         <div className="b">
           <div className="ttl">{t(service ? "en_title_lw" : "en_title")}</div>
           <div className="bd">
@@ -1315,15 +1309,14 @@ function EnableDialog({ service, onClose, onDone }: { service: boolean; onClose:
           </div>
         </div>
         <div className="f">
-          <button className="btn primary" autoFocus disabled={!plan || state === "running"} onClick={() => void go()}>
+          <button className="btn primary" disabled={!plan || state === "running"} onClick={() => void go()}>
             {t(admin ? (mac ? "en_go_mac" : "en_go_win") : "en_go")}
           </button>
           <button className="btn" disabled={state === "running"} onClick={onClose}>
             {t("cancel")}
           </button>
         </div>
-      </div>
-    </>
+    </Modal>
   );
 }
 

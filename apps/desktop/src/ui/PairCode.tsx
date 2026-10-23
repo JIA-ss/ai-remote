@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import { t } from "../lib/i18n";
 import type { AuditLine, Level, PairTicket } from "../lib/types";
 import { Icon } from "./Icon";
+import { Modal } from "./Modal";
 import { cx } from "./util";
 
 /** Digits typed or pasted so far, grouped `4821 0937` as they grow. */
@@ -67,6 +68,7 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
   const [error, setError] = useState<string | null>(null);
   const [showTicket, setShowTicket] = useState(false);
   const [copied, setCopied] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const now = useNow(1000);
   const pairedRef = useRef(false);
   pairedRef.current = !!paired;
@@ -76,11 +78,6 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
     if (!pairedRef.current) void api.localWithdrawCode().catch(() => {});
     onClose();
   };
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === "Escape" && close();
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  });
   useEffect(
     () => () => {
       void api.protectWindow(false).catch(() => {});
@@ -127,9 +124,7 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
   const peer = paired?.peer ?? "?";
 
   return (
-    <>
-      <div className="smoke" style={{ position: "fixed" }} onClick={close} />
-      <div className="cdlg nt-pair" role="dialog" aria-modal="true" aria-label={t("pc_title", { name })} style={{ position: "fixed" }}>
+    <Modal label={t("pc_title", { name })} className="nt-pair" onClose={close} initialFocus={closeRef}>
         <div className="b">
           {paired ? (
             <div className="nt-pair-done">
@@ -271,12 +266,11 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
               </button>
             </>
           ) : (
-            <button className={cx("btn", paired && "primary")} style={{ gridColumn: "1 / -1" }} onClick={close}>
+            <button ref={closeRef} className={cx("btn", paired && "primary")} style={{ gridColumn: "1 / -1" }} onClick={close}>
               {t(paired ? "pc_close" : "pc_cancel")}
             </button>
           )}
         </div>
-      </div>
-    </>
+    </Modal>
   );
 }
