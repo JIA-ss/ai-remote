@@ -28,8 +28,23 @@ pub struct Listener {
     inner: local::LocalListener,
     // mcpmesh's Unix bind removes stale sockets unconditionally. Hold an OS lock first so
     // concurrent cold starts cannot unlink a live daemon's endpoint.
+    // Keep this after `inner`: close the old endpoint before allowing another bind.
     #[cfg(unix)]
-    _lock: std::fs::File,
+    _lock: EndpointLock,
+}
+
+#[cfg(unix)]
+struct EndpointLock(std::fs::File);
+
+#[cfg(unix)]
+impl Drop for EndpointLock {
+    fn drop(&mut self) {
+        // Closing alone may leave flock held by a child between fork and exec. Explicitly
+        // release it so a stopped daemon can be restarted before that child exits.
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(%error, "failed to release the control endpoint lock");
+        }
+    }
 }
 
 impl Listener {
@@ -67,7 +82,7 @@ impl Listener {
                 }
                 std::fs::TryLockError::Error(e) => e,
             })?;
-            lock
+            EndpointLock(lock)
         };
         let inner = local::bind_local_shared(path, shared_with)?;
         Ok(Self {
@@ -183,5 +198,26 @@ mod tests {
         drop((client, server, first));
         // Reuse after a normal exit or crash: the lock is released, the stale socket is removed.
         let _next = Listener::bind(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_inherited_lock_descriptor_does_not_delay_restart_or_unlock_its_successor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        for _ in 0..64 {
+            let first = Listener::bind(&path).unwrap();
+            // dup and fork share the same open file description. A child between fork and
+            // exec may keep this descriptor alive after its parent closes the listener.
+            let inherited = first._lock.0.try_clone().unwrap();
+            drop(first);
+            let mut next = Listener::bind(&path).expect("restart must not wait for an inherited descriptor");
+            assert_eq!(Listener::bind(&path).err().unwrap().kind(), std::io::ErrorKind::AddrInUse);
+            drop(inherited);
+            assert_eq!(Listener::bind(&path).err().unwrap().kind(), std::io::ErrorKind::AddrInUse);
+            let mut client = Conn::connect(&path).await.unwrap();
+            let mut server = next.accept().await.unwrap();
+            client.write_json(&json!({"op": "status"})).await.unwrap();
+            assert_eq!(server.read_json().await.unwrap(), Some(json!({"op": "status"})));
+        }
     }
 }
