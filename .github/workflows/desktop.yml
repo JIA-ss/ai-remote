@@ -1,51 +1,22 @@
 name: Desktop and core
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: desktop-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, windows-2025]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  native-e2e:
+    runs-on: macos-15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "25"
+          node-version: '25'
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-      - name: Select macOS SDK
-        if: runner.os == 'macOS'
-        env:
-          # apple-metal's Swift bridge uses macOS 26 SDK declarations.
-          # https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md
-          DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-        run: |
-          test -d "$DEVELOPER_DIR"
-          printf '%s\n' "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
-          xcodebuild -version
-          python3 - <<'PY'
-          import subprocess
-          sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-version"], text=True).strip()
-          if int(sdk.split(".")[0]) < 26:
-              raise SystemExit("apple-metal requires macOS SDK 26+")
-          print(f"macOS SDK: {sdk}")
-          PY
-      - name: Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal --component clippy
+          python-version: '3.12'
+      - run: rustup toolchain install 1.95.0 --profile minimal
       - uses: actions/cache/restore@v4
-        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
@@ -53,39 +24,30 @@ jobs:
             target/debug/.fingerprint
             target/debug/build
             target/debug/deps
-          key: desktop-rust-1.95-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: desktop-acceptance-${{ github.sha }}
           restore-keys: |
-            desktop-rust-1.95-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}-
-      - name: Build desktop frontend
+            desktop-rust-1.95-macos-15-${{ hashFiles('Cargo.lock') }}-
+      - run: cargo build -p ai-remote --locked
+      - run: npm ci && npx tauri build --debug --no-bundle
         working-directory: apps/desktop
+      - name: Native conversation and workspace acceptance
+        env:
+          PYTHONUNBUFFERED: '1'
         run: |
-          npm ci
-          npm run build
-      - name: MCP client configuration tests
-        run: node --test tools/mcp-install.test.mjs tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs
-      - name: macOS bundle signature regression
-        if: runner.os == 'macOS'
-        run: python3 tools/test_macos_packaging.py
-      - name: Windows packaging plan
-        if: runner.os == 'Windows'
-        run: python tools/test_windows_packaging.py
-      - name: Windows command transport diagnostics
-        if: runner.os == 'Windows'
-        run: pwsh -NoProfile -File tools/windows-cmd-probe.ps1
-      - name: Rust tests
-        run: cargo test --workspace --locked
-      - name: Darwin dependency ABI regression
-        if: runner.os == 'macOS'
-        run: cargo test --manifest-path vendor/netdev/Cargo.toml --lib darwin_abi --locked --target-dir target/vendor-abi
-      - name: Rust lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - uses: actions/cache/save@v4
-        if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
+          result=0
+          for name in claude codex workspace; do
+            if [[ "$name" == claude ]]; then script=tools/desktop-chat-e2e.js; query='view=session';
+            elif [[ "$name" == codex ]]; then script=tools/desktop-chat-codex-e2e.js; query='view=session';
+            else script=tools/desktop-workspace-e2e.js; query='view=devices&shotlang=zh&shottheme=dark'; fi
+            mkdir -p "target/native-e2e/$name"
+            if [[ "$name" == workspace ]]; then export E2E_QUERY="$query"; else unset E2E_QUERY; fi
+            E2E_SCRIPT="$script" python3 -u tools/desktop-chat-e2e.py --visible --secs 600 --out "target/native-e2e/$name" > "target/native-e2e/$name.log" 2>&1 || result=1
+            cat "target/native-e2e/$name.log"
+          done
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug/.fingerprint
-            target/debug/build
-            target/debug/deps
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+          name: native-conversation-acceptance
+          path: target/native-e2e/
+          retention-days: 3

@@ -106,8 +106,9 @@
   async function send(t) {
     const ta = await until("composer", composer);
     setValue(ta, t);
-    await sleep(100);
-    $(".ws-main .nt-compose .round.send").click();
+    const button = await until("message ready to send", () => $(".ws-main .nt-compose .round.send:not(:disabled)"));
+    if (!button) throw new Error("the composer never enabled Send");
+    button.click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
   const said = (t, ms = 20000) => until(`reply "${t}"`, () => lastTurn()?.textContent.includes(t), ms);
@@ -664,6 +665,19 @@
     await idle();
     await check("the one taken back never ran", !$$(".ws-main .nt-user").some((u) => u.textContent.includes("撤回我")));
     await shot("b09-after-queue");
+
+    // The live view uses this same conversation. Opening it must carry the session ID, rather than
+    // silently taking an unrelated session remembered by the former side panel.
+    $(".ws-tb-end .ws-ib").click();
+    const rail = await until("this conversation beside the live view", () => {
+      const el = $(".win[data-route=session] .nt-rail .nt-chat");
+      return el && el.textContent.includes("SLOW 排队测试") && el.textContent.includes("you said: 排队一条（已改）") && el;
+    }, 30000);
+    await check("Watch opens the current conversation beside the live view", !!rail && rail.classList.contains("cl-root"));
+    await check("the live view has no old steps or agent-perspective tabs", !$(".nt-rail > .seg"));
+    await shot("c03-watch-current-session");
+    $(".gl-toolbar .back:not(:disabled)").click();
+    await check("Back returns to the same workspace session", !!(await until("workspace session again", () => $(".ws-session") && currentKey() === kq)));
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }

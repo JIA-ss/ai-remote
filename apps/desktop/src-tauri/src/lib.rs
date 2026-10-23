@@ -1293,6 +1293,8 @@ fn find_cli() -> Result<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    let mut smoke_activity = std::env::var_os("AI_REMOTE_SMOKE").map(|_| SmokeActivity::begin());
     let builder = builder();
     #[cfg(debug_assertions)]
     builder
@@ -1357,7 +1359,12 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building the ai-remote app")
-        .run(|app, event| {
+        .run(move |app, event| {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            if matches!(&event, tauri::RunEvent::Exit) {
+                // Keep the activity through the queued exit request, until the event loop handles it.
+                drop(smoke_activity.take());
+            }
             // macOS: a click on the Dock icon brings the hidden window back.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
@@ -1366,6 +1373,39 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         });
+}
+
+/// A smoke run is user-requested work even while its window is off screen or the desktop is locked.
+/// Keep only that debug run out of App Nap; display sleep, system sleep and locking remain unchanged.
+/// The token stays on the app event loop and is ended on exit or when that loop unwinds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+struct SmokeActivity {
+    process: objc2::rc::Retained<objc2_foundation::NSProcessInfo>,
+    activity: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>,
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+impl SmokeActivity {
+    fn begin() -> Self {
+        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+
+        let process = NSProcessInfo::processInfo();
+        let activity = process.beginActivityWithOptions_reason(
+            NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+            &NSString::from_str("ai-remote debug UI smoke test"),
+        );
+        eprintln!("[smoke] began activity to prevent App Nap for this debug run");
+        Self { process, activity }
+    }
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+impl Drop for SmokeActivity {
+    fn drop(&mut self) {
+        // SAFETY: this is the activity token returned by this process's matching begin call.
+        unsafe { self.process.endActivity(&self.activity) };
+        eprintln!("[smoke] ended debug run activity");
+    }
 }
 
 /// Debug builds: `AI_REMOTE_SMOKE=<png>` runs the app without ever showing it to the person at the

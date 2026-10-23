@@ -1,7 +1,7 @@
 // The live session: the remote screen is the subject, edge to edge on a black stage, never scaled
 // past 1:1 device pixels. A floating bar says who drives and holds the actions, a corner HUD shows
-// what arrives, the rail is a running document of steps with the one pending decision lifted above
-// it. Full screen (⌃⌘F) keeps only the stage; the bars come back on movement and leave after 3 s.
+// what arrives. The rail shows the same coding-agent conversations as the workspace, with a pending
+// host approval above the conversation. Full screen (⌃⌘F) keeps only the stage; the bars come back on movement and leave after 3 s.
 // While you drive, only the top and bottom edges, or the small tab under the bottom bar, bring them back.
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +13,6 @@ import { currentLang, t } from "../lib/i18n";
 import { isMissingMonitor, loadMonitor, monitorNames, monitorOption, pickerOrder, primaryOf, saveMonitor, type RemoteMonitor } from "../lib/monitors";
 import { loadStreamQuality, resolveQuality, saveStreamQuality, STREAM_QUALITIES, streamQuality } from "../lib/stream-quality";
 import type { Computer } from "../lib/store";
-import type { Step } from "../lib/types";
 import { createHostClock, startPinging } from "../lib/clock";
 import { isFullscreen, setFullscreen, watchFullscreen } from "../lib/fullscreen";
 import { preferredCodecs } from "../lib/codec";
@@ -27,8 +26,7 @@ import { watchFileDrop } from "../lib/drop";
 import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
 import { computerFacts, Facts, TitleBar, type Nav } from "./Shell";
-import { TurnLine, turnSpec } from "./TurnLine";
-import { agentLabel, clock, countdown, cx, useNow, useSize } from "./util";
+import { agentLabel, countdown, cx, useNow, useSize } from "./util";
 
 type Bar = "agent" | "waiting" | "you" | "paused" | "idle" | "offline" | "connecting";
 
@@ -241,113 +239,6 @@ export function Stream({
   );
 }
 
-/** One row of the steps log. `cls` follows the design's grammar: done | you | sys, the rule above
- *  (u-agent, u-you, u-wait, u-waited, u-sys) and below (d-...) the node, and the node (n-...). */
-function Row({ cls, time, text, sub, mono }: { cls: string; time: string; text: React.ReactNode; sub?: string | null; mono?: boolean }) {
-  return (
-    <div className={cx("lr", cls)}>
-      <span className="t">{time}</span>
-      <span className="r">{/n-/.test(cls) && <i />}</span>
-      <div className="x">
-        {text}
-        {sub && <span className={cx("sub", mono && "mono")}>{sub}</span>}
-      </div>
-    </div>
-  );
-}
-
-type LogItem = { ts: number; key: string; node: React.ReactNode };
-
-function logItems(c: Computer, agent: string, host: string): LogItem[] {
-  const items: LogItem[] = [];
-  const stepText = (s: Step) => s.intent ?? s.tool;
-  for (const s of c.feed.steps) {
-    const who = s.byPerson ? "you u-you d-you n-you" : "done u-agent d-agent";
-    if (s.state === "waiting") {
-      items.push({
-        ts: s.startedMs,
-        key: s.key,
-        node: <Row cls="done from-card u-wait d-agent n-waithead" time={clock(s.startedMs)} text={t("s_asked", { tool: s.tool })} />,
-      });
-      continue;
-    }
-    if (s.approvalId) {
-      const by = s.answeredBy;
-      const allowed = s.decision === "approved";
-      const answer =
-        s.decision === "timeout" || s.decision === "unavailable"
-          ? t("s_timeout")
-          : by === "host"
-            ? t(allowed ? "s_allowed_host" : "s_denied_host", { host })
-            : t(allowed ? "s_allowed" : "s_denied", { device: by ?? "" });
-      items.push({
-        ts: s.startedMs,
-        key: `${s.key}/asked`,
-        node: <Row cls="done u-waited d-agent n-wait" time={clock(s.startedMs)} text={t("s_asked", { tool: s.tool })} sub={stepText(s) !== s.tool ? stepText(s) : null} />,
-      });
-      items.push({
-        ts: s.decidedMs ?? s.startedMs + 1,
-        key: `${s.key}/answer`,
-        node: <Row cls="you u-agent d-waited n-you" time={clock(s.decidedMs ?? s.startedMs)} text={answer} sub={s.note ? `“${s.note}”` : null} />,
-      });
-      if (allowed && s.state !== "refused") {
-        items.push({
-          ts: (s.decidedMs ?? s.startedMs) + 2,
-          key: `${s.key}/ran`,
-          node: <Row cls={who} time={clock(s.decidedMs ?? s.startedMs)} text={stepText(s)} sub={s.error ?? null} />,
-        });
-      }
-      continue;
-    }
-    if (s.state === "refused") {
-      const why = s.decision === "turn" ? t("s_refused_turn") : t("s_refused");
-      items.push({ ts: s.startedMs, key: s.key, node: <Row cls="sys u-agent d-agent n-sys" time={clock(s.startedMs)} text={why} sub={s.tool} mono /> });
-      continue;
-    }
-    items.push({
-      ts: s.startedMs,
-      key: s.key,
-      node: (
-        <Row
-          cls={who}
-          time={clock(s.startedMs)}
-          text={stepText(s)}
-          sub={s.state === "failed" ? (s.error ?? t("s_failed")) : s.intent ? s.tool : null}
-          mono={s.state !== "failed" && !!s.intent}
-        />
-      ),
-    });
-  }
-  for (const turn of c.feed.turns) {
-    const d = turn.driver;
-    let text: string;
-    let cls = "you u-agent d-agent n-you";
-    if (turn.message) {
-      text = t("s_note");
-    } else if (turn.owner) {
-      // The owner, at that computer, paused or resumed: not something this device did.
-      text = d?.state === "paused" ? t("s_owner_paused", { host: c.host.name }) : t("s_owner_resumed", { host: c.host.name });
-      cls = "you u-agent d-sys n-you";
-    } else if (d?.state === "person") {
-      text = t("s_took_over", { device: turn.by });
-      cls = "you u-agent d-you n-you";
-    } else if (d?.state === "paused") {
-      text = t("s_paused", { device: turn.by });
-      cls = "you u-agent d-sys n-you";
-    } else {
-      text = turn.note !== undefined || c.feed.turns.some((x) => x.driver?.state === "person") ? t("s_handed") : t("s_resumed");
-      cls = "you u-you d-agent n-you";
-    }
-    items.push({
-      ts: turn.ts,
-      key: `turn/${turn.ts}/${turn.by}`,
-      node: <Row cls={cls} time={clock(turn.ts)} text={text} sub={turn.message ? `“${turn.message}”` : turn.note ? `“${turn.note}”` : null} />,
-    });
-  }
-  void agent;
-  return items.sort((a, b) => b.ts - a.ts);
-}
-
 /** The floating bar over the picture: a dot, a short status, the actions. Small and dark in both themes;
  *  the route and the latency live in the HUD. */
 function DriverBar({
@@ -358,6 +249,8 @@ function DriverBar({
   immersive,
   onLeave,
   ownerPaused = false,
+  optionsOpen,
+  onOptions,
 }: {
   bar: Bar;
   agent: string;
@@ -367,6 +260,8 @@ function DriverBar({
   onLeave: () => void;
   /** The owner paused it at that computer: only they can resume. */
   ownerPaused?: boolean;
+  optionsOpen: boolean;
+  onOptions: () => void;
 }) {
   const status: Record<Bar, string> = {
     agent: t("drv_agent", { agent }),
@@ -416,6 +311,11 @@ function DriverBar({
       <i className={cx("nt-dot", bar)} />
       <span className="nt-status">{status[bar]}</span>
       {actions[bar]}
+      {bar === "you" && (
+        <button type="button" className="nt-iconbtn" onClick={onOptions} aria-label={t("takeover_options")} aria-expanded={optionsOpen} aria-controls="takeover-options">
+          <Icon name="settings" size={14} />
+        </button>
+      )}
       {immersive && (
         <button className="nt-iconbtn" onClick={onLeave} aria-label={t("fs_exit")} title={`${t("fs_exit")} · ⌃⌘F`}>
           <Icon name="x" size={14} />
@@ -488,16 +388,15 @@ export function SessionPage({
   onBack,
   onNav,
   chat: chatTarget = null,
-  panel,
 }: {
   c: Computer;
   device: string;
   waiting: number;
   onBack: () => void;
   onNav: (n: Nav | "home") => void;
-  /** A coding-agent session to open in the chat tab (just started, or picked on the computer page). */
+  /** A coding-agent session to show beside the screen (just started, or picked elsewhere). */
   chat?: ChatTarget | null;
-  /** Open with this tab of the right column. */
+  /** Legacy deep links may name the chat panel; the rail always shows it now. */
   panel?: "chat";
 }) {
   void waiting;
@@ -508,7 +407,6 @@ export function SessionPage({
   const host = c.host.name;
   const agent = agentLabel(c.feed.agent);
   const [stageRef, stage] = useSize<HTMLDivElement>();
-  const [lineRef, line] = useSize<HTMLDivElement>();
   const [native, setNative] = useState<{ w: number; h: number } | null>(null);
   const [hasFrame, setHasFrame] = useState(false);
   const [screen, setScreen] = useState<ScreenRect | null>(null);
@@ -526,18 +424,16 @@ export function SessionPage({
   // Concrete limits ("auto" follows this display), fixed while the quality stays the same.
   const limits = useMemo(() => resolveQuality(quality), [quality]);
   const [stats, setStats] = useState<VideoStats | null>(null);
-  const [tab, setTab] = useState<"steps" | "sees" | "chat">(panel === "chat" ? "chat" : "steps");
   const [chatOpen, setChatOpen] = useState<ChatTarget | null>(chatTarget);
   useEffect(() => {
     if (chatTarget) {
       setChatOpen(chatTarget);
-      setTab("chat");
     }
   }, [chatTarget?.session]);
-  const [message, setMessage] = useState("");
-  const [sent, setSent] = useState(false);
   const [handNote, setHandNote] = useState("");
   const [mayWatch, setMayWatch] = useState(false);
+  const [driverOptions, setDriverOptions] = useState(false);
+  const [reviewApproval, setReviewApproval] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // A passing note from live input (paused, a refused chord) and file transfers.
   const [notice, setNotice] = useState<string | null>(null);
@@ -569,10 +465,6 @@ export function SessionPage({
   const pending = c.feed.pending[0];
   const askedStep = pending ? c.feed.steps.find((s) => s.approvalId === pending.id) : undefined;
   const driving = bar === "you";
-
-  const turn = useMemo(() => turnSpec(c.feed, now, c.online !== false), [c.feed, now, c.online]);
-  const items = useMemo(() => logItems(c, agent, host), [c, agent, host]);
-  const running = [...c.feed.steps].reverse().find((s) => s.state === "running" && !s.byPerson);
 
   // Full screen: ours (⌃⌘F, the button) and the window's (the green button) end in the same state.
   const ownChangeAt = useRef(0);
@@ -611,7 +503,7 @@ export function SessionPage({
   const hideSoon = () => {
     if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
     chromeTimer.current = window.setTimeout(() => {
-      if (stageRef.current?.querySelector(".nt-anchor:hover, .nt-anchor select:focus")) hideSoon();
+      if (stageRef.current?.querySelector(".nt-anchor:hover, .nt-anchor select:focus, .nt-drive-options:hover, .nt-drive-options:focus-within")) hideSoon();
       else setChrome(false);
     }, 3000);
   };
@@ -632,7 +524,17 @@ export function SessionPage({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [immersive, bar]);
-  const showBars = chrome;
+  const showBars = chrome || (driving && driverOptions);
+  useEffect(() => {
+    if (!driving) setDriverOptions(false);
+  }, [driving]);
+  // Wait for the rail to mount after leaving full screen before locating the approval.
+  useEffect(() => {
+    if (!reviewApproval || immersive) return;
+    cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    cardRef.current?.focus({ preventScroll: true });
+    setReviewApproval(false);
+  }, [reviewApproval, immersive]);
 
   // The picture: contained in the stage (the letterbox on one axis only), keeps the remote's aspect,
   // its edges on whole device pixels so nothing is resampled at the border.
@@ -709,6 +611,7 @@ export function SessionPage({
       else if (a === "hand_back") {
         await api.setTurn(host, "hand_back", { note: handNote.trim() || undefined });
         setHandNote("");
+        setDriverOptions(false);
       } else await api.setTurn(host, a);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -716,29 +619,6 @@ export function SessionPage({
       setActing(false);
     }
   };
-
-  const send = async () => {
-    const text = message.trim();
-    if (!text) return;
-    try {
-      setActionError(null);
-      await api.tellAgent(host, text);
-      setMessage("");
-      setSent(true);
-      setTimeout(() => setSent(false), 4000);
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const composerPh = pending ? t("composer_decide") : bar === "paused" ? t("composer_decide") : t("composer_ph");
-  const composerHint = sent
-    ? t("composer_sent")
-    : pending
-      ? t("composer_after")
-      : bar === "paused"
-        ? t("composer_resume")
-        : t("composer_hint_short");
 
   const qualityPicker = (
     <span className="nt-select-wrap">
@@ -928,9 +808,7 @@ export function SessionPage({
                   className="b"
                   onClick={() => {
                     if (immersive) enter(false);
-                    // The decision card lives in the steps tab.
-                    setTab("steps");
-                    setTimeout(() => cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+                    setReviewApproval(true);
                   }}
                 >
                   {t("review")}
@@ -940,10 +818,37 @@ export function SessionPage({
             )}
             {showBars && (
               <motion.div key="bar" {...fade} className={cx("nt-anchor bottom", driving && "raised")}>
-                    <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} ownerPaused={c.feed.driver.state === "paused" && !!c.feed.driver.owner} />
+                    <DriverBar bar={bar} agent={agent} busy={acting} onAction={act} immersive={immersive} onLeave={() => enter(false)} ownerPaused={c.feed.driver.state === "paused" && !!c.feed.driver.owner} optionsOpen={driverOptions} onOptions={() => setDriverOptions((open) => !open)} />
               </motion.div>
             )}
           </AnimatePresence>
+          {driving && driverOptions && (
+            <div className="nt-drive-options" id="takeover-options" role="dialog" aria-label={t("takeover_options")}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDriverOptions(false); }
+              }}>
+              <div className="nt-drive-options-hd">
+                <strong>{t("takeover_options")}</strong>
+                <button type="button" className="nt-iconbtn" onClick={() => setDriverOptions(false)} aria-label={t("pc_close")}>
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+              <label className="nt-drive-watch">
+                <span>{t("let_watch")}</span>
+                <input type="checkbox" checked={mayWatch} onChange={(e) => {
+                  const next = e.target.checked;
+                  setMayWatch(next);
+                  void api.setTurn(host, "take_over", { agentMayWatch: next }).catch((error) => setActionError(error instanceof Error ? error.message : String(error)));
+                }} />
+              </label>
+              <label className="nt-drive-note">
+                <span>{t("what_changed")}</span>
+                <textarea className="ta ta-input" rows={2} value={handNote} onChange={(e) => setHandNote(e.target.value)} />
+              </label>
+              <p>{t("optional_sent")}</p>
+              <p>{t("handback_note")}</p>
+            </div>
+          )}
           {/* While you drive, a small tab stays under the bottom bar: moving over the middle of the
               picture is remote input, and in full screen the screen's own edges also bring up the Dock
               and the menu bar. It only ever shows the bars, and it never moves, so a click aimed at it
@@ -974,144 +879,13 @@ export function SessionPage({
           )}
         </section>
         {!immersive && (
-          <aside className={cx("nt-rail", tab === "chat" && "wide")}>
-            {turn && (
-              <div className="nt-line" ref={lineRef}>
-                <span className="tnum" style={{ width: 36 }}>
-                  {clock(Math.min(...c.feed.steps.map((s) => s.startedMs), now), false)}
-                </span>
-                <TurnLine spec={turn} w={Math.max(line.w - 36 - 10 - (c.online !== false ? 56 : 0) - 10, 0)} />
-                {c.online !== false && (
-                  <span className="live">
-                    <i />
-                    {t("live")}
-                  </span>
-                )}
+          <aside className="nt-rail wide">
+            {pending && (
+              <div className="nt-chat-approval" ref={cardRef} tabIndex={-1}>
+                <DecisionCard p={pending} host={host} agent={agent} askedMs={askedStep?.startedMs} escapeScope={cardRef} />
               </div>
             )}
-            <div className="seg" role="tablist">
-              <span className={cx(tab === "steps" && "sel")} onClick={() => setTab("steps")} role="tab">
-                {t("tab_steps")}
-              </span>
-              <span className={cx(tab === "chat" && "sel")} onClick={() => setTab("chat")} role="tab">
-                {t("tab_chat")}
-              </span>
-              <span className={cx(tab === "sees" && "sel")} onClick={() => setTab("sees")} role="tab">
-                {t("tab_sees")}
-              </span>
-            </div>
-            {tab === "chat" ? (
-              <AgentChat host={host} target={chatOpen} onTarget={setChatOpen} />
-            ) : (
-            <div className={cx("rail-scroll", tab === "sees" && "nofade")} style={{ overflowY: "auto" }}>
-              {tab === "sees" ? (
-                <div className="note-box">
-                  <Icon name="info" size={14} />
-                  <span>{t("sees_soon")}</span>
-                </div>
-              ) : (
-                <>
-                  {c.feed.task && (
-                    <div className="lr head">
-                      <span className="t">
-                        <b>{t("task_l")}</b>
-                        {clock(c.feed.task.ts, false)}
-                      </span>
-                      <span className="r" />
-                      <div className="x">
-                        {c.feed.task.text}
-                        <span className="sub">{t("task_from", { agent, device: c.feed.task.peer })}</span>
-                      </div>
-                    </div>
-                  )}
-                  {pending && (
-                    <div ref={cardRef} style={{ marginTop: c.feed.task ? 24 : 0 }}>
-                      <DecisionCard p={pending} host={host} agent={agent} askedMs={askedStep?.startedMs} />
-                    </div>
-                  )}
-                  <div className="log" style={{ marginTop: pending ? 20 : c.feed.task ? 28 : 0 }}>
-                    {running && (
-                      <div className="lr now d-agent n-live">
-                        <span className="t">
-                          <b className="agent">{t("now")}</b>
-                          {clock(running.startedMs)}
-                        </span>
-                        <span className="r">
-                          <i />
-                        </span>
-                        <div className="x">
-                          <div className="now-hd hd">{running.intent ?? running.tool}</div>
-                          {running.intent && <div className="now-sub">{running.tool}</div>}
-                        </div>
-                      </div>
-                    )}
-                    {items.filter((i) => !running || !i.key.startsWith(running.key)).map((i) => (
-                      <div key={i.key}>{i.node}</div>
-                    ))}
-                    {items.length === 0 && !running && (
-                      <div className="note-box">
-                        <Icon name="info" size={14} />
-                        <span>{t("no_steps")}</span>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-            )}
-            {tab === "steps" && (
-              <div className="composer-foot">
-                {driving ? (
-                  <div className="hb">
-                    <div className="tg">
-                      <span className="grow">{t("let_watch")}</span>
-                      <button
-                        className={cx("switch", mayWatch && "on")}
-                        aria-pressed={mayWatch}
-                        onClick={() => {
-                          const next = !mayWatch;
-                          setMayWatch(next);
-                          void api.setTurn(host, "take_over", { agentMayWatch: next });
-                        }}
-                      />
-                    </div>
-                    <div className="lbl">{t("what_changed")}</div>
-                    <textarea className="ta ta-input" rows={2} value={handNote} onChange={(e) => setHandNote(e.target.value)} />
-                    <div className="ft">{t("optional_sent")}</div>
-                    <div className="ft" style={{ marginTop: 4 }}>
-                      {t("handback_note")}
-                    </div>
-                  </div>
-                ) : (
-                  <div className={cx("composer", bar === "offline" && "off")}>
-                    <div className="tx">
-                      {bar === "offline" ? (
-                        <span className="ph">{t("composer_offline", { host })}</span>
-                      ) : (
-                        <>
-                          <input
-                            className="ph-input"
-                            value={message}
-                            placeholder={composerPh}
-                            onChange={(e) => setMessage(e.target.value)}
-                            onKeyDown={(e) => {
-                              // An input method's Enter confirms the composition; it must not send.
-                              if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) void send();
-                            }}
-                          />
-                          <span className="hint">{composerHint}</span>
-                        </>
-                      )}
-                    </div>
-                    {bar !== "offline" && (
-                      <button className="send" onClick={() => void send()} aria-label={t("send")} disabled={!message.trim()}>
-                        <Icon name="send" size={16} />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+            <AgentChat host={host} target={chatOpen} onTarget={setChatOpen} />
           </aside>
         )}
       </div>

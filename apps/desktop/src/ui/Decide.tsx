@@ -44,6 +44,7 @@ export function DecisionCard({
   wide = false,
   askedMs,
   onDone,
+  escapeScope,
 }: {
   p: PendingApproval;
   host: string;
@@ -52,6 +53,8 @@ export function DecisionCard({
   /** When the request arrived (from the feed), shown in the header. */
   askedMs?: number;
   onDone?: (verdict: "allowed" | "denied") => void;
+  /** Beside other interactive views, Esc belongs to this card only while it has the event or focus. */
+  escapeScope?: React.RefObject<HTMLElement | null>;
 }) {
   const now = useNow(1000);
   const zh = currentLang() === "zh";
@@ -110,7 +113,13 @@ export function DecisionCard({
   // Esc denies, as the button's key hint says.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !telling && !busy) void deny();
+      if (e.defaultPrevented || e.key !== "Escape" || e.repeat || telling || busy) return;
+      if (escapeScope) {
+        const scope = escapeScope.current;
+        if (!scope || !((e.target instanceof Node && scope.contains(e.target)) || scope.contains(document.activeElement))) return;
+      }
+      e.preventDefault();
+      void deny();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

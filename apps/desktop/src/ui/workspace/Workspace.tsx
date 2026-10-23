@@ -76,7 +76,7 @@ export function Workspace({
   back: (() => void) | null;
   forward: (() => void) | null;
   onMode: (m: AppMode) => void;
-  onWatch: (host: string) => void;
+  onWatch: (host: string, session?: string) => void;
   onPair: () => void;
   onSettings: () => void;
 }) {

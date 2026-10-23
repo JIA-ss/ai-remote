@@ -48,8 +48,9 @@
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
-    await sleep(100);
-    $(".nt-compose .round.send").click();
+    const button = await until("message ready to send", () => $(".nt-compose .round.send:not(:disabled)"));
+    if (!button) throw new Error("the composer never enabled Send");
+    button.click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
@@ -70,11 +71,13 @@
     // 0. A remembered session that is gone from the host (it restarted): the panel goes back to the
     // sessions and says so, instead of staying on an error with a composer that cannot send.
     await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
-    const tabs = () => $$(".nt-rail .seg [role=tab]");
+    await check("the live view shows the agent conversation directly, without the old tabs", !!$(".nt-rail") && !$(".nt-rail > .seg"));
     localStorage.setItem("ai-remote.chat.last", JSON.stringify({ ...JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}"), [CFG.host]: "c0ffee0000000" }));
-    tabs()[0].click();
-    await sleep(300);
-    tabs()[1].click();
+    // Leave and return through the shell so the conversation remounts and reads the stale choice.
+    // The live view has one conversation now; switching a removed steps tab cannot stand in for this.
+    $("#gl-side .nv").click();
+    await until("computers page", () => $(".win")?.dataset.route === "devices");
+    $(".gl-toolbar .back:not(:disabled)").click();
     const back = await until("back to the sessions", () => $(".nt-chat-start") && $(".nt-chat-picker .nt-chat-note.warn"), 20000);
     await check("a remembered session that is gone returns to the sessions with a note",
       !!back && /不在这台电脑上|no longer on the computer/.test(back.textContent),

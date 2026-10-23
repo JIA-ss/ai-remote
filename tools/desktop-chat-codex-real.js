@@ -35,6 +35,35 @@
   }
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   const text = (el) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const navigationState = () => ({
+    route: $(".win")?.dataset.route ?? null,
+    chat: $(".nt-chat")?.className ?? null,
+    picker: !!$(".nt-chat-start"),
+    sessions: $$(".nt-sessions .sess").length,
+    menu: !!$(".nt-chat-menu"),
+    hidden: document.hidden,
+    focus: document.activeElement?.className ?? null,
+  });
+  // Keep one recovery attempt so replay can still be inspected, but a missed first click is a test
+  // failure even if the second works. Preserve its route and DOM state before trying again.
+  async function leaveSession() {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const before = navigationState();
+      const button = $$(".nt-chat-hd .ico").at(-1);
+      if (!button) throw new Error(`session list: menu button missing; ${JSON.stringify({ before })}`);
+      button.click();
+      const item = await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]);
+      if (!item) throw new Error(`session list: menu did not open; ${JSON.stringify({ before, after: navigationState() })}`);
+      const connected = item.isConnected;
+      item.click();
+      const clicked = navigationState();
+      const moved = await until("sessions", () => $$(".nt-sessions .sess").length >= 1, 8000);
+      await check(`the session list opens on menu click ${attempt}`, !!moved);
+      if (moved) return;
+      await say("e2e", `     navigation failure: ${JSON.stringify({ attempt, connected, before, clicked, after: navigationState() })}`);
+    }
+    throw new Error("neither menu click left the conversation");
+  }
   const running = () => !!$(".nt-compose .round.stop");
   const turns = () => $$(".cdx-turn");
   const lastTurn = () => turns().at(-1);
@@ -151,13 +180,7 @@
     await shot("r04-stopped");
 
     // 4. Reopen: the conversation replays in the Codex view.
-    // Leaving the session has, rarely, not taken (seen twice in e2e runs, never in 28 tries made to
-    // provoke it; see AGENTS.md): try once more before calling it a failure.
-    for (let tries = 0; tries < 2 && !$$(".nt-sessions .sess").length; tries++) {
-      $$(".nt-chat-hd .ico").at(-1).click();
-      (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0]))?.click();
-      await until("sessions", () => $$(".nt-sessions .sess").length >= 1, 8000);
-    }
+    await leaveSession();
     $$(".nt-sessions .sess").find((s) => s.textContent.includes(CFG.agent)).click();
     const back = await until("replay", () => $(".nt-chat.cdx") && turns().length >= 3 && $(".cdx-worked", turns()[0]), 30000);
     await check("reopening replays it in the Codex view", !!back, `${turns().length} turns`);
