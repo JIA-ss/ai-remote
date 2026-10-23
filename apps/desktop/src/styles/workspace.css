@@ -300,6 +300,9 @@
 .ws-menu-item:disabled { color: var(--ws-t4); }
 .ws-menu-item.danger { color: var(--ws-danger-text); }
 .ws-menu-icon { width: 16px; flex: none; display: grid; place-items: center; color: var(--ws-t2); }
+.ws-menu-icon .ws-warn-icon { color: var(--ws-warn-text); }
+.ws-menu-item.detailed { align-items: flex-start; padding-top: 5px; padding-bottom: 5px; }
+.ws-menu-item.detailed :is(.ws-menu-icon, .ws-menu-check) { margin-top: 2px; }
 .ws-menu-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ws-menu-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ws-menu-detail { font-size: 12px; line-height: 15px; color: var(--ws-t3); }

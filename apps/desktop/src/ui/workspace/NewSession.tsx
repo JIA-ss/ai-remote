@@ -5,7 +5,7 @@
 // agent and its model. Sending the first message starts the session (`chat_start` with the message)
 // and opens it; ⌘↵ starts it and stays here.
 
-import { ArrowUp, ChevronDown, Shield, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Code, ScrollText, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { folderChoices, folderName, lastCwd, recentCwds, rememberCwd, sameFolder, type Runtime, type RuntimesReport } from "../../lib/chat";
 import { isCodexRuntime } from "../../lib/codex";
@@ -77,6 +77,13 @@ function useRuntimes(host: string | null, online: boolean) {
 /** Claude's permission modes, as `chat_start` takes them (design 1.4). */
 const MODES = ["default", "acceptEdits", "plan", "bypassPermissions"] as const;
 type PermissionMode = (typeof MODES)[number];
+/** NS-30: a scroll for plan, code for accepting edits, a warning for bypassing (the chip itself stays plain). */
+const MODE_ICON: Record<PermissionMode, ReactNode> = {
+  default: <ShieldCheck size={15} strokeWidth={1.5} />,
+  acceptEdits: <Code size={15} strokeWidth={1.5} />,
+  plan: <ScrollText size={15} strokeWidth={1.5} />,
+  bypassPermissions: <TriangleAlert size={15} strokeWidth={1.5} className="ws-warn-icon" />,
+};
 
 /** The prompt being written, kept while the person looks at a session and comes back. */
 let draft = "";
@@ -174,7 +181,13 @@ export function NewSession({
     setError(null);
     area.current?.focus();
   };
-  const openFolder = () => folderBox.current?.querySelector<HTMLButtonElement>(".nt-folder-btn")?.click();
+  /** Opens the folder chip's list; `browse` goes on to the computer's folders (the card's "Browse folders…"). */
+  const openFolder = (browse = false) => {
+    const box = folderBox.current;
+    if (!box) return;
+    if (!box.querySelector(".nt-folder-pop")) box.querySelector<HTMLButtonElement>(".nt-folder-btn")?.click();
+    if (browse) requestAnimationFrame(() => box.querySelector<HTMLButtonElement>(".nt-folder-list .row.browse")?.click());
+  };
 
   // Next steps (NS-08..NS-11): every session waiting for someone, then failed sessions in this folder;
   // choosing a folder when there is none. Three places in all (NS-09).
@@ -272,7 +285,7 @@ export function NewSession({
   ];
   const modeMenu: MenuLine[] = [
     { heading: t("ws_perm_title") },
-    ...MODES.map((m) => ({ key: m, label: t(`ws_perm_${m}`), detail: t(`ws_perm_${m}_d`), checked: m === mode, run: () => setMode(m) })),
+    ...MODES.map((m) => ({ key: m, label: t(`ws_perm_${m}`), detail: t(`ws_perm_${m}_d`), icon: MODE_ICON[m], checked: m === mode, run: () => setMode(m) })),
   ];
   const agentMenu: MenuLine[] = [
     { heading: t("ws_agent") },
@@ -332,7 +345,7 @@ export function NewSession({
                       <span>{t("ws_choose_env")}</span>
                       <ChevronDown size={13} strokeWidth={1.5} />
                     </button>
-                    <button type="button" className="ws-env-btn" disabled={!online} onClick={openFolder}>
+                    <button type="button" className="ws-env-btn" disabled={!online} onClick={() => openFolder(true)}>
                       {t("ws_browse")}
                     </button>
                   </div>
@@ -351,7 +364,7 @@ export function NewSession({
               {seats.length > 0 && (
                 <section className="ws-card ws-steps" aria-label={t("ws_next_steps")}>
                   {seats.flatMap((g, gi) => [
-                    ...g.shown.map((s) => <StepRow key={key(s)} step={s} onOpen={onOpen} onFolder={openFolder} onDismiss={() => dismiss(s)} />),
+                    ...g.shown.map((s) => <StepRow key={key(s)} step={s} onOpen={onOpen} onFolder={() => openFolder()} onDismiss={() => dismiss(s)} />),
                     ...(g.rest.length
                       ? [
                           <button
@@ -442,7 +455,6 @@ export function NewSession({
                   title={oldHost ? t("ws_perm_old", { host: host ?? "" }) : t("ws_perm_title")}
                   onClick={(e) => openMenu("mode", e.currentTarget, "above")}
                 >
-                  {mode !== "bypassPermissions" && !oldHost && <Shield size={13} strokeWidth={1.5} />}
                   <span className="ws-chip-text">{t(`ws_perm_${oldHost ? "bypassPermissions" : mode}`)}</span>
                 </button>
               )}
@@ -477,7 +489,7 @@ export function NewSession({
           className="wide"
           items={summary.steps.map((s) =>
             s.kind === "folder"
-              ? { key: "folder", label: t("ws_choose_folder"), run: openFolder }
+              ? { key: "folder", label: t("ws_choose_folder"), run: () => openFolder() }
               : { key: s.item.key, label: titleOf(s.item), detail: stepDetail(s), run: () => onOpen(s.item) },
           )}
           onClose={() => setSummary(null)}
