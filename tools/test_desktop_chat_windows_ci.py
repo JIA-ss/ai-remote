@@ -29,31 +29,65 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("Alice", stdout.getvalue())
 
-    def test_ci_done_prepares_final_safe_layout_then_reports_count_before_forwarding(self):
+    def ci_source_adapter(self):
+        tree = ast.parse(Path(__file__).with_name('desktop-chat-e2e.py').read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'ci_driver_source')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'ci_driver_source', 'exec'), namespace)
+        return namespace['ci_driver_source']
+
+    def test_ci_adapter_requires_one_known_connection_and_supports_all_six_drivers(self):
+        adapt = self.ci_source_adapter()
+        for _, filename, _ in ci.SUITES:
+            original = Path(__file__).with_name(filename).read_text()
+            rewritten = adapt(original)
+            self.assertIn('const invoke = (cmd, args) => window.__smokeCiInvoke(cmd, args);', rewritten)
+            self.assertIn('const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);', original)
+        for unsupported in ('', 'const invoke = (cmd,args) => anotherBackend(cmd,args);',
+                            'const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);' * 2):
+            with self.assertRaises(ValueError):
+                adapt(unsupported)
+
+    def test_ci_done_with_readonly_tauri_keeps_native_forwarding_and_final_evidence(self):
         harness = Path(__file__).with_name('desktop-chat-e2e.py').read_text()
         hook = next(node.value.value for node in ast.parse(harness).body if isinstance(node, ast.Assign)
                     and any(isinstance(target, ast.Name) and target.id == 'SMOKE_CI_CAPTURE_LAYOUT' for target in node.targets))
+        adapter = self.ci_source_adapter()('const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);')
         script = """
 const vm = require('node:vm');
-const events = [];
-const window = { __smokePrepareShot: async(name) => events.push({prepare:name}),
-  __TAURI_INTERNALS__: {invoke: async(command,args) => {events.push({command,...args}); return 17}} };
-const devices = {getBoundingClientRect:() => ({x:0,y:0,width:1280,height:800})};
-const document = {querySelector:(selector) => selector === '.win[data-route="devices"]' ? devices : null};
-vm.runInNewContext(HOOK, {window,document,innerWidth:1280,innerHeight:800,devicePixelRatio:1,
-  getComputedStyle:() => ({visibility:'visible',borderTopLeftRadius:'0',borderTopRightRadius:'0',borderBottomLeftRadius:'0',borderBottomRightRadius:'0'})});
+const events = [], internals = {}, payload = {session:'fixture',nested:{value:3}}, options = {request:'sentinel'};
+let forwarded;
+const nativeResult = {answer:17};
+const originalInvoke = async function(command,args,...rest) {
+  events.push({command,...args});
+  if(command === 'call_tool') forwarded = {bound:this===internals,payload:args===payload,options:rest[0]===options};
+  return nativeResult;
+};
+// Match Cargo.lock's Tauri 2.12.2 core.js: value-only means nonwritable/nonconfigurable.
+Object.defineProperty(internals,'invoke',{value:originalInvoke});
+const window = {__smokePrepareShot:async(name)=>events.push({prepare:name}),__TAURI_INTERNALS__:internals};
+const devices = {getBoundingClientRect:()=>({x:0,y:0,width:1280,height:800})};
+const document = {querySelector:(selector)=>selector === '.win[data-route="devices"]' ? devices : null};
+const context = {window,document,innerWidth:1280,innerHeight:800,devicePixelRatio:1,
+  getComputedStyle:()=>({visibility:'visible',borderTopLeftRadius:'0',borderTopRightRadius:'0',borderBottomLeftRadius:'0',borderBottomRightRadius:'0'})};
+vm.createContext(context); vm.runInContext(HOOK,context); vm.runInContext(ADAPTER+';globalThis.driverInvoke=invoke;',context);
 (async()=>{
- const invoke = window.__TAURI_INTERNALS__.invoke;
- await invoke('log_from_page',{level:'e2e',message:'ok    first'});
- await invoke('log_from_page',{level:'e2e',message:'FAIL  second'});
- const result = await invoke('log_from_page',{level:'done',message:'1'});
- process.stdout.write(JSON.stringify({events,result}));
+ const businessResult = await window.__smokeCiInvoke('call_tool',payload,options);
+ await context.driverInvoke('log_from_page',{level:'e2e',message:'ok    first'});
+ await context.driverInvoke('log_from_page',{level:'e2e',message:'FAIL  second'});
+ const result = await context.driverInvoke('log_from_page',{level:'done',message:'1'});
+ const descriptor=Object.getOwnPropertyDescriptor(internals,'invoke');
+ process.stdout.write(JSON.stringify({events,forwarded,resultUnchanged:result===nativeResult&&businessResult===nativeResult,
+   nativeUnchanged:internals.invoke===originalInvoke,readonly:descriptor.writable===false&&descriptor.configurable===false}));
 })().catch(()=>process.exit(1));
-""".replace('HOOK', json.dumps(hook))
+""".replace('HOOK', json.dumps(hook)).replace('ADAPTER', json.dumps(adapter))
         process = subprocess.run(['node', '-'], input=script, text=True, capture_output=True, check=True)
         evidence = json.loads(process.stdout)
-        self.assertEqual(evidence['result'], 17)
-        final = evidence['events'][2:]
+        self.assertTrue(evidence['nativeUnchanged'])
+        self.assertTrue(evidence['readonly'])
+        self.assertTrue(evidence['resultUnchanged'])
+        self.assertEqual(evidence['forwarded'], {'bound': True, 'payload': True, 'options': True})
+        final = evidence['events'][3:]
         self.assertEqual(final[0], {'prepare': 'zz-final'})
         self.assertEqual(json.loads(final[1]['message'])['kind'], 'devices_ui')
         self.assertEqual(json.loads(final[1]['message'])['name'], 'zz-final')

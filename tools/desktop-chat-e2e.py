@@ -181,9 +181,9 @@ SMOKE_CI_CAPTURE_LAYOUT = r'''(() => {
       radius: style ? Math.max(...["borderTopLeftRadius", "borderTopRightRadius", "borderBottomLeftRadius", "borderBottomRightRadius"].map((key) => parseFloat(style[key]) || 0)) : 0
     }) });
   };
-  // The driver captures invoke after this CI-only hook. Forward every real IPC unchanged;
-  // only delay done until the final layout and independently counted checks are recorded.
-  window.__TAURI_INTERNALS__.invoke = (command, args, ...rest) => {
+  // Tauri's invoke descriptor is read-only. The CI driver calls this separate writable helper,
+  // which forwards the real IPC and only delays done for final layout and counted checks.
+  window.__smokeCiInvoke = (command, args, ...rest) => {
     if (command === "log_from_page" && args?.level === "e2e" && /^(?:ok  |FAIL\s)/.test(args.message)) checks++;
     if (command === "log_from_page" && args?.level === "done") return (async () => {
       await window.__smokePrepareShot("zz-final");
@@ -193,6 +193,14 @@ SMOKE_CI_CAPTURE_LAYOUT = r'''(() => {
     return nativeInvoke(command, args, ...rest);
   };
 })();'''
+
+def ci_driver_source(source: str) -> str:
+    """Connect only the known driver adapter to the CI helper; never mutate Tauri internals."""
+    adapter = "const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);"
+    if source.count(adapter) != 1:
+        raise ValueError("CI driver must expose exactly one supported invoke adapter")
+    return source.replace(adapter, "const invoke = (cmd, args) => window.__smokeCiInvoke(cmd, args);", 1)
+
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{EXE}")
@@ -578,8 +586,11 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
   }) });
 })();
 '''
+        driver_source = source.read_text(encoding="utf-8")
+        if ci_layout:
+            driver_source = ci_driver_source(driver_source)
         script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.visible))
-                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + (SMOKE_CI_CAPTURE_LAYOUT if ci_layout else "") + "\n" + source.read_text(encoding="utf-8")
+                          + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + (SMOKE_CI_CAPTURE_LAYOUT if ci_layout else "") + "\n" + driver_source
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")
         app_env = {**env, "AI_REMOTE_HOME": str(desk), "AI_REMOTE_SMOKE": str(options.out / "zz-final.png"),
