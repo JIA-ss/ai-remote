@@ -8,6 +8,8 @@ public struct PhoneViewportFixtureView: View {
     @PhoneViewState<PhoneStore> private var store: PhoneStore
     @PhoneViewState<String> private var lastInput = "none"
     @PhoneViewState<Int> private var inputCount = 0
+    @PhoneViewState private var resizeFixtureNarrow = false
+    @PhoneViewState<CGFloat?> private var lastWindowWidth = nil
 
     public init() {
         let model = PhoneStore()
@@ -21,14 +23,32 @@ public struct PhoneViewportFixtureView: View {
         model.driver = observe ? "agent" : "person"
         model.ownName = "ui-fixture"
         model.driverDevice = "ui-fixture"
+        if ProcessInfo.processInfo.arguments.contains("-ui-viewport-chat") {
+            model.chat = PhoneChatFixtureView.makeStore(host: model.selected!.name)
+            model.showChat = true
+        }
         _store = State(initialValue: model)
     }
 
     public var body: some View {
-        PhoneRootView(store: store, fixtureInputObserver: { tool, args in
-            inputCount += 1
-            lastInput = JSONValue.object(["sequence": .number(Double(inputCount)), "tool": .string(tool), "args": .object(args)]).text
-        })
+        GeometryReader { area in
+            let resized = ProcessInfo.processInfo.arguments.contains("-ui-viewport-resize") && resizeFixtureNarrow
+            PhoneRootView(store: store, fixtureInputObserver: { tool, args in
+                inputCount += 1
+                lastInput = JSONValue.object(["sequence": .number(Double(inputCount)), "tool": .string(tool), "args": .object(args)]).text
+            })
+            // Exercise the production layout with a half-width container. This is not
+            // a claim that the simulator entered the system's Split View mode.
+            .frame(width: resized ? 683 : nil)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: area.size.width, initial: true) { _, width in
+                // Follow the actual window-width transition. Keyboard height cannot flip
+                // this state, and device-orientation notifications are not required.
+                if let previous = lastWindowWidth, previous != width { resizeFixtureNarrow = width < previous }
+                else if lastWindowWidth == nil { resizeFixtureNarrow = width < area.size.height }
+                lastWindowWidth = width
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             Text("UI 测试 · 静态画面")
                 .font(.caption2).foregroundStyle(.white).padding(4).background(.black.opacity(0.7))

@@ -59,6 +59,13 @@ import SwiftUI
     private let client: PhoneClient
     private var subscription: UInt64?
     private var generation = 0
+    private var selectionGeneration = 0
+    private struct ComposerDraft {
+        var text: String
+        var images: [PhoneImage]
+        var note: String?
+    }
+    private var composerDrafts: [String: ComposerDraft] = [:]
     /// Requests waiting for the reply with their `rid` (`files`).
     private var waiting: [String: CheckedContinuation<JSONValue, Error>] = [:]
     private var nextRid = 0
@@ -72,6 +79,7 @@ import SwiftUI
     var fixtureCodex = false
     /// Answers to the fixture's Codex questions so far, by request and question (the host combines them).
     var fixtureAnswers: [String: [String: String]] = [:]
+    var fixtureLogs: [String: PhoneChatLog] = [:]
     private var fixtureSeq = 1000
     func fixtureEvent(_ fields: [String: JSONValue]) {
         fixtureSeq += 1
@@ -210,8 +218,10 @@ import SwiftUI
             let reply = try await client.call(host: host, tool: "chat_start", args: args)
             let started = reply["structuredContent"]
             rememberFolder(cwd)
+            saveComposer()
             await close()
             current = PhoneChatSession(started)
+            restoreComposer()
             log = PhoneChatLog(); outgoing = []; previews = [:]
             showNew = false; newPrompt = ""
             // The ticket in the reply is good once; if it cannot be used, attach asks for a new one.
@@ -221,10 +231,45 @@ import SwiftUI
     }
 
     public func open(_ session: PhoneChatSession) async {
+        guard current?.id != session.id || !connected else { return }
+        selectionGeneration += 1
+        let selection = selectionGeneration
+        saveComposer()
+        #if DEBUG
+        if fixture, let current { fixtureLogs[current.id] = log }
+        #endif
+        let closingGeneration = generation + 1
         await close()
+        guard selection == selectionGeneration, generation == closingGeneration else { return }
         current = session
-        log = PhoneChatLog(); outgoing = []; previews = [:]
+        restoreComposer()
+        log = PhoneChatLog(); outgoing = []; previews = [:]; error = nil
+        #if DEBUG
+        if fixture {
+            log = fixtureLogs[session.id] ?? PhoneChatLog()
+            fixtureCodex = session.runtime == "codex" || session.id == "fixture-codex"
+            runtimeName = fixtureCodex ? "Codex" : "Claude Code"
+            runtimeID = fixtureCodex ? "codex" : "claude"
+            runtimeProtocol = fixtureCodex ? "codex-app-server" : nil
+            runtimeFor = session.id
+            connected = true; role = "rw"
+            return
+        }
+        #endif
+        runtimeName = session.name; runtimeID = nil; runtimeProtocol = nil; runtimeFor = nil
+        caps = nil; hostAcks = false
         await attach(since: 0)
+    }
+
+    private func saveComposer() {
+        guard let current else { return }
+        composerDrafts[current.id] = ComposerDraft(text: draft, images: attachments, note: attachNote)
+    }
+
+    private func restoreComposer() {
+        let saved = current.flatMap { composerDrafts[$0.id] }
+        draft = saved?.text ?? ""; attachments = saved?.images ?? []; attachNote = saved?.note
+        focusComposer = false
     }
 
     /// Opens the conversation again after its connection ended, asking only for what came after.
@@ -235,12 +280,15 @@ import SwiftUI
 
     private func attach(since: UInt64) async {
         guard let session = current else { return }
+        let token = generation
         disconnected = nil
         do {
             let attached = try await client.call(host: host, tool: "chat_attach", args: ["session": .string(session.id)])
-            guard current?.id == session.id, let ticket = attached["structuredContent"]["ticket"].string else { return }
+            guard token == generation, current?.id == session.id,
+                  let ticket = attached["structuredContent"]["ticket"].string else { return }
             _ = await open(ticket: ticket, since: since, report: true)
         } catch {
+            guard token == generation, current?.id == session.id else { return }
             self.error = error.localizedDescription; disconnected = error.localizedDescription
         }
     }
@@ -437,7 +485,10 @@ import SwiftUI
     public func editQueued(_ id: String, text: String) async {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
-        for c in phoneEditQueued(queuedID: id, newID: UUID().uuidString, text: value) { guard await command(c) else { return } }
+        let token = generation
+        for c in phoneEditQueued(queuedID: id, newID: UUID().uuidString, text: value) {
+            guard token == generation, await command(c), token == generation else { return }
+        }
     }
 
     /// The Codex questions waiting for an answer, in a card in place of the composer, with the key
@@ -458,8 +509,11 @@ import SwiftUI
     /// Answers a Codex request: one `answer` per question (an empty text skips it; the host combines
     /// them and answers Codex once the request is complete).
     public func answerRequest(_ req: PhoneCodexRequest, id: String, answers: [(qid: String, text: String)]) async {
+        let token = generation
         for a in answers {
-            guard await command(["answer": .object(["qid": .string(a.qid), "text": .string(a.text)])]) else { return }
+            guard token == generation,
+                  await command(["answer": .object(["qid": .string(a.qid), "text": .string(a.text)])]),
+                  token == generation else { return }
             log.markAnswered(a.qid, answer: a.text, request: req.request, turn: req.turn)
         }
         codexDrafts[id] = nil
@@ -499,9 +553,10 @@ import SwiftUI
         #if DEBUG
         if fixture { fixtureCommand(command); return true }
         #endif
+        let token = generation
         guard let id = subscription else { if report { self.error = "对话已断开" }; return false }
-        do { try await client.chatSend(id, command); return true }
-        catch { if report { self.error = error.localizedDescription }; return false }
+        do { try await client.chatSend(id, command); return token == generation }
+        catch { if report && token == generation { self.error = error.localizedDescription }; return false }
     }
 
     #if DEBUG
@@ -606,13 +661,21 @@ import SwiftUI
     public func close() async {
         generation += 1
         failWaiting()
-        if let id = subscription { await client.stop(id) }
+        let id = subscription
         subscription = nil; connected = false; role = nil; disconnected = nil
+        if let id { await client.stop(id) }
     }
 
     /// Back to the session list.
     public func leave() async {
+        selectionGeneration += 1
+        let selection = selectionGeneration
+        saveComposer()
+        #if DEBUG
+        if fixture, let current { fixtureLogs[current.id] = log }
+        #endif
         await close()
+        guard selection == selectionGeneration else { return }
         current = nil; log = PhoneChatLog(); draft = ""; attachments = []; outgoing = []; previews = [:]
         await loadSessions()
     }

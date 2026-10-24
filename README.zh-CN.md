@@ -22,7 +22,7 @@
 | **macOS / Mac** | 被控端 + 桌面控制端 | 已实现；Apple Silicon 本机已验证配对、截图、输入与 H.264 屏幕流。[Mac 配置](docs/macos.md) |
 | **Windows / PC** | 被控端 + 桌面控制端 | 已实现；包含 Windows UIA 与原生输入路径。[使用说明](docs/operations.zh-CN.md) · [结构化 UI 验收](docs/structured-ui.md) |
 | **iOS / iPhone** | 原生手机控制端 | **WIP** — 已有 SwiftUI/UniFFI 源码，设备/模拟器 SDK 构建和模拟器界面测试通过；真机远控待验收。[验收记录](docs/iphone-validation.md) |
-| **iPadOS / iPad** | 平板控制端 | **WIP** — iOS 应用已声明支持 iPhone 与 iPad；iPad 布局与真机验收待完成。[源码与构建](apps/ios/README.md) |
+| **iPadOS / iPad** | 平板控制端 | **WIP** — 已实现优先面向 12.9 英寸 iPad Pro 的自适应布局，并接入模拟器 CI；真机和系统多任务验收待完成。[源码与构建](apps/ios/README.md) |
 | **Android** | 手机 / 平板控制端 | **WIP** — 规划中，原生应用待实现。 |
 | **Linux** | 桌面被控端 / 控制端 | **WIP** — 桌面能力与平台验收待完成。 |
 

@@ -4,43 +4,100 @@ import PhotosUI
 /// The host's coding-agent chats: the session list, and one conversation shown turn by turn.
 public struct PhoneChatView: View {
     @Bindable var chat: PhoneChatStore
+    let expand: (() -> Void)?
     let close: () -> Void
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
-    public init(chat: PhoneChatStore, close: @escaping () -> Void) {
+    public init(chat: PhoneChatStore, expand: (() -> Void)? = nil, close: @escaping () -> Void) {
         self.chat = chat
+        self.expand = expand
         self.close = close
     }
 
     public var body: some View {
-        NavigationStack {
-            Group {
-                if let session = chat.current { conversation(session) } else { sessionList }
+        GeometryReader { geometry in
+            if PhoneAdaptiveLayout(width: geometry.size.width, regular: regularWidth).chatSidebar {
+                splitChat
+            } else {
+                NavigationStack { chatDetail(sidebar: false) }
             }
-            .navigationTitle(chat.current.map { chat.runtimeName.isEmpty ? $0.name : chat.runtimeName } ?? "智能体")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                if chat.current != nil {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("会话", systemImage: "chevron.left") { Task { await chat.leave() } }
-                            .accessibilityIdentifier("chat-back")
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) { Button("完成", action: close) }
-                if chat.current == nil {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("新对话", systemImage: "plus") { chat.showNew = true }
-                            .accessibilityIdentifier("chat-new")
-                    }
-                }
-            }
-            .sheet(isPresented: $chat.showNew) { newChat }
         }
-        .task { if chat.current == nil { await chat.loadSessions() } }
+        // Layout changes only move the view. The store owns the connection, messages and draft;
+        // never leave or attach again because an iPad rotates or its window becomes narrower.
+        .task { if chat.current == nil || chat.sessions.isEmpty { await chat.loadSessions() } }
+        .sheet(isPresented: $chat.showNew) { newChat }
         .alert("出错了", isPresented: Binding(get: { chat.error != nil && !chat.showNew }, set: { if !$0 { chat.error = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(chat.error ?? "") }
+    }
+
+    private var regularWidth: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular
+        #else
+        true
+        #endif
+    }
+
+    private var splitChat: some View {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
+            sessionList
+                .accessibilityIdentifier("chat-session-sidebar")
+                .navigationTitle("智能体")
+                .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 300)
+                .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) { newChatButton }
+                }
+        } detail: {
+            NavigationStack { chatDetail(sidebar: true) }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .toolbar(removing: .sidebarToggle)
+    }
+
+    private func chatDetail(sidebar: Bool) -> some View {
+        Group {
+            if let session = chat.current {
+                conversation(session)
+            } else if sidebar {
+                ContentUnavailableView("选择一个会话", systemImage: "bubble.left.and.text.bubble.right",
+                                       description: Text("从左侧选择会话，或点 + 启动新的智能体对话。"))
+            } else {
+                sessionList
+            }
+        }
+        .navigationTitle(chat.current.map { chat.runtimeName.isEmpty ? $0.name : chat.runtimeName } ?? "智能体")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            if chat.current != nil {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("会话", systemImage: "chevron.left") { Task { await chat.leave() } }
+                        .accessibilityIdentifier("chat-back")
+                }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("完成", action: close).accessibilityIdentifier("chat-close")
+            }
+            if let expand {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("展开智能体", systemImage: "arrow.up.left.and.arrow.down.right", action: expand)
+                        .accessibilityIdentifier("chat-expand")
+                }
+            }
+            if !sidebar && chat.current == nil {
+                ToolbarItem(placement: .primaryAction) { newChatButton }
+            }
+        }
+    }
+
+    private var newChatButton: some View {
+        Button("新对话", systemImage: "plus") { chat.showNew = true }
+            .accessibilityIdentifier("chat-new")
     }
 
     // MARK: Sessions
@@ -60,8 +117,13 @@ public struct PhoneChatView: View {
             ForEach(phoneSessionsByFolder(chat.sessions), id: \.folder) { group in
                 Section {
                     ForEach(group.sessions) { session in
-                        Button { Task { await chat.open(session) } } label: { sessionRow(session) }
+                        Button {
+                            guard chat.current?.id != session.id || !chat.connected else { return }
+                            Task { await chat.open(session) }
+                        } label: { sessionRow(session) }
                             .buttonStyle(.plain)
+                            .listRowBackground(chat.current?.id == session.id ? Color.accentColor.opacity(0.13) : .clear)
+                            .accessibilityAddTraits(chat.current?.id == session.id ? .isSelected : [])
                             .accessibilityIdentifier("chat-session-\(session.id)")
                     }
                 } header: {
@@ -95,7 +157,8 @@ public struct PhoneChatView: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+            Image(systemName: chat.current?.id == s.id ? "checkmark" : "chevron.right")
+                .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
         }
         .contentShape(Rectangle())
         .padding(.vertical, 4)
@@ -200,14 +263,19 @@ public struct PhoneChatView: View {
                         conversationRows(session, codex: true, turns: turns, earlier: window.earlier)
                     }
                     .padding(16)
+                    .frame(maxWidth: PhoneAdaptiveLayout.transcriptWidth)
+                    .frame(maxWidth: .infinity)
                 } else {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         conversationRows(session, codex: false, turns: turns, earlier: nil)
                     }
                     .padding(16)
+                    .frame(maxWidth: PhoneAdaptiveLayout.transcriptWidth)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .defaultScrollAnchor(.bottom)
+            .accessibilityIdentifier("chat-conversation-column")
             .onChange(of: chat.log.seq) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
             .onChange(of: chat.outgoing.count) { _, _ in proxy.scrollTo("chat-bottom", anchor: .bottom) }
             .onChange(of: codexHistoryFirst[session.id]) { _, first in
@@ -368,7 +436,7 @@ public struct PhoneChatView: View {
             } else if chat.role == "ro" {
                 // Older hosts give write tickets only to the device that started the session.
                 HStack {
-                    Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台 iPhone 只能查看。")
+                    Text("由 \(session.byDevice.isEmpty ? "另一台设备" : session.byDevice) 启动，这台设备 只能查看。")
                         .font(.footnote).foregroundStyle(.secondary)
                     Spacer()
                     if chat.log.busy && chat.connected {
@@ -383,6 +451,8 @@ public struct PhoneChatView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: PhoneAdaptiveLayout.transcriptWidth)
+        .frame(maxWidth: .infinity)
         .background(.bar)
         .alert("编辑排队的消息", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             TextField("消息", text: $editText)
@@ -503,13 +573,20 @@ public struct PhoneChatView: View {
             .ignoresSafeArea()
         }
         #endif
-        .task(id: autocomplete.map { $0.mode + ":" + $0.query }) {
+        .task(id: autocomplete.map { (chat.current?.id ?? "") + ":" + $0.mode + ":" + $0.query }) {
             menuActive = 0
+            mentionFiles = []; mentionError = nil
             guard let ac = autocomplete, ac.mode == "mention" else { return }
+            let session = chat.current?.id
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            do { mentionFiles = try await chat.files(ac.query); mentionError = nil }
-            catch { mentionFiles = []; mentionError = error.localizedDescription }
+            do {
+                let files = try await chat.files(ac.query)
+                guard !Task.isCancelled, chat.current?.id == session else { return }
+                mentionFiles = files
+            } catch {
+                if !Task.isCancelled, chat.current?.id == session { mentionError = error.localizedDescription }
+            }
         }
     }
 

@@ -3158,3 +3158,33 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
   `terminated`，以 143 退出，不再丢信号。
 - 仍未做：等待方主动请求持有方让位（控制套接字或 want 文件）。如果真机上 LoginWindow 那份降权后读到的是
   确定但错误的 `Some(true)`，Aqua 那份仍会一直 `waiting: another host`；上表第三行要据 `console read` 日志确认。
+
+## iPad 12.9 英寸优先适配（2026-10-24，`feat/ipad-12-9`）
+
+- `PhoneAdaptiveLayout` 按窗口可用点数和 size class 决策，不按设备型号：regular 且宽 ≥900 时远程画面旁显示 360–440 点智能体面板；
+  展开智能体后，宽 ≥800 显示 260–300 点会话侧栏。12.9 英寸横屏 1366 点、竖屏 1024 点均满足；窄分屏回单栏 / sheet。
+  正文和输入区最大 820 点，电脑列表宽屏双列；iPad 专属 Info.plist 项启用四向旋转，仍允许系统多任务。
+- 旋转、全屏、sheet / 并排 / 整窗切换共用同一个 `PhoneChatStore`，不因布局变化关闭远程订阅。文本和附件草稿按会话暂存；
+  直接从侧栏切换时恢复各自草稿，并用选择代数 / 连接代数挡住旧 close、attach 的迟到结果。图片预览同时按宽高 fit。
+- Debug 聊天 fixture 可切 Claude / Codex；`-ui-viewport-chat` 在静态远程画面旁打开同一套聊天 fixture；
+  `-ui-viewport-resize` 让竖屏容器约束到 683 点、横屏回全宽，专测 sheet ↔ 并排切换（不是系统 Split View 实测）。
+- 本机实测：布局决策 12 场景、聊天模型 79 项、viewport geometry、前端 267 项（266 过 / 1 跳过）、TypeScript、IPA 打包 9 项和隐私 7 项通过。
+  mac-core 刷新时 `~/.cargo` 符号链接使 Askama 生成路径错误，使用真实 `CARGO_HOME=/Volumes/SSD-2TB/MacData/Development/cargo` 后解决；
+  CLT 6.4 缺失 SwiftUI State 宏插件，原始 mac-core 全模块检查仍受既有 `PhoneNetworkSheet` / `PhonePairing` 的 `@State` 阻断。
+  仅在 target 中复制源码并将这两处既有 @State 包装换成项目的 PhoneViewState 别名后，全模块 macOS typecheck 通过；没有将该兼容变更混入产品。
+- CI 固定 iOS 26.2 的 `iPad Pro (12.9-inch) (6th generation)`（不存在就创建同型号，缺 runtime / device type 明确失败），
+  保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。首轮代码 `7f993b8` 的 CI 39984998117：iPhone 33 项（1 跳过）无失败；iPad 1 过 / 4 失败。
+  三项失败的原始 AX 树显示外层面板 ID 覆盖了输入框等子项 ID，草稿值仍在；给面板 / 整窗 / sheet 增加 contain 容器隔离标记。另一项使用了 x=0 的 ScrollView AX 容器边界，改用实际 UITextView 全球坐标检验并排。
+  原始日志、6 张已到达截图和 xcresult 保留；下一轮不重跑已通过的 iPhone UI，只跑集成 main 后的完整 iPad 五项。截图改采 XCUIScreen 并附窗口 / 图像方向元数据，不把首轮带黑边的画布当实际方向证明。物理 iPad、
+  实际系统 Split View / Stage Manager、外接键盘和 VoiceOver 手动遍历未测，不能用 fixture 截图替代。
+- 同步最新 main `028ccc9` 时仅 AGENTS.md 章节插入冲突，保留双方完整记录；在独立 managed worktree 处理，主工作区其他桌面 UI 改动未动。
+- Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），
+  相同代码串行全量重跑 438 过 / 9 忽略 / 0 失败；没有为这次 iPad 布局改动修改 Rust。
+- 第二轮 `91ab035` / CI 39992042339：iPad 3 过 / 2 失败，展开重开、预览和侧栏草稿均通过，截图改采 XCUIScreen 后横屏画布正常。剩余一项在键盘弹出后竖屏约束未触发，fixture 改按实际窗口宽度的缩小 / 放大切换 683 点，不依赖 UIDevice 通知；一项是面板 AX 组包围框 y=-9.5，改验实际输入框和导航控件的严格窗口边界。
+  截图另证实嵌套 NavigationStack 合并工具栏；常规布局改为 HStack 中两个兄弟导航容器，左侧 Root 工具栏与右侧聊天各自归属，面板显示时隐藏重复打开入口。
+- 同步 main 后在隔离检出复跑：默认并发 Rust 全量 439 过 / 9 忽略 / 0 失败、fmt / Clippy / TypeScript 通过；指定 16 文件前端共 362 项，361 过 / 1 跳过，布局 12 场景、聊天模型、viewport、打包和隐私复查通过。
+  iOS workflow 默认继续两端 UI 回归；手动 `ipad_only` 只跳过已独立验过的 iPhone UI 套件，仍完整构建设备包和 iPad 验收。
+
+- 再同步 main 的桌面导航 / Claude 细节与诊断记录（1aefe9f），移动端 apps/ios、ar-mobile / controller / net / core、Cargo 与 vendor 相对 519eee1 均无变化；iPad 记录改放文末，避免并行工作反复争用文首插入点。
+- 本次 main 同步复查：Rust fmt / Clippy / TypeScript 通过；Rust 全量 439 过 / 9 忽略 / 0 失败，前端 375 项中 374 过 / 1 跳过。移动端源码与 519eee1 一致，当前原生复验沿用该源码。
+- 第三轮 519eee1 / CI 39998306949 的五项 iPad 原生验收通过，20 张截图齐全；业务链路、窄窗往返、四向全屏和同会话草稿均完成。逐图复核又发现浅色外观下非全屏左侧导航栏文字在远程黑底不可读，显式设置 canvas 导航栏背景（不动舞台 / 全屏 / 右侧），复验标题与时间可见性。

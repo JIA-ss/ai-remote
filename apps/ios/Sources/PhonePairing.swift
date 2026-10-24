@@ -46,7 +46,7 @@ struct PhonePairSheet: View {
                             .scrollContentBackground(.hidden).padding(8).modifier(PhoneSurface(cornerRadius: 18))
                         Button("改用配对码") { store.useTicket = false }.accessibilityIdentifier("pair-use-code")
                     } header: { Text("完整票据") } footer: {
-                        Text("电脑和手机之间不通网络时使用：在电脑的配对窗口里展开“使用完整票据”，复制后粘贴到这里。")
+                        Text("电脑和设备之间不通网络时使用：在电脑的配对窗口里展开“使用完整票据”，复制后粘贴到这里。")
                     }
                 } else {
                     if store.network?.pairCode == false {

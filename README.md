@@ -22,7 +22,7 @@ Your phone, your tablet, your Mac, your PC — and your AI agent, connected thro
 | **macOS / Mac** | Host + desktop controller | Implemented; local Apple Silicon pairing, capture, input and H.264 stream acceptance. [Mac setup](docs/macos.md) |
 | **Windows / PC** | Host + desktop controller | Implemented; Windows UIA and native input paths. [Operations](docs/operations.md) · [Structured UI evidence](docs/structured-ui.md) |
 | **iOS / iPhone** | Native mobile controller | **WIP** — SwiftUI/UniFFI source, device/simulator SDK builds and simulator UI tests; physical remote-control acceptance pending. [Validation](docs/iphone-validation.md) |
-| **iPadOS / iPad** | Tablet controller | **WIP** — the iOS app targets iPhone and iPad; iPad layout and real-device acceptance pending. [Source and builds](apps/ios/README.md) |
+| **iPadOS / iPad** | Tablet controller | **WIP** — adaptive iPad layout prioritizes the 12.9-inch iPad Pro, with simulator coverage in CI; physical-device and system multitasking acceptance pending. [Source and builds](apps/ios/README.md) |
 | **Android** | Phone / tablet controller | **WIP** — planned; native app implementation pending. |
 | **Linux** | Desktop host / controller | **WIP** — desktop support and platform acceptance pending. |
 

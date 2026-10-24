@@ -48,6 +48,7 @@ targets:
           - CFBundleURLName: io.github.jia-ss.ai-remote.pair
             CFBundleURLSchemes: [ai-remote]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIRequiresFullScreen: false
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

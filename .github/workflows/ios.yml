@@ -1,16 +1,21 @@
-name: iPhone controller
+name: iPhone and iPad controller
 on:
   workflow_dispatch:
     inputs:
+      ipad_only:
+        description: "Run only iPad UI acceptance; still build and package both device families"
+        required: false
+        type: boolean
+        default: false
       build_number:
         description: "Optional CFBundleVersion (1-3 numeric components); defaults to run_number.run_attempt"
         required: false
         type: string
   push:
     branches: [main]
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", "tools/test-phone-layout.sh", "tools/PhoneAdaptiveLayoutSmoke.swift", ".github/workflows/ios.yml"]
   pull_request:
-    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", ".github/workflows/ios.yml"]
+    paths: ["apps/ios/**", "crates/ar-mobile/**", "crates/ar-controller/**", "crates/ar-net/**", "crates/ar-core/**", "Cargo*", "vendor/**", "tools/ios.sh", "tools/package-ios-ipa.py", "tools/test_package_ios_ipa.py", "tools/test-phone-viewport.sh", "tools/PhoneViewportGeometrySmoke.swift", "tools/test-phone-chat-model.sh", "tools/PhoneChatModelTests.swift", "tools/test-phone-layout.sh", "tools/PhoneAdaptiveLayoutSmoke.swift", ".github/workflows/ios.yml"]
 permissions:
   contents: read
 concurrency:
@@ -19,7 +24,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       # macos-15 ARM64 lists Xcode 26.2 and its iOS 26.2 simulator runtime:
       # https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md
@@ -62,6 +67,8 @@ jobs:
         run: tools/test-phone-viewport.sh
       - name: Verify the chat model (same cases as the desktop's chat-state tests)
         run: tools/test-phone-chat-model.sh
+      - name: Verify adaptive iPad and narrow-window layout decisions
+        run: tools/test-phone-layout.sh
       - uses: actions/cache/restore@v4
         id: rust-cache
         with:
@@ -85,6 +92,7 @@ jobs:
         working-directory: apps/ios
         run: xcodegen generate
       - name: Compile iPhone simulator app
+        id: simulator-build
         run: |
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
             -destination 'generic/platform=iOS Simulator' -configuration Debug \
@@ -143,13 +151,57 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Launch and test on iPhone simulator
+        if: ${{ !inputs.ipad_only }}
+        id: iphone-tests
         run: |
           simulator=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; print(next(d["udid"] for runtime, group in json.load(sys.stdin)["devices"].items() if runtime.endswith(".iOS-26-2") for d in group if d["name"].startswith("iPhone")))')
+          echo "simulator=$simulator" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b
           xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
             -destination "platform=iOS Simulator,id=$simulator" -configuration Debug \
             -derivedDataPath target/ios-build -resultBundlePath target/phone-ui.xcresult \
+            -skip-testing:AIRemoteUITests/PhonePadUITests \
+            CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION='${{ steps.version.outputs.build_number }}' test
+      - name: Test iPad Pro 12.9-inch on iOS 26.2
+        if: ${{ !cancelled() && steps.simulator-build.outcome == 'success' }}
+        env:
+          IPHONE_SIMULATOR: ${{ steps.iphone-tests.outputs.simulator }}
+        run: |
+          simulator=$(python3 - <<'PY'
+          import json, os, subprocess, sys
+          def inventory(kind):
+              return json.loads(subprocess.check_output(["xcrun", "simctl", "list", kind, "-j"], text=True))
+          runtime = next((item for item in inventory("runtimes")["runtimes"]
+                          if item["identifier"].endswith(".iOS-26-2") and item.get("isAvailable")), None)
+          if runtime is None:
+              raise SystemExit("The pinned iPad acceptance runtime, iOS 26.2, is unavailable")
+          name = "iPad Pro (12.9-inch) (6th generation)"
+          device_type = next((item for item in inventory("devicetypes")["devicetypes"] if item["name"].startswith(name)), None)
+          if device_type is None:
+              raise SystemExit(f"The required 12.9-inch device type is unavailable: {name}")
+          all_devices = inventory("devices")["devices"]
+          previous = next((item for group in all_devices.values() for item in group
+                           if item["udid"] == os.environ.get("IPHONE_SIMULATOR")), None)
+          if previous and previous["state"] == "Booted":
+              subprocess.run(["xcrun", "simctl", "shutdown", previous["udid"]], check=True)
+          devices = all_devices.get(runtime["identifier"], [])
+          device = next((item for item in devices if item.get("isAvailable") and
+                         (item.get("deviceTypeIdentifier") == device_type["identifier"] or item["name"] == name)), None)
+          udid = device["udid"] if device else subprocess.check_output([
+              "xcrun", "simctl", "create", "ai-remote-iPad-Pro-12.9-iOS-26.2",
+              device_type["identifier"], runtime["identifier"]], text=True).strip()
+          print(f"iPad acceptance: {name}; {device_type['identifier']}; {runtime['identifier']}; {udid}", file=sys.stderr)
+          if device is None or device["state"] != "Booted":
+              subprocess.run(["xcrun", "simctl", "boot", udid], check=True)
+          print(udid)
+          PY
+          )
+          xcrun simctl bootstatus "$simulator" -b
+          xcodebuild -project apps/ios/AIRemote.xcodeproj -scheme AIRemote \
+            -destination "platform=iOS Simulator,id=$simulator" -configuration Debug \
+            -derivedDataPath target/ios-build -resultBundlePath target/pad-ui.xcresult \
+            -only-testing:AIRemoteUITests/PhonePadUITests -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION='${{ steps.version.outputs.build_number }}' test
       - uses: actions/upload-artifact@v4
         with:
@@ -163,6 +215,19 @@ jobs:
           name: iPhone-simulator-test-result
           path: target/phone-ui.xcresult
           retention-days: 1
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/pad-ui.xcresult/Info.plist') != ''
+        with:
+          name: iPad-Pro-12.9-simulator-test-result
+          path: target/pad-ui.xcresult
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iPad-Pro-12.9-screenshots
+          path: /tmp/ios-pad/
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
         with:
