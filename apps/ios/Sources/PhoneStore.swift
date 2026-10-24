@@ -26,7 +26,7 @@ import AIRemoteCore
     public var applyingNetwork = false
     public var showActivity = false
     public var showChat = false
-    /// The selected host's coding-agent chats, while the chat sheet has been opened in this session.
+    /// The selected host's coding-agent chats, shared by the sheet and iPad companion/workspace.
     public var chat: PhoneChatStore?
     public var connected = false
     public var image: CGImage?

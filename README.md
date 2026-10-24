@@ -8,6 +8,8 @@
 </picture></p>
 <p align="center"><a href="#across-your-devices">Platforms</a> · <a href="#paired-devices-connected-over-p2p">P2P</a> · <a href="#ai-native-from-protocol-to-control">AI Native</a> · <a href="#start-from-source">Get started</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="docs/architecture.md">Architecture</a></p>
 
+<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven publisher verification" height="20"></a></p>
+
 **AI-native remote control across your devices, over encrypted P2P.**
 Your phone, your tablet, your Mac, your PC — and your AI agent, connected through one shared control layer. Use the human apps to view and control your paired computers, or connect your existing MCP agent to do the work. Watch the screen, take over, and hand control back whenever you want.
 
@@ -20,7 +22,7 @@ Your phone, your tablet, your Mac, your PC — and your AI agent, connected thro
 | **macOS / Mac** | Host + desktop controller | Implemented; local Apple Silicon pairing, capture, input and H.264 stream acceptance. [Mac setup](docs/macos.md) |
 | **Windows / PC** | Host + desktop controller | Implemented; Windows UIA and native input paths. [Operations](docs/operations.md) · [Structured UI evidence](docs/structured-ui.md) |
 | **iOS / iPhone** | Native mobile controller | **WIP** — SwiftUI/UniFFI source, device/simulator SDK builds and simulator UI tests; physical remote-control acceptance pending. [Validation](docs/iphone-validation.md) |
-| **iPadOS / iPad** | Tablet controller | **WIP** — the iOS app targets iPhone and iPad; iPad layout and real-device acceptance pending. [Source and builds](apps/ios/README.md) |
+| **iPadOS / iPad** | Tablet controller | **WIP** — adaptive iPad layout prioritizes the 12.9-inch iPad Pro, with simulator coverage in CI; physical-device and system multitasking acceptance pending. [Source and builds](apps/ios/README.md) |
 | **Android** | Phone / tablet controller | **WIP** — planned; native app implementation pending. |
 | **Linux** | Desktop host / controller | **WIP** — desktop support and platform acceptance pending. |
 

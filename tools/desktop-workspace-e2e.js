@@ -18,6 +18,9 @@
 //      an edit's diff with its real line numbers, stop and continue, a waiting message edited and taken back.
 //   C. First answer wins: a second connection to the same session answers an approval; the desktop's card
 //      goes when the host says it was resolved.
+//   D. Three idle sessions outside the current conversation: modifier/range selection, the batch
+//      menu's keyboard focus, pin/read/archive and Undo; `chat_sessions` independently confirms the
+//      host's persisted pin/archive fields, including the archived-only query.
 (async () => {
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -43,12 +46,42 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -71,9 +104,21 @@
   const pageTitle = () => text($(".ws-tb .ws-title"));
   /** A folder group's name (its label is "folder · computer" for another computer). */
   const groupName = (key) => text($(".ws-gh-label", rowOf(key)?.closest(".ws-sec"))).split(" · ")[0];
+  const conversation = (key) => currentKey() === key && rowOf(key) && $(".ws-session .nt-chat");
+  const readyConversation = (key) => {
+    const panel = conversation(key);
+    return panel?.isConnected && !$(".nt-chat-status, .cl-loading, .cdx-loading", panel)
+      && $(".nt-compose textarea:not(:disabled)", panel) && panel;
+  };
+  const sceneError = (reason, detail = {}) => new Error(`${reason}: ${JSON.stringify({
+    ...detail, current: currentKey(), route: $("[data-route]")?.dataset.route,
+    status: text($(".ws-main .nt-chat-status")), outgoing: $$(".ws-main [data-out]").map((el) => ({ state: el.dataset.out, text: text(el) })),
+  })}`);
   async function openRow(key) {
     $(".ws-row-main", rowOf(key))?.click();
-    return until(`session ${key} open`, () => currentKey() === key && $(".ws-session"));
+    const panel = await until(`session ${key} connected and replayed`, () => readyConversation(key));
+    if (!panel) throw sceneError("openRow: session never became ready", { key });
+    return panel;
   }
   /** Opens a row's menu. A menu closes when the window loses the focus (another app took it): opened again then. */
   async function rowMenu(key) {
@@ -103,12 +148,27 @@
   const turns = () => $$(".ws-main .cl-turn");
   const lastTurn = () => turns().at(-1);
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".ws-main .cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
-  async function send(t) {
-    const ta = await until("composer", composer);
+  async function send(t, { newTurn = false } = {}) {
+    const key = currentKey();
+    const panel = await until("connected conversation", () => readyConversation(key));
+    const ta = $(".nt-compose textarea", panel);
+    if (!key || !panel?.isConnected || !ta?.isConnected) throw sceneError("send: no connected composer", { key, message: t });
+    const priorTurns = new Set($$(".cl-turn", panel).map((turn) => turn.dataset.turn));
+    const priorUsers = new Set($$(".cl-user .txt, .nt-qd .tx", panel));
     setValue(ta, t);
-    await sleep(100);
-    $(".ws-main .nt-compose .round.send").click();
-    await until("composer cleared", () => composer().value === "", 5000);
+    const button = await until("message ready to send", () => $(".nt-compose .round.send:not(:disabled)", panel));
+    if (!button?.isConnected || button.disabled || readyConversation(key) !== panel || composer() !== ta) {
+      throw sceneError("send: conversation changed before Send", { key, message: t });
+    }
+    button.click();
+    const accepted = await until(newTurn ? "the submitted message's new turn" : "the submitted message accepted or queued", () => {
+      if (conversation(key) !== panel || composer() !== ta || ta.value !== "") return false;
+      const candidates = newTurn
+        ? $$(".cl-turn", panel).filter((turn) => !priorTurns.has(turn.dataset.turn)).flatMap((turn) => $$(".cl-user .txt", turn))
+        : $$(".cl-user .txt, .nt-qd .tx", panel);
+      return candidates.find((el) => !priorUsers.has(el) && text(el) === t.trim());
+    }, 15000);
+    if (!accepted) throw sceneError("send: submitted message was not accepted by the same session", { key, message: t, newTurn });
   }
   const said = (t, ms = 20000) => until(`reply "${t}"`, () => lastTurn()?.textContent.includes(t), ms);
 
@@ -170,7 +230,7 @@
   }
 
   // What this run changes in the webview's storage (shared with an installed app): put back at the end.
-  const KEEP = /^ai-remote\.(mode$|ws\.)/;
+  const KEEP = /^ai-remote\.(mode$|ws\.|live\.split$)/;
   // Leftovers of earlier runs (hosts named e2e-<pid>, gone now) are dropped from it first.
   const leftover = (x) => typeof x === "string" && /^e2e-\d+(\/|$)/.test(x);
   for (const k of Object.keys(localStorage).filter((k) => KEEP.test(k))) {
@@ -210,8 +270,15 @@
     const sw = await until("the computers page's switch", () => $(".ws-modes [data-mode=agents]"), 30000);
     await check("the computers page has the computers / agents switch", !!sw && !$(".ws"));
     sw.click();
-    const ws = await until("workspace", () => $(".ws .ws-new"), 10000);
+    const ws = await until("workspace", () => $(".nt-live-workspace .ws .ws-new"), 10000);
     await check("the switch opens the agents workspace on a new session", !!ws && localStorage.getItem("ai-remote.mode") === "agents", localStorage.getItem("ai-remote.mode"));
+    await check("Agents opens the complete workspace beside one live screen", $$(".nt-live-workspace .nt-stage canvas.rd-holder").length === 1
+      && $$(".nt-live-workspace .ws[data-embedded=true]").length === 1);
+    // Give the existing sidebar enough space for the data-flow checks below. A narrow pane's overlay
+    // intentionally unmounts its rows on selection; container folding is checked at the end.
+    const split = await until("live workspace divider", () => $(".nt-live-divider"));
+    for (let i = 0; i < 12; i++) { keyDown(split, "ArrowLeft"); await sleep(20); }
+    await until("workspace sidebar docked", () => $(".ws")?.dataset.side === "docked", 5000);
     await check("the sidebar is docked at 288 px", $(".ws")?.dataset.side === "docked" && Math.round($(".ws-side").getBoundingClientRect().width) === 288,
       `${$(".ws")?.dataset.side} ${$(".ws-side")?.getBoundingClientRect().width}`);
 
@@ -235,7 +302,10 @@
     await check("the sidebar groups the session under its folder", !!group1 && groupName(k1) === workName, text($(".ws-gh-label", group1)));
     await check("the title starts as the first message", rowTitle(k1).includes("整理季度导出脚本") && pageTitle().includes("整理季度导出脚本"), `${rowTitle(k1)} | ${pageTitle()}`);
     const blink = await until("running dot", () => dotOf(k1) === "running" && $(".ws-row-dot", rowOf(k1)));
-    await check("a running session's dot is grey and blinks", !!blink && getComputedStyle(blink).animationName !== "none", blink && getComputedStyle(blink).animationName);
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const dotAnimation = blink && getComputedStyle(blink).animationName;
+    await check("a running session's dot respects the system's motion setting", !!blink && (reducedMotion ? dotAnimation === "none" : dotAnimation !== "none"),
+      `reduced motion: ${reducedMotion}; animation: ${dotAnimation}`);
     await shot("a02-running");
     // The stand-in answers the title 4 s after it is asked; the row and the page learn it from the next poll.
     const sentAt = Date.now();
@@ -243,31 +313,65 @@
     if (titled) await note(`the agent's title showed ${((Date.now() - sentAt) / 1000).toFixed(1)} s after the first message`);
     await check("the agent's title replaces it", !!titled, `${rowTitle(k1)} | ${pageTitle()}`);
     await check("the turn ends by itself", !!(await said("later: DELAYTITLE", 20000)));
-    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 15000)), dotOf(k1));
+    // An occluded/locked desktop polls at the store's idle 20 s cadence, instead of 4 s. Observe
+    // the natural poll; do not force a refresh or fail before that configured interval can elapse.
+    const settledAt = Date.now();
+    await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 35000)),
+      `${dotOf(k1)}; ${(Date.now() - settledAt) / 1000} s; visibility: ${document.visibilityState}`);
 
     // A2. Unread: a session that moves on while another is open gets a blue dot; opening it clears it.
     await newSession();
     await check("New keeps the last place", folderShown() === workName, folderShown());
-    const k2 = await start("LATER8 第二个会话");
+    const k2 = await start("LATER25 第二个会话");
     await check("a second session opens", !!k2 && k2 !== k1, k2);
     await openRow(k1);
     await check("its dot runs while the other is open", dotOf(k2) === "running", dotOf(k2));
-    const unread = await until("unread dot", () => dotOf(k2) === "unread", 30000);
+    const unread = await until("unread dot", () => dotOf(k2) === "unread", 45000);
     await check("it ends while away: blue unread dot", !!unread, dotOf(k2));
     await shot("a03-unread");
     await openRow(k2);
     await check("opening it clears the dot", !!(await until("read", () => dotOf(k2) === null, 10000)), dotOf(k2));
 
     // A3. A failed turn: red dot; Mark as done takes it away.
-    await send("FAIL 这一轮会失败");
+    const failedAt = Date.now();
+    const failedSnapshot = async (label) => {
+      const report = await hostCall("chat_sessions");
+      const m = report.sessions.find((x) => x.id === k2.slice(k2.indexOf("/") + 1));
+      await note(`failed-turn ${label} ${JSON.stringify({
+        elapsedMs: Date.now() - failedAt, visibility: document.visibilityState, focused: document.hasFocus(), dot: dotOf(k2),
+        connectionStatus: text($(".ws-main .nt-chat-status")),
+        outgoing: $$(".ws-main [data-out]").map((x) => ({ state: x.dataset.out, error: $(".st.bad", x)?.title ?? null })),
+        host: m ? { state: m.state, turns: m.turns, last_status: m.last_status, seq: m.seq, last_seq: m.last_seq, last_activity: m.last_activity, pending: m.pending } : null
+      })}`);
+    };
+    await failedSnapshot("before-send");
+    await send("FAIL 这一轮会失败", { newTurn: true });
+    await failedSnapshot("sent");
     await check("a failed turn shows a red dot", !!(await until("failed dot", () => dotOf(k2) === "failed", 20000)), dotOf(k2));
+    await failedSnapshot("after-dot-wait");
     await shot("a04-failed");
     await rowMenu(k2);
     const done = byLetter("U");
-    await check("its menu offers Mark as done", !!done && /标记为完成|Mark as done/.test(text(done)), text(done));
-    done?.click();
-    await check("Mark as done clears the red dot", !!(await until("done", () => dotOf(k2) === null, 5000)), dotOf(k2));
-    await check("and says so in a toast", !!(await until("toast", () => $(".ws-toast"), 3000)));
+    const offersDone = !!done?.isConnected && /标记为完成|Mark as done/.test(text(done));
+    await check("its menu offers Mark as done", offersDone, text(done));
+    if (!offersDone) throw sceneError("Mark as done: expected action is unavailable", { key: k2 });
+    const donePanel = conversation(k2);
+    const priorToasts = new Set($$(".ws-toast"));
+    let leftDonePage = !donePanel;
+    const sameDonePage = () => conversation(k2) === donePanel && !!donePanel?.isConnected;
+    const donePageWatch = new MutationObserver(() => { if (!sameDonePage()) leftDonePage = true; });
+    donePageWatch.observe(document.body, { childList: true, subtree: true });
+    if (!done.isConnected || !sameDonePage() || !/标记为完成|Mark as done/.test(text(done))) {
+      donePageWatch.disconnect();
+      throw sceneError("Mark as done: menu or conversation changed before the click", { key: k2 });
+    }
+    done.click();
+    const cleared = await until("done on the same session page", () => !leftDonePage && sameDonePage() && rowOf(k2) && dotOf(k2) === null, 5000);
+    await check("Mark as done clears the red dot", !!cleared && !leftDonePage, dotOf(k2));
+    const doneToast = await until("Mark as done toast on the same session page", () => !leftDonePage && sameDonePage()
+      && $$(".ws-toast").find((el) => !priorToasts.has(el) && /已把.*标记为完成|marked as done/.test(text(el)) && $(".ws-toast-act", el)), 3000);
+    donePageWatch.disconnect();
+    await check("and says so in a toast", !!doneToast && !leftDonePage);
 
     // A4. Pin and unpin.
     await rowMenu(k1);
@@ -291,7 +395,8 @@
     keyDown(field, "Enter");
     await check("Enter keeps the new name", !!(await until("renamed", () => rowTitle(k2) === name2 && pageTitle() === name2, 10000)), `${rowTitle(k2)} | ${pageTitle()}`);
     await sleep(5000); // a poll
-    await check("renaming does not bring back the red dot put aside with Mark as done", dotOf(k2) !== "failed", dotOf(k2));
+    await check("renaming does not bring back the red dot put aside with Mark as done", !!doneToast && !leftDonePage && !!rowOf(k2)
+      && conversation(k2) === donePanel && dotOf(k2) !== "failed", dotOf(k2));
     const listed = await hostCall("chat_sessions").catch((e) => ({ error: String(e) }));
     await check("the host has the new name (chat_update)", JSON.stringify(listed).includes(name2), JSON.stringify(listed).slice(0, 200));
     await rowMenu(k1);
@@ -317,7 +422,8 @@
     await rowMenu(k2);
     byLetter("A")?.click();
     await check("archiving takes the row out of the list", !!(await until("archived", () => !rowOf(k2), 10000)));
-    await check("with a toast that can undo it", !!$$(".ws-toast").find((x) => $(".ws-toast-act", x)));
+    // The row disappears optimistically; the Undo toast follows the host's completed update.
+    await check("with a toast that can undo it", !!(await until("archive Undo toast", () => $$(".ws-toast").find((x) => $(".ws-toast-act", x)), 10000)));
     const filter = () => $$(".ws-menu [role=menuitemradio]");
     $(".ws-list-filter").click();
     (await until("list menu", () => filter().length >= 12 && filter(), 5000))?.[10].click();
@@ -354,6 +460,9 @@
     await check("a Codex session gets the Codex view", !!(await until("codex view", () => $(".ws-main .nt-chat.cdx"), 20000)), $(".ws-main .nt-chat")?.className);
     await check("in its own folder's group", groupName(k3) === "src", text($(".ws-gh-label", rowOf(k3)?.closest(".ws-sec"))));
     await until("codex turn", () => $(".ws-main .cdx-turn"), 15000);
+    const codexComposer = $(".ws-main .nt-chat.cdx .nt-compose")?.getBoundingClientRect();
+    await check("the workspace Codex composer keeps its whole lower edge above the window bottom",
+      !!codexComposer && codexComposer.bottom <= innerHeight - 12, codexComposer && `${codexComposer.bottom} / ${innerHeight}`);
     await shot("a07-codex");
 
     // A8. ⌘K: by title, by folder; Enter opens.
@@ -372,7 +481,8 @@
     const byFolder = await until("folder hit", () => $$(".ws-palette-row").length >= 1 && $$(".ws-palette-row").every((r) => text($(".ws-palette-where", r)).includes("src")) && $$(".ws-palette-row"), 5000);
     await check("it finds a session by its folder", !!byFolder && byFolder.length === 1, $$(".ws-palette-row").map(text).join(" | "));
     keyDown(pq2, "Enter");
-    await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 10000)));
+    await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 30000)),
+      `selected: ${currentKey()}; expected: ${k3}; view: ${$(".ws-main .nt-chat")?.className}`);
 
     // A9. ↑ / ↓ over the list; a row's button opens it (Enter's own action on a focused button).
     $(".ws-row-main", rowOf(k1))?.focus();
@@ -487,7 +597,9 @@
     await until("approval card", () => $(".ws-main .cl-ap"), 20000);
     await sleep(500);
     btn(/^(拒绝|Deny)\s*(esc)?$/)?.click();
-    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    await check("Deny tells the agent no", !!(await until("denied", () => /Not done: (?:The user )?declined/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-120));
+    const deniedTool = $(".cl-tool[data-state='denied']", lastTurn());
+    await check("a denied tool is not labelled as executed", !!deniedTool && !/运行了|^Ran\b/.test(text($(".cl-lbl", deniedTool))), text(deniedTool));
     await idle();
 
     // B2. A question in two parts: single choice, then multiple with Other; the answers in the transcript.
@@ -577,6 +689,8 @@
     $(".ws-main .nt-compose .round.stop").click();
     const stopped = await until("stopped", () => $(".cl-stopped", lastTurn()), 10000);
     await check("Stop ends the turn and offers Continue", !!stopped);
+    await check("b07-stopped: the tool reaches stopped after its specified display dwell",
+      !!(await until("displayed tool stopped", () => $('.cl-tool[data-state="stopped"]', lastTurn()), 3000)));
     await shot("b07-stopped");
     $(".cl-stopped .cl-btn", lastTurn())?.click();
     await check("Continue sends a new turn", !!(await until("continued", () => !$(".ws-main .cl-stopped") && /you said: (从刚才|Continue where)/.test(lastTurn()?.textContent ?? ""), 15000)), lastTurn()?.textContent.slice(-100));
@@ -588,8 +702,10 @@
       const att = await hostCall("chat_attach", { session: kb.split("/").pop() });
       const cb = window.__TAURI_INTERNALS__.transformCallback((raw) => { if (raw && "message" in raw) other2.events.push(raw.message); });
       const channel = { toJSON: () => `__CHANNEL__:${cb}`, __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cb}` };
-      const [id] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
+      const [id, hello] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
       other2.id = id;
+      // Replayed approvals precede this hello; only answer the new request that this step sends.
+      other2.since = hello.seq;
     } catch (e) {
       other2.error = String(e && e.message || e);
     }
@@ -597,7 +713,7 @@
     if (other2.id !== undefined) {
       await send("PERMIT 另一端来批");
       const card = await until("approval card", () => $(".ws-main .cl-ap"), 20000);
-      const ev = await until("permission event on the second connection", () => other2.events.filter((e) => e && e.t === "permission").at(-1), 10000);
+      const ev = await until("permission event on the second connection", () => other2.events.filter((e) => e && e.t === "permission" && e.seq > other2.since).at(-1), 10000);
       await check("the card shows here and the request on the other connection", !!card && !!ev, ev?.rid);
       await shot("c01-before-other");
       if (ev) await invoke("chat_send", { id: other2.id, command: { permit: { rid: ev.rid, decision: "once" } } });
@@ -608,7 +724,9 @@
       const res = other2.events.find((e) => e && e.t === "resolved" && e.id === ev?.rid);
       await check("the host reports it resolved (who answered)", !!res, JSON.stringify(res ?? {}).slice(0, 160));
       if (!/另一|other device|elsewhere|已在/.test(text(lastTurn()))) note("nothing on the page says another device answered (the card just closes)");
-      await shot("c02-after-other");
+      await check("c02-after-other: the tool reaches done after its specified display dwell",
+      !!(await until("displayed tool done", () => $('.cl-tool[data-state="done"]', lastTurn()), 3000)));
+    await shot("c02-after-other");
       const otherAt = Date.now();
       const settled = await until("not awaiting", () => dotOf(kb) !== "awaiting", 30000);
       if (settled) await note(`the amber dot went ${((Date.now() - otherAt) / 1000).toFixed(1)} s after the other connection answered`);
@@ -664,6 +782,443 @@
     await idle();
     await check("the one taken back never ran", !$$(".ws-main .nt-user").some((u) => u.textContent.includes("撤回我")));
     await shot("b09-after-queue");
+
+    // The current conversation already shares the live screen. The same computer's conversations,
+    // projects and history change only the right side of the window.
+    const rail = await until("this conversation beside the live view", () => {
+      const el = $(".nt-live-workspace .ws[data-embedded=true] .nt-chat");
+      return el && el.textContent.includes("SLOW 排队测试") && el.textContent.includes("you said: 排队一条（已改）") && el;
+    }, 30000);
+    await check("the current conversation is still beside the live view", !!rail && rail.classList.contains("cl-root"));
+    await check("the live view has no old steps or agent-perspective tabs", !$(".nt-rail > .seg"));
+    await shot("c03-watch-current-session");
+
+    // ===== D. Batch actions use the mounted UI and the real host's stored metadata =====
+    // Keep the current conversation out of the batch: opening it would automatically mark it read.
+    // Reuse A's k1/k2 and the already-ended Codex k3; this section starts no additional agent.
+    const batchKeys = [k1, k2, k3];
+    const batchIds = batchKeys.map((key) => key.slice(key.indexOf("/") + 1));
+    const selectedKeys = () => $$(".ws-row[data-multi-selected]").map((row) => row.dataset.rowKey);
+    const sameKeys = (actual, expected) => actual.length === expected.length && expected.every((key) => actual.includes(key));
+    const pinnedRow = (key) => rowOf(key)?.closest(".ws-sec")?.dataset.group === "pinned";
+    const batchSummary = (el, undo = false) => undo
+      ? /已撤销 3 个，未撤销 0 个|Undid 3; could not undo 0/.test(text(el))
+      : /已完成 3 个，失败 0 个|Completed 3; failed 0/.test(text(el));
+    const batchHost = async (label, matches, args = {}) => {
+      const end = Date.now() + 10000;
+      let last = null, error = "";
+      do {
+        try {
+          last = await hostCall("chat_sessions", args);
+          if (matches(last.sessions ?? [])) return last;
+        } catch (e) { error = String(e && e.message || e); }
+        await sleep(250);
+      } while (Date.now() < end);
+      await note(`batch host timeout ${label}: ${error || JSON.stringify(last).slice(0, 300)}`);
+      return null;
+    };
+    const clearBatch = async () => {
+      keyDown(document.activeElement ?? document.body, "Escape");
+      if (!await until("batch selection cleared", () => !selectedKeys().length && !$(".ws-menu"), 3000)) {
+        throw sceneError("batch: selection did not clear");
+      }
+    };
+    const selectBatchRow = async (key, modifiers) => {
+      const button = $(".ws-row-main", rowOf(key));
+      if (!button?.isConnected) throw sceneError("batch: a target row disappeared", { key });
+      button.focus({ preventScroll: true });
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers }));
+      await sleep(100);
+    };
+    const selectBatch = async () => {
+      await clearBatch();
+      for (const key of batchKeys) await selectBatchRow(key, { [mac ? "metaKey" : "ctrlKey"]: true });
+      if (!sameKeys(selectedKeys(), batchKeys)) throw sceneError("batch: wrong selected sessions", { selected: selectedKeys(), batchKeys });
+    };
+    const batchMenu = async () => {
+      const row = rowOf(k1);
+      if (!row?.isConnected) throw sceneError("batch: context row is missing");
+      row.scrollIntoView({ block: "nearest" });
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: rect.left + 24, clientY: rect.top + rect.height / 2 }));
+      const menu = await until("batch menu", () => $(".ws-batch-menu"), 3000);
+      if (!menu) throw sceneError("batch: required menu did not open", { selected: selectedKeys() });
+      return menu;
+    };
+    const batchAction = async (letter, label) => {
+      const menu = $(".ws-batch-menu");
+      const button = byLetter(letter);
+      if (!menu?.isConnected || !button?.isConnected || button.disabled || !label.test(text(button))) {
+        throw sceneError("batch: required action is unavailable", { letter, expected: String(label), menu: text(menu) });
+      }
+      if (!menu.contains(document.activeElement)) throw sceneError("batch: menu did not receive keyboard focus", { letter });
+      const previous = new Set($$(".ws-toast"));
+      keyDown(document.activeElement, letter.toLowerCase(), { code: `Key${letter}` });
+      const toast = await until("batch result", () => $$(".ws-toast").find((el) => !previous.has(el) && batchSummary(el)), 10000);
+      if (!toast) throw sceneError("batch: missing three-success result", { letter, toasts: $$(".ws-toast").map(text) });
+      return toast;
+    };
+    const undoBatchToast = async (toast) => {
+      const button = $(".ws-toast-act", toast);
+      if (!button?.isConnected) throw sceneError("batch: Undo disappeared before use");
+      const previous = new Set($$(".ws-toast"));
+      button.click();
+      const undone = await until("batch undone", () => $$(".ws-toast").find((el) => !previous.has(el) && batchSummary(el, true)), 10000);
+      if (!undone) throw sceneError("batch: missing three-success Undo result", { toasts: $$(".ws-toast").map(text) });
+      return undone;
+    };
+    const baseline = await batchHost("three idle non-current sessions", (xs) => batchIds.every((id) => {
+      const meta = xs.find((x) => x.id === id);
+      return meta && !["running", "starting", "interrupting"].includes(meta.state) && !meta.pending;
+    }));
+    await check("batch targets three distinct idle sessions outside the current conversation", !!baseline && new Set(batchKeys).size === 3
+      && !batchKeys.includes(currentKey()) && batchKeys.every((key) => rowOf(key)), JSON.stringify({ batchKeys, current: currentKey() }));
+    if (!baseline || new Set(batchKeys).size !== 3 || batchKeys.includes(currentKey()) || !batchKeys.every((key) => rowOf(key))) {
+      throw sceneError("batch: preconditions failed", { batchKeys });
+    }
+    const beforeBatch = new Map(baseline.sessions.filter((x) => batchIds.includes(x.id)).map((meta) => [meta.id, meta]));
+    const flagsMatch = (xs) => batchIds.every((id) => {
+      const meta = xs.find((x) => x.id === id), before = beforeBatch.get(id);
+      return meta && !!meta.pinned === !!before.pinned && !!meta.archived === !!before.archived && meta.title === before.title;
+    });
+    const checkBatchOwnership = async () => {
+      const pane = $('.nt-live-workspace .ws[data-embedded="true"]');
+      const aside = pane?.closest("aside.nt-workspace-pane");
+      const screen = $(".nt-live-workspace .nt-stage");
+      const pair = [k1, k2], watchKeys = [...batchKeys, kq];
+      if (!pane || !aside || !screen || aside.hasAttribute("inert")) throw sceneError("batch ownership: live panes are unavailable");
+      const metadata = () => JSON.stringify(watchKeys.map((key) => ({
+        key, title: rowTitle(key), pinned: pinnedRow(key), archived: rowOf(key)?.hasAttribute("data-archived"),
+      })));
+      // Status dots follow independently refreshed turn/read state, not the host's editable metadata.
+      const dots = () => JSON.stringify(watchKeys.map((key) => dotOf(key)));
+      // idle() observes the conversation footer; the independently polled list may still show the
+      // first-message title. Start the key probes only after this host snapshot is drawn by the UI.
+      // A hidden workspace legitimately polls every 20 s. This is a derived readiness budget,
+      // not measured title latency; the independent decoded-frame check remains 30 s.
+      const ownershipDeadline = Date.now() + (document.hidden ? 25000 : 10000);
+      const ownershipBaseline = await batchHost("ownership metadata ready", (xs) => watchKeys.every((key) => {
+        const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id);
+        return meta && (key !== kq || (typeof meta.title === "string" && !!meta.title.trim()));
+      }));
+      const shownHostTitle = (meta) => {
+        const title = typeof meta.title === "string" ? meta.title.trim() : "";
+        if (title) return title;
+        const first = (meta.first_text ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+        const firstLine = first.length > 80 ? `${first.slice(0, 79).trimEnd()}…` : first;
+        return firstLine || (meta.name ?? "").trim();
+      };
+      const remaining = ownershipDeadline - Date.now();
+      const ready = ownershipBaseline && remaining > 0 && await until("ownership host metadata drawn in the list", () =>
+        watchKeys.every((key) => {
+          const id = key.slice(key.indexOf("/") + 1), meta = ownershipBaseline.sessions.find((x) => x.id === id), row = rowOf(key);
+          return meta && row?.isConnected && rowTitle(key) === shownHostTitle(meta)
+            && pinnedRow(key) === !!meta.pinned && row.hasAttribute("data-archived") === !!meta.archived;
+        }), remaining);
+      if (!ready) throw sceneError("batch ownership: host metadata did not reach the list within the shared readiness budget");
+      const before = metadata(), beforeDots = dots();
+      const checkpoints = [];
+      let hostMetadataUnchanged = false;
+      const shortcuts = [
+        { key: "F2", code: "F2" }, { key: "Escape", code: "Escape" },
+        ...["metaKey", "ctrlKey"].flatMap((modifier) => ["P", "U", "A", "R"].map((letter) =>
+          ({ key: letter.toLowerCase(), code: `Key${letter}`, altKey: true, [modifier]: true }))),
+      ];
+      const probe = (target, keys) => keys.map((options) => {
+        const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...options });
+        let targetReached = false, documentReached = false;
+        const atTarget = (e) => { if (e === event) targetReached = true; };
+        const atDocument = (e) => { if (e === event) documentReached = true; };
+        target.addEventListener("keydown", atTarget);
+        document.addEventListener("keydown", atDocument);
+        try {
+          target.dispatchEvent(event);
+          return { ...options, prevented: event.defaultPrevented, targetReached, documentReached };
+        } finally {
+          target.removeEventListener("keydown", atTarget);
+          document.removeEventListener("keydown", atDocument);
+        }
+      });
+      const allowed = (rows) => rows.every((x) => !x.prevented && x.targetReached && x.documentReached);
+      const blocked = (rows) => rows.every((x) => x.prevented && !x.targetReached && !x.documentReached);
+      const originalTabIndex = screen.getAttribute("tabindex"), originalInert = aside.getAttribute("inert");
+      const checkpoint = (phase, flowOk, selectionOk, focusOk) => {
+        const result = {
+          phase, flow_ok: flowOk, selection_ok: selectionOk, current_ok: currentKey() === kq,
+          metadata_ok: metadata() === before, dots_unchanged: dots() === beforeDots,
+          menu_closed: !$(".ws-menu"), focus_ok: focusOk,
+          inert_ok: phase === "dom-inert" ? aside.hasAttribute("inert") : aside.getAttribute("inert") === originalInert,
+        };
+        checkpoints.push(result);
+        return result;
+      };
+      try {
+        // Focus the stage itself, not RemoteInput: these synthetic probes must never send host keys.
+        // No pointerdown is dispatched, because a real unmodified outside pointer clears selection.
+        screen.setAttribute("tabindex", "-1");
+        screen.focus({ preventScroll: true });
+        const screenFocusOk = document.activeElement === screen && pane.dataset.keyboardActive === "false" && sameKeys(selectedKeys(), pair);
+        const left = probe(screen, shortcuts);
+        await check("screen focus keeps the two-row batch selected and releases workspace keyboard ownership",
+          screenFocusOk);
+        await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "screen", probes: left })}`);
+        const screenResult = checkpoint("screen", allowed(left), sameKeys(selectedKeys(), pair),
+          document.activeElement === screen && pane.dataset.keyboardActive === "false");
+        await check("the screen's F2, Escape and both modifier shortcut sets pass the workspace capture handlers", screenResult.flow_ok
+          && screenResult.selection_ok && screenResult.current_ok && screenResult.metadata_ok && screenResult.menu_closed);
+        try {
+          // Offscreen-safe DOM boundary probe for the inert pane used by immersive mode. This does
+          // not enter OS full screen or claim that physical immersive keyboard input was exercised.
+          aside.setAttribute("inert", "");
+          const inert = probe(pane, shortcuts);
+          await note(`batch-keyboard-ownership ${JSON.stringify({ phase: "dom-inert", probes: inert })}`);
+          const inertResult = checkpoint("dom-inert", allowed(inert), sameKeys(selectedKeys(), pair),
+            document.activeElement === screen && pane.dataset.keyboardActive === "false");
+          await check("an inert workspace does not capture F2, Escape or either modifier shortcut set", inertResult.flow_ok
+            && inertResult.selection_ok && inertResult.current_ok && inertResult.metadata_ok && inertResult.menu_closed);
+        } finally {
+          if (originalInert === null) aside.removeAttribute("inert");
+          else aside.setAttribute("inert", originalInert);
+        }
+        const rowButton = $(".ws-row-main", rowOf(k1));
+        rowButton.focus({ preventScroll: true });
+        const owned = probe(rowButton, shortcuts.filter((x) => x.key !== "Escape"));
+        const restoredResult = checkpoint("restored", blocked(owned), sameKeys(selectedKeys(), pair),
+          pane.dataset.keyboardActive === "true");
+        await check("restoring workspace ownership blocks single-row shortcuts while two rows remain selected",
+          restoredResult.inert_ok && restoredResult.focus_ok && restoredResult.flow_ok
+            && restoredResult.selection_ok && restoredResult.metadata_ok && restoredResult.menu_closed);
+        const escape = probe(rowButton, [shortcuts[1]]);
+        const escapeFlowOk = blocked(escape);
+        const escapeSelectionOk = escapeFlowOk
+          ? !!(await until("owned batch Escape clears selection", () => !selectedKeys().length, 3000))
+          : !selectedKeys().length;
+        const escapedResult = checkpoint("escaped", escapeFlowOk, !!escapeSelectionOk, pane.dataset.keyboardActive === "true");
+        await check("Escape owned by the workspace clears the batch and is consumed", escapedResult.flow_ok && escapedResult.selection_ok);
+        // Always query the host, even when the DOM metadata comparison fails, to distinguish the two.
+        hostMetadataUnchanged = !!(await batchHost("ownership probes did not mutate session metadata", (xs) =>
+          watchKeys.every((key) => {
+            const id = key.slice(key.indexOf("/") + 1), meta = xs.find((x) => x.id === id), original = ownershipBaseline.sessions.find((x) => x.id === id);
+            return meta && original && !!meta.pinned === !!original.pinned && !!meta.archived === !!original.archived && meta.title === original.title;
+          })));
+        // This final phase also records the DOM half of the metadata check after the host query.
+        escapedResult.metadata_ok = metadata() === before;
+        await check("ownership key probes leave every test session's pin, archive and title metadata unchanged",
+          escapedResult.metadata_ok && hostMetadataUnchanged);
+      } finally {
+        if (originalInert === null) aside.removeAttribute("inert");
+        else aside.setAttribute("inert", originalInert);
+        if (originalTabIndex === null) screen.removeAttribute("tabindex");
+        else screen.setAttribute("tabindex", originalTabIndex);
+        await say("e2e", `     (workspace ownership diagnostic ${JSON.stringify({ schema: 1, checkpoints, host_metadata_unchanged: hostMetadataUnchanged })})`);
+      }
+    };
+    await check("batch starts with all three unpinned and unarchived", [...beforeBatch.values()].every((meta) => !meta.pinned && !meta.archived));
+    if ([...beforeBatch.values()].some((meta) => meta.pinned || meta.archived)) throw sceneError("batch: unexpected original flags");
+    await clearBatch();
+    await selectBatchRow(k1, { metaKey: true });
+    await check("Cmd-click selects without opening the session", sameKeys(selectedKeys(), [k1]) && currentKey() === kq, selectedKeys().join(", "));
+    await selectBatchRow(k2, { ctrlKey: true });
+    await check("Ctrl-click adds another session", sameKeys(selectedKeys(), [k1, k2]) && currentKey() === kq, selectedKeys().join(", "));
+    await checkBatchOwnership();
+    await selectBatchRow(k1, { metaKey: true });
+    await selectBatchRow(k2, { ctrlKey: true });
+    await selectBatchRow(k1, { metaKey: true });
+    await check("another modifier click toggles the row off", sameKeys(selectedKeys(), [k2]), selectedKeys().join(", "));
+    await clearBatch();
+    const drawn = $$(".ws-row[data-row-key]").map((row) => row.dataset.rowKey);
+    const rangeStart = Math.min(drawn.indexOf(k1), drawn.indexOf(k2)), rangeEnd = Math.max(drawn.indexOf(k1), drawn.indexOf(k2));
+    await selectBatchRow(drawn[rangeStart], { ctrlKey: true });
+    await selectBatchRow(drawn[rangeEnd], { shiftKey: true });
+    await check("Shift-click selects the range in the drawn list order", sameKeys(selectedKeys(), drawn.slice(rangeStart, rangeEnd + 1)), selectedKeys().join(", "));
+    await selectBatch();
+    const bulkMenu = await batchMenu();
+    await check("right-clicking a selected row opens the three-session batch menu", /3/.test(bulkMenu.getAttribute("aria-label") ?? "") && $$(".ws-menu-item", bulkMenu).length === 3);
+    await check("the batch menu receives keyboard focus", bulkMenu.contains(document.activeElement), text(document.activeElement));
+    // Resource evidence from WK itself: fonts.check can succeed through fallback. The shared
+    // five-second deadline is only a waiting budget, not a measured font-loading duration.
+    const fontBudgetMs = 5000;
+    let fontTimer, fontsReady = false, fontEvidence;
+    try {
+      fontEvidence = await Promise.race([
+        (async () => {
+          await document.fonts.ready;
+          fontsReady = true;
+          const faces = await document.fonts.load('12px "Geist Mono"');
+          return { faces: faces.map((face) => ({ family: face.family, status: face.status })) };
+        })(),
+        new Promise((_, reject) => { fontTimer = setTimeout(() => reject(new Error("font resource check exceeded its waiting budget")), fontBudgetMs); }),
+      ]);
+    } catch (e) {
+      fontEvidence = { faces: [], error: String(e && e.message || e) };
+    } finally {
+      clearTimeout(fontTimer);
+    }
+    const geistFaces = fontEvidence.faces.filter((face) => face.family.replace(/["']/g, "").trim() === "Geist Mono");
+    const fontReport = { budget_ms: fontBudgetMs, ready: fontsReady, ...fontEvidence };
+    await note(`native webview bundled font resource: ${JSON.stringify({ engine: mac ? "WKWebView" : "WebView2", ...fontReport })}`);
+    await check("the native webview loads the bundled Geist Mono FontFace before the batch screenshots", fontsReady && !fontEvidence.error
+      && geistFaces.length > 0 && geistFaces.every((face) => face.status === "loaded"),
+      JSON.stringify(fontReport));
+    // This proves that WK can load the bundled resource, not which font exclusively paints a glyph.
+    await shot("d01-batch-menu");
+    const pinToast = await batchAction("P", /^置顶 3 个会话|^Pin 3 sessions/);
+    await check("batch Pin moves all three rows into Pinned", !!(await until("three pinned rows", () => batchKeys.every(pinnedRow), 5000)));
+    const hostPinned = await batchHost("three pins persisted", (xs) => batchIds.every((id) => xs.some((x) => x.id === id && x.pinned === true)));
+    await check("the real host stores all three batch pins", !!hostPinned);
+    await undoBatchToast(pinToast);
+    await check("pin Undo restores all three rows' original positions", !!(await until("three unpinned rows", () => batchKeys.every((key) => rowOf(key) && !pinnedRow(key)), 5000)));
+    await check("the real host restores only the batch pin fields and retains titles", !!(await batchHost("original pin flags", flagsMatch)));
+
+    // Normalize pre-existing unread marks through the same menu, then verify both U directions.
+    if (batchKeys.some((key) => dotOf(key) === "unread")) {
+      await selectBatch(); await batchMenu();
+      await batchAction("U", /标为已读|as read/);
+    }
+    await check("all three non-current rows start the unread check without a blue dot", !!(await until("initial read marks", () => batchKeys.every((key) => dotOf(key) !== "unread"), 5000)));
+    await selectBatch(); await batchMenu();
+    await batchAction("U", /标为未读|as unread/);
+    await check("batch Unread gives all three non-current rows a blue dot", !!(await until("three unread dots", () => batchKeys.every((key) => dotOf(key) === "unread"), 5000)));
+    await check("marking the batch unread keeps the current conversation", currentKey() === kq);
+    await selectBatch(); await batchMenu();
+    await batchAction("U", /标为已读|as read/);
+    await check("batch Read clears all three blue dots", !!(await until("three read rows", () => batchKeys.every((key) => dotOf(key) === null), 5000)));
+
+    await selectBatch(); await batchMenu();
+    const archiveToast = await batchAction("A", /^归档 3 个会话|^Archive 3 sessions/);
+    await check("batch Archive removes the three rows from the active list", !!(await until("batch rows archived", () => batchKeys.every((key) => !rowOf(key)), 5000)));
+    await check("the real host's archived query contains the three archived sessions", !!(await batchHost("three archived flags", (xs) => batchIds.every((id) => xs.some((x) => x.id === id && x.archived === true)), { archived: true })));
+    await check("the real host's active query omits all three archived sessions", !!(await batchHost("archived absent from active", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)))));
+    await undoBatchToast(archiveToast);
+    await check("archive Undo restores all three active rows", !!(await until("batch rows restored", () => batchKeys.every((key) => rowOf(key) && !rowOf(key).hasAttribute("data-archived")), 5000)));
+    await check("the real host restores the original archive and pin flags without losing titles", !!(await batchHost("original archived flags", flagsMatch)));
+    await check("the real host's archived query no longer contains these three sessions", !!(await batchHost("archive Undo persisted", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)), { archived: true })));
+    await check("batch actions finish with no selection and the same current conversation", !selectedKeys().length && !$(".ws-menu") && currentKey() === kq);
+    await shot("d02-batch-restored");
+    // The same live workspace stays mounted after the batch metadata checks. Exercise main's
+    // conversation/project history with the batch restored before its expendable session is ended.
+    await check("the live view reuses one complete workspace and one screen", $$(".nt-live-workspace .ws[data-embedded=true]").length === 1
+      && $$(".nt-live-workspace .nt-stage").length === 1 && !$$(".nt-live-workspace .nt-chat-picker").length);
+    const embedded = () => $(".nt-live-workspace .ws[data-embedded=true]");
+    const liveCanvas = $(".nt-live-workspace .nt-stage canvas.rd-holder");
+    await check("the real screen canvas is mounted beside the workspace", !!liveCanvas);
+    // Stream zeroes its drawing size at start; only VideoDecoder's real output restores dimensions.
+    // A DOM canvas alone (with the HTML default 300x150) is not proof that the host sent a frame.
+    const liveFrameWaitStarted = performance.now();
+    const decodedFrame = await until("a decoded frame from the isolated test host", () => liveCanvas?.isConnected
+      && liveCanvas.width > 0 && liveCanvas.height > 0 && !$(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"), 30000);
+    const sessionError = $(".nt-live-workspace .session-error");
+    const streamEnded = $(".nt-live-workspace .stream-ended");
+    // Error text stays local. Only these static classifications and typed state reach CI evidence;
+    // never include the text, host/monitor labels, paths, frame contents or arbitrary exceptions.
+    const localScreenError = `${text(sessionError)}\n${text(streamEnded)}`;
+    const screenErrorCodes = [
+      ["stream_terminal", /The screen stream ended\./i],
+      ["wgc_unsupported", /Windows Graphics Capture is not supported here/i],
+      ["wgc_start", /start Windows Graphics Capture/i],
+      ["dda_start", /capture the screen with Desktop Duplication/i],
+      ["capture_start", /start screen capture:/i],
+      ["monitor_unavailable", /no such monitor:/i],
+    ].filter(([, pattern]) => pattern.test(localScreenError)).map(([code]) => code);
+    if ((sessionError || streamEnded) && !screenErrorCodes.length) screenErrorCodes.push("other");
+    await say("e2e", `     (live screen diagnostic ${JSON.stringify({
+      schema: 1, checkpoint: "workspace_live_frame", elapsed_ms: Math.max(0, Math.round(performance.now() - liveFrameWaitStarted)),
+      document_hidden: document.hidden, secure_context: window.isSecureContext === true,
+      video_decoder_available: typeof window.VideoDecoder === "function", encoded_video_chunk_available: typeof window.EncodedVideoChunk === "function",
+      canvas_present: !!liveCanvas, canvas_connected: !!liveCanvas?.isConnected,
+      width: liveCanvas ? liveCanvas.width : null, height: liveCanvas ? liveCanvas.height : null,
+      session_error_present: !!sessionError, stream_ended_present: !!streamEnded,
+      wait_satisfied: !!decodedFrame, error_codes: screenErrorCodes,
+    })})`);
+    await check("a real decoded screen frame has arrived without a capture error", !!decodedFrame,
+      `${liveCanvas?.width}x${liveCanvas?.height}; ${text($(".nt-live-workspace .session-error, .nt-live-workspace .stream-ended"))}`);
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "begin", ts: Date.now(), host: CFG.host,
+      decoded: !!decodedFrame, width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    const originalWorkspace = embedded();
+    let canvasRemoved = false;
+    const screenObserver = new MutationObserver(() => { if (!liveCanvas?.isConnected) canvasRemoved = true; });
+    screenObserver.observe(document.body, { childList: true, subtree: true });
+    const sameScreen = () => !canvasRemoved && !!liveCanvas?.isConnected
+      && $(".nt-live-workspace .nt-stage canvas.rd-holder") === liveCanvas && embedded() === originalWorkspace;
+    const paneSidebar = async () => {
+      if (!$(".ws-side", embedded())) $(".ws-corner .ws-ib", embedded())?.click();
+      return until("embedded session sidebar", () => $(".ws-side", embedded()), 5000);
+    };
+    await paneSidebar();
+    await check("the existing session and project management is available beside the screen", !!rowOf(k1) && !!rowOf(kq)
+      && !!$(".ws-side .ws-nav", embedded()) && !!$(".ws-sec", embedded()));
+    $(".ws-row-main", rowOf(k1))?.click();
+    await check("selecting another session changes the conversation in the same pane", !!(await until("other live-workspace session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("switching sessions on one computer keeps its screen canvas and workspace mounted", sameScreen());
+    await paneSidebar();
+    $(".ws-side .ws-nav", embedded())?.click();
+    await check("New opens the existing CLI, project and first-message composer beside the screen", !!(await until("embedded new session", () =>
+      $(".ws-new .ws-composer textarea", embedded()) && $(".ws-env-trail .ws-chip", embedded()), 10000)));
+    await check("choosing a project on the same computer keeps its screen canvas mounted", sameScreen());
+    await check("the embedded new-session page offers the existing CLI selector", await pickAgent("Rich fake"));
+    await check("the embedded project picker uses the existing recent project", !!(await pickRecent(workName)), folderShown());
+    // The isolated host permits four agents. Keep the two sessions used by the history checks, and
+    // retire this run's unused renamed session before testing another real first-message creation.
+    if (!k2?.startsWith(`${CFG.host}/`)) throw new Error("the expendable test session does not belong to this isolated host");
+    const unusedSession = k2.slice(CFG.host.length + 1);
+    await hostCall("chat_end", { session: unusedSession });
+    let unusedEnded = false;
+    const endDeadline = Date.now() + 30000;
+    while (Date.now() < endDeadline) {
+      const report = await hostCall("chat_sessions");
+      if (report.sessions.some((session) => session.id === unusedSession && session.state === "ended")) { unusedEnded = true; break; }
+      await sleep(250);
+    }
+    await check("the run's unused session has ended before another first message starts", unusedEnded);
+    if (!unusedEnded) throw new Error("the unused test session never ended, so creating another would exceed the host's agent limit");
+    // D did not add a session. B ended k3 before kq started; only k2 is retired here, after its
+    // batch/Undo metadata was verified. Keep k1, kb and kq, including the IDs needed by C's Back flow.
+    const capacity = await hostCall("chat_sessions");
+    const retainedIds = [k1, kb, kq].map((key) => {
+      if (!key.startsWith(`${CFG.host}/`)) throw new Error("a retained test session belongs to another host");
+      return key.slice(CFG.host.length + 1);
+    });
+    const activeIds = capacity.sessions.filter((session) => session.state !== "ended").map((session) => session.id);
+    const capacityReady = sameKeys(activeIds, retainedIds) && activeIds.length <= 3
+      && capacity.sessions.some((session) => k3.endsWith(`/${session.id}`) && session.state === "ended")
+      && (!Number.isFinite(capacity.live) || capacity.live <= 3);
+    await check("the four-agent host retains only the three required sessions before C creates its fourth", capacityReady,
+      JSON.stringify({ activeIds, retainedIds, live: capacity.live, endedUnused: unusedSession }));
+    if (!capacityReady) throw new Error("the isolated host has no verified free slot for C's new session");
+    const firstInPane = $(".ws-new .ws-composer textarea", embedded());
+    setValue(firstInPane, "实时画面旁直接开始一个新会话");
+    const sendFirst = await until("embedded first message ready", () => $(".ws-new .ws-send:not(:disabled)", embedded()), 5000);
+    sendFirst?.click();
+    await check("the first message starts a real session without leaving the screen", !!(await until("embedded first-message reply", () => {
+      const chat = $(".ws-session .nt-chat", embedded());
+      return chat?.textContent.includes("you said: 实时画面旁直接开始一个新会话") && chat;
+    }, 30000)));
+    await check("starting a session keeps the current computer's screen and workspace mounted", sameScreen());
+    // The workspace's own history buttons remain available even when its sidebar is folded.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the embedded new-session page", !!(await until("embedded history new page", () =>
+      $(".ws-new .ws-composer textarea", embedded()), 10000)));
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back selects the previous conversation inside the live workspace", !!(await until("embedded history session", () =>
+      pageTitle() === name1 && $(".ws-session .nt-chat", embedded()), 30000)));
+    await check("conversation history keeps the live screen mounted", sameScreen());
+    screenObserver.disconnect();
+    await shot("c03-live-workspace-history");
+    // Back to the conversation this sequence started from; there is no separate Watch page.
+    $$(".ws-corner .ws-ib", embedded())[1]?.click();
+    await check("Back returns to the original conversation beside the same screen", !!(await until("initial live-workspace conversation", () =>
+      $(".ws-session .nt-chat", embedded())?.textContent.includes("SLOW 排队测试"), 30000)) && sameScreen());
+    await check("Back returns to the same workspace session", currentKey() === kq && !!readyConversation(kq),
+      `${currentKey()} vs ${kq}`);
+    await note(`live-screen-continuity ${JSON.stringify({ phase: "end", ts: Date.now(), host: CFG.host,
+      sameCanvas: sameScreen(), width: liveCanvas?.width, height: liveCanvas?.height })}`);
+    keyDown($(".nt-live-divider"), "Home");
+    const paneFolded = await until("sidebar folded inside its narrower pane", () => embedded()?.dataset.side === "hidden", 5000);
+    await check("the sidebar folds by workspace pane width even in a wide app window", !!paneFolded, `${innerWidth} / ${embedded()?.clientWidth}`);
+    await paneSidebar();
+    await check("the existing toggle opens session and project management over the narrow pane", embedded()?.dataset.side === "float" && !!rowOf(kq));
+    await shot("c04-live-workspace-narrow-sidebar");
   } catch (e) {
     await check("no script errors", false, e && e.stack || e);
   }

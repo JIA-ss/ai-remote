@@ -170,6 +170,7 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
           now={now}
           readonly={readonly}
           empty={t("hc_empty", { agent })}
+          loading={!hello || chat.seq < hello.seq}
           follow={follow}
           outgoing={outgoing}
           store={store}
@@ -193,6 +194,7 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
           running={running}
           canSteer={!!hello?.caps?.steer}
           disabled={ended ? "ended" : readonly ? "readonly" : null}
+          disabledSend={!hello}
           context={chat.context}
           queued={chat.queued}
           history={history}

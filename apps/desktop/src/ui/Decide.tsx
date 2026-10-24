@@ -44,6 +44,7 @@ export function DecisionCard({
   wide = false,
   askedMs,
   onDone,
+  escapeScope,
 }: {
   p: PendingApproval;
   host: string;
@@ -52,6 +53,8 @@ export function DecisionCard({
   /** When the request arrived (from the feed), shown in the header. */
   askedMs?: number;
   onDone?: (verdict: "allowed" | "denied") => void;
+  /** Beside other interactive views, Esc belongs to this card only while it has the event or focus. */
+  escapeScope?: React.RefObject<HTMLElement | null>;
 }) {
   const now = useNow(1000);
   const zh = currentLang() === "zh";
@@ -108,15 +111,17 @@ export function DecisionCard({
       setApprover("ready");
     });
 
-  // Esc belongs to the focused card, or the first card when focus is elsewhere. A single key
-  // press must never deny a whole queue, nor escape from an open dialog or menu to a card behind it.
+  // Esc belongs to one card within its optional pane scope. A single key must never deny
+  // a whole queue, escape from a modal, or deny an approval while the person is using chat.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229) return;
+      if (e.key !== "Escape" || e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229 || telling || busy) return;
       if (e.target instanceof Element && e.target.closest(".nt-picture")) return;
       if (document.documentElement.hasAttribute("data-modal") || document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')) return;
+      const scope = escapeScope?.current;
+      if (escapeScope && (!scope || !((e.target instanceof Node && scope.contains(e.target)) || scope.contains(document.activeElement)))) return;
       const focused = document.activeElement?.closest(".decide");
-      if ((focused ?? document.querySelector(".decide")) !== cardRef.current || telling || busy) return;
+      if ((focused ?? (scope ?? document).querySelector(".decide")) !== cardRef.current) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       void deny();

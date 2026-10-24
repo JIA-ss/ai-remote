@@ -7,15 +7,16 @@
 // route of the window, every page it opens is an entry there, so ‹ › and ⌘[ ⌘] walk across the
 // workspace, the live views it opens and the computers alike.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { t } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
 import { clampSidebar, narrowAt, sessionKey, SIDEBAR, sidebarMax, type Place, type WsItem } from "../../lib/workspace";
 import { cx } from "../util";
+import type { ChatTarget } from "../AgentChat";
 import type { AppMode } from "./ModeSwitch";
 import { NewSession } from "./NewSession";
 import { Palette } from "./Palette";
-import { Corner, modKey, Toasts, viewWidth, type Toast } from "./parts";
+import { Corner, modKey, Toasts, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
 import { SessionPage } from "./SessionPage";
 import { Sidebar } from "./Sidebar";
 import { archive, markDone, togglePin, toggleRead, unarchive } from "./actions";
@@ -43,13 +44,19 @@ function readSide(): { w: number; hidden: boolean } {
   }
 }
 
-function useWindowWidth() {
+function useWorkspaceWidth(root: RefObject<HTMLDivElement | null>, embedded: boolean) {
   const [w, setW] = useState(viewWidth());
-  useEffect(() => {
-    const on = () => setW(viewWidth());
+  useLayoutEffect(() => {
+    const on = () => setW(embedded ? root.current?.clientWidth ?? viewWidth() : viewWidth());
+    on();
     window.addEventListener("resize", on);
-    return () => window.removeEventListener("resize", on);
-  }, []);
+    const ro = embedded && root.current ? new ResizeObserver(on) : null;
+    if (ro && root.current) ro.observe(root.current);
+    return () => {
+      window.removeEventListener("resize", on);
+      ro?.disconnect();
+    };
+  }, [embedded, root]);
   return w;
 }
 
@@ -66,6 +73,9 @@ export function Workspace({
   onWatch,
   onPair,
   onSettings,
+  embedded = false,
+  onPlaceChange,
+  initialTarget,
 }: {
   computers: Computer[];
   device: string;
@@ -76,9 +86,15 @@ export function Workspace({
   back: (() => void) | null;
   forward: (() => void) | null;
   onMode: (m: AppMode) => void;
-  onWatch: (host: string) => void;
+  onWatch: (host: string, session?: string) => void;
   onPair: () => void;
   onSettings: () => void;
+  /** The complete workspace beside a live view, sized and keyboard-scoped to its own pane. */
+  embedded?: boolean;
+  /** A local new-session computer / folder choice; lets the live view follow the same computer. */
+  onPlaceChange?: (place: Place) => void;
+  /** A first-use chat_start ticket supplied by the page that opened this workspace. */
+  initialTarget?: (ChatTarget & { host: string }) | null;
 }) {
   const snap = useWorkspace(computers, true);
   const [side, setSide] = useState(readSide);
@@ -88,7 +104,7 @@ export function Workspace({
   const [edgeHint, setEdgeHint] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
-  const winW = useWindowWidth();
+  const winW = useWorkspaceWidth(root, embedded);
   const narrow = winW <= narrowAt(side.w);
   const docked = !narrow && !side.hidden;
   const shown = docked || (narrow && floatOpen);
@@ -100,6 +116,26 @@ export function Workspace({
   /** Tickets from `chat_start`, for the first look at a session just started here. */
   const tickets = useRef(new Map<string, string>());
   const current = route.host && route.session ? sessionKey(route.host, route.session) : null;
+
+  useLayoutEffect(() => {
+    const pane = root.current;
+    if (!embedded || !pane) return;
+    const own = (target: EventTarget | null) => target instanceof Node && pane.contains(target);
+    const set = (target: EventTarget | null) => { pane.dataset.keyboardActive = own(target) ? "true" : "false"; };
+    set(document.activeElement);
+    const pointer = (e: PointerEvent) => set(e.target);
+    const focus = (e: FocusEvent) => {
+      // A focused control may disappear while its click changes the session or closes the drawer.
+      if (e.target !== document.body && e.target !== document.documentElement) set(e.target);
+    };
+    document.addEventListener("pointerdown", pointer, true);
+    document.addEventListener("focusin", focus, true);
+    return () => {
+      document.removeEventListener("pointerdown", pointer, true);
+      document.removeEventListener("focusin", focus, true);
+      delete pane.dataset.keyboardActive;
+    };
+  }, [embedded]);
 
   const saveSide = (next: { w: number; hidden: boolean }) => {
     setSide(next);
@@ -130,6 +166,7 @@ export function Workspace({
 
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || (embedded && !workspaceOwnsEvent(root.current, e))) return;
       if (e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey && current && !editable(e.target) && !(e.target as HTMLElement | null)?.closest?.(".ws-list")) {
         e.preventDefault();
         setRenamingTitle(true);
@@ -194,9 +231,11 @@ export function Workspace({
       timer = null;
     };
     const move = (e: PointerEvent) => {
-      const x = e.clientX - (root.current?.getBoundingClientRect().left ?? 0);
-      setEdgeHint(!e.buttons && x <= 48);
-      if (e.buttons || x > 16) return stopTimer();
+      const bounds = root.current?.getBoundingClientRect();
+      const x = e.clientX - (bounds?.left ?? 0);
+      const inside = !!bounds && x >= 0 && x < bounds.width && e.clientY >= bounds.top && e.clientY < bounds.bottom;
+      setEdgeHint(inside && !e.buttons && x <= 48);
+      if (!inside || e.buttons || x > 16) return stopTimer();
       timer ??= setTimeout(() => {
         setPeek(true);
         setFloatOpen(true);
@@ -207,11 +246,12 @@ export function Workspace({
       setEdgeHint(false);
     };
     window.addEventListener("pointermove", move);
-    document.documentElement.addEventListener("pointerleave", out);
+    const el = root.current;
+    el?.addEventListener("pointerleave", out);
     return () => {
       stopTimer();
       window.removeEventListener("pointermove", move);
-      document.documentElement.removeEventListener("pointerleave", out);
+      el?.removeEventListener("pointerleave", out);
     };
   }, [narrow, floatOpen]);
   useEffect(() => {
@@ -266,7 +306,7 @@ export function Workspace({
       if (!moved) setDragging(true);
       moved = true;
       hide = startW + dx < SIDEBAR.MIN / 2;
-      w = clampSidebar(startW + dx, viewWidth());
+      w = clampSidebar(startW + dx, winW);
       setSide((s) => ({ ...s, w, hidden: hide }));
     };
     const up = () => {
@@ -282,7 +322,7 @@ export function Workspace({
     el.addEventListener("pointercancel", up);
   };
 
-  const corner = <Corner onToggle={toggle} back={back} forward={forward} />;
+  const corner = <Corner onToggle={toggle} back={back} forward={forward} embedded={embedded} />;
   const sidebar = (
     <Sidebar
       snap={snap}
@@ -309,6 +349,7 @@ export function Workspace({
     <div
       ref={root}
       className={cx("ws", dragging && "dragging")}
+      data-embedded={embedded ? "true" : undefined}
       data-side={docked ? "docked" : shown ? "float" : "hidden"}
       style={{ ["--ws-side-w" as string]: `${width}px` }}
     >
@@ -329,7 +370,7 @@ export function Workspace({
           onKeyDown={(e) => {
             if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
               e.preventDefault();
-              saveSide({ ...side, w: clampSidebar(width + (e.key === "ArrowRight" ? 16 : -16), viewWidth()) });
+              saveSide({ ...side, w: clampSidebar(width + (e.key === "ArrowRight" ? 16 : -16), winW) });
             } else if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               toggle();
@@ -347,11 +388,12 @@ export function Workspace({
             computers={computers}
             host={route.host}
             id={route.session}
-            ticket={tickets.current.get(`${route.host}/${route.session}`) ?? null}
+            ticket={tickets.current.get(`${route.host}/${route.session}`) ?? (initialTarget?.host === route.host && initialTarget.session === route.session ? initialTarget.ticket : null) ?? null}
             corner={mainCorner}
             renaming={renamingTitle}
             setRenaming={setRenamingTitle}
             onWatch={onWatch}
+            embedded={embedded}
             onLeave={() => newSession()}
             onArchived={(key) => key === current && newSession()}
             onNew={() => newSession()}
@@ -362,6 +404,8 @@ export function Workspace({
             snap={snap}
             computers={computers}
             prefill={route.place ?? null}
+            embedded={embedded}
+            onPlaceChange={onPlaceChange}
             corner={mainCorner}
             onStarted={(host, session, ticket) => {
               tickets.current.set(`${host}/${session}`, ticket);

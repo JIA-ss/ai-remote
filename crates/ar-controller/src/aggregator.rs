@@ -12,7 +12,7 @@ use rmcp::{
         CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotification,
         CancelledNotificationParam, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, Implementation,
         JsonObject, ListToolsResult, PaginatedRequestParams, ResultType, ServerCapabilities, ServerConfig,
-        ServerResult, Tool,
+        ServerResult, Tool, ToolAnnotations,
     },
     service::{PeerRequestOptions, RequestContext, RunningService, ServiceError},
 };
@@ -306,12 +306,16 @@ fn local_tools() -> Vec<Tool> {
             "List the computers paired with this machine, whether each is reachable now, and whether the \
              connection is direct or relayed.",
             Arc::new(empty),
-        ),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(true)),
         Tool::new(
             "use_host",
             "Make a host the default for later calls in this session and return its system_info.",
             Arc::new(use_host),
-        ),
+        )
+        // Selection mutates this session, but repeating the same host does not add effects.
+        // Both local tools may contact external paired hosts; annotations do not grant access.
+        .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(true)),
     ]
 }
 

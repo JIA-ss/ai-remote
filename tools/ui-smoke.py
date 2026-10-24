@@ -17,6 +17,8 @@ import tempfile
 import threading
 import time
 
+from ui_fixture_state import read_fixture_state
+
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -27,6 +29,14 @@ CLI = opts.cli.resolve()
 OUT = opts.out.resolve()
 OUT.mkdir(parents=True, exist_ok=True)
 report = {'platform': sys.platform, 'model_calls': 0, 'targeting': 'native_elements', 'result': 'running'}
+
+
+def quiet_profiles(*homes):
+    for home in homes:
+        for role in ('host', 'controller'):
+            directory = home / role
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / 'ai-remote.toml').write_bytes(b'[network]\nquiet = true\n')
 
 
 def command(home, *args):
@@ -93,6 +103,7 @@ def select_node(tree, label):
 exit_code=0
 with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='darwin' else None) as temp:
     base=Path(temp);host_home=base/'host';client_home=base/'controller';state_file=base/'fixture.json'
+    quiet_profiles(host_home, client_home)
     host=fixture=None;bridges=[]
     log=open(OUT/'host.log','w')
     try:
@@ -106,6 +117,9 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
             exit_code=2
         else:
             doctor=bridge.call('doctor')
+            network=next((check for check in doctor.get('checks',[]) if check.get('id')=='network'), None)
+            assert network and network.get('grade')=='ok' and 'locked by quiet = true' in network.get('summary',''), 'isolated host must lock quiet network mode'
+            report['network_quiet']={'configured_profiles':4, 'host_doctor_lock':True}
             if sys.platform=='darwin':
                 checks=doctor.get('checks',[])
                 if any(c.get('id')=='accessibility' and c.get('grade')=='fail' for c in checks):
@@ -119,8 +133,8 @@ with tempfile.TemporaryDirectory(prefix='ar-ui-', dir='/tmp' if sys.platform=='d
                     fixture=subprocess.Popen(['powershell.exe','-NoProfile','-STA','-File',str(ROOT/'tools/ui-fixture.ps1'),'-OutputPath',str(state_file)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 else: raise RuntimeError('native UI acceptance supports macOS and Windows')
                 wait_for(lambda:state_file.exists() and json.loads(state_file.read_text(encoding="utf-8")).get('pid'),'fixture ready')
-                pid=json.loads(state_file.read_text(encoding="utf-8"))['pid']
-                def state():return json.loads(state_file.read_text(encoding="utf-8"))
+                pid=read_fixture_state(state_file)['pid']
+                def state():return read_fixture_state(state_file)
                 def tree(**args):return bridge.call('ui_tree',{'pid':pid,**args})
                 def action(t,n,a,value=None,error=False):
                     args={'snapshot_id':t['snapshot_id'],'element_id':n['id'],'action':a}

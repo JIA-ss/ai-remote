@@ -275,11 +275,10 @@ mod mac {
         #[test]
         fn the_current_pointer_can_be_read() {
             // A session without a window server (CI) has no pointer to read.
-            let Some(at) = position() else { return };
-            if at.shape == 0 {
-                return;
-            }
-            let shape = shape(at.shape).expect("the shape read a moment ago");
+            // Read one snapshot: the person's cursor may legitimately change between position()
+            // and shape(id), in which case the public shape lookup must return None.
+            let Some((id, shape)) = current() else { return };
+            assert_ne!(id, 0);
             assert_eq!(shape.bgra.len(), (shape.width * shape.height * 4) as usize);
             assert!(shape.hotspot.0 < shape.width && shape.hotspot.1 < shape.height);
             // The arrow is mostly transparent with some opaque pixels.

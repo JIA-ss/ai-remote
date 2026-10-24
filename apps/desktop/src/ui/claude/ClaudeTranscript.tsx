@@ -3,7 +3,7 @@
 // or a key upwards lets go), a round "jump to the latest" button past 200 px and a fade past 8 px, the
 // newest turns mounted (older ones on request), find (⌘F) and quoting a selection as in the chat panel.
 
-import { ArrowDown, Quote } from "lucide-react";
+import { ArrowDown, LoaderCircle, Quote } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { stoppedTurn, type Chat, type Outgoing } from "../../lib/chat";
 import { FOLLOW, scrollKey } from "../../lib/claude";
@@ -16,11 +16,13 @@ import { ClaudeTurnView } from "./ClaudeTurn";
 /** Turns mounted at first; "show earlier" adds this many more each time. */
 const WINDOW = 30;
 
-export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing, store, onRetry, onDiscard, onContinue, finding, findFocus, onCloseFind, onQuote, status }: {
+export function ClaudeTranscript({ chat, now, readonly, empty, loading = false, follow, outgoing, store, onRetry, onDiscard, onContinue, finding, findFocus, onCloseFind, onQuote, status }: {
   chat: Chat;
   now: number;
   readonly: boolean;
   empty: ReactNode;
+  /** The host's hello or the rest of its conversation has not arrived yet. */
+  loading?: boolean;
   /** Changes when this device sends something: back to the end to follow it. */
   follow: number;
   outgoing: Outgoing[];
@@ -127,7 +129,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
   };
 
   return (
-    <div className="cl-transcript">
+    <div className="nt-transcript cl-transcript">
       {finding && <FindBar root={inner} focus={findFocus} onShow={show} onClose={onCloseFind} />}
       {quote && (
         <button type="button" className="nt-quote" style={{ top: quote.top, left: quote.left }}
@@ -141,7 +143,7 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
         className="nt-chat-body cl-scroll"
         ref={scroller}
         role="feed"
-        aria-busy={running}
+        aria-busy={loading || running}
         onMouseUp={() => setTimeout(pickQuote, 0)}
         onKeyUp={(e) => e.shiftKey && pickQuote()}
         onWheel={(e) => {
@@ -152,7 +154,8 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
           if (scrollKey(e.key, e.shiftKey) === "up") stick.current = false;
         }}
         onScroll={(e) => {
-          if (quote) setQuote(null);
+          // A scroll moves a valid selection's Quote button; clearing the selection removes it.
+          if (quote) pickQuote();
           const el = e.currentTarget;
           const d = el.scrollHeight - el.scrollTop - el.clientHeight;
           // Up past the end lets go (a drag of the scroll bar has no wheel); back at the end follows again.
@@ -171,7 +174,12 @@ export function ClaudeTranscript({ chat, now, readonly, empty, follow, outgoing,
           {chat.notices.map((n, i) => (
             <NoticeRow key={`n${i}`} level={n.level} code={n.code} text={n.text} />
           ))}
-          {chat.turns.length === 0 && !running && outgoing.length === 0 && <div className="cl-empty">{empty}</div>}
+          {chat.turns.length === 0 && !running && outgoing.length === 0 && (loading ? (
+            <div className="cl-loading" role="status" aria-live="polite">
+              <LoaderCircle size={14} className="spin" aria-hidden />
+              <span>{t("cdx_loading")}</span>
+            </div>
+          ) : <div className="cl-empty">{empty}</div>)}
           {visible.map((turn, i) => (
             <ClaudeTurnView
               key={turn.n}

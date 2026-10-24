@@ -1,1 +1,48 @@
-/* glass: the session in the shell: stage glass bars (never blurred), HUD, handle, rail. Owned by the session package; empty in the foundation. */
+/* The live-view rail reuses the workspace's conversations. Stage controls stay opaque: no blur is
+   composited over the video. */
+.nt-session .nt-rail > .nt-chat { margin-top: 0; }
+.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow-y: auto; margin-bottom: 12px; }
+.nt-chat-approval .decide { padding: 12px; }
+
+.nt-drive-options { position: absolute; z-index: 9; right: 12px; bottom: 72px; width: min(320px, calc(100% - 24px));
+  max-height: calc(100% - 96px); overflow-y: auto; box-sizing: border-box; padding: 14px; border-radius: 12px;
+  background: var(--canvas); border: 1px solid var(--stroke-2); color: var(--text-1); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
+.nt-drive-options-hd { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 12px; }
+.nt-drive-watch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 14px; }
+.nt-drive-watch input { width: 16px; height: 16px; accent-color: var(--agent); }
+.nt-drive-note { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.nt-drive-note textarea { box-sizing: border-box; width: 100%; min-height: 54px; resize: vertical; }
+.nt-drive-options p { margin: 6px 0 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
+
+/* One screen and one complete workspace. The separator resizes their containers, so video geometry
+   and the workspace's existing responsive sidebar follow the real available space. */
+.nt-live-workspace { display: grid; grid-template-columns: minmax(180px, var(--live-screen-share, 50fr)) 5px minmax(300px, var(--live-workspace-share, 50fr));
+  width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.nt-live-workspace > .nt-session { width: auto; height: auto; min-width: 0; min-height: 0; container: live-screen / inline-size; }
+.nt-live-workspace > .nt-session > .tb.gl-toolbar { position: relative; padding-left: 16px; gap: 8px; }
+[data-os="mac"] .nt-live-workspace > .nt-session > .tb.gl-toolbar { padding-left: 84px; }
+.nt-live-workspace .gl-titles { min-width: 64px; flex: 1; overflow: hidden; }
+.nt-live-workspace .nt-session .nt-tb-end { min-width: 0; }
+.nt-live-workspace .nt-session .nt-tb-end .nt-select { width: 128px; max-width: 128px; text-overflow: ellipsis; }
+.nt-live-workspace .nt-session .gl-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nt-live-workspace > .nt-workspace-pane { display: flex; width: auto; padding: 0; min-width: 0; overflow: hidden; border-left: 0; }
+.nt-live-workspace .nt-chat-approval { padding: 8px; margin: 0; }
+.nt-live-workspace > .nt-workspace-pane > .ws { min-width: 0; }
+.nt-live-divider { position: relative; z-index: 12; background: var(--stroke-1); cursor: col-resize; touch-action: none; outline: none; }
+.nt-live-divider::after { content: ""; position: absolute; inset: 0 -3px; }
+.nt-live-divider:hover, .nt-live-divider:focus-visible, .nt-live-workspace.resizing > .nt-live-divider { background: var(--agent); }
+.nt-live-workspace.resizing { cursor: col-resize; user-select: none; }
+.nt-live-workspace.immersive, .nt-live-workspace:has(> .nt-session.immersive) { grid-template-columns: minmax(0, 1fr); }
+.nt-live-workspace.immersive > .nt-workspace-pane, .nt-live-workspace.immersive > .nt-live-divider,
+.nt-live-workspace:has(> .nt-session.immersive) > .nt-workspace-pane,
+.nt-live-workspace:has(> .nt-session.immersive) > .nt-live-divider { display: none; }
+@container live-screen (max-width: 560px) {
+  .nt-live-workspace > .nt-session > .tb.gl-toolbar,
+  [data-os="mac"] .nt-live-workspace > .nt-session > .tb.gl-toolbar {
+    flex-wrap: wrap; height: auto; min-height: 48px; padding: 0 12px 8px;
+  }
+  [data-os="mac"] .nt-live-workspace .nt-session .gl-nav { margin-left: 68px; }
+  .nt-live-workspace .nt-session .nt-tb-end { flex-basis: 100%; flex-wrap: wrap; justify-content: flex-end; height: auto; min-height: 32px; }
+  .nt-live-workspace .nt-session .nt-tb-end .nt-select { width: clamp(72px, 22cqw, 128px); }
+  .nt-live-workspace .nt-session .demo-badge { display: none; }
+}

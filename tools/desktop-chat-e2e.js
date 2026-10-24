@@ -25,12 +25,42 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   // React-controlled fields: set through the native setter so React sees the change.
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -44,20 +74,96 @@
   const lastTurn = () => turns().at(-1);
   // The folder picker (ui/chat/FolderPicker.tsx).
   const keyDown = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-  const folderShown = () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  const folderShown = () => $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl .fn")?.textContent ?? "";
+  async function checkFolderSurface(name) {
+    const popup = $(".ws-chip-folder .nt-folder-pop");
+    const style = popup && getComputedStyle(popup);
+    const sample = document.createElement("canvas");
+    sample.width = sample.height = 1;
+    const context = sample.getContext("2d");
+    if (style && context) {
+      context.fillStyle = style.backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+    }
+    const alpha = context?.getImageData(0, 0, 1, 1).data[3];
+    await check(name, !!style && style.opacity === "1" && alpha === 255,
+      JSON.stringify({ background: style?.backgroundColor, opacity: style?.opacity, alpha }));
+  }
   async function send(text) {
     const ta = await until("composer", composer);
     setValue(ta, text);
-    await sleep(100);
-    $(".nt-compose .round.send").click();
+    const button = await until("message ready to send", () => $(".nt-compose .round.send:not(:disabled)"));
+    if (!button) throw new Error("the composer never enabled Send");
+    button.click();
     await until("composer cleared", () => composer().value === "", 5000);
   }
   const idle = (ms = 20000) => until("turn end", () => !running() && !$(".cl-status") && lastTurn()?.querySelector(".cl-foot, .cl-stopped"), ms);
 
+  const liveSlowLabel = () => $$(".cl-tool[data-state=busy] > .cl-tool-hd > .cl-line.shimmer", lastTurn())
+    .find((line) => /sleep\s+600/.test(line.textContent));
+  function ink(color) {
+    if (!color || color === "transparent") return false;
+    const alpha = color.match(/\/\s*([\d.]+)%?\s*\)$/) ?? color.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/);
+    return !alpha || Number(alpha[1]) > 0;
+  }
+  function toolPaint() {
+    const line = liveSlowLabel();
+    if (!line) return null;
+    const paint = (node) => {
+      const s = getComputedStyle(node), rect = node.getBoundingClientRect();
+      return {
+        text: node.textContent.trim(), color: s.color, fill: s.getPropertyValue("-webkit-text-fill-color"),
+        image: s.backgroundImage, clip: s.backgroundClip, webkitClip: s.getPropertyValue("-webkit-background-clip"),
+        background: s.backgroundColor, animation: s.animationName, duration: s.animationDuration,
+        playState: s.animationPlayState, width: rect.width, height: rect.height,
+      };
+    };
+    return {
+      systemReduce: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      appReduce: document.documentElement.getAttribute("data-reduce-motion"),
+      line: paint(line), parts: $$(".cl-lbl > .vb, .cl-lbl > .cl-obj", line).map(paint),
+    };
+  }
+  const fallbackPaint = (p) => !!p && p.parts.length >= 2 && p.line.animation === "none" && p.line.image === "none"
+    && ink(p.line.fill) && p.parts.every((x) => x.text && x.width > 0 && x.height > 0
+      && ink(x.color) && ink(x.fill) && x.fill === x.color && x.image === "none");
+  const normalPaint = (p) => !!p && p.parts.length >= 2 && (p.systemReduce || p.appReduce === "true" ? fallbackPaint(p)
+    : p.line.animation.split(", ").includes("cl-sweep") && parseFloat(p.line.duration) > 0 && p.line.playState === "running"
+      && /linear-gradient\(/.test(p.line.image) && (p.line.clip === "text" || p.line.webkitClip === "text")
+      && !ink(p.line.fill) && p.parts.every((x) => x.text && x.width > 0 && x.height > 0 && ink(x.color) && !ink(x.fill)));
+  async function checkLiveToolPaint() {
+    // SLOW stays active until the real steer/stop below. Read its actual CSS and system preference;
+    // do not forge tool state, pause its sweep, or change motion settings for the normal screenshot.
+    if (!(await until("live sleep 600 tool label", liveSlowLabel))) throw new Error("the slow tool label never became active");
+    const normal = toolPaint();
+    await say("e2e", `     (live tool normal paint ${JSON.stringify(normal)})`);
+    await check("the active Claude tool paints text for the actual system motion preference", normalPaint(normal),
+      JSON.stringify({ systemReduce: normal?.systemReduce, appReduce: normal?.appReduce, animation: normal?.line.animation, parts: normal?.parts.map((x) => ({ text: x.text, fill: x.fill })) }));
+    await shot("18-live-sweep");
+
+    const root = document.documentElement, previous = root.getAttribute("data-reduce-motion");
+    try {
+      root.setAttribute("data-reduce-motion", "true");
+      await until("app reduced-motion tool paint", () => fallbackPaint(toolPaint()), 3000);
+      const reduced = toolPaint();
+      await say("e2e", `     (live tool app reduced paint ${JSON.stringify(reduced)})`);
+      await check("app reduced motion keeps Claude tool text colored without gradient or transparent fill", fallbackPaint(reduced)
+        && reduced.parts.every((x, i) => x.text === normal.parts[i]?.text && x.background === normal.parts[i]?.background),
+      JSON.stringify({ systemReduce: reduced?.systemReduce, appReduce: reduced?.appReduce, animation: reduced?.line.animation, image: reduced?.line.image, parts: reduced?.parts.map((x) => ({ text: x.text, fill: x.fill })) }));
+    } finally {
+      if (previous === null) root.removeAttribute("data-reduce-motion");
+      else root.setAttribute("data-reduce-motion", previous);
+    }
+    await until("restored motion tool paint", () => normalPaint(toolPaint()), 3000);
+    const restored = toolPaint();
+    await check("the root motion attribute and live tool paint are restored", root.getAttribute("data-reduce-motion") === previous && normalPaint(restored),
+      JSON.stringify({ systemReduce: restored?.systemReduce, appReduce: restored?.appReduce, animation: restored?.line.animation }));
+  }
+
   // Diagnostics: say when the panel of the same session is replaced (a remount loses the composer's
   // state). Switching tabs or sessions replaces it on purpose and is not counted.
   let panel = null, panelKey = "";
-  const sessionKey = () => `${$(".nt-chat-hd .cwd")?.textContent ?? ""}|${$(".nt-user")?.textContent ?? ""}`;
+  const sessionKey = () => `${$(".ws-tb-meta")?.title ?? ""}|${$(".nt-user")?.textContent ?? ""}`;
   setInterval(() => {
     const now = $(".nt-chat");
     if (!now) { panel = null; return; }
@@ -66,35 +172,73 @@
     panel = now;
     panelKey = key;
   }, 50);
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 30000);
+  }
+  async function showSessions() {
+    if (!$(".ws-side")) $(".ws-corner .ws-ib").click();
+    return until("workspace sessions sidebar", () => $(".ws-side"), 5000);
+  }
+  async function closeSessions() {
+    if ($(".ws")?.dataset.side === "float") {
+      $(".ws-side .ws-corner .ws-ib").click();
+      await until("workspace drawer closed", () => !$(".ws-side"), 5000);
+    }
+  }
+  async function newSession() {
+    await showSessions();
+    $(".ws-side .ws-nav").click();
+    return until("workspace new-session page", () => $(".ws-new .ws-composer textarea"));
+  }
   try {
-    // 0. A remembered session that is gone from the host (it restarted): the panel goes back to the
-    // sessions and says so, instead of staying on an error with a composer that cannot send.
-    await until("chat panel", () => $(".nt-chat-start, .nt-chat"), 30000);
-    const tabs = () => $$(".nt-rail .seg [role=tab]");
-    localStorage.setItem("ai-remote.chat.last", JSON.stringify({ ...JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}"), [CFG.host]: "c0ffee0000000" }));
-    tabs()[0].click();
-    await sleep(300);
-    tabs()[1].click();
-    const back = await until("back to the sessions", () => $(".nt-chat-start") && $(".nt-chat-picker .nt-chat-note.warn"), 20000);
-    await check("a remembered session that is gone returns to the sessions with a note",
-      !!back && /不在这台电脑上|no longer on the computer/.test(back.textContent),
-      $(".nt-chat-status, .nt-chat-note")?.textContent);
-    await check("and is forgotten", !(JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host]));
+    // 0. The harness opens an explicit missing session in the ordinary agents route. The workspace
+    // explains the missing target and its New session action recovers to a usable first-message page.
+    const missing = await until("missing workspace session", () => $(".ws-session .ws-state"), 30000);
+    await check("the live view shows the agent conversation directly, without the old tabs", !!$(".nt-rail") && !$(".nt-rail > .seg"));
+    await check("a missing session has an explicit explanation and a recovery action",
+      !!missing && /找不到|不存在|not found|couldn.t be found|no longer/i.test(missing.textContent) && !!$(".ws-state-acts button", missing), missing?.textContent);
+    $(".ws-state-acts button", missing).click();
+    await check("New session recovers without an unusable conversation composer", !!(await until("missing target recovered", () => $(".ws-new .ws-composer textarea") && !$(".ws-session .nt-chat"))));
     await shot("00-gone");
 
     // 1. The start form: pick the rich stand-in, a folder and a first message.
-    const form = await until("start form", () => $(".nt-chat-start"), 30000);
+    const form = await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
     await check("the chat panel offers to start an agent", !!form);
-    const pick = $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake"));
-    await check("chat_runtimes lists the stand-in agents", !!pick && $$(".nt-chat-pick .opt").some((b) => b.textContent.includes("No-steer fake")),
-      $$(".nt-chat-pick .opt").map((b) => b.textContent).join(" | "));
+    const agentChip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip:not(:disabled)"), 30000);
+    agentChip.click();
+    const pick = await until("Rich fake in workspace menu", () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === "Rich fake"));
+    await check("chat_runtimes lists the stand-in agents", !!pick && $$(".ws-menu .ws-menu-item").some((b) => $(".ws-menu-label", b)?.textContent.trim() === "No-steer fake"),
+      $$(".ws-menu .ws-menu-label").map((b) => b.textContent).join(" | "));
     pick.click();
     // 1a. The folder: with nothing recent the picker opens on the host's home (files_list over the real
     // channel); a typed path is browsed, a subfolder entered with a click, and the footer takes it.
     const work = CFG.work.split(/[\\/]/).pop();
     const above = CFG.work.slice(0, CFG.work.length - work.length - 1);
-    await check("with no folder chosen the field asks for one", !!$(".nt-chat-start .nt-folder-lbl.none"), $(".nt-chat-start .nt-folder-btn")?.textContent);
-    $(".nt-chat-start .nt-folder-btn").click();
+    await check("with no folder chosen the field asks for one", !!$(".ws-chip-folder .nt-folder-lbl.none"), $(".ws-chip-folder .nt-folder-btn")?.textContent);
+    $(".ws-chip-folder .nt-folder-btn").click();
     const home = await until("home listing", () => $$(".nt-folder-list .row.child").length > 0 && $(".nt-folder-crumbs"));
     await check("the picker opens on the host's home and lists its folders", !!home && !$(".nt-folder-note.err"),
       `${$(".nt-folder-crumbs")?.textContent} | ${$$(".nt-folder-list .row.child").length} folders | ${$(".nt-folder-note")?.textContent ?? ""}`);
@@ -105,6 +249,7 @@
     keyDown(q, "Enter");
     const child = await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work));
     await check("the typed path is browsed and lists the work folder", !!child, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
+    await checkFolderSurface("the folder browser stays opaque over the first-message composer");
     await shot("00-folder-browse");
     child.click();
     await check("entering a folder updates the crumbs", !!(await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work)), $(".nt-folder-crumbs")?.textContent);
@@ -112,22 +257,35 @@
     await check("the footer offers this folder by name", !!use && use.textContent.includes(work), use?.textContent);
     use.click();
     await check("the chosen folder shows by name, the full path on hover",
-      !!(await until("chosen", () => folderShown() === work)) && $(".nt-chat-start .nt-folder-btn .nt-folder-lbl").title === CFG.work,
-      `${folderShown()} | ${$(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title}`);
-    setValue($("#ag-prompt"), "RICH fix the quarter export");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await check("starting opens the conversation", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)));
-    const hdFolder = await until("header folder", () => $(".nt-chat-hd .nt-folder-lbl"));
-    await check("the header shows the folder's name and where it is", !!hdFolder && $(".fn", hdFolder)?.textContent === work
-      && hdFolder.title === CFG.work && ($(".fp", hdFolder)?.textContent ?? "").length > 0, hdFolder?.textContent);
+      !!(await until("chosen", () => folderShown() === work)) && $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl").title === CFG.work,
+      `${folderShown()} | ${$(".ws-chip-folder .nt-folder-btn .nt-folder-lbl")?.title}`);
+    await check("starting opens the conversation", !!(await startSession("RICH fix the quarter export")));
+    const hdFolder = await until("workspace header folder", () => $(".ws-session .ws-tb-meta"));
+    await check("the header shows the folder's name and where it is", !!hdFolder && hdFolder.textContent.includes(work)
+      && hdFolder.title === CFG.work, `${hdFolder?.textContent} | ${hdFolder?.title}`);
     await check("the first message shows as the user's", !!(await until("user row", () => $$(".nt-user").some((u) => u.textContent.includes("RICH fix the quarter export")))));
     await check("the first turn finishes", !!(await idle(30000)));
+    await showSessions();
+    const firstSessionKey = $(".ws-row[data-selected]")?.dataset.rowKey;
+    if (!firstSessionKey) throw new Error("the first workspace session is not selected in its sidebar");
+    await closeSessions();
 
     // 2. What the turn shows (the Claude view): reasoning and tool calls folded into one sentence, the task
     // list as a call, an edit with its counts, Markdown, context usage.
     const t1 = lastTurn();
+    // The terminal footer can precede the group header's finite minimum dwell. Wait for the
+    // finished sentence in this same turn, then keep its content and failure-count checks separate.
+    const initialSummaryPresent = !!$(".cl-group .cl-sent", t1)?.textContent.trim();
+    const summaryWaitStarted = performance.now();
+    await until("the first turn's finished tool group sentence", () => t1?.isConnected
+      && !!$(".cl-group .cl-sent", t1)?.textContent.trim());
     const group = $(".cl-group", t1);
+    await say("e2e", `     first_turn_summary_wait: ${JSON.stringify({
+      initial_summary_present: initialSummaryPresent,
+      resolved_after_ms: Math.round(performance.now() - summaryWaitStarted),
+      terminal_footer: !!$(".cl-foot, .cl-stopped", t1),
+      resolved_summary_present: !!group && !!$(".cl-sent", group)?.textContent.trim(),
+    })}`);
     await check("reasoning and tool calls fold into one group with a sentence", !!group && $(".cl-sent", group)?.textContent.length > 0, group?.textContent);
     await check("the sentence counts the failed command", !!group && /1 failed|1 个失败/.test($(".cl-sent", group)?.textContent ?? ""), $(".cl-sent", group)?.textContent);
     await check("the group sums up the edit", !!group && /\+2/.test($(".cl-group-hd .cl-stat .add", group)?.textContent ?? "") && /1/.test($(".cl-group-hd .cl-stat .del", group)?.textContent ?? ""),
@@ -152,7 +310,7 @@
     await check("the answer renders Markdown: heading, list, table, code block",
       !!reply && !!$("h1, h2, h3, h4, h5, h6", reply) && !!$("li", reply) && !!$("table", reply) && !!$("pre", reply), reply?.innerHTML.slice(0, 200));
     const ring = $(".nt-ring");
-    await check("context usage shows as a ring", !!ring && /4[12]k \/ 200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
+    await check("context usage shows as a ring", !!ring && /4[12]k\s*(?:\/|of)\s*200k/.test(ring.getAttribute("aria-label") ?? ""), ring?.getAttribute("aria-label"));
     await check("the turn's foot offers to copy the reply (its time shows from 1 s)", !!$(".cl-foot button", t1), $(".cl-foot", t1)?.innerHTML.slice(0, 120));
     await shot("01-first-turn");
 
@@ -249,6 +407,10 @@
     $(".nt-chat-body").dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     const qb = await until("quote button", () => $(".nt-quote"));
     await check("a selection offers Quote", !!qb);
+    await check("Quote is positioned over its selection", getComputedStyle(qb).position === "absolute");
+    $(".nt-chat-body").dispatchEvent(new Event("scroll", { bubbles: true }));
+    await sleep(150);
+    await check("scrolling keeps Quote attached to the selected reply", !!$(".nt-quote") && qb.isConnected);
     await shot("16-quote");
     qb.click();
     await check("Quote puts it in the composer as a quote", !!(await until("quoted", () => composer().value.startsWith("> "), 3000)), composer().value.slice(0, 80));
@@ -265,6 +427,7 @@
     const before = turns().length;
     await send("SLOW job");
     await check("a slow turn runs, with stop", !!(await until("running", running)));
+    await checkLiveToolPaint();
     await sleep(2500);
     const tm = $(".cl-status .tm")?.textContent ?? "";
     await check("the status line's timer counts while hidden", /^\d+\s?(s|秒)$/.test(tm.trim()) && parseInt(tm, 10) >= 2, tm);
@@ -291,28 +454,30 @@
 
     // 5. An agent that cannot take a message mid-turn: Send waits for the turn to end; a waiting
     // message can be taken back.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("picker", () => $(".nt-chat-start"));
-    await check("the session list shows the first session", $$(".nt-sessions .sess").length >= 1, $$(".nt-sessions .sess").map((s) => s.textContent).join(" | "));
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("No-steer fake")).click();
+    await newSession();
+    await showSessions();
+    await check("the session list shows the first session", !!$(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`), $$(".ws-row").map((s) => s.textContent).join(" | "));
+    const grouped = $(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`)?.closest(".ws-sec");
+    const groupLabel = $(".ws-gh-label", grouped)?.textContent;
+    await closeSessions();
+    await pickAgent("No-steer fake");
     await check("the last folder is chosen already", folderShown() === work, folderShown());
-    $(".nt-chat-start .nt-folder-btn").click();
+    $(".ws-chip-folder .nt-folder-btn").click();
     const recent = await until("recent list", () => $(".nt-folder-list .row.recent"));
     await check("the picker opens on recent folders, the chosen one marked", !!recent && !!$(".nt-folder-list .row.recent.sel")
       && $$(".nt-folder-list .row.recent").length === 1, $$(".nt-folder-list .row").map((r) => r.textContent).join(" | "));
-    await check("the session list groups sessions under their folder", $$(".nt-sessions .nt-proj-hd .fn").some((x) => x.textContent === work));
+    await check("the session list groups sessions under their folder", groupLabel?.split(" · ")[0] === work, groupLabel);
+    await checkFolderSurface("the recent-folder popup stays opaque over the first-message composer");
     await shot("04b-folder-recent");
     recent.click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
-    setValue($("#ag-prompt"), "SLOW job");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
+    await startSession("SLOW job");
     await check("the second agent starts and runs", !!(await until("running", running, 30000)));
     await check("its composer says the message waits for the turn, no switch", !$(".nt-compose .chip") && /本轮结束后|current turn ends/.test(composer().placeholder), composer().placeholder);
     await send("take me back");
     const queued = await until("queued", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back")));
     await check("the waiting message shows above the composer", !!queued);
+    await check("the waiting message is visible from its first frame", !!queued && getComputedStyle(queued).opacity === "1" && queued.getBoundingClientRect().height > 0);
     await shot("03-queued");
     const remove = await until("remove button", () => $$(".nt-qd").find((q) => q.textContent.includes("take me back"))?.querySelectorAll(".nt-ib")[1]);
     remove.click();
@@ -326,11 +491,11 @@
     await shot("05-no-steer");
 
     // 6. Back to the first session: the transcript replays.
-    $$(".nt-chat-hd .ico").at(-1).click();
-    (await until("session menu", () => $$(".nt-chat-menu [role=menuitem]")[0])).click();
-    await until("picker", () => $$(".nt-sessions .sess").length >= 2);
-    await check("the session list has both sessions", $$(".nt-sessions .sess").length === 2);
-    $$(".nt-sessions .sess").find((s) => s.textContent.includes("Rich fake")).click();
+    await newSession();
+    await showSessions();
+    await until("both workspace sessions", () => $$(".ws-row[data-row-key]").length >= 2);
+    await check("the session list has both sessions", $$(".ws-row[data-row-key]").length === 2);
+    $(".ws-row-main", $(`.ws-row[data-row-key="${CSS.escape(firstSessionKey)}"]`)).click();
     await check("reopening replays the conversation", !!(await until("replay", () => turns().length >= 4 && document.body.textContent.includes("steered: change of plan"))), `${turns().length} turns`);
     await shot("06-replay");
   } catch (e) {

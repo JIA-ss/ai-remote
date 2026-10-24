@@ -71,6 +71,20 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
     }
     #if DEBUG
     var diagnosticsEnabled = false
+    // A 180-degree rotation need not change the view's bounds or run layout again.
+    // Read scene orientation when accessibility asks, rather than reporting an old layout sample.
+    override var accessibilityValue: String? {
+        get {
+            guard diagnosticsEnabled, let stored = super.accessibilityValue, let data = stored.data(using: .utf8),
+                  var value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                return super.accessibilityValue
+            }
+            value["interface_orientation"] = window?.windowScene?.interfaceOrientation.rawValue ?? 0
+            guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else { return stored }
+            return String(data: data, encoding: .utf8)
+        }
+        set { super.accessibilityValue = newValue }
+    }
     #endif
     private var imageSize = CGSize.zero
     private var lastViewport = CGSize.zero
@@ -403,6 +417,7 @@ final class NativePhoneViewport: UIScrollView, UIScrollViewDelegate, UIGestureRe
             let displayed = imageView.convert(imageView.bounds, to: self)
             let available = availableRect
             let value: [String: Double] = [
+                "interface_orientation": Double(window?.windowScene?.interfaceOrientation.rawValue ?? 0),
                 "viewport_width": bounds.width, "viewport_height": bounds.height,
                 "available_x": available.minX, "available_y": available.minY,
                 "available_width": available.width, "available_height": available.height,

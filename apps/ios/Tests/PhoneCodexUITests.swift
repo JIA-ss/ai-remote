@@ -24,7 +24,7 @@ final class PhoneCodexUITests: XCTestCase {
         return app
     }
 
-    func testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs() {
+    func testCodexTurnFoldsAndOpensToGroupsShellsAndDiffs() throws {
         continueAfterFailure = false
         let app = launch()
         defer { app.terminate() }
@@ -105,18 +105,50 @@ final class PhoneCodexUITests: XCTestCase {
         XCTAssertTrue(changed.descendants(matching: .any)["codex-diff"].waitForExistence(timeout: 5), "a changed file opens to its diff")
         bringIntoView(app, changed)
         XCTAssertTrue(text(changed, "end = date(year, quarter * 3, 31)").exists, "a removed line")
+        let removed = phoneCodexDiffLabel(PhoneDiffLine(.del, "    end = date(year, quarter * 3, 31)", old: 7), lang: lang)
+        let added = phoneCodexDiffLabel(PhoneDiffLine(.add, "    end = date(year, quarter * 3, last)", new: 8), lang: lang)
+        XCTAssertTrue(changed.staticTexts[removed].exists, "a deleted row exposes its old line number and code")
+        XCTAssertTrue(changed.staticTexts[added].exists, "an added row exposes its new line number and code")
+        // Exercise the expanded card through the audit engine used by Accessibility Inspector too.
+        // This is an automated audit, not a VoiceOver navigation test.
+        try app.performAccessibilityAudit(for: [.elementDetection])
         file.tap()
         waitFor("closed again") { changed.descendants(matching: .any).matching(identifier: "codex-diff").count == 0 }
         let review = changed.buttons["codex-review"]
         XCTAssertTrue(scroll(app, to: review, up: true))
         review.tap()
         waitFor("Review opens both files") { changed.descendants(matching: .any).matching(identifier: "codex-diff").count == 2 }
+        try app.performAccessibilityAudit(for: [.elementDetection])
         shot(app, "c05-changes-review")
 
         // Folding again hides the work.
         XCTAssertTrue(scroll(app, to: worked, up: true))
         worked.tap()
         waitFor("folded again") { !app.buttons["codex-group-cc1"].exists }
+    }
+
+    func testLongCodexHistoryStartsWithThirtyTurnsAndOpensTheEarlierPage() {
+        continueAfterFailure = false
+        let app = launch(["-ui-codex-history"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.staticTexts["History request 35"].waitForExistence(timeout: 15), "the conversation starts at its end")
+        let turns = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "codex-turn-"))
+        XCTAssertEqual(turns.count, 30, "only the latest page is mounted")
+        XCTAssertTrue(app.staticTexts["History request 6"].exists)
+        XCTAssertFalse(app.staticTexts["History request 1"].exists, "older turns are not mounted yet")
+        let earlier = app.buttons["chat-earlier-turns"]
+        XCTAssertTrue(scroll(app, to: earlier, up: true, tries: 40), "the history button is above the visible turns")
+        XCTAssertEqual(earlier.label, words("cdx_show_earlier_turns"))
+        earlier.tap()
+        let first = app.staticTexts["History request 1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "the older page joins the existing turns")
+        XCTAssertEqual(turns.count, 35, "no previous turns were dropped or duplicated")
+        XCTAssertFalse(earlier.exists, "there are no more retained turns to open")
+        XCTAssertTrue(first.isHittable, "opening history positions its new first turn in view")
+        let second = app.staticTexts["History request 2"]
+        XCTAssertTrue(first.frame.minY < second.frame.minY, "older turns stay in chronological order")
+        XCTAssertTrue(app.staticTexts["History request 35"].exists, "the latest turn is still mounted")
+        shot(app, "c12-earlier-history")
     }
 
     func testLiveCodexTurnSaysWhatRunsAndShowsItsPlanThenStops() {

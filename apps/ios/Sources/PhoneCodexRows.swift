@@ -516,6 +516,11 @@ struct PhoneCodexDiffView: View {
         .padding(.leading, numbered ? 0 : 6)
         .padding(.vertical, 1)
         .background(add ? Ink.addBG : del ? Ink.delBG : Color.clear)
+        // Expose the visible numbers and change marker with the code, rather than hiding that
+        // information from readers who navigate the diff through accessibility.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(phoneCodexDiffLabel(l))
+        .accessibilityAddTraits(.isStaticText)
     }
 
     /// A line number, right-aligned in a column as wide as the largest one.
@@ -817,7 +822,7 @@ private struct ChangesCard: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        // Keep the border without clipping the expanding accessibility subtree.
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("codex-changes")

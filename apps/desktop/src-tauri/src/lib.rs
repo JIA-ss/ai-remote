@@ -1291,8 +1291,23 @@ fn find_cli() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("cannot find the ai-remote command next to this app or on PATH (set AI_REMOTE_CLI)"))
 }
 
+/// A failed or interrupted smoke run must never leave preferences in the person's normal WebView.
+/// Only the explicitly requested debug run uses a nonpersistent website data store.
+#[cfg(any(debug_assertions, test))]
+fn configure_smoke_storage(config: &mut tauri::Config, smoke: bool) {
+    if smoke {
+        for window in &mut config.app.windows {
+            window.incognito = true;
+            // Acceptance windows render off screen; installed windows retain normal throttling.
+            window.background_throttling = Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    let mut smoke_activity = std::env::var_os("AI_REMOTE_SMOKE").map(|_| SmokeActivity::begin());
     let builder = builder();
     #[cfg(debug_assertions)]
     builder
@@ -1306,6 +1321,15 @@ pub fn run() {
     });
     let tray_profile = profile.clone();
     let tray_cli = cli.clone();
+    let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let mut context = context;
+    #[cfg(debug_assertions)]
+    configure_smoke_storage(context.config_mut(), std::env::var_os("AI_REMOTE_SMOKE").is_some());
+    #[cfg(debug_assertions)]
+    if std::env::var_os("AI_REMOTE_SMOKE").is_some() {
+        eprintln!("[smoke] isolated nonpersistent webview storage");
+    }
     tauri::Builder::default()
         // Windows: our page draws the 48 px title bar; the plugin adds the caption buttons and the
         // native hit-test that keeps Snap Layouts on the maximize button. The window is shown by
@@ -1355,9 +1379,14 @@ pub fn run() {
                 let _ = tauri::Emitter::emit(window, "window-hidden", ());
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the ai-remote app")
-        .run(|app, event| {
+        .run(move |app, event| {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            if matches!(&event, tauri::RunEvent::Exit) {
+                // Keep the activity through the queued exit request, until the event loop handles it.
+                drop(smoke_activity.take());
+            }
             // macOS: a click on the Dock icon brings the hidden window back.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
@@ -1366,6 +1395,39 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         });
+}
+
+/// A smoke run is user-requested work even while its window is off screen or the desktop is locked.
+/// Keep only that debug run out of App Nap; display sleep, system sleep and locking remain unchanged.
+/// The token stays on the app event loop and is ended on exit or when that loop unwinds.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+struct SmokeActivity {
+    process: objc2::rc::Retained<objc2_foundation::NSProcessInfo>,
+    activity: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>,
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+impl SmokeActivity {
+    fn begin() -> Self {
+        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+
+        let process = NSProcessInfo::processInfo();
+        let activity = process.beginActivityWithOptions_reason(
+            NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+            &NSString::from_str("ai-remote debug UI smoke test"),
+        );
+        eprintln!("[smoke] began activity to prevent App Nap for this debug run");
+        Self { process, activity }
+    }
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+impl Drop for SmokeActivity {
+    fn drop(&mut self) {
+        // SAFETY: this is the activity token returned by this process's matching begin call.
+        unsafe { self.process.endActivity(&self.activity) };
+        eprintln!("[smoke] ended debug run activity");
+    }
 }
 
 /// Debug builds: `AI_REMOTE_SMOKE=<png>` runs the app without ever showing it to the person at the
@@ -1384,8 +1446,11 @@ fn smoke(app: &tauri::App) {
         // with real key events (an input method, tools/desktop-chat-e2e-ime.js).
         if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() == Ok("1") {
             let _ = w.show();
+            let _ = w.set_focus();
         } else {
             let _ = w.set_focusable(false);
+            let _ = w.set_ignore_cursor_events(true);
+            let _ = w.set_title("ai-remote · 隔离验收");
             let _ = w.set_position(tauri::PhysicalPosition::new(-8000, -8000));
         }
         // `AI_REMOTE_SMOKE_QUALITY=ultra` picks a live-view quality first (a stream-quality id; run
@@ -1415,6 +1480,29 @@ fn smoke(app: &tauri::App) {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
             if let Some(w) = handle.get_webview_window("main") {
+                // The page shows its initially hidden window after its first paint. On macOS that
+                // can constrain a pre-show position back onto a screen; move after that show too.
+                if std::env::var("AI_REMOTE_SMOKE_VISIBLE").as_deref() != Ok("1")
+                    && let Err(error) = place_smoke_offscreen(&w)
+                {
+                    eprintln!("[smoke] cannot place the isolated window off screen: {error}");
+                    handle.exit(1);
+                    return;
+                }
+                eprintln!("[smoke] scripted window position: {:?}, size: {:?}", w.outer_position(), w.outer_size());
+                let screens = w.available_monitors().map(|monitors| {
+                    monitors.into_iter().map(|monitor| (*monitor.position(), *monitor.size())).collect::<Vec<_>>()
+                });
+                eprintln!("[smoke] screen bounds: {screens:?}");
+                let window_geometry = w.outer_position().ok().zip(w.outer_size().ok()).map(|(position, size)| {
+                    json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                });
+                let screen_geometry = screens.ok().map(|screens| {
+                    screens.into_iter().map(|(position, size)| {
+                        json!({"x": position.x, "y": position.y, "width": size.width, "height": size.height})
+                    }).collect::<Vec<_>>()
+                });
+                eprintln!("[smoke] geometry {}", json!({"window": window_geometry, "screens": screen_geometry}));
                 let _ = w.eval(script);
             }
         });
@@ -1435,11 +1523,18 @@ fn smoke(app: &tauri::App) {
                     name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
                 if let Some(w) = handle.get_webview_window("main") {
                     let path = shots.join(format!("{name}.png"));
-                    match capture(&w).and_then(|img| img.save(&path).map_err(|e| e.to_string())) {
-                        Ok(()) => eprintln!("[smoke] saved {}", path.display()),
-                        Err(e) => eprintln!("[smoke] cannot capture {name}: {e}"),
-                    }
-                    let _ = w.eval(format!("window.__smokeShot && window.__smokeShot('{name}')"));
+                    let error = match save_capture(&w, &path) {
+                        Ok(()) => {
+                            eprintln!("[smoke] saved {}", path.display());
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!("[smoke] cannot capture {name}: {e}");
+                            Some(e)
+                        }
+                    };
+                    let _ =
+                        w.eval(format!("window.__smokeShot && window.__smokeShot({}, {})", json!(name), json!(error)));
                 }
             }
             if done {
@@ -1460,8 +1555,11 @@ fn smoke(app: &tauri::App) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
-        let picture = handle.get_webview_window("main").ok_or("no window".to_string()).and_then(|w| capture(&w));
-        let code = match picture.and_then(|img| img.save(&out).map_err(|e| e.to_string())) {
+        let picture = handle
+            .get_webview_window("main")
+            .ok_or("no window".to_string())
+            .and_then(|w| save_capture(&w, std::path::Path::new(&out)));
+        let code = match picture {
             Ok(()) => {
                 eprintln!("[smoke] saved {}", std::path::Path::new(&out).display());
                 0
@@ -1473,6 +1571,20 @@ fn smoke(app: &tauri::App) {
         };
         handle.exit(code);
     });
+}
+
+#[cfg(debug_assertions)]
+fn save_capture(w: &tauri::WebviewWindow, path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit already returns PNG bytes. Decoding and encoding them again in an unoptimized
+        // debug build can take longer than the UI step, and adds no information to the snapshot.
+        std::fs::write(path, capture_png(w)?).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        capture(w)?.save(path).map_err(|e| e.to_string())
+    }
 }
 
 /// The window's pixels, drawn by the window itself (works off screen).
@@ -1527,8 +1639,35 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
     }
 }
 
+/// Smoke captures webview content, not platform caption controls. AppKit constrains titled windows
+/// to keep a caption strip on screen, so the default smoke window is untitled before moving it.
+#[cfg(debug_assertions)]
+fn place_smoke_offscreen(w: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindowStyleMask;
+        use objc2_foundation::NSPoint;
+        use objc2_web_kit::WKWebView;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        // with_webview dispatches on AppKit's main thread; the window is retained for this call.
+        w.with_webview(move |webview| unsafe {
+            let view = &*webview.inner().cast::<WKWebView>();
+            let result = view.window().ok_or_else(|| "smoke webview has no window".to_string()).map(|window| {
+                window.setStyleMask(window.styleMask() & !NSWindowStyleMask::Titled);
+                window.setFrameOrigin(NSPoint::new(-8000.0, -8000.0));
+            });
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(|error| error.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    w.set_position(tauri::PhysicalPosition::new(-8000, -8000)).map_err(|error| error.to_string())
+}
+
 #[cfg(all(debug_assertions, target_os = "macos"))]
-fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
+fn capture_png(w: &tauri::WebviewWindow) -> Result<Vec<u8>, String> {
     use block2::RcBlock;
     use objc2::AnyThread;
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
@@ -1558,8 +1697,7 @@ fn capture(w: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
         view.takeSnapshotWithConfiguration_completionHandler(None, &done);
     })
     .map_err(|e| e.to_string())?;
-    let bytes = rx.recv_timeout(std::time::Duration::from_secs(15)).map_err(|e| e.to_string())??;
-    image::load_from_memory(&bytes).map(|i| i.into_rgba8()).map_err(|e| e.to_string())
+    rx.recv_timeout(std::time::Duration::from_secs(15)).map_err(|e| e.to_string())?
 }
 
 #[cfg(all(debug_assertions, not(any(windows, target_os = "macos"))))]
@@ -1569,6 +1707,35 @@ fn capture(_: &tauri::WebviewWindow) -> Result<image::RgbaImage, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smoke_windows_use_temporary_storage_without_changing_ordinary_launches() {
+        let original: tauri::Config = serde_json::from_value(serde_json::json!({
+            "identifier": "io.ai-remote.smoke-fixture",
+            "app": { "windows": [
+                { "label": "main", "width": 1280 },
+                { "label": "private", "incognito": true },
+                { "label": "another", "width": 640 }
+            ] }
+        }))
+        .unwrap();
+        let mut ordinary = original.clone();
+        super::configure_smoke_storage(&mut ordinary, false);
+        assert_eq!(ordinary, original, "normal debug launches retain their configured storage");
+
+        let mut smoke = original.clone();
+        super::configure_smoke_storage(&mut smoke, true);
+        assert!(smoke.app.windows.iter().all(|window| window.incognito));
+        assert!(smoke.app.windows.iter().all(|window| {
+            window.background_throttling == Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        }));
+        assert_eq!(smoke.app.windows.len(), 3);
+        assert_eq!(smoke.identifier, original.identifier);
+        assert_eq!(smoke.app.windows[0].label, "main");
+        assert_eq!(smoke.app.windows[0].width, 1280.0);
+        assert_eq!(smoke.app.windows[2].label, "another");
+        assert_eq!(smoke.app.windows[2].width, 640.0);
+    }
+
     /// Regenerates `src/bindings.ts` (also done at every debug start) and fails if a command's
     /// types cannot be exported.
     #[test]

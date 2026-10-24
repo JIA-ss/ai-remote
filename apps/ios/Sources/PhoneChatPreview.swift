@@ -120,6 +120,7 @@ struct PhonePreviewSheet: View {
     let path: String
     let close: () -> Void
     private enum Loaded { case loading, failed(String), ready(Data) }
+    private struct Fetch: Equatable { let path: String; let round: Int }
     @PhoneViewState private var loaded: Loaded = .loading
     @PhoneViewState private var source = false
     @PhoneViewState private var round = 0
@@ -128,6 +129,7 @@ struct PhonePreviewSheet: View {
         let kind = phonePreviewKind(path)
         NavigationStack {
             content(kind)
+                .id(path)
                 .navigationTitle(phoneBaseName(path))
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -153,9 +155,15 @@ struct PhonePreviewSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal).padding(.vertical, 6).background(.bar)
                 }
         }
-        .task(id: round) {
+        .task(id: Fetch(path: path, round: round)) {
             loaded = .loading
-            do { loaded = .ready(try await chat.preview(path, fresh: round > 0)) } catch { loaded = .failed(error.localizedDescription) }
+            do {
+                let data = try await chat.preview(path, fresh: round > 0)
+                try Task.checkCancellation()
+                loaded = .ready(data)
+            } catch {
+                if !Task.isCancelled { loaded = .failed(error.localizedDescription) }
+            }
         }
         .accessibilityIdentifier("chat-preview-sheet")
     }
@@ -183,7 +191,9 @@ struct PhonePreviewSheet: View {
                 PhoneZoomImage(image: image)
             } else {
                 // SVG (or a format ImageIO cannot read): the web view draws it, still without scripts.
-                PhoneHTMLPreview(html: "<!doctype html><html><head><style>body{margin:0;display:flex;justify-content:center}img{max-width:100%}</style></head>"
+                PhoneHTMLPreview(html: "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                                 + "<style>html,body{margin:0;width:100%;height:100%}body{display:flex;align-items:center;justify-content:center}"
+                                 + "img{max-width:100%;max-height:100%;object-fit:contain}</style></head>"
                                  + "<body><img src=\"data:\(phoneImageMime(path));base64,\(data.base64EncodedString())\"></body></html>")
             }
         } else if source {
@@ -205,14 +215,16 @@ struct PhonePreviewSheet: View {
 /// An image that fits the sheet; a double tap shows it at its own size (and back), pinching zooms.
 private struct PhoneZoomImage: View {
     let image: CGImage
+    @Environment(\.displayScale) private var displayScale
     @PhoneViewState private var actual = false
     @PhoneViewState private var zoom: CGFloat = 1
     var body: some View {
         GeometryReader { geo in
+            let fit = min(geo.size.width / CGFloat(image.width), geo.size.height / CGFloat(image.height))
+            let scale = (actual ? 1 / max(displayScale, 1) : fit) * zoom
             ScrollView([.horizontal, .vertical]) {
                 Image(decorative: image, scale: 1).resizable().interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: actual ? CGFloat(image.width) / displayScale : geo.size.width * zoom)
+                    .frame(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
                     .frame(minWidth: geo.size.width, minHeight: geo.size.height)
                     .onTapGesture(count: 2) { actual.toggle(); zoom = 1 }
                     .gesture(MagnificationGesture().onChanged { zoom = max(1, min(6, $0)) })
@@ -221,13 +233,6 @@ private struct PhoneZoomImage: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("图片 \(image.width)×\(image.height)")
         .accessibilityIdentifier("chat-preview-image")
-    }
-    private var displayScale: CGFloat {
-        #if os(iOS)
-        UIScreen.main.scale
-        #else
-        2
-        #endif
     }
 }
 

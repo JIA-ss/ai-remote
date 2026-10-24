@@ -24,12 +24,42 @@
       } catch {}
       await sleep(100);
     }
+    // A throttled timer can sleep past the deadline: one last look before giving up.
+    try {
+      const v = fn();
+      if (v) return v;
+    } catch {}
     await say("e2e", `     (timed out waiting for ${what})`);
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -49,7 +79,7 @@
   }
   // The folder picker (ui/chat/FolderPicker.tsx): a typed path, Enter browses it, the footer takes it.
   async function typeFolder(path) {
-    if (!$(".nt-folder-pop")) $(".nt-chat-start .nt-folder-btn").click();
+    if (!$(".nt-folder-pop")) $(".ws-chip-folder .nt-folder-btn").click();
     const q = await until("folder search box", () => $("#ag-folder-q"));
     setValue(q, path);
     await until("open-path row", () => $(".nt-folder-list .row.open"));
@@ -58,22 +88,45 @@
     (await until("folder listed", () => $(".nt-folder-crumbs .cur")?.textContent === name && $(".nt-folder-ft .btn.primary:not(:disabled)")))?.click();
     await until("picker closed", () => !$(".nt-folder-pop"), 5000);
   }
+
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
+  async function startSession(prompt) {
+    const ta = await until("workspace first-message composer", () => $(".ws-new .ws-composer textarea"), 30000);
+    if (!ta) throw new Error("the workspace new-session page is absent");
+    setValue(ta, prompt);
+    const send = await until("first message ready", () => $(".ws-new .ws-send:not(:disabled)"));
+    if (!send) throw new Error("the workspace never enabled its first-message Send");
+    send.click();
+    return until("connected workspace conversation", readyConversation, 30000);
+  }
   try {
-    await until("start form", () => $(".nt-chat-start"), 30000);
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
+    await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
+    await pickAgent("Rich fake");
     await typeFolder(CFG.work);
-    setValue($("#ag-prompt"), "RICH fix the quarter export");
-    await sleep(200);
-    $(".nt-chat-start .btn.primary").click();
-    await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000);
+    if (!(await startSession("RICH fix the quarter export"))) throw new Error("the workspace did not open its conversation");
     await idle(30000);
 
     // Fonts the page resolves to (the bundled faces, or the platform's).
     await document.fonts.ready;
     const fam = (sel) => { const el = $(sel); return el ? getComputedStyle(el).fontFamily : "(none)"; };
     const loaded = [...document.fonts].filter((f) => f.status === "loaded").map((f) => `${f.family} ${f.weight}`);
-    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".nt-md")} | code: ${fam(".nt-md pre, .nt-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
-    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".nt-md")).fontFamily, "读了文件"));
+    await check("fonts", loaded.length > 0, `body: ${fam("body")} | reply: ${fam(".cl-md")} | code: ${fam(".cl-md pre, .cl-cmd")} | loaded: ${[...new Set(loaded)].join(", ")}`);
+    await check("CJK text has a face", document.fonts.check("14px " + getComputedStyle($(".cl-md")).fontFamily, "读了文件"));
 
     // A long message folds behind a fading mask.
     const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}: 这是一条很长的消息，用来检查折叠 the long message folds`).join("\n");
@@ -89,7 +142,13 @@
     await check("a long message folds", !!bubble && bubble.classList.contains("folded"), bubble?.className);
     await check("the fold fades out with mask-image", /gradient/.test(mask ?? ""), mask);
     await check("the folded text is cut short", !!txt && txt.clientHeight < txt.scrollHeight, `${txt?.clientHeight} < ${txt?.scrollHeight}`);
-    bubble?.scrollIntoView({ block: "center" });
+    const feed = $(".nt-chat-body");
+    feed.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    bubble?.scrollIntoView({ block: "center", behavior: "instant" });
+    await check("the folded message is in the viewport", !!(await until("folded bubble in view", () => {
+      const b = bubble.getBoundingClientRect(), f = feed.getBoundingClientRect();
+      return b.top >= f.top && b.bottom <= f.bottom;
+    })));
     await sleep(300);
     await shot("10-long-folded");
 
@@ -113,7 +172,9 @@
     const body = $(".nt-chat-body");
     await check("the list follows the newest turn", body.scrollHeight - body.scrollTop - body.clientHeight < 40,
       `${body.scrollHeight} - ${body.scrollTop} - ${body.clientHeight}`);
+    body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
     body.scrollTop = 0;
+    await check("the reader reaches the first turn", !!(await until("scrolled to the first turn", () => body.scrollTop < 1)));
     await sleep(300);
     await check("far turns still paint when scrolled to", turns()[0].getBoundingClientRect().height > 50, turns()[0].getBoundingClientRect().height);
     await shot("11-scrolled-top");

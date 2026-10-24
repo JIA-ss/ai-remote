@@ -269,6 +269,25 @@ def main():
         js("document.dispatchEvent(new Event('overlay-install-release'))")
         closed("Enable completed")
 
+        main_js("""const react=await import('/node_modules/.vite/deps/react.js');const React=react.default??react;
+          const dom=await import('/node_modules/.vite/deps/react-dom_client.js');const {createRoot}=dom.default??dom;
+          const {Confirm}=await import('/src/ui/ComputerTabs.tsx');
+          const mount=document.createElement('div');document.getElementById('root').append(mount);
+          const r=createRoot(mount);r.render(React.createElement(Confirm,{title:'Busy confirm fixture',body:'A pending action cannot be dismissed.',verb:'Run',
+            onYes:()=>new Promise((resolve,reject)=>document.addEventListener('overlay-confirm-reject',()=>reject(new Error('Confirm fixture rejection')),{once:true})),
+            onNo:()=>{r.unmount();mount.remove();}}));return true;""")
+        check("Confirm running: fixture opens", until("document.querySelector('.gl-sheet')?.getAttribute('aria-label')==='Busy confirm fixture'"))
+        js("document.querySelector('.gl-sheet .primary').focus();document.querySelector('.gl-sheet .primary').click()")
+        check("Confirm running: both actions disable and focus stays inside", until("document.querySelector('.gl-sheet')?.contains(document.activeElement) && [...document.querySelectorAll('.gl-sheet button')].every(b=>b.disabled)"))
+        press("Escape")
+        js("document.querySelector('.gl-scrim').click()")
+        check("Confirm running: Escape and scrim cannot dismiss pending action", js("document.querySelector('.gl-sheet')?.getAttribute('aria-label')==='Busy confirm fixture'"))
+        js("document.dispatchEvent(new Event('overlay-confirm-reject'))")
+        check("Confirm failure: error stays visible and actions recover", until("document.querySelector('.gl-sheet')?.textContent.includes('Confirm fixture rejection') && [...document.querySelectorAll('.gl-sheet button')].every(b=>!b.disabled)"))
+        shot("5b-confirm-failure-light")
+        press("Escape")
+        closed("Confirm failure", restore=False)
+
         page("shotlang=zh&shottheme=light&view=approvals", "document.querySelector('.decide')")
         result = main_js("""const {store}=await import('/src/lib/store.ts'); const {api}=await import('/src/lib/api.ts');
           document.body.dataset.denials='[]'; const deny=api.deny.bind(api);
@@ -315,6 +334,33 @@ def main():
         js("document.getElementById('overlay-menu-fixture').remove()")
         press("Escape")
         check("Decision: next Esc handles remaining single card", until("document.querySelectorAll('.decide').length===0 && JSON.parse(document.body.dataset.denials).length===3"))
+        # The live Workspace shares a page with approval cards. Chat's Escape must never
+        # deny that pane's approval, while focus in the pane still resolves just one card.
+        main_js("""const react=await import('/node_modules/.vite/deps/react.js');const React=react.default??react;
+          const dom=await import('/node_modules/.vite/deps/react-dom_client.js');const {createRoot}=dom.default??dom;
+          const {DecisionCard}=await import('/src/ui/Decide.tsx');
+          const scope=React.createRef();const mount=document.createElement('div');mount.id='overlay-scope-fixture';document.getElementById('root').append(mount);
+          const r=createRoot(mount);let remaining=[1,2];
+          const render=()=>r.render(React.createElement('div',null,
+            React.createElement('button',{id:'overlay-outside-scope'},'Chat control'),
+            React.createElement('div',{ref:scope,id:'overlay-approval-scope'},remaining.map(n=>React.createElement(DecisionCard,{
+              key:n,host:'office-pc',agent:'Fixture',escapeScope:scope,
+              p:{id:'overlay-fixture-scope-'+n,peer:'home-laptop',tool:'shell',intent:'Scoped Escape '+n,argsPreview:'{}',expiresMs:Date.now()+600000},
+              onDone:()=>{remaining=remaining.filter(x=>x!==n);render();}
+            })))));
+          render();document.addEventListener('overlay-scope-remove',()=>{r.unmount();mount.remove();},{once:true});return true;""")
+        check("Decision scope: two cards mount beside chat control", until("document.querySelectorAll('#overlay-approval-scope .decide').length===2"))
+        js("document.getElementById('overlay-outside-scope').focus()")
+        press("Escape")
+        check("Decision scope: chat Escape preserves both approvals", js("document.querySelectorAll('#overlay-approval-scope .decide').length===2 && JSON.parse(document.body.dataset.denials).length===3"))
+        js("document.querySelectorAll('#overlay-approval-scope .decide')[1].querySelector('button:not(:disabled)').focus()")
+        press("Escape")
+        check("Decision scope: focused second card alone is denied", until("document.querySelectorAll('#overlay-approval-scope .decide').length===1 && JSON.parse(document.body.dataset.denials).at(-1)==='overlay-fixture-scope-2'"))
+        js("document.querySelector('#overlay-approval-scope button:not(:disabled)').focus(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,isComposing:true})); document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,repeat:true}))")
+        check("Decision scope: composing and repeated Escape preserve approval", js("document.querySelectorAll('#overlay-approval-scope .decide').length===1 && JSON.parse(document.body.dataset.denials).length===4"))
+        press("Escape")
+        check("Decision scope: next deliberate Escape resolves last scoped card", until("!document.querySelector('#overlay-approval-scope .decide') && JSON.parse(document.body.dataset.denials).at(-1)==='overlay-fixture-scope-1'"))
+        js("document.dispatchEvent(new Event('overlay-scope-remove'))")
         report = {"status": "passed", "checks": checks, "limitations": limitations,
                   "seconds": round(time.monotonic() - started, 2), "session": args.session, "url": args.url}
         (args.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))

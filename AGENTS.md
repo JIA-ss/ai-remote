@@ -6,10 +6,12 @@
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs tools/live-workspace.test.mjs`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
+- 构建前确认调用目录：Cargo 门槛在仓库根，Tauri 在 `apps/desktop`；非交互子进程需要时为 `PATH` 补 rustup shims（通常为 `~/.cargo/bin`）。
+  本次曾在 `apps/desktop` 执行假定仓库根目录的备份脚本，另有构建子进程 `PATH` 未包含 Cargo；修正调用目录和子进程环境后 Tauri 构建通过，旧二进制此前未变。Cargo 并未缺少安装，未改全局 shell 配置，不把这些调用失败记为产品回归。
 - 换行符：`.gitattributes` 是 `* text=auto eol=lf`，提交时统一转 LF。Windows 上用脚本改文件优先二进制读写
   （`open(p, 'rb')` / `open(p, 'wb')`）。检查换行用 `git ls-files --eol <file>`；Git Bash 里 `grep -c` 查 CR 会误报。
 - Windows 上的 Bash 工具对很长的 heredoc（含引号的大段代码）解析不稳定，大段内容先写成文件再处理。
@@ -17,44 +19,288 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
-## 桌面端毛玻璃第二阶段 · 浮层（2026-10-23，`feat/desktop-glass-pages`）
+## 当前交接状态（2026-10-24，P3 已合入）
 
-本包只交付浮层；主页面、设置内容、会话外观和全页巡检分后续包。按交接稿的 final-decisions、A D.6/D.7 和
-`tests.json` mustKeep 实现；第一阶段之后 main 已合入智能体工作区及 Claude / Codex 视图，验收数量以当前实际结果为准。
+下方历史章节的“待测 / 未测”只对应当时基准；当前状态以本节为准，后续成功不追认旧失败根因，也不代表全部规格已经完成。
 
-- 新 `ui/Modal.tsx`：sheet 与遮罩 portal 到 body，保留 `.cdlg` / `.smoke` / `.nt-pair` 和语义角色；挂载期间
-  `html[data-modal]` 是非零计数，后台 `#root` 与较低的 sheet inert。初始焦点、Tab 循环、关闭恢复焦点统一处理；
-  控件在异步操作中禁用或被替换时，MutationObserver 把失落到 body 的焦点移回 sheet。
-- Confirm、EnableDialog、PairCodeDialog 复用 Modal。安装进行中仍吞掉 Esc / 遮罩点击；配对码关闭仍撤码并解除窗口保护。
-  配对框先聚焦始终可用的取消按钮（原先先聚焦“换一个”，随后生成码禁用它，焦点会掉到 body）。
-- 决策卡 Esc 只拒绝焦点所在的一张，焦点不在卡里时只拒绝第一张；备注框 Esc 只关闭备注。对话框、菜单、远程输入与输入法组字
-  不触发拒绝，忽略长按产生的 repeat。
-- `glass/overlays.css`：确认 / 开启 / 配对框宽 440 / 560 / 480 px，thick 玻璃、无动画的祖先、独立遮罩；mac 按钮靠右按
-  “取消、主操作”显示，Windows 保留 DOM 顺序。配对二维码缩到 160 px、数字 40 px，避免原 48 px 数字吃掉右内边距。
-  泛菜单按平台排版；sheet 是唯一带模糊的入场动画，叠层和模态期间关闭其它菜单动画，减少动态效果时不播放。
-- 补回两处 main 集成回归，均由本包的必跑验收发现：Claude 工具行和轮末遗漏文件预览（复用已有 PreviewProvider / PreviewButton /
-  TurnFiles，不改文件读取与脚本隔离策略），预览 e2e 的旧选择器同步成 Claude 视图；工作区切换器改用 group + aria-pressed 按钮，
-  使网络页文档里恢复只有两枚 radio，切换功能与键盘事件保持原样。
-- 新 `tools/desktop-overlays-smoke.py`：headless Camofox REST，真实页面打开三种 sheet；多卡和叠层使用内存 fixture，
-  测试专属请求的 deny spy 不发送真实操作。截图只能证明布局，不能证明原生材质。
+- P1 已随 PR #45 合入 main `028ccc9`，P2 已随 PR #47 合入 main `1aefe9f`；PR #49、#50 随后合入 main `1ddacb1`。**P3 的 PR #48 已合入，最终产品 main 为 `35f54a3bda0fc01d5f0965c404ec0288543f179a`**，GitHub 确认合入时间为 `2026-10-23T21:51:30Z`。产品实现为 `f688335`，`35f54a3` 只补标题就绪预算与记录；本机 macOS 应用 SHA-256 前缀 `4d62b9a6`、CLI 前缀 `3e35eed8`。
+- **macOS 最终实测**：选定 16 轮、894 条断言通过，162 张替身安全图全部逐张通过。最后 `35f54a3` workspace 161 项各两轮及 56 张图替换旧 workspace，其余驱动与产品字节相同；primary 78、secondary 64 与补充 20 图不重复累计。真实 Codex 桌面另 24/24、50.014 秒及 6 张新安全图通过，不计入 162 张替身图。Mac 原 PNG 与安全裁图的 SHA、尺寸、完整集合均已本地末次复验。
+- **真实与替身被控端基准**：CLI 字节未变，沿用此前替身被控端 35 项各两轮、真实 Codex 被控端受控精确统计 44/44 的证据，没有额外模型测试。旧真实 smoke 43 过、1 失败仍保留；44/44 使用明确串行提示与唯一调用计数，不能追认旧 20 次工具完成的原因，也不把不同链路混成一次测试。
+- **Windows 最终实测与合入门槛**：Desktop/core `40024928040`、Native structured UI `40024928047` 两平台四项及独立 Windows 聊天 `40024928145` 全部成功。最终 Windows 合并树 `b3c4464` 的文件树等于 `35f54a3`；六套各两轮共 818/818 条功能断言通过，142 张新安全裁图独立逐张通过，全集、裁图 SHA 与尺寸末次复验一致。Win32 两探针也实际执行，Windows Python suite 23/23、无跳过；原 workflow 记录 `Ran 23 tests in 1.899s`、`OK`。Windows 原 PNG 下载数为 0，原图 SHA/尺寸仅 CI 记录，本地只复验裁图，不能写成本地复验原图。
+- **历史失败与未选证据**：旧 Windows `40012531342` 的 816/2、`613cedd` / `fe3f578` 的 `40018173520` 的 812/6 及各自独立 142 图视觉通过继续保留。更早 `f688335` core `40023600939` 被新35取代而取消，不记产品失败；native `40023600860` 成功，Windows `40023600928` 的成功仅作较早回退诊断，其 142 图未选未审，不混入最终集合。旧 `427cfec` / `613cedd` 本机与真实链路证据也按各自基准保留。
+- **合入后检查**：main push 生成 core `40029749650` / native `40029749530`；本交接稿形成时未取得终态，未纳入合入前五项成功证据，终态另看对应运行。本次交接文档将走独立 PR，也须等待自身两平台四项必需检查。
+- **安装与未测**：main `35f54a3` 尚待 Mac 与 Windows 开发机分别安装并确认，**本会话未安装 P3**。PR #50 另会话已有的 Mac release 安装记录完整保留，不当作本次 main35 已装。真实 Claude 未登录，Windows 现场、物理键鼠/IME/辅助技术、动画节拍与性能仍未测；本机只有 CLT，没有完整 Xcode。其余未实现的会话组织与长对话功能见两份工作区笔记。
 
-实测（本机 macOS 27.0.1 / Apple Silicon / 16 GB，Rust 1.95.0、Node 25.5.0、Python 3.14.2）：
-- `tsc --noEmit`、`npm run build`、CLI 与 Tauri debug 构建通过；`cargo fmt --all --check`、Clippy `-D warnings` 通过。
-- `node --test tools/*.test.mjs` 258 项：257 过、0 失败、1 跳过（PowerShell 原生命令参数测试）；最终代码又跑 1 次同样通过。
-- Camofox headless、humanize=true、1280×800、Vite demo：浮层专项最终完整 **111/111 过，1 次，60.36 秒**；网络 **17/17 过，1 次**。
-  覆盖三种 sheet 的深浅布局、Tab / Esc、外壳导航隔离、异步禁用焦点、两层 sheet、减少透明度与 demo 撤码。
-  多决策卡用真实 store 内存事件与仅 fixture ID 的 deny spy；原生 Tab/Esc，外壳快捷键使用 DOM 事件。截图不证明原生模糊。
-- 真实 App + 隔离 quiet host + 替身：预览 **31/31 过，1 次**。首轮完整对话在并行编译、较高换页压力及锁屏期间变慢，
-  截图等待超时，第二次 SLOW 未进入运行，手动中止；不计为验收通过，保留诊断日志。原测试此处先等待 running 再直接点 stop，
-  超时后表现为 null.click；未找到与本包浮层代码的直接关联，仍需空载复跑，不能把原因直接定为换页压力。
-- 原生窗口验收使用的隔离 profile 一开始路径过长，触发 Unix socket `SUN_LEN` 限制；改用短 `/tmp` profile。
-  已观测 native / thick 36px 计算样式与 portal / modal=1 / inert，但系统检测本机锁屏且无法自动解锁，未取得可接受的整屏裁窗效果图。
+## Windows 解码故障与批量验收精确化（2026-10-24，PR #48）
 
-- Rust workspace 全量在 `-j 2 -- --test-threads=1` 条件下通过：437 过、0 失败、9 忽略（1 次）。默认并发首轮在
-  `ipc::tests::a_second_daemon_cannot_replace_the_live_socket` 的退出后重绑阶段遇到 AddrInUse，串行复跑通过；未改 Rust。
+- **失败实测**：`613cedd` 的 Windows 聊天运行 `40018173520` 为 812 项过、6 项失败，均在工作区。两轮都实际等满首帧检查的 30 秒，secure context / WebCodecs 可用、没有 session/stream-ended 错误，但画布一直 0×0；整个套件分别记录 502 / 503 次配置和同数 `OperationError`，未记录 decoder caught-up。被控端两次选择了既有 GPU→CPU 采集回退；这些数字只证明配置/错误循环，不证明具体显卡或驱动原因。
+- **产品修复**：解码仍先请求 `prefer-hardware`；当前解码器的 `OperationError` / `NotSupportedError` 让同一编码与尺寸在下一关键帧用 `no-preference`，由浏览器选择可用路径。只保留本次推流最近 16 个失败配置，普通 reset 不会再次尝试该配置的硬件偏好；不同配置仍可先用硬件。DataError 等仍按原规则请求关键帧，退役/已关闭实例的迟到错误不污染新实例。`no-preference` 不等于实测软件解码；语义依据 [WebCodecs 7.9](https://www.w3.org/TR/webcodecs/#dom-hardwareacceleration)。
+- **键盘验收精确化**：另 4 项失败涉及 inert / 恢复归属 / 元数据快照。旧快照混入异步状态点，且 DOM 不等会短路真正的后端检查；当前证据不能证明键盘改了持久元数据，也不能追认失败由状态点或自动标题导致。现在严格比较 title/pin/archive，状态点另记；后端核对始终执行，两个元数据结果仍严格合取。四个阶段只导出静态名称和布尔，不导出会话 ID、标题或原事件。自动标题与列表必须先对齐同一被控端快照，才开始键盘探针；未就绪即失败，不用 sleep 或重试。
+- **最终 Windows 功能实测（`40024928145`）**：workspace 两轮均取得 1024×768 画布，无会话或 stream-ended 错误；每轮记录 `OperationError` 2 次、默认偏好回退 2 次、decoder caught-up 2 次，硬件偏好错误后恢复路径已在该环境实际走通。`no-preference` 仍由浏览器选择，不等于证明软件解码；检查点等待 0 ms 也不是流启动时延。四阶段 ownership 的 flow/selection/current/metadata/menu/focus/inert 与 host 元数据布尔两轮全真，状态点也未变；旧 812/6 的具体触发条件仍未追认。
+- **就绪预算推导**：后台工作区合法轮询间隔为 20 秒，挂载时的即时刷新不代表自动标题也已到达；因此新增标题/列表对齐门槛在隐藏文档中共用 25 秒、可见文档中共用 10 秒。25 秒是轮询间隔加工程余量的推导上限，不是实测标题时延或网络保证；仍按实际快照就绪立即继续，超时失败，独立解码帧的 30 秒检查不变。
+- **静态阶段与后续实测**：新增 7 个真实模块回归覆盖同步/异步失败、数据错误、迟到回调、配置隔离、有界历史及输出/清理；全量 Node 423 项中 422 过、1 平台项跳过，TypeScript 通过。该阶段 Windows 证据便携测试在 Mac 为 23 项中 21 过、2 个 Win32 项跳过；随后最终 Windows workflow 实际执行 23/23，无跳过，记录 1.899s。Rust 源码未改，静态结果本身不证明 WebView2 恢复；最终 Windows 两轮恢复与 818/818、142 图通过属于后续实际证据。P3 已合 main `35f54a3`，旧失败及未知根因保留，本会话未安装。
 
-合入前待补：完整对话 3 次、预览第 2 次、render / offline、真实窗口深浅玻璃截图与原生快捷键。
-未测：Windows Mica / 标题条、不同壁纸和失焦对比度、视频帧率对照、真实主机安装及配对。后两项未因本包主动执行。
+## 并行主干整合与重新验收（2026-10-24，PR #48）
+
+- 并行会话已把 PR #49、#50 合入 main `1ddacb1`。其中包含 MCP 元数据与原生夹具报告修正，以及推流旁的完整工作区、新路由、菜单、卡片焦点与对应 E2E。此前只 fetch 后推送、未及时检查 origin/main 是否为本分支祖先，漏查了合并冲突，导致 PR 的 pull_request CI 没有生成检查记录；不是工作流被禁用。
+- 本次先整合主干，再保留本批多选/批量/撤销、动效回退、摘要语义等待与 Windows 证据入口。共享菜单按可见后聚焦；嵌入侧栏的多选快捷键应遵循工作区键盘归属，画面接管或 pane inert 时不能截走按键。
+  Windows 证据只裁完整工作区 pane 或安全对话框，不能把 LiveWorkspace 的视频半边当作测试 UI。四份 quiet 配置、只读 invoke 兼容、失败保留与精确计数仍是门槛。
+- 旧 `40005026321` 聊天运行及手动触发的旧 `4bcc35e` core/chat 运行因整合主干而主动取消，不能记整合版成功或产品失败。原生 `40007638843` 另保留自身的实际结果；即使通过也不替代新合并树验收。
+- **整合态静态/便携实测**：TypeScript、fmt、全量 Node 416 项（415 过、1 平台跳过）通过；Windows runner 16 项在本机 14 过、2 个 Win32 探针跳过，fixture reader 4 项通过。新增 pane 测试确认导出的视频色块为 0、隐藏/零矩形时拒绝父层回退；这些不替代真实 WebView2 或原生像素验收。
+- **整合源码 `427cfec` 实测**：本机 Clippy、Rust 440 过 / 9 忽略、CLI 与 Tauri debug 构建通过；被控端替身 35 项各两轮通过。原生六套各两轮：工作区 161、默认对话 77、Codex 121、渲染 12、离线 7、预览 31，每轮合计 409，两轮 818 项全过；补充 Claude 细节 28 与导航 10 各两轮，另 76 项全过。142 张主图和 20 张补充图均已逐张复核。完全离屏、非持久配置、四份 quiet 与真实退出均有记录；隐藏文档里的 DOM 快捷键探针不代表物理键鼠验收。
+- **新增诊断的本机补验**：`613cedd` workspace 161 项连续两轮通过，56 张新安全图已逐张通过；两轮类型化记录为3840×1620、hidden/secure/WebCodecs均为true、错误状态均为false，检查点等待0/1 ms不是流启动时延。被控端替身35项又各两轮通过（10.257 / 9.794秒）。清理检查仅确认本任务debug进程0、验收目录复制auth文件0、临时真实profile 0，不推导系统没有其它真实应用或CLI。
+- **真实 Codex 与失败保留**：同一整合包、Codex 0.159.2、已登录、模型 `gpt-6-luna` 的桌面流程 24 项通过，6 张图复核通过（6 个文件、5 个唯一安全裁图内容）。被控端 smoke 43 项通过、1 项插话行为失败：同轮插话约 0.03 秒获应答，末答为 5，但旧统计记 20 次工具完成。代码链确认上游成功应答后才发插话用户事件；现有证据不能确定是否提前排了命令，也不能认定产品丢插话。测试补明确逐命令等待、按唯一 execute call_id 计数、发送返回码及可选私有逐事件留证；保留原 `<12`、末答 5、同轮要求；`613cedd` 新受控复验 44/44 通过、43.063 秒，使用同一产品二进制。提示与统计方式已变，不追认旧失败根因。
+- **精确插话留证复核**：新运行实际执行`sleep 1; echo 1`至`echo 5`，第2条完成后发插话，初始与插话发送返回码均0；发送/应答时各有2条已开始且完成，同turn6应答后才出现第3条开始。36个带序号事件连续、无重复（另1个无序号commands快照），转录同时未完成的execute最多1条。脚本观察发送至应答29.044 ms，host第2条完成至应答事件时间差28 ms；它们不是模型内部读取时点，不能证明内部没有预生成，也不反推旧失败原因。原隔离profile已删除；清理结论只限本任务范围。
+- **Windows 仍未验收通过**：`40012531342` 的 12 轮中 816 项过、2 项失败，均为工作区“已收到解码帧且无采集错误”；其余五套各两轮全部通过。截图只导出安全工作区与预览裁图；旧证据未导出 canvas 尺寸或错误分类，不能区分采集、传输、解码或终止。新增静态枚举/布尔/数值诊断与私有原生日志白名单计数，禁止导出错误原文、原屏幕或任意日志；原断言与 30 秒等待不变。便携诊断测试本机 20 项中 18 过、2 个 Win32 项跳过，含实际驱动事件到解析器的契约检查；该轮142张安全裁图后续逐张视觉通过，功能816过/2失败仍保留；新运行结果见下一条。
+- **最新 Windows 失败（`40018173520`）**：`613cedd` 触发的PR合并树`fe3f578`共12轮，812项过、6项失败，全部在workspace：第1轮metadata不变和首帧两项失败，第2轮另有inert/恢复ownership两项失败；其余五套各两轮通过。两轮检查点canvas均0×0、connected=true、secure/WebCodecs=true、hidden=false，无session-error/stream-ended；30秒等待实际30065/30098 ms。解码器配置/OperationError计数分别502/502、503/503，caught-up均0，host GPU→CPU fallback各2次。这些是白名单诊断计数，不是已解码帧数；正在验证硬件偏好失败后重复按原配置重建的路径与最小回退。ownership失败另行核对异步状态和真实事件，不无证据归因解码压力。新142张安全裁图已独立逐张视觉通过，裁图SHA、尺寸与完整集合末次复验通过；功能812过/6失败保持，原图未上传、原图哈希仅CI记录。
+- **该阶段必需 CI 与后续**：`427cfec` 的 Desktop/core `40012531326`、Native structured UI `40012531320` 两平台四项全部成功，但该阶段独立 Windows 聊天失败当时仍阻止 PR #48 合入。旧816/2与新812/6两轮失败均保留；后续解码回退与ownership验收精确化见上节，后续最终35的Windows818/818与142图通过另记于顶部。旧阶段图集按各自基准保留，不追认为新源码；真实 Claude 已安装但未登录，本轮未测。此会话未安装 PR #48 候选到 Mac 或 Windows 开发机；下节 PR #50 的另会话安装记录保留。
+
+## 实时画面与完整智能体工作区并排（2026-10-24，PR #50）
+
+- 用户明确要复用现有完整工作区：左实时画面，右侧保留 CLI、工程、会话、新建和对话；不再增加顶部选择条，也不跳另一套配置页。
+  有已配对电脑时，智能体和看电脑入口都进入同一并排视图；工作区选择电脑时同步左侧，选择同机项目/会话只改变右侧。
+- `LiveWorkspace` 让左 `SessionPage` 与右 `Workspace embedded` 成为兄弟节点，只给左侧按 host 加 key；中间可调整宽度。
+  工作区按自身容器测宽并使用原侧栏/抽屉，保留完整 computers 给全局 store。新建地点回报不清草稿、不循环；已有首句和一次性 ticket 仍用原流程。
+- 快捷键限右侧，Claude 审批/计划/问答、数字会话导航及模式菜单不截左侧远程输入；右侧已聚焦控件卸载、焦点回 body 时仍保留其按键归属，
+  左侧指针/焦点动作立即接回。全屏隐藏右侧但保留会话，Review 等父层解除 inert 后才聚焦。
+  隐藏应用停止画面与远程输入，重新显示后等新几何和首帧再恢复；不能因工作区默认并排而在后台重新观看。
+- 从电脑页打开的旧 `chat.session` 也按最近工作区恢复；切到设备页再回来保留当前会话，旧 ticket 不复用。
+  已打开的会话断线时保留正文、草稿、未送达和重试；首次离线、权限拒绝和会话不存在仍显示原有明确状态。
+- **门槛实测**：本次界面源码 `b8068e9`，之后本分支只改测试和记录。Rust fmt、全工作区/all-targets Clippy、Rust 439 过 / 9 忽略、
+  TypeScript、CLI / Tauri debug 构建与 release app 打包通过；全量前端 399 项，398 过 / 1 平台项跳过。
+  本地 Rust 全量在本分支初始基准通过，后续同步 main 只带 Windows fixture 诊断的 Rust 差异；最终两平台 CI 另行核对，不把 Mac 当 Windows 现场。
+- **最终本机原生 E2E**：同一份最终 debug 应用、隔离 quiet 被控端和控制端，经真实 QUIC 与替身/真实 CLI，以下每套各一轮全过；
+  请求 `--visible`，实际 1280×800 CSS 窗口、DPR 2，文档报告 hidden / focused。默认完全离屏首轮因显示器枚举空被硬门槛拒绝，
+  本轮不冒称完全离屏或物理键鼠验证。
+
+  | 脚本 | 通过项 |
+  |---|---:|
+  | workspace | 129 |
+  | Codex 替身 | 121 |
+  | Claude 默认 | 74 |
+  | render | 12 |
+  | preview | 31 |
+  | offline | 7 |
+  | 真实 Codex | 24 |
+
+  真实 Codex 0.159.2、ChatGPT 已登录、`gpt-6-luna`，覆盖真实修改、命令、改动卡、插话、停止与按原 ID 重开；
+  校验返回 2026 年四个正确季度末日期。工作区关键同机新建/切换/历史段实测 1417 ms，已解码 3840×1620、同一画布，原始审计无 view_start/view_end；
+  此前两个阶段另有 129/129 各一轮通过，单独保留，不混成最终源码三连。Camofox headless 深浅主题、1440 / 1280 窗宽、窄左画面及跨机画布切换已看过，未见文档横溢出。
+- **保留的失败与修复**：早期原生第 1 轮在 51 项中有 2 项快捷键归属失败，修复 body 焦点归属；第 2 轮 128 项有 2 项失败，
+  原因是新测试创建第 5 个智能体撞既有 4 个额度，改为先结束本轮自建空闲会话，未放宽服务上限。
+  Codex 初轮 101 项中有 3 项菜单/停止失败：菜单首次在隐藏测量阶段聚焦无效，改为可见提交后聚焦；新增真实组件回归在旧码失败、新码通过。
+  Claude 初轮 72 项虽通过，逐图仍发现目录弹层被玻璃卡片样式变半透明、输入框文字透出；恢复原不透明弹层，最终两处 computed alpha 均 255 / opacity 1。
+  preview 初轮 29 过 / 2 失败是驱动从旧存储键取不到 session，已改读取实际选中工作区会话；原两条安全拒绝断言完整保留。
+  两个 Codex 驱动同时按完整工程路径确认选择；所有旧失败日志/截图留在仓库外，不删除、不追认为通过。
+- **视觉复核**：最终七套 73 个 PNG 文件清单、SHA-256 与逐图结论均已核对，未见剩余确证遮挡/溢出；旧的两张目录透字图单独保留。
+  历史返回的一张截图拍在加载阶段，只证明绘制状态，不能写成回放追平或终态；完整回放另由 Codex / Claude 套件的内容与轮数断言验证。
+- **安装与边界**：最终 release 桌面端已原子替换 `/Applications/ai-remote.app`，安装前核对旧版指纹，安装后 deep/strict 签名与三个可执行文件 SHA-256 均核对，
+  旧 app 留作本地备份；未迁移或重启既有被控端服务。本轮只测本机，Windows 现场、真实 Claude 登录、物理键鼠/IME/VoiceOver 未测；无 iOS 改动。
+  安装版实际打开，智能体入口和新建页正常；正式配置当时 0 台已配对电脑，显示配对提示，没有将这次启动当作正式配置里的实时画面验收。
+  独立 worktree 实现，主检出其它会话的页面美化和 iPad 改动未纳入。
+- **本地合入**：PR head `8571970` 的两平台 test/native 四项检查全成功（Desktop/core `40001419318`、Native structured UI `40001419198`）。
+  推送前发现 main 新增 `c9d03ec`（MCP 元数据及 fixture reader），重新在临时 worktree 从它 `merge --no-ff`，完整保留两边记录；
+  界面文件与 `b8068e9` 完全相同，合并态另跑 fmt / workspace Clippy、Rust 440 过 / 9 忽略、13 项 mounts 检查与 reader 4 项回归均通过。
+  这批独立元数据变化没有改会话或推流，未将七套界面验收无意义地重复计数；main 合入后的自动 CI 单独核对。
+
+## 智能体工作区第二阶段 · 第三段：列表多选与批量操作（2026-10-23 ~ 24）
+
+- Cmd/Ctrl 点击切换选择，Shift 按可见行顺序选择范围；选中行右键打开批量菜单。Esc、无修饰点击行外（含组头与列表空白）或普通打开会话会清空选择，选择不持久化。
+  全选至少需要两个会话；有折叠分区时禁用并提示先展开。保留默认的文件夹与电脑分组、截断后的“更多”和 Ctrl+Shift 数字跳转。
+- 只接现有置顶、已读状态和归档接口；运行中或待处理的会话不能批量改已读。菜单字母只作用于当前菜单，多选时阻止单行快捷键误改其中一行。
+  批量远端请求共享并发上限 8，同会话编辑串行、每批按会话去重；逐项收集成功与失败，部分成功明确计数并说明失败原因。
+- 撤销只处理实际成功且状态仍符合本批结果的项，只发本次字段的补丁。旧请求的回复与回滚也只改本次涉及的字段，保留期间收到的其他元数据。
+  本地已读批量只更新一次快照，每个既有存储键写一次；打开会话后的新决定优先于撤销。归档后被筛掉的成功项仍可撤销回来。
+- 修复共享弹出菜单首次聚焦：先完成隐藏测量，再在显示后聚焦，避免浏览器拒绝焦点而让字母键仍发给列表；保留菜单的筛选及确认步骤更新不再触发重新聚焦。
+- **开发期浏览器实测**：Camofox headless 演示后端 24 项页面流程通过，深色中文 / 浅色英文截图看过；DOM 事件触发真实挂载组件，
+  不能当作系统键鼠证明。开发初期前端 369 项（368 过、1 跳过）；整合后全套 391 项（390 过、1 平台项跳过）、TypeScript 通过，保留不同阶段口径。
+- **门槛实测**：产品基准 `59c86aa` 的 fmt、全工作区/all-targets Clippy、Rust workspace 测试通过（439 过、9 忽略，另 13 项 mounts 检查）；
+  Tauri debug/no-bundle 构建成功。后续整合到 `fc7fe3d`（原 `6d46f13` 只更正祖先提交署名，文件树一致）没有生产 TS/Rust 差异，新增 Rust 仅为上一节的原生夹具诊断测试。
+  原生记录保存实际二进制与脚本哈希，不能把不同验收工具版本说成同一轮。
+- **修复前基准的本机原生实测（历史）**：实际应用到本机隔离被控端，四份 quiet 配置、非持久 WebView、当轮窗口与报告的全部显示器无交叠；
+  workspace **134**、Codex **120**、chat **72**、render **12**、offline **7**、preview **31** 项，各连续两轮通过。
+  新批量段以三个非当前空闲会话为样本，验证修饰键多选/范围、菜单焦点、P/U/A、撤销；置顶与归档另从真实被控端 `chat_sessions` 查询持久化。
+  8 是程序并发上限，Node 模拟验证此上限；本机原生三个会话样本不冒称实测八项并发。
+- **整合验收工具后实测**：同一产品二进制、脚本基准 `faed828` 的 Claude details 28 与导航 10 项，各连续两轮通过；
+  真实 Codex CLI 0.159.2 / `gpt-6-luna` 23 项通过，含真实文件修改、命令校验、插话、停止与原会话回放。
+  独立核对生成文件的四个 2026 季度末日期，4/4 正确。最后的只读 IPC 接入修正仅在 Windows CI 模式生效，本机普通路径不接该 helper。
+- **修复前基准的逐图复核（历史）**：本批六套替身 136 张、附加 details/navigation 20 张及真实 Codex 6 张，162/162 张新图逐张通过；
+  实际集合无遗漏/重复，原 PNG SHA-256 与尺寸全部末次复验一致。推流截图只审右测试会话栏，预览只审对话框，不审或发布真实桌面。
+- **字体实测与限制**：两轮 WK 都返回打包 `Geist Mono` 的非空 FontFace 且全部 loaded，5 秒是共享等待预算而非实测耗时，
+  这证明资源可加载，不证明每个字形排他使用该字体。早期 Camofox 资源虽返回 200，`fonts.load` 仍报 `NS_ERROR_FAILURE`，
+  那批浏览器图存在回退条件，原因未定位，不能由 WK 的成功追认浏览器字体已通过。
+- **未测 / 装机**：真实 Claude 未登录，真实审批/提问/计划/标题/断线整段未测；本机 Windows 现场、物理键鼠/IME/触屏/读屏器、OS caption 与动画性能未测。
+  本机只有 Command Line Tools，没有完整 Xcode，本会话未运行完整 iOS 验收；其他章节的 CI/iOS 结果仍只属于其记录的基准。本批 P3 未安装到开发机；PR #50 另会话的安装历史独立保留。
+- **当时下一步与现状**：该阶段曾等待 PR #48 修复后的原生、Windows 全矩阵、新图及必需检查；后续已按最终35基准完成并合入。旧功能全绿但视觉失败的运行仍保留，安装待办以顶部为准。
+  自建分组、拖拽、子会话树、深入搜索等仍在 not_done，本段不声称全部还原完成。
+
+## Windows 原生聊天 CI 验收入口（2026-10-24，P3）
+
+- 新增独立 `windows-chat.yml`：限定路径的 PR 触发和手动触发，Windows 2025；Node 22.16.0、Python 3.13.2、Rust 1.95.0。
+  90 分钟硬上限，只 restore 现有 desktop Rust 依赖缓存，不 save、不改变四个现有 required job 的超时或缓存策略。
+- 构建 CLI 与 Tauri debug/no-bundle 后，六套替身脚本各固定运行两遍；第一遍失败不会被第二遍覆盖，也没有自动重试。
+  每套 fresh temp、四份 quiet 配置、非持久 WebView、离屏几何、App/harness 退出码和精确断言计数均作为成功条件；quiet 不代表禁止全部网络。
+  Job Object 先纳管暂停的 harness 再恢复，整体超时或正常退出后清掉该 scope 的残留进程，不按进程名清理其他任务。
+- 上传产物仅字段白名单摘要与安全测试 UI 裁图。裁框来自截图前 DOM 和同一进程的原生客户区物理坐标；LiveWorkspace 只保留完整测试工作区 pane，旧聊天布局只保留聊天栏，预览只保留对话框并遮掉圆角外像素；不包含视频舞台。
+  原 PNG、原日志、sessions、homes/auth、WebView 与 drive.js 不上传，也不把 harness 原文送到 Actions console。
+  CI 模式在发出 done 前采集自动终帧布局及独立断言计数；每张命名/终态截图都须有可靠裁图，缺失时明确未验并使该套失败。有效像素检查不等于图审，Windows 裁图须下载后逐张验收。Actions artifact 不称为私有。
+- **本地实测**：9 项便携 runner 行为测试、Python/JS 语法、布局 hook 语法和 YAML 解析通过；前端 391 项（390 过、1 跳过）。
+  静态对抗审查确认 Tauri 2.12.2 的内部 invoke 只读，CI 改用独立可写 helper，仅重接已知驱动适配器；缺少唯一入口立即失败。
+  portable VM 使用真实只读 descriptor，验证 native 函数未改、业务参数/返回保持，以及 done 前终帧布局与计数完整。
+  2 项 Win32 Job 运行探针只在 Windows 执行，本机跳过。以上是该入口的本地静态阶段，不能据此记 Windows 已通过；云端运行及逐图结果另行追记。
+- 首次云运行 `39988590929` 为更正尚未合入分支的提交署名而由本会话主动取消；WebView2 六套矩阵步骤未执行，不能计成功或产品失败。
+  更正只涉及提交元数据与交接引用，原实现文件树已逐项确认相同；新提交须重新取得必需检查和独立 Windows 验收结果。
+- 随后运行 `39989630714` 已通过运行时/Win32 探针与 CLI 编译；Tauri 的 npx 包装调用报 `unexpected argument --locked`，
+  六套界面矩阵未执行。构建改用已安装的 Tauri Node 入口直接传参，另在编译前用原生 Node 验证含 Cargo 分隔符的完整参数数组；
+  保留 `--locked`。这是构建入口修正；后续 `39992295300` 已完成矩阵但视觉未通过，见下一节，不能把构建成功当作产品验收通过。
+
+## Windows 扫光文字视觉回归（2026-10-24，PR #48）
+
+- Windows 运行 `39992295300`（分支 `fa62129`）在 WebView2 `155.0.4283.62` 上实际完成六套替身各两轮：chat 72、render 12、offline 7、preview 31、Codex 120、workspace 134 项；合计 752 条断言，全部成功，无自动重试，136 张安全裁图完整。
+  所有 App/harness 退出码、隔离、离屏几何和 scope 清理通过；9 项便携测试与 2 项 Win32 探针在 Actions 日志中确认全部实际执行，11 项通过、无跳过；裁图 SHA-256、尺寸与集合下载后复验。原图不在 artifact，本地没有复验其哈希，不能把 CI 记录的原图哈希说成本地复验。
+- **视觉未通过**：136 张裁图逐张复核发现 8 张问题：两轮 chat 的 queued/stopped 共四张及 workspace queued 两张活动标签缺字、只剩灰色渐变矩形；另两张 Claude thinking 带异常灰底。
+  最初将其中两张误认成合法过渡的图审结论已撤销。功能全绿不替代逐图验收，该提交没有合 main。
+- 对照：已有 macOS 同场景文字可读；隔离 Chrome 155 的最小静态夹具在默认偏好下未复现，强制系统减少动态效果后精确复现嵌套标签缺字、纯文字带灰底。
+  已查明的产品缺陷是浅色渐变选择器优先级高于 media 回退，渐变未清掉而裁剪已重置为 border-box，内部文字又仍透明。旧 Windows 运行没有记录 media 值，不能据相似截图追认它当时的实际偏好，也不能据此断定 PrintWindow 是根因。
+  `8486866` 仅调整 CSS：主题差异改为高光变量，系统与应用的减少动态效果回退恢复父子文字并清除渐变，保留代码对象浅底、文本 DOM 与正常扫光功能，截图准备规则未改。
+- **修复后本地实测**：编译后 CSS 的 Chrome 155 最小夹具，浅/深主题 × 应用减少动态效果开/关 × 系统偏好默认/强制减少，共 8 组全部通过；正常计算样式周期为 3s、动画状态为 running，回退无渐变、父子文字均有色、代码浅底保留，两张夹具图已查看。3s 是 CSS 计算样式值，不是逐帧或墙钟周期实测；动画节拍与性能仍未测，该夹具不代替真实 Tauri 验收。前端 391 项（390 过、1 平台跳过）、TypeScript 与前端构建通过。
+  同步修正正常扫光的实现参数；该独立对齐不是灰块故障的必要修复。
+- **Windows 证据入口补强**：本会话已主动请求取消 `39998869206`，原因是 JS 记录的系统/应用动效偏好仅进入未上传的日志，公开的类型化证据无法复核该条件；这是主动终止待验运行，不记为产品失败或成功。工具提交 `ef3fa3a` 已补偏好字段白名单与缺失即失败的断言，本地 14 项中 12 过、2 个 Win32 探针按平台跳过；Windows 运行 `40000053673` 的 14 项测试全部实际通过、无跳过；聊天摘要的四条失败另见下文。产品 CSS 与本机原生二进制基准仍是 `8486866`。
+  quiet 配置 helper 的独立 AST 执行已验证两份新 home 下合计四份配置与 LF 字节；没有启动原生 GUI，也不当作 doctor 锁已通过，后续 CI 继续验证该门槛。
+- **修复后首批本机原生实测（摘要等待修正前脚本）**：同一 `8486866` 调试包，chat 75、render 12、offline 7、preview 31、Codex 120、workspace 134 项各连续两轮；另 Claude details 28、navigation 10 项各连续两轮。合计 16 轮、834 条断言全过，158 张新图逐张通过，原 PNG 和安全裁图的哈希、尺寸与完整集合末次复验一致。
+  macOS chat 两轮实际系统偏好为不减少动态效果，正常扫光计算样式周期 3s、running；测试临时设置根属性 `data-reduce-motion=true` 后父子文字有色、无渐变与动画，恢复原属性后复核正常；这是 CSS 条件验证，不是设置页面开关操作。测试进程已退出，临时浏览器配置已清理，任务证据目录无复制认证残留。
+- **待验证**：Windows 最终运行、全部新裁图及最新提交的四项必需检查；没有证据前不记整批验收通过。
+
+- Windows 运行 `39998869206` 为补齐可复核的系统动效偏好而主动取消，不记产品失败或完成。原始偏好只进隔离日志，原 typed 摘要没有保留；现仅白名单导出 `systemReduce` 布尔和 `appReduce` 的 null / true / false 字符串，不带文字、命令、颜色或其他原始字段。
+  chat 两轮各要求恰好一条合法偏好记录，缺失、重复或坏类型均使该轮失败；其它脚本没有该事件，不凭空要求。用实际 macOS 75 项原生日志独立核对，解析得到 systemReduce=false、appReduce=null；Windows `40000053673` 两轮 chat 已实测 systemReduce=true、appReduce=null。
+
+- Windows 新运行 `40000053673` 实际执行 12 轮、758 条断言，其中 754 过、4 失败：chat 两轮各在最初两项工具组摘要检查失败，其余五套全部两轮通过；138 张裁图完整。chat 两轮实际 `systemReduce=true`、`appReduce=null`，新增动效三项均通过，关键运行标签文字可读、旧灰块消失。
+  后续查找步骤的裁图可见完整摘要及“1 failed”，不属于永久缺失。结合已通过的统计/折叠断言与源码推导：回合 footer 出现时，组头仍可能处在 650 ms 最短停留窗口；650 ms 是实现约定，不是本次云失败瞬间的实测耗时。
+  `dwellStep` 的受控终态 null 验证确认旧标签保持到截止、截止后正常清空；测试改为等待同一回合的真实 `.cl-sent` 非空，再执行原有两条独立断言。不加任意 sleep，不扩大既有等待预算，不改产品停留规则，不用重试覆盖失败。新脚本 `5eea269` 本机 chat 两轮各 75 项已通过，同一 `8486866` 产品二进制未改；两轮最初已有摘要、等待计算值均为 0 ms，因此不声称本机复现旧 Windows 早读窗口。38 张新图后续已逐张通过；两轮初始摘要均已存在、等待值为 0 ms，未复现旧 Windows 早读瞬间。旧 Windows `40005026321` 后因整合主干主动取消，不记产品成功或失败。
+  该阶段最终本机集合采用未改源码的其它五套 100 张、补充细节/导航 20 张与最新 chat 38 张，共 158 张，已逐张通过；新 chat 替换旧 38 张，不重复累加。它不替代后续 `427cfec` 整合树的独立图集。
+
+## Windows 首次 UIA 读取的空错误诊断（2026-10-24，PR #48）
+
+- `5eea269` 的原生运行 `40005026322` 在 Windows 第一轮、首次 `ar_ui::collect` 返回错误，6.72 秒结束；startup poll 已在 5904 ms 命中、子进程仍运行，后续输入/点击/开关动作没有执行。这是与旧 15 秒 generic poll 超时不同的失败。
+  夹具 stage 记录已到 form_shown / first_tick、stdout/stderr 为空。不能据启动耗时认定启动慢；当前空 Display 没有保留调用阶段或数值码，底层原因仍未知。
+- Windows provider 的初始化、walker/root 与根级 sibling 错误现在补静态调用阶段、十进制与十六进制数值码、有界原文，并保留源错误供 downcast；不改 no_element 集合、动作语义或 500 ms COM 超时。
+  原生夹具首次 collect 失败时另存 `collect-error.json`，只含阶段、耗时、子进程状态、错误元数据及受控夹具状态，不保存其它桌面节点或窗口标题。合成空消息的格式单测所用错误码只是测试常量，不代表本次实际失败码。
+- 同步补齐旧 `ui-smoke.py`：启动两端前以二进制 LF 写齐两份隔离 home 各 host/controller 的四份 quiet 配置，并要求远端 doctor 确认 quiet 锁定。之前默认关闭发现不替代这四份显式配置；本机 AST 独立执行已核四份精确 LF 字节，原生 CI 结果待测。
+- 本轮保留两次预先规划的原生命令，第一轮失败即停，不以重试洗掉失败；新增诊断只解决空错误不可定位，不声称底层 UIA 原因或旧 poll 超时已修复。fmt、Clippy、测试及新 CI 待完成。
+
+## Windows 原生 fixture 失败诊断（2026-10-24，PR #47）
+
+- 首次 Windows UIA 原生测试在 15.46 秒后仅报 `fixture state verifier timed out`；四个等待点共用文案，原临时目录已删除，
+  所以**根因仍未知**，不能根据总时长认定是启动慢、Timer 或 UIA 动作。`ar-ui` 测试/provider 与 fixture 相比已成功的 `028ccc9` 没有改动。
+- 这次只增加可证伪的诊断：四个 poll 使用 `startup_pid` / `set_value` / `press_apply` / `toggle_option` 静态阶段，记录 elapsed、
+  最后成功解析的受控 fixture 状态、最后解析或 IO 错误及 `child.try_wait` 状态；子进程退出时立即失败。
+  状态、逐阶段 verifier 记录、fixture stdout/stderr 保存于 `target/ui-validation/native-<pid>-<timestamp>/`，不随临时编译目录删除。
+  Windows fixture 另记 bootstrap、assemblies_loaded、form_shown、first_tick；不记录密码框、环境变量或其他应用内容。
+- CI 预先规划同一原生命令连续两轮，每轮写 planned-round 标记并追加日志，第一轮失败立即退出，**两轮都过才通过**；不是失败后重试。
+  保留 15 秒等待、全部业务断言及 provider/Swift 源码。macOS 对诊断源码（`a318b07`；原 `9ee03ec` 仅更正作者/提交者署名，文件树完全一致）的 fmt、全工作区/all-targets Clippy 通过；
+  `cargo test -p ar-ui --locked` 编译通过、0 项执行 / 1 项原生测试按原设置忽略，不能当作 GUI 实测。以下保留新增 Windows 两轮采样的后续结果；
+  首次失败的根因仍未知，后续成功也不追认它为已查明。
+- PR #47 诊断运行 `39987649385` 的 Windows real UIA fixture 步骤已实际连续两轮通过（原生单测每轮 1 项），
+  后续必需检查完成，PR #47 已合入 main `1aefe9f`；未因后来的通过删除首次失败，也未扩大超时或修改业务断言来消红。将来若再现，继续据阶段与留存状态定位。
+
+## MCP 聚合入口元数据（2026-10-24）
+
+- `list_hosts` 明确声明只读、非破坏性、幂等；`use_host` 会改本会话的默认被控端，所以不是只读，重复选择同一端是幂等的。
+  两者均可能查询已配对的外部主机，`openWorldHint = true`。这些是客户端提示，不改变原有配对、等级、审批与审计门禁。
+- 新增真实 rmcp `tools/list` 协议回归：全新临时 profile、未配对、LAN-only、关闭发现和映射，不使用机主设备或本机服务。
+  测试先在原代码上因缺 annotations 失败，再补齐两项本地工具的四个布尔 hint。根 `glama.json` 仅声明维护者供目录核对。
+- 中英 README 的 20 px 紧凑 M8ven badge 保留平台本次领取的公开所有权核对参数；这不是 Live 声明，项目的平台 WIP / pre-alpha 边界不变。
+- 首次本机 macOS（`9851dbe`）：Rust fmt / workspace Clippy 通过；workspace tests 440 过、9 忽略；规定的 Node 测试 361 过、1 跳过，TypeScript 通过。
+  这些验证只覆盖协议元数据和回归检查，没有把它们当成真机远程操作或平台安全认证。
+- PR #49 首轮 Windows native CI 的 11 项已记录断言均符合预期，但最后收集 fixture JSON 时失败；Windows fixture 每 100 ms 原位重写，
+  最后的直接读取可能撞上写入空窗。保留首轮产物，未声称捕获了当时的空文件本体。`ui_fixture_state.py` 只有限重读新数据，
+  不缓存旧状态、不重复 UI 动作；空/半写/UTF-8 截断后完成、持续损坏明确超时与不复用上次结果均有先红后绿的回归，native CI 同跑。
+- 随后接到 main `1aefe9f`：完整保留 PR #47 的诊断章节、原生两轮采样和产物路径；仅在本节做并列记录。
+  新基准本机 fmt / workspace Clippy、Rust 440 过 / 9 忽略、Node 374 过 / 1 跳过、TypeScript、fixture reader 4 项回归通过；新 head 的 CI 单独等待。
+
+## 智能体工作区第二阶段 · 第一段：验收修复（2026-10-23，PR #45）
+
+从 `origin/main` 的 `3e69f81` 接手，随后整合另一条线的 `a1efb9f`，在独立分支 `fix/workspace-acceptance` 推进。
+初次**缺规格**停过，用户补交的 17 份 Markdown 与 2 张参考图已在仓库外就位；只按洁净室规格开发，没有读取官方应用实现。
+规格、截图、运行日志和隔离认证均不进公开仓库；原工作区和其他会话的现场保持原样。
+
+- **环境实测 / 基线**：macOS 27.0.1 arm64，外置盘起始可用约 1.6 TiB，Rust 1.95.0、Node.js 25.5.0、Python 3.14.2、CLT 可用，
+  已完成 `npm ci`。初次 fmt、Clippy 通过，`cargo test --workspace --locked` 退出 101：IPC 旧实例退出后立即重绑偶发失败。
+  所有失败与后续修复日志保留；不是全绿基线。16 GiB 内存的本机后续 Cargo 使用两项编译并发，复用一份 target。
+- **历史 CI 查证**：`3e69f81` 与 #43 的 `4b73551`，两平台 test/native 成功。#43 的 iPhone
+  [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39929694837)被同一 main 后续 push 取代；`3e69f81` 的
+  [运行](https://github.com/JIA-ss/ai-remote/actions/runs/39934119268)先发生 Codex 无障碍快照失败，再在缓存保存时撞 45 分钟上限。
+  同步进来的 `a1efb9f` 已包含另线 iOS 修复及 CI 套件 9/9、折叠三连 3/3 证据；本轮没有在本机运行完整 Xcode/iOS 验收。
+- **产品修复**：Claude 恢复共享文件预览与多文件 diff 入口、有效选区随滚动的引用、查找浮层、排队/未送达可见性及回放加载态；拒绝/停止的工具不再写成成功。
+  Claude/Codex 首次 hello 前仅禁止提交、保留草稿；连接完成后的真实断线仍有未送达与重试。工作区 Codex 输入框增加底部留白。
+  共享转录通知重置舞台浮层残留的定位属性，历史失败留在所属轮次，避免永久盖住后续终端；舞台提示定位不变。
+  IPC 监听器关闭后显式释放锁，64 轮回归覆盖继承描述符仍存活、旧副本关闭不影响新实例互斥；原始偶发是否由 fork 触发未现场观测。
+- **验收修复**：保留两条线的断言并集，适配原生直接会话栏，Watch/Back 核对同一会话 ID；旧 Steps 标签不能再作为测试开关。
+  菜单首击失败仍失败，重试只继续采证；等待真实连接/回放、浏览器尺寸通知和原生截图确认，外部看门狗约束挂起，核对业务结果与应用退出码。
+  Rust HOLD 替身只由下一条 user 消息完成，生成标题等控制请求不能当插话；原失败用例及旧/新协议探针通过。
+  指针图片测试改用同一次原生快照，保留像素断言，避免把两次采样间允许的 None 误当失败。
+- **本机原生条件实测**：每个临时 home 的 host/controller 四份配置均 quiet，非持久 WebView 存储，进程活动/后台节流仅对 debug smoke 生效。
+  新日志抓到脚本外 `isTrusted=true` 激活导致切页；默认测试隔离外部指针/激活/按键，保留脚本合成操作及真实布局/滚动/控件通知，显式 visible 输入路径不变。
+  几何探针发现 AppKit 会把有标题窗口约束回屏边；默认脚本只截图 WK 内容，因此仅该临时窗口移除原生 Titled 样式并移动 frame origin。
+  harness 硬校验窗口与全部报告显示器均无相交，缺几何或仍在屏内立即失败。最终逻辑窗口实测 1280×800、DPR 2，真正离屏后 document.hidden，WK 截图正常。
+  截图仅将白名单有限入场动画推进到终态，无限指示器保留；Claude 状态行按 TC-12 停留，截图等待真实终态，不改产品节拍。
+  **未验 OS caption、物理键鼠、动画性能或帧率**；此前未核对实际几何的通过轮次不作为完全离屏证明，旧失败及旧图均保留。
+- **最终门槛实测（代码基准 `efb0df4`）**：fmt、全工作区/all-targets Clippy、TypeScript、CLI 与 Tauri debug/no-bundle 构建通过。
+  Rust 标准测试 439 过、9 忽略，另 13 项 mounts 集成检查通过；前端 368 项、367 过、1 个平台项跳过。
+  CI 前端名单补齐预览、目录、输入及同步回归；同步回归共 91 项。
+- **最终完全离屏 E2E 实测**：实际调试应用 → 控制端 → QUIC → 本机隔离被控端 → 替身，六套均连续两次通过：
+
+  | 脚本 | 每轮通过项 | 连续轮次 |
+  |---|---:|---:|
+  | workspace | 110 | 2 |
+  | Codex | 120 | 2 |
+  | chat | 72 | 2 |
+  | render | 12 | 2 |
+  | offline | 7 | 2 |
+  | preview | 31 | 2 |
+
+  被控端替身 35 项连续两轮通过；真实 Codex 被控端 44 项通过（在先前本轮运行中验证，host 产品逻辑未变）。
+  最终真实 Codex CLI 0.159.2、模型 `gpt-6-luna` 桌面整段 23 项通过，含真实 apply_patch、命令校验、改动卡、插话、停止、首击离开与按原 ID 重开回放。
+  独立复核生成文件的 2026 年四个季度末日期。模型曾改用 Shell 写文件、没有编辑事件的负例保留，没有伪造编辑卡。
+- **逐图复核**：当前完全离屏产物 132 张替身与 6 张真实 Codex，138/138 张逐张通过；实际文件集合无遗漏/重复，最终 SHA-256 与尺寸全部核对一致。只审测试会话栏或预览主体，不将截图当成物理输入或滚动交互证明。
+- **未测 / 限制**：末次复核 Claude CLI 已安装但未登录，真实 Claude 的审批、问答、计划、标题和断线整段未测；本机 Windows/WebView2、
+  完整 Xcode/iOS、真实键鼠/IME未测。macOS 结果不推导为 Windows 现场结果。早期未抓到输入来源的历史偶发不能全部归为本次外部输入。
+  本轮不安装服务、不修改系统安全设置、真实 CLI 配置或既有应用；最终自有测试进程与临时认证配置均为 0。
+- **装机状态**：另线安装记录留在其对应章节。本批代码基准 `efb0df4` 尚未装到 Mac 和 Windows 开发机；由两台开发机各自会话安装最终合入 main 的版本。
+- **合入 / 下一步**：PR #45 在四项 test/native 必需检查成功后已进入 main `028ccc9`（2026-10-24，本地提交身份保持 JIA-ss）；
+  独立 iPhone 检查当时仍在执行，随后运行 `39980248088` 已成功，PR #45 五项检查最终全部成功。main `028ccc9` 尚未装到 Mac / Windows 开发机。继续分别验收后两段；自建分组、
+  拖拽、子会话树、深入搜索等继续列在 not_done，不冒充全部还原完成。
+
+## 智能体工作区第二阶段 · 第二段：导航与 Claude 细节（2026-10-23 ~ 24）
+
+本段已随 PR #47 合入 main `1aefe9f`，包含第一段的产品、完全离屏验收工具与最终文档。只依据仓库外洁净室规格，不读官方应用实现；
+本段不改第一段已实测的历史数字，规格、原生截图、浏览器证据与认证资料继续留在公开仓库之外。
+
+- **数字跳转（SB-41）**：所有平台用 Ctrl+Shift，按住 200 ms 给前九个实际渲染的会话行显示编号；物理 Digit / Numpad 键兼容
+  Shift 后的标点。输入框、输入法合成、隐藏文档与错误修饰键不触发；释放修饰键、指针移动、滚动、失焦、可见性或缩放变化收起提示。
+- **窄布局芯片（NS-34）**：按真实完整标签测宽，只把电脑和目录文字收成图标；名称、读屏文本与 tooltip 保留，权限、智能体和模型文字仍显示。
+  ResizeObserver 处理尺寸变化，MutationObserver 处理模型等文字变化；恢复完整标签要有超过 2 px 的余量，避免临界宽度反复切换。
+- **Claude 细节**：共享安全终端文本渲染处理 ANSI 16 / 256 / RGB、反显、CR / BS 覆写和不完整 ESC / OSC；成功 Bash 的无 ANSI
+  diff 按 hunk 边界着色，错误输出不误当 diff。Claude Markdown 围栏按需启用 ANSI 并默认换行，复制仍保留原字节。
+  提问题干、选项和说明支持行内 Markdown，但链接与文件名在按钮内不生成交互控件；选中文字后的 detail=1 激活不误选选项，
+  detail=0 激活仍可选，问题与答案通过原协议原样回显。
+- **浏览器已测**：数字跳转与芯片在 Camofox 前台演示后端下，深色中文 / 浅色英文各 25 项、各两轮通过，共 100 次断言、4 张图；Claude 隔离实际组件的浏览器检查
+  30 项通过，深浅两主题共 12 张图已看过。这些结果分别是演示或组件证据，不当作真实被控端链路。
+- **门槛实测**：全量 Node 381 项、380 过、1 个平台项跳过，TypeScript、fmt、全工作区/all-targets Clippy 通过；
+  Rust 439 过、9 忽略，另 13 项 mounts 检查通过，Tauri debug/no-bundle 构建成功。产品代码基准 `903207c`，至验收脚本 `1b5a134`
+  只变文档与测试，没有产品源码差异；CLI 沿用第一段相同代码和二进制，原生记录保存实际二进制与脚本哈希。
+- **原生实测**：本机隔离被控端与控制端、四份 quiet 配置、实际窗口与所有报告显示器无交叠；工作区 110、对话 72、渲染 12、
+  Claude 细节 28、导航/窄芯片 10 项，分别连续两轮通过。110/110 张本轮新 PNG 逐张通过，实际集合、SHA-256 和尺寸全部复验一致。
+  Claude 细节覆盖真实替身协议的 ANSI/diff/复制原值、选字与激活、原题/答案回显；复制仅在本页截获并恢复，不写系统剪贴板。
+- **新导航脚本**：`tools/desktop-workspace-navigation-e2e.js` 通过实际隔离被控端建会话；约束新建页容器 CSS 宽度，等待产品真实 RO / MO
+  处理窄芯片、模型文字变化和恢复，不伪造 resize 通知或 `document.hidden`。本轮 WK 文档隐藏，数字跳转的隐藏/输入框禁止分支实测；
+  正向数字跳转仍是上面的可见文档浏览器证据。合成 DOM 事件、DOM Range 和 detail=0 激活不冒称物理键鼠。
+- **失败记录保留**：首轮 28 项仅计算样式断言失败；WebKit 的标准 `user-select` 不支持、前缀支持，三个目标的 `webkitUserSelect` 均为 `text`。
+  编译 CSS 已有前缀，只修测试按 `CSS.supports` 选择计算字段并保留两字段日志，没有改产品 CSS。新增导航脚本两次过早读取异步 runtime/选择
+  状态的失败也保留，现按实际 DOM 就绪等待，不加重试掩盖结果。睡屏时显示器枚举为空被硬门槛拒绝；临时防休眠进程恢复条件后重跑，未改系统设置。
+- **仍未测 / 装机**：前台物理键盘数字跳转、IME/触屏/读屏器、真实 Claude 登录全流程，以及 Windows 的专用 details/navigation 脚本未测；
+  P3 的 Windows 六套替身记录另列，不替代这两个专用脚本或开发机现场。产品基准 `903207c` 与脚本 `1b5a134` 没有由本会话安装到两台开发机。
+- **后续**：P2 已合入；多选批量与扫光修复当时在 PR #48 继续验收，后续已合 main `35f54a3`，修复前后的数据与未测边界仍分别记录。
 
 ## 智能体工作区接进玻璃外壳（2026-10-23，main 的 PR #41 合进 `worktree-agent-workspace`）
 
@@ -264,6 +510,41 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
     `LazyStack` 反复布局里，没有我们自己的代码帧。手动走同样步骤 CPU 一直是 0，所以是**抓无障碍快照时**才进入布局死循环——
     VoiceOver 用户可能也会碰到，要当真 bug 查。下一步：二分 `PhoneCodexRows.swift` 移植后的改动（`.accessibilityElement`
     容器、`onAppear` 改状态、`TimelineView`、Shell 输出框的 `defaultScrollAnchor`），看哪一处让快照时布局不收敛。
+
+**收尾复核（2026-10-23，基于 main 3e69f81）**：
+- 用户追加的界面要求已实现：远程桌面右侧直接复用现有 Claude/Codex 会话组件，去掉“步骤 / 对话 / 智能体视角”、步骤时间线和旧留言输入。
+  待审批卡独立显示在会话上方；Esc 仅在卡内拒绝，避免聊天关查找/菜单时误拒审批。接管后的观看开关与交还说明放在舞台设置面板，非模态 region 不拦聊天 Esc。
+  工作区“看电脑”携带当前会话 ID，返回时仍是同一会话，路由不复用一次性票据。Camofox headless 演示页面已核对并保存截图。
+- 指定提交的 CI：Desktop and core（39934119396，两平台）与 Native structured UI（39934119355）成功；iPhone controller
+  （39934119268）总状态 cancelled，但测试先在原折叠/改动卡快照处失败（136.670 秒），其他三项 Codex 通过。原预览用例当轮通过（77.316 秒）。
+- iOS 诊断保留了失败：同轮未改基线 145.797 秒失败；单独移除裁剪先通过（80.781 秒），后重复第二遍仍失败（134.696 秒）。
+  底部锚点组合也未解决；非惰性诊断版本连续 3 遍通过（71.321 / 71.015 / 58.581 秒）。最终仅 Codex 改用 VStack，首次挂载最近 30 轮，
+  按会话每次展开更早 30 轮，模型仍保留原来的 200 轮上限，Claude 仍用 LazyVStack。新 35 轮 UI 用例核对数量、顺序、无重复与首轮可见。
+  diff 每行补完整无障碍标签（增删、旧/新行号、代码），保留容器语义。单文件展开和“审阅”全展开分别做 elementDetection 审计，不过滤问题。
+  本机只有 CLT，完整 iOS 验收在 Xcode 26.2 的 CI Mac 按明确模拟器 UDID 运行；没有声称做过真机 VoiceOver/Inspector 手动遍历。
+- 最后诊断运行 39954997454：Codex 五项全过，原折叠用例含审计 62.681 秒、分页 55.539 秒；独立重复折叠 3/3 通过。
+  仅旧预览用例失败。原始 app 日志显示 WebContent 冷启动耗时 34.779 秒，旧正文检查只等 5 秒，检查结束时进程尚未启动；
+  不能据空白末帧推断导航竞态。测试现等待正文最多 45 秒（配置预算，不是实测耗时），强制验证链接、正文和脚本禁用；新增卡片→链接→卡片
+  三次打开、每次源码→预览重建，共 6 次 HTML 加载。产品预览 Coordinator 未改。最终运行 39959115495：九项套件 9/9 通过一轮，原折叠/审计 66.817 秒、分页 45.944 秒、
+  旧预览 68.525 秒、新六次加载 49.267 秒；独立折叠三连 3/3（84.016 / 64.645 / 64.805 秒），不是失败重试计绿。
+  iPhone workflow 总限时由 45 改为 60 分钟，为 SDK 构建、归档、UI 用例与缓存留空间，不放宽断言。
+- 桌面端补齐本轮发现的 Claude 引用滚动跟随和 hello/回放加载门，选区取消后才清掉引用；行为单测先复现再修复。
+  仅调试 smoke 使用非持久 WebView 存储、进程活动防止 App Nap，显式可见模式请求焦点；Release 与全局偏好不变。
+  harness 退出或中断只清理自己的隔离实例，保存完整 stderr 与去标识的可见性信息；早期锁屏/遮挡失败和中断不计通过。
+- Mac 原生 CI 验收 39953111022 一轮全过：Claude 默认脚本 69 项、Codex 替身 114 项、工作区 106 项，含“看电脑”右侧同一会话和返回。
+  本机 Claude 默认脚本完整 69 项成功一轮；最终 Codex 替身在重建后的可见 debug 包 116/116 成功一轮（新增两项区分退出会话与表单就绪）。驱动适配英文文案、减少动画设置和后台 20 秒自然轮询；工作区第二连接只响应 hello.seq 之后的新审批，
+  避免重放旧事件时误答历史 rid；未以强刷替代自然更新。本机最终工作区 106/106 一轮全过（149.4 秒，可见但未聚焦）。
+  上一轮四项失败中，三项源于测试未等连接完成便发消息（截图明确未送达），一项源于乐观移行后立即检查保存完成提示；
+  驱动现等待连接/回放就绪与真实 toast，不放宽业务断言。实测 FAIL 发送后 156 毫秒后端已记 failed，自然侧栏 2.842 秒变红。
+- 真实 Codex 本机原生 E2E 22 项全过一轮：可见调试窗口、隔离 quiet 被控端/控制端，Codex 0.159.2、ChatGPT 已登录、gpt-5.6-luna，
+  脚本约 49 秒；读/改 export.py、运行校验、diff、插话、停止 sleep 120、重开回放，“其他会话”首点成功。登录信息未传到 CI。
+- “其他会话”新捕获的一次现场实际已退出对话、列表已有记录，只是 runtimes 表单未就绪。测试先确认退出，再独立等表单，不重点击菜单；
+  8 个 VM 行为用例覆盖延迟、首点真失败和错误路由。首点真失败仍记失败；旧“落到设备页”的产品原因本轮未复现，继续保留待查。
+- 本机最终检查：前端 14 文件 267 项，266 过、1 跳过；TypeScript 通过；iOS 纯模型 79/79（CLT Swift 6.4）；Rust fmt/clippy 通过、全量 438 过、0 失败、9 忽略。
+- Mac 完整 Release 已安装到 `/Applications/ai-remote.app`，含桌面端、CLI、hostw；本机临时签名，deep/strict 验证通过，三份可执行文件 SHA-256 与构建包一致。
+  目标目录原本不存在且当前用户可写，临时目录校验后排他原子重命名安装，无需提权。Finder 已确认应用文件。旧用户级后台被控端仍从原目录运行，
+  后台注册迁移和系统授权继续走 App 入口。待办：app 本体移到应用程序目录的一键入口、完整卸载入口；不要求人在终端输入提权命令。
+- 按用户最新范围，仅做本机与 Mac CI 验收；另一平台的现场测试、桌面安装和服务替换未执行。
 
 **没做 / 没验证**（按收益排序，规格里的 Should / Later）：
 - 输入框整体外形（两行布局、"完全访问"标签、上下文环弹层、队列托盘、读图等待、历史）、头部（文件夹按钮 + 标题 + ⋯ 菜单、连接横幅、
@@ -2877,3 +3158,85 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
   `terminated`，以 143 退出，不再丢信号。
 - 仍未做：等待方主动请求持有方让位（控制套接字或 want 文件）。如果真机上 LoginWindow 那份降权后读到的是
   确定但错误的 `Some(true)`，Aqua 那份仍会一直 `waiting: another host`；上表第三行要据 `console read` 日志确认。
+
+## iPad 12.9 英寸优先适配（2026-10-24，`feat/ipad-12-9`）
+
+- `PhoneAdaptiveLayout` 按窗口可用点数和 size class 决策，不按设备型号：regular 且宽 ≥900 时远程画面旁显示 360–440 点智能体面板；
+  展开智能体后，宽 ≥800 显示 260–300 点会话侧栏。12.9 英寸横屏 1366 点、竖屏 1024 点均满足；窄分屏回单栏 / sheet。
+  正文和输入区最大 820 点，电脑列表宽屏双列；iPad 专属 Info.plist 项启用四向旋转，仍允许系统多任务。
+- 旋转、全屏、sheet / 并排 / 整窗切换共用同一个 `PhoneChatStore`，不因布局变化关闭远程订阅。文本和附件草稿按会话暂存；
+  直接从侧栏切换时恢复各自草稿，并用选择代数 / 连接代数挡住旧 close、attach 的迟到结果。图片预览同时按宽高 fit。
+- Debug 聊天 fixture 可切 Claude / Codex；`-ui-viewport-chat` 在静态远程画面旁打开同一套聊天 fixture；
+  `-ui-viewport-resize` 让竖屏容器约束到 683 点、横屏回全宽，专测 sheet ↔ 并排切换（不是系统 Split View 实测）。
+- 本机实测：布局决策 12 场景、聊天模型 79 项、viewport geometry、前端 267 项（266 过 / 1 跳过）、TypeScript、IPA 打包 9 项和隐私 7 项通过。
+  mac-core 刷新时 `~/.cargo` 符号链接使 Askama 生成路径错误，使用真实 `CARGO_HOME=/Volumes/SSD-2TB/MacData/Development/cargo` 后解决；
+  CLT 6.4 缺失 SwiftUI State 宏插件，原始 mac-core 全模块检查仍受既有 `PhoneNetworkSheet` / `PhonePairing` 的 `@State` 阻断。
+  仅在 target 中复制源码并将这两处既有 @State 包装换成项目的 PhoneViewState 别名后，全模块 macOS typecheck 通过；没有将该兼容变更混入产品。
+- CI 固定 iOS 26.2 的 `iPad Pro (12.9-inch) (6th generation)`（不存在就创建同型号，缺 runtime / device type 明确失败），
+  保留 iPhone 回归，新增 5 项 iPad UI 用例，保存 xcresult 和 20 张阶段截图。首轮代码 `7f993b8` 的 CI 39984998117：iPhone 33 项（1 跳过）无失败；iPad 1 过 / 4 失败。
+  三项失败的原始 AX 树显示外层面板 ID 覆盖了输入框等子项 ID，草稿值仍在；给面板 / 整窗 / sheet 增加 contain 容器隔离标记。另一项使用了 x=0 的 ScrollView AX 容器边界，改用实际 UITextView 全球坐标检验并排。
+  原始日志、6 张已到达截图和 xcresult 保留；下一轮不重跑已通过的 iPhone UI，只跑集成 main 后的完整 iPad 五项。截图改采 XCUIScreen 并附窗口 / 图像方向元数据，不把首轮带黑边的画布当实际方向证明。物理 iPad、
+  实际系统 Split View / Stage Manager、外接键盘和 VoiceOver 手动遍历未测，不能用 fixture 截图替代。
+- 同步最新 main `028ccc9` 时仅 AGENTS.md 章节插入冲突，保留双方完整记录；在独立 managed worktree 处理，主工作区其他桌面 UI 改动未动。
+- Rust fmt / Clippy 通过；全量默认并发首轮在 `ar-net::ipc` 的旧 socket 释放后重绑定用例遇到 AddrInUse（保留失败日志），
+  相同代码串行全量重跑 438 过 / 9 忽略 / 0 失败；没有为这次 iPad 布局改动修改 Rust。
+- 第二轮 `91ab035` / CI 39992042339：iPad 3 过 / 2 失败，展开重开、预览和侧栏草稿均通过，截图改采 XCUIScreen 后横屏画布正常。剩余一项在键盘弹出后竖屏约束未触发，fixture 改按实际窗口宽度的缩小 / 放大切换 683 点，不依赖 UIDevice 通知；一项是面板 AX 组包围框 y=-9.5，改验实际输入框和导航控件的严格窗口边界。
+  截图另证实嵌套 NavigationStack 合并工具栏；常规布局改为 HStack 中两个兄弟导航容器，左侧 Root 工具栏与右侧聊天各自归属，面板显示时隐藏重复打开入口。
+- 同步 main 后在隔离检出复跑：默认并发 Rust 全量 439 过 / 9 忽略 / 0 失败、fmt / Clippy / TypeScript 通过；指定 16 文件前端共 362 项，361 过 / 1 跳过，布局 12 场景、聊天模型、viewport、打包和隐私复查通过。
+  iOS workflow 默认继续两端 UI 回归；手动 `ipad_only` 只跳过已独立验过的 iPhone UI 套件，仍完整构建设备包和 iPad 验收。
+
+- 再同步 main 的桌面导航 / Claude 细节与诊断记录（1aefe9f），移动端 apps/ios、ar-mobile / controller / net / core、Cargo 与 vendor 相对 519eee1 均无变化；iPad 记录改放文末，避免并行工作反复争用文首插入点。
+- 本次 main 同步复查：Rust fmt / Clippy / TypeScript 通过；Rust 全量 439 过 / 9 忽略 / 0 失败，前端 375 项中 374 过 / 1 跳过。移动端源码与 519eee1 一致，当前原生复验沿用该源码。
+- 第三轮 519eee1 / CI 39998306949 的五项 iPad 原生验收通过，20 张截图齐全；业务链路、窄窗往返、四向全屏和同会话草稿均完成。逐图复核又发现浅色外观下非全屏左侧导航栏文字在远程黑底不可读，显式设置 canvas 导航栏背景（不动舞台 / 全屏 / 右侧），复验标题与时间可见性。
+
+## 桌面端毛玻璃第二阶段 · 浮层（2026-10-23，`feat/desktop-glass-pages`）
+
+本包只交付浮层；主页面、设置内容、会话外观和全页巡检分后续包。按交接稿的 final-decisions、A D.6/D.7 和
+`tests.json` mustKeep 实现；第一阶段之后 main 已合入智能体工作区及 Claude / Codex 视图，验收数量以当前实际结果为准。
+
+- 新 `ui/Modal.tsx`：sheet 与遮罩 portal 到 body，保留 `.cdlg` / `.smoke` / `.nt-pair` 和语义角色；挂载期间
+  `html[data-modal]` 是非零计数，后台 `#root` 与较低的 sheet inert。初始焦点、Tab 循环、关闭恢复焦点统一处理；
+  控件在异步操作中禁用或被替换时，MutationObserver 把失落到 body 的焦点移回 sheet。
+- Confirm、EnableDialog、PairCodeDialog 复用 Modal。安装进行中仍吞掉 Esc / 遮罩点击；配对码关闭仍撤码并解除窗口保护。
+  配对框先聚焦始终可用的取消按钮（原先先聚焦“换一个”，随后生成码禁用它，焦点会掉到 body）。
+- 决策卡 Esc 只拒绝焦点所在的一张，焦点不在卡里时只拒绝第一张；备注框 Esc 只关闭备注。对话框、菜单、远程输入与输入法组字
+  不触发拒绝，忽略长按产生的 repeat。
+- `glass/overlays.css`：确认 / 开启 / 配对框宽 440 / 560 / 480 px，thick 玻璃、无动画的祖先、独立遮罩；mac 按钮靠右按
+  “取消、主操作”显示，Windows 保留 DOM 顺序。配对二维码缩到 160 px、数字 40 px，避免原 48 px 数字吃掉右内边距。
+  泛菜单按平台排版；sheet 是唯一带模糊的入场动画，叠层和模态期间关闭其它菜单动画，减少动态效果时不播放。
+- 补回两处 main 集成回归，均由本包的必跑验收发现：Claude 工具行和轮末遗漏文件预览（复用已有 PreviewProvider / PreviewButton /
+  TurnFiles，不改文件读取与脚本隔离策略），预览 e2e 的旧选择器同步成 Claude 视图；工作区切换器改用 group + aria-pressed 按钮，
+  使网络页文档里恢复只有两枚 radio，切换功能与键盘事件保持原样。
+- 新 `tools/desktop-overlays-smoke.py`：headless Camofox REST，真实页面打开三种 sheet；多卡和叠层使用内存 fixture，
+  测试专属请求的 deny spy 不发送真实操作。截图只能证明布局，不能证明原生材质。
+
+实测（本机 macOS 27.0.1 / Apple Silicon / 16 GB，Rust 1.95.0、Node 25.5.0、Python 3.14.2）：
+- `tsc --noEmit`、`npm run build`、CLI 与 Tauri debug 构建通过；`cargo fmt --all --check`、Clippy `-D warnings` 通过。
+- `node --test tools/*.test.mjs` 258 项：257 过、0 失败、1 跳过（PowerShell 原生命令参数测试）；最终代码又跑 1 次同样通过。
+- Camofox headless、humanize=true、1280×800、Vite demo：浮层专项最终完整 **111/111 过，1 次，60.36 秒**；网络 **17/17 过，1 次**。
+  覆盖三种 sheet 的深浅布局、Tab / Esc、外壳导航隔离、异步禁用焦点、两层 sheet、减少透明度与 demo 撤码。
+  多决策卡用真实 store 内存事件与仅 fixture ID 的 deny spy；原生 Tab/Esc，外壳快捷键使用 DOM 事件。截图不证明原生模糊。
+- 真实 App + 隔离 quiet host + 替身：预览 **31/31 过，1 次**。首轮完整对话在并行编译、较高换页压力及锁屏期间变慢，
+  截图等待超时，第二次 SLOW 未进入运行，手动中止；不计为验收通过，保留诊断日志。原测试此处先等待 running 再直接点 stop，
+  超时后表现为 null.click；未找到与本包浮层代码的直接关联，仍需空载复跑，不能把原因直接定为换页压力。
+- 原生窗口验收使用的隔离 profile 一开始路径过长，触发 Unix socket `SUN_LEN` 限制；改用短 `/tmp` profile。
+  已观测 native / thick 36px 计算样式与 portal / modal=1 / inert，但系统检测本机锁屏且无法自动解锁，未取得可接受的整屏裁窗效果图。
+
+- Rust workspace 全量在 `-j 2 -- --test-threads=1` 条件下通过：437 过、0 失败、9 忽略（1 次）。默认并发首轮在
+  `ipc::tests::a_second_daemon_cannot_replace_the_live_socket` 的退出后重绑阶段遇到 AddrInUse，串行复跑通过；未改 Rust。
+
+2026-10-23 当时待补：完整对话 3 次、预览第 2 次、render / offline、真实窗口深浅玻璃截图与原生快捷键；当前收尾见下节与 PR #44。
+未测：Windows Mica / 标题条、不同壁纸和失焦对比度、视频帧率对照、真实主机安装及配对。后两项未因本包主动执行。
+
+
+### PR #44 同步与冲突取舍（2026-10-24）
+
+- 先按用户要求合入 #46（main `27944dd`），再将最新 main 合进本分支，保留实时完整 Workspace、批量会话操作与 iPad 适配。
+- Claude 文件预览已在后续 main 中补齐，保留 main 的 grid、ANSI 和 previewedPath 实现，不退回旧包装结构。
+  决策卡同时保留 main 的 escapeScope 与本分支的一次一张 / modal / 菜单 / IME 防护，避免聊天 Esc 误拒批准。
+- Confirm 的异步动作现在禁用取消与 Esc / 遮罩关闭，失败后留框显示错误并恢复按钮；Camofox 补上 promise 拒绝与作用域双卡检查。
+- 本次集成本机静态检查：Rust fmt / Clippy / 默认并发全量 440 过 / 9 忽略，TypeScript、前端 build、前端 422 过 / 1 跳过；
+  Camofox 浮层 122 / 122、网络 17 / 17 通过。旧 Node fixture 缺 Element 与真实 card ref，补齐 DOM fixture 后保留原行为断言并通过。
+  网络首轮回环请求经系统代理得到 HTTP 400，仅测试进程使用直接回环 opener 后通过，未改系统代理。
+- 原生对话 / 预览 / render / offline 回归、深浅色 WindowServer 截图与真实快捷键的最终结果集中记录在 PR #44；
+  本机当前未锁屏且录屏权限已授予。证据目录 `/Volumes/SSD-2TB/MacData/Artifacts/ai-remote-pr44-merge-20261024`；旧失败不删除。

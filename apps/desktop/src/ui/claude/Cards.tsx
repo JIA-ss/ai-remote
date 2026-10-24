@@ -20,14 +20,18 @@ import {
   qPick,
   qSkip,
   questionParts,
+  questionSelectionBlocks,
   type CardKey,
   type QDraft,
 } from "../../lib/claude";
 import { currentLang, t, type Key } from "../../lib/i18n";
+import { inlineText, parseInline } from "../../lib/markdown";
 import { detectOs } from "../../lib/platform";
 import { cx } from "../util";
-import { Markdown } from "../chat/Markdown";
+import { InlineMarkdown, Markdown } from "../chat/Markdown";
+import { renderAnsiText } from "../chat/Ansi";
 import { DiffView } from "./ToolBody";
+import { workspaceOwnsEvent } from "../workspace/parts";
 
 const MAC = detectOs() === "mac";
 const CMD_ENTER = MAC ? "⌘↵" : "Ctrl+↵";
@@ -92,14 +96,17 @@ function FrontCard({ item, agent, readonly, draft, actions }: { item: OpenItem; 
 
 type CardProps = { box: React.RefObject<HTMLDivElement | null>; agent: string; readonly: boolean; draft: boolean; armed: () => boolean };
 
-/** Keys for the card in front, from anywhere in the window (in the capture phase, before the composer's). */
-function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean) {
+/** Keys for the card in front (before the composer's). A workspace beside the live view owns only
+ *  its own events: remote keyboard input must never approve or dismiss an agent's card. */
+function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean, box: React.RefObject<HTMLElement | null>) {
   const ref = useRef(handler);
   ref.current = handler;
   useEffect(() => {
     if (!on) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      const pane = box.current?.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (pane && !workspaceOwnsEvent(pane, e)) return;
       if (ref.current(e)) {
         e.preventDefault();
         e.stopPropagation();
@@ -107,7 +114,7 @@ function useCardKeys(handler: (e: KeyboardEvent) => boolean, on: boolean) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [on]);
+  }, [on, box]);
 }
 
 function Kbd({ k }: { k: string }) {
@@ -142,7 +149,7 @@ function ApprovalCard({ r, box, agent, readonly, draft, armed, armedAt, actions 
     if (act.act === "button") answer(([`deny`, v.session ? "session" : "once", "once"] as const)[act.index]);
     else answer(act.act);
     return true;
-  }, !readonly);
+  }, !readonly, box);
   const action = t(`cl_ap_a_${v.action}` as Key);
   // "Run the test suite" reads as the action itself in English: "Allow Claude to run the test suite?"
   const own = v.action === "run" && v.description && currentLang() === "en" ? describe(v.description, "failed") : null;
@@ -246,7 +253,7 @@ function PlanCard({ r, box, agent, readonly, draft, armed, actions }: CardProps 
       return true;
     }
     return false;
-  }, !readonly);
+  }, !readonly, box);
   return (
     <div ref={box} className="cl-card cl-pl" role="group" aria-label={t("cl_pl_title", { agent })}
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "none"; }}>
@@ -258,7 +265,7 @@ function PlanCard({ r, box, agent, readonly, draft, armed, actions }: CardProps 
       </div>
       {shown && (
         <div className="cl-card-scroll cl-pl-body">
-          <Markdown text={r.plan} className="cl-md" />
+          <Markdown text={r.plan} className="cl-md" renderAnsi={renderAnsiText} />
         </div>
       )}
       {revising && (
@@ -357,14 +364,15 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
     if (e.repeat || !armed()) return true;
     primary();
     return true;
-  }, !readonly);
+  }, !readonly, box);
   const other = d.other[i];
   const answered = qAnswered(d, i);
   const open = parts.findIndex((_, k) => !qAnswered(d, k));
+  const questionLabel = inlineText(parseInline(part.question));
   return (
-    <div ref={box} className="cl-card cl-qc" role="group" aria-label={part.question}>
+    <div ref={box} className="cl-card cl-qc" role="group" aria-label={questionLabel}>
       <div className="cl-qc-hd">
-        <span className="q">{part.question}</span>
+        <span className="q"><InlineMarkdown text={part.question} /></span>
         {parts.length > 1 && (
           <span className="pager">
             <button type="button" className="cl-ib" aria-label={t("cl_q_prev")} disabled={i === 0} onClick={() => setD({ ...d, page: i - 1 })}>
@@ -377,19 +385,19 @@ function QuestionCard({ q, box, readonly, armed, actions }: Omit<CardProps, "age
           </span>
         )}
       </div>
-      <div className="cl-qc-opts" role={multi ? "group" : "radiogroup"} aria-label={part.question}>
+      <div className="cl-qc-opts" role={multi ? "group" : "radiogroup"} aria-label={questionLabel}>
         {part.options.map((o) => {
           const on = d.picks[i]?.includes(o.label) ?? false;
           return (
             <button key={o.label} type="button" role={multi ? "checkbox" : "radio"} aria-checked={on} className={cx("opt", on && "on")} disabled={readonly}
-              onClick={() => {
-                if (window.getSelection()?.toString()) return;
+              onClick={(e) => {
+                if (questionSelectionBlocks(e.detail, window.getSelection(), e.currentTarget)) return;
                 setD((cur) => qPick(cur, parts, i, o.label));
               }}>
               <span className={cx("mark", multi ? "check" : "radio")} aria-hidden>{multi && on && <Check size={11} />}</span>
               <span className="lb">
-                <span className="nm">{o.label}</span>
-                {o.description && <span className="ds">{o.description}</span>}
+                <span className="nm"><InlineMarkdown text={o.label} /></span>
+                {o.description && <span className="ds"><InlineMarkdown text={o.description} /></span>}
               </span>
             </button>
           );

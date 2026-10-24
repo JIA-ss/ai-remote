@@ -29,7 +29,7 @@ const upper = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /** One tool call as a phrase: "Read export.py", "Ran `git status`", "Running the test suite". */
 export function ToolLabel({ x, st }: { x: ToolItem; st: ToolState }) {
-  const tense = tenseOf(st);
+  const tense = st === "denied" || st === "stopped" ? "failed" : tenseOf(st);
   const w = toolWords(x, tense);
   // A call that was said no to or stopped did not do what it set out to: its own words, not "Ran …".
   const held = (st === "denied" || st === "stopped") ? toolWords(x, "failed").failedText : undefined;

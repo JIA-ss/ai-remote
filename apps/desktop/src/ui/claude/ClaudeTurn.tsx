@@ -34,6 +34,7 @@ import { previewKind } from "../../lib/preview";
 import { cx } from "../util";
 import { CopyButton, StreamingMarkdown } from "../chat/Markdown";
 import { PreviewButton, TurnFiles } from "../chat/Preview";
+import { renderAnsiText } from "../chat/Ansi";
 import { NoticeRow } from "../chat/Rows";
 import { ToolBody } from "./ToolBody";
 import { countOf, dur, SentenceView, ToolLabel } from "./text";
@@ -157,7 +158,7 @@ function Prose({ row }: { row: Extract<ClRow, { kind: "text" }> }) {
   // A fence that has only opened would flash as an empty code block before its first line comes.
   const text = row.streaming ? paced.replace(/(^|\n)[ \t>]*(?:`{1,}|~{1,})[\w+-]*[ \t]*$/, "$1") : paced;
   if (!text) return null;
-  return <StreamingMarkdown text={text} streaming={row.streaming} className={cx("cl-md", row.streaming && "streaming")} />;
+  return <StreamingMarkdown text={text} streaming={row.streaming} className={cx("cl-md", row.streaming && "streaming")} renderAnsi={renderAnsiText} />;
 }
 
 /** "+3 −1" of an edit. */
@@ -185,11 +186,11 @@ function hasBody(x: ToolItem): boolean {
   return toolName(x) === "Bash" || x.tool === "execute";
 }
 
-/** A file the call acted on that still exists and can be previewed. */
+/** The first previewable file the tool read or changed, as in the shared transcript. */
 function previewTarget(x: ToolItem): string | null {
   if (x.status === "failed" || x.tool === "delete") return null;
-  const diffs = x.content.filter((c): c is Extract<ToolItem["content"][number], { type: "diff" }> => c.type === "diff");
-  const deleted = new Set(diffs.filter((c) => c.new === "" && !!c.old).map((c) => c.path));
+  const diffs = x.content.filter((c) => c.type === "diff");
+  const deleted = new Set(diffs.filter((c) => c.new === "" && c.old).map((c) => c.path));
   return [...x.locations, ...diffs.map((c) => c.path)].find((p) => !deleted.has(p) && previewKind(p)) ?? null;
 }
 
@@ -198,25 +199,23 @@ const ToolRow = memo(function ToolRow({ x, st, now, store, nested }: { x: ToolIt
   const [open, toggle] = useOpen(store, `t:${x.callId}`, false);
   const shown = useDwell<ToolState>(st, 0) ?? st;
   const body = hasBody(x);
-  const file = previewTarget(x);
   const elapsed = shown === "busy" ? now - x.startedTs : 0;
   const stat = shown !== "busy" && x.content.some((c) => c.type === "diff") ? groupStat([x]) : null;
+  const file = previewTarget(x);
   return (
-    <div className={cx("cl-tool", nested && "nested", open && "open")} data-state={shown}>
-      <div className="nt-cl-tool-head">
-        <button type="button" className="cl-tool-hd" aria-expanded={body ? open : undefined} disabled={!body} onClick={toggle}>
-          <ChevronRight size={12} className="chev" aria-hidden />
-          <span className={cx("cl-line", shown === "busy" && "shimmer")}>
-            <ToolLabel x={x} st={shown} />
-          </span>
-          {shown === "busy" && <span className="sr-only">{t("cl_st_running")}</span>}
-          <StateWord st={shown} />
-          <Stat s={stat} />
-          {elapsed >= 2000 && <span className="cl-tm tnum">{dur(elapsed)}</span>}
-        </button>
-        {file && <PreviewButton path={file} />}
-      </div>
-      {open && body && <ToolBody x={x} st={shown} now={now} />}
+    <div className={cx("cl-tool", nested && "nested", open && "open", file && "has-preview")} data-state={shown}>
+      <button type="button" className="cl-tool-hd" aria-expanded={body ? open : undefined} disabled={!body} onClick={toggle}>
+        <ChevronRight size={12} className="chev" aria-hidden />
+        <span className={cx("cl-line", shown === "busy" && "shimmer")}>
+          <ToolLabel x={x} st={shown} />
+        </span>
+        {shown === "busy" && <span className="sr-only">{t("cl_st_running")}</span>}
+        <StateWord st={shown} />
+        <Stat s={stat} />
+        {elapsed >= 2000 && <span className="cl-tm tnum">{dur(elapsed)}</span>}
+      </button>
+      {file && <PreviewButton path={file} />}
+      {open && body && <ToolBody x={x} st={shown} now={now} previewedPath={file} />}
     </div>
   );
 });
@@ -310,7 +309,7 @@ const AgentRow = memo(function AgentRow({ row, states, now, store }: { row: Extr
           {row.children.map((c) => (
             <ToolRow key={c.callId} x={c} st={states.get(c.callId) ?? toolState(c)} now={now} store={store} nested />
           ))}
-          {out && st !== "busy" && <StreamingMarkdown text={out} streaming={false} className="cl-md cl-agent-out" />}
+          {out && st !== "busy" && <StreamingMarkdown text={out} streaming={false} className="cl-md cl-agent-out" renderAnsi={renderAnsiText} />}
         </div>
       )}
     </div>
@@ -388,6 +387,7 @@ function TurnFoot({ turn, stopped, onContinue, readonly }: { turn: Turn; stopped
   const reply = replyOf(turn);
   return (
     <>
+      <TurnFiles turn={turn} />
       {turn.status === "failed" && (
         <div className="cl-fail" role="status">
           <CircleAlert size={14} aria-hidden />
@@ -461,7 +461,6 @@ export const ClaudeTurnView = memo(function ClaudeTurnView({ turn, requests, now
         }
       })}
       {showChanges(turn, rows) && <ChangesCard turn={turn} store={store} />}
-      <TurnFiles turn={turn} />
       <TurnFoot turn={turn} stopped={stopped} onContinue={onContinue} readonly={readonly} />
     </section>
   );

@@ -8,6 +8,8 @@
 </picture></p>
 <p align="center"><a href="#连接你的每一端">平台支持</a> · <a href="#多端-p2p-加密连接">P2P 直连</a> · <a href="#ai-native从协议到控制">AI Native</a> · <a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
 
+<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven 发布者验证" height="20"></a></p>
+
 **AI Native 多端远程控制，P2P 加密连接你的设备。**
 手机、平板、Mac、PC，与你的 AI，共用一套远程控制核心。通过控制端查看和操作已配对的电脑，也可以接入现有 MCP 智能体，让 AI 动手。你看得见屏幕和操作过程，随时接管，再把控制权交还给 AI。
 
@@ -20,7 +22,7 @@
 | **macOS / Mac** | 被控端 + 桌面控制端 | 已实现；Apple Silicon 本机已验证配对、截图、输入与 H.264 屏幕流。[Mac 配置](docs/macos.md) |
 | **Windows / PC** | 被控端 + 桌面控制端 | 已实现；包含 Windows UIA 与原生输入路径。[使用说明](docs/operations.zh-CN.md) · [结构化 UI 验收](docs/structured-ui.md) |
 | **iOS / iPhone** | 原生手机控制端 | **WIP** — 已有 SwiftUI/UniFFI 源码，设备/模拟器 SDK 构建和模拟器界面测试通过；真机远控待验收。[验收记录](docs/iphone-validation.md) |
-| **iPadOS / iPad** | 平板控制端 | **WIP** — iOS 应用已声明支持 iPhone 与 iPad；iPad 布局与真机验收待完成。[源码与构建](apps/ios/README.md) |
+| **iPadOS / iPad** | 平板控制端 | **WIP** — 已实现优先面向 12.9 英寸 iPad Pro 的自适应布局，并接入模拟器 CI；真机和系统多任务验收待完成。[源码与构建](apps/ios/README.md) |
 | **Android** | 手机 / 平板控制端 | **WIP** — 规划中，原生应用待实现。 |
 | **Linux** | 桌面被控端 / 控制端 | **WIP** — 桌面能力与平台验收待完成。 |
 

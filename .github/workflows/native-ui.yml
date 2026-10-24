@@ -22,6 +22,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: UI fixture reader regressions
+        run: python -m unittest discover -s tools -p test_ui_fixture_state.py -v
       - name: Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --component clippy
       - name: Check native library
@@ -32,8 +34,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo test -p ar-ui --locked --test native -- --ignored --nocapture 2>&1 | Tee-Object -FilePath native-ui-e2e.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($round in 1..2) {
+            "native_ui_planned_round=$round of 2" | Tee-Object -FilePath native-ui-e2e.log -Append
+            cargo test -p ar-ui --locked --test native -- --ignored --nocapture 2>&1 | Tee-Object -FilePath native-ui-e2e.log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Windows remote host UI acceptance
         if: runner.os == 'Windows'
         run: |

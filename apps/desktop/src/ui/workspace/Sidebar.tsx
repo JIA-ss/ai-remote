@@ -7,10 +7,11 @@
 // own (new session there, copy the path, collapse the others — also Alt+click).
 
 import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { folderName, knownHome } from "../../lib/chat";
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
+import { EMPTY_SELECTION, readLocked as batchReadLocked, runBatch, selectRow, undoBatch, type BatchKind, type BatchResult, type RowSelection } from "../../lib/workspace-batch";
 import {
   aggregateDot,
   dateBuckets,
@@ -21,6 +22,9 @@ import {
   isFiltered,
   normalizeList,
   rowsBeforeMore,
+  SESSION_JUMP,
+  sessionJumpChord,
+  sessionJumpNumber,
   shownByStatus,
   sortSessions,
   stateBucket,
@@ -39,7 +43,7 @@ import {
 import { cx } from "../util";
 import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { ModeSwitch, type AppMode } from "./ModeSwitch";
-import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
+import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, workspaceOwnsEvent, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
 import { workspace } from "./useWorkspace";
 
 const COLLAPSED = "ai-remote.ws.collapsed";
@@ -47,6 +51,118 @@ const COLLAPSED = "ai-remote.ws.collapsed";
 const LIST = "ai-remote.ws.list";
 const PINNED_KEY = "pinned";
 const ALL_KEY = "all";
+
+/** SB-41: number the rows actually drawn by the current grouping (not rows behind Show more). */
+function useSessionJumps(list: RefObject<HTMLDivElement | null>, disabled: boolean, onOpen: (key: string) => void): string[] {
+  const [keys, setKeys] = useState<string[]>([]);
+  const open = useRef(onOpen);
+  open.current = onOpen;
+  useEffect(() => {
+    setKeys([]);
+    if (disabled) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let held = false;
+    let showing = false;
+    const rows = () => [...(list.current?.querySelectorAll<HTMLButtonElement>(".ws-row-main") ?? [])]
+      .filter((el) => el.getClientRects().length > 0 && !el.closest("[inert], [aria-hidden=true]"))
+      .slice(0, SESSION_JUMP.COUNT);
+    const update = () => {
+      const next = rows().map((el) => el.closest<HTMLElement>("[data-row-key]")!.dataset.rowKey!);
+      setKeys((prev) => prev.length === next.length && prev.every((key, i) => key === next[i]) ? prev : next);
+    };
+    const hide = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      showing = false;
+      setKeys((prev) => prev.length ? [] : prev);
+    };
+    const editing = () => {
+      const a = document.activeElement;
+      return a instanceof HTMLElement && (a.isContentEditable || !!a.closest("input, textarea, select, [role=textbox]"));
+    };
+    const down = (e: globalThis.KeyboardEvent) => {
+      const pane = list.current?.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (e.defaultPrevented || (pane && !workspaceOwnsEvent(pane, e)) || e.isComposing || editing() || document.hidden || !sessionJumpChord(e)) {
+        held = false;
+        hide();
+        return;
+      }
+      const number = sessionJumpNumber(e);
+      if (number !== null) {
+        if (e.repeat) return;
+        // The delay reveals hints; a quick Ctrl+Shift+digit can still open the corresponding row.
+        const el = rows()[number - 1];
+        if (el) {
+          e.preventDefault();
+          const key = el.closest<HTMLElement>("[data-row-key]")!.dataset.rowKey!;
+          hide();
+          el.focus({ preventScroll: true });
+          el.scrollIntoView({ block: "nearest" });
+          open.current(key);
+        }
+        return;
+      }
+      if (e.key !== "Control" && e.key !== "Shift") {
+        hide();
+        return;
+      }
+      if (held) return;
+      held = true;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!held || editing() || document.hidden) return;
+        showing = true;
+        update();
+      }, SESSION_JUMP.HOLD_MS);
+    };
+    const up = (e: globalThis.KeyboardEvent) => {
+      if (!sessionJumpChord(e)) {
+        held = false;
+        hide();
+      }
+    };
+    const blur = () => { held = false; hide(); };
+    const focus = () => { if (editing()) hide(); };
+    let resolution: MediaQueryList;
+    const scaleChanged = () => {
+      hide();
+      resolution.removeEventListener("change", scaleChanged);
+      resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution.addEventListener("change", scaleChanged);
+    };
+    resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    resolution.addEventListener("change", scaleChanged);
+    const changes = new MutationObserver(() => { if (showing) update(); });
+    if (list.current) changes.observe(list.current, { childList: true, subtree: true });
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("pointermove", hide);
+    window.addEventListener("wheel", hide, { passive: true });
+    window.addEventListener("blur", blur);
+    // Browser zoom changes the layout viewport or its visual scale; either removes stale hints.
+    window.addEventListener("resize", hide);
+    window.visualViewport?.addEventListener("resize", hide);
+    document.addEventListener("scroll", hide, true);
+    document.addEventListener("focusin", focus);
+    document.addEventListener("visibilitychange", blur);
+    return () => {
+      if (timer) clearTimeout(timer);
+      changes.disconnect();
+      resolution.removeEventListener("change", scaleChanged);
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("pointermove", hide);
+      window.removeEventListener("wheel", hide);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("resize", hide);
+      window.visualViewport?.removeEventListener("resize", hide);
+      document.removeEventListener("scroll", hide, true);
+      document.removeEventListener("focusin", focus);
+      document.removeEventListener("visibilitychange", blur);
+    };
+  }, [disabled, list]);
+  return keys;
+}
 
 function readCollapsed(): Set<string> {
   try {
@@ -163,6 +279,47 @@ export function Sidebar(p: SidebarProps) {
   const [listMenu, setListMenu] = useState<MenuAt | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
+  const side = useRef<HTMLElement>(null);
+  const [selection, setSelection] = useState<RowSelection>(EMPTY_SELECTION);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const batchQueue = useRef(Promise.resolve());
+  const clearSelection = () => setSelection((s) => s.keys.length ? EMPTY_SELECTION : s);
+  useEffect(() => {
+    const valid = new Set(items.map((x) => x.key));
+    setSelection((s) => {
+      const keys = s.keys.filter((key) => valid.has(key));
+      return keys.length === s.keys.length ? s : { keys, anchor: s.anchor && valid.has(s.anchor) ? s.anchor : null };
+    });
+  }, [items]);
+  useEffect(() => {
+    const outside = (e: PointerEvent) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !(e.target instanceof Element)) return;
+      if ((list.current?.contains(e.target) && e.target.closest("[data-row-key]"))
+        || (side.current?.contains(e.target) && e.target.closest(".ws-batch-menu"))) return;
+      setSelection((s) => s.keys.length ? EMPTY_SELECTION : s);
+    };
+    document.addEventListener("pointerdown", outside, true);
+    return () => document.removeEventListener("pointerdown", outside, true);
+  }, []);
+  useEffect(() => {
+    if (!selection.keys.length) return;
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (!side.current) return;
+      const pane = side.current.closest<HTMLElement>('.ws[data-embedded="true"]');
+      if (e.defaultPrevented || e.isComposing || (pane && !workspaceOwnsEvent(pane, e))) return;
+      // Single-row shortcuts never silently act on one member of a multi-selection. Menu
+      // letters stay local to PopMenu; Ctrl+Shift+digits still belong to the jump handler.
+      if (selection.keys.length > 1 && ((e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey)
+        || ((e.metaKey || e.ctrlKey) && e.altKey && ["KeyP", "KeyU", "KeyA", "KeyR"].includes(e.code)))) {
+        e.preventDefault(); e.stopPropagation(); return;
+      }
+      if (e.key !== "Escape") return;
+      e.preventDefault(); e.stopPropagation();
+      setSelection(EMPTY_SELECTION); setMenu(null); setGroupMenu(null); setListMenu(null);
+    };
+    window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, [selection.keys.length]);
   // SB-32: a card beside the row the pointer rests on (500 ms; once one shows, the next row's follows at
   // once), gone 200 ms after the pointer leaves; not while a menu is open or a row is being renamed.
   const [card, setCard] = useState<{ key: string; rect: DOMRect } | null>(null);
@@ -180,8 +337,63 @@ export function Sidebar(p: SidebarProps) {
     if (cardTimer.current) clearTimeout(cardTimer.current);
   }, []);
   const byKey = useMemo(() => new Map(all.map((x) => [x.key, x])), [all]);
+  const jumps = useSessionJumps(list, quiet, (key) => {
+    const item = byKey.get(key);
+    if (item) { clearSelection(); p.onOpen(item.host, item.meta.id); }
+  });
   const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
   const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived };
+  const selectedItems = selection.keys.flatMap((key) => byKey.get(key) ? [byKey.get(key)!] : []);
+  const bulk = selectedItems.length > 1 && !!menu && selection.keys.includes(menu.key);
+  const selectAllKeys = [...pinned, ...groups.flatMap((g) => g.items)].map((x) => x.key);
+  const folded = (pinned.length > 0 && collapsed.has(PINNED_KEY)) || groups.some((g) => g.key !== ALL_KEY && g.items.length > 0 && collapsed.has(g.key));
+  const selectAllNote = folded ? t("ws_select_all_expand") : selectAllKeys.length < 2 ? t("ws_select_all_min") : undefined;
+  const selectAll = () => {
+    if (selectAllNote) { p.toast({ text: selectAllNote }); return; }
+    setSelection({ keys: selectAllKeys, anchor: selectAllKeys[0] ?? null });
+  };
+  const batchError = (error: string) => error === "busy_session" ? t("ws_batch_read_locked")
+    : error === "missing_session" ? t("ws_batch_missing") : error === "state_changed" ? t("ws_batch_changed")
+    : error === "unsupported" || /unknown tool '?chat_/i.test(error) ? t("ws_batch_unsupported") : error;
+  const dispatchBatch = (job: () => Promise<BatchResult>, label: string, offerUndo: boolean) => {
+    clearSelection();
+    batchQueue.current = batchQueue.current.catch(() => undefined).then(async () => {
+      setBatchBusy(true);
+      try {
+        const result = await job();
+        for (const change of result.successes) if (change.field === "archived" && change.before !== change.after && change.after) p.onArchived(change.item.key);
+        const changes = result.successes.filter((c) => c.field === "read" ? c.before.seen !== c.after.seen || c.before.explicit !== c.after.explicit : c.before !== c.after);
+        const detail = result.failures.slice(0, 3).map((f) => `${f.title}: ${batchError(f.error)}`).join("; ");
+        let undone = false;
+        p.toast({
+          text: `${label}: ${t(offerUndo ? "ws_batch_result" : "ws_batch_undone", { ok: result.successes.length, failed: result.failures.length })}${detail ? ` — ${detail}` : ""}${result.failures.length > 3 ? ` (${t("ws_batch_more_errors", { n: result.failures.length - 3 })})` : ""}`,
+          tone: result.failures.length ? "error" : undefined,
+          action: offerUndo && changes.length ? { label: t("ws_undo"), run: () => {
+            if (undone) return;
+            undone = true;
+            dispatchBatch(() => undoBatch(workspace, changes), label, false);
+          } } : undefined,
+        });
+      } catch (error) { p.toast({ text: t("ws_failed", { error: String((error as Error)?.message ?? error) }), tone: "error" }); }
+      finally { setBatchBusy(false); }
+    });
+  };
+  const batchItems = (): MenuLine[] => {
+    const n = selectedItems.length;
+    const pinned = selectedItems.every((x) => workspace.isPinned(x));
+    const read = !selectedItems.some((x) => workspace.unread(x));
+    const archived = selectedItems.every((x) => !!x.meta.archived);
+    const action = (kind: BatchKind, value: boolean, label: string, letter: string, locked = false): MenuLine => ({
+      key: `batch-${kind}`, label, letter, disabled: batchBusy || locked,
+      note: batchBusy ? t("ws_batch_busy") : locked ? t("ws_batch_read_locked") : undefined,
+      run: () => { const chosen = selectedItems.map((x) => ({ ...x, meta: { ...x.meta } })); dispatchBatch(() => runBatch(workspace, chosen, kind, value), label, true); },
+    });
+    return [
+      action("pin", !pinned, t(pinned ? "ws_batch_unpin" : "ws_batch_pin", { n }), "p"),
+      action("read", !read, t(read ? "ws_batch_unread" : "ws_batch_read", { n }), "u", selectedItems.some(batchReadLocked)),
+      "sep", action("archive", !archived, t(archived ? "ws_batch_unarchive" : "ws_batch_archive", { n }), "a"),
+    ];
+  };
 
   const saveCollapsed = (next: Set<string>) => {
     setCollapsed(next);
@@ -213,8 +425,10 @@ export function Sidebar(p: SidebarProps) {
   // Roving focus (SB-40): ↑ / ↓ over rows and group headers, Home / End, F2 renames.
   const onListKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.target instanceof HTMLInputElement) return;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); return; }
     const nav = [...(list.current?.querySelectorAll<HTMLElement>("[data-ws-nav]") ?? [])];
     const i = nav.indexOf(document.activeElement as HTMLElement);
+    const from = nav[i]?.closest<HTMLElement>("[data-row-key]")?.dataset.rowKey ?? null;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     let next = -1;
     if (e.key === "ArrowDown") next = (i + 1) % nav.length;
@@ -225,6 +439,7 @@ export function Sidebar(p: SidebarProps) {
       const key = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-row-key]")?.dataset.rowKey;
       if (key) {
         e.preventDefault();
+        clearSelection();
         p.setRenaming(key);
       }
       return;
@@ -233,6 +448,10 @@ export function Sidebar(p: SidebarProps) {
     e.preventDefault();
     nav[next].focus();
     nav[next].scrollIntoView({ block: "nearest" });
+    if (e.shiftKey) {
+      const key = nav[next].closest<HTMLElement>("[data-row-key]")?.dataset.rowKey;
+      if (key) setSelection((s) => selectRow(s.anchor ? s : { ...s, anchor: from }, key, [...list.current!.querySelectorAll<HTMLElement>("[data-row-key]")].map((r) => r.dataset.rowKey!), false, true));
+    }
   };
   // One Tab stop for the list: the last focused item, else the first header.
   const navIds = useMemo(() => {
@@ -327,6 +546,8 @@ export function Sidebar(p: SidebarProps) {
     const status = (v: StatusFilter, k: Key) => choice(`f-${v}`, t(k), prefs.status === v, () => setPrefs({ status: v }));
     const asc = isAscending(prefs);
     return [
+      { key: "select-all", label: t("ws_select_all"), disabled: !!selectAllNote, note: selectAllNote, run: selectAll },
+      "sep",
       { heading: t("ws_group_by") },
       groupBy("project", "ws_group_project"),
       groupBy("date", "ws_group_date"),
@@ -355,15 +576,24 @@ export function Sidebar(p: SidebarProps) {
       key={x.key}
       item={x}
       lead={opts.lead}
+      jump={jumps.indexOf(x.key) + 1 || undefined}
       env={opts.env && !x.local ? (computer(x.host) ?? { os: null, online: x.online }) : null}
       selected={x.key === p.current}
+      multiSelected={selection.keys.includes(x.key)}
       menuOpen={menu?.key === x.key}
       renaming={p.renaming === x.key}
       tabIndex={navIndex(`row:${x.key}`)}
       onFocus={() => setFocusId(`row:${x.key}`)}
       onHover={(el) => hoverRow(el ? x.key : null, el ?? undefined)}
-      onOpen={() => p.onOpen(x.host, x.meta.id)}
+      onOpen={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey) {
+          e.preventDefault();
+          const order = [...(list.current?.querySelectorAll<HTMLElement>("[data-row-key]") ?? [])].map((r) => r.dataset.rowKey!);
+          setSelection((s) => selectRow(s.anchor ? s : { ...s, anchor: p.current }, x.key, order, e.metaKey || e.ctrlKey, e.shiftKey));
+        } else { clearSelection(); p.onOpen(x.host, x.meta.id); }
+      }}
       onMenu={(at) => {
+        if (!selection.keys.includes(x.key)) clearSelection();
         setConfirmEnd(null);
         setMenu({ key: x.key, at });
       }}
@@ -389,7 +619,7 @@ export function Sidebar(p: SidebarProps) {
   const listLabel = filtered ? t("ws_group_sort_on") : t("ws_group_sort");
 
   return (
-    <nav className="ws-side" aria-label={t("ws_sidebar")}>
+    <nav ref={side} className="ws-side" aria-label={t("ws_sidebar")}>
       <div className="ws-side-top" data-tauri-drag-region>
         {p.corner}
         <div className="ws-drag" data-tauri-drag-region />
@@ -446,7 +676,7 @@ export function Sidebar(p: SidebarProps) {
         )}
         {(all.length > 0 || filtered) && !noComputers && (
           <div className="ws-list-head" data-open={listMenu ? "" : undefined}>
-            <span className="ws-list-head-label">{t("ws_sessions_head")}</span>
+            <span className="ws-list-head-label">{selection.keys.length ? t("ws_selection_count", { n: selection.keys.length }) : t("ws_sessions_head")}</span>
             <button
               type="button"
               className={cx("ws-list-filter", filtered && "on")}
@@ -573,7 +803,7 @@ export function Sidebar(p: SidebarProps) {
         </button>
       </div>
       {menu && menuOf && (
-        <PopMenu at={menu.at} label={t("ws_session_menu", { title: titleOf(menuOf) })} items={menuItems(menuOf)} onClose={() => setMenu(null)} />
+        <PopMenu at={menu.at} className={bulk ? "ws-batch-menu" : undefined} label={bulk ? t("ws_batch_menu", { n: selectedItems.length }) : t("ws_session_menu", { title: titleOf(menuOf) })} items={bulk ? batchItems() : menuItems(menuOf)} onClose={() => setMenu(null)} />
       )}
       {groupMenu && (
         <PopMenu
@@ -657,8 +887,10 @@ function Section({
 function Row({
   item,
   lead,
+  jump,
   env,
   selected,
+  multiSelected,
   menuOpen,
   renaming,
   tabIndex,
@@ -670,16 +902,18 @@ function Row({
 }: {
   item: WsItem;
   lead?: boolean;
+  jump?: number;
   /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
   env: Pick<Computer, "os" | "online"> | null;
   selected: boolean;
+  multiSelected: boolean;
   menuOpen: boolean;
   renaming: boolean;
   tabIndex?: number;
   onFocus: () => void;
   /** The pointer came onto the row (its element) or left it (null). */
   onHover: (el: HTMLElement | null) => void;
-  onOpen: () => void;
+  onOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onMenu: (at: MenuAt) => void;
   onRenamed: (title: string | null) => void;
 }) {
@@ -695,6 +929,7 @@ function Row({
       role="listitem"
       data-row-key={item.key}
       data-selected={selected ? "" : undefined}
+      data-multi-selected={multiSelected ? "" : undefined}
       data-menu-open={menuOpen ? "" : undefined}
       data-decorated={decorated ? "" : undefined}
       data-archived={item.meta.archived ? "" : undefined}
@@ -717,11 +952,12 @@ function Row({
           onFocus={onFocus}
           onClick={onOpen}
           aria-current={selected ? "page" : undefined}
+          aria-pressed={multiSelected}
           aria-description={item.meta.archived ? t("ws_archived_row") : undefined}
         >
-          {lead && (
+          {(lead || jump) && (
             <span className="ws-row-lead">
-              <CodeXml size={14} strokeWidth={1.5} />
+              {jump ? <kbd className="ws-jump-key" aria-hidden>{jump}</kbd> : <CodeXml size={14} strokeWidth={1.5} />}
             </span>
           )}
           <span className="ws-row-title" ref={ref}>

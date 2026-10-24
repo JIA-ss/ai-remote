@@ -38,8 +38,33 @@
     return null;
   }
   const shotWaits = new Map();
-  window.__smokeShot = (name) => shotWaits.get(name)?.();
-  const shot = (name) => new Promise((r) => { shotWaits.set(name, r); say("shot", name); setTimeout(r, 5000); });
+  window.__smokeShot = (name, error) => shotWaits.get(name)?.(error);
+  const shot = (name) => new Promise((resolve, reject) => {
+    if (shotWaits.has(name)) {
+      reject(new Error(`screenshot ${name} is already waiting for its native acknowledgement`));
+      return;
+    }
+    const finish = (error) => {
+      if (shotWaits.get(name) !== finish) return;
+      clearTimeout(timer);
+      shotWaits.delete(name);
+      if (error) reject(new Error(`screenshot ${name} failed: ${error}`));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish("native acknowledgement not received within 60000 ms"), 60000);
+    shotWaits.set(name, finish);
+    // Prepare only the screenshot's finite animation terminal state; live indicators keep running.
+    // The page must then stay on this state until the native capture has finished.
+    const request = () => {
+      if (shotWaits.get(name) === finish) return say("shot", name);
+    };
+    try {
+      Promise.resolve(window.__smokePrepareShot?.(name)).then(request)
+        .catch((error) => finish(String(error) || "screenshot preparation or request rejected"));
+    } catch (error) {
+      finish(String(error) || "screenshot preparation or request rejected");
+    }
+  });
   function setValue(el, v) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v);
@@ -63,15 +88,31 @@
   const posted = [];
   window.addEventListener("message", (e) => posted.push(String(e.data)));
 
+  // The complete workspace owns creation and navigation beside the live screen.
+  const readyConversation = () => {
+    const pane = $(".ws-session .nt-chat");
+    return pane && !$(".cl-loading, .cdx-loading, .nt-chat-status", pane)
+      && $(".nt-compose textarea:not(:disabled)", pane) && pane;
+  };
+  async function pickAgent(name) {
+    const chip = await until("workspace agent chip", () => $(".ws-env-trail .ws-chip"), 30000);
+    if (!chip) throw new Error("the workspace did not offer an agent");
+    if ($(".ws-chip-text", chip)?.textContent.trim() === name) return true;
+    chip.click();
+    const choice = await until(`workspace agent ${name}`, () => $$(".ws-menu .ws-menu-item").find((b) => $(".ws-menu-label", b)?.textContent.trim() === name), 5000);
+    if (!choice) throw new Error(`the workspace did not list ${name}`);
+    choice.click();
+    return until("workspace agent chosen", () => $(".ws-env-trail .ws-chip-text")?.textContent.trim() === name, 5000);
+  }
   try {
-    const form = await until("start form", () => $(".nt-chat-start"), 30000);
+    const form = await until("start form", () => $(".ws-new .ws-composer textarea"), 30000);
     await check("the chat panel offers to start an agent", !!form);
-    $$(".nt-chat-pick .opt").find((b) => b.textContent.includes("Rich fake")).click();
+    await pickAgent("Rich fake");
     // The folder goes through the picker (ui/chat/FolderPicker.tsx), the way tools/desktop-chat-e2e.js
     // does it: type the parent, open it, enter the work folder, use it.
     const work = CFG.work.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
     const above = CFG.work.replace(/[\\/]+$/, "").slice(0, -work.length);
-    $(".nt-chat-start .nt-folder-btn").click();
+    $(".ws-chip-folder .nt-folder-btn").click();
     const q = await until("folder search", () => $("#ag-folder-q"));
     setValue(q, above);
     await until("open row", () => $(".nt-folder-list .row.open"));
@@ -80,15 +121,14 @@
     (await until("work folder", () => $$(".nt-folder-list .row.child").find((r) => r.querySelector(".fn")?.textContent === work))).click();
     await until("crumbs", () => $(".nt-folder-crumbs .cur")?.textContent === work);
     (await until("use button", () => $(".nt-folder-ft .btn.primary:not(:disabled)"))).click();
-    await check("the work folder is chosen", !!(await until("folder chosen", () => $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title === CFG.work)),
-      $(".nt-chat-start .nt-folder-btn .nt-folder-lbl")?.title);
-    setValue($("#ag-prompt"), "FILES make the report");
-    await sleep(200);
-    const startBtn = $$(".nt-chat-start .btn.primary").filter((b) => !b.closest(".nt-folder")).pop();
+    await check("the work folder is chosen", !!(await until("folder chosen", () => $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl")?.title === CFG.work)),
+      $(".ws-chip-folder .nt-folder-btn .nt-folder-lbl")?.title);
+    setValue($(".ws-new .ws-composer textarea"), "FILES make the report");
+    const startBtn = await until("workspace first-message Send", () => $(".ws-new .ws-send:not(:disabled)"));
     await check("the start button is ready", !!startBtn && !startBtn.disabled,
-      `${$$(".nt-chat-start .btn.primary").map((b) => `${b.textContent.trim()}${b.disabled ? "(disabled)" : ""}`).join(" | ")} | folder=${$(".nt-chat-start .nt-folder-lbl")?.title}`);
+      `${$(".ws-new .ws-send")?.disabled ? "disabled" : "ready"} | folder=${$(".ws-chip-folder .nt-folder-lbl")?.title}`);
     startBtn.click();
-    await check("the files turn finishes", !!(await until("conversation", () => $(".nt-chat .nt-chat-hd"), 30000)) && !!(await idle(30000)));
+    await check("the files turn finishes", !!(await until("conversation", () => readyConversation(), 30000)) && !!(await idle(30000)));
 
     const turn = lastTurn();
     const run = $(".cl-group", turn);
@@ -228,7 +268,11 @@
     await shot("p5-outside");
     esc();
     await until("closed", () => !dialog(), 3000);
-    const session = JSON.parse(localStorage.getItem("ai-remote.chat.last") ?? "{}")[CFG.host];
+    // The workspace owns the current selection; the removed chat rail no longer writes chat.last.
+    if (!$(".ws-row[data-selected]")) $(".ws-corner .ws-ib").click();
+    const selected = await until("selected workspace session", () => $(".ws-row[data-selected]")?.dataset.rowKey);
+    if (!selected?.startsWith(`${CFG.host}/`)) throw new Error("the workspace did not identify this host's selected session");
+    const session = selected.slice(CFG.host.length + 1);
     const secret = CFG.work.replace(/work$/, "outside/secret.md");
     let refused = "";
     try {

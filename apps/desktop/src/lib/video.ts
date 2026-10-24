@@ -105,6 +105,19 @@ export function createDecoder(
   // The configuration the decoder was made with: codec string and coded size. Chromium's HEVC
   // path reports a 1280x720 display size unless the coded size is given (seen 2026-10-12).
   let config: VideoDecoderConfig | null = null;
+  // Keep only this live view's 16 most recent failed codec/size tuples, not permanent device state.
+  // Ordinary resets retain a matching failure so a broken hardware path cannot be retried forever.
+  const hardwareFailures = new Set<string>();
+  const configKey = (c: VideoDecoderConfig) => `${c.codec}/${c.codedWidth}x${c.codedHeight}`;
+  const hardwareFailure = (error: unknown, c: VideoDecoderConfig | null) => {
+    const name = error && typeof error === "object" && "name" in error ? error.name : null;
+    if (!c || c.hardwareAcceleration !== "prefer-hardware" || (name !== "OperationError" && name !== "NotSupportedError")) return;
+    const key = configKey(c);
+    if (hardwareFailures.has(key)) return;
+    if (hardwareFailures.size >= 16) hardwareFailures.delete(hardwareFailures.values().next().value!);
+    hardwareFailures.add(key);
+    logVideo("info", "retrying decoder with default acceleration");
+  };
   let waitingForKey = true;
   let closed = false;
   let lastKeyframeRequest = -Infinity;
@@ -259,6 +272,7 @@ export function createDecoder(
       error: (e) => {
         if (closed || decoder !== next) return;
         reportVideoError(e);
+        hardwareFailure(e, c);
         reset();
       },
     });
@@ -269,7 +283,8 @@ export function createDecoder(
     behindSince = null;
     submitted = [];
     // Annex B / OBU input: no `description`, the parameter sets travel in the keyframes.
-    decoder.configure(c);
+    try { decoder.configure(c); }
+    catch (e) { hardwareFailure(e, c); throw e; }
     config = c;
     logVideo("info", `decoder configured: ${c.codec} ${c.codedWidth}x${c.codedHeight}`);
   };
@@ -287,6 +302,7 @@ export function createDecoder(
           ? { codec: string, codedWidth: f.header.width, codedHeight: f.header.height,
             optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" }
           : null;
+        if (c && hardwareFailures.has(configKey(c))) c.hardwareAcceleration = "no-preference";
         const changed = c && (c.codec !== config?.codec || c.codedWidth !== config?.codedWidth
           || c.codedHeight !== config?.codedHeight);
         if (c && (changed || !decoder || decoder.state === "closed")) {
@@ -333,10 +349,11 @@ export function createDecoder(
         decoder.decode(new EncodedVideoChunk({ type: f.header.keyframe ? "key" : "delta", timestamp: f.header.tsUs, data: f.data }));
         submitted.push(f.header.tsUs);
         if (submitted.length > 1024) submitted = submitted.slice(-512);
-      } catch (e) { reportVideoError(e); drop("error"); reset(); }
+      } catch (e) { reportVideoError(e); hardwareFailure(e, config); drop("error"); reset(); }
     },
     close() {
       closed = true;
+      hardwareFailures.clear();
       clearInterval(metricsTimer);
       pendingFrame?.close();
       pendingFrame = null;

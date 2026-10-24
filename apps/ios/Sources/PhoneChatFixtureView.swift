@@ -11,7 +11,11 @@ public struct PhoneChatFixtureView: View {
     @PhoneViewState<PhoneChatStore> private var chat: PhoneChatStore
 
     public init() {
-        let chat = PhoneChatStore(client: PhoneClient(directory: NSTemporaryDirectory() + "ui-chat-fixture"), host: "UI 测试电脑")
+        _chat = State(initialValue: Self.makeStore())
+    }
+
+    @MainActor static func makeStore(host: String = "UI 测试电脑") -> PhoneChatStore {
+        let chat = PhoneChatStore(client: PhoneClient(directory: NSTemporaryDirectory() + "ui-chat-fixture"), host: host)
         chat.fixture = true
         let now = Date().timeIntervalSince1970 * 1000
         let session = PhoneChatSession(.object([
@@ -87,7 +91,21 @@ public struct PhoneChatFixtureView: View {
         chat.hostAcks = true
         // `-ui-chat-unacked`: the first message is refused (not delivered, then sent again).
         chat.fixtureRefuse = arguments.contains("-ui-chat-unacked")
-        for line in codex ? PhoneChatStore.codexFixtureLog(now: now) : lines { chat.fixtureEvent(line) }
+        let history = codex && arguments.contains("-ui-codex-history")
+        let fixtureLog = history ? PhoneChatStore.codexHistoryFixtureLog(now: now) : codex ? PhoneChatStore.codexFixtureLog(now: now) : lines
+        for line in fixtureLog { chat.fixtureEvent(line) }
+        // Switching the production sidebar uses the same open(session:) path, with only
+        // transport replaced. Seed both agents so a switch never needs a real host.
+        for (id, events) in [("fixture-1", lines), ("fixture-codex", PhoneChatStore.codexFixtureLog(now: now))] {
+            var log = PhoneChatLog()
+            for (index, fields) in events.enumerated() {
+                var event = fields
+                event["seq"] = .number(Double(index + 1))
+                event["ts"] = event["ts"] ?? .number(now)
+                log.apply(.object(event))
+            }
+            chat.fixtureLogs[id] = log
+        }
         if codex {
             chat.fixtureEvent(["t": text("commands"), "turn": .number(2), "commands": .array([
                 .object(["name": text("release-notes"), "description": text("Draft release notes from the commits since the last tag"), "kind": text("skill"), "insert": text("$release-notes")])])])
@@ -100,7 +118,7 @@ public struct PhoneChatFixtureView: View {
         if arguments.contains("-ui-chat-attach"), let image = phonePrepareImage(phoneFixturePNG(width: 640, height: 400), name: "chart") {
             chat.attach(image)
         }
-        _chat = State(initialValue: chat)
+        return chat
     }
 
     public var body: some View { PhoneChatView(chat: chat) {} }

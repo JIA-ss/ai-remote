@@ -36,6 +36,7 @@ export function SessionPage({
   onArchived,
   onNew,
   toast,
+  embedded = false,
 }: {
   snap: WsSnapshot;
   computers: Computer[];
@@ -46,11 +47,12 @@ export function SessionPage({
   corner: ReactNode;
   renaming: boolean;
   setRenaming: (on: boolean) => void;
-  onWatch: (host: string) => void;
+  onWatch: (host: string, session?: string) => void;
   onLeave: () => void;
   onArchived: (key: string) => void;
   onNew: () => void;
   toast: (t: Omit<Toast, "id">) => void;
+  embedded?: boolean;
 }) {
   const key = sessionKey(host, id);
   const item = useMemo(() => workspace.find(host, id), [snap, host, id]);
@@ -60,6 +62,9 @@ export function SessionPage({
   const [menu, setMenu] = useState<DOMRect | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const opened = useRef(Date.now());
+  // Once mounted, the conversation owns its reconnect / undelivered-message state. A transient
+  // computer-list offline report must not unmount it and lose the draft, pending sends or Retry.
+  const mountedConversation = useRef(false);
   const [now, setNow] = useState(Date.now());
 
   // This session is being looked at: what it says is read, now and while it goes on.
@@ -88,7 +93,7 @@ export function SessionPage({
 
   let body: ReactNode;
   const fetchedSince = hostState && hostState.status === "ok" && hostState.fetchedAt >= opened.current;
-  if (c?.online === false) {
+  if (c?.online === false && !mountedConversation.current) {
     // A dropped connection reconnects for a while; a computer with a reason (unreachable) is offline now.
     const since = c.since ?? 0;
     body =
@@ -112,6 +117,7 @@ export function SessionPage({
       </Later>
     );
   } else {
+    mountedConversation.current = true;
     const codex = isCodexRuntime({ id: item.meta.runtime, name: item.meta.name });
     body = (
       <div className="ws-convo">
@@ -187,9 +193,11 @@ export function SessionPage({
         </div>
         <div className="ws-drag" data-tauri-drag-region />
         <div className="ws-tb-end">
-          <button type="button" className="ws-ib" disabled={c?.online !== true} onClick={() => onWatch(host)} aria-label={t("ws_open_stream", { host })} title={t("ws_open_stream", { host })}>
-            <MonitorPlay size={16} strokeWidth={1.5} />
-          </button>
+          {!embedded && (
+            <button type="button" className="ws-ib" disabled={c?.online !== true} onClick={() => onWatch(host, id)} aria-label={t("ws_open_stream", { host })} title={t("ws_open_stream", { host })}>
+              <MonitorPlay size={16} strokeWidth={1.5} />
+            </button>
+          )}
           {item && (
             <button
               type="button"

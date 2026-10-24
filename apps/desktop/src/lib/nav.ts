@@ -14,6 +14,13 @@ export type NavKey = NavPage | { computer: string };
 export const SECTIONS: readonly Section[] = ["general", "agents", "device", "network", "approvals", "about"];
 export const COMPUTER_TABS: readonly ComputerTab[] = ["overview", "access", "tools", "agents"];
 
+/** The existing workspace's selection, whether it fills the window or sits beside a live screen. */
+export interface AgentLocation {
+  host?: string;
+  session?: string;
+  place?: Place | null;
+}
+
 export type Route =
   | { page: "welcome" }
   | { page: "devices" }
@@ -23,7 +30,7 @@ export type Route =
   | { page: "pair" }
   | { page: "settings"; sec: Section }
   | { page: "computer"; host: string; tab: ComputerTab }
-  | { page: "session"; host: string; panel?: "chat"; chat?: ChatTarget | null }
+  | { page: "session"; host: string; panel?: "chat"; chat?: ChatTarget | null; workspace?: AgentLocation }
   /** The agents workspace (it takes the whole window, with its own sidebar): one session on a computer,
    *  or the new-session page; `place` pre-fills that page (it does not make a different place). */
   | { page: "agents"; host?: string; session?: string; place?: Place | null };
@@ -35,6 +42,23 @@ export type AppMode = "computers" | "agents";
 export interface History {
   stack: Route[];
   i: number;
+}
+
+/** Opens a computer's screen with the conversation the reader came from. Only the session id
+ *  crosses views: the conversation obtains a fresh attachment ticket from the host. */
+export function screenRoute(host: string, session?: string): Route {
+  return session ? { page: "session", host, chat: { session } } : { page: "session", host };
+}
+
+/** Legacy screen links open their selected conversation in the complete workspace too. */
+export function workspaceOfScreen(route: Extract<Route, { page: "session" }>): AgentLocation {
+  return route.workspace ?? (route.chat ? { host: route.host, session: route.chat.session } : { host: route.host });
+}
+
+/** Keep the picture on the workspace's computer. Session changes on that computer keep its stream. */
+export function screenWorkspaceRoute(route: Extract<Route, { page: "session" }>, workspace: AgentLocation): Extract<Route, { page: "session" }> {
+  const host = workspace.host ?? workspace.place?.host ?? route.host;
+  return { page: "session", host, workspace };
 }
 
 /** The last settings section and computer tab, so a sidebar click returns to them. */
@@ -114,7 +138,8 @@ export function same(a: Route, b: Route): boolean {
     case "computer":
       return a.host === (b as typeof a).host && a.tab === (b as typeof a).tab;
     case "session":
-      return a.host === (b as typeof a).host && (a.panel ?? null) === ((b as typeof a).panel ?? null);
+      return a.host === (b as typeof a).host
+        && (workspaceOfScreen(a).session ?? null) === (workspaceOfScreen(b as typeof a).session ?? null);
     case "agents":
       return (a.host ?? null) === ((b as typeof a).host ?? null) && (a.session ?? null) === ((b as typeof a).session ?? null);
     default:
@@ -181,6 +206,12 @@ export const canForward = (h: History): boolean => h.i < h.stack.length - 1;
 export function hidden(h: History, mem: Memory = DEFAULT_MEMORY): History {
   const r = current(h);
   if (r.page !== "session") return h;
+  // The combined view keeps its workspace selection. App's hidden-window gate stops the stream;
+  // returning to the window resumes that same conversation rather than an older history entry.
+  if (r.workspace !== undefined || r.chat?.session) {
+    const workspace = workspaceOfScreen(r);
+    return replace(h, { page: "agents", ...workspace, host: workspace.host ?? workspace.place?.host ?? r.host });
+  }
   if (h.i > 0 && h.stack[h.i - 1].page === "agents") return { stack: h.stack.slice(0, h.i), i: h.i - 1 };
   return replace(h, { page: "computer", host: r.host, tab: mem.tab });
 }
@@ -223,8 +254,21 @@ export function routeOfNav(n: NavKey | "home", mem: Memory = DEFAULT_MEMORY): Ro
  * session you came from, a page you went back past), else its new-session page.
  */
 export function lastAgents(h: History): Route {
-  for (let i = h.i; i >= 0; i--) if (h.stack[i].page === "agents") return h.stack[i];
-  for (let i = h.i + 1; i < h.stack.length; i++) if (h.stack[i].page === "agents") return h.stack[i];
+  const workspace = (r: Route): Route | null => {
+    if (r.page === "agents" || (r.page === "session" && r.workspace !== undefined)) return r;
+    // Computer-page chat_start and older screen links also open the complete workspace. Remember
+    // their selection without taking a first-use attachment ticket into the next mount.
+    if (r.page === "session" && r.chat?.session) return { page: "agents", host: r.host, session: r.chat.session };
+    return null;
+  };
+  for (let i = h.i; i >= 0; i--) {
+    const r = workspace(h.stack[i]);
+    if (r) return r;
+  }
+  for (let i = h.i + 1; i < h.stack.length; i++) {
+    const r = workspace(h.stack[i]);
+    if (r) return r;
+  }
   return { page: "agents" };
 }
 

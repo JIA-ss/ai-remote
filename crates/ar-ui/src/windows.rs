@@ -12,10 +12,22 @@ use uiautomation::{
 pub const SOURCE: &str = "windows_uia";
 pub struct Element(UIElement);
 thread_local! { static AUTOMATION: std::cell::OnceCell<UIAutomation> = const { std::cell::OnceCell::new() }; }
+fn uia_error(stage: &'static str, error: uiautomation::errors::Error) -> anyhow::Error {
+    let code = error.code();
+    let message = clipped(error.to_string());
+    anyhow::Error::new(error)
+        .context(format!("UIA {stage} failed: code={code} hex=0x{:08X} display={message:?}", code as u32))
+}
+fn com_error(stage: &'static str, error: windows::core::Error) -> anyhow::Error {
+    let code = error.code().0;
+    let message = clipped(error.to_string());
+    anyhow::Error::new(error)
+        .context(format!("UIA {stage} failed: code={code} hex=0x{:08X} display={message:?}", code as u32))
+}
 fn automation() -> Result<UIAutomation> {
     AUTOMATION.with(|a| {
         if a.get().is_none() {
-            let _initial = UIAutomation::new()?;
+            let _initial = UIAutomation::new().map_err(|error| uia_error("automation.uia_new", error))?;
             use windows::{
                 Win32::{
                     System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
@@ -23,13 +35,20 @@ fn automation() -> Result<UIAutomation> {
                 },
                 core::Interface,
             };
-            let bounded: IUIAutomation2 = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)? };
+            let bounded: IUIAutomation2 = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|error| com_error("automation.cocreate_uia8", error))?;
             unsafe {
-                bounded.SetConnectionTimeout(500)?;
-                bounded.SetTransactionTimeout(500)?;
-                bounded.SetAutoSetFocus(false)?;
+                bounded.SetConnectionTimeout(500).map_err(|error| com_error("automation.connection_timeout", error))?;
+                bounded
+                    .SetTransactionTimeout(500)
+                    .map_err(|error| com_error("automation.transaction_timeout", error))?;
+                bounded.SetAutoSetFocus(false).map_err(|error| com_error("automation.auto_set_focus", error))?;
             }
-            let client = UIAutomation::from(bounded.cast::<windows::Win32::UI::Accessibility::IUIAutomation>()?);
+            let client = UIAutomation::from(
+                bounded
+                    .cast::<windows::Win32::UI::Accessibility::IUIAutomation>()
+                    .map_err(|error| com_error("automation.cast", error))?,
+            );
             let _ = a.set(client);
         }
         Ok(a.get().unwrap().clone())
@@ -107,8 +126,8 @@ fn no_element(error: &uiautomation::errors::Error) -> bool {
 }
 pub fn collect(pid: u32, max: usize, depth: usize, check: &dyn Fn() -> Result<()>) -> Result<super::Tree> {
     let a = automation()?;
-    let walker = a.get_control_view_walker()?;
-    let desktop = a.get_root_element()?;
+    let walker = a.get_control_view_walker().map_err(|error| uia_error("collect.control_walker", error))?;
+    let desktop = a.get_root_element().map_err(|error| uia_error("collect.desktop_root", error))?;
     let mut roots = vec![];
     if let Ok(mut w) = walker.get_first_child(&desktop) {
         loop {
@@ -119,7 +138,7 @@ pub fn collect(pid: u32, max: usize, depth: usize, check: &dyn Fn() -> Result<()
             match walker.get_next_sibling(&w) {
                 Ok(next) => w = next,
                 Err(error) if no_element(&error) => break,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(uia_error("collect.root_next_sibling", error)),
             }
         }
     }
@@ -230,6 +249,16 @@ pub fn act(e: &Element, action: Action, value: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn blank_provider_errors_retain_the_operation_and_numeric_code() {
+        let code = -2147467259;
+        let error = uia_error("collect.root_next_sibling", uiautomation::errors::Error::new(code, ""));
+        let context = error.to_string();
+        assert!(context.contains("collect.root_next_sibling"));
+        assert!(context.contains("code=-2147467259"));
+        assert!(context.contains("hex=0x80004005"));
+        assert_eq!(error.downcast_ref::<uiautomation::errors::Error>().unwrap().code(), code);
+    }
     #[test]
     fn null_com_results_end_walks_but_provider_errors_do_not() {
         for code in [0, 1, 5, -2147467261] {

@@ -3,12 +3,15 @@
 // call's input and output for any other tool. Output boxes stop at 400 px and scroll.
 
 import { Check, Circle, CircleCheck, LoaderCircle } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { baseName, toolCommand, toolOutput, type ToolContent, type ToolItem } from "../../lib/chat";
 import { bodyKind, contentStat, diffLines, inputLines, inputOf, readText, toolName, type ToolState } from "../../lib/claude";
+import { ansiOutput, outputRuns, type OutputRun } from "../../lib/claude-output";
 import { t } from "../../lib/i18n";
 import { cx } from "../util";
 import { CopyButton, Markdown } from "../chat/Markdown";
+import { PreviewButton } from "../chat/Preview";
+import { ansiStyle, renderAnsiText } from "../chat/Ansi";
 import { dur } from "./text";
 
 type Diff = Extract<ToolContent, { type: "diff" }>;
@@ -17,11 +20,15 @@ type Diff = Extract<ToolContent, { type: "diff" }>;
 const TAIL = 40;
 
 /** A tool's output, scrolling past 400 px; long ones show their last lines until asked. */
-function Output({ text, error }: { text: string; error?: boolean }) {
+function Output({ text, error, command }: { text: string; error?: boolean; command?: string }) {
   const [all, setAll] = useState(false);
   const body = text.replace(/\n+$/, "");
-  const lines = body.split("\n");
+  // Parse before choosing the tail: an ANSI style can start before the last 40 lines.
+  const runs = useMemo<OutputRun[]>(() => command === undefined ? ansiOutput(body) : outputRuns(body, command, error), [body, command, error]);
+  const lines = runs.map((r) => r.text).join("").split("\n");
   const cut = !all && lines.length > TAIL;
+  const skip = cut ? lines.slice(0, -TAIL).join("\n").length + 1 : 0;
+  let at = 0;
   return (
     <div className="cl-out-box">
       {cut && (
@@ -30,7 +37,15 @@ function Output({ text, error }: { text: string; error?: boolean }) {
         </button>
       )}
       <pre className={cx("cl-out", error && "err")} tabIndex={0} role="group" aria-label={t("cl_out_label")}>
-        {cut ? lines.slice(-TAIL).join("\n") : body}
+        {runs.map((r, i) => {
+          const start = at;
+          at += r.text.length;
+          if (at <= skip) return null;
+          return <span key={i} className={cx(r.change && `cl-out-${r.change}`, r.line && "cl-out-line")}
+            style={ansiStyle(r)}>
+            {r.text.slice(Math.max(0, skip - start))}
+          </span>;
+        })}
       </pre>
     </div>
   );
@@ -59,7 +74,7 @@ function BashBody({ x, st, now }: { x: ToolItem; st: ToolState; now: number }) {
           <CopyButton text={`${ps}${cmd}${out ? `\n\n${out}` : ""}`} className="cl-copy" />
         </div>
       )}
-      {st === "denied" || st === "stopped" ? <Settled st={st} /> : out && <Output text={out} error={st === "failed"} />}
+      {st === "denied" || st === "stopped" ? <Settled st={st} /> : out && <Output text={out} error={st === "failed"} command={cmd} />}
       {st === "busy" && elapsed >= 10_000 && (
         <div className="cl-run-ft">
           <span>{t("cl_bash_running")}</span>
@@ -89,7 +104,7 @@ function ReadBody({ x, st }: { x: ToolItem; st: ToolState }) {
 }
 
 /** One file's change: a header with the name and counts, then the lines (numbered from hunks). */
-export const DiffView = memo(function DiffView({ c, head = true }: { c: Diff; head?: boolean }) {
+export const DiffView = memo(function DiffView({ c, head = true, preview = false }: { c: Diff; head?: boolean; preview?: boolean }) {
   const { rows, numbered } = diffLines(c);
   const st = contentStat(c);
   const created = c.old === null || c.old === "";
@@ -103,6 +118,7 @@ export const DiffView = memo(function DiffView({ c, head = true }: { c: Diff; he
             <span className="add">+{st.add}</span>
             <span className="del">−{st.del}</span>
           </span>
+          {preview && <PreviewButton path={c.path} />}
         </div>
       )}
       <div className={cx("cl-diff-rows", numbered && "numbered")} tabIndex={0}>
@@ -147,7 +163,7 @@ function PlanBody({ x, st }: { x: ToolItem; st: ToolState }) {
           {t("cl_plan_ok")}
         </div>
       )}
-      {plan && <Markdown text={plan} className="cl-plan-md" />}
+      {plan && <Markdown text={plan} className="cl-plan-md" renderAnsi={renderAnsiText} />}
     </div>
   );
 }
@@ -173,13 +189,14 @@ function GenericBody({ x, st }: { x: ToolItem; st: ToolState }) {
 }
 
 /** The body of an opened tool row. */
-export function ToolBody({ x, st, now }: { x: ToolItem; st: ToolState; now: number }) {
+export function ToolBody({ x, st, now, previewedPath }: { x: ToolItem; st: ToolState; now: number; previewedPath?: string | null }) {
   const kind = bodyKind(x);
   return (
     <div className="cl-tool-bd">
       {kind === "bash" && <BashBody x={x} st={st} now={now} />}
       {kind === "read" && <ReadBody x={x} st={st} />}
-      {kind === "diff" && x.content.map((c, i) => (c.type === "diff" ? <DiffView key={i} c={c} /> : null))}
+      {kind === "diff" && x.content.map((c, i) => (c.type === "diff" ? <DiffView key={i} c={c}
+        preview={x.status !== "failed" && c.path !== previewedPath && !(c.new === "" && c.old)} /> : null))}
       {kind === "todo" && <TodoBody x={x} />}
       {kind === "plan" && <PlanBody x={x} st={st} />}
       {kind === "generic" && <GenericBody x={x} st={st} />}

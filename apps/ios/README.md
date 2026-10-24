@@ -1,4 +1,4 @@
-# ai-remote for iPhone
+# ai-remote for iPhone and iPad
 
 Native SwiftUI controller over the existing Rust controller via UniFFI. It runs the transport in
 the app process, with the same encrypted pairing, MCP gate, activity feed and screen/1 protocol;
@@ -14,6 +14,25 @@ Validation is tracked separately: the shared Swift/Rust modules compile on macOS
 controller closes/reopens with a stable identity even at iOS-length sandbox paths. The real Mac
 host protocol smoke is `tools/phone-core-smoke.py`. This is not a simulator/device test. Native
 iOS SDK builds run locally through Xcode and in the [public iPhone CI](https://github.com/JIA-ss/ai-remote/actions/workflows/ios.yml). CI also launches an iPhone simulator and tests initial pairing/error UI; physical phone acceptance remains required.
+
+## iPad layout
+
+The priority layout is the 12.9-inch iPad Pro (1366 × 1024 points in landscape). In a regular-width
+window of at least 900 points, **Agent** opens beside the remote desktop. Expand the agent panel to
+use the whole window; a window of at least 800 points keeps the session list beside the conversation.
+Each session retains its own unsent text and pictures while switching between Claude and Codex.
+Conversation text and the composer stay within an 820-point reading column.
+
+Narrow Split View and Stage Manager windows use the single-column layout and present the agent in
+a sheet. The decision follows the available window width, including after resizing; it does not depend
+on the iPad's model name. Fullscreen temporarily hides the companion, and leaving fullscreen restores
+it. The computer list uses two columns on a wide iPad. All four iPad orientations are enabled.
+
+CI selects the **iPad Pro (12.9-inch) (6th generation)** on iOS 26.2 and preserves UI results and
+screenshots separately from the iPhone suite. Its debug fixtures exercise production views with local
+chat events and a static desktop image. The constrained-width fixture tests container resizing; it
+does not prove the system entered Split View. Physical iPad control and system multitasking still
+need separate acceptance.
 
 ## View and operate the desktop
 
@@ -78,7 +97,7 @@ provided by this helper.
 ## Install on your own iPhone or iPad
 
 The controller requires iOS/iPadOS 17 or later. It is not published on the App Store or TestFlight.
-The `iPhone controller` workflow archives a Release `iphoneos` app with signing disabled, verifies its
+The `iPhone and iPad controller` workflow archives a Release `iphoneos` app with signing disabled, verifies its
 arm64 Mach-O device platform, and uploads **`iPhone-device-unsigned-ipa`** before simulator UI tests.
 Download that artifact from a run for the revision you want to test and unzip it to obtain
 `ai-remote-unsigned.ipa` and `package-metadata.json`. Artifacts are retained for seven days.

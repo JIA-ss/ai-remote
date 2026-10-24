@@ -55,6 +55,7 @@
 .cl-col { box-sizing: border-box; width: 100%; max-width: calc(var(--cl-measure) + 2 * var(--cl-gutter)); margin: 0 auto; padding: 16px var(--cl-gutter) 12px;
   display: flex; flex-direction: column; gap: var(--cl-gap); font-size: var(--cl-body); line-height: var(--cl-line); color: var(--cl-text); }
 .cl-empty { color: var(--cl-muted); font-size: 13px; line-height: 1.55; padding: 28px 12px; text-align: center; }
+.cl-loading { align-self: center; display: inline-flex; align-items: center; gap: 8px; padding: 28px 12px; color: var(--cl-muted); font-size: 13px; }
 .cl-turn { display: flex; flex-direction: column; gap: var(--cl-item-gap); min-width: 0; }
 .cl-turn.far { content-visibility: auto; contain-intrinsic-size: auto 320px; }
 
@@ -72,7 +73,7 @@
 @media (prefers-reduced-motion: no-preference) {
   .cl-root .nt-sending .bubble { animation: cl-pop .45s cubic-bezier(.34, 1.3, .64, 1) both; transform-origin: 100% 100%; }
 }
-@keyframes cl-pop { from { opacity: 0; transform: translateY(6px) scale(.92); } }
+@keyframes cl-pop { from { transform: translateY(6px) scale(.92); } }
 
 /* prose: no bubble */
 .cl-md { font-size: var(--cl-body); line-height: var(--cl-line); color: var(--cl-text); }
@@ -81,20 +82,17 @@
 
 /* ---- one line of tool work (TC-14, TC-15) -------------------------------------------- */
 .cl-tool, .cl-agent { min-width: 0; }
-.nt-cl-tool-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.nt-cl-tool-head > .cl-tool-hd { flex: 1; }
-.nt-cl-tool-head > .nt-pv-btn { flex: none; }
+.cl-tool.has-preview { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
+.cl-tool.has-preview > .cl-tool-bd { grid-column: 1 / -1; }
+.cl-tool > .nt-pv-btn { flex: none; }
 .cl-tool-hd, .cl-group-hd { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 0; border: 0; background: none; text-align: left;
   font: inherit; font-size: 13px; line-height: 20px; color: var(--cl-muted); cursor: pointer; min-width: 0; }
 .cl-tool-hd:disabled { cursor: default; }
 .cl-tool-hd:not(:disabled):hover, .cl-group-hd:hover, .cl-tool-hd:focus-visible, .cl-group-hd:focus-visible { color: var(--cl-text-2); }
-.cl-tool[data-state="busy"] > .nt-cl-tool-head > .cl-tool-hd, .cl-tool[data-state="blocked"] > .nt-cl-tool-head > .cl-tool-hd,
-.cl-tool[data-state="busy"] > .cl-tool-hd, .cl-tool[data-state="blocked"] > .cl-tool-hd,
-.cl-group.is-live > .cl-group-hd, .cl-agent[data-state="busy"] > .cl-tool-hd { color: var(--cl-text-2); }
+.cl-tool[data-state="busy"] > .cl-tool-hd, .cl-tool[data-state="blocked"] > .cl-tool-hd, .cl-group.is-live > .cl-group-hd, .cl-agent[data-state="busy"] > .cl-tool-hd { color: var(--cl-text-2); }
 .cl-tool-hd .chev, .cl-group-hd .chev { flex: none; color: var(--cl-muted); transition: transform 60ms; }
 .cl-tool-hd:disabled .chev { visibility: hidden; }
-.cl-tool.open > .nt-cl-tool-head > .cl-tool-hd .chev, .cl-tool.open > .cl-tool-hd .chev,
-.cl-agent.open > .cl-tool-hd .chev, .cl-group.open > .cl-group-hd .chev { transform: rotate(90deg); color: var(--cl-text-2); }
+.cl-tool.open > .cl-tool-hd .chev, .cl-agent.open > .cl-tool-hd .chev, .cl-group.open > .cl-group-hd .chev { transform: rotate(90deg); color: var(--cl-text-2); }
 .cl-group-hd .chev { opacity: 0; }
 .cl-group-hd:hover .chev, .cl-group-hd:focus-visible .chev, .cl-group.open > .cl-group-hd .chev { opacity: 1; }
 .cl-line { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -114,20 +112,30 @@
 .cl-tm, .cl-steps { flex: none; font-size: 12px; color: var(--cl-muted); margin-left: auto; }
 .cl-steps { margin-left: 4px; }
 
-/* the running label's sweep (TC-16) */
-.cl-root .shimmer { background: linear-gradient(120deg, currentColor 37.5%, color-mix(in srgb, currentColor 30%, #fff) 50%, currentColor 62.5%) 0 0 / 300% 100%;
+/* the running label's sweep (TC-16, VS-43) */
+.cl-root .shimmer { --cl-shimmer-peak: color-mix(in srgb, currentColor 30%, #fff);
+  background: linear-gradient(120deg, currentColor 37.5%, var(--cl-shimmer-peak) 50%, currentColor 62.5%) 83.333% 0 / 400% 100%;
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: cl-sweep 3s linear infinite; }
 .cl-root .shimmer .cl-obj, .cl-root .shimmer .vb { -webkit-text-fill-color: transparent; }
-[data-theme="light"] .cl-root .shimmer { background-image: linear-gradient(120deg, currentColor 37.5%, color-mix(in srgb, currentColor 25%, #fff) 50%, currentColor 62.5%); }
-@keyframes cl-sweep { 0%, 15% { background-position: 100% 0; } 85%, 100% { background-position: 0 0; } }
-@media (prefers-reduced-motion: reduce) { .cl-root .shimmer { animation: none; background: none; -webkit-text-fill-color: currentColor; } }
+/* Theme variation must not outrank reduced motion's background reset. */
+[data-theme="light"] .cl-root .shimmer { --cl-shimmer-peak: color-mix(in srgb, currentColor 25%, #fff); }
+@keyframes cl-sweep {
+  0%, 15% { background-position: 83.333% 0; animation-timing-function: cubic-bezier(.714, .121, .211, .888); }
+  85%, 100% { background-position: 16.667% 0; }
+}
+[data-reduce-motion="true"] .cl-root .shimmer { animation: none; background: none; -webkit-text-fill-color: currentColor; }
+[data-reduce-motion="true"] .cl-root .shimmer .cl-obj, [data-reduce-motion="true"] .cl-root .shimmer .vb { -webkit-text-fill-color: currentColor; }
+@media (prefers-reduced-motion: reduce) {
+  .cl-root .shimmer { animation: none; background: none; -webkit-text-fill-color: currentColor; }
+  .cl-root .shimmer .cl-obj, .cl-root .shimmer .vb { -webkit-text-fill-color: currentColor; }
+}
 
 /* a group: one sentence, opening to a card of its calls (TR-28 … TR-33) */
 .cl-group { min-width: 0; }
 .cl-group-bd { margin-top: 6px; padding: 0 10px; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--cl-a2); }
 .cl-group-bd > * { padding: 4px 0; }
 .cl-group-bd > * + * { border-top: 1px solid var(--cl-a2); }
-.cl-tool.nested > .nt-cl-tool-head > .cl-tool-hd, .cl-tool.nested > .cl-tool-hd { min-height: 26px; }
+.cl-tool.nested > .cl-tool-hd { min-height: 26px; }
 
 /* ---- what an opened call shows (TC-18 … TC-34) --------------------------------------- */
 .cl-tool-bd { padding: 4px 0 6px 18px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -139,6 +147,9 @@
 .cl-out-box { min-width: 0; }
 .cl-out { margin: 0; max-height: 400px; overflow: auto; font-family: var(--cl-mono); font-size: 12px; line-height: 18px; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--cl-text-2); }
 .cl-out.err { color: var(--cl-danger); }
+.cl-out-add { background: color-mix(in srgb, var(--cl-add) 20%, transparent); }
+.cl-out-del { background: color-mix(in srgb, var(--cl-del) 20%, transparent); }
+.cl-out-line { display: block; }
 .cl-more { font-size: 12px; color: var(--cl-muted); padding: 0 0 4px; }
 .cl-more:hover { color: var(--cl-text); }
 .cl-settled { font-size: 12px; color: var(--cl-text-2); }
@@ -302,6 +313,9 @@
 .cl-qc { padding: 0; gap: 0; overflow: hidden; max-height: none; }
 .cl-qc-hd { display: flex; align-items: flex-start; gap: 12px; padding: 8px 12px; background: var(--cl-a1); }
 .cl-qc-hd .q { flex: 1; min-width: 0; font-weight: 500; }
+.cl-qc .md-inline { overflow-wrap: anywhere; }
+.cl-qc .md-inline code { font-family: var(--cl-mono); font-size: .93em; padding: 1px 3px; border-radius: 4px; background: var(--cl-a1); }
+.cl-qc .q, .cl-qc-opts .lb { user-select: text; }
 .cl-qc-hd .pager { flex: none; display: inline-flex; align-items: center; gap: 2px; font-size: 11px; color: var(--cl-muted); }
 .cl-qc-opts { display: flex; flex-direction: column; }
 .cl-qc-opts .opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; text-align: left; border-top: 1px solid var(--cl-a2); color: var(--cl-text); }
@@ -346,7 +360,7 @@
 .cl-compose .nt-qd { min-height: 40px; box-sizing: border-box; gap: 5px; padding: 4px 4px 4px 12px; border: 0; border-radius: 10px; background: var(--cl-a1); font-size: 13px; color: var(--cl-text-2); user-select: none; }
 .cl-compose .nt-qd .ic { color: var(--cl-muted); }
 @media (prefers-reduced-motion: no-preference) { .cl-compose .nt-qd { animation: cl-q-in .12s ease-out both; } }
-@keyframes cl-q-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes cl-q-in { from { transform: translateY(6px); } }
 .cl-mode { position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .cl-mode .cl-menu { left: 0; }
 .cl-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px; font-size: 12px; color: var(--cl-text-2); white-space: nowrap; }

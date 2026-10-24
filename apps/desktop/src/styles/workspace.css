@@ -88,6 +88,12 @@
 .ws-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--ws-accent); opacity: 0; transition: opacity 120ms; }
 .ws-grip:hover::after, .ws-grip:focus-visible::after, .ws.dragging .ws-grip::after { opacity: 1; transition-delay: 100ms; }
 .ws-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--ws-s1); container-type: inline-size; }
+/* The same complete workspace beside the live view: its pane owns its width, while native window
+   controls remain with the outer frame. Floating sidebar / palette layers stay inside this pane. */
+.ws[data-embedded="true"] { min-width: 0; width: 100%; height: 100%; isolation: isolate; }
+.ws[data-embedded="true"] .ws-frame-room { display: none; }
+.ws[data-embedded="true"] .ws-scrim { position: absolute; padding-top: 12%; }
+.ws[data-embedded="true"] .ws-palette { width: min(600px, calc(100% - 32px)); max-height: 80%; }
 
 /* the window's corner: traffic lights (74 px from the window's edge), toggle, back, forward (SB-01) */
 .ws-corner { display: flex; align-items: center; gap: 2px; flex: none; }
@@ -158,7 +164,9 @@
 .ws-row[data-selected]:hover { background: var(--ws-selected); }
 .ws-row-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; padding-left: 8px; border-radius: 6px; color: inherit; text-align: left; }
 .ws-row-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent), 0 0 6px 0 color-mix(in srgb, var(--ws-accent) 20%, transparent); }
+.ws-row[data-multi-selected] { background: color-mix(in srgb, var(--ws-accent) 14%, var(--ws-side)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ws-accent) 35%, transparent); }
 .ws-row-lead { width: 16px; flex: none; display: grid; place-items: center; color: var(--ws-t3); }
+.ws-jump-key { display: grid; place-items: center; height: 16px; min-width: 16px; padding: 0 2px; border: .5px solid var(--ws-line); border-radius: 3px; font: inherit; font-size: 10px; line-height: 1; color: var(--ws-t1); background: var(--ws-s3); }
 .ws-row[data-selected] .ws-row-lead { color: var(--ws-t1); }
 .ws-row-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; padding: 4px 0; }
 .ws-row-title[data-overflowing] { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); }
@@ -245,6 +253,8 @@
 .ws-convo { flex: 1; min-height: 0; width: 100%; max-width: calc(768px + 64px); margin: 0 auto; padding: 0 32px; display: flex; flex-direction: column; }
 @container (max-width: 560px) { .ws-convo { padding: 0 16px; } }
 .ws-convo > .nt-chat { margin-top: 0; }
+/* Keep a whole-page Codex composer clear of the window edge, including its rounded bottom. */
+.ws-convo > .nt-chat.cdx { padding-bottom: 16px; }
 
 /* whole-page states (SP-41..45) */
 .ws-state { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 16px 48px; animation: ws-reveal .15s ease-out backwards; }
@@ -305,8 +315,18 @@
 .ws-send { width: 28px; height: 28px; flex: none; border-radius: 8px; display: grid; place-items: center; background: var(--ws-t1); color: var(--ws-s1); transition: background-color 60ms, opacity 60ms; }
 .ws-send:disabled { background: var(--ws-hover); color: var(--ws-t3); }
 .ws-env { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; min-height: 24px; padding: 0 4px; }
-.ws-env-lead { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ws-env-lead { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; }
 .ws-env-trail { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.ws-env[data-measuring] { flex-wrap: nowrap; }
+.ws-env[data-measuring] > .ws-env-lead, .ws-env[data-measuring] > .ws-env-trail { flex: 0 0 auto; flex-wrap: nowrap; }
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-location .ws-chip-text,
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-folder .nt-folder-btn .fn {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-location,
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-folder .nt-folder-btn,
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-folder .nt-folder-btn .nt-folder-lbl { gap: 0; }
+.ws-env[data-compact]:not([data-measuring]) .ws-chip-folder .nt-folder-btn > .fi { display: none; }
 .ws-chip { height: 24px; max-width: 256px; display: inline-flex; align-items: center; gap: 5px; padding: 0 6px; border-radius: 6px; color: var(--ws-t2); transition: background-color 60ms, color 60ms; }
 .ws-chip > svg { flex: none; }
 .ws-chip:hover:not(:disabled), .ws-chip[aria-expanded="true"] { background: var(--ws-hover); color: var(--ws-t1); }
@@ -326,6 +346,9 @@
 .ws-chip-folder .nt-folder-btn .nt-folder-lbl .fp { display: none; }
 .ws-chip-folder .nt-folder-btn .nt-folder-glyph { color: inherit; }
 .ws-chip-folder .nt-folder-pop { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; width: 400px; max-width: calc(100vw - 32px); background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
+/* Inside the glass window this workspace keeps its own opaque popup surface: text in the composer
+   beneath the folder list must not show through its footer or rows. No video blur is involved. */
+.gl-win .ws .ws-chip-folder .nt-folder-pop { background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
 .ws-model { position: relative; }
 .ws-model-pop { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30; width: 240px; padding: 6px; border-radius: 10px; background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
 .ws-model-pop input { width: 100%; height: 28px; padding: 0 8px; border: 0; outline: 0; border-radius: 6px; background: var(--ws-hover); color: var(--ws-t1); font-size: 12px; user-select: text; }

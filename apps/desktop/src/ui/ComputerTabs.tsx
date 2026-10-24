@@ -76,7 +76,7 @@ export function Confirm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <Modal label={title} role="alertdialog" onClose={onNo} initialFocus={cancel}>
+    <Modal label={title} role="alertdialog" onClose={onNo} dismissible={!busy} initialFocus={cancel}>
         <div className="b">
           <div className="ttl">{title}</div>
           <div className="bd">{body}</div>
@@ -99,7 +99,7 @@ export function Confirm({
             {danger && <Glyph name="revoke" size={14} />}
             {verb}
           </button>
-          <button className="btn" ref={cancel} onClick={onNo}>
+          <button className="btn" ref={cancel} disabled={busy} onClick={onNo}>
             {t("cancel")}
           </button>
         </div>
