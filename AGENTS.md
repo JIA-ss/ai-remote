@@ -3188,3 +3188,55 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
 - 再同步 main 的桌面导航 / Claude 细节与诊断记录（1aefe9f），移动端 apps/ios、ar-mobile / controller / net / core、Cargo 与 vendor 相对 519eee1 均无变化；iPad 记录改放文末，避免并行工作反复争用文首插入点。
 - 本次 main 同步复查：Rust fmt / Clippy / TypeScript 通过；Rust 全量 439 过 / 9 忽略 / 0 失败，前端 375 项中 374 过 / 1 跳过。移动端源码与 519eee1 一致，当前原生复验沿用该源码。
 - 第三轮 519eee1 / CI 39998306949 的五项 iPad 原生验收通过，20 张截图齐全；业务链路、窄窗往返、四向全屏和同会话草稿均完成。逐图复核又发现浅色外观下非全屏左侧导航栏文字在远程黑底不可读，显式设置 canvas 导航栏背景（不动舞台 / 全屏 / 右侧），复验标题与时间可见性。
+
+## 桌面端毛玻璃第二阶段 · 浮层（2026-10-23，`feat/desktop-glass-pages`）
+
+本包只交付浮层；主页面、设置内容、会话外观和全页巡检分后续包。按交接稿的 final-decisions、A D.6/D.7 和
+`tests.json` mustKeep 实现；第一阶段之后 main 已合入智能体工作区及 Claude / Codex 视图，验收数量以当前实际结果为准。
+
+- 新 `ui/Modal.tsx`：sheet 与遮罩 portal 到 body，保留 `.cdlg` / `.smoke` / `.nt-pair` 和语义角色；挂载期间
+  `html[data-modal]` 是非零计数，后台 `#root` 与较低的 sheet inert。初始焦点、Tab 循环、关闭恢复焦点统一处理；
+  控件在异步操作中禁用或被替换时，MutationObserver 把失落到 body 的焦点移回 sheet。
+- Confirm、EnableDialog、PairCodeDialog 复用 Modal。安装进行中仍吞掉 Esc / 遮罩点击；配对码关闭仍撤码并解除窗口保护。
+  配对框先聚焦始终可用的取消按钮（原先先聚焦“换一个”，随后生成码禁用它，焦点会掉到 body）。
+- 决策卡 Esc 只拒绝焦点所在的一张，焦点不在卡里时只拒绝第一张；备注框 Esc 只关闭备注。对话框、菜单、远程输入与输入法组字
+  不触发拒绝，忽略长按产生的 repeat。
+- `glass/overlays.css`：确认 / 开启 / 配对框宽 440 / 560 / 480 px，thick 玻璃、无动画的祖先、独立遮罩；mac 按钮靠右按
+  “取消、主操作”显示，Windows 保留 DOM 顺序。配对二维码缩到 160 px、数字 40 px，避免原 48 px 数字吃掉右内边距。
+  泛菜单按平台排版；sheet 是唯一带模糊的入场动画，叠层和模态期间关闭其它菜单动画，减少动态效果时不播放。
+- 补回两处 main 集成回归，均由本包的必跑验收发现：Claude 工具行和轮末遗漏文件预览（复用已有 PreviewProvider / PreviewButton /
+  TurnFiles，不改文件读取与脚本隔离策略），预览 e2e 的旧选择器同步成 Claude 视图；工作区切换器改用 group + aria-pressed 按钮，
+  使网络页文档里恢复只有两枚 radio，切换功能与键盘事件保持原样。
+- 新 `tools/desktop-overlays-smoke.py`：headless Camofox REST，真实页面打开三种 sheet；多卡和叠层使用内存 fixture，
+  测试专属请求的 deny spy 不发送真实操作。截图只能证明布局，不能证明原生材质。
+
+实测（本机 macOS 27.0.1 / Apple Silicon / 16 GB，Rust 1.95.0、Node 25.5.0、Python 3.14.2）：
+- `tsc --noEmit`、`npm run build`、CLI 与 Tauri debug 构建通过；`cargo fmt --all --check`、Clippy `-D warnings` 通过。
+- `node --test tools/*.test.mjs` 258 项：257 过、0 失败、1 跳过（PowerShell 原生命令参数测试）；最终代码又跑 1 次同样通过。
+- Camofox headless、humanize=true、1280×800、Vite demo：浮层专项最终完整 **111/111 过，1 次，60.36 秒**；网络 **17/17 过，1 次**。
+  覆盖三种 sheet 的深浅布局、Tab / Esc、外壳导航隔离、异步禁用焦点、两层 sheet、减少透明度与 demo 撤码。
+  多决策卡用真实 store 内存事件与仅 fixture ID 的 deny spy；原生 Tab/Esc，外壳快捷键使用 DOM 事件。截图不证明原生模糊。
+- 真实 App + 隔离 quiet host + 替身：预览 **31/31 过，1 次**。首轮完整对话在并行编译、较高换页压力及锁屏期间变慢，
+  截图等待超时，第二次 SLOW 未进入运行，手动中止；不计为验收通过，保留诊断日志。原测试此处先等待 running 再直接点 stop，
+  超时后表现为 null.click；未找到与本包浮层代码的直接关联，仍需空载复跑，不能把原因直接定为换页压力。
+- 原生窗口验收使用的隔离 profile 一开始路径过长，触发 Unix socket `SUN_LEN` 限制；改用短 `/tmp` profile。
+  已观测 native / thick 36px 计算样式与 portal / modal=1 / inert，但系统检测本机锁屏且无法自动解锁，未取得可接受的整屏裁窗效果图。
+
+- Rust workspace 全量在 `-j 2 -- --test-threads=1` 条件下通过：437 过、0 失败、9 忽略（1 次）。默认并发首轮在
+  `ipc::tests::a_second_daemon_cannot_replace_the_live_socket` 的退出后重绑阶段遇到 AddrInUse，串行复跑通过；未改 Rust。
+
+2026-10-23 当时待补：完整对话 3 次、预览第 2 次、render / offline、真实窗口深浅玻璃截图与原生快捷键；当前收尾见下节与 PR #44。
+未测：Windows Mica / 标题条、不同壁纸和失焦对比度、视频帧率对照、真实主机安装及配对。后两项未因本包主动执行。
+
+
+### PR #44 同步与冲突取舍（2026-10-24）
+
+- 先按用户要求合入 #46（main `27944dd`），再将最新 main 合进本分支，保留实时完整 Workspace、批量会话操作与 iPad 适配。
+- Claude 文件预览已在后续 main 中补齐，保留 main 的 grid、ANSI 和 previewedPath 实现，不退回旧包装结构。
+  决策卡同时保留 main 的 escapeScope 与本分支的一次一张 / modal / 菜单 / IME 防护，避免聊天 Esc 误拒批准。
+- Confirm 的异步动作现在禁用取消与 Esc / 遮罩关闭，失败后留框显示错误并恢复按钮；Camofox 补上 promise 拒绝与作用域双卡检查。
+- 本次集成本机静态检查：Rust fmt / Clippy / 默认并发全量 440 过 / 9 忽略，TypeScript、前端 build、前端 422 过 / 1 跳过；
+  Camofox 浮层 122 / 122、网络 17 / 17 通过。旧 Node fixture 缺 Element 与真实 card ref，补齐 DOM fixture 后保留原行为断言并通过。
+  网络首轮回环请求经系统代理得到 HTTP 400，仅测试进程使用直接回环 opener 后通过，未改系统代理。
+- 原生对话 / 预览 / render / offline 回归、深浅色 WindowServer 截图与真实快捷键的最终结果集中记录在 PR #44；
+  本机当前未锁屏且录屏权限已授予。证据目录 `/Volumes/SSD-2TB/MacData/Artifacts/ai-remote-pr44-merge-20261024`；旧失败不删除。

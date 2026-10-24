@@ -455,14 +455,24 @@ test("the screen stays a stage without a second conversation and Review reaches 
 
 test("host approval Escape stays with its card beside chat and respects the real find bar", async () => {
   class Element {
-    constructor(parent = null) { this.parent = parent; }
+    constructor(parent = null, className = "") { this.parent = parent; this.className = className; this.children = []; parent?.children.push(this); }
     contains(node) {
       for (let at = node; at; at = at.parent) if (at === this) return true;
       return false;
     }
+    closest(selector) {
+      for (let at = this; at; at = at.parent) if (selector === "." + at.className) return at;
+      return null;
+    }
+    querySelector(selector) {
+      for (const child of this.children) if (child.closest(selector) === child) return child;
+      return null;
+    }
   }
+  const cards = [];
   const window = new EventTarget();
-  const document = { activeElement: null };
+  const document = { activeElement: null, documentElement: { hasAttribute: () => false },
+    querySelector: (selector) => selector === ".decide" ? cards[0] ?? null : null };
   const denied = [], mounted = [];
   const approvalRoot = new Element(), approvalButton = new Element(approvalRoot), chatField = new Element();
   const scope = { current: approvalRoot };
@@ -477,8 +487,15 @@ test("host approval Escape stays with its card beside chat and respects the real
   });
   const mount = (id, escapeScope) => {
     const hooks = hooksFixture();
-    const { DecisionCard } = module("../apps/desktop/src/ui/Decide.tsx", dependencies(hooks), { window, document, Node: Element });
-    hooks.render(DecisionCard, { p: { id, tool: "shell", argsPreview: {}, expiresMs: 10_000 }, host: "test-host", agent: "test-agent", escapeScope });
+    const { DecisionCard } = module("../apps/desktop/src/ui/Decide.tsx", dependencies(hooks), { window, document, Node: Element, Element });
+    const card = new Element(escapeScope?.current ?? null, "decide");
+    cards.push(card);
+    if (escapeScope) { approvalButton.parent = card; card.children.push(approvalButton); }
+    const tree = hooks.render(DecisionCard, { p: { id, tool: "shell", argsPreview: {}, expiresMs: 10_000 }, host: "test-host", agent: "test-agent", escapeScope });
+    tree.props.ref.current = card;
+    const close = hooks.close;
+    hooks.close = () => { close(); cards.splice(cards.indexOf(card), 1);
+      if (card.parent) card.parent.children = card.parent.children.filter((node) => node !== card); };
     mounted.push(hooks);
     return hooks;
   };

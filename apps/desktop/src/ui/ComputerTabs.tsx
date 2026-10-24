@@ -11,6 +11,7 @@ import { type ChatTarget, StartForm, loginLabel, useRuntimes, useSessions } from
 import { CmdLine } from "./CmdLine";
 import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
+import { Modal } from "./Modal";
 import { agentLabel, cx } from "./util";
 
 const LEVELS: Level[] = ["observe", "control", "admin"];
@@ -74,16 +75,8 @@ export function Confirm({
   const cancel = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    cancel.current?.focus();
-    const key = (e: KeyboardEvent) => e.key === "Escape" && onNo();
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [onNo]);
   return (
-    <>
-      <div className="smoke" style={{ position: "fixed" }} onClick={onNo} />
-      <div className="cdlg" role="alertdialog" aria-label={title} style={{ position: "fixed" }}>
+    <Modal label={title} role="alertdialog" onClose={onNo} dismissible={!busy} initialFocus={cancel}>
         <div className="b">
           <div className="ttl">{title}</div>
           <div className="bd">{body}</div>
@@ -106,12 +99,11 @@ export function Confirm({
             {danger && <Glyph name="revoke" size={14} />}
             {verb}
           </button>
-          <button className="btn" ref={cancel} onClick={onNo}>
+          <button className="btn" ref={cancel} disabled={busy} onClick={onNo}>
             {t("cancel")}
           </button>
         </div>
-      </div>
-    </>
+    </Modal>
   );
 }
 

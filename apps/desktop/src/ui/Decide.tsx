@@ -65,6 +65,7 @@ export function DecisionCard({
   const [telling, setTelling] = useState(false);
   const [note, setNote] = useState("");
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let live = true;
@@ -110,15 +111,19 @@ export function DecisionCard({
       setApprover("ready");
     });
 
-  // Esc denies, as the button's key hint says.
+  // Esc belongs to one card within its optional pane scope. A single key must never deny
+  // a whole queue, escape from a modal, or deny an approval while the person is using chat.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.key !== "Escape" || e.repeat || telling || busy) return;
-      if (escapeScope) {
-        const scope = escapeScope.current;
-        if (!scope || !((e.target instanceof Node && scope.contains(e.target)) || scope.contains(document.activeElement))) return;
-      }
+      if (e.key !== "Escape" || e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229 || telling || busy) return;
+      if (e.target instanceof Element && e.target.closest(".nt-picture")) return;
+      if (document.documentElement.hasAttribute("data-modal") || document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')) return;
+      const scope = escapeScope?.current;
+      if (escapeScope && (!scope || !((e.target instanceof Node && scope.contains(e.target)) || scope.contains(document.activeElement)))) return;
+      const focused = document.activeElement?.closest(".decide");
+      if ((focused ?? (scope ?? document).querySelector(".decide")) !== cardRef.current) return;
       e.preventDefault();
+      e.stopImmediatePropagation();
       void deny();
     };
     window.addEventListener("keydown", onKey);
@@ -152,7 +157,7 @@ export function DecisionCard({
   );
 
   return (
-    <div className="decide">
+    <div className="decide" ref={cardRef}>
       <div className="hdr">
         <span className="w">
           <Pointer who="you" h={12} ui />
@@ -212,7 +217,11 @@ export function DecisionCard({
                 e.preventDefault();
                 void deny(note.trim());
               }
-              if (e.key === "Escape") setTelling(false);
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setTelling(false);
+              }
             }}
           />
           <div className="acts">
