@@ -6,9 +6,12 @@
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.zh-CN.svg">
 <img src="assets/brand/home-light.zh-CN.svg" width="880" alt="ai-remote：AI Native 多端 P2P 远程控制。Mac 与 Windows 已实现；iOS/iPhone、iPadOS/iPad、Android 与 Linux WIP。">
 </picture></p>
-<p align="center"><a href="#连接你的每一端">平台支持</a> · <a href="#多端-p2p-加密连接">P2P 直连</a> · <a href="#ai-native从协议到控制">AI Native</a> · <a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
+<p align="center"><a href="#连接你的每一端">平台支持</a> · <a href="#多端-p2p-加密连接">P2P 直连</a> · <a href="#ai-native从协议到控制">AI Native</a> · <a href="#从源码开始">快速上手</a> · <a href="#接入你的智能体">MCP 接入</a> · <a href="https://mcpservers.org/servers/jia-ss/ai-remote">收录页面</a> · <a href="docs/architecture.zh-CN.md">架构</a></p>
 
-<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven 发布者验证" height="20"></a></p>
+<p align="center">
+<a href="https://mcpservers.org/servers/jia-ss/ai-remote"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" height="20"></a>
+<a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven 发布者验证" height="20"></a>
+</p>
 
 **AI Native 多端远程控制，P2P 加密连接你的设备。**
 手机、平板、Mac、PC，与你的 AI，共用一套远程控制核心。通过控制端查看和操作已配对的电脑，也可以接入现有 MCP 智能体，让 AI 动手。你看得见屏幕和操作过程，随时接管，再把控制权交还给 AI。
@@ -97,6 +100,8 @@ ai-remote call system_info --host office-pc
 核对两端相同的三个单词安全码。Mac 被控端需要给实际运行的可执行文件授予屏幕录制与辅助功能权限，重启后运行 `ai-remote doctor`。锁屏或权限不足时，先恢复桌面和权限再操作。[详细说明](docs/operations.zh-CN.md)
 
 ## 接入你的智能体
+
+**从发现到接入。** 在 [mcpservers.org 查看 ai-remote](https://mcpservers.org/servers/jia-ss/ai-remote)，浏览 MCP 服务介绍；按下方指引配置客户端，连接你自己的已配对电脑。
 
 桌面应用中打开 **设置 → 智能体**，选择客户端后复制安装指引。应用会提供真实可执行文件路径和当前配对配置目录，也支持 Mac 应用包内的 CLI。
 

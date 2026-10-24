@@ -6,9 +6,12 @@
 <source media="(prefers-color-scheme: light)" srcset="assets/brand/home-light.svg">
 <img src="assets/brand/home-light.svg" width="880" alt="ai-remote: AI-native, multi-device P2P remote control. Mac and Windows implemented; iOS/iPhone, iPadOS/iPad, Android and Linux WIP.">
 </picture></p>
-<p align="center"><a href="#across-your-devices">Platforms</a> · <a href="#paired-devices-connected-over-p2p">P2P</a> · <a href="#ai-native-from-protocol-to-control">AI Native</a> · <a href="#start-from-source">Get started</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="docs/architecture.md">Architecture</a></p>
+<p align="center"><a href="#across-your-devices">Platforms</a> · <a href="#paired-devices-connected-over-p2p">P2P</a> · <a href="#ai-native-from-protocol-to-control">AI Native</a> · <a href="#start-from-source">Get started</a> · <a href="#connect-your-agent">MCP setup</a> · <a href="https://mcpservers.org/servers/jia-ss/ai-remote">MCP listing</a> · <a href="docs/architecture.md">Architecture</a></p>
 
-<p align="center"><a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven publisher verification" height="20"></a></p>
+<p align="center">
+<a href="https://mcpservers.org/servers/jia-ss/ai-remote"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" height="20"></a>
+<a href="https://m8ven.ai/mcp/jia-ss-ai-remote-orb00i?s=readme"><img src="https://m8ven.ai/badge/mcp/jia-ss-ai-remote-orb00i?v=9774643a180dccc32e6fca8d78a701ec&amp;variant=verified" alt="M8ven publisher verification" height="20"></a>
+</p>
 
 **AI-native remote control across your devices, over encrypted P2P.**
 Your phone, your tablet, your Mac, your PC — and your AI agent, connected through one shared control layer. Use the human apps to view and control your paired computers, or connect your existing MCP agent to do the work. Watch the screen, take over, and hand control back whenever you want.
@@ -98,6 +101,8 @@ ai-remote call system_info --host office-pc
 Compare the same three-word safety code on both devices. On a Mac host, grant Screen Recording and Accessibility to the actual running executable, restart it, and run `ai-remote doctor`. A locked or unauthorized desktop must be repaired before capture/input, not worked around. [Detailed operations](docs/operations.md)
 
 ## Connect your agent
+
+**Discover, then connect.** Explore [ai-remote on mcpservers.org](https://mcpservers.org/servers/jia-ss/ai-remote) for the public MCP profile, then configure your client below to reach your own paired computers.
 
 In the desktop app, open **Settings → Agents**, choose your MCP client, then copy its setup. The app supplies the actual executable path and the current pairing profile, including when the CLI lives inside the Mac bundle.
 
