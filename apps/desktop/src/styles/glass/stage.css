@@ -91,6 +91,14 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace > .nt-workspace-pane { box-shadow: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace .nt-chat-approval { background: var(--gl-content); box-shadow: inset 0 calc(-1 * var(--gl-hair)) 0 var(--gl-sep); }
 
+/* Sheets are centred on the whole window, so in the live view they cover part of the picture: no
+   blur there (it would re-blur the video every frame), an opaque fill with the same shape, ring, rim
+   and shadow. The chat's file preview does the same (chat.css). */
+:root:is([data-material="native"], [data-material="preview"]):has(.nt-live-workspace) .cdlg.gl-sheet {
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  background: rgb(var(--gl-g-rgb));
+}
+
 /* ==== 3. Stage glass (material on): no backdrop-filter anywhere in here ==== */
 
 /* the shared surface: bars, the pending banner, cards, notices, takeover options */

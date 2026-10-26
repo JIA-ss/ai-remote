@@ -1,1 +1,128 @@
-/* glass: the coding-agent chat (transcript, composer, its popovers). Owned by the overlays package; empty in the foundation. */
+/* glass/chat.css: the coding-agent conversation's floating pieces, wherever the shared chat
+   components (ui/chat/*, ui/AgentChat.tsx) draw them: the Claude and Codex views in the workspace,
+   the workspace beside the live screen, the older nt-chat.
+
+   Functional glass, the .gl-glass thick recipe of material.css spelled out on the existing class
+   names (the components are not changed): the / and @ list (.nt-ac), the context usage popover
+   (.nt-usage), the find bar (.nt-findbar), Quote over a selection (.nt-quote), the generic jump to
+   the latest (.nt-jump), a code block's floating actions, and the file preview dialog's chrome
+   (.nt-pv-dlg). Each one floats over painted conversation, never over the live picture: the chat
+   lives in the workspace pane, which clips its absolutely placed children. The one piece that can
+   cross the stage is the preview dialog (fixed, centred on the window); while the live view is
+   mounted it keeps the glass shape but drops the blur and turns opaque.
+
+   Not here, on purpose:
+   - the message list and composer: the Claude / Codex views paint them (claude.css, codex.css) on the
+     content tints; surfaces.css maps the composer field;
+   - .nt-folder-pop: in the workspace composer it stays opaque (workspace.css; the chat e2e checks
+     alpha 255, after folder rows showed the composer's text through a translucent list), and in the
+     computer page's start form it is an in-flow card (surfaces.css);
+   - menus (.menu.nt-chat-menu): material.css already paints every .menu as thick glass.
+
+   Rules a glass piece here keeps (material.css): it is a leaf (a code block inside the preview
+   dialog does not get glass actions), the prefixed backdrop-filter carries literal values first, the
+   blur radius never animates, and only the piece itself animates (160 ms in, nothing out: closing
+   unmounts at once). With data-material="none" none of this applies and every piece keeps today's
+   opaque --raised look. */
+
+/* ---- the shared paint: thick glass, ring, inner stroke (Windows), float shadow ---- */
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
+:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump,
+:root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float) {
+  isolation: isolate;
+  border: 0;
+  color: var(--c-strong, var(--text-1));
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+}
+/* The blur. A code block's actions stay invisible until the block is hovered: only the shown one
+   blurs, so a long conversation does not carry a blurred layer per code block. */
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
+:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump,
+:root:is([data-material="native"], [data-material="preview"]) .nt-cb:is(:hover, :focus-within) .acts.float:not(.nt-pv-dlg .acts.float) {
+  -webkit-backdrop-filter: blur(36px) saturate(160%);
+  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+}
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-chat:not(.cdx) .nt-jump,
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-cb:is(:hover, :focus-within) .acts.float:not(.nt-pv-dlg .acts.float) {
+  -webkit-backdrop-filter: blur(30px) saturate(125%);
+  backdrop-filter: blur(30px) saturate(125%);
+}
+/* The rim: material.css's masked 1 px ring, bright at the top. The / list scrolls inside itself, and a
+   ring placed in a scroller scrolls away with the rows, so the list gets its highlight from inset
+   shadows instead (below). */
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg)::before,
+:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump::before,
+:root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float)::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: var(--gl-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  transition: opacity var(--gl-dur) ease;
+}
+:root[data-window-active="false"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .nt-cb .acts.float)::before { opacity: .4; }
+:root[data-os="windows"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .nt-cb .acts.float)::before { display: none; }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="dark"]:not([data-os="windows"]) .nt-ac {
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .05), var(--gl-sh-float);
+}
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"]:not([data-os="windows"]) .nt-ac {
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), inset 0 1px 0 rgb(255 255 255 / .9), inset 0 0 0 1px rgb(255 255 255 / .4), var(--gl-sh-float);
+}
+
+/* ---- each piece: concentric radii, rows on the glass ---- */
+/* the / and @ list: radius 14, padding 6, rows radius 8 (14 − 6) */
+:root:is([data-material="native"], [data-material="preview"]) .nt-ac { padding: 6px; border-radius: var(--gl-r-pop); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-ac .it { border-radius: var(--gl-r-row); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-ac .it.on { background: var(--gl-sel); }
+/* context usage */
+:root:is([data-material="native"], [data-material="preview"]) .nt-usage { padding: 14px 16px; border-radius: var(--gl-r-pop); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-usage .meter { background: var(--fill-2); }
+/* find: one capsule, its 24 px buttons concentric (16 − 4) */
+:root:is([data-material="native"], [data-material="preview"]) .nt-transcript .nt-findbar { height: 32px; box-sizing: border-box; padding: 0 4px 0 12px; border-radius: 16px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-findbar .nt-ib { border-radius: 12px; }
+/* Quote and the generic jump: small capsules */
+:root:is([data-material="native"], [data-material="preview"]) .nt-transcript .nt-quote { height: 28px; padding: 0 12px; border-radius: 14px; font-weight: 500; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-transcript .nt-quote:hover { background: rgb(var(--gl-g-rgb) / .96); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump { height: 32px; padding: 0 14px; border-radius: 16px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump:hover { background: rgb(var(--gl-g-rgb) / .96); }
+/* a code block's copy / wrap buttons, shown on hover */
+:root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float) { padding: 2px; border-radius: 9px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float) .nt-ib { border-radius: 7px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.nt-transcript .nt-findbar, .nt-transcript .nt-quote, .nt-chat:not(.cdx) .nt-jump, .nt-cb .acts.float) { border-radius: 4px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-findbar .nt-ib { border-radius: 4px; }
+
+/* the file preview: a sheet. Glass chrome (radius 20, header on the glass), the document itself on
+   a well so long code and Markdown read on a steady ground; an HTML page keeps its white sheet. */
+:root:is([data-material="native"], [data-material="preview"]) .nt-pv-dlg { border-radius: var(--gl-r-sheet); box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-pv-dlg :is(.nt-pv-hd, .nt-pv-note) { border-bottom-color: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-pv-dlg .nt-pv-bd { background: var(--gl-well); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-pv-dlg .nt-pv-hd .seg { background: var(--fill-1); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-pv-dlg .nt-pv-hd .seg button.on { background: rgb(255 255 255 / .14); box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .nt-pv-dlg .nt-pv-hd .seg button.on { background: #FFFFFF; box-shadow: 0 1px 2px rgb(0 0 0 / .10), 0 0 0 .5px rgb(0 0 0 / .05); }
+/* Over the live view the dialog can sit on the moving picture: no blur there, and an opaque fill (an
+   unblurred translucent sheet would show the video's edges moving behind the document). It keeps the
+   glass shape, ring, rim and shadow. */
+:root:is([data-material="native"], [data-material="preview"]):has(.nt-live-workspace) .nt-pv-dlg {
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  background: rgb(var(--gl-g-rgb));
+}
+
+/* ---- motion: the list and the usage popover grow from their trigger (the composer below them) ---- */
+@media (prefers-reduced-motion: no-preference) {
+  :root:is([data-material="native"], [data-material="preview"]):not([data-reduce-motion="true"]) .nt-ac { transform-origin: bottom center; animation: gl-pop-in 160ms var(--gl-ease); }
+  :root:is([data-material="native"], [data-material="preview"]):not([data-reduce-motion="true"]) .nt-usage { transform-origin: bottom right; animation: gl-pop-in 160ms var(--gl-ease); }
+}
+:root[data-modal] :is(.nt-ac, .nt-usage) { animation: none; }
+
+/* where backdrop-filter does not exist: an opaque floor, as fallbacks.css gives .gl-glass */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-chat:not(.cdx) .nt-jump, .nt-cb .acts.float) { background: rgb(var(--gl-g-rgb) / .96); }
+}
+
+/* ---- without the material: no stray blur ---- */
+/* The Claude view's jump-to-latest blurs whatever the material (claude.css). Reduce transparency and
+   higher contrast promise an opaque window with nothing blurred; claude.css's own fill stays. */
+:root[data-material="none"] .cl-jump { -webkit-backdrop-filter: none; backdrop-filter: none; }
