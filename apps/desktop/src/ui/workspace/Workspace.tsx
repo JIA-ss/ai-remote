@@ -76,6 +76,7 @@ export function Workspace({
   embedded = false,
   onPlaceChange,
   initialTarget,
+  attention,
 }: {
   computers: Computer[];
   device: string;
@@ -95,6 +96,8 @@ export function Workspace({
   onPlaceChange?: (place: Place) => void;
   /** A first-use chat_start ticket supplied by the page that opened this workspace. */
   initialTarget?: (ChatTarget & { host: string }) | null;
+  /** Requests waiting on the computers side, as a sentence (the sidebar's mode switch flags it). */
+  attention?: string;
 }) {
   const snap = useWorkspace(computers, true);
   const [side, setSide] = useState(readSide);
@@ -330,6 +333,7 @@ export function Workspace({
       corner={corner}
       mode="agents"
       onMode={onMode}
+      attention={attention}
       current={current}
       onOpen={openSession}
       onNew={newSession}

@@ -358,6 +358,10 @@ export const zh: Record<keyof typeof en, string> = {
   // glass: workspace end
 
   // glass: live (add keys below, above its end marker)
+  lv_appr_more: "详情",
+  lv_appr_less: "收起",
+  lv_attn_one: "{host} 上有一个请求在等你",
+  lv_attn_many: "其他电脑上有 {n} 个请求在等你",
   // glass: live end
   // glass: end
   g_needs: "需要你处理",

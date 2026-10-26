@@ -473,7 +473,7 @@ export function NewSession({
                   <div className="ws-step static">
                     <span className="ws-step-title">{t("ws_no_computers")}</span>
                   </div>
-                  <button type="button" className="ws-step" onClick={onPair}>
+                  <button type="button" className="ws-step ws-step-cta" onClick={onPair}>
                     <span className="ws-step-title">{t("ws_pair")}</span>
                   </button>
                 </section>

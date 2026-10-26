@@ -356,6 +356,10 @@ export const en = {
   // glass: workspace end
 
   // glass: live (add keys below, above its end marker)
+  lv_appr_more: "Details",
+  lv_appr_less: "Less",
+  lv_attn_one: "A request is waiting for you on {host}",
+  lv_attn_many: "{n} requests are waiting for you on other computers",
   // glass: live end
   // glass: end
   g_needs: "Needs you",

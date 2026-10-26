@@ -19,8 +19,44 @@
 
 /* The live-view rail reuses the workspace's conversations. */
 .nt-session .nt-rail > .nt-chat { margin-top: 0; }
-.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow-y: auto; margin-bottom: 12px; }
+.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 60%; overflow-y: auto; margin-bottom: 12px; }
 .nt-chat-approval .decide { padding: 12px; }
+/* The request above the live workspace. Kept whole it is about 430 px tall, so in a window up to
+   900 px high it is compact by default: who asks, the command (three lines at most), the two answers
+   and the time left, about 210 px; the question repeats the line above it, and the agent's reason,
+   the Mac note and "Tell the agent instead" are behind Details (LiveWorkspace.tsx). Its answers are
+   never pushed into an inner scroll. On the stage, the banner that repeats the same request goes
+   while the card shows (immersive full screen hides the card, and the banner comes back). */
+.nt-chat-approval .gl-appr-more { display: none; flex: none; height: 22px; margin-left: 10px; padding: 0 9px; border-radius: 11px;
+  font: inherit; font-size: 12px; color: var(--text-1); background: var(--fill-1); }
+.nt-chat-approval .gl-appr-more:hover { background: var(--fill-2); }
+.nt-chat-approval .decide .hdr .w + .gl-appr-more { margin-left: auto; }
+.nt-chat-approval .gl-appr-more:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+@media (max-height: 900px) {
+  .nt-live-workspace .nt-chat-approval { max-height: 70%; }
+  .nt-live-workspace .nt-chat-approval .gl-appr-more { display: inline-flex; align-items: center; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide :is(.q, .says, .prov, .tell) { display: none; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .who { margin-top: 8px; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .payload { margin-top: 8px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .acts { margin-top: 10px; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .ft { margin-top: 8px; padding-top: 8px; }
+}
+/* Requests waiting on the other computers: one amber line at the top of the pane (LiveWorkspace.tsx),
+   a button to Approvals. Content-plane paint, no blur. */
+.nt-live-workspace .gl-live-attn { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; margin: 8px 8px 0; padding: 6px 10px 6px 12px;
+  border-radius: var(--r-card); font: inherit; font-size: 12px; line-height: 16px; text-align: left; color: var(--text-1);
+  background: var(--you-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--you-stroke) 32%, transparent); }
+.nt-live-workspace .gl-live-attn:hover { background: color-mix(in srgb, var(--you) 22%, transparent); }
+.nt-live-workspace .gl-live-attn:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+.nt-live-workspace .gl-live-attn-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--you); }
+.nt-live-workspace .gl-live-attn-tx { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nt-live-workspace .gl-live-attn-go { flex: none; font-weight: 600; color: var(--you-text); }
+.nt-live-workspace .gl-live-attn + .nt-chat-approval { padding-top: 8px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-live-workspace .gl-live-attn { border-radius: var(--gl-r-card); }
+.nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-anchor:has(> .nt-wait) { display: none; }
+/* (the HUD then keeps its own place instead of stepping below a banner that is not there) */
+.nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-stage .nt-hud { top: 12px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-stage .nt-hud { top: 20px; }
 
 /* Takeover options: a small panel over the stage, above the raised bottom bar. */
 .nt-drive-options { position: absolute; z-index: 9; right: 12px; bottom: 72px; width: min(320px, calc(100% - 24px));

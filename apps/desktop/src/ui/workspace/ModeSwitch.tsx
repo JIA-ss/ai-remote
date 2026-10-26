@@ -33,7 +33,9 @@ const MODES: Array<{ mode: AppMode; label: "ws_mode_computers" | "ws_mode_agents
   { mode: "agents", label: "ws_mode_agents", Icon: Bot },
 ];
 
-export function ModeSwitch({ mode, onMode }: { mode: AppMode; onMode: (mode: AppMode) => void }) {
+/** `attention`: requests waiting on the computers side (a sentence); in the agents mode the Computers
+ *  segment then carries an amber dot and the sentence in its name. */
+export function ModeSwitch({ mode, onMode, attention }: { mode: AppMode; onMode: (mode: AppMode) => void; attention?: string }) {
   const pick = (m: AppMode) => {
     if (m === mode) return;
     saveMode(m);
@@ -53,21 +55,26 @@ export function ModeSwitch({ mode, onMode }: { mode: AppMode; onMode: (mode: App
         requestAnimationFrame(() => box.querySelector<HTMLButtonElement>(`[data-mode="${next}"]`)?.focus());
       }}
     >
-      {MODES.map(({ mode: m, label, Icon }) => (
-        <button
-          key={m}
-          type="button"
-          data-mode={m}
-          aria-pressed={m === mode}
-          tabIndex={m === mode ? 0 : -1}
-          className={cx("ws-mode", m === mode && "on")}
-          aria-label={t(label)}
-          title={t(label)}
-          onClick={() => pick(m)}
-        >
-          <Icon size={15} strokeWidth={1.5} />
-        </button>
-      ))}
+      {MODES.map(({ mode: m, label, Icon }) => {
+        const flag = !!attention && m === "computers" && mode !== "computers";
+        const name = flag ? `${t(label)} · ${attention}` : t(label);
+        return (
+          <button
+            key={m}
+            type="button"
+            data-mode={m}
+            aria-pressed={m === mode}
+            tabIndex={m === mode ? 0 : -1}
+            className={cx("ws-mode", m === mode && "on")}
+            aria-label={name}
+            title={name}
+            onClick={() => pick(m)}
+          >
+            <Icon size={15} strokeWidth={1.5} />
+            {flag && <i className="gl-mode-dot" aria-hidden="true" />}
+          </button>
+        );
+      })}
     </div>
   );
 }

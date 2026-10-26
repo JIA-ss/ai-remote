@@ -83,6 +83,9 @@
 .ws.dragging, .ws.dragging * { cursor: col-resize !important; user-select: none; }
 .ws-side { width: var(--ws-side-w, 288px); flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--ws-side); border-right: .5px solid var(--ws-line); user-select: none; }
 .ws[data-side="float"] .ws-side { position: absolute; left: 0; top: 0; bottom: 0; z-index: 40; box-shadow: var(--ws-shadow-pop); }
+/* the page under a floating sidebar steps back a little, so the two never read as one surface */
+.ws[data-side="float"] > .ws-main::after { content: ""; position: absolute; inset: 0; z-index: 35; pointer-events: none; background: rgb(0 0 0 / .18); }
+[data-theme="light"] .ws[data-side="float"] > .ws-main::after { background: rgb(0 0 0 / .08); }
 .ws-float-scrim { position: absolute; inset: 0; z-index: 39; }
 .ws-grip { position: relative; z-index: 5; flex: none; width: 7px; margin: 0 -4px 0 -3px; cursor: col-resize; outline: none; }
 .ws-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--ws-accent); opacity: 0; transition: opacity 120ms; }
@@ -109,6 +112,9 @@
 .ws-mode { width: 30px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--text-3); transition: background-color 120ms, color 120ms; }
 .ws-mode:hover { color: var(--text-1); }
 .ws-mode.on { color: var(--text-1); background: color-mix(in srgb, var(--text-1) 14%, transparent); box-shadow: 0 1px 2px rgb(0 0 0 / .18); }
+/* the Computers segment carries an amber dot while requests wait there (LiveWorkspace.tsx) */
+.ws-mode:has(> .gl-mode-dot) { position: relative; }
+.ws-mode > .gl-mode-dot { position: absolute; top: 3px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--you); box-shadow: 0 0 0 1.5px var(--canvas); }
 [data-theme="light"] .ws-mode.on { background: #ffffff; box-shadow: 0 0 0 .5px rgb(0 0 0 / .08), 0 1px 2px rgb(0 0 0 / .10); }
 /* In the shell's glass sidebar (ui/Shell.tsx): at the right end of the 48 px top strip while expanded
    (clear of the macOS traffic lights, the sidebar toggle and the Windows app name), shaped like the
@@ -296,7 +302,10 @@
 .ws-step-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
 .ws-step.static .ws-step-title { white-space: normal; }
 .ws-step-blocked { color: var(--ws-warn-text); }
-.ws-step-detail { flex: 0 10000 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ws-t3); }
+/* the reason after a step is a short fixed phrase ("Needs permission"): it stays whole, the title gives way */
+.ws-step-detail { flex: none; white-space: nowrap; color: var(--ws-t3); }
+/* the one action of an empty workspace: reads as a button, not as a line of text */
+.ws-step.ws-step-cta { color: var(--ws-accent); font-weight: 500; }
 .ws-step-x { position: absolute; right: 4px; top: 4px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--ws-t3); opacity: 0; transition: opacity 60ms; }
 .ws-step-wrap:hover .ws-step-x, .ws-step-wrap:focus-within .ws-step-x { opacity: 1; }
 .ws-step-x:hover { background: var(--ws-hover); color: var(--ws-t1); }

@@ -210,6 +210,8 @@ export interface SidebarProps {
   corner: ReactNode;
   mode: AppMode;
   onMode: (m: AppMode) => void;
+  /** Requests waiting on the computers side, as a sentence (the mode switch flags it). */
+  attention?: string;
   /** The open session (`host/id`), or null on the new-session page. */
   current: string | null;
   onOpen: (host: string, id: string) => void;
@@ -623,7 +625,7 @@ export function Sidebar(p: SidebarProps) {
       <div className="ws-side-top" data-tauri-drag-region>
         {p.corner}
         <div className="ws-drag" data-tauri-drag-region />
-        <ModeSwitch mode={p.mode} onMode={p.onMode} />
+        <ModeSwitch mode={p.mode} onMode={p.onMode} attention={p.attention} />
       </div>
       <button type="button" className="ws-search" onMouseDown={(e) => e.preventDefault()} onClick={p.onPalette}>
         <span className="ws-lead">
@@ -646,12 +648,8 @@ export function Sidebar(p: SidebarProps) {
       </button>
       <div className="ws-list" ref={list} onKeyDown={onListKey} onScroll={() => card && setCard(null)} role="list" aria-label={t("ws_sessions")}>
         {noComputers ? (
-          <div className="ws-list-empty">
-            <p>{t("ws_no_computers")}</p>
-            <button type="button" className="ws-btn" onClick={p.onPair}>
-              {t("ws_pair")}
-            </button>
-          </div>
+          // the new-session page carries the one way to pair; the list only says what will appear here
+          <div className="ws-list-note">{t("ws_empty")}</div>
         ) : loading ? (
           <div className="ws-skel" aria-label={t("ws_loading")}>
             <i style={{ width: "75%" }} />
