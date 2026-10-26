@@ -164,3 +164,26 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .receipts { border-radius: var(--gl-r-card); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .rcpt + .rcpt { border-top: var(--gl-hair) solid var(--gl-sep); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.gl-inbox, .cpage) .decide { border-radius: var(--gl-r-card); }
+
+/* ======================================================================================
+   Activity: a table under a hard edge, grouped by day; rows are buttons (Enter / Space)
+   ====================================================================================== */
+.act.gl-act-empty { grid-template-columns: minmax(0, 1fr); }
+.act .gl-act-lede { font-size: 13px; line-height: 20px; color: var(--text-2); }
+.act .mm { margin-top: 16px; }
+/* the header stays under the toolbar while the rows scroll: it continues the hard edge */
+.act .tbl .th { position: sticky; top: var(--tb-h); z-index: 2; background: rgb(var(--gl-edge-rgb) / .96); }
+.act .tbl .tday { padding: 16px 12px 6px; }
+.act .tbl .tr { cursor: default; }
+.act .tbl .tr:not(.sel):hover { background: var(--fill-1); }
+.act .tbl .tr:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.act .tbl .tday + .tr { box-shadow: none; }
+.act .insp .gl-more { margin-top: 6px; }
+.act .insp .gl-insp-foot { padding-top: 14px; border-top: 1px solid var(--stroke-1); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .mm { border-radius: var(--gl-r-card); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .th { border-bottom: var(--gl-hair) solid var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr + .tr { box-shadow: inset 0 var(--gl-hair) 0 var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr:not(.sel):hover { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel { background: var(--gl-sel-list); box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel + .tr { box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .act .insp .gl-insp-foot { border-top: var(--gl-hair) solid var(--gl-sep); }

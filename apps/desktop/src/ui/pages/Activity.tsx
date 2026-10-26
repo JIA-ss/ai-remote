@@ -1,13 +1,16 @@
-// Activity: every step on every computer, newest first, with an inspector for the picked one.
+// Activity: every step on every computer (or the one the toolbar's filter picked), newest first and
+// grouped by day, with an inspector for the picked row. The toolbar edge is hard here: a table follows.
 
-import { useMemo, useState } from "react";
-import { t } from "../../lib/i18n";
+import { Fragment, useMemo, useState } from "react";
+import { currentLang, t } from "../../lib/i18n";
 import type { Computer, Snapshot } from "../../lib/store";
 import type { Step } from "../../lib/types";
 import { Pointer } from "../glyphs";
+import { Icon } from "../Icon";
 import { TurnLine, turnSpec } from "../TurnLine";
 import { agentLabel, clock, cx, useNow, useSize } from "../util";
 import { receiptOf } from "./common";
+import { EmptyState } from "./Empty";
 
 function outcomeOf(s: Step): string {
   if (s.state === "waiting") return t("out_waiting");
@@ -28,6 +31,15 @@ function axisTicks(computers: Computer[], now: number): string[] {
   return [0, 1, 2, 3, 4].map((i) => clock(t0 + ((now - t0) * i) / 4, false));
 }
 
+/** A row's day heading: today, yesterday, or the date. */
+function dayOf(ms: number, now: number): string {
+  const day = new Date(ms).toDateString();
+  if (day === new Date(now).toDateString()) return t("today");
+  if (day === new Date(now - 86_400_000).toDateString()) return t("day_yesterday");
+  const zh = currentLang() === "zh";
+  return new Date(ms).toLocaleDateString(zh ? "zh-CN" : "en-US", { month: zh ? "numeric" : "short", day: "numeric" });
+}
+
 /** The computers whose steps the page shows: all of them, or the one the toolbar's filter picked. */
 export function activityComputers(snap: Snapshot, host?: string): Computer[] {
   return host ? snap.computers.filter((c) => c.host.name === host) : snap.computers;
@@ -36,6 +48,8 @@ export function activityComputers(snap: Snapshot, host?: string): Computer[] {
 export function ActivityPage({
   snap,
   host,
+  onHost,
+  onOpenComputer,
 }: {
   snap: Snapshot;
   /** Only this computer's steps (the toolbar's filter). */
@@ -58,12 +72,24 @@ export function ActivityPage({
   const picked = rows.find((r) => `${r.c.host.name}/${r.s.key}` === sel);
   const mm = shown.filter((c) => c.feed.steps.length > 0);
   const mmW = Math.max((list.w || 600) - 32 - 40 - 32 - 96 - 12, 100);
+  if (rows.length === 0)
+    return (
+      <div className="act gl-act-empty">
+        <div className="act-list" ref={listRef}>
+          <EmptyState
+            icon="history"
+            title={host ? t("pg_act_empty_host", { host }) : t("pg_act_empty")}
+            body={t("pg_act_empty_d")}
+            action={host && onHost && <button type="button" className="btn" onClick={() => onHost(undefined)}>{t("pg_act_show_all")}</button>}
+          />
+        </div>
+      </div>
+    );
+  const pick = (key: string) => setSel(key);
   return (
     <div className="act">
-      <div className="act-list" ref={listRef} style={{ overflowY: "auto" }}>
-        <div className="body c2">
-          {t("act_sub")}
-        </div>
+      <div className="act-list" ref={listRef}>
+        <div className="gl-act-lede">{t("act_sub")}</div>
         {mm.length > 0 && (
           <div className="mm">
             {mm.map((c) => {
@@ -92,22 +118,38 @@ export function ActivityPage({
             <span>{t("h_tool")}</span>
             <span>{t("h_out")}</span>
           </div>
-          <div className="tday">{t("today")}</div>
-          {rows.map(({ s, c }) => {
+          {rows.map(({ s, c }, i) => {
             const key = `${c.host.name}/${s.key}`;
+            const day = dayOf(s.startedMs, now);
+            const newDay = i === 0 || dayOf(rows[i - 1].s.startedMs, now) !== day;
             return (
-              <div key={key} className={cx("tr", sel === key && "sel")} onClick={() => setSel(key)} role="button" tabIndex={0}>
-                <span className="t">{clock(s.startedMs)}</span>
-                <span>
-                  <Pointer who={s.byPerson ? "you" : "agent"} h={12} ui />
-                </span>
-                <span className={cx("s", s.byPerson && "you")}>{s.intent ?? s.tool}</span>
-                <span className="c">{c.host.name}</span>
-                <span className="k">
-                  <span className="mono">{s.tool}</span>
-                </span>
-                <span className="o">{outcomeOf(s)}</span>
-              </div>
+              <Fragment key={key}>
+                {newDay && <div className="tday">{day}</div>}
+                <div
+                  className={cx("tr", sel === key && "sel")}
+                  onClick={() => pick(key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      pick(key);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={sel === key}
+                >
+                  <span className="t">{clock(s.startedMs)}</span>
+                  <span>
+                    <Pointer who={s.byPerson ? "you" : "agent"} h={12} ui />
+                  </span>
+                  <span className={cx("s", s.byPerson && "you")}>{s.intent ?? s.tool}</span>
+                  <span className="c">{c.host.name}</span>
+                  <span className="k">
+                    <span className="mono">{s.tool}</span>
+                  </span>
+                  <span className="o">{outcomeOf(s)}</span>
+                </div>
+              </Fragment>
             );
           })}
         </div>
@@ -128,6 +170,12 @@ export function ActivityPage({
             <div className="body c2" style={{ marginTop: 4 }}>
               {agentLabel(picked.c.feed.agent)} · {picked.c.host.name}
             </div>
+            {onOpenComputer && (
+              <button type="button" className="gl-more" onClick={() => onOpenComputer(picked.c.host.name)}>
+                {t("open_computer", { host: picked.c.host.name })}
+                <Icon name="chevR" size={12} />
+              </button>
+            )}
             {picked.s.argsPreview && <div className="payload">{picked.s.argsPreview}</div>}
             <dl className="dl">
               {picked.s.approvalId && (
@@ -163,7 +211,7 @@ export function ActivityPage({
           <div className="body c3">{t("ins_pick")}</div>
         )}
         <div style={{ flex: 1 }} />
-        <div className="footnote" style={{ borderTop: "1px solid var(--stroke-1)", paddingTop: 14 }}>
+        <div className="footnote gl-insp-foot">
           <span className="hatch" style={{ width: 22, marginTop: 4 }} />
           <span>{t("takeover_not_recorded")}</span>
         </div>
