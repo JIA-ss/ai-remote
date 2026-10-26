@@ -811,6 +811,30 @@ test("archive undo preserves events arriving after its filtered row is restored 
   assert.equal(restored.meta.last_seq, 99);
 });
 
+test("a poll answered after a newer event on the open conversation keeps that event's fields", async () => {
+  let answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 5, pinned: false })] };
+  const { store } = storeWith({ "new chat_sessions": () => answer }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  // A turn starts and a question arrives on the open conversation (events 8 and 9) ...
+  store.patchSession("new", "a", ws.eventPatch({ t: "state", state: "running", seq: 8 }));
+  store.patchSession("new", "a", ws.eventPatch({ t: "question", seq: 9, ts: 3000 }));
+  // ... while a poll sent before it answers with event 5 (and a pin made on another device).
+  answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 5, pinned: true })] };
+  await store.refreshAll();
+  let x = store.find("new", "a");
+  assert.equal(x.meta.pending, "question");
+  assert.equal(x.meta.state, "running");
+  assert.equal(x.meta.pinned, true);
+  assert.equal(store.dot(x), "awaiting");
+  // The host's next answer is as new as the events here: it wins.
+  answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 12, pending: null, pinned: true })] };
+  await store.refreshAll();
+  x = store.find("new", "a");
+  assert.equal(x.meta.pending, null);
+  assert.equal(x.meta.state, "idle");
+  assert.deepEqual(plain(ws.keepNewerEvents([], [meta({ id: "z" })]).map((m) => m.id)), ["z"]);
+});
+
 // ---- Groups made here, pinned order, density and the metadata line (SB-04 / SB-08 / SB-15 / SB-28 / SB-36 / SB-38 / SB-42)
 
 test("custom groups: names are 1–200 characters, broken saved entries are dropped", () => {

@@ -146,6 +146,26 @@ export function eventPatch(e: { t: string; seq?: number; ts?: number; [k: string
   return Object.keys(p).length ? p : null;
 }
 
+/** The fields a chat event changes (`eventPatch`); everything else only comes with `chat_sessions`. */
+const EVENT_FIELDS = ["title", "title_source", "state", "pending", "last_status", "last_reason", "permission_mode", "last_seq", "last_activity"] as const;
+
+/**
+ * A `chat_sessions` answer merged with what is known here: a session whose events seen here are newer
+ * than the answer (a poll sent before a question arrived on the open conversation, answered after it)
+ * keeps those events' fields; the rest is the host's. Sessions are the answer's.
+ */
+export function keepNewerEvents(known: WsMeta[], answer: WsMeta[]): WsMeta[] {
+  if (!known.length) return answer;
+  const byId = new Map(known.map((m) => [m.id, m]));
+  return answer.map((m) => {
+    const here = byId.get(m.id);
+    if (!here || lastSeq(here) <= lastSeq(m)) return m;
+    const kept: Partial<WsMeta> = {};
+    for (const k of EVENT_FIELDS) if (k in here) (kept as Record<string, unknown>)[k] = here[k];
+    return { ...m, ...kept };
+  });
+}
+
 /** First line of a message, at most `max` characters (NS-38: 80), or "" for nothing. */
 export function firstLine(text: string | null | undefined, max = 80): string {
   const line = (text ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
@@ -1037,7 +1057,8 @@ export class WorkspaceStore {
       this.setHost(host, (h) => ({
         status: "ok",
         error: null,
-        sessions,
+        // An answer asked for before an event seen meanwhile on the open conversation must not undo it.
+        sessions: keepNewerEvents(h.sessions, sessions),
         // A host once seen with the fields (or answering chat_update) keeps them; one that refused stays refused.
         update: h.update === false && learned !== true ? false : learned ?? h.update,
         fetchedAt: this.deps.now(),
