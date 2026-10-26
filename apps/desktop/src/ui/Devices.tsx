@@ -141,7 +141,7 @@ export function DevicesPage({
           icon="monitor"
           title={t("no_computers_short")}
           body={t("devices_empty_hint")}
-          action={<button type="button" className="btn primary" onClick={onPair}><Icon name="add" size={14} />{t("pair")}</button>}
+          action={<button type="button" className="btn" onClick={onPair}><Icon name="add" size={14} />{t("pair")}</button>}
         />
       )}
     </section>

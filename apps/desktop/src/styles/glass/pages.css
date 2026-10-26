@@ -16,6 +16,7 @@
   min-height: 280px; padding: 24px 24px 12vh; text-align: center; color: var(--text-3); }
 .gl-blank.compact { flex: none; min-height: 0; padding: 36px 24px 28px; }
 .gl-blank-ic { display: grid; place-items: center; color: var(--text-3); }
+.gl-blank-ic > :is(svg, .fi) { width: 32px; height: 32px; font-size: 32px; }
 .gl-blank-ttl { margin-top: 6px; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.01em; color: var(--text-1); }
 .gl-blank-body { max-width: 360px; font-size: 13px; line-height: 20px; color: var(--text-2); text-wrap: pretty; }
 .gl-blank-act { margin-top: 12px; display: flex; gap: 8px; }
@@ -24,6 +25,7 @@
 :is(.devices-page, .ipage, .act-list):has(> .gl-blank:not(.compact)) { display: flex; flex-direction: column; }
 /* the old card look of the devices empty state goes: no card, the plane shows */
 .devices-page .devices-empty.gl-blank { padding: 24px 24px 12vh; border-radius: 0; background: transparent; box-shadow: none; }
+.devices-page .devices-empty.gl-blank .btn { margin-top: 0; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .devices-empty.gl-blank { background: transparent; box-shadow: none; }
 
 /* buttons on the content plane are capsules with the material on (Apple: buttons ≥ 28 px are
@@ -81,9 +83,10 @@
 /* nothing to decide: the picture and the task / steps sit side by side */
 .cpage .cp-grid.calm { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: start; }
 .cpage .cp-grid > .pv-wrap { align-self: start; }
+@media (max-width: 980px) { .cpage .cp-grid.calm { grid-template-columns: minmax(0, 1fr); } }
 .cpage .cp-cols { column-gap: 32px; }
 .cpage .cp-cols.two { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--stroke-1); }
-.cpage .cp-cols.side { display: flex; flex-direction: column; gap: 24px; margin: 0; padding: 4px 0 0; border-top: 0; }
+.cpage .cp-cols.gl-aside { display: flex; flex-direction: column; gap: 24px; margin: 0; padding: 4px 0 0; border-top: 0; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .cp-cols.two { border-top: var(--gl-hair) solid var(--gl-sep); }
 .cpage .colh { margin-bottom: 8px; }
 /* "This computer's activity ›": a quiet text action under the steps */
@@ -116,11 +119,11 @@
 
 /* the tabs: grouped cards (D.4) — group titles outside the card, rows with hairlines inset from the text */
 .cpage .tab-grid { margin-top: 24px; column-gap: 28px; }
-.cpage .tab-grid > div > .grp-h { margin: 24px 4px 6px; }
+.cpage .tab-grid > div > .grp-h { min-height: 28px; align-items: center; margin: 20px 4px 4px; }
 .cpage .tab-grid > div > .grp-h:first-child { margin-top: 0; }
 .cpage .tab-grid .grp-sub { margin: -2px 4px 8px; }
 .cpage .tab-grid .gnote { margin: 6px 4px 0; }
-.cpage .tab-grid .gr { min-height: 48px; padding: 8px 14px; column-gap: 12px; grid-template-columns: 28px minmax(0, 1fr) auto; }
+.cpage .tab-grid .gr { min-height: 44px; padding: 8px 14px; column-gap: 12px; grid-template-columns: 28px minmax(0, 1fr) auto; }
 .cpage .tab-grid .gr.noic { grid-template-columns: minmax(0, 1fr) auto; }
 .cpage .tab-grid .gr:has(.ds) { min-height: 54px; }
 .cpage .tab-grid .gr .ic { width: 28px; height: 28px; }

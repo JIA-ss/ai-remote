@@ -163,7 +163,7 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
   const recent = short ? (currentLang() === "zh" ? 3 : 4) : 5;
   // The task and the recent steps: under the decision when one waits, beside the picture otherwise.
   const side = (
-    <div className={cx("cp-cols", pending ? "two" : "side")}>
+    <div className={cx("cp-cols", pending ? "two" : "gl-aside")}>
       <div>
         <div className="colh">{t("cur_task")}</div>
         {c.feed.task ? (
