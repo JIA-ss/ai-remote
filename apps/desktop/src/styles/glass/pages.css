@@ -1,1 +1,74 @@
-/* glass: main-window pages (devices, welcome, computer, pairing, approvals, activity). Owned by the pages package; empty in the foundation. */
+/* glass: main-window pages (devices, welcome, computer, pairing, approvals, activity). Owned by the pages package.
+
+   Two kinds of rule live here:
+   - layout (spacing, sizes, what is shown): any material, because the pages themselves changed;
+   - paint (tints, capsule shapes, hairlines on the translucent plane): only while the material is
+     on, every selector spelled out with :root:is([data-material="native"], [data-material="preview"]).
+     With data-material="none" the pages keep today's opaque native.css surfaces.
+   Content here is the content layer: translucent tints, no backdrop-filter anywhere (the window
+   material already frosts it). The preview card and the welcome figure are stage pictures: no blur
+   on or inside them. One card level only. */
+
+/* ======================================================================================
+   Shared: the empty state (D.9), the page column, buttons on the plane
+   ====================================================================================== */
+.gl-blank { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 1 0 auto;
+  min-height: 280px; padding: 24px 24px 12vh; text-align: center; color: var(--text-3); }
+.gl-blank.compact { flex: none; min-height: 0; padding: 36px 24px 28px; }
+.gl-blank-ic { display: grid; place-items: center; color: var(--text-3); }
+.gl-blank-ttl { margin-top: 6px; font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.01em; color: var(--text-1); }
+.gl-blank-body { max-width: 360px; font-size: 13px; line-height: 20px; color: var(--text-2); text-wrap: pretty; }
+.gl-blank-act { margin-top: 12px; display: flex; gap: 8px; }
+.gl-blank-act .btn { display: inline-flex; align-items: center; gap: 6px; }
+/* a page whose only content is the empty state centres it in the space under the toolbar */
+:is(.devices-page, .ipage, .act-list):has(> .gl-blank:not(.compact)) { display: flex; flex-direction: column; }
+/* the old card look of the devices empty state goes: no card, the plane shows */
+.devices-page .devices-empty.gl-blank { padding: 24px 24px 12vh; border-radius: 0; background: transparent; box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .devices-empty.gl-blank { background: transparent; box-shadow: none; }
+
+/* buttons on the content plane are capsules with the material on (Apple: buttons ≥ 28 px are
+   capsules; Windows keeps Fluent's 4 px through --gl-r-btn) */
+:root:is([data-material="native"], [data-material="preview"]) :is(.devices-page, .cpage, .ipage, .ppage, .spread, .act) .btn { border-radius: var(--gl-r-btn); }
+
+/* ======================================================================================
+   Devices
+   ====================================================================================== */
+/* the attention strip: only while requests wait; amber is the "waits for you" colour */
+.devices-page .gl-attn {
+  display: flex; align-items: center; gap: 12px; width: 100%; margin: 0 0 16px; padding: 10px 12px 10px 14px;
+  border-radius: var(--r-card); text-align: left; font: inherit; color: var(--text-1);
+  background: var(--you-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--you-stroke) 32%, transparent);
+  transition: background-color 120ms ease;
+}
+.devices-page .gl-attn:hover { background: color-mix(in srgb, var(--you) 22%, transparent); }
+.devices-page .gl-attn:focus-visible { outline: 2px solid var(--agent); outline-offset: 2px; }
+.devices-page .gl-attn-ic { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 14px; background: color-mix(in srgb, var(--you) 20%, transparent); }
+.devices-page .gl-attn-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.devices-page .gl-attn-l1 { font-size: 13px; line-height: 18px; font-weight: 600; }
+.devices-page .gl-attn-l2 { font-size: 12px; line-height: 16px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.devices-page .gl-attn-go { flex: none; display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 8px; font-size: 13px; font-weight: 500; color: var(--you-text); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .gl-attn { border-radius: var(--gl-r-card); }
+
+/* cards: name, OS, a status pill, the status sentence, at most two facts, two actions */
+.devices-page .device-grid { gap: 12px; }
+.devices-page .device-card { padding: 16px 16px 14px; }
+.devices-page .device-card-top { gap: 12px; }
+.devices-page .device-card-icon { width: 36px; height: 36px; border-radius: 10px; }
+.devices-page .device-card-name { font-size: 15px; line-height: 20px; }
+.devices-page .device-card-name > span { margin-top: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.devices-page .device-card-top > .device-card-status { height: 22px; padding: 0 9px 0 8px; gap: 6px; border-radius: 11px; background: var(--fill-1); font-size: 11px; font-weight: 500; color: var(--text-2); }
+.devices-page .device-card-status .device-status-dot { width: 6px; height: 6px; }
+.devices-page .device-card-agent { margin: 14px 0 0; font-size: 13px; line-height: 18px; color: var(--text-1); }
+.devices-page .device-card-agent.you { color: var(--you-text); }
+.devices-page .device-card-agent.agent { color: var(--agent); }
+.devices-page .device-card.off .device-card-agent { color: var(--text-2); }
+.devices-page .gl-dc-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0 0; font-size: 12px; line-height: 16px; color: var(--text-2); min-width: 0; }
+.devices-page .gl-dc-facts > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.devices-page .gl-dc-facts .g { color: var(--text-3); flex: none; }
+.devices-page .device-card-actions { margin-top: auto; padding-top: 16px; border-top: 0; gap: 8px; }
+.devices-page .device-card-actions .btn { height: 28px; padding: 0 12px; gap: 6px; font-size: 12px; display: inline-flex; align-items: center; }
+.devices-page .device-card-actions .btn:not(.primary) { padding-right: 8px; }
+.devices-page .device-card-actions .btn:disabled { opacity: 1; background: var(--fill-1); color: var(--text-3); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card { border-radius: var(--gl-r-card); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card-icon { background: var(--fill-1); }
+

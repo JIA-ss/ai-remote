@@ -301,9 +301,22 @@ export const en = {
   sc_search: "Search computers",
   sc_fullscreen: "Full screen",
   // glass: pages (add keys below, above its end marker)
+  pg_done: "Done",
+  pg_ctl_note: "On the computer to be controlled, open ai-remote and show its pair code in Settings › This device.",
+  pg_host_d: "Once it's on, agents on your other devices can use this computer. Every device that pairs needs your approval.",
+  pg_agents_note: "To let Claude Code, Codex and other agents use ai-remote, see Settings › Agent access.",
+  pg_agents_go: "Agent access…",
+  pg_done_d: "Level granted: {level}. Once an agent is connected to ai-remote, you can watch it work here.",
+  pg_err_words_d: "The pairing was removed on this computer. Make a new pair code on {host}, and remove this device there in Settings › This device.",
+  pg_act_empty: "No activity yet",
+  pg_act_empty_host: "No activity on {host} yet",
+  pg_act_empty_d: "Once an agent starts working, every step is recorded here.",
+  pg_act_show_all: "Show all computers",
   // glass: pages end
 
   // glass: computer (add keys below, above its end marker)
+  cp_os: "System",
+  cp_idle_none: "Nothing has happened here yet. It starts once an agent is connected to ai-remote.",
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
