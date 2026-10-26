@@ -65,7 +65,7 @@
 :root:is([data-material="native"], [data-material="preview"]) .ws-search:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent) 35%, transparent); }
 /* "New" and the session rows: the shell sidebar's hover and selection */
 :root:is([data-material="native"], [data-material="preview"]) .ws-nav { height: 28px; }
-:root:is([data-material="native"], [data-material="preview"]) :is(.ws-nav, .ws-more, .ws-list-filter, .ws-gh-add):hover { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-nav, .ws-more, .ws-list-filter, .ws-gh-add:not(:disabled)):hover { background: var(--gl-hover); }
 :root:is([data-material="native"], [data-material="preview"]) .ws-nav.on { background: var(--gl-sel); }
 :root:is([data-material="native"], [data-material="preview"]) :is(.ws-row:hover, .ws-row[data-menu-open]) { background: var(--gl-hover); }
 :root:is([data-material="native"], [data-material="preview"]) :is(.ws-row[data-selected], .ws-row[data-selected]:hover) { background: var(--gl-sel); }
