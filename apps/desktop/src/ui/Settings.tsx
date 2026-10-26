@@ -345,7 +345,7 @@ function Agents({ status, name, onChange }: { status: AgentStatus | null; name: 
               tt={t(setup.command ? "st_cmd_t" : "st_cfg_t")}
               ds={t(setup.command ? (mac ? "st_cmd_d_mac" : "st_cmd_d_win") : "st_cfg_d")}
             >
-              <CopyButton text={copyText} label={t(setup.command ? "st_copy_cmd" : "st_copy_cfg")} />
+              <CopyButton key={copyText} text={copyText} label={t(setup.command ? "st_copy_cmd" : "st_copy_cfg")} />
             </Row>
             <Disclosure open={manual} onToggle={() => setManual((v) => !v)} ic={<Icon name="wrench" />} tt={t("st_manual")} ds={t("st_manual_d")} />
             {manual && (
