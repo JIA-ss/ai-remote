@@ -57,6 +57,7 @@
 .spage.gl-st .gr + .gr::before { left: 54px; right: 14px; height: var(--gl-hair); background: var(--gl-sep); }
 .spage.gl-st .gr.noic::before { left: 14px; }
 .spage.gl-st .gl-st-val { font-size: 12px; line-height: 16px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.spage.gl-st .gl-st-val.gl-st-on { color: var(--text-1); }
 .spage.gl-st .gl-st-extra { margin-top: 2px; }
 .spage.gl-st .gl-st-busy { margin-top: 4px; color: var(--text-1); }
 /* an identity row (this device, the app): its name reads as the group's title */

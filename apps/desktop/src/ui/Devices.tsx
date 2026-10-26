@@ -116,7 +116,7 @@ export function DevicesPage({
                   )}
                 </p>
                 <div className="device-card-actions">
-                  <button type="button" className="btn primary" onClick={() => onWatch(c.host.name)} disabled={!watch} aria-label={t("devices_watch_host", { host: c.host.name })}>
+                  <button type="button" className="btn gl-watch" onClick={() => onWatch(c.host.name)} disabled={!watch} aria-label={t("devices_watch_host", { host: c.host.name })}>
                     <Icon name="eye" size={14} />{t("watch_live")}
                   </button>
                   <button type="button" className="btn" onClick={() => onDetails(c.host.name)} aria-label={t("devices_details_host", { host: c.host.name })}>
@@ -141,7 +141,7 @@ export function DevicesPage({
           icon="monitor"
           title={t("no_computers_short")}
           body={t("devices_empty_hint")}
-          action={<button type="button" className="btn" onClick={onPair}><Icon name="add" size={14} />{t("pair")}</button>}
+          action={<button type="button" className="btn primary" onClick={onPair}><Icon name="add" size={14} />{t("pair")}</button>}
         />
       )}
     </section>

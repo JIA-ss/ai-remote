@@ -324,12 +324,15 @@ export const zh: Record<keyof typeof en, string> = {
   // glass: computer (add keys below, above its end marker)
   cp_os: "系统",
   cp_idle_none: "这里还没有任何活动。智能体接入 ai-remote 后就会开始。",
+  cp_offline_d: "现在连不上它。它重新上线后，这里会自动更新。",
+  cp_acc_change: "更改权限",
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
   st_me_d: "{os} · 已配对的电脑看到的就是这个名字",
   st_perm_ok: "全部正常",
-  st_perm_rest: "另外 {n} 项正常",
+  st_perm_rest_one: "另外 1 项正常",
+  st_perm_rest_many: "另外 {n} 项正常",
   st_rules_t: "规则文件",
   st_autostart_t: "自启项",
   st_sc_handback: "交还控制",
@@ -343,6 +346,9 @@ export const zh: Record<keyof typeof en, string> = {
   st_manual: "手动设置",
   st_manual_d: "完整的命令和配置",
   st_ap_hosts_h: "各台电脑",
+  st_ap_hosts_d_mac: "各台电脑是否接受本设备的审批。",
+  st_ap_mac_on: "已接受",
+  st_ap_mac_off: "未接受",
   // glass: settings end
 
   // glass: overlays (add keys below, above its end marker)

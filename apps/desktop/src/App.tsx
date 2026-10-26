@@ -39,7 +39,7 @@ import {
   type SidebarPref,
 } from "./lib/nav";
 import { detectOs } from "./lib/platform";
-import { mouseActionOf, shortcutOf, type Action } from "./lib/shortcuts";
+import { mouseActionOf, shortcutLabel, shortcutOf, type Action } from "./lib/shortcuts";
 import { allPending, store, useStore, type Computer, type Snapshot } from "./lib/store";
 import type { AgentStatus, TrayIntent } from "./lib/types";
 import { DevicesPage } from "./ui/Devices";
@@ -460,11 +460,13 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
       return { bare: true };
     case "devices": {
       const online = snap.computers.filter((c) => c.online === true).length;
+      // With no computer yet the empty state is the one way to pair: no count, no second button.
+      const none = snap.ready && !snap.error && snap.computers.length === 0;
       return {
         title: t("devices"),
-        subtitle: snap.ready && !snap.error ? t("devices_subtitle", { online, n: snap.computers.length }) : undefined,
-        primary: (
-          <button type="button" className="btn primary" onClick={() => go({ page: "pair" })}>
+        subtitle: snap.ready && !snap.error && !none ? t("devices_subtitle", { online, n: snap.computers.length }) : undefined,
+        primary: none ? undefined : (
+          <button type="button" className="btn primary" onClick={() => go({ page: "pair" })} aria-label={t("pair")} title={`${t("pair")} · ${shortcutLabel("pair", os)}`}>
             <Icon name="add" size={14} />
             <span className="lbl">{t("pair")}</span>
           </button>
@@ -473,7 +475,8 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
     }
     case "approvals": {
       const n = allPending(snap).length;
-      return { title: t("approvals"), subtitle: n > 0 ? t("approvals_subtitle", { n }) : t("approvals_clear") };
+      // nothing waiting: the page's empty state says so, the toolbar does not repeat it
+      return { title: t("approvals"), subtitle: n > 0 ? t("approvals_subtitle", { n }) : undefined };
     }
     case "activity": {
       const shown = activityComputers(snap, route.host);
@@ -521,7 +524,7 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
         subtitle: <Facts items={computerFacts(c)} />,
         center: <ComputerTabStrip tab={route.tab} onTab={(tab) => go({ page: "computer", host: c.host.name, tab }, "replace")} />,
         primary: canWatch ? (
-          <button type="button" className="btn primary" onClick={() => go({ page: "session", host: c.host.name })}>
+          <button type="button" className="btn primary" onClick={() => go({ page: "session", host: c.host.name })} aria-label={t("watch_live")} title={t("watch_live")}>
             <Icon name="eye" size={14} />
             <span className="lbl">{t("watch_live")}</span>
           </button>

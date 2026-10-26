@@ -9,7 +9,7 @@ import type { Step } from "../../lib/types";
 import type { ChatTarget } from "../AgentChat";
 import { AccessTab, AgentsTab, ToolsTab } from "../ComputerTabs";
 import { DecisionCard } from "../Decide";
-import { Pointer, SeatMark } from "../glyphs";
+import { SeatMark } from "../glyphs";
 import { Icon } from "../Icon";
 import { Stream } from "../Session";
 import { statusOf } from "../Shell";
@@ -17,15 +17,15 @@ import { TurnLine, turnSpec } from "../TurnLine";
 import { canWatch } from "../Devices";
 import { agentLabel, clock, cx, useNow, useShortWindow, useSize } from "../util";
 
-/** The computer page's headline and lede: what is happening there, in one sentence. */
-function news(c: Computer, now: number): { hl: string; lede: string | null; who: "you" | "agent" | "idle" } {
+/** The computer page's headline and lede: what is happening there, in one sentence. `detail` is the
+ *  host's own wording of a problem (English, technical), kept for the lede's tooltip. */
+function news(c: Computer, now: number): { hl: string; lede: string | null; who: "you" | "agent" | "idle"; detail?: string } {
   const host = c.host.name;
   const agent = agentLabel(c.feed.agent);
   const g = groupOf(c, now);
   const p = c.feed.pending[0];
-  if (g === "offline") return { hl: t("hl_offline", { host }), lede: c.problem, who: "idle" };
+  if (g === "offline") return { hl: t("hl_offline", { host }), lede: t("cp_offline_d"), who: "idle", detail: c.problem ?? undefined };
   if (p) {
-    const asked = c.feed.steps.find((s) => s.approvalId === p.id);
     const hl =
       p.tool === "shell"
         ? t("hl_waiting_shell")
@@ -34,7 +34,8 @@ function news(c: Computer, now: number): { hl: string; lede: string | null; who:
           : p.tool.startsWith("files_")
             ? t("hl_waiting_file")
             : t("hl_waiting_tool", { tool: p.tool });
-    return { hl, lede: t("lede_waiting", { agent, time: clock(asked?.startedMs ?? now), tool: p.tool }), who: "you" };
+    // the decision card right below says who asks, what, and when: no second sentence here
+    return { hl, lede: null, who: "you" };
   }
   if (g === "you") return { hl: t("hl_you", { host }), lede: t("lede_you", { agent }), who: "you" };
   if (c.feed.driver.state === "paused")
@@ -189,11 +190,11 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
   );
   return (
     <>
+      {/* the same heading as the other tabs and pairing (glass/pages.css): no mark in front of it */}
       <div className="cp-hl">
-        {n.who === "you" ? <Pointer who="you" h={28} ui /> : n.who === "agent" ? <Pointer who="agent" h={28} ui /> : <SeatMark state="idle" h={24} />}
         <div className="dsp">{n.hl}</div>
       </div>
-      {n.lede && <div className="cp-lede lede">{n.lede}</div>}
+      {n.lede && <div className="cp-lede lede" title={n.detail}>{n.lede}</div>}
       <div className={cx("cp-grid", !pending && "calm")}>
         {pending && <DecisionCard p={pending} host={c.host.name} agent={agent} askedMs={askedStep?.startedMs} wide />}
         <div className="pv-wrap">
@@ -220,7 +221,8 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
             <div className="cap2">
               <SeatMark state={group === "needs" ? "waiting" : group === "you" ? "you" : group === "working" ? "agent" : "idle"} h={18} />
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <span className="l1">{st.text}</span>
+                {/* while a request waits, the card above already says so: the picture names the agent */}
+                <span className="l1">{pending ? agent : st.text}</span>
                 <span className="l2">{off ? t("st_offline") : `${t("live")} · ${clock(now, false)}`}</span>
               </div>
             </div>

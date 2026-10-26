@@ -137,13 +137,11 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
   const level = access.level;
   const admin = level === "admin";
   const desc = { observe: "lv_o_d", control: "lv_c_d", admin: "lv_a_d" } as const;
-  const ledes = { observe: "acc_lede_observe", control: "acc_lede_control", admin: "acc_lede_admin" } as const;
   const ruleText = { allow: "rule_allow", ask: "rule_ask", deny: "rule_deny" } as const;
   return (
     <>
       <TabHead
         hl={level ? t("acc_hl", { level: lvlName(level), host }) : t("acc_hl_none", { host })}
-        lede={level ? t(ledes[level], { host }) : null}
       />
       {access.bypass && (
         <div className="body c-danger" role="note" style={{ margin: "8px 0 0", maxWidth: 760, fontSize: 14, lineHeight: 1.65 }}>
@@ -154,7 +152,7 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
         <div>
           <div className="grp-h">{t("this_computer")}</div>
           <ComputerFacts c={c} />
-          <div className="grp-h">{t("acc_level", { host })}</div>
+          <div className="grp-h">{t("cp_acc_change")}</div>
           <div className="grp" role="radiogroup" aria-label={t("acc_level", { host })}>
             {LEVELS.map((l) => {
               const lower = rank(l) < rank(level);

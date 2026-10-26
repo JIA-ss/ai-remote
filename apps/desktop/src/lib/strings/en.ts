@@ -322,12 +322,15 @@ export const en = {
   // glass: computer (add keys below, above its end marker)
   cp_os: "System",
   cp_idle_none: "Nothing has happened here yet. It starts once an agent is connected to ai-remote.",
+  cp_offline_d: "It can't be reached right now. This page updates by itself once it is back online.",
+  cp_acc_change: "Change access",
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
   st_me_d: "{os} · the name your paired computers see",
   st_perm_ok: "All good",
-  st_perm_rest: "{n} more are fine",
+  st_perm_rest_one: "1 more is fine",
+  st_perm_rest_many: "{n} more are fine",
   st_rules_t: "Rules file",
   st_autostart_t: "Autostart entry",
   st_sc_handback: "Hand back control",
@@ -341,6 +344,9 @@ export const en = {
   st_manual: "Set up by hand",
   st_manual_d: "The full command and configuration",
   st_ap_hosts_h: "Computers",
+  st_ap_hosts_d_mac: "Whether each computer accepts approvals from this device.",
+  st_ap_mac_on: "Accepted",
+  st_ap_mac_off: "Not accepted",
   // glass: settings end
 
   // glass: overlays (add keys below, above its end marker)

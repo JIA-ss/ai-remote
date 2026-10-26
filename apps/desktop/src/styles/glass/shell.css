@@ -146,9 +146,16 @@
    (Window media queries, not container queries: a size container would also become the containing
    block of the fixed dialogs inside the page on some WebKit versions.) */
 @media (max-width: 1180px) { .gl-toolbar .gl-titles:has(+ .gl-center) .gl-sub { display: none; } }
+/* Only the expanded sidebar leaves the toolbar short of room (960 px, the window's minimum, leaves
+   720 px); with the compact one it keeps 888 px and every label fits. The selected segment keeps its
+   label, so the toolbar always says where you are (settings has no visible title of its own); the
+   others show their icon, with the name in their title. A primary action that drops its label keeps
+   its name as aria-label and title (App.tsx). */
 @media (max-width: 1060px) {
-  .gl-cap .gl-segbtn:has(> :is(svg, .fi, .g)) > .lbl, .gl-primary .btn.primary > .lbl { display: none; }
-  .gl-primary .btn.primary { width: var(--gl-cap-h); padding: 0; justify-content: center; }
+  .gl-win:not([data-sidebar="compact"]) .gl-cap .gl-segbtn:not(.sel):has(> :is(svg, .fi, .g)) > .lbl,
+  .gl-win:not([data-sidebar="compact"]) .gl-primary .btn.primary > .lbl { display: none; }
+  .gl-win:not([data-sidebar="compact"]) .gl-cap .gl-segbtn:not(.sel):has(> :is(svg, .fi, .g)) { padding: 0 9px; }
+  .gl-win:not([data-sidebar="compact"]) .gl-primary .btn.primary { width: var(--gl-cap-h); padding: 0; justify-content: center; }
 }
 
 /* ---- pages under the toolbar: they start at the top and scroll beneath it ---- */

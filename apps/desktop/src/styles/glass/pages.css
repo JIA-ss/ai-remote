@@ -74,16 +74,32 @@
 .devices-page .gl-dc-facts .g { color: var(--text-3); flex: none; }
 .devices-page .device-card-actions { margin-top: auto; padding-top: 16px; border-top: 0; gap: 8px; }
 .devices-page .device-card-actions .btn { height: 28px; padding: 0 12px; gap: 6px; font-size: 12px; display: inline-flex; align-items: center; }
-.devices-page .device-card-actions .btn:not(.primary) { padding-right: 8px; }
+.devices-page .device-card-actions .btn:not(.gl-watch) { padding-right: 8px; }
+/* "Watch live" on each card is a quiet button with the accent on its icon: the toolbar's Pair keeps
+   the page's one tinted action */
+.devices-page .device-card-actions .gl-watch:not(:disabled) > :is(svg, .fi) { color: var(--agent); }
 .devices-page .device-card-actions .btn:disabled { opacity: 1; background: var(--fill-1); color: var(--text-3); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card { border-radius: var(--gl-r-card); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card-icon { background: var(--fill-1); }
+/* Small text on fills and tints over the translucent plane (derived with the WCAG formula against the
+   bounding material colours, as tokens.css; not measured on screen). Dark: --text-2 on a --fill-1
+   pill over a card is 3.8:1 and on the amber tint 4.0:1, --agent on a card 3.5:1; light: --agent on a
+   card 4.45:1. Amber text needs nothing here: the material's light --you-text is global (tokens.css). */
+:root:is([data-material="native"], [data-material="preview"]) .devices-page .device-card-top > .device-card-status,
+:root:is([data-material="native"], [data-material="preview"]) .gl-inbox .decide .hdr .gl-open-host { color: var(--text-1); }
+:root:is([data-material="native"], [data-material="preview"]) .devices-page .gl-attn-l2 { color: color-mix(in srgb, var(--text-1) 40%, var(--text-2)); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="dark"] .devices-page .device-card-agent.agent { color: color-mix(in srgb, var(--agent) 70%, #fff); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .devices-page .device-card-agent.agent { color: color-mix(in srgb, var(--agent) 88%, #000); }
 
 /* ======================================================================================
    Computer: overview (headline, decision, live preview, task and recent steps) and the tabs
    ====================================================================================== */
 .cpage > .cp-hl:first-child { margin-top: 4px; }
 .cpage .cp-hl.tab { margin-top: 4px; }
+/* One heading style for every tab of the computer page and for pairing: 22 px / 600 on one left edge
+   (the overview's was 24 px behind a 28 px mark, the tabs' 20 px / 500: switching tabs made it jump). */
+.cpage .cp-hl :is(.dsp, .hd), .gl-pair .gl-pair-step > .hd { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -.015em; }
+.cpage .cp-hl + .cp-lede { margin-left: 0; }
 .cpage .cp-grid { margin-top: 28px; column-gap: 20px; row-gap: 20px; }
 /* nothing to decide: the picture and the task / steps sit side by side */
 .cpage .cp-grid.calm { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: start; }
@@ -148,6 +164,10 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.pick:hover { background: var(--gl-hover); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.sel { background: var(--gl-sel-list); }
 
+/* the decision card on a Mac (Decide.tsx): allowing is not possible here, so its button is a quiet
+   disabled outline rather than the card's loudest control; Deny carries the tint */
+.decide .acts .btn.gl-allow-off, .decide .acts .btn.gl-allow-off:disabled { opacity: 1; background: transparent; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--stroke-2); cursor: default; }
+
 /* ======================================================================================
    Approvals: the waiting requests (one column), today's receipts folded below
    ====================================================================================== */
@@ -160,18 +180,28 @@
 .gl-inbox .decide .hdr .gl-open-host { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 24px; margin-left: 10px; padding: 0 6px 0 10px;
   border-radius: 12px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-2); background: var(--fill-1); }
 .gl-inbox .decide .hdr .w + .gl-open-host { margin-left: auto; }
+/* the request's time, the disclosure and the footnote are text: --text-2 (--text-3 is under 4.5:1 on
+   the plane and on cards); --text-3 stays for icons and dots, which need 3:1 */
+:is(.gl-inbox, .cpage, .nt-chat-approval) .decide .hdr .tm { color: var(--text-2); }
 .gl-inbox .decide .hdr .gl-open-host:hover { color: var(--text-1); background: var(--fill-2); }
 .gl-inbox .decide .hdr .gl-open-host:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
 .gl-inbox .gl-decided { margin-top: 28px; }
 .gl-inbox .gl-blank.compact + .gl-decided { margin-top: 8px; }
+/* nothing waiting, but receipts from today: the empty state and the fold sit together in one centred
+   column (auto margins, so a long open list still scrolls from its top) */
+.ipage.gl-inbox > .gl-blank.compact { margin-top: auto; }
+.ipage.gl-inbox > .gl-blank.compact + .gl-decided { align-self: center; max-width: 520px; margin-bottom: auto; padding-bottom: 8vh;
+  display: flex; flex-direction: column; align-items: center; }
+.ipage.gl-inbox > .gl-blank.compact + .gl-decided > .gl-disclose { margin-left: 0; }
+.ipage.gl-inbox > .gl-blank.compact + .gl-decided > .receipts { align-self: stretch; }
 .gl-inbox .gl-disclose { display: inline-flex; align-items: center; gap: 6px; height: 24px; margin: 0 0 6px -2px; padding: 0 8px 0 4px; border-radius: 12px;
-  font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); background: transparent; }
-.gl-inbox .gl-disclose:hover { color: var(--text-2); background: var(--fill-1); }
+  font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); background: transparent; }
+.gl-inbox .gl-disclose:hover { color: var(--text-1); background: var(--fill-1); }
 .gl-inbox .gl-disclose:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
 .gl-inbox .gl-disclose .n { font-weight: 400; font-variant-numeric: tabular-nums; }
 .gl-inbox .gl-disclose .gl-chev { transition: transform var(--gl-dur) ease; }
 .gl-inbox .gl-disclose[aria-expanded="true"] .gl-chev { transform: rotate(90deg); }
-.gl-inbox .gl-foot { margin-top: 28px; }
+.gl-inbox .gl-foot { margin-top: 28px; color: var(--text-2); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .gl-note { border-radius: var(--gl-r-card); background: var(--gl-card); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .receipts { border-radius: var(--gl-r-card); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .rcpt + .rcpt { border-top: var(--gl-hair) solid var(--gl-sep); }
@@ -271,7 +301,6 @@
    ====================================================================================== */
 .ppage .gl-pair { max-width: 520px; margin: 0 auto; padding: 4vh 0 40px; }
 .gl-pair .steps4 { margin: 0 0 28px; }
-.gl-pair .gl-pair-step > .hd { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -.015em; }
 .gl-pair .gl-pair-d { margin-top: 6px; font-size: 13px; line-height: 20px; text-wrap: pretty; }
 .gl-pair .nt-code-input { max-width: none; margin-top: 24px; }
 .gl-pair .gl-pair-ticket { display: block; width: 100%; margin-top: 24px; }

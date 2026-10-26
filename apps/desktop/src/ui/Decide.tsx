@@ -139,18 +139,24 @@ export function DecisionCard({
   const command = commandOf(p.argsPreview);
   const { q, verb } = questionFor(p.tool);
   const danger = destructive(command);
-  const verbBtn = (
+  // On a Mac allowing is not possible here (no Touch ID approval yet): the allow button stays as a
+  // quiet, disabled outline that says why, and Deny becomes the card's one tinted action.
+  const verbBtn = canApprove ? (
     <button
       className={cx("btn", danger ? "danger" : "primary")}
-      disabled={!canApprove || approver !== "ready" || busy !== null}
+      disabled={approver !== "ready" || busy !== null}
       onClick={allow}
       title={approver === "ready" ? t("hello_first") : undefined}
     >
       {busy === "allow" ? t("approving") : verb}
     </button>
+  ) : (
+    <button className="btn gl-allow-off" disabled title={t("ap_mac_deny_only")}>
+      {verb}
+    </button>
   );
   const denyBtn = (
-    <button className="btn" disabled={busy !== null} onClick={() => void deny()}>
+    <button className={cx("btn", !canApprove && "primary")} disabled={busy !== null} onClick={() => void deny()}>
       {t("deny")}
       <span className="kbd">Esc</span>
     </button>
