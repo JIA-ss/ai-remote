@@ -135,3 +135,32 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr + .gr::before { height: var(--gl-hair); background: var(--gl-sep); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.pick:hover { background: var(--gl-hover); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.sel { background: var(--gl-sel-list); }
+
+/* ======================================================================================
+   Approvals: the waiting requests (one column), today's receipts folded below
+   ====================================================================================== */
+.ipage.gl-inbox > * { width: 100%; max-width: 760px; flex: none; }
+.ipage.gl-inbox > .gl-blank:not(.compact) { max-width: none; flex: 1 0 auto; }
+.gl-inbox .gl-note { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; padding: 10px 14px; border-radius: var(--r-card);
+  font-size: 13px; line-height: 20px; color: var(--text-2); background: var(--fill-1); }
+.gl-inbox .gl-note > :is(svg, .fi) { flex: none; margin-top: 2px; color: var(--text-3); }
+.gl-inbox .inbox-grid { margin-top: 0; row-gap: 16px; }
+.gl-inbox .decide .hdr .gl-open-host { flex: none; display: inline-flex; align-items: center; gap: 2px; height: 24px; margin-left: 10px; padding: 0 6px 0 10px;
+  border-radius: 12px; font: inherit; font-size: 12px; font-weight: 500; color: var(--text-2); background: var(--fill-1); }
+.gl-inbox .decide .hdr .w + .gl-open-host { margin-left: auto; }
+.gl-inbox .decide .hdr .gl-open-host:hover { color: var(--text-1); background: var(--fill-2); }
+.gl-inbox .decide .hdr .gl-open-host:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+.gl-inbox .gl-decided { margin-top: 28px; }
+.gl-inbox .gl-blank.compact + .gl-decided { margin-top: 8px; }
+.gl-inbox .gl-disclose { display: inline-flex; align-items: center; gap: 6px; height: 24px; margin: 0 0 6px -2px; padding: 0 8px 0 4px; border-radius: 12px;
+  font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); background: transparent; }
+.gl-inbox .gl-disclose:hover { color: var(--text-2); background: var(--fill-1); }
+.gl-inbox .gl-disclose:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.gl-inbox .gl-disclose .n { font-weight: 400; font-variant-numeric: tabular-nums; }
+.gl-inbox .gl-disclose .gl-chev { transition: transform var(--gl-dur) ease; }
+.gl-inbox .gl-disclose[aria-expanded="true"] .gl-chev { transform: rotate(90deg); }
+.gl-inbox .gl-foot { margin-top: 28px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .gl-note { border-radius: var(--gl-r-card); background: var(--gl-card); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .receipts { border-radius: var(--gl-r-card); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-inbox .rcpt + .rcpt { border-top: var(--gl-hair) solid var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.gl-inbox, .cpage) .decide { border-radius: var(--gl-r-card); }

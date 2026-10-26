@@ -45,6 +45,8 @@ export function DecisionCard({
   askedMs,
   onDone,
   escapeScope,
+  macNote = true,
+  aside,
 }: {
   p: PendingApproval;
   host: string;
@@ -55,6 +57,10 @@ export function DecisionCard({
   onDone?: (verdict: "allowed" | "denied") => void;
   /** Beside other interactive views, Esc belongs to this card only while it has the event or focus. */
   escapeScope?: React.RefObject<HTMLElement | null>;
+  /** The "this Mac can only deny" note; a page listing several cards says it once instead. */
+  macNote?: boolean;
+  /** Something at the end of the header, after the time (the approvals page's "Open {host}"). */
+  aside?: React.ReactNode;
 }) {
   const now = useNow(1000);
   const zh = currentLang() === "zh";
@@ -164,6 +170,7 @@ export function DecisionCard({
           {t("waiting_for_you")}
         </span>
         {askedMs && <span className="tm">{clock(askedMs)}</span>}
+        {aside}
       </div>
       <div className="who">
         <Actor who="agent" h={11} />
@@ -177,7 +184,7 @@ export function DecisionCard({
         </div>
       )}
       <Payload text={command} />
-      {!canApprove && <div className="prov"><Icon name="info" size={16} /><span>{t("approval_unavailable_mac")}</span></div>}
+      {!canApprove && macNote && <div className="prov"><Icon name="info" size={16} /><span>{t("approval_unavailable_mac")}</span></div>}
       {canApprove && approver === "none" && (
         <div className="prov">
           <Icon name="info" size={16} />
