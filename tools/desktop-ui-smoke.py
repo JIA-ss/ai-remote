@@ -78,7 +78,7 @@ parser.add_argument("--langs", default="zh,en")
 parser.add_argument("--themes", default="light,dark")
 parser.add_argument("--no-interactions", action="store_true", help="skip the navigation / reduced / sheet scenarios")
 parser.add_argument("--verbose", action="store_true", help="print every passing check too")
-parser.add_argument("--lint", nargs="+", type=Path, metavar="CSS", help="only lint these style sheets (no browser) and exit")
+parser.add_argument("--lint", nargs="*", type=Path, metavar="CSS", help="only lint these style sheets (default: the glass, workspace, claude, codex and app sheets) without a browser, and exit")
 args = parser.parse_args()
 
 # A fresh browser profile each run (Camofox keeps per-user storage between runs); deleted at the end.
@@ -706,8 +706,8 @@ def summary():
 
 
 def main():
-    if args.lint:
-        lint_styles(args.lint)
+    if args.lint is not None:
+        lint_styles(args.lint or LINTED)
         failed, line = summary()
         print(line)
         sys.exit(1 if failed else 0)
