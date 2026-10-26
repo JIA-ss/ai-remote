@@ -2,7 +2,7 @@
 // real key events (tools/win_input.py, asked for with "(action) input {...}" lines), so the input method composes
 // as it does for a person. Checks that Enter while composing only confirms the composition and never sends, that
 // a candidate picked with Space lands in the composer, and that Enter then sends it.
-//   E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --visible
+//   E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --native-input
 // It moves the mouse and types on that computer's real desktop, and switches the app window's keyboard layout to
 // Chinese (0804) and back to US English (0409) at the end.
 (async () => {

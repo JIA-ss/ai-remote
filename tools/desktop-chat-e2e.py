@@ -73,8 +73,8 @@ def outside_displays(geometry: dict) -> bool:
 
 
 SMOKE_INPUT_ISOLATION = r'''
-// Default smoke is driven by injected DOM events. An unrelated native click/key must not drive
-// this throwaway window; explicit --visible runs keep real input for the input-method tests.
+// Smoke is driven by injected DOM events. An unrelated native click/key must not drive this
+// throwaway window, visible or not; only --native-input runs (the input-method tests) keep real input.
 (() => {
   if (__ALLOW_NATIVE_INPUT__) return;
   const block = (event) => {
@@ -213,12 +213,15 @@ parser.add_argument("--cli", type=Path, default=ROOT / f"target/debug/ai-remote{
 parser.add_argument("--app", type=Path, default=ROOT / f"target/debug/ai-remote-desktop{EXE}")
 parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "desktop-chat-e2e")
 parser.add_argument("--verbose", action="store_true", help="print everything the app writes to stderr")
-parser.add_argument("--visible", action="store_true", help="show the app window and let it take focus (needed by "
-                    "scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js)")
+parser.add_argument("--visible", action="store_true", help="show the app window and let it take focus; real clicks and "
+                    "keys still do not reach the page (a stray click once navigated a run away mid-test)")
+parser.add_argument("--native-input", action="store_true", help="also let real mouse and key events reach the page; "
+                    "implies --visible (needed by scripts that type with real key events, such as tools/desktop-chat-e2e-ime.js)")
 parser.add_argument("--secs", type=int, default=300, help="give up after this long")
 parser.add_argument("--real", metavar="AGENT", help="drive a real agent installed on this Mac instead (its name as the "
                     "panel lists it, e.g. 'Claude Code'): a small file task, a / command, an image and a steer; uses its sign-in and quota")
 options = parser.parse_args()
+options.visible = options.visible or options.native_input
 
 RICH_AGENT = r'''
 import json, sys, threading
@@ -597,7 +600,7 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         driver_source = source.read_text(encoding="utf-8")
         if ci_layout:
             driver_source = ci_driver_source(driver_source)
-        script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.visible))
+        script.write_text(metadata + SMOKE_INPUT_ISOLATION.replace("__ALLOW_NATIVE_INPUT__", json.dumps(options.native_input))
                           + SMOKE_TRACE_UI + SMOKE_PREPARE_SHOT + (SMOKE_CI_CAPTURE_LAYOUT if ci_layout else "") + "\n" + driver_source
                           .replace("__CONFIG__", json.dumps({"work": str(work), "host": name, "agent": options.real,
                                                              "model": os.environ.get("E2E_MODEL")})), encoding="utf-8")

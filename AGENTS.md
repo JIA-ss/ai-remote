@@ -25,6 +25,35 @@
 - `skills/ai-remote/SKILL.md` 是给 agent 看的操作方法（会话起手、看 / 操作 / 命令 / 文件、级别与审批、拒绝提示对照、机主接管、
   命令行速查）。改工具参数、命令行选项或拒绝文案时同步改它；README 两种语言和 `docs/mcp-clients.md` 指向它。
 
+## 两台开发机装上 main `ccbcf37`，Windows 现场验收（2026-10-26）
+
+- **Mac**：`/Applications/ai-remote.app` 是 `ccbcf37` 的 release，本机自签名证书签名（另一会话 11:52 装的）；被控端装成用户级
+  LaunchAgent（安静 + 仅局域网）。新控制端到 win-dev 是 direct（P2P），`chat_runtimes` 可开、Claude Code 2.1.293 / Codex 0.162.1 已登录。
+  10-22 旧包备份在 `~/ai-remote-backups/ai-remote-2026-10-22.app`（不在仓库里）。
+- **win-dev 现场 e2e**（Windows 11，WebView2，debug `ccbcf37`，窗口在屏幕外、PrintWindow 截图，每套 1 次、第一遍就全过）：
+  Codex 替身 121/121、Claude 默认脚本 77/77、工作区 161/161、真实 Codex（0.162.1，ChatGPT 登录，`gpt-5.6-luna`）24/24。
+  这是合进 #43 / #50 之后第一次在 Windows 现场跑；之前 Windows 只有 CI（windows-2025）。`tools/windows.ps1 build` 出 release 和
+  msi / nsis 两个安装包用时约 16 分钟；安装包本身没装过。
+- **win-dev 服务换版**（服务 `ai-remote-host-cc166525`）：路径和参数不变（`host install --service --dry-run` 用新程序比对过，只有目录不同），
+  只原地覆盖 `ai-remote-svc-bin` 里的 `ai-remote.exe` 和 `ai-remote-hostw.exe`，防火墙规则照旧；旧版备份在 `ai-remote-svc-bin-backup-20261022`。
+  顺序：确认 runner 下没有智能体进程 → `sc stop` → 旧 runner 约 2 分钟后自己退出（没被控端连着、也没智能体）→ 覆盖 → `sc start`。
+  **runner 不会被新被控端换掉**（没有版本检查，新被控端会接上还在跑的旧 runner），所以换版前要等它下面的会话都 parked，
+  否则智能体还跑旧适配器。这次一开始有一个刚从 Mac 开的 Claude 会话占着 runner，等它自己 parked 才继续。
+  换后 `doctor` 全 ok，唯一 warn 是 bypass（Mac 控制端免审批，原有配置）；3 个 parked 会话都还在。服务停了约 2.5 分钟。
+- **win-dev 桌面端**：从构建目录复制到 `%USERPROFILE%\ai-remote-app`（不直接跑构建目录，免得重编时被覆盖），两个快捷方式改指过去；
+  旧桌面端关窗只是缩到托盘，要强制结束，它的 `ai-remote.exe agent` 不随之退出，用旧 CLI 的 `stop-agent` 停掉。
+- **"其他会话"落到设备页（Codex 一节里"没查清的偶发"）查清了，不是产品问题**：那次（`3e69f81`）调试窗口名义上在屏幕外、实际被
+  macOS 拉回屏幕内，测试以外的真实点击 / 鼠标侧键落进来，连按两次"返回"：会话页 → 电脑页 → 设备页（深链启动时历史只有一项，
+  返回走 `parentOf`）。证据是那次被控端日志结束前约 5 秒新开了一路 960×404 的流，只对得上电脑页概览的预览。路由只在 React
+  状态里，所以地址栏不变；`551:34` 是 e2e 第 13 步找不到聊天头的脚本异常，是结果。现在默认离屏的 e2e 已经忽略系统指针、在
+  document 捕获层丢掉 `isTrusted` 输入、窗口和任何显示器相交就判失败；剩下的口子是 `--visible` 也放行真实输入（PR #50 的最终 e2e
+  就是这样跑的）。本次把它拆开：`--visible` 只让窗口显示并可聚焦，真实输入照样拦；新的 `--native-input`（隐含 `--visible`）才放行，
+  输入法测试 `tools/desktop-chat-e2e-ime.js` 改用它。结论来自读代码 + 那一次的日志（对抗式复核两票都没推翻）；"外部输入"是推断，那次没有点击轨迹。
+- **模型芯片**：用户反馈"模型选择的按钮窗口没适配"——新建会话页的模型芯片弹的是一个光秃秃的输入框。PR #53（`fix/ws-model-menu`）
+  改成和智能体 / 权限芯片一样的菜单（NS-32"模型 · 仅本会话"：默认模型、Claude Code 的别名 Opus / Sonnet / Haiku、用过的模型、
+  底部输入框），Mac 真机导航 e2e 10/10、工作区 e2e 161/161。被控端上报的模型列表和 effort 档位由 `feat/ws-model-effort` 接在它上面，
+  一起随那条线的集成 PR 进 main。Codex 输入框的模型 / 推理强度芯片等那条线的协议说明。
+
 ## 当前交接状态（2026-10-24，P3 已合入）
 
 下方历史章节的“待测 / 未测”只对应当时基准；当前状态以本节为准，后续成功不追认旧失败根因，也不代表全部规格已经完成。
@@ -35,7 +64,7 @@
 - **Windows 最终实测与合入门槛**：Desktop/core `40024928040`、Native structured UI `40024928047` 两平台四项及独立 Windows 聊天 `40024928145` 全部成功。最终 Windows 合并树 `b3c4464` 的文件树等于 `35f54a3`；六套各两轮共 818/818 条功能断言通过，142 张新安全裁图独立逐张通过，全集、裁图 SHA 与尺寸末次复验一致。Win32 两探针也实际执行，Windows Python suite 23/23、无跳过；原 workflow 记录 `Ran 23 tests in 1.899s`、`OK`。Windows 原 PNG 下载数为 0，原图 SHA/尺寸仅 CI 记录，本地只复验裁图，不能写成本地复验原图。
 - **历史失败与未选证据**：旧 Windows `40012531342` 的 816/2、`613cedd` / `fe3f578` 的 `40018173520` 的 812/6 及各自独立 142 图视觉通过继续保留。更早 `f688335` core `40023600939` 被新35取代而取消，不记产品失败；native `40023600860` 成功，Windows `40023600928` 的成功仅作较早回退诊断，其 142 图未选未审，不混入最终集合。旧 `427cfec` / `613cedd` 本机与真实链路证据也按各自基准保留。
 - **合入后检查**：main push 生成 core `40029749650` / native `40029749530`；本交接稿形成时未取得终态，未纳入合入前五项成功证据，终态另看对应运行。本次交接文档将走独立 PR，也须等待自身两平台四项必需检查。
-- **安装与未测**：main `35f54a3` 尚待 Mac 与 Windows 开发机分别安装并确认，**本会话未安装 P3**。PR #50 另会话已有的 Mac release 安装记录完整保留，不当作本次 main35 已装。真实 Claude 未登录，Windows 现场、物理键鼠/IME/辅助技术、动画节拍与性能仍未测；本机只有 CLT，没有完整 Xcode。其余未实现的会话组织与长对话功能见两份工作区笔记。
+- **安装与未测**：main `35f54a3` 尚待 Mac 与 Windows 开发机分别安装并确认，**本会话未安装 P3**（2026-10-26 两台都已装上 `ccbcf37`，见上一节）。PR #50 另会话已有的 Mac release 安装记录完整保留，不当作本次 main35 已装。真实 Claude 未登录，Windows 现场、物理键鼠/IME/辅助技术、动画节拍与性能仍未测；本机只有 CLT，没有完整 Xcode。其余未实现的会话组织与长对话功能见两份工作区笔记。
 
 ## Windows 解码故障与批量验收精确化（2026-10-24，PR #48）
 
@@ -599,6 +628,7 @@ source map，用 prettier 展开后读：`split-items-into-render-groups`（一�
 - **没查清的偶发**：点 ⋯ →"其他会话"偶尔没有离开当前会话（面板还停在对话里，菜单已关）。替身 e2e 里见过 1 次（关查找栏之后），
   真实 Codex e2e 里 1 次（停止一轮之后）；之后写了专门的脚本反复"离开 → 重开"28 次（空闲、刚停止、刚关查找栏、刚截图）都没复现。
   两个 e2e 脚本在这一步都加了一次重试；原因待查（怀疑点击时菜单元素被重新渲染，点到了旧节点）。
+  **2026-10-26 查清**：落到设备页那次是测试以外的真实输入点进了实际在屏幕上的调试窗口，不是产品问题，见"两台开发机装上 main `ccbcf37`"一节。
 - 合并前做了一轮对抗式审查（3 个方向各自找问题、每条再由独立 agent 试图推翻），确认 16 项，全部修掉并补了单测或 e2e：
   非阻塞提问没人放行（见上）；请求 id 跨进程撞名导致新提问卡不出现、旧答案被改写（`question_done` 现在只改本轮，草稿和"已关闭"
   按轮次记）；正在输入框打字时卡片抢焦点、下一个数字键 / 回车替用户作答（卡片首次渲染时记下焦点，在输入框里就不抢；输入框被隐藏
@@ -1813,7 +1843,7 @@ NativeChatAutocompleteMenus、NativeChatFindBar、NativeChatSelectionQuote、Nat
 
 ### 真实中文输入法（2026-10-22，分支 `claude/ime-e2e`，基于 main 9933900）
 
-- **做法**：`E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --visible`。页面脚本发
+- **做法**：`E2E_SCRIPT=tools/desktop-chat-e2e-ime.js python tools/desktop-chat-e2e.py --native-input`（2026-10-26 前是 `--visible`）。页面脚本发
   `(action) input {...}` 行，脚本用 `tools/win_input.py`（ctypes `SendInput`）在真实桌面上点输入框、把焦点窗口的键盘布局切到
   0804、逐键敲 `nihao`、空格、回车，按键和人打字一样经过微软拼音。`--visible` 让调试版窗口显示并可聚焦（`lib.rs` 的 smoke 模式
   原来一律 `set_focusable(false)`，现在只在屏幕外时这样）。它会动那台电脑的鼠标、改焦点窗口的键盘布局（结束时切回 0409），
