@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import socket
 import subprocess
 import sys
 import tempfile
@@ -31,12 +32,21 @@ OUT.mkdir(parents=True, exist_ok=True)
 report = {'platform': sys.platform, 'model_calls': 0, 'targeting': 'native_elements', 'result': 'running'}
 
 
+def free_udp_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(('0.0.0.0', 0))
+        return s.getsockname()[1]
+
+
 def quiet_profiles(*homes):
+    # Quiet and Local network only (no relay, no address lookup): nothing outside this machine is
+    # contacted. A host listens on a free UDP port, not 47800 (an installed host may hold it).
     for home in homes:
         for role in ('host', 'controller'):
             directory = home / role
             directory.mkdir(parents=True, exist_ok=True)
-            (directory / 'ai-remote.toml').write_bytes(b'[network]\nquiet = true\n')
+            port = f'port = {free_udp_port()}\n' if role == 'host' else ''
+            (directory / 'ai-remote.toml').write_bytes(f'[network]\nquiet = true\nmode = "lan"\n{port}'.encode())
 
 
 def command(home, *args):
