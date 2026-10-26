@@ -307,6 +307,22 @@ export const en = {
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
+  st_me_d: "{os} · the name your paired computers see",
+  st_perm_ok: "All good",
+  st_perm_rest: "{n} more are fine",
+  st_rules_t: "Rules file",
+  st_autostart_t: "Autostart entry",
+  st_sc_handback: "Hand back control",
+  st_cmd_t: "Setup command",
+  st_cmd_d_mac: "Copy it, then paste it into Terminal on this Mac.",
+  st_cmd_d_win: "Copy it, then paste it into PowerShell on this computer.",
+  st_cfg_t: "MCP configuration",
+  st_cfg_d: "Copy it into the client's configuration, adding or updating only the ai-remote entry.",
+  st_copy_cmd: "Copy command",
+  st_copy_cfg: "Copy configuration",
+  st_manual: "Set up by hand",
+  st_manual_d: "The full command and configuration",
+  st_ap_hosts_h: "Computers",
   // glass: settings end
 
   // glass: overlays (add keys below, above its end marker)

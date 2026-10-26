@@ -309,6 +309,22 @@ export const zh: Record<keyof typeof en, string> = {
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
+  st_me_d: "{os} · 已配对的电脑看到的就是这个名字",
+  st_perm_ok: "全部正常",
+  st_perm_rest: "另外 {n} 项正常",
+  st_rules_t: "规则文件",
+  st_autostart_t: "自启项",
+  st_sc_handback: "交还控制",
+  st_cmd_t: "添加命令",
+  st_cmd_d_mac: "复制后，粘贴到这台 Mac 的终端里运行。",
+  st_cmd_d_win: "复制后，粘贴到这台电脑的 PowerShell 里运行。",
+  st_cfg_t: "MCP 配置",
+  st_cfg_d: "复制后合并到客户端的配置里，只添加或更新 ai-remote 这一项。",
+  st_copy_cmd: "复制命令",
+  st_copy_cfg: "复制配置",
+  st_manual: "手动设置",
+  st_manual_d: "完整的命令和配置",
+  st_ap_hosts_h: "各台电脑",
   // glass: settings end
 
   // glass: overlays (add keys below, above its end marker)
