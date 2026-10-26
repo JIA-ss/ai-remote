@@ -1,1 +1,137 @@
-/* glass: Settings inside the shell (sections, rows, the enable dialog). Owned by the settings package; empty in the foundation. */
+/* glass: Settings inside the shell (sections, rows, the enable dialog). Owned by the settings package.
+
+   Everything is scoped to the settings page (.spage.gl-st): the same .grp / .gr classes are drawn
+   by other pages, which other packages own.
+
+   Two kinds of rule:
+   - layout and type (any material): one centred 720 px column under the toolbar, headings, notes and
+     row geometry. Secondary text uses --text-2, not --text-3: on the translucent content plane
+     --text-3 measures about 2.7-4.1:1 (derived with the WCAG formula against the bounding material
+     colours, as in tokens.css), under the 4.5:1 that 12 px text needs; --text-2 stays at 4.6:1 or
+     more on the plane and on cards in both themes;
+   - paint of controls (material on only): capsule buttons, the macOS switch and the small radio /
+     check. With data-material="none" the controls keep today's opaque look.
+   Cards get their tint from surfaces.css (--gl-card); nothing here blurs, and no card holds a card. */
+
+/* ---- the column: centred and at most 720 px wide, while the page itself stays the scroller so
+   the scrollbar sits at the window's edge ---- */
+.gl-main > .nt-content > .spage.gl-st {
+  max-width: none;
+  padding-left: max(32px, calc((100% - 720px) / 2));
+  padding-right: max(32px, calc((100% - 720px) / 2));
+  padding-bottom: 48px;
+}
+.spage.gl-st > .gl-lede { margin: 0 0 20px; max-width: 640px; font-size: 13px; line-height: 20px; color: var(--text-2); }
+
+/* ---- groups: a heading outside the card, one card, a note under it ---- */
+.spage.gl-st .grp { margin: 0; border-radius: var(--gl-r-card); }
+.spage.gl-st .grp + .grp { margin-top: 16px; }
+.spage.gl-st .grp-h {
+  display: flex; align-items: center; gap: 8px; min-height: 16px; margin: 28px 4px 8px;
+  font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0; color: var(--text-2);
+}
+.spage.gl-st > :is(.gl-lede + .grp-h, .grp-h:first-child) { margin-top: 0; }
+.spage.gl-st .grp-h .btn.icon { width: 24px; height: 24px; margin: -4px 0 -4px auto; padding: 0; border-radius: 12px; background: transparent; box-shadow: none; color: var(--text-2); }
+.spage.gl-st .grp-h .btn.icon:not(:disabled):hover { background: var(--gl-hover); color: var(--text-1); }
+.spage.gl-st .grp-sub { margin: -2px 4px 8px; max-width: 640px; font-size: 12px; line-height: 17px; color: var(--text-2); }
+.spage.gl-st .gnote { margin: 8px 4px 0; max-width: 640px; font-size: 12px; line-height: 17px; color: var(--text-2); }
+.spage.gl-st :is(.grp-h, .grp-sub) + .gnote { margin-top: 0; }
+.spage.gl-st .gnote.c-danger { color: var(--danger); }
+
+/* ---- rows: icon tile, title and description, the control at the end; hairlines between rows
+   start where the text starts ---- */
+.spage.gl-st .gr { grid-template-columns: 28px minmax(0, 1fr) auto; column-gap: 12px; min-height: 44px; padding: 8px 14px; }
+.spage.gl-st .gr:has(.ds) { min-height: 52px; }
+.spage.gl-st .gr.noic { grid-template-columns: minmax(0, 1fr) auto; }
+.spage.gl-st .gr .ic { width: 28px; height: 28px; border-radius: var(--gl-r-tile); color: var(--text-2); }
+.spage.gl-st .gr .ic.bare { background: transparent; }
+.spage.gl-st .gr .tt { font-size: 13px; line-height: 18px; color: var(--text-1); }
+.spage.gl-st .gr .ds { margin-top: 1px; font-size: 12px; line-height: 16px; color: var(--text-2); }
+.spage.gl-st .gr .ds .mono { font-size: 12px; line-height: 16px; }
+.spage.gl-st .gr .end { gap: 8px; }
+.spage.gl-st .gr .end:empty { display: none; }
+.spage.gl-st .gr + .gr::before { left: 54px; right: 14px; height: var(--gl-hair); background: var(--gl-sep); }
+.spage.gl-st .gr.noic::before { left: 14px; }
+.spage.gl-st .gl-st-val { font-size: 12px; line-height: 16px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.spage.gl-st .gl-st-extra { margin-top: 2px; }
+.spage.gl-st .gl-st-busy { margin-top: 4px; color: var(--text-1); }
+/* an identity row (this device, the app): its name reads as the group's title */
+.spage.gl-st .gl-st-me > .gr:first-child .tt { font-weight: 600; }
+.spage.gl-st .gl-st-me > .gr:first-child .ic { color: var(--text-1); }
+
+/* a connected agent: "online" after its name */
+.spage.gl-st .gl-st-online { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; vertical-align: 1px; font-size: 12px; line-height: 16px; font-weight: 400; color: var(--text-2); }
+.spage.gl-st .gl-st-online > i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+
+/* ---- a row that folds what follows it (passing checks, the manual agent setup) ---- */
+.spage.gl-st button.gr.gl-st-more {
+  width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  font: inherit; color: inherit; text-align: left;
+}
+.spage.gl-st .gl-st-more .gl-st-tx { display: block; min-width: 0; }
+.spage.gl-st .gl-st-more :is(.tt, .ds) { display: block; }
+.spage.gl-st .gl-st-more .end { color: var(--text-2); }
+.spage.gl-st .gl-st-more .end > * { transition: transform var(--gl-dur) var(--gl-ease); }
+.spage.gl-st .gl-st-more[aria-expanded="true"] .end > * { transform: rotate(90deg); }
+.spage.gl-st .gl-st-more:hover { background: var(--gl-hover); }
+.spage.gl-st .gl-st-more:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+/* the manual setup under its row: lined up with the row's text, the commands as wells */
+.spage.gl-st .gl-st-manual { display: grid; gap: 8px; padding: 0 14px 14px 54px; }
+.spage.gl-st .gl-st-manual .ds { font-size: 12px; line-height: 16px; color: var(--text-2); }
+.spage.gl-st .gl-st-manual .ds + .cmdline { margin-top: -2px; }
+.spage.gl-st .gl-st-manual .cmdline .mono { font-size: 12px; }
+
+/* ---- keyboard shortcuts: compact rows, the keys as small keycaps ---- */
+.spage.gl-st .gl-st-keys .gr { min-height: 36px; padding-top: 6px; padding-bottom: 6px; }
+.spage.gl-st .gl-st-keys .gr:has(.ds) { min-height: 52px; }
+.spage.gl-st .gl-st-keys .end { gap: 4px; }
+.spage.gl-st kbd.kbd {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 20px; padding: 0 6px;
+  border-radius: 5px; font: 500 12px/1 var(--font-text); color: var(--text-1);
+  background: var(--fill-1); box-shadow: inset 0 0 0 var(--gl-hair) var(--stroke-2);
+}
+:root[data-os="windows"] .spage.gl-st kbd.kbd { border-radius: 3px; }
+
+/* ---- the audit log: one line per entry, time first ---- */
+.spage.gl-st .gl-st-log .gr { min-height: 36px; padding: 8px 14px; }
+.spage.gl-st .gl-st-logline { display: flex; align-items: baseline; gap: 12px; min-width: 0; font-size: 12px; line-height: 18px; }
+.spage.gl-st .gl-st-logline > .mono { flex: none; font-size: 12px; line-height: 18px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.spage.gl-st .gl-st-logline > .ell { color: var(--text-1); }
+
+/* ---- selects at the end of a row ---- */
+.spage.gl-st .dd-wrap select.dd { height: 28px; padding: 0 28px 0 10px; border-radius: var(--gl-r-field); font-size: 13px; color: var(--text-1); }
+.spage.gl-st .dd-wrap > :is(svg, .fi, .lucide) { right: 10px; }
+.spage.gl-st .dd-wrap select.dd:disabled { opacity: .45; }
+
+/* ---- controls with the material on (D.5): capsule buttons, a macOS switch, small radio / check ---- */
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn {
+  height: 28px; padding: 0 12px; gap: 6px; border-radius: var(--gl-r-btn);
+  font-size: 13px; font-weight: 500; color: var(--text-1); background: rgb(255 255 255 / .10); box-shadow: none;
+}
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .spage.gl-st .btn { background: rgb(0 0 0 / .06); }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn:not(:disabled):hover { background: rgb(255 255 255 / .14); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .spage.gl-st .btn:not(:disabled):hover { background: rgb(0 0 0 / .09); }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn:not(:disabled):active { background: rgb(255 255 255 / .18); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .spage.gl-st .btn:not(:disabled):active { background: rgb(0 0 0 / .12); }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn.primary,
+:root:is([data-material="native"], [data-material="preview"])[data-theme] .spage.gl-st .btn.primary { color: var(--agent-on); font-weight: 600; background: var(--agent); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme] .spage.gl-st .btn.primary:not(:disabled):hover { background: color-mix(in srgb, var(--agent) 88%, #000); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme] .spage.gl-st .btn.primary:not(:disabled):active { background: color-mix(in srgb, var(--agent) 80%, #000); }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn:disabled { opacity: .4; }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .btn.icon { width: 28px; padding: 0; }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .grp-h .btn.icon { width: 24px; height: 24px; background: transparent; }
+:root:is([data-material="native"], [data-material="preview"]) .spage.gl-st .dd-wrap select.dd:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--agent), 0 0 0 3px color-mix(in srgb, var(--agent) 30%, transparent);
+}
+
+/* macOS: a 36 x 20 switch with a white knob; Windows keeps the Fluent outline switch */
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st .switch { width: 36px; height: 20px; border-radius: 10px; background: rgb(255 255 255 / .20); box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"][data-theme="light"] .spage.gl-st .switch { background: rgb(0 0 0 / .14); }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st .switch::after {
+  left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 8px; background: #FFFFFF;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .25), 0 0 0 .5px rgb(0 0 0 / .04); transition: left var(--dur-small) ease;
+}
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st .switch.on { background: var(--agent); }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st .switch.on::after { left: 18px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st :is(.radio, .check) { width: 16px; height: 16px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .spage.gl-st .radio.on::after { inset: 5px; }
