@@ -50,6 +50,9 @@
 .devices-page .gl-attn-l2 { font-size: 12px; line-height: 16px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .devices-page .gl-attn-go { flex: none; display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 8px; font-size: 13px; font-weight: 500; color: var(--you-text); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .gl-attn { border-radius: var(--gl-r-card); }
+/* amber text on the light plane: --you-text measures about 3:1 there; a darker mix keeps 13 px
+   text above 4.5:1 on the amber tint and on white cards (derived with the WCAG formula, not measured) */
+:root[data-theme="light"] .devices-page :is(.gl-attn-go, .device-card-agent.you) { color: color-mix(in srgb, var(--you-text) 72%, #000); }
 
 /* cards: name, OS, a status pill, the status sentence, at most two facts, two actions */
 .devices-page .device-grid { gap: 12px; }
