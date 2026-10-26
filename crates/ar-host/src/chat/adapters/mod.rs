@@ -40,6 +40,13 @@ pub enum LiveCmd {
     Permit { rid: String, decision: Decision, message: Option<String>, mode: Option<String> },
     /// Switch the permission mode (Claude Code only; the session refuses it for other agents).
     SetMode { mode: String },
+    /// Use this model and effort level from now on (`None`: the agent's default). Claude Code
+    /// switches models with `set_model` and answers [`Out::ModelSet`] or a `model_rejected`
+    /// notice; Codex sends them with every `turn/start`. Sent only where the running process can
+    /// take the change (see the session's `set_model`).
+    ///
+    /// [`Out::ModelSet`]: super::event::Out::ModelSet
+    SetModel { model: Option<String>, effort: Option<String> },
     /// Ask the agent for a title for the conversation that starts with `description` (Claude Code
     /// only; others ignore it). Answered with a `title` event, or not at all.
     GenerateTitle { description: String },
@@ -58,6 +65,8 @@ pub struct Launch<'a> {
     pub resume: Option<&'a str>,
     /// Claude Code's permission mode (see [`PERMISSION_MODES`]); `None` is `bypassPermissions`.
     pub permission_mode: Option<&'a str>,
+    /// The effort level (Claude Code's `--effort`, Codex's `effort`); `None`: the agent's default.
+    pub effort: Option<&'a str>,
 }
 
 /// What a person decided about a permission or a plan.
@@ -114,6 +123,7 @@ pub fn launch(l: Launch<'_>) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
             let opts = codex::Opts {
                 cwd: l.cwd.display().to_string(),
                 model: l.model.map(str::to_string),
+                effort: l.effort.map(str::to_string),
                 resume: l.resume.map(str::to_string),
             };
             tokio::spawn(codex::run(proc, lines, cmds, out_tx, name, opts));

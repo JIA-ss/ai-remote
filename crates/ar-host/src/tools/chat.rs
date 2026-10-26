@@ -129,6 +129,10 @@ struct StartParams {
     /// A model the agent should use instead of its default.
     #[serde(default)]
     model: Option<String>,
+    /// The effort level instead of the agent's default (Claude Code: low, medium, high, xhigh,
+    /// max; Codex: what its model list offers). The session's `models` say which a model takes.
+    #[serde(default)]
+    effort: Option<String>,
     /// Ignore the folder's own agent settings, hooks and MCP servers where the agent supports it.
     #[serde(default)]
     hardened: bool,
@@ -176,7 +180,16 @@ impl Tool for Start {
         let chat = ctx
             .host
             .chat()
-            .start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt, p.permission_mode)
+            .start(
+                ctx.session.peer.clone(),
+                &p.runtime,
+                &p.cwd,
+                p.model,
+                p.hardened,
+                p.prompt,
+                p.permission_mode,
+                p.effort,
+            )
             .await?;
         let ticket = ctx.host.chat().issue_ticket(&chat.id, ctx.session.peer.principal.clone(), Role::Rw);
         let mut v = chat.describe();
