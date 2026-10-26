@@ -147,6 +147,51 @@ pub struct SlashCommand {
     pub hint: Option<String>,
 }
 
+/// A model an agent offers (see [`Ev::Models`]), for the model menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// What the agent takes as the model (`--model` for Claude Code, `turn/start` for Codex).
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The effort levels the model takes, lowest first (none: it takes no effort level).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    /// The level it uses when none is chosen, when the agent says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// The model the agent uses when none is chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+/// Most models kept in a list (the list also goes into a session's hello line, which older
+/// controllers read up to 64 KiB), and characters of a description.
+pub const MAX_MODELS: usize = 40;
+pub const MODEL_DESCRIPTION: usize = 240;
+
+impl ModelInfo {
+    /// A model as an agent lists it, with its text cut to size.
+    pub fn new(id: &str, name: &str, description: Option<&str>) -> Self {
+        let description = description.map(str::trim).filter(|d| !d.is_empty()).map(|d| {
+            match d.char_indices().nth(MODEL_DESCRIPTION) {
+                Some((at, _)) => format!("{}…", &d[..at]),
+                None => d.to_string(),
+            }
+        });
+        let name = if name.trim().is_empty() { id } else { name.trim() };
+        Self {
+            id: id.to_string(),
+            name: name.chars().take(120).collect(),
+            description,
+            efforts: Vec::new(),
+            default_effort: None,
+            default: false,
+        }
+    }
+}
+
 /// Most characters of a command's description kept.
 pub const COMMAND_DESCRIPTION: usize = 240;
 /// Most commands kept in a list.
@@ -400,6 +445,17 @@ pub enum Ev {
     Commands {
         commands: Vec<SlashCommand>,
     },
+    /// The models the agent offers now (all of them; the list replaces the last one).
+    Models {
+        models: Vec<ModelInfo>,
+    },
+    /// The model and effort level the session uses now (`null`: the agent's default). Later
+    /// messages run with them; Claude Code takes a new effort level by restarting (it resumes the
+    /// conversation) once nothing runs.
+    Model {
+        model: Option<String>,
+        effort: Option<String>,
+    },
     /// Something the user should know that is not part of the conversation. `input_id` names the
     /// message it is about when it is about one (a message dropped because the queue was full).
     Notice {
@@ -447,6 +503,11 @@ pub enum Out {
         final_text: Option<String>,
         reason: Option<String>,
     },
+    /// The agent switched to this model (and effort level) as the session asked.
+    ModelSet {
+        model: Option<String>,
+        effort: Option<String>,
+    },
     /// The agent process ended or its protocol broke; the adapter is done.
     Exited(String),
     /// The runner's number of the last output passed on before this one: the session records it
@@ -487,6 +548,7 @@ const NOTICE_WORDS: &[&str] = &[
     "steer_queued",
     "mode_rejected",
     "permission_expired",
+    "model_rejected",
 ];
 
 fn static_str<'de, D: Deserializer<'de>>(d: D) -> Result<&'static str, D::Error> {

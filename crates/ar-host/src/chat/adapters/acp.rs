@@ -16,6 +16,8 @@
 //!   `session/resume` (DeepSeek Harness) continues without replaying and is preferred.
 //! - A model is chosen with the session's `model` config option when the agent lists one
 //!   (`session/set_config_option`, matched by value or name), otherwise with `session/set_model`.
+//!   The option's choices are reported as the session's models (the one set when the session came
+//!   up is the default); a model chosen later is set the same way. Effort levels are not offered.
 //! - Images go in the prompt as `image` blocks when the agent says it takes them
 //!   (`promptCapabilities.image`); otherwise they are left out with a notice, and the session
 //!   tells viewers (`agent` event) so the composer stops offering them.
@@ -35,11 +37,12 @@ use super::{LiveCmd, content_text, exit_reason, report};
 use crate::chat::{
     Image,
     event::{
-        DIFF_SIDE, Ev, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus, TurnStatus, cut,
-        preview_value,
+        DIFF_SIDE, Ev, MAX_MODELS, ModelInfo, Out, PREVIEW, PlanEntry, SlashCommand, ToolContent, ToolKind, ToolStatus,
+        TurnStatus, cut, preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
+    valid_token,
 };
 
 pub struct Opts {
@@ -83,6 +86,10 @@ struct State {
     segment: u32,
     cancelling: bool,
     permissions: Vec<Value>,
+    /// The session's answer (its `configOptions`), kept to choose another model later.
+    config: Option<Value>,
+    /// The model option's value when the session came up: the agent's own choice.
+    default_model: Option<String>,
 }
 
 impl State {
@@ -208,6 +215,18 @@ pub async fn run(
                 }
                 // Permissions, modes and titles are Claude Code's; nothing asks for them here.
                 Some(LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. }) => {}
+                Some(LiveCmd::SetModel { model, .. }) => {
+                    for o in switch_model(&mut st, model, &name) {
+                        match o {
+                            Ok(line) => {
+                                let _ = proc.write_line(line).await;
+                            }
+                            Err(o) => {
+                                report(&out, o).await;
+                            }
+                        }
+                    }
+                }
                 Some(LiveCmd::Steer { id, .. }) => {
                     // ACP has no way to add to a running prompt turn.
                     report(&out, Out::SteerRejected { id, reason: "the protocol has no way to add to a running turn".into() }).await;
@@ -228,6 +247,84 @@ pub async fn run(
 
 fn session_new(st: &mut State, opts: &Opts) -> String {
     st.request("session/new", json!({"cwd": opts.cwd, "mcpServers": []}), Pending::Session { continuing: false })
+}
+
+/// The model config option of a session's answer and its choices (flat or in groups).
+fn model_choices(r: &Value) -> Option<(&Value, Vec<&Value>)> {
+    let opt = r["configOptions"].as_array()?.iter().find(|o| o["category"] == "model" || o["id"] == "model")?;
+    let choices = opt["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|o| match o["options"].as_array() {
+            Some(group) => group.iter().collect::<Vec<_>>(),
+            None => vec![o],
+        })
+        .collect();
+    Some((opt, choices))
+}
+
+/// The models a session's model option offers: each by the name `select_model` takes (its value,
+/// or the last part of an opaque value such as `["provider","model"]`, or its name), the current
+/// one marked default.
+pub fn models(r: &Value) -> Vec<ModelInfo> {
+    let Some((opt, choices)) = model_choices(r) else { return Vec::new() };
+    choices
+        .iter()
+        .filter_map(|c| {
+            let value = c["value"].as_str()?;
+            let last = serde_json::from_str::<Vec<String>>(value).ok().and_then(|v| v.last().cloned());
+            let id = Some(value.to_string())
+                .filter(|v| valid_token(v))
+                .or(last.filter(|v| valid_token(v)))
+                .or(c["name"].as_str().filter(|n| valid_token(n)).map(str::to_string))?;
+            let mut info = ModelInfo::new(&id, c["name"].as_str().unwrap_or(&id), c["description"].as_str());
+            info.default = opt["currentValue"] == value;
+            Some(info)
+        })
+        .take(MAX_MODELS)
+        .collect()
+}
+
+/// Another model for the running session (`None`: the one it came up with): the request to write
+/// and what to report, in order.
+fn switch_model(st: &mut State, model: Option<String>, name: &str) -> Vec<Result<String, Out>> {
+    let (Some(session), Some(r)) = (st.session.clone(), st.config.clone()) else {
+        return vec![Err(model_rejected(format!("{name} is not ready to switch models yet")))];
+    };
+    let Some(want) = model.clone().or_else(|| st.default_model.clone()) else {
+        return vec![Err(Out::ModelSet { model, effort: None })];
+    };
+    match select_model(st, &session, &r, &want) {
+        Ok(line) => {
+            note_value(st, &line);
+            vec![Ok(line), Err(Out::ModelSet { model, effort: None })]
+        }
+        Err(why) if why.is_empty() => vec![Err(Out::ModelSet { model, effort: None })],
+        Err(why) => vec![Err(model_rejected(format!("{name} has no model '{want}' ({why})")))],
+    }
+}
+
+/// Records the value a `session/set_config_option` request sets, so the next switch compares
+/// with it.
+fn note_value(st: &mut State, line: &str) {
+    let Some(value) =
+        serde_json::from_str::<Value>(line).ok().and_then(|v| v["params"]["value"].as_str().map(str::to_string))
+    else {
+        return;
+    };
+    if let Some(opt) = st
+        .config
+        .as_mut()
+        .and_then(|c| c["configOptions"].as_array_mut())
+        .and_then(|o| o.iter_mut().find(|o| o["category"] == "model" || o["id"] == "model"))
+    {
+        opt["currentValue"] = json!(value);
+    }
+}
+
+fn model_rejected(text: String) -> Out {
+    Out::Ev(Ev::Notice { input_id: None, level: "warn", code: "model_rejected", text })
 }
 
 /// The request that selects `model`: the `model` config option's matching value when the agent
@@ -328,9 +425,17 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                         ));
                     }
                 }
+                // The model choice, for the menu and for choosing another one later.
+                st.default_model =
+                    model_choices(&r).and_then(|(opt, _)| opt["currentValue"].as_str().map(str::to_string));
+                let offered = models(&r);
+                st.config = Some(r.clone());
                 if let Some(model) = &opts.model {
                     match select_model(st, &session, &r, model) {
-                        Ok(w) => writes.push(w),
+                        Ok(w) => {
+                            note_value(st, &w);
+                            writes.push(w)
+                        }
                         Err(why) if why.is_empty() => {}
                         Err(why) => outs.push(Out::Ev(Ev::Notice {
                             input_id: None,
@@ -342,6 +447,9 @@ fn handle(st: &mut State, line: &str, opts: &Opts, name: &str) -> (Vec<String>, 
                 }
                 st.ready = true;
                 outs.push(Out::Session(session));
+                if !offered.is_empty() {
+                    outs.push(Out::Ev(Ev::Models { models: offered }));
+                }
                 while let Some((text, images)) = st.waiting.pop_front() {
                     let (line, dropped) = st.prompt(&text, &images);
                     outs.extend(dropped);
@@ -803,5 +911,34 @@ mod tests {
         let (p, dropped) = st.prompt("see", &[img()]);
         assert!(!p.contains("image/png"));
         assert!(matches!(dropped, Some(Out::Ev(Ev::Notice { code: "no_images", .. }))));
+    }
+
+    #[test]
+    fn a_model_option_is_offered_and_switched_while_the_session_runs() {
+        let o = Opts { cwd: "/w".into(), resume: None, auto_mode: None, model: None };
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        let (w, _) = handle(&mut st, r#"{"id":1,"result":{"agentCapabilities":{}}}"#, &o, "Agent");
+        assert!(w[0].contains("session/new"));
+        let new = r#"{"id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","category":"model","currentValue":"[\"p\",\"pro\"]","options":[{"value":"[\"p\",\"pro\"]","name":"pro","description":"Strong"},{"value":"[\"p\",\"flash\"]","name":"flash"}]}]}}"#;
+        let (_, outs) = handle(&mut st, new, &o, "Agent");
+        let Some(Out::Ev(Ev::Models { models })) = outs.iter().find(|o| matches!(o, Out::Ev(Ev::Models { .. }))) else {
+            panic!("{outs:?}")
+        };
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["pro", "flash"]);
+        assert!(
+            models[0].default && models[0].description.as_deref() == Some("Strong") && models[0].efforts.is_empty()
+        );
+        // Another model: set, then reported; the same one again needs no request.
+        let r = switch_model(&mut st, Some("flash".into()), "Agent");
+        assert!(matches!(&r[0], Ok(l) if l.contains("session/set_config_option") && l.contains("flash")), "{r:?}");
+        assert!(matches!(&r[1], Err(Out::ModelSet { model: Some(m), .. }) if m == "flash"));
+        let r = switch_model(&mut st, Some("flash".into()), "Agent");
+        assert!(matches!(&r[..], [Err(Out::ModelSet { .. })]), "{r:?}");
+        // Back to the agent's own, and one it does not have.
+        let r = switch_model(&mut st, None, "Agent");
+        assert!(matches!(&r[0], Ok(l) if l.contains(r#"\"pro\"]"#)), "{r:?}");
+        let r = switch_model(&mut st, Some("nope".into()), "Agent");
+        assert!(matches!(&r[..], [Err(Out::Ev(Ev::Notice { code: "model_rejected", .. }))]), "{r:?}");
     }
 }

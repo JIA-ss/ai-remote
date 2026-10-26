@@ -42,6 +42,15 @@
 //!   was started in that turn; terminals of earlier turns (a dev server the user asked for) stay.
 //!   Both methods are experimental (0.150 has them, 0.137 does not): `initialize` opts in with
 //!   `experimentalApi`, and a Codex without them leaves its commands running as before.
+//! - Models: `model/list` once the thread is up (`data: [{id, displayName, description, isDefault,
+//!   hidden, defaultReasoningEffort, supportedReasoningEfforts: [{reasoningEffort}]}]`, measured
+//!   with 0.163) becomes a `models` event, hidden models left out. `thread/start` and
+//!   `thread/resume` take a model but no effort level; `turn/start` takes both for that turn and
+//!   the ones after it, and `null` keeps what the thread had. So a turn carries the model and level
+//!   the session chose (a chosen model without a level gets its own default level, not the last
+//!   model's); going back to the default after a turn carried a choice sends the default's model
+//!   and level explicitly (the thread's own, as `thread/start` reported them, else the list's
+//!   default).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -52,16 +61,18 @@ use super::{LiveCmd, exit_reason, report};
 use crate::chat::{
     Image,
     event::{
-        DIFF_SIDE, DIFF_TOTAL, Ev, Hunk, MAX_HUNKS, Out, PREVIEW, PlanEntry, SlashCommand, TURN_DIFF, ToolContent,
-        ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, DIFF_TOTAL, Ev, Hunk, MAX_HUNKS, MAX_MODELS, ModelInfo, Out, PREVIEW, PlanEntry, SlashCommand,
+        TURN_DIFF, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
     },
     jsonrpc::{self, Incoming},
     proc::{AgentProc, Line},
+    valid_effort, valid_token,
 };
 
 pub struct Opts {
     pub cwd: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub resume: Option<String>,
     /// `resume` is a thread to fork (`thread/fork`: a new thread with its turns), not to continue.
     pub fork: bool,
@@ -111,6 +122,7 @@ enum Pending {
         id: String,
     },
     Skills,
+    Models,
     /// The background terminals, listed to stop those started by these command items.
     Terminals {
         items: HashSet<String>,
@@ -152,6 +164,63 @@ struct State {
     phases: HashMap<String, String>,
     /// The running turn's whole diff as Codex last reported it (`turn/diff/updated`); sent as the turn ends.
     turn_diff: Option<String>,
+    /// The model and effort level the session chose (`None`: the default), sent with turns.
+    model: Option<String>,
+    effort: Option<String>,
+    /// What Codex offers (`model/list`).
+    models: Vec<ModelInfo>,
+    /// The model and level the thread had of its own (no model asked for at its start), as
+    /// `thread/start` or `thread/resume` reported them: the default to go back to.
+    base: Option<(String, Option<String>)>,
+    /// A turn carried a model or level: Codex keeps it, so the default has to be sent explicitly.
+    overridden: bool,
+}
+
+/// The model and effort level a turn carries (see the module notes): the chosen ones; for a model
+/// chosen without a level, that model's default level; after a choice, the default's own.
+fn turn_settings(st: &State) -> (Option<String>, Option<String>) {
+    let default_model = || {
+        st.base.as_ref().map(|(m, _)| m.clone()).or_else(|| st.models.iter().find(|m| m.default).map(|m| m.id.clone()))
+    };
+    let model = st.model.clone().or_else(|| st.overridden.then(default_model).flatten());
+    let level_of = |m: &str| {
+        st.base
+            .as_ref()
+            .filter(|(b, e)| b == m && e.is_some() && st.model.is_none())
+            .and_then(|(_, e)| e.clone())
+            .or_else(|| st.models.iter().find(|x| x.id == m).and_then(|x| x.default_effort.clone()))
+    };
+    let effort = st
+        .effort
+        .clone()
+        .or_else(|| model.as_deref().filter(|_| st.model.is_some() || st.overridden).and_then(level_of));
+    (model, effort)
+}
+
+/// The models of a `model/list` answer, hidden ones left out.
+pub fn models(r: &Value) -> Vec<ModelInfo> {
+    r["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["hidden"].as_bool() != Some(true))
+        .filter_map(|m| {
+            let id = m["id"].as_str().or(m["model"].as_str()).filter(|id| valid_token(id))?;
+            let mut info = ModelInfo::new(id, m["displayName"].as_str().unwrap_or(id), m["description"].as_str());
+            info.efforts = m["supportedReasoningEfforts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| {
+                    e["reasoningEffort"].as_str().or(e.as_str()).filter(|e| valid_effort(e)).map(str::to_string)
+                })
+                .collect();
+            info.default_effort = m["defaultReasoningEffort"].as_str().filter(|e| valid_effort(e)).map(str::to_string);
+            info.default = m["isDefault"].as_bool() == Some(true);
+            Some(info)
+        })
+        .take(MAX_MODELS)
+        .collect()
 }
 
 /// The input items of a message: its text, every skill it names as `$name`, and its images (as
@@ -198,6 +267,8 @@ pub async fn run(
 ) {
     let mut st = State {
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
+        model: opts.model.clone(),
+        effort: opts.effort.clone(),
         ..Default::default()
     };
     let init = st.request(
@@ -245,6 +316,11 @@ pub async fn run(
                 },
                 // Permissions, modes and titles are Claude Code's; nothing asks for them here.
                 Some(LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. }) => {}
+                // From the next turn on (`turn/start` carries them).
+                Some(LiveCmd::SetModel { model, effort }) => {
+                    st.model = model;
+                    st.effort = effort;
+                }
                 Some(LiveCmd::Answer { qid, text, .. }) => {
                     let late = !st.asking.iter().any(|a| a.qids.contains(&qid)) && st.closed.contains(&qid);
                     if let Some((reply, done)) = answer(&mut st, qid, text) {
@@ -393,7 +469,17 @@ fn turn_start(st: &mut State, text: &str, images: &[Image]) -> String {
     st.streamed.clear();
     st.commands.clear();
     let thread = st.thread.clone().unwrap_or_default();
-    st.request("turn/start", json!({"threadId": thread, "input": input_items(st, text, images)}), Pending::TurnStart)
+    let mut p = json!({"threadId": thread, "input": input_items(st, text, images)});
+    let (model, effort) = turn_settings(st);
+    if let Some(m) = model {
+        p["model"] = json!(m);
+        st.overridden = true;
+    }
+    if let Some(e) = effort {
+        p["effort"] = json!(e);
+        st.overridden = true;
+    }
+    st.request("turn/start", p, Pending::TurnStart)
 }
 
 fn thread_start(st: &mut State, opts: &Opts) -> String {
@@ -438,11 +524,16 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::Thread { .. } | Pending::Fork), Ok(r)) => {
                 if let Some(id) = r["thread"]["id"].as_str() {
                     st.thread = Some(id.to_string());
-                    st.ready = true;
-                    outs.push(Out::Session(id.to_string()));
-                    while let Some((text, images)) = st.waiting.pop_front() {
-                        writes.push(turn_start(st, &text, &images));
+                    // The thread's own model when none was asked for: the default to go back to.
+                    if opts.model.is_none()
+                        && let Some(m) = r["model"].as_str()
+                    {
+                        st.base = Some((m.to_string(), r["reasoningEffort"].as_str().map(str::to_string)));
                     }
+                    outs.push(Out::Session(id.to_string()));
+                    // Messages wait for the model list (one round trip): a model chosen without a
+                    // level then runs at its own default level from the first turn.
+                    writes.push(st.request("model/list", json!({"limit": 100}), Pending::Models));
                     writes.push(st.request("skills/list", json!({"cwds": [opts.cwd]}), Pending::Skills));
                 } else {
                     outs.push(Out::Exited("Codex did not return a thread".into()));
@@ -512,6 +603,19 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     })
                     .collect();
                 outs.push(Out::Ev(Ev::Commands { commands }));
+            }
+            (Some(Pending::Models), r) => {
+                // A Codex without `model/list` answers with an error: it goes on without a list.
+                if let Ok(r) = r {
+                    st.models = models(&r);
+                    if !st.models.is_empty() {
+                        outs.push(Out::Ev(Ev::Models { models: st.models.clone() }));
+                    }
+                }
+                st.ready = true;
+                while let Some((text, images)) = st.waiting.pop_front() {
+                    writes.push(turn_start(st, &text, &images));
+                }
             }
             (Some(Pending::Terminals { items }), Ok(r)) => {
                 let thread = st.thread.clone().unwrap_or_default();
@@ -1266,7 +1370,13 @@ mod tests {
     use super::*;
 
     fn opts(resume: Option<&str>) -> Opts {
-        Opts { cwd: "/w".into(), model: Some("m1".into()), resume: resume.map(str::to_string), fork: false }
+        Opts {
+            cwd: "/w".into(),
+            model: Some("m1".into()),
+            effort: None,
+            resume: resume.map(str::to_string),
+            fork: false,
+        }
     }
 
     #[test]
@@ -1286,6 +1396,9 @@ mod tests {
         // The answer names the new thread: the session goes on in it.
         let (w, outs) = handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"child"},"model":"m1"}}"#, &o);
         assert!(matches!(&outs[0], Out::Session(s) if s == "child"));
+        // As after thread/start, the first turn waits for the model list.
+        assert!(w[0].contains("model/list") && !w.iter().any(|l| l.contains("turn/start")), "{w:?}");
+        let (w, _) = handle(&mut st, r#"{"id":3,"error":{"code":-32601,"message":"unknown method"}}"#, &o);
         let turn: Value = serde_json::from_str(&w[0]).unwrap();
         assert_eq!((turn["method"].as_str(), turn["params"]["threadId"].as_str()), (Some("turn/start"), Some("child")));
         // A fork Codex refuses starts afresh and says so.
@@ -1311,12 +1424,16 @@ mod tests {
         assert_eq!(start["params"]["model"], "m1");
         let (w, o) = handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"th"}}}"#, &opts(None));
         assert!(matches!(&o[0], Out::Session(s) if s == "th"));
+        assert!(w[0].contains("model/list") && !w.iter().any(|l| l.contains("turn/start")), "{w:?}");
+        // The first turn waits for the model list (a Codex without one answers with an error).
+        let (w, _) = handle(&mut st, r#"{"id":3,"error":{"code":-32601,"message":"unknown method"}}"#, &opts(None));
         let turn: Value = serde_json::from_str(&w[0]).unwrap();
         assert_eq!(
             (turn["method"].as_str(), turn["params"]["input"][0]["text"].as_str()),
             (Some("turn/start"), Some("hi"))
         );
-        handle(&mut st, r#"{"id":3,"result":{"turn":{"id":"tu"}}}"#, &opts(None));
+        // Ids 3 and 4 are the model and skill lists.
+        handle(&mut st, r#"{"id":5,"result":{"turn":{"id":"tu"}}}"#, &opts(None));
         assert_eq!(st.turn.as_deref(), Some("tu"));
     }
 
@@ -1867,7 +1984,8 @@ mod tests {
         assert_eq!((list["method"].as_str(), list["params"]["cwds"][0].as_str()), (Some("skills/list"), Some("/w")));
         let (_, outs) = handle(
             &mut st,
-            r#"{"id":3,"result":{"data":[{"cwd":"/w","errors":[],"skills":[
+            // Id 3 is `model/list`, asked first.
+            r#"{"id":4,"result":{"data":[{"cwd":"/w","errors":[],"skills":[
                 {"name":"tidy","description":"Long text","shortDescription":"Tidy up","enabled":true,"path":"/s/tidy/SKILL.md","scope":"user"},
                 {"name":"off","description":"x","enabled":false,"path":"/s/off/SKILL.md","scope":"user"}]}]}}"#,
             &opts(None),
@@ -1890,5 +2008,57 @@ mod tests {
         let img = crate::chat::Image::parse("s.jpg", "image/jpeg", "/9j/4AAQ").unwrap();
         let start: Value = serde_json::from_str(&turn_start(&mut st, "look", &[img])).unwrap();
         assert_eq!(start["params"]["input"][1], json!({"type": "image", "url": "data:image/jpeg;base64,/9j/4AAQ"}));
+    }
+
+    #[test]
+    fn models_are_listed_and_turns_carry_the_chosen_model_and_level() {
+        // As 0.163 answers `model/list` (trimmed).
+        let list = json!({"data": [
+            {"id": "gpt-a", "model": "gpt-a", "displayName": "GPT A", "description": "Fast", "isDefault": true, "hidden": false,
+             "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "l"}, {"reasoningEffort": "medium", "description": "m"}, {"reasoningEffort": "high", "description": "h"}]},
+            {"id": "gpt-b", "model": "gpt-b", "displayName": "GPT B", "isDefault": false, "hidden": false,
+             "defaultReasoningEffort": "high", "supportedReasoningEfforts": [{"reasoningEffort": "high"}, {"reasoningEffort": "xhigh"}]},
+            {"id": "gpt-hidden", "displayName": "Hidden", "hidden": true}
+        ], "nextCursor": null});
+        let m = models(&list);
+        assert_eq!(m.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["gpt-a", "gpt-b"], "hidden ones are left out");
+        assert!(m[0].default && !m[1].default);
+        assert_eq!((m[0].efforts.len(), m[0].default_effort.as_deref()), (3, Some("medium")));
+
+        let o = Opts { cwd: "/w".into(), model: None, effort: None, resume: None, fork: false };
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        let (w, _) = handle(&mut st, r#"{"id":1,"result":{}}"#, &o);
+        assert!(serde_json::from_str::<Value>(&w[1]).unwrap()["params"].get("model").is_none());
+        // The thread's own model and level: the default to go back to.
+        let (w, _) =
+            handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"th"},"model":"gpt-a","reasoningEffort":"low"}}"#, &o);
+        let list_req: Value =
+            w.iter().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|v| v["method"] == "model/list").unwrap();
+        assert_eq!(list_req["method"], "model/list");
+        let id = list_req["id"].as_u64().unwrap();
+        let (_, outs) = handle(&mut st, &json!({"id": id, "result": list}).to_string(), &o);
+        assert!(matches!(&outs[0], Out::Ev(Ev::Models { models }) if models.len() == 2));
+        let turn = |st: &mut State| -> Value { serde_json::from_str(&turn_start(st, "hi", &[])).unwrap() };
+        // Nothing chosen: Codex keeps what it has.
+        let t = turn(&mut st);
+        assert!(t["params"].get("model").is_none() && t["params"].get("effort").is_none(), "{t}");
+        // A model and a level.
+        st.model = Some("gpt-b".into());
+        st.effort = Some("xhigh".into());
+        let t = turn(&mut st);
+        assert_eq!((t["params"]["model"].as_str(), t["params"]["effort"].as_str()), (Some("gpt-b"), Some("xhigh")));
+        // A model without a level: its own default level, not the last one's.
+        st.effort = None;
+        let t = turn(&mut st);
+        assert_eq!((t["params"]["model"].as_str(), t["params"]["effort"].as_str()), (Some("gpt-b"), Some("high")));
+        // Back to the default: the thread's own model and level, sent explicitly.
+        st.model = None;
+        let t = turn(&mut st);
+        assert_eq!((t["params"]["model"].as_str(), t["params"]["effort"].as_str()), (Some("gpt-a"), Some("low")));
+        // Only a level on the default model.
+        st.effort = Some("high".into());
+        let t = turn(&mut st);
+        assert_eq!((t["params"]["model"].as_str(), t["params"]["effort"].as_str()), (Some("gpt-a"), Some("high")));
     }
 }

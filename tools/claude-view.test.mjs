@@ -725,6 +725,7 @@ test("the Claude conversation shows loading before hello and until replay catche
     "../chat/Composer": { Composer: noop }, "../chat/FolderPicker": { FolderLabel: noop },
     "../chat/Preview": { PreviewProvider: noop }, "../Icon": { Icon: noop },
     "./Cards": { CardDock: noop }, "./Dock": { ModePicker: noop, StatusLine: noop, TodoDock: noop },
+    "./ModelPicker": { ModelPicker: noop },
   };
   const component = (name) => {
     const source = readFileSync(new URL(`../apps/desktop/src/ui/claude/${name}.tsx`, import.meta.url), "utf8");
@@ -939,4 +940,18 @@ test("opted-in Markdown code fences render ANSI and start wrapped, with the defa
   assert.doesNotMatch(normal, /<pre class="wrapped">|color:#c82829/);
   const escaped = renderToStaticMarkup(React.createElement(CodeBlock, { code: "\x1b[31m<script>\rnew text", lang: "bash", renderAnsi: renderAnsiText }));
   assert.doesNotMatch(escaped, /<script>|\x1b|\r/);
+});
+
+test("models and the model in use come from the hello and `models` / `model` events; the command names both", () => {
+  let c = chat.emptyChat();
+  assert.equal(c.models, null);
+  assert.equal(c.model, null);
+  c = chat.reduceChat(c, ev(0, { t: "models", models: [{ id: "opus", name: "Opus", efforts: ["low"], default: true }] }));
+  assert.deepEqual(plain(c.models), [{ id: "opus", name: "Opus", efforts: ["low"], default: true }]);
+  c = chat.reduceChat(c, ev(0, { t: "model", model: "haiku", effort: "low" }));
+  assert.deepEqual(plain(c.model), { model: "haiku", effort: "low" });
+  c = chat.reduceChat(c, ev(0, { t: "model" }));
+  assert.deepEqual(plain(c.model), { model: null, effort: null }, "back to the agent's default");
+  assert.deepEqual(plain(chat.modelCommand(" haiku ", "high")), { model: { model: "haiku", effort: "high" } });
+  assert.deepEqual(plain(chat.modelCommand("", null)), { model: { model: null, effort: null } });
 });

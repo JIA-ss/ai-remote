@@ -607,9 +607,9 @@ settings. Hence every tool here needs admin level, and starting asks the owner b
 
 | Tool | Default | What it does |
 |---|---|---|
-| `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`; `host.can_start`, `host.enabled` |
-| `chat_sessions` | allow | the sessions that are not archived (`archived: true`: the archived ones), newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns, `last_seq`, `pinned`, `archived`, and when known `title` / `title_source` (`agent` or `user`), `first_text` (the first message, 200 characters), `last_status` / `last_reason`, `pending` (`permission`, `question` or `plan`: something waits for an answer), `branch` (read from the folder's `.git/HEAD`, git is never run), Claude Code's `permission_mode`, `parent` (a fork: the session it was forked from) and `previous_titles` (the titles it had before, oldest first, at most 10); never the conversation |
-| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`, and for Claude Code `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`; default `bypassPermissions`). Or `fork_of` (a session id) with optional `prompt` / `intent` and no `runtime`, `cwd`, `model` or `permission_mode`: a fork of that session (below). Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
+| `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`, and once the agent has run on this host `models` (the list it offered last, see "Models and effort levels"); `host.can_start`, `host.enabled` |
+| `chat_sessions` | allow | the sessions that are not archived (`archived: true`: the archived ones), newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns, `last_seq`, `pinned`, `archived`, and when known `title` / `title_source` (`agent` or `user`), `first_text` (the first message, 200 characters), `last_status` / `last_reason`, `pending` (`permission`, `question` or `plan`: something waits for an answer), `branch` (read from the folder's `.git/HEAD`, git is never run), Claude Code's `permission_mode`, the `model` / `effort` it runs with, `parent` (a fork: the session it was forked from) and `previous_titles` (the titles it had before, oldest first, at most 10); never the conversation |
+| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `effort` (an effort level, see below), `hardened`, `intent`, and for Claude Code `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`; default `bypassPermissions`). Or `fork_of` (a session id) with optional `prompt` / `intent` and no `runtime`, `cwd`, `model`, `effort` or `permission_mode`: a fork of that session (below), with its model and effort level. Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
 | `chat_update` | allow | `session` and any of `title` (at most 200 characters; empty: back to the agent's title or the first message), `pinned`, `archived`. A title given here is not replaced by the agent's. Returns the session as `chat_sessions` lists it; audited |
 | `chat_attach` | allow | `session`. A ticket to watch the session and send it messages (any device with admin level; each message records who sent it) |
 | `chat_interrupt` | allow | stops the running turn; the session takes the next message |
@@ -703,6 +703,23 @@ as the session's `model` config option when the agent lists one (DeepSeek Harnes
 e.g. `deepseek-v4-pro`; a notice lists what it offers if the name is not among them), otherwise
 `session/set_model`.
 
+**Models and effort levels.** The agent's models reach the controller as a `models` event and in the
+reply line: each `{id, name, description?, efforts?, default_effort?, default?}`, `id` being what
+the agent takes as a model, `efforts` the levels it takes lowest first (none: it takes no level),
+`default` the model used when none is chosen. Claude Code's come from its `initialize` answer (the
+`default` entry is left out and the model it resolves to is marked default; levels `low`, `medium`,
+`high`, `xhigh`, `max` as each model says), Codex's from `model/list` (hidden models left out), an
+ACP agent's from its `model` config option (no levels). `{"model":{"model":".."|null,"effort":".."|null}}`
+sets what the next messages run with (`null`: the agent's default; a level the model does not take
+is dropped); a `model` event (`model`, `effort`) says it holds, a `model_rejected` notice why not.
+Claude Code switches models in its running process (`set_model`); it takes an effort level only at
+start (`--effort`), so another level restarts the process, resuming the conversation, once no turn
+runs. Codex sends both with its next `turn/start` (a model chosen without a level gets its own
+default level; back to the default sends the thread's own model and level, since Codex keeps the
+last ones). An ACP agent's model is set through its config option. The session keeps them for its
+next process; the host keeps each agent's last list, so `chat_runtimes` offers it before a session
+starts. Each change is audited (`chat_session` `model`: who and what).
+
 **Events** are numbered per session and written to `<profile>/host/chat/<id>/events.jsonl` before
 they go out, so a viewer that reconnects asks for what came after the last one it saw. One JSON line
 each: `{"seq":N,"ts":<ms>,"turn":K,"t":"<type>",...}` with `t` one of `user` (`steer: true` when it
@@ -732,7 +749,8 @@ them `context_window`, `context_used`, `cache_read_tokens`, `cache_write_tokens`
 (`state`, `queued`), `commands` (the agent's slash commands and skills, all of them, sent when the
 list changes: `name`, `description`, `kind` command or skill, `insert` — what choosing it puts in
 the message, `/name`, or `$name` for a Codex skill — and `hint`), `agent` (`images`: whether the
-agent takes images, where it differs from what its kind was assumed to do), `notice` (`input_id`
+agent takes images, where it differs from what its kind was assumed to do), `models` (the agent's
+models, the whole list, when it changes), `model` (`model`, `effort` the next messages run with), `notice` (`input_id`
 when it is about a message, e.g. one dropped because the queue was full). Where the commands come
 from: Claude Code answers an `initialize` control request with every command and skill and its
 description (the first `init` says which are skills); Codex lists its skills with `skills/list`
@@ -748,7 +766,8 @@ with each file's unified diff (an added file's is its content, cut to 64 KiB); a
 
 **On the chat channel** the controller writes `{"open":{"ticket":"..","since":N}}`, reads one reply
 line (`ok`, `session`, `role`, `runtime` — `id`, `name` and `protocol`, which says the agent's kind
-for a custom agent too — `cwd`, `state`, `seq`, `caps`, `acks`, `images`), then one
+for a custom agent too — `cwd`, `state`, `seq`, `caps`, `acks`, `images`, and `models`, `model`,
+`effort`: a host that sends `models` takes the `model` command), then one
 unnumbered `{"t":"commands","commands":[..]}` line (the last known list, or what the same agent
 offered in the same folder in another session; a line of its own because a long list would not fit
 the 64 KiB reply line), then the events after `N` and every new one. Commands, one line each:
@@ -756,6 +775,7 @@ the 64 KiB reply line), then the events after `N` and every new one. Commands, o
 sent twice runs once; answered `{"t":"ack","input_id":".."}` once the session has it, or
 `{"t":"error","code":..,"input_id":"..","text":".."}` when refused), `{"interrupt":{}}`,
 `{"answer":{"qid":"..","text":".."}}`, `{"dequeue":{"id":".."}}`,
+`{"model":{"model":"..","effort":".."}}` (see "Models and effort levels"),
 `{"files":{"rid":..,"query":"..","limit":N}}` (files in the session's folder whose relative path
 contains every word of `query`: `git ls-files` in a work tree — tracked, and untracked but not
 ignored — otherwise six folder levels without hidden folders or build output; answered

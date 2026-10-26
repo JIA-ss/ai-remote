@@ -139,6 +139,10 @@ struct StartParams {
     /// A model the agent should use instead of its default.
     #[serde(default)]
     model: Option<String>,
+    /// The effort level instead of the agent's default (Claude Code: low, medium, high, xhigh,
+    /// max; Codex: what its model list offers). The session's `models` say which a model takes.
+    #[serde(default)]
+    effort: Option<String>,
     /// Ignore the folder's own agent settings, hooks and MCP servers where the agent supports it.
     #[serde(default)]
     hardened: bool,
@@ -187,16 +191,24 @@ impl Tool for Start {
         let peer = ctx.session.peer.clone();
         let chat = match (p.fork_of, p.runtime, p.cwd) {
             (Some(parent), runtime, cwd) => {
-                if runtime.is_some() || cwd.is_some() || p.model.is_some() || p.permission_mode.is_some() {
+                if runtime.is_some()
+                    || cwd.is_some()
+                    || p.model.is_some()
+                    || p.effort.is_some()
+                    || p.permission_mode.is_some()
+                {
                     anyhow::bail!(
-                        "a fork takes its agent, folder, model and permission mode from the session it forks; leave \
-                         out runtime, cwd, model and permission_mode"
+                        "a fork takes its agent, folder, model, effort level and permission mode from the session it \
+                         forks; leave out runtime, cwd, model, effort and permission_mode"
                     );
                 }
                 ctx.host.chat().fork(peer, &parent, p.prompt).await?
             }
             (None, Some(runtime), Some(cwd)) => {
-                ctx.host.chat().start(peer, &runtime, &cwd, p.model, p.hardened, p.prompt, p.permission_mode).await?
+                ctx.host
+                    .chat()
+                    .start(peer, &runtime, &cwd, p.model, p.hardened, p.prompt, p.permission_mode, p.effort)
+                    .await?
             }
             (None, _, _) => anyhow::bail!("chat_start needs runtime and cwd (or fork_of, to fork a session)"),
         };

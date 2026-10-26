@@ -461,6 +461,7 @@ impl RunnerLink {
         resume: Option<&str>,
         fork: bool,
         permission_mode: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
         let c = self.ensure().await?;
         let (out_tx, out) = mpsc::channel(1024);
@@ -470,7 +471,7 @@ impl RunnerLink {
         let (resume, fork_from) = if fork { (None, resume) } else { (resume, None) };
         let req = json!({
             "op": "launch", "live": live, "runtime": runtime, "custom": custom, "cwd": cwd, "model": model,
-            "hardened": hardened, "resume": resume, "fork_from": fork_from, "permission_mode": permission_mode,
+            "hardened": hardened, "resume": resume, "fork_from": fork_from, "permission_mode": permission_mode, "effort": effort,
         });
         let info = match self.request(&c, req, LOOKUP).await.and_then(|v| Ok(serde_json::from_value::<LiveInfo>(v)?)) {
             Ok(i) => i,
@@ -558,6 +559,9 @@ impl RunnerLink {
                                 json!({"t": "permit", "rid": rid, "decision": decision, "message": message, "mode": mode})
                             }
                             Some(LiveCmd::SetMode { mode }) => json!({"t": "mode", "mode": mode}),
+                            Some(LiveCmd::SetModel { model, effort }) => {
+                                json!({"t": "model", "model": model, "effort": effort})
+                            }
                             Some(LiveCmd::GenerateTitle { description }) => {
                                 json!({"t": "title", "description": description})
                             }
@@ -688,6 +692,8 @@ struct Req {
     fork_from: Option<String>,
     #[serde(default)]
     permission_mode: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
     #[serde(default)]
     after: u64,
     #[serde(default)]
@@ -863,6 +869,10 @@ impl Runner {
                         mode: c["mode"].as_str().map(str::to_string),
                     },
                     Some("mode") => LiveCmd::SetMode { mode: c["mode"].as_str().unwrap_or_default().to_string() },
+                    Some("model") => LiveCmd::SetModel {
+                        model: c["model"].as_str().filter(|m| super::valid_token(m)).map(str::to_string),
+                        effort: c["effort"].as_str().filter(|e| super::valid_effort(e)).map(str::to_string),
+                    },
                     Some("title") => LiveCmd::GenerateTitle {
                         description: c["description"].as_str().unwrap_or_default().to_string(),
                     },
@@ -902,6 +912,7 @@ impl Runner {
             resume: req.resume.as_deref().or(req.fork_from.as_deref()),
             fork: req.resume.is_none() && req.fork_from.is_some(),
             permission_mode: req.permission_mode.as_deref(),
+            effort: req.effort.as_deref(),
         })?;
         let l = Arc::new(RLive {
             tx: handle.tx,

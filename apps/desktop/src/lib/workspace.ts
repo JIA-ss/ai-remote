@@ -8,7 +8,7 @@
 // so tools/workspace.test.mjs runs it in node. The store reaches hosts only through the `call` it is
 // given (ui/workspace/useWorkspace.ts gives it the app's tool call).
 
-import { folderName, parentFolder, sameFolder, tildeFolder, trimFolder, type ChatState } from "./chat";
+import { folderName, parentFolder, sameFolder, tildeFolder, trimFolder, type ChatState, type ModelInfo } from "./chat";
 
 // ---------------------------------------------------------------------------------------------
 // Session metadata
@@ -53,6 +53,8 @@ export interface WsMeta {
   parent?: string | null;
   /** Titles it had before, oldest first (search matches them, SB-06). */
   previous_titles?: string[];
+  /** The effort level the session runs with (null: the agent's default). */
+  effort?: string | null;
 }
 
 /** A session with the computer it is on. */
@@ -145,6 +147,10 @@ export function eventPatch(e: { t: string; seq?: number; ts?: number; [k: string
       break;
     case "mode":
       if (typeof e.mode === "string") p.permission_mode = e.mode;
+      break;
+    case "model":
+      p.model = typeof e.model === "string" ? e.model : null;
+      p.effort = typeof e.effort === "string" ? e.effort : null;
       break;
   }
   return Object.keys(p).length ? p : null;
@@ -909,6 +915,117 @@ export function compactEnvironment(compact: boolean, available: number, required
 // The new-session page: recent projects (NS-04) and next steps (NS-08 / NS-09)
 
 /** A computer and a folder on it. */
+/** The models Claude Code takes by alias (NS-32: the model menu's choices). Other agents name none here. */
+export const CLAUDE_MODELS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "opus", label: "Opus" },
+  { id: "sonnet", label: "Sonnet" },
+  { id: "haiku", label: "Haiku" },
+];
+
+/** The model menu's fixed choices for an agent speaking `protocol`. */
+export function modelPresets(protocol: string | undefined): ReadonlyArray<{ id: string; label: string }> {
+  return protocol === "claude-stream-json" ? CLAUDE_MODELS : [];
+}
+
+/** What the model chip says: an alias by its name, any other model as typed ("" is the agent's default). */
+export function modelLabel(model: string, protocol: string | undefined): string {
+  const m = model.trim();
+  return modelPresets(protocol).find((p) => p.id === m)?.label ?? m;
+}
+
+// The model menu (NS-29, NS-32, NS-33): what the agent offers, the effort levels a model takes, and
+// what a place (a computer and a folder) remembers for the next session started there.
+
+/** Effort levels lowest first, as Claude Code names them (NS-33); Codex may offer others (`minimal`, `none`). */
+export const EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The models to choose from: what the agent offered, else Claude Code's aliases (other agents: none),
+ * which take every level `claude --help` names (an agent's own entry without levels takes none).
+ */
+export function modelChoices(models: readonly ModelInfo[] | null | undefined, protocol: string | undefined): ModelInfo[] {
+  if (models?.length) return [...models];
+  return modelPresets(protocol).map((p) => ({ id: p.id, name: p.label, efforts: [...EFFORTS] }));
+}
+
+/** The entry for `model` in `models` ("" or null: the one the agent uses by default), or null. */
+export function modelEntry(models: readonly ModelInfo[], model: string | null | undefined): ModelInfo | null {
+  const m = model?.trim();
+  return (m ? models.find((x) => x.id === m) : models.find((x) => x.default)) ?? null;
+}
+
+/**
+ * The effort levels `model` takes, lowest first: what the agent said for it (none: it takes none);
+ * for a model the agent did not describe, all of Claude Code's levels (`claude --help`) and none for
+ * other agents.
+ */
+export function effortsFor(models: readonly ModelInfo[], model: string | null | undefined, protocol: string | undefined): string[] {
+  const e = modelEntry(models, model);
+  if (e) return [...(e.efforts ?? [])];
+  return protocol === "claude-stream-json" ? [...EFFORTS] : [];
+}
+
+/** `effort` when `model` takes it, else null: a level is not carried over to a model without it (NS-33). */
+export function keepEffort(models: readonly ModelInfo[], model: string | null | undefined, effort: string | null | undefined, protocol: string | undefined): string | null {
+  return effort && effortsFor(models, model, protocol).includes(effort) ? effort : null;
+}
+
+/** What the model chip says: the model's name, the default model's name for "" ("" when the agent did not say). */
+export function modelName(models: readonly ModelInfo[], model: string | null | undefined, protocol: string | undefined): string {
+  const m = model?.trim() ?? "";
+  const e = modelEntry(models, m);
+  if (e) return e.name;
+  return m ? modelLabel(m, protocol) : "";
+}
+
+/** A model and level a place remembers (NS-29). */
+export interface PlaceModel {
+  model: string;
+  effort: string | null;
+  at: number;
+}
+
+/** Where a place's model is kept: the computer, the folder and the agent (a model id is an agent's own). */
+export function placeModelKey(host: string, cwd: string, runtime: string): string {
+  return `${host}\n${trimFolder(cwd)}\n${runtime}`;
+}
+
+/** Remembers what a session was started with in a place; the newest `max` places are kept. */
+export function rememberPlaceModel(all: Record<string, PlaceModel>, key: string, model: string, effort: string | null, now: number, max = 50): Record<string, PlaceModel> {
+  const next: Record<string, PlaceModel> = { ...all, [key]: { model: model.trim(), effort: effort ?? null, at: now } };
+  const keys = Object.keys(next).sort((a, b) => next[b].at - next[a].at);
+  return Object.fromEntries(keys.slice(0, max).map((k) => [k, next[k]]));
+}
+
+/**
+ * NS-29: the model and level a new session in a place starts with. What the last session started
+ * there with this agent used; for a folder without one, its latest session's, as long as that model
+ * is still offered. The permission mode is not remembered. Levels the model does not take are left out.
+ */
+export function placeDefaults(
+  saved: Record<string, PlaceModel>,
+  items: readonly WsItem[],
+  place: { host: string; cwd: string; runtime: string; protocol?: string },
+  models: readonly ModelInfo[],
+): { model: string; effort: string | null } {
+  const fit = (model: string, effort: string | null) => ({ model, effort: keepEffort(models, model, effort, place.protocol) });
+  const kept = saved[placeModelKey(place.host, place.cwd, place.runtime)];
+  if (kept) return fit(kept.model, kept.effort);
+  const last = items
+    .filter((x) => x.host === place.host && x.meta.runtime === place.runtime && sameFolder(x.meta.cwd, place.cwd))
+    .sort((a, b) => b.meta.started_at - a.meta.started_at)[0];
+  const model = last?.meta.model?.trim() ?? "";
+  if (!last || (model && models.length && !models.some((m) => m.id === model))) return { model: "", effort: null };
+  return fit(model, last.meta.effort ?? null);
+}
+
+/** Models typed for an agent, newest first: the new one in front, no presets, no repeats, at most `max`. */
+export function rememberModel(list: readonly string[], model: string, protocol: string | undefined, max = 5): string[] {
+  const m = model.trim();
+  if (!m || modelPresets(protocol).some((p) => p.id === m)) return list.slice(0, max);
+  return [m, ...list.filter((x) => x !== m)].slice(0, max);
+}
+
 export interface Place {
   host: string;
   cwd: string;

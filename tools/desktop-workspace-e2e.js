@@ -21,6 +21,9 @@
 //   E. (between A9 and A10) Fork from the row menu: the fork under its parent with the guide line, its
 //      agent continuing a copy of the conversation, folding to a summary line, ⌘K finding it by what was
 //      said (the hosts' chat_search) and the parent by a title it had before, archiving asking about it.
+//   M. Models and effort levels (inside A): the new-session page's model menu and ⌘⇧E, the first message
+//      starting with them, the place remembering them, the composer chin's button switching the model in
+//      place and the effort level by a restart, and a Codex session's next turn/start carrying both.
 //   D. Three idle sessions outside the current conversation: modifier/range selection, the batch
 //      menu's keyboard focus, pin/read/archive and Undo; `chat_sessions` independently confirms the
 //      host's persisted pin/archive fields, including the archived-only query.
@@ -301,6 +304,24 @@
     await check("the folder picker browses the computer and takes the work folder", !!(await browseTo(above, workName, workName)), folderShown());
     const modeText = await pickMode(0);
     await check("the permission mode can be set to Ask", /询问|Ask/.test(modeText), modeText);
+    // M1. NS-32 / NS-33: the model chip opens a menu (Claude Code's aliases before the agent has run on
+    // this computer) and ⌘⇧E opens it at the effort levels; both go with the first message.
+    const modelChip = () => $(".ws-env-trail .ws-model-chip");
+    const chipWords = (chip) => `${text($(".ws-chip-text", chip))}|${text($(".ws-chip-sub", chip))}`;
+    modelChip()?.click();
+    const haiku = await until("model menu", () => $$(".ws-menu [role=menuitemradio]").find((b) => /^Haiku/.test(text($(".ws-menu-label", b)))), 5000);
+    await check("M1 the model chip opens a menu of models with a custom ID field", !!haiku && !!$(".ws-menu .ws-menu-field input"),
+      text($(".ws-menu")).slice(0, 200));
+    haiku?.click();
+    await until("model menu closed", () => !$(".ws-menu"), 3000);
+    $(".ws-new .ws-composer textarea")?.focus();
+    chord("e", { shiftKey: true });
+    const high = await until("effort levels", () => document.activeElement?.closest(".ws-menu")
+      && $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === L("高", "High")), 5000);
+    await check("M1 ⌘⇧E opens the menu at the effort levels", !!high && /默认|Default/.test(text(document.activeElement)), text(document.activeElement));
+    high?.click();
+    await check("M1 the chip shows the model and the effort word", !!(await until("model chip", () => chipWords(modelChip()) === `Haiku|${L("高", "High")}`, 3000)),
+      chipWords(modelChip()));
     await shot("a01-new-session");
     const prompt1 = "DELAYTITLE LATER6 整理季度导出脚本";
     const k1 = await start(prompt1);
@@ -321,15 +342,54 @@
     if (titled) await note(`the agent's title showed ${((Date.now() - sentAt) / 1000).toFixed(1)} s after the first message`);
     await check("the agent's title replaces it", !!titled, `${rowTitle(k1)} | ${pageTitle()}`);
     await check("the turn ends by itself", !!(await said("later: DELAYTITLE", 20000)));
+    const m1 = (await hostCall("chat_sessions")).sessions.find((x) => k1?.endsWith(`/${x.id}`));
+    await check("M1 the session started with the chosen model and effort level", m1?.model === "haiku" && m1?.effort === "high",
+      JSON.stringify({ model: m1?.model, effort: m1?.effort }));
     // An occluded/locked desktop polls at the store's idle 20 s cadence, instead of 4 s. Observe
     // the natural poll; do not force a refresh or fail before that configured interval can elapse.
     const settledAt = Date.now();
     await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 35000)),
       `${dotOf(k1)}; ${(Date.now() - settledAt) / 1000} s; visibility: ${document.visibilityState}`);
 
+    // M2. CP-53: the composer chin's right side: the model (the agent's own list now) and the effort word,
+    // then the context ring. A model switches in the running process; another level restarts it.
+    const chin = () => $(".ws-main .cl-model-chip");
+    await check("M2 the chin shows the model's name and its effort word", !!(await until("chin model", () => chipWords(chin()) === `Haiku 5.5|${L("高", "High")}`, 15000)),
+      chipWords(chin()));
+    const chinBox = chin()?.getBoundingClientRect();
+    const modeBox = $(".ws-main .nt-compose-ft .cl-mode")?.getBoundingClientRect();
+    await check("M2 the model sits right of the permission mode, inside the composer's width", !!chinBox && !!modeBox && chinBox.left > modeBox.right
+      && chinBox.right <= ($(".ws-main .nt-compose")?.getBoundingClientRect().right ?? 0) + 1, `${chinBox?.left} ${modeBox?.right}`);
+    await send("WHICH 1");
+    await check("M2 the agent runs with the chosen model and level", !!(await said("model=haiku effort=high")));
+    chin()?.click();
+    const opus = await until("session model menu", () => $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === "Opus 5.5"), 5000);
+    await check("M2 its menu is titled for this session and lists the agent's models", !!opus && /仅本会话|this session/.test(text($(".ws-menu .ws-menu-h"))),
+      text($(".ws-menu")).slice(0, 160));
+    const pop = $(".ws-menu")?.getBoundingClientRect();
+    await check("M2 the menu stays inside the window", !!pop && pop.top >= 0 && pop.left >= 0 && pop.bottom <= innerHeight && pop.right <= innerWidth,
+      pop && `${pop.left},${pop.top},${pop.right},${pop.bottom} / ${innerWidth}x${innerHeight}`);
+    await shot("a01b-model-menu");
+    opus?.click();
+    await check("M2 a model chosen mid-session shows once the host says it holds", !!(await until("chin opus", () => text($(".ws-chip-text", chin())) === "Opus 5.5", 10000)),
+      chipWords(chin()));
+    await send("WHICH 2");
+    await check("M2 the running agent switched in place", !!(await said("model=opus effort=high")));
+    composer()?.focus();
+    chord("e", { shiftKey: true });
+    const low = await until("effort item", () => document.activeElement?.closest(".ws-menu") && $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === L("低", "Low")), 5000);
+    await check("M2 ⌘⇧E opens it at the effort levels, the current one focused", !!low && text(document.activeElement) === L("高", "High"), text(document.activeElement));
+    low?.click();
+    await check("M2 another effort level shows", !!(await until("chin low", () => text($(".ws-chip-sub", chin())) === L("低", "Low"), 10000)), chipWords(chin()));
+    await send("WHICH 3");
+    await check("M2 the agent restarted with it and the conversation goes on", !!(await said("model=opus effort=low", 30000)));
+    await idle();
+
     // A2. Unread: a session that moves on while another is open gets a blue dot; opening it clears it.
     await newSession();
     await check("New keeps the last place", folderShown() === workName, folderShown());
+    await check("M3 the place remembers the model and level it started with (NS-29)", !!(await until("remembered model", () =>
+      /^Haiku/.test(text($(".ws-chip-text", modelChip()))) && text($(".ws-chip-sub", modelChip())) === L("高", "High"), 5000)), chipWords(modelChip()));
     const k2 = await start("LATER25 第二个会话");
     await check("a second session opens", !!k2 && k2 !== k1, k2);
     await openRow(k1);
@@ -475,6 +535,49 @@
     await check("the workspace Codex composer keeps its whole lower edge above the window bottom",
       !!codexComposer && codexComposer.bottom <= innerHeight - 12, codexComposer && `${codexComposer.bottom} / ${innerHeight}`);
     await shot("a07-codex");
+
+    // M4. Codex: the host lists the models model/list gave, and a model and level chosen go with the next
+    // turn/start (Codex keeps them; back to the default sends the thread's own). The Codex view's own
+    // composer belongs to another piece of work, so the command goes over a second connection here.
+    const cx = { events: [] };
+    try {
+      const att = await hostCall("chat_attach", { session: k3.split("/").pop() });
+      const cb = window.__TAURI_INTERNALS__.transformCallback((raw) => { if (raw && "message" in raw) cx.events.push(raw.message); });
+      const channel = { toJSON: () => `__CHANNEL__:${cb}`, __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cb}` };
+      const [id, hello] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
+      Object.assign(cx, { id, hello });
+    } catch (e) {
+      cx.error = String(e && e.message || e);
+    }
+    await check("M4 a Codex session's hello lists its models (hidden ones left out)", (cx.hello?.models ?? []).map((m) => m.id).join() === "gpt-fake,gpt-fake-mini",
+      cx.error ?? JSON.stringify(cx.hello?.models ?? null).slice(0, 200));
+    if (cx.id !== undefined) {
+      const turnText = async (what, ms = 20000) => until(what, () => cx.events.find((e) => e?.t === "turn_end" && (e.final_text ?? "").includes(what)), ms);
+      await invoke("chat_send", { id: cx.id, command: { model: { model: "gpt-fake-mini", effort: "high" } } });
+      await check("M4 the host takes the model and level for the next turn", !!(await until("codex model event", () =>
+        cx.events.find((e) => e?.t === "model" && e.model === "gpt-fake-mini" && e.effort === "high"), 10000)));
+      await invoke("chat_send", { id: cx.id, command: { input: { id: `w${Date.now()}`, text: "WHICH mini" } } });
+      await check("M4 turn/start carries the chosen model and effort level", !!(await turnText("model=gpt-fake-mini effort=high")));
+      await invoke("chat_send", { id: cx.id, command: { model: { model: null, effort: null } } });
+      await invoke("chat_send", { id: cx.id, command: { input: { id: `w${Date.now()}`, text: "WHICH default" } } });
+      await check("M4 back to the default sends the thread's own model and level", !!(await turnText("model=gpt-fake effort=medium")));
+      await invoke("close_chat", { id: cx.id }).catch(() => {});
+    }
+    // The new-session page now offers Codex's own models and levels (asked again after a start).
+    await newSession();
+    await pickAgent("Codex fake");
+    modelChip()?.click();
+    const mini = await until("codex models", () => $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === "GPT Fake Mini"), 10000);
+    await check("M4 the new-session page lists Codex's models after it ran here", !!mini, text($(".ws-menu")).slice(0, 200));
+    mini?.click();
+    await until("menu closed", () => !$(".ws-menu"), 3000);
+    modelChip()?.click();
+    const levels = await until("codex levels", () => $(".ws-menu") && $$(".ws-menu [role=menuitemradio]").map((b) => text($(".ws-menu-label", b))), 5000);
+    await check("M4 only the levels that model takes are offered, its own default named", !!levels && levels.includes(L("高", "High"))
+      && !levels.includes(L("中", "Medium")) && levels.some((l) => /低|Low/.test(l) && /默认|Default/.test(l)), (levels ?? []).join(" | "));
+    await shot("a07b-codex-model-menu");
+    closeMenu();
+    await until("menu closed", () => !$(".ws-menu"), 3000);
 
     // A8. ⌘K: by title, by folder; Enter opens.
     chord("k");

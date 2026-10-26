@@ -64,7 +64,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use self::{
     adapters::{Decision, Launch, LiveCmd, LiveHandle, PERMISSION_MODES},
-    event::{By, Ev, Out, Outcome, Queued, SlashCommand, ToolContent, TurnStatus},
+    event::{By, Ev, ModelInfo, Out, Outcome, Queued, SlashCommand, ToolContent, TurnStatus},
     runtimes::{ChatConfig, Protocol},
 };
 
@@ -188,6 +188,13 @@ pub struct Meta {
     /// The titles it had before, oldest first (at most [`PREVIOUS_TITLES`]), for search.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previous_titles: Vec<String>,
+    /// The effort level the session runs with (see [`valid_effort`]); none: the agent's default.
+    /// Like [`Meta::model`], what later messages use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The models the agent offered last (see [`Ev::Models`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelInfo>,
 }
 
 /// Characters of the first message kept in [`Meta::first_text`].
@@ -326,6 +333,12 @@ pub enum Cmd {
         mode: String,
         by: By,
     },
+    /// Use this model and effort level from the next message on (`None`: the agent's default).
+    SetModel {
+        model: Option<String>,
+        effort: Option<String>,
+        by: By,
+    },
     Dequeue {
         id: String,
     },
@@ -399,6 +412,9 @@ struct Inner {
     /// The commands an agent offered last, by agent and folder: what a new session shows in its `/`
     /// menu before its own agent process has started.
     commands: Mutex<HashMap<(String, String), Vec<SlashCommand>>>,
+    /// The models each agent offered last (by agent id, newest list): what `chat_runtimes` and a
+    /// new session show before an agent process has started.
+    models: Mutex<HashMap<String, (u64, Vec<ModelInfo>)>>,
 }
 
 /// One chat session.
@@ -459,6 +475,7 @@ impl ChatManager {
             audit,
             paused: Mutex::new(None),
             commands: Mutex::new(HashMap::new()),
+            models: Mutex::new(HashMap::new()),
         });
         let manager = Self(inner);
         let pending = manager.load();
@@ -523,6 +540,16 @@ impl ChatManager {
                 Err(e) => json!({"host": {"can_start": false, "reason": format!("{e:#}")}, "runtimes": []}),
             },
         };
+        // The models each agent offered last here, for the new-session page's menu (none until an
+        // agent has run once on this host).
+        if let Some(list) = v["runtimes"].as_array_mut() {
+            let cache = self.0.models.lock().unwrap();
+            for r in list {
+                if let Some((_, models)) = r["id"].as_str().and_then(|id| cache.get(id)) {
+                    r["models"] = json!(models);
+                }
+            }
+        }
         v["host"]["enabled"] = json!(self.enabled());
         v["host"]["max_live"] = json!(MAX_LIVE);
         v["host"]["config_error"] = json!(self.0.config_error);
@@ -657,8 +684,14 @@ impl ChatManager {
         hardened: bool,
         prompt: Option<String>,
         permission_mode: Option<String>,
+        effort: Option<String>,
     ) -> Result<Arc<Chat>> {
-        self.create(creator, runtime, cwd, model, hardened, prompt, permission_mode, None).await
+        if let Some(e) = &effort
+            && !valid_effort(e)
+        {
+            bail!("invalid effort level '{e}'");
+        }
+        self.create(creator, runtime, cwd, model, hardened, prompt, permission_mode, effort, None).await
     }
 
     /// Forks session `parent` for `creator`: a new session with its agent, folder, model and
@@ -681,8 +714,18 @@ impl ChatManager {
             bail!("session '{}' has no conversation to fork yet: it has not run a turn", p.id);
         };
         let (runtime, cwd) = (pm.runtime.clone(), pm.cwd.clone());
-        self.create(creator, &runtime, &cwd, pm.model.clone(), pm.hardened, prompt, pm.permission_mode, Some((p, from)))
-            .await
+        self.create(
+            creator,
+            &runtime,
+            &cwd,
+            pm.model.clone(),
+            pm.hardened,
+            prompt,
+            pm.permission_mode,
+            pm.effort,
+            Some((p, from)),
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -695,6 +738,7 @@ impl ChatManager {
         hardened: bool,
         prompt: Option<String>,
         permission_mode: Option<String>,
+        effort: Option<String>,
         fork: Option<(Arc<Chat>, String)>,
     ) -> Result<Arc<Chat>> {
         if let Some(m) = &permission_mode
@@ -794,6 +838,8 @@ impl ChatManager {
             parent: fork.as_ref().map(|(p, _)| p.id.clone()),
             fork_from: fork.as_ref().map(|(_, from)| from.clone()),
             previous_titles: Vec::new(),
+            effort: effort.clone(),
+            models: Vec::new(),
         };
         let chat = self.insert(meta, creator, &dir, false)?;
         self.audit(json!({
@@ -801,6 +847,7 @@ impl ChatManager {
             "runtime": rid, "program": program, "cwd": chat.meta().cwd, "by": by.device,
             "principal": by.principal, "hardened": hardened, "permission_mode": permission_mode,
             "parent": fork.as_ref().map(|(p, _)| p.id.clone()),
+            "model": chat.meta().model, "effort": effort,
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
             chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by, images: Vec::new() }));
@@ -929,6 +976,27 @@ impl ChatManager {
         runtimes::caps_of(&m.runtime, &self.custom()).is_some_and(|c| c.images)
     }
 
+    /// The models to offer for `chat` now: its agent's last list, or what the same agent offered
+    /// last in another session here.
+    pub fn models_for(&self, chat: &Chat) -> Vec<ModelInfo> {
+        let m = chat.meta();
+        if !m.models.is_empty() {
+            return m.models;
+        }
+        self.0.models.lock().unwrap().get(&m.runtime).map(|(_, v)| v.clone()).unwrap_or_default()
+    }
+
+    fn remember_models(&self, meta: &Meta) {
+        if meta.models.is_empty() {
+            return;
+        }
+        let mut cache = self.0.models.lock().unwrap();
+        // The newest list wins (sessions load in no particular order).
+        if cache.get(&meta.runtime).is_none_or(|(at, _)| *at <= meta.last_activity) {
+            cache.insert(meta.runtime.clone(), (meta.last_activity, meta.models.clone()));
+        }
+    }
+
     fn remember_commands(&self, meta: &Meta) {
         if !meta.commands.is_empty() {
             self.0.commands.lock().unwrap().insert((meta.runtime.clone(), meta.cwd.clone()), meta.commands.clone());
@@ -949,6 +1017,7 @@ impl ChatManager {
             let Ok(mut meta) = serde_json::from_str::<Meta>(&text) else { continue };
             let claude = self.protocol_of(&meta.runtime) == Some(Protocol::ClaudeStreamJson);
             migrate(&mut meta, &dir.join("events.jsonl"), claude);
+            self.remember_models(&meta);
             if runner && meta.state != State::Ended && meta.runner_live.is_some() && meta.pid.is_some() {
                 let creator = Peer {
                     name: meta.by.device.clone(),
@@ -1099,6 +1168,7 @@ impl Chat {
             ("last_reason", m.last_reason.map(Value::from)),
             ("pending", m.pending.map(|p| json!(p))),
             ("permission_mode", m.permission_mode.map(Value::from)),
+            ("effort", m.effort.map(Value::from)),
             ("branch", git::branch(Path::new(&m.cwd)).map(Value::from)),
             ("parent", m.parent.map(Value::from)),
             ("previous_titles", (!m.previous_titles.is_empty()).then(|| json!(m.previous_titles))),
@@ -1361,6 +1431,7 @@ async fn drive(chat: Arc<Chat>, manager: Weak<Inner>, mut rx: mpsc::UnboundedRec
         steering: Vec::new(),
         delivered: HashSet::new(),
         adopting,
+        relaunch: false,
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -1416,6 +1487,9 @@ struct Driver {
     delivered: HashSet<String>,
     /// Waiting to learn whether the runner still runs this session's agent: nothing starts.
     adopting: bool,
+    /// The process runs with settings it cannot take while it runs (Claude Code's effort level):
+    /// it restarts, resuming the conversation, as soon as no turn runs.
+    relaunch: bool,
 }
 
 /// Message ids remembered for [`Driver::seen`].
@@ -1528,6 +1602,7 @@ impl Driver {
                 }),
             },
             Cmd::SetMode { mode, by } => self.set_mode(mode, by).await,
+            Cmd::SetModel { model, effort, by } => self.set_model(model, effort, by).await,
             Cmd::Dequeue { id } => {
                 self.queue.retain(|i| i.id != id);
                 self.chat.emit_state(&self.queue);
@@ -1599,6 +1674,90 @@ impl Driver {
                     self.chat.emit(Ev::Mode { mode });
                 }
             }
+        }
+    }
+
+    /// Switches the model and effort level the next messages run with (`None`: the agent's default).
+    /// Codex takes both with its next turn and ACP agents a model from their config options;
+    /// Claude Code switches models in the running process (it says when, [`Out::ModelSet`]) but
+    /// takes an effort level only at start, so for another level its process restarts, resuming the
+    /// conversation, once no turn runs. A session without a process records them for the next one.
+    async fn set_model(&mut self, model: Option<String>, effort: Option<String>, by: By) {
+        let meta = self.chat.meta();
+        let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+        let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
+        let bad = match (&model, &effort) {
+            (Some(m), _) if !valid_token(m) => Some(format!("'{m}' is not a model name")),
+            (_, Some(e)) if !valid_effort(e) => Some(format!("'{e}' is not an effort level")),
+            _ => None,
+        };
+        if let Some(text) = bad {
+            self.chat.emit(Ev::Notice { input_id: None, level: "warn", code: "model_rejected", text });
+            return;
+        }
+        let Some(manager) = self.manager() else { return };
+        let protocol = manager.protocol_of(&meta.runtime);
+        // A level the model does not take is not kept (NS-33), as far as the agent said which it takes;
+        // ACP agents take none here.
+        let effort = effort.filter(|e| {
+            protocol != Some(Protocol::Acp) && takes_effort(&manager.models_for(&self.chat), model.as_deref(), e)
+        });
+        if model == meta.model && effort == meta.effort {
+            self.chat.emit(Ev::Model { model, effort });
+            return;
+        }
+        manager.audit(json!({
+            "kind": "chat_session", "action": "model", "chat": self.chat.id, "model": model, "effort": effort,
+            "by": by.device, "principal": by.principal,
+        }));
+        let Some(live) = &self.live else {
+            self.record_model(model, effort);
+            return;
+        };
+        match protocol {
+            // Claude Code says when it switched (or why not); the session records it then.
+            Some(Protocol::ClaudeStreamJson) if effort == meta.effort => {
+                let _ = live.tx.send(LiveCmd::SetModel { model, effort }).await;
+            }
+            Some(Protocol::ClaudeStreamJson) => {
+                self.record_model(model, effort);
+                self.relaunch = true;
+                if self.turn.is_none() {
+                    self.restart().await;
+                }
+            }
+            Some(Protocol::Acp) => {
+                let _ = live.tx.send(LiveCmd::SetModel { model, effort: None }).await;
+            }
+            // Codex: from its next turn on.
+            _ => {
+                let _ = live.tx.send(LiveCmd::SetModel { model: model.clone(), effort: effort.clone() }).await;
+                self.record_model(model, effort);
+            }
+        }
+    }
+
+    /// Records the model and effort level in use and tells every viewer.
+    fn record_model(&self, model: Option<String>, effort: Option<String>) {
+        self.chat.set_meta(|m| {
+            m.model = model.clone();
+            m.effort = effort.clone();
+        });
+        self.chat.emit(Ev::Model { model, effort });
+    }
+
+    /// Restarts the agent process with the session's settings now (nothing runs): it resumes the
+    /// conversation, and messages wait for it as for any start.
+    async fn restart(&mut self) {
+        self.relaunch = false;
+        if self.live.is_none() {
+            return;
+        }
+        self.stop_process("restarting with new settings").await;
+        let Some(manager) = self.manager() else { return };
+        if let Err(e) = self.launch(&manager).await {
+            self.chat.emit(Ev::Notice { input_id: None, level: "error", code: "start_failed", text: format!("{e:#}") });
+            self.chat.set_state(State::Parked, &self.queue);
         }
     }
 
@@ -1801,6 +1960,7 @@ impl Driver {
                     resume: meta.proto_session.as_deref().or(meta.fork_from.as_deref()),
                     fork: meta.proto_session.is_none() && meta.fork_from.is_some(),
                     permission_mode: meta.permission_mode.as_deref(),
+                    effort: meta.effort.as_deref(),
                 })?;
                 (handle, out, None, resolved.caps.steer)
             }
@@ -1817,6 +1977,7 @@ impl Driver {
                         meta.proto_session.as_deref().or(meta.fork_from.as_deref()),
                         meta.proto_session.is_none() && meta.fork_from.is_some(),
                         meta.permission_mode.as_deref(),
+                        meta.effort.as_deref(),
                     )
                     .await?;
                 let steer = runtimes::caps_of(&meta.runtime, &manager.custom()).is_some_and(|c| c.steer);
@@ -1888,6 +2049,17 @@ impl Driver {
                     self.chat.emit(Ev::Commands { commands });
                 }
             }
+            Out::Ev(Ev::Models { mut models }) => {
+                models.truncate(event::MAX_MODELS);
+                if self.chat.meta().models != models {
+                    self.chat.set_meta(|m| m.models = models.clone());
+                    if let Some(m) = self.manager() {
+                        m.remember_models(&self.chat.meta());
+                    }
+                    self.chat.emit(Ev::Models { models });
+                }
+            }
+            Out::ModelSet { model, effort } => self.record_model(model, effort),
             Out::Ev(Ev::Title { title, source }) => {
                 // A name a person gave is not replaced by the agent's.
                 if self.chat.meta().title_source.as_deref() != Some("user") {
@@ -2130,6 +2302,10 @@ impl Driver {
         if let Some(then) = turn.then {
             self.queue.push_front(then);
         }
+        if self.relaunch {
+            // Boxed: restarting stops the process, which may end a turn, which may restart.
+            Box::pin(self.restart()).await;
+        }
         self.next_turn().await;
     }
 
@@ -2234,6 +2410,25 @@ fn kind_name(s: &str) -> &'static str {
 /// A model name or resume id: no spaces or shell metacharacters (they end up in a command line).
 pub fn valid_token(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/@[]".contains(c))
+}
+
+/// Whether `model` (`None`: the agent's default) takes the effort level `effort`, as far as
+/// `models` (what the agent offered) says: a model it lists with no levels takes none; a model it
+/// does not list is not known, so any level goes.
+pub fn takes_effort(models: &[ModelInfo], model: Option<&str>, effort: &str) -> bool {
+    let entry = match model {
+        Some(m) => models.iter().find(|x| x.id == m),
+        None => models.iter().find(|x| x.default),
+    };
+    entry.is_none_or(|x| x.efforts.iter().any(|e| e == effort))
+}
+
+/// An effort level as agents name them (`low` … `max`, Codex's `minimal`, `none`, `ultra`): lower
+/// case letters, digits, `-` and `_`. Which levels a model takes is the agent's to say.
+pub fn valid_effort(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 pub fn random_hex() -> String {

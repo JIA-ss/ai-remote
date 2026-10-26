@@ -30,6 +30,11 @@
 //!   everyone with a `resolved` event;
 //! - `{"mode":{"mode":"default"|"acceptEdits"|"plan"|"bypassPermissions"}}`: switches Claude Code's
 //!   permission mode (other agents answer with a `mode_rejected` notice);
+//! - `{"model":{"model":".."|null,"effort":".."|null}}`: the model and effort level the next
+//!   messages run with (`null`: the agent's default), answered with a `model` event once it holds
+//!   or a `model_rejected` notice (see [`crate::chat`]: Claude Code switches models in the running
+//!   process and restarts it, resuming the conversation, for another effort level; Codex sends both
+//!   with its next turn);
 //! - `{"files":{"rid":..,"query":"..","limit":N}}`: files in the session's folder whose relative
 //!   path contains every word of `query` (see [`crate::chat::files`]), answered with
 //!   `{"t":"files","rid":..,"files":[".."],"truncated":bool,"source":"git"|"walk"}` (or an
@@ -129,6 +134,13 @@ enum Command {
     },
     Mode {
         mode: String,
+    },
+    /// The model and effort level for the next messages (`null` or left out: the agent's default).
+    Model {
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        effort: Option<String>,
     },
     Dequeue {
         id: String,
@@ -252,6 +264,12 @@ async fn serve(host: Arc<HostState>, peer: Peer, mut send: SendStream, recv: Rec
         "images": host.chat().takes_images(&chat),
         // The permission mode now: a session started in the mode it asked for has no `mode` event.
         "permission_mode": meta.permission_mode,
+        // The models the agent offers (as last known; `models` events update it), and the model and
+        // effort level the next message runs with (`null`: the agent's default; `model` events
+        // update them). A host that has `models` here takes the `model` command.
+        "models": host.chat().models_for(&chat),
+        "model": meta.model,
+        "effort": meta.effort,
     });
     if !write_line(&mut send, &hello.to_string()).await {
         return;
@@ -416,6 +434,7 @@ async fn command(host: &HostState, peer: &Peer, chat: &Chat, role: Role, line: &
             chat.send(Cmd::Permit { rid, decision, message: message.map(cap), mode, by })
         }
         Command::Mode { mode } => chat.send(Cmd::SetMode { mode, by }),
+        Command::Model { model, effort } => chat.send(Cmd::SetModel { model, effort, by }),
         Command::Dequeue { id } => chat.send(Cmd::Dequeue { id }),
         Command::End {} => chat.send(Cmd::End { reason: format!("ended by {}", peer.name) }),
         Command::Bye {} | Command::Ping(_) | Command::Files { .. } => unreachable!(),
@@ -492,6 +511,11 @@ mod tests {
         // An older controller's answer still parses.
         assert!(serde_json::from_str::<Command>(r#"{"answer":{"qid":"q1","text":"a"}}"#).is_ok());
         assert!(matches!(serde_json::from_str(r#"{"mode":{"mode":"plan"}}"#).unwrap(), Command::Mode { .. }));
+        let c: Command = serde_json::from_str(r#"{"model":{"model":"haiku","effort":"low"}}"#).unwrap();
+        assert!(matches!(c, Command::Model { model: Some(m), effort: Some(e) } if m == "haiku" && e == "low"));
+        // Back to the agent's default: null or left out.
+        let c: Command = serde_json::from_str(r#"{"model":{"model":null}}"#).unwrap();
+        assert!(matches!(c, Command::Model { model: None, effort: None }));
         assert!(serde_json::from_str::<Command>(r#"{"permit":{"rid":"p1","decision":"always"}}"#).is_err());
         assert_eq!(readonly(Role::Ro).unwrap()["code"], "readonly");
         assert!(readonly(Role::Rw).is_none());

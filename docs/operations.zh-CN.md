@@ -392,7 +392,7 @@ claude mcp add ai-remote -- ai-remote mcp
 | `ai-remote push <本地> <远端> [--force] [--mkdir]` | `files_push` + 文件通道 | admin，默认要审批 |
 | `ai-remote pull <远端> [<本地>] [--force]` | `files_pull` + 文件通道 | admin，默认要审批 |
 | `ai-remote chat list [--refresh]` | `chat_runtimes` | admin |
-| `ai-remote chat start <智能体> --cwd <目录> [--prompt ..] [--model ..] [--hardened]` | `chat_start` + 对话通道 | admin，默认要审批 |
+| `ai-remote chat start <智能体> --cwd <目录> [--prompt ..] [--model ..] [--effort ..] [--hardened]` | `chat_start` + 对话通道 | admin，默认要审批 |
 | `ai-remote chat run <智能体> "<任务>" --cwd <目录> [--keep]` | `chat_start` + 对话通道，打印回答 | admin，默认要审批 |
 | `ai-remote chat sessions` / `attach <id>` / `send <id> "<文本>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`、`chat_attach`、`chat_interrupt`、`chat_end` | admin |
 | `ai-remote chat send <id> "<文本>" --image <文件>` / `commands <id>` / `files <id> [查询]` | 对话通道：随消息发图片、列出智能体的斜杠命令和技能、列出会话目录下的文件 | admin |

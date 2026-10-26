@@ -39,10 +39,17 @@
 //!   every slash command and skill with its description (`commands`), before any message; the
 //!   first turn's `system` `init` then says which of them are skills (`skills`). Agents too old to
 //!   answer it still list the names in `init` (`slash_commands`).
+//! - Models: the same `initialize` answer lists the models (`models`: `value`, `displayName`,
+//!   `description`, `supportedEffortLevels`), the `default` entry naming what runs without one
+//!   (`resolvedModel`); that entry is left out and the model it resolves to is marked default.
+//!   `set_model` switches the model of the running process (answered `{model}`, or an error such as
+//!   `not_found`). There is no control request for the effort level (2.1.308 refuses `set_effort`):
+//!   it is `--effort` at start, so the session restarts the process (resuming the conversation)
+//!   to change it.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::chat::{Image, event::SlashCommand, random_hex};
+use crate::chat::{Image, event::SlashCommand, random_hex, valid_effort, valid_token};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -50,8 +57,8 @@ use tokio::sync::mpsc;
 use super::{DEFAULT_PERMISSION_MODE, Decision, LiveCmd, PERMISSION_MODES, content_text, exit_reason, report};
 use crate::chat::{
     event::{
-        DIFF_SIDE, Ev, Hunk, MAX_HUNKS, Out, Outcome, PREVIEW, PlanEntry, QuestionItem, QuestionOption, ToolContent,
-        ToolKind, ToolStatus, TurnStatus, cut, preview_value,
+        DIFF_SIDE, Ev, Hunk, MAX_HUNKS, MAX_MODELS, ModelInfo, Out, Outcome, PREVIEW, PlanEntry, QuestionItem,
+        QuestionOption, ToolContent, ToolKind, ToolStatus, TurnStatus, cut, preview_value,
     },
     proc::{AgentProc, Line},
 };
@@ -83,6 +90,9 @@ pub fn args(l: &super::Launch<'_>) -> Vec<String> {
     }
     if let Some(m) = l.model {
         a.extend(["--model".into(), m.into()]);
+    }
+    if let Some(e) = l.effort {
+        a.extend(["--effort".into(), e.into()]);
     }
     if let Some(r) = l.resume {
         a.extend(["--resume".into(), r.into()]);
@@ -124,6 +134,8 @@ struct State {
     mode_said: bool,
     /// What the agent asks and waits on a person for, by the id the events carry.
     asks: HashMap<String, Ask>,
+    /// `set_model` requests not answered yet: the model and effort level each asks for.
+    model_reqs: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 /// A `can_use_tool` request waiting for a person.
@@ -233,7 +245,7 @@ pub async fn run(
                         report(&out, Out::SteerRejected { id, reason: format!("{e:#}") }).await;
                     }
                 },
-                Some(cmd @ (LiveCmd::Interrupt | LiveCmd::Answer { .. } | LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::GenerateTitle { .. })) => {
+                Some(cmd @ (LiveCmd::Interrupt | LiveCmd::Answer { .. } | LiveCmd::Permit { .. } | LiveCmd::SetMode { .. } | LiveCmd::SetModel { .. } | LiveCmd::GenerateTitle { .. })) => {
                     let (writes, outs) = command(&mut st, cmd);
                     for w in writes {
                         let _ = proc.write_line(w).await;
@@ -372,6 +384,13 @@ fn command(st: &mut State, cmd: LiveCmd) -> (Vec<String>, Vec<Out>) {
             } else {
                 outs.push(notice("mode_rejected", format!("'{mode}' is not a permission mode")));
             }
+        }
+        LiveCmd::SetModel { model, effort } => {
+            let id = st.request_id("model");
+            // The `default` entry of the model list is what runs without a model.
+            let name = model.clone().unwrap_or_else(|| "default".into());
+            writes.push(control(id.clone(), json!({"subtype": "set_model", "model": name})));
+            st.model_reqs.insert(id, (model, effort));
         }
         LiveCmd::GenerateTitle { description } => {
             let id = st.request_id("title");
@@ -754,6 +773,18 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
                 outs.push(notice("mode_rejected", format!("Claude Code did not switch the permission mode: {why}")));
             }
         }
+        "control_response" if v["response"]["request_id"].as_str().is_some_and(|r| r.starts_with("ar-model-")) => {
+            let r = &v["response"];
+            let asked = r["request_id"].as_str().and_then(|id| st.model_reqs.remove(id));
+            if let Some((model, effort)) = asked {
+                if r["subtype"] == "success" {
+                    outs.push(Out::ModelSet { model, effort });
+                } else {
+                    let why = r["error"].as_str().unwrap_or("refused");
+                    outs.push(notice("model_rejected", format!("Claude Code did not switch the model: {why}")));
+                }
+            }
+        }
         "control_response" if v["response"]["request_id"].as_str().is_some_and(|r| r.starts_with("ar-title-")) => {
             if let Some(title) = v["response"]["response"]["title"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
                 outs.push(Out::Ev(Ev::Title { title: cut(title, 200).0, source: "agent".into() }));
@@ -782,6 +813,10 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
             if st.skills_known && !st.commands.is_empty() {
                 outs.push(st.command_list());
             }
+            let models = models(&r["models"]);
+            if !models.is_empty() {
+                outs.push(Out::Ev(Ev::Models { models }));
+            }
         }
         "control_request" => {
             let id = v["request_id"].clone();
@@ -796,6 +831,36 @@ fn handle(st: &mut State, line: &str) -> (Vec<String>, Vec<Out>) {
         _ => {}
     }
     (writes, outs)
+}
+
+/// The models `initialize` lists. The `default` entry is left out: the model it resolves to is
+/// marked default instead (choosing it means no `--model`).
+pub fn models(list: &Value) -> Vec<ModelInfo> {
+    let list = list.as_array().map(Vec::as_slice).unwrap_or_default();
+    let default = list.iter().find(|m| m["value"] == "default").and_then(|m| m["resolvedModel"].as_str());
+    let mut marked = false;
+    let mut out = Vec::new();
+    for m in list {
+        let Some(id) = m["value"].as_str().filter(|v| *v != "default" && valid_token(v)) else { continue };
+        let mut info = ModelInfo::new(id, m["displayName"].as_str().unwrap_or(id), m["description"].as_str());
+        if m["supportsEffort"] != false {
+            info.efforts = m["supportedEffortLevels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.as_str().filter(|e| valid_effort(e)).map(str::to_string))
+                .collect();
+        }
+        if !marked && default.is_some() && m["resolvedModel"].as_str() == default {
+            info.default = true;
+            marked = true;
+        }
+        out.push(info);
+        if out.len() == MAX_MODELS {
+            break;
+        }
+    }
+    out
 }
 
 /// The context window of `model` in a `result`'s `modelUsage` (keyed by model, sometimes with a
@@ -1002,8 +1067,12 @@ mod tests {
             resume: Some("s1"),
             fork: false,
             permission_mode: None,
+            effort: None,
         };
         let a = args(&l).join(" ");
+        assert!(!a.contains("--effort"), "{a}");
+        let e = super::super::Launch { effort: Some("xhigh"), ..l };
+        assert!(args(&e).join(" ").contains("--model haiku --effort xhigh --resume s1"));
         assert!(a.contains("--permission-mode bypassPermissions"), "{a}");
         assert!(a.contains("--permission-prompt-tool stdio"), "{a}");
         assert!(!a.contains("--disallowedTools"), "{a}");
@@ -1383,5 +1452,71 @@ mod tests {
             ],
         );
         assert!(matches!(&outs[1], Out::Ev(Ev::ToolUpdate { content, .. }) if content.len() == 1));
+    }
+
+    #[test]
+    fn models_come_from_the_initialize_answer_and_switch_with_set_model() {
+        // As 2.1.308 answers (trimmed): the `default` entry, aliases and full ids.
+        let list = json!([
+            {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)", "description": "Opus 5.5 · Best for everyday, complex tasks", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+            {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5", "description": "Best for everyday, complex tasks", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+            {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku 5.5", "description": "Fastest for quick answers", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+            {"value": "claude-haiku-4-5-20251001", "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku 4.5", "description": "Fastest for quick answers", "supportsThinkingOff": true},
+            {"value": "claude-opus-4-6", "resolvedModel": "claude-opus-4-6", "displayName": "Opus 4.6", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "max"]},
+            {"value": "bad model", "displayName": "Bad"}
+        ]);
+        let m = models(&list);
+        let ids: Vec<&str> = m.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["opus", "haiku", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
+            "no default entry, no bad id"
+        );
+        assert!(m[0].default && !m[1].default, "the model the default resolves to is marked");
+        assert_eq!(m[0].name, "Opus 5.5");
+        assert_eq!(m[0].efforts, ["low", "medium", "high", "xhigh", "max"]);
+        assert!(m[2].efforts.is_empty(), "Haiku 4.5 takes no effort level");
+        assert_eq!(m[3].efforts, ["low", "medium", "high", "max"]);
+        // The initialize answer reports them.
+        let mut st = State::new("bypassPermissions");
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": "ar-init", "response": {"commands": [], "models": list}}}),
+            ],
+        );
+        assert!(outs.iter().any(|o| matches!(o, Out::Ev(Ev::Models { models }) if models.len() == 4)), "{outs:?}");
+        // `set_model`: the alias as asked; `default` for the agent's own.
+        let (w, _) = command(&mut st, LiveCmd::SetModel { model: Some("haiku".into()), effort: Some("low".into()) });
+        let req = written(&w[0]);
+        assert_eq!(req["request"], json!({"subtype": "set_model", "model": "haiku"}));
+        let id = req["request_id"].as_str().unwrap().to_string();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": {"model": "claude-haiku-5-5"}}}),
+            ],
+        );
+        assert!(
+            matches!(&outs[0], Out::ModelSet { model: Some(m), effort: Some(e) } if m == "haiku" && e == "low"),
+            "{outs:?}"
+        );
+        let (w, _) = command(&mut st, LiveCmd::SetModel { model: None, effort: None });
+        let req = written(&w[0]);
+        assert_eq!(req["request"]["model"], "default");
+        // An unknown model: the agent's reason, nothing recorded.
+        let (w, _) = command(&mut st, LiveCmd::SetModel { model: Some("nope".into()), effort: None });
+        let id = written(&w[0])["request_id"].as_str().unwrap().to_string();
+        let (_, outs) = run_lines(
+            &mut st,
+            &[
+                json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "Model 'nope' not found", "error_code": "not_found"}}),
+            ],
+        );
+        assert!(
+            matches!(&outs[0], Out::Ev(Ev::Notice { code: "model_rejected", text, .. }) if text.contains("Model 'nope' not found")),
+            "{outs:?}"
+        );
+        assert!(st.model_reqs.len() == 1, "the answered requests are gone, the default one waits");
     }
 }

@@ -130,6 +130,9 @@ pub struct StartArgs {
     /// A model instead of the agent's default.
     #[arg(long)]
     pub model: Option<String>,
+    /// An effort level instead of the agent's default (Claude Code: low, medium, high, xhigh, max).
+    #[arg(long)]
+    pub effort: Option<String>,
     /// Ignore the folder's own agent settings, hooks and MCP servers where the agent supports it.
     #[arg(long)]
     pub hardened: bool,
@@ -146,6 +149,8 @@ pub struct RunArgs {
     pub cwd: String,
     #[arg(long)]
     pub model: Option<String>,
+    #[arg(long)]
+    pub effort: Option<String>,
     #[arg(long)]
     pub hardened: bool,
     /// Keep the session instead of ending it after the answer.
@@ -190,6 +195,9 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             }
             if let Some(m) = a.model {
                 args["model"] = m.into();
+            }
+            if let Some(e) = a.effort {
+                args["effort"] = e.into();
             }
             let started = call(profile, &a.target, "chat_start", args).await?.ok();
             let mut chat = Conversation::open(profile, &a.target, &started, 0).await?;
@@ -242,6 +250,9 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             let mut args = json!({"runtime": a.runtime, "cwd": a.cwd, "hardened": a.hardened, "prompt": a.task});
             if let Some(m) = a.model {
                 args["model"] = m.into();
+            }
+            if let Some(e) = a.effort {
+                args["effort"] = e.into();
             }
             let started = call(profile, &a.target, "chat_start", args).await?.ok();
             let mut chat = Conversation::open(profile, &a.target, &started, 0).await?;
