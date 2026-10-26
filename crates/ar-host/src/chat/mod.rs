@@ -676,7 +676,8 @@ impl ChatManager {
                 pm.name
             );
         }
-        let Some(from) = pm.proto_session.clone().filter(|_| pm.turns > 0) else {
+        // A fork that has not run yet copies what it was forked from (the same conversation).
+        let Some(from) = pm.proto_session.clone().or(pm.fork_from.clone()).filter(|_| pm.turns > 0) else {
             bail!("session '{}' has no conversation to fork yet: it has not run a turn", p.id);
         };
         let (runtime, cwd) = (pm.runtime.clone(), pm.cwd.clone());

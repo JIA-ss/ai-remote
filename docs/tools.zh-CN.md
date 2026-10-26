@@ -537,15 +537,19 @@ pid 被复用也不会误杀无关进程。最多等 3 秒，返回 `{killed: [{
 | 工具 | 默认 | 作用 |
 |---|---|---|
 | `chat_runtimes` | 允许 | 找到的智能体：`id`、`name`、`version`、`path`、`verdict`（`ok`、`missing`、`below_minimum`、`not_executable`）、`login`（`logged_in` / `logged_out` 及方式，不含账号）、`caps`；另有 `host.can_start`、`host.enabled` |
-| `chat_sessions` | 允许 | 未归档的会话列表（`archived: true` 时只列已归档的），最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数、`last_seq`、`pinned`、`archived`，有值时还有 `title` / `title_source`（`agent` 或 `user`）、`first_text`（首条消息前 200 字）、`last_status` / `last_reason`、`pending`（`permission` / `question` / `plan`：有东西等人回答）、`branch`（读文件夹的 `.git/HEAD`，不执行 git）和 Claude Code 的 `permission_mode`；不含对话内容 |
-| `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`，Claude Code 还可给 `permission_mode`（`default`、`acceptEdits`、`plan`、`bypassPermissions`，默认 `bypassPermissions`）。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
+| `chat_sessions` | 允许 | 未归档的会话列表（`archived: true` 时只列已归档的），最新在前：智能体、文件夹、`state`（`starting`、`idle`、`running`、`interrupting`、`parked`、`ended`）、发起设备、轮数、`last_seq`、`pinned`、`archived`，有值时还有 `title` / `title_source`（`agent` 或 `user`）、`first_text`（首条消息前 200 字）、`last_status` / `last_reason`、`pending`（`permission` / `question` / `plan`：有东西等人回答）、`branch`（读文件夹的 `.git/HEAD`，不执行 git）、Claude Code 的 `permission_mode`、`parent`（分叉出来的会话：从哪个会话分叉）和 `previous_titles`（以前用过的标题，旧的在前，最多 10 个）；不含对话内容 |
+| `chat_start` | **询问** | 参数 `runtime`、`cwd`（绝对路径，可用 `~`），可选 `prompt`、`model`、`hardened`、`intent`，Claude Code 还可给 `permission_mode`（`default`、`acceptEdits`、`plan`、`bypassPermissions`，默认 `bypassPermissions`）。也可以只给 `fork_of`（会话 id）加可选的 `prompt` / `intent`，不给 `runtime`、`cwd`、`model`、`permission_mode`：分叉那个会话（见下）。返回会话和对话通道的一次性 `ticket`：2 分钟内有效，只限本设备 |
 | `chat_update` | 允许 | `session` 加 `title`（最多 200 字；空串恢复智能体的标题或首条消息）、`pinned`、`archived` 任意几项。这里起的名字不会被智能体的标题覆盖。返回 `chat_sessions` 里这一行；记审计 |
 | `chat_attach` | 允许 | 参数 `session`。返回票据，可观看会话并给它发消息；任何管理员级别的设备都可以，每条消息记录发送者 |
 | `chat_interrupt` | 允许 | 停止正在进行的一轮，会话继续接收下一条消息 |
 | `chat_end` | 允许 | 结束会话和它的智能体进程，会话记录保留 |
 | `chat_file` | 允许 | 参数 `session`、`path`。返回一次性票据（2 分钟内在文件通道上兑换），读取会话里的 HTML、Markdown 或图片文件，供应用内预览：最大 16 MiB，且只能是会话工作目录里的文件（按解析符号链接后的真实路径判断），或智能体自己在本会话里提到过的路径（工具调用的位置、diff 或它的回答） |
 
-`chat_start`、`chat_attach`、`chat_file` 和 `chat_update` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
+`chat_search` 的参数是 `query`，可选 `limit`（默认 20，最多 50），默认允许：搜本机各会话里说过的话。一段话（人发的一条消息，或智能体的一次回答，分段流出的部分拼起来；不搜工具输出和思考）包含查询里的每个词（按"非字母非数字"切词）就算命中，不区分大小写。返回按最后活动排序的会话，每个带 `hits`（命中段数）和 `excerpts`（最后 3 段：`role` 为 `user` 或 `agent`、`seq`、单行最多 160 字符），以及 `title`、`first_text`、`cwd`、`runtime`、`state`、`archived`、`parent`、`last_activity`。逐行读转录，最多 1.5 s、256 MiB，没读完时 `truncated: true`。
+
+**分叉**：`chat_start` 带 `fork_of` 时新建一个会话，智能体、文件夹、模型、`hardened`、权限模式都取被分叉的会话，`parent` 记它。新会话的转录以那个会话已结束的轮次开头（从 1 重新编号，去掉标题；正在跑的轮次不复制），它的第一个智能体进程把那个智能体自己最后保存的对话复制成一个新对话，此后各走各的：Claude Code 用 `--resume <id> --fork-session`，Codex 用 `thread/fork`（和新线程一样跳过审批）。被分叉的会话不变，正在运行也可以分叉。会拒绝并说明原因：ACP 智能体（没有复制对话的办法），以及智能体还没有对话（没跑过轮次）的会话。分叉出来的会话在有人命名前没有自己的 `title`，应用里显示成父会话的分叉。审计记 `chat_session` / `fork`，带 `parent`。（经 runner 时分叉的对话用 `fork_from` 字段传；不认识它的旧 runner 会开一个新对话，而不是续上另一个会话的对话。）
+
+`chat_start`、`chat_attach`、`chat_file`、`chat_update` 和 `chat_search` 不对 MCP 客户端列出，与 `files_push` / `files_pull` 相同。对话走 `app/ai-remote/chat/1`，只有 ai-remote 的应用和命令行支持这条通道（`ai-remote chat`，见 [operations.zh-CN.md](operations.zh-CN.md)）。
 
 **审批、计划和提问（Claude Code）。** Claude Code 以 `--permission-prompt-tool stdio` 启动，权限模式要求问人的事都会到会话里：
 `AskUserQuestion`（任何模式，包括 bypass）成为带全部题目（`questions`）的 `question` 事件，`ExitPlanMode`（plan 模式）成为

@@ -230,7 +230,11 @@ def out(v):
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
 mode = sys.argv[sys.argv.index("--permission-mode") + 1] if "--permission-mode" in sys.argv else "default"
-out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"], "permissionMode": mode})
+# A fork (--resume X --fork-session) is session fork-X and says so in its plain answers.
+resume = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else None
+forked = resume if "--fork-session" in sys.argv else None
+tail = f" (forked from {forked})" if forked else ""
+out({"type": "system", "subtype": "init", "session_id": f"fork-{forked}" if forked else "fake-session", "skills": ["tidy"], "permissionMode": mode})
 OLD = "def quarter_end(year, q):\n    return date(year, q * 3, 31)\n"
 ANSWER = """Fixed: the quarter end was always **day 31**.
 
@@ -497,10 +501,10 @@ for line in sys.stdin:
     if "AGENT" in text:
         subagent(); continue
     out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m"}}})
-    for word in ("you ", "said: ", text):
+    for word in ("you ", "said: ", text + tail):
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word}}})
-    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text}]}})
-    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text})
+    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text + tail}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text + tail})
 '''
 
 for exe in (options.cli, options.app):

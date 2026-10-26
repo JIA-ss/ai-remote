@@ -819,6 +819,10 @@ async fn a_fork_copies_the_finished_turns_and_its_agent_forks_the_conversation()
     );
     assert_eq!((cm.turns, cm.title.as_deref(), cm.first_text.as_deref()), (1, None, Some("remember KIWI")));
     assert_eq!(child.describe()["parent"], json!(parent.id));
+    // A fork that has not run yet forks the conversation it was itself forked from.
+    let grandchild = m.fork(creator(), &child.id, None).await.unwrap();
+    assert_eq!(grandchild.meta().parent.as_deref(), Some(child.id.as_str()));
+    assert_eq!((grandchild.meta().fork_from.as_deref(), grandchild.meta().turns), (Some("fake-session"), 1));
     // Its transcript starts with the parent's turn, numbered from 1, without the parent's titles.
     let log = std::fs::read_to_string(child.dir.join("events.jsonl")).unwrap();
     assert!(log.starts_with("{\"seq\":1,") && log.contains("remember KIWI"), "{log}");

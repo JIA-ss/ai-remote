@@ -18,6 +18,9 @@
 //      an edit's diff with its real line numbers, stop and continue, a waiting message edited and taken back.
 //   C. First answer wins: a second connection to the same session answers an approval; the desktop's card
 //      goes when the host says it was resolved.
+//   E. (between A9 and A10) Fork from the row menu: the fork under its parent with the guide line, its
+//      agent continuing a copy of the conversation, folding to a summary line, ⌘K finding it by what was
+//      said (the hosts' chat_search) and the parent by a title it had before, archiving asking about it.
 //   D. Three idle sessions outside the current conversation: modifier/range selection, the batch
 //      menu's keyboard focus, pin/read/archive and Undo; `chat_sessions` independently confirms the
 //      host's persisted pin/archive fields, including the archived-only query.
@@ -470,7 +473,8 @@
     const pq = await until("palette", () => $(".ws-palette input"), 5000);
     await check("⌘K opens the search", !!pq);
     setValue(pq, "重命名");
-    const hit = await until("title hit", () => $$(".ws-palette-row").length === 1 && text($(".ws-palette-title")) === name2, 5000);
+    const mainRows = () => $$(".ws-palette-row:not([data-content-hit])");
+    const hit = await until("title hit", () => mainRows().length === 1 && text($(".ws-palette-title", mainRows()[0])) === name2, 5000);
     await check("it finds a session by its title", !!hit, $$(".ws-palette-row").map(text).join(" | "));
     await shot("a08-search");
     keyDown(pq, "Enter");
@@ -478,7 +482,7 @@
     chord("k");
     const pq2 = await until("palette", () => $(".ws-palette input"), 5000);
     setValue(pq2, "src");
-    const byFolder = await until("folder hit", () => $$(".ws-palette-row").length >= 1 && $$(".ws-palette-row").every((r) => text($(".ws-palette-where", r)).includes("src")) && $$(".ws-palette-row"), 5000);
+    const byFolder = await until("folder hit", () => mainRows().length >= 1 && mainRows().every((r) => text($(".ws-palette-where", r)).includes("src")) && mainRows(), 5000);
     await check("it finds a session by its folder", !!byFolder && byFolder.length === 1, $$(".ws-palette-row").map(text).join(" | "));
     keyDown(pq2, "Enter");
     await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 30000)),
@@ -494,6 +498,99 @@
     await check("↑ moves back", document.activeElement === from);
     document.activeElement.click();
     await check("the focused row opens", !!(await until("opened by key", () => currentKey() === k1, 5000)));
+
+    // E. A fork (SB-29) and the deeper search (SB-06): the row menu's Fork copies k1's conversation into a
+    // new session listed under it; the tree folds into a summary line and back; ⌘K finds the fork by what
+    // was said in it (not in its parent), and k1 by a title it had before; archiving k1 asks about its fork.
+    {
+      await openRow(k1);
+      await idle(30000);
+      const forkKeysBefore = new Set($$(".ws-row[data-row-key]").map((r) => r.dataset.rowKey));
+      await rowMenu(k1);
+      const forkItem = await until("Fork item", () => byLetter("F"), 3000);
+      await check("the row menu offers Fork for an idle Claude session", !!forkItem && !forkItem.disabled && /分叉|Fork/.test(text(forkItem)), $(".ws-menu")?.textContent);
+      forkItem?.click();
+      const kf = await until("the fork opened", () => {
+        const key = currentKey();
+        return key && key !== k1 && !forkKeysBefore.has(key) && readyConversation(key) && key;
+      }, 30000);
+      await check("Fork opens a new session", !!kf, `${currentKey()}`);
+      if (!kf) throw sceneError("fork: no new session");
+      await check("the fork is told in a toast", $$(".ws-toast").some((x) => /已分叉|Forked/.test(x.textContent)), $$(".ws-toast").map(text).join(" | "));
+      const fid = kf.slice(kf.indexOf("/") + 1), pid = k1.slice(k1.indexOf("/") + 1);
+      const listed = (await hostCall("chat_sessions")).sessions.find((s) => s.id === fid);
+      await check("the host keeps the fork's parent, agent and folder", listed?.parent === pid && listed?.runtime && listed?.cwd === CFG.work,
+        JSON.stringify(listed ?? {}).slice(0, 300));
+      await check("the fork sits under its parent, indented, with the guide line", rowOf(kf)?.dataset.depth === "1"
+        && rowOf(k1)?.dataset.family === "open" && !!$(`.ws-family[data-family-of="${CSS.escape(k1)}"] .ws-row[data-row-key="${CSS.escape(kf)}"]`));
+      await check("an unnamed fork is named after its parent", /的分叉|^Fork of /.test(rowTitle(kf)), rowTitle(kf));
+      await check("the fork's conversation starts with its parent's turns",
+        !!(await until("copied turns", () => $$(".ws-main .nt-user").some((u) => u.textContent.includes(prompt1)), 15000)));
+      await send("which word ZEBRAFORK", { newTurn: true });
+      await check("the fork's agent continues a copy of the parent's conversation",
+        !!(await said("(forked from fake-session)", 30000)), text(lastTurn()).slice(-200));
+      await idle();
+      await shot("e01-fork-tree");
+      // Folding: shown again by the summary line; a second click within 500 ms is ignored.
+      await openRow(k1);
+      const arrow = () => $(".ws-row-family", rowOf(k1));
+      arrow()?.click();
+      arrow()?.click();
+      const folded = await until("forks hidden", () => rowOf(k1)?.dataset.family === "closed" && !rowOf(kf) && $(".ws-family-sum"), 3000);
+      await check("the arrow hides the forks (a second click within 500 ms is ignored) and a line counts them", !!folded
+        && /1/.test(text(folded)), text(folded));
+      await check("the folded family is remembered here", (localStorage.getItem("ai-remote.ws.families") ?? "").includes(k1));
+      await check("the arrow does not open the session", currentKey() === k1);
+      await shot("e02-forks-hidden");
+      $(".ws-family-sum")?.click();
+      await check("the summary line shows the forks again", !!(await until("forks shown", () => rowOf(k1)?.dataset.family === "open" && rowOf(kf), 3000)));
+      // ⌘K: what was said in the fork (not in its parent) is found by the hosts' search, with an excerpt.
+      chord("k");
+      const dq = await until("palette", () => $(".ws-palette input"), 5000);
+      setValue(dq, "zebrafork");
+      const content = await until("content hit", () => $(`.ws-palette-row[data-content-hit="${CSS.escape(kf)}"]`), 15000);
+      await check("⌘K finds the fork by what was said in it, with an excerpt", !!content && /ZEBRAFORK/.test(text(content)) && /在内容中|In conversations/.test(text($("[data-content-head]"))),
+        $$(".ws-palette-row").map(text).join(" | "));
+      await check("its parent was not told it", !$(`.ws-palette-row[data-content-hit="${CSS.escape(k1)}"]`));
+      await shot("e03-deep-search");
+      content?.click();
+      await check("a content hit opens its session", !!(await until("opened from content", () => !$(".ws-palette") && currentKey() === kf, 10000)), currentKey());
+      // A title it had before is a main result, said so.
+      const former = "E2E ALPHA 曾用名";
+      await hostCall("chat_update", { session: pid, title: former });
+      await hostCall("chat_update", { session: pid, title: name1 });
+      chord("k");
+      const fq = await until("palette", () => $(".ws-palette input"), 5000);
+      setValue(fq, "alpha");
+      // The list learns the earlier title at its next poll (every 4 s, 20 s while the window is hidden).
+      const formerRow = await until("former title listed", () =>
+        $$(".ws-palette-row:not([data-content-hit])").find((r) => text($(".ws-palette-title", r)) === name1 && $("[data-formerly]", r)), 30000);
+      await check("⌘K finds a session by a title it had before, saying so", !!formerRow && text($("[data-formerly]", formerRow)).includes(former), $$(".ws-palette-row").map(text).join(" | "));
+      await shot("e04-formerly");
+      keyDown(fq, "Escape");
+      await until("palette closed", () => !$(".ws-palette"), 3000);
+      // Archiving a session with a fork asks first; "only this one" moves the fork to the top level, Undo puts it back.
+      await rowMenu(k1);
+      byLetter("A")?.click();
+      const ask = await until("archive question", () => $(".ws-confirm"), 5000);
+      await check("archiving a session with a fork asks whether the fork goes too", !!ask && /1/.test(text(ask)) && !!$("[data-family-only]", ask) && !!$("[data-family-all]", ask), text(ask));
+      await shot("e05-archive-ask");
+      $("[data-family-only]", ask)?.click();
+      const moved = await until("fork on top", () => !$(".ws-confirm") && !rowOf(k1) && rowOf(kf) && !rowOf(kf).dataset.depth, 10000);
+      await check("only this one: the parent is archived and its fork moves to the top level", !!moved);
+      const undo = await until("archive toast", () => $$(".ws-toast").find((x) => /已归档|Archived/.test(x.textContent)), 5000);
+      $(".ws-toast-act", undo)?.click();
+      await check("Undo brings the parent back with its fork under it", !!(await until("family again", () => rowOf(k1) && !rowOf(k1).hasAttribute("data-archived")
+        && rowOf(kf)?.dataset.depth === "1", 15000)));
+      // The fork's agent ends (the isolated host runs at most four).
+      await hostCall("chat_end", { session: fid });
+      let forkEnded = false;
+      for (const end = Date.now() + 15000; Date.now() < end && !forkEnded; await sleep(250)) {
+        forkEnded = (await hostCall("chat_sessions")).sessions.some((s) => s.id === fid && s.state === "ended");
+      }
+      await check("the fork ends on its host", forkEnded);
+      await openRow(k1);
+    }
 
     // A10. ⌘B hides and shows the sidebar; its edge drags to a width that stays; a double click resets it.
     chord("b");

@@ -299,10 +299,11 @@ export function Sidebar(p: SidebarProps) {
   // SB-29: whose forks are hidden; the arrow ignores a second click within 500 ms.
   const [folds, setFolds] = useState(readFamilies);
   const foldClicks = useRef(new Map<string, number>());
-  const toggleFamily = (key: string) => {
+  const toggleFamily = (key: string, guarded = true) => {
+    // Only the arrow is guarded against a quick second click; the summary line and the keys are not.
     const now = Date.now();
-    if (now - (foldClicks.current.get(key) ?? 0) < FAMILY_GUARD_MS) return;
-    foldClicks.current.set(key, now);
+    if (guarded && now - (foldClicks.current.get(key) ?? 0) < FAMILY_GUARD_MS) return;
+    if (guarded) foldClicks.current.set(key, now);
     setFolds((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -615,7 +616,7 @@ export function Sidebar(p: SidebarProps) {
     ];
   };
 
-  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean; depth?: number; family?: { open: boolean; onToggle: () => void } } = {}) => (
+  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean; depth?: number; family?: { open: boolean; onToggle: (guarded?: boolean) => void } } = {}) => (
     <Row
       key={x.key}
       item={x}
@@ -667,7 +668,7 @@ export function Sidebar(p: SidebarProps) {
     const depthStyle = { "--ws-depth": depth } as CSSProperties;
     return (
       <Fragment key={key}>
-        {row(n.item, { ...opts, depth, family: { open, onToggle: () => toggleFamily(key) } })}
+        {row(n.item, { ...opts, depth, family: { open, onToggle: (guarded = true) => toggleFamily(key, guarded) } })}
         <div className="ws-family" style={depthStyle} data-family-of={key}>
           {kids.map((c) => family(c, depth + 1, opts))}
           {sum && (
@@ -679,7 +680,7 @@ export function Sidebar(p: SidebarProps) {
               tabIndex={navIndex(`sum:${key}`)}
               onFocus={() => setFocusId(`sum:${key}`)}
               aria-expanded={false}
-              onClick={() => toggleFamily(key)}
+              onClick={() => toggleFamily(key, false)}
             >
               <span>{t(sum.count === 1 ? "ws_family_count_one" : "ws_family_count_many", { n: sum.count })}</span>
               {sum.failed > 0 && <span className="bad">· {t("ws_family_failed", { n: sum.failed })}</span>}
@@ -998,7 +999,7 @@ function Row({
   /** How far under the session it was forked from (SB-29). */
   depth: number;
   /** A session with forks: whether they show, and the arrow that shows or hides them. */
-  family?: { open: boolean; onToggle: () => void };
+  family?: { open: boolean; onToggle: (guarded?: boolean) => void };
   jump?: number;
   /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
   env: Pick<Computer, "os" | "online"> | null;
@@ -1038,7 +1039,7 @@ function Row({
         if (!family || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
         if ((e.key === "ArrowRight" && !family.open) || (e.key === "ArrowLeft" && family.open)) {
           e.preventDefault();
-          family.onToggle();
+          family.onToggle(false);
         }
       }}
       onPointerEnter={(e) => e.pointerType === "mouse" && onHover(e.currentTarget)}

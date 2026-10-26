@@ -175,6 +175,8 @@ ai-remote chat send <session> "stop after the first file" --steer   # into the r
 ai-remote chat send <session> "what is wrong here?" --image shot.png  # images: PNG/JPEG/GIF/WebP, ≤3.75 MiB, up to 4
 ai-remote chat commands <session>                           # its slash commands and skills (send one as text: "/review")
 ai-remote chat files <session> main                         # files in its folder matching "main" (to name as @path)
+ai-remote chat fork <session> [--prompt "try it another way"]   # a new session with a copy of its conversation (Claude, Codex)
+ai-remote chat search "export quarter"                      # sessions whose messages hold every word, with excerpts
 ai-remote chat end <session>
 ```
 

@@ -25,6 +25,9 @@
 | `pinned` | bool | 置顶 |
 | `archived` | bool | 归档（列表默认不显示；被控端仍按原规则清理） |
 | `permission_mode` | string? | Claude 的权限模式：`default`\|`acceptEdits`\|`plan`\|`bypassPermissions` |
+| `parent` | string? | 分叉出来的会话：从哪个会话（同一被控端）分叉（SB-29 子会话树） |
+| `fork_from` | string? | 只在被控端内部用：分叉时父会话的 `proto_session`，第一个进程据此复制对话；`chat_sessions` 不返回 |
+| `previous_titles` | string[]? | 以前用过的标题，旧的在前，最多 10 个；改名（用户或智能体）时把旧标题推入（SB-06 曾用名） |
 
 `chat_sessions` 增加可选参数 `archived: bool`（默认只返回未归档的；`true` 只返回已归档的）。
 
@@ -35,6 +38,18 @@ Claude 会话的 `permission_mode` 记为 `bypassPermissions`（旧会话都是�
 
 新工具 `chat_update`（admin 级，默认允许，`CHANNEL_TOOLS` 里，不对 MCP 客户端列出）：参数 `session` 加任意几项
 `title`（空串表示恢复自动标题）、`pinned`、`archived`。改标题时 `title_source = "user"`。返回更新后的 meta。
+
+分叉（2026-10-26）：`chat_start` 新增可选参数 `fork_of`（同一被控端上的会话 id），此时不给 `runtime` / `cwd` / `model` /
+`permission_mode`（给了就拒绝），都取父会话；新会话 meta 记 `parent`，没有自己的标题（界面显示「父标题 的分叉」/「Fork of …」）。
+转录先复制父会话已结束的轮次（重新编号、去掉 `title` 事件，正在跑的那一轮不复制），第一个进程用父会话的 `proto_session`
+分叉：Claude `--resume <id> --fork-session`，Codex `thread/fork`（`excludeTurns: true`，审批与沙箱同 `thread/start`）。
+拒绝并写明原因：ACP 智能体、父会话还没有 `proto_session`（没跑过轮次）。父会话运行中也允许。经 runner 时用单独的
+`fork_from` 字段，旧 runner 不认识时开新对话，不会续上父会话的对话。
+
+新工具 `chat_search`（admin 级，默认允许，只读，`CHANNEL_TOOLS` 里）：参数 `query`、`limit`（默认 20，最多 50）。
+在本机所有会话的 `events.jsonl` 里按"每个词都包含、不区分大小写"搜 `user` / `message` 正文（同一条回答的分段拼起来，
+不搜工具输出和思考），每个会话最多 3 段带上下文的摘录（≤160 字符）和命中段数，按最后活动排序；逐行读，
+1.5 s / 256 MiB 预算，超了返回 `truncated: true`。
 
 ### 1.2 新事件（chat/1 下行）
 

@@ -608,17 +608,29 @@ settings. Hence every tool here needs admin level, and starting asks the owner b
 | Tool | Default | What it does |
 |---|---|---|
 | `chat_runtimes` | allow | the agents found: `id`, `name`, `version`, `path`, `verdict` (`ok`, `missing`, `below_minimum`, `not_executable`), `login` (`logged_in` / `logged_out` and how, never the account), `caps`; `host.can_start`, `host.enabled` |
-| `chat_sessions` | allow | the sessions that are not archived (`archived: true`: the archived ones), newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns, `last_seq`, `pinned`, `archived`, and when known `title` / `title_source` (`agent` or `user`), `first_text` (the first message, 200 characters), `last_status` / `last_reason`, `pending` (`permission`, `question` or `plan`: something waits for an answer), `branch` (read from the folder's `.git/HEAD`, git is never run) and Claude Code's `permission_mode`; never the conversation |
-| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`, and for Claude Code `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`; default `bypassPermissions`). Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
+| `chat_sessions` | allow | the sessions that are not archived (`archived: true`: the archived ones), newest first: agent, folder, `state` (`starting`, `idle`, `running`, `interrupting`, `parked`, `ended`), who started it, turns, `last_seq`, `pinned`, `archived`, and when known `title` / `title_source` (`agent` or `user`), `first_text` (the first message, 200 characters), `last_status` / `last_reason`, `pending` (`permission`, `question` or `plan`: something waits for an answer), `branch` (read from the folder's `.git/HEAD`, git is never run), Claude Code's `permission_mode`, `parent` (a fork: the session it was forked from) and `previous_titles` (the titles it had before, oldest first, at most 10); never the conversation |
+| `chat_start` | **ask** | `runtime`, `cwd` (absolute; `~` allowed), optional `prompt`, `model`, `hardened`, `intent`, and for Claude Code `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`; default `bypassPermissions`). Or `fork_of` (a session id) with optional `prompt` / `intent` and no `runtime`, `cwd`, `model` or `permission_mode`: a fork of that session (below). Returns the session and a one-time `ticket` for the chat channel (2 minutes, this device only) |
 | `chat_update` | allow | `session` and any of `title` (at most 200 characters; empty: back to the agent's title or the first message), `pinned`, `archived`. A title given here is not replaced by the agent's. Returns the session as `chat_sessions` lists it; audited |
 | `chat_attach` | allow | `session`. A ticket to watch the session and send it messages (any device with admin level; each message records who sent it) |
 | `chat_interrupt` | allow | stops the running turn; the session takes the next message |
 | `chat_end` | allow | ends the session and its agent process; the transcript stays |
 | `chat_file` | allow | `session`, `path`. A one-time ticket (2 minutes, files channel) to read an HTML, Markdown or image file of the session for a preview in the app: at most 16 MiB, and only inside the session's folder (after links are followed) or a path the agent itself named in the session (a tool call's location or diff, or its text) |
+| `chat_search` | allow | `query`, optional `limit` (default 20, at most 50). What was said in the sessions here: a passage (a person's message, or one answer of the agent with its streamed parts joined; not tool output or reasoning) matches when it holds every word of the query (split at anything that is not a letter or a digit), ignoring case. Sessions most recently active first, each with `hits` (matching passages) and `excerpts` (the last 3: `role` `user` or `agent`, `seq`, at most 160 characters on one line), plus `title`, `first_text`, `cwd`, `runtime`, `state`, `archived`, `parent`, `last_activity`. Reads transcripts a line at a time for at most 1.5 s and 256 MiB; `truncated: true` when it stopped before the end |
 
-`chat_start`, `chat_attach`, `chat_file` and `chat_update` are not listed to MCP clients (like `files_push` / `files_pull`): the
+`chat_start`, `chat_attach`, `chat_file`, `chat_update` and `chat_search` are not listed to MCP clients (like `files_push` / `files_pull`): the
 conversation runs on `app/ai-remote/chat/1`, which the ai-remote apps and command line speak
 (`ai-remote chat`, see [operations.md](operations.md)).
+
+**Forks.** `chat_start` with `fork_of` makes a new session with the forked session's agent, folder, model,
+`hardened` and permission mode, and `parent` set to it. Its transcript starts with that session's finished
+turns (numbered again from 1, without its titles; a turn running now is left out), and its agent's first
+process copies that agent's own conversation as last saved into a new one that goes on apart from it:
+Claude Code `--resume <id> --fork-session`, Codex `thread/fork` (bypassed like a new thread). The forked
+session is not changed and may be running. Refused, saying why: ACP agents (no way to copy a
+conversation), and a session whose agent has no conversation yet (no turn). A fork has no `title` of its
+own until someone names it; the apps show it as a fork of its parent. Audited as `chat_session` /
+`fork` with `parent`. (Through an agent runner, the fork's conversation goes as `fork_from`; a runner from
+before forks ignores it and starts a new conversation rather than continuing the other one.)
 
 **Permissions, plans and questions (Claude Code).** Claude Code runs with `--permission-prompt-tool stdio`, so
 what its permission mode says to ask about reaches the session: `AskUserQuestion` (in every mode, bypass

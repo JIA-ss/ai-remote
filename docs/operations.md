@@ -461,6 +461,8 @@ exactly as they do to an agent's calls. `--json` prints machine-readable output.
 | `ai-remote chat run <agent> "<task>" --cwd <dir> [--keep]` | `chat_start` + the chat channel; prints the answer | admin, asks |
 | `ai-remote chat sessions` / `attach <id>` / `send <id> "<text>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`, `chat_attach`, `chat_interrupt`, `chat_end` | admin |
 | `ai-remote chat send <id> "<text>" --image <file>` / `commands <id>` / `files <id> [query]` | the chat channel: an image with a message, the agent's slash commands and skills, files in the session's folder | admin |
+| `ai-remote chat fork <id> [--prompt ..]` | `chat_start` with `fork_of`: a new session with a copy of the conversation (Claude Code, Codex); prints it | admin, asks |
+| `ai-remote chat search "<words>" [--limit N]` | `chat_search`: sessions whose messages hold every word, with excerpts | admin |
 
 **Which host.** `--host <name>`, else the environment variable `AI_REMOTE_HOST`, else this device's
 default host, else the only paired host. `ai-remote hosts default <name>` sets the default (kept in

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """A stand-in for `codex app-server` (JSON-RPC over stdio, the protocol of codex-cli 0.16x), for the
 desktop chat e2e (tools/desktop-chat-e2e.py, tools/desktop-chat-codex-e2e.js). It answers the requests
-the host's Codex adapter sends (initialize, thread/start and /resume, skills/list, turn/start, /steer,
-/interrupt, thread/backgroundTerminals/list) and plays a scripted turn chosen by a word in the message:
+the host's Codex adapter sends (initialize, thread/start, /resume and /fork, skills/list, turn/start,
+/steer, /interrupt, thread/backgroundTerminals/list) and plays a scripted turn chosen by a word in the
+message (in a forked thread the short answer ends "(forked from <thread>)"):
 
   EXPLORE  reasoning, a remark, a search, a read and a listing, a failing command, an edit of two files
            (one new) that it really writes, a passing command, a web search, plan updates, the answer
@@ -53,7 +54,7 @@ def send(v):
 
 
 def note(method, params):
-    send({"jsonrpc": "2.0", "method": method, "params": {"threadId": THREAD, **params}})
+    send({"jsonrpc": "2.0", "method": method, "params": {"threadId": state.get("thread", THREAD), **params}})
 
 
 def result(rid, value):
@@ -273,7 +274,7 @@ def ask(n):
     answers.clear()
     rid = state["next_id"] = state["next_id"] + 1
     send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
-        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": True,
+        "threadId": state.get("thread", THREAD), "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": True,
         "questions": [
             {"id": "scope", "header": "Scope", "question": "Should I fix report/monthly.py too?", "isOther": True, "isSecret": False,
              "options": [{"label": "Fix it too (Recommended)", "description": "Same bug, same fix"},
@@ -293,7 +294,7 @@ def ask(n):
 def resolved(n):
     rid = state["next_id"] = state["next_id"] + 1
     send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/requestUserInput", "params": {
-        "threadId": THREAD, "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": False,
+        "threadId": state.get("thread", THREAD), "turnId": state["turn"], "itemId": f"q{n}", "isBlocking": False,
         "questions": [{"id": "name", "header": "Name", "question": "What should the report be called?", "isOther": False, "isSecret": False, "options": None}]}})
     if not pause(2.5):
         return end("interrupted")
@@ -440,7 +441,10 @@ def drawl(n):
 def short(n):
     if not reasoning(f"r{n}", "**Answering directly**"):
         return end("interrupted")
-    if not message(f"a{n}", "Yes: `calendar.monthrange(2024, 2)` is `(3, 29)`, so leap years are handled.", "final_answer"):
+    said = "Yes: `calendar.monthrange(2024, 2)` is `(3, 29)`, so leap years are handled."
+    if state.get("forked"):
+        said += f" (forked from {state['forked']})"
+    if not message(f"a{n}", said, "final_answer"):
         return end("interrupted")
     end()
 
@@ -481,7 +485,17 @@ for line in sys.stdin:
         result(rid, {"userAgent": "fake-codex/0.163.0", "platformFamily": "unix", "platformOs": sys.platform})
     elif method in ("thread/start", "thread/resume"):
         state["cwd"] = params.get("cwd") or state["cwd"]
-        result(rid, {"thread": {"id": THREAD, "preview": "", "cwd": state["cwd"]}, "model": "gpt-fake", "cwd": state["cwd"]})
+        if method == "thread/resume" and params.get("threadId"):
+            state["thread"] = params["threadId"]
+        result(rid, {"thread": {"id": state.get("thread", THREAD), "preview": "", "cwd": state["cwd"]}, "model": "gpt-fake", "cwd": state["cwd"]})
+    elif method == "thread/fork":
+        # A new thread with the turns of `threadId`; plain answers then say where they came from.
+        state["cwd"] = params.get("cwd") or state["cwd"]
+        state["forked"] = params.get("threadId")
+        state["thread"] = f"{params.get('threadId')}-fork"
+        result(rid, {"thread": {"id": state["thread"], "preview": "", "cwd": state["cwd"]}, "model": "gpt-fake", "cwd": state["cwd"],
+                     "approvalPolicy": params.get("approvalPolicy"), "sandbox": params.get("sandbox"), "modelProvider": "openai",
+                     "approvalsReviewer": None})
     elif method == "skills/list":
         result(rid, {"data": [{"cwd": state["cwd"], "skills": [{"name": "tidy", "path": "/skills/tidy/SKILL.md", "description": "Tidy imports and formatting", "enabled": True}], "errors": []}]})
     elif method == "turn/start":
