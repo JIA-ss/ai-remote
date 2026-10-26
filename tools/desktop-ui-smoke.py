@@ -29,6 +29,11 @@ back), Settings -> sidebar -> Devices with < and > in between, a session -> work
 Computers, a session's < to its computer, the computer-less workspace -> Computers, and a sheet
 opened over the computer page (it sits outside .win, its ancestors are clean).
 
+Before the screens, a self-test plants one violation of each kind on a live session (blur in the
+stage, an ancestor's opacity / filter / mask / will-change, glass in glass, a dialog in .win, a second
+h1 and page root, a sideways scroller, a blur that survives data-material=none) and expects every
+detector to report it, so a clean run means the detectors work.
+
 A static lint runs first over the glass layer and the app's own sheets (styles/glass, workspace,
 claude, codex, app): every non-none backdrop-filter has a -webkit-backdrop-filter with a literal value
 before it in the same rule, and its selectors start with
@@ -321,6 +326,12 @@ return {
   dialogsInWin: [...d.querySelectorAll('.win .cdlg, .win .smoke')].map(desc),
   overflow: {doc: d.documentElement.scrollWidth, view: d.documentElement.clientWidth,
     content: content ? [content.scrollWidth, content.clientWidth] : null},
+  // scroll containers that scroll sideways although nothing in them is meant to (code and the
+  // remote picture may)
+  hscroll: [...d.querySelectorAll('*')].filter(e => { const s = cs(e);
+    return (s.overflowX === 'auto' || s.overflowX === 'scroll') && e.scrollWidth > e.clientWidth + 1 && e.getClientRects().length > 0
+      && !e.matches('pre, pre *, code, textarea, table, .mono, .nt-out, .nt-diff-rows') && !e.closest(%(stage)s); })
+    .map(e => desc(e) + ' ' + e.scrollWidth + '/' + e.clientWidth),
   errorOverlay: !!d.querySelector('vite-error-overlay'),
   demo: !!d.querySelector('.demo-badge'),
 };""" % {"roots": json.dumps(ROOTS), "stage": json.dumps(STAGE), "surfaces": json.dumps(SURFACES)}
@@ -440,6 +451,7 @@ def audit_screen(name, query, kind, root, expect, lang, theme):
     check(f"{tag}: no dialog inside .win", not a["dialogsInWin"], a["dialogsInWin"])
     o = a["overflow"]
     check(f"{tag}: no horizontal overflow", o["doc"] <= o["view"] + 1 and (not o["content"] or o["content"][0] <= o["content"][1] + 1), o)
+    check(f"{tag}: no sideways scrolling inside the page", not a["hscroll"], a["hscroll"])
 
     # The same screen with the material off: not a single backdrop-filter may remain.
     set_reduced(True)
@@ -456,6 +468,51 @@ def audit_screen(name, query, kind, root, expect, lang, theme):
         shot(f"{name}-{lang}-{theme}-reduced")
     set_reduced(False)
     check(f"{tag}: glass comes back", until("return d.documentElement.dataset.material === 'preview';", 3))
+
+
+# ---------------------------------------------------------------- the detectors themselves
+
+def self_test():
+    """Plant one violation of each kind on a live session and expect the audit to report it, so a
+    clean run means the detectors work rather than that they looked at nothing."""
+    if not check("self-test: a live session loads", load("shotlang=zh&shottheme=dark&view=session&host=lab-pc", ".nt-session")):
+        return
+    planted = fjs("""const plant = (parent, tag, cls, css) => { if (!parent) return null; const e = d.createElement(tag);
+        e.className = (cls + ' gl-audit-plant').trim(); e.style.cssText = 'position:absolute;left:0;top:0;width:8px;height:8px;' + css;
+        parent.append(e); return e; };
+      const cap = d.querySelector('.nt-session .gl-toolbar .gl-cap');
+      const ok = [
+        plant(d.querySelector('.nt-stage'), 'div', '', 'backdrop-filter: blur(3px)'),
+        plant(cap, 'div', '', 'backdrop-filter: blur(3px)'),
+        plant(d.querySelector('.win'), 'div', 'cdlg', ''),
+        plant(d.querySelector('.nt-session'), 'h1', '', ''),
+        plant(d.querySelector('.win'), 'div', 'spage', ''),
+        plant(d.querySelector('.nt-session'), 'div', '', 'overflow-x: auto; width: 40px'),
+      ];
+      if (ok.some(e => !e)) return false;
+      ok[5].append(Object.assign(d.createElement('div'), {style: 'width: 200px; height: 1px'}));
+      d.querySelector('.nt-session .gl-toolbar').style.opacity = '0.9';
+      d.querySelector('.nt-session').style.willChange = 'transform';
+      d.querySelector('.nt-live-workspace').style.filter = 'saturate(1.1)';
+      d.querySelector('.win').style.maskImage = 'linear-gradient(#000, #000)';
+      return true;""")
+    if not check("self-test: violations planted", planted):
+        return
+    a = audit()
+    found = " | ".join(" ".join(p["ancestors"]) for p in a["problems"])
+    check("self-test: blur inside the stage is caught", any("gl-audit-plant" in x for x in a["stageBlur"]), a["stageBlur"])
+    for needle, what in (("opacity 0.9", "opacity"), ("will-change transform", "will-change"), ("filter saturate", "filter"), ("mask ", "mask")):
+        check(f"self-test: glass under an ancestor's {what} is caught", needle in found, found[:400])
+    check("self-test: glass inside glass is caught", "is glass too" in found, found[:400])
+    check("self-test: a dialog inside .win is caught", any("cdlg" in x for x in a["dialogsInWin"]), a["dialogsInWin"])
+    check("self-test: a second h1 is caught", len(a["h1Shell"]) == 2, a["h1Shell"])
+    check("self-test: a second page root is caught", a["roots"][".spage"] == 1 and a["roots"][".nt-session"] == 1, a["roots"])
+    check("self-test: sideways scrolling is caught", any("gl-audit-plant" in x for x in a["hscroll"]), a["hscroll"])
+    set_reduced(True)
+    until("return d.documentElement.dataset.material === 'none';", 3)
+    b = audit()
+    check("self-test: a blur left with the material off is caught", any("gl-audit-plant" in x for x in b["blurAll"]), b["blurAll"])
+    set_reduced(False)
 
 
 # ---------------------------------------------------------------- interactions
@@ -557,7 +614,7 @@ def interactions():
         where = fjs("const s=d.querySelector('.gl-modal-root [aria-modal=true]');return {inWin:!!s.closest('.win'),root:s.closest('.gl-modal-root').parentElement===d.body,cdlg:d.querySelectorAll('.cdlg').length};")
         check(f"sheet {theme}: portalled to body, outside .win", where["root"] and not where["inWin"] and where["cdlg"] >= 1, where)
         check(f"sheet {theme}: no dialog inside .win", not a["dialogsInWin"], a["dialogsInWin"])
-        check(f"sheet {theme}: the sheet is glass", any("aria-modal" not in x and ("cdlg" in x or "gl-sheet" in x) for x in a["blurShown"]), a["blurShown"])
+        check(f"sheet {theme}: the sheet is glass", any(".cdlg" in x or ".gl-sheet" in x for x in a["blurShown"]), a["blurShown"])
         check(f"sheet {theme}: glass is a leaf with clean ancestors", not a["problems"], a["problems"])
         check(f"sheet {theme}: at most one blurred element animating", len(a["glassAnimating"]) <= 1, a["glassAnimating"])
         shot(f"x-sheet-{lang}-{theme}")
@@ -620,6 +677,7 @@ def main():
         engine = fjs("const c=d.querySelector('.gl-toolbar .gl-cap');return c?w.getComputedStyle(c).backdropFilter:null;")
         if not check("engine: getComputedStyle reports backdrop-filter", engine and engine != "none", engine):
             raise RuntimeError("this engine does not report backdrop-filter; the blur checks would be meaningless")
+        self_test()
 
         for lang in langs:
             for name, query, kind, root, expect in screens(lang):
