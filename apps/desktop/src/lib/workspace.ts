@@ -311,8 +311,8 @@ export function truncateGroup<T extends { key: string }>(items: T[], limit: numb
 // ---------------------------------------------------------------------------------------------
 // How the list groups, sorts and filters (SB-09..SB-14, SB-46)
 
-/** SB-09: by folder on a computer (the default here), by day, by state, or not at all. */
-export type GroupBy = "project" | "date" | "state" | "none";
+/** SB-09: by folder on a computer (the default here), by the groups made here (SB-08), by day, by state, or not at all. */
+export type GroupBy = "project" | "custom" | "date" | "state" | "none";
 /** SB-11: the sessions listed — those not archived (default), the archived ones, or both. */
 export type StatusFilter = "active" | "archived" | "all";
 
@@ -332,7 +332,7 @@ const pick = <V extends string>(v: unknown, ok: readonly V[], fallback: V): V =>
 export function normalizeList(raw: unknown): ListPrefs {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
-    groupBy: pick(o.groupBy, ["project", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
+    groupBy: pick(o.groupBy, ["project", "custom", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
     sort: pick(o.sort, ["recency", "created", "alpha"] as const, DEFAULT_LIST.sort),
     reversed: o.reversed === true,
     status: pick(o.status, ["active", "archived", "all"] as const, DEFAULT_LIST.status),
@@ -415,6 +415,235 @@ export function stateBucket(m: WsMeta, dot: Dot | null): StateBucket {
 /** Sessions by state bucket, in SB-14's order, without empty buckets; items keep their order. */
 export function stateBuckets<T>(items: T[], bucketOf: (x: T) => StateBucket): Array<{ key: StateBucket; items: T[] }> {
   return STATE_ORDER.map((key) => ({ key, items: items.filter((x) => bucketOf(x) === key) })).filter((b) => b.items.length);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Groups made here, the pinned order (SB-08 / SB-15 / SB-36 / SB-42), the "Older" bucket's bulk
+// action (SB-38), and how rows are drawn: density (SB-04) and the metadata line (SB-28). All of it
+// stays on this device: a group holds sessions by `host/id`, so sessions of several computers can
+// share one, and a host only ever sees its session ids.
+
+/** A group made here: a name (1–200 characters, SB-08) and a stable id. */
+export interface CustomGroup {
+  id: string;
+  name: string;
+}
+
+export interface GroupsState {
+  /** The groups in the order they are drawn (SB-15: the person's order). */
+  groups: CustomGroup[];
+  /** Session (`host/id`) → the group it was moved into; a session is in one group at most. */
+  members: Record<string, string>;
+  /** Pinned sessions in the order they were put (SB-42); pins not in it follow, in the list's order. */
+  pinOrder: string[];
+}
+
+export const EMPTY_GROUPS: GroupsState = { groups: [], members: {}, pinOrder: [] };
+/** SB-08: a group's name is 1–200 characters; at most 100 sessions move in one go. */
+export const GROUP_NAME_MAX = 200;
+export const MOVE_MAX = 100;
+
+/** A name as kept: inner runs of space made one, trimmed, at most 200 characters; null for an empty one. */
+export function cleanGroupName(raw: string): string | null {
+  const v = raw.replace(/\s+/g, " ").trim();
+  return v ? v.slice(0, GROUP_NAME_MAX) : null;
+}
+
+/** Saved groups as they can be used: broken entries dropped, members of groups that are gone forgotten. */
+export function normalizeGroups(raw: unknown): GroupsState {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const seen = new Set<string>();
+  const groups: CustomGroup[] = [];
+  for (const g of Array.isArray(o.groups) ? o.groups : []) {
+    const r = g && typeof g === "object" ? (g as Record<string, unknown>) : {};
+    const id = typeof r.id === "string" ? r.id : "";
+    const name = typeof r.name === "string" ? cleanGroupName(r.name) : null;
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    groups.push({ id, name });
+  }
+  const members: Record<string, string> = {};
+  if (o.members && typeof o.members === "object") {
+    for (const [k, v] of Object.entries(o.members as Record<string, unknown>)) if (typeof v === "string" && seen.has(v)) members[k] = v;
+  }
+  const pinOrder = Array.isArray(o.pinOrder) ? [...new Set(o.pinOrder.filter((k): k is string => typeof k === "string"))] : [];
+  return { groups, members, pinOrder };
+}
+
+/** A new group at the end of the order; null when the name is empty or the id is taken. */
+export function createGroup(s: GroupsState, name: string, id: string): { state: GroupsState; group: CustomGroup } | null {
+  const clean = cleanGroupName(name);
+  if (!clean || !id || s.groups.some((g) => g.id === id)) return null;
+  const group = { id, name: clean };
+  return { state: { ...s, groups: [...s.groups, group] }, group };
+}
+
+/** A group renamed; the same state when the name is empty or unchanged. */
+export function renameGroup(s: GroupsState, id: string, name: string): GroupsState {
+  const clean = cleanGroupName(name);
+  if (!clean || !s.groups.some((g) => g.id === id && g.name !== clean)) return s;
+  return { ...s, groups: s.groups.map((g) => (g.id === id ? { ...g, name: clean } : g)) };
+}
+
+export interface DeletedGroup {
+  group: CustomGroup;
+  index: number;
+  members: string[];
+}
+
+/**
+ * SB-08: a group deleted, its sessions back in the list's own section. What comes back lets the toast's
+ * Undo put the group, its place and its sessions back as they were.
+ */
+export function deleteGroup(s: GroupsState, id: string): { state: GroupsState; undo: DeletedGroup | null } {
+  const index = s.groups.findIndex((g) => g.id === id);
+  if (index < 0) return { state: s, undo: null };
+  const members = Object.keys(s.members).filter((k) => s.members[k] === id);
+  const rest = { ...s.members };
+  for (const k of members) delete rest[k];
+  return { state: { ...s, groups: s.groups.filter((g) => g.id !== id), members: rest }, undo: { group: s.groups[index], index, members } };
+}
+
+/** Undoes `deleteGroup`: the group at its place again, with its sessions that went into no other group since. */
+export function restoreGroup(s: GroupsState, undo: DeletedGroup): GroupsState {
+  if (s.groups.some((g) => g.id === undo.group.id)) return s;
+  const groups = [...s.groups];
+  groups.splice(Math.min(undo.index, groups.length), 0, undo.group);
+  const members = { ...s.members };
+  for (const k of undo.members) if (!members[k]) members[k] = undo.group.id;
+  return { ...s, groups, members };
+}
+
+export interface GroupMove {
+  key: string;
+  from: string | null;
+}
+
+/**
+ * Sessions moved into a group (`null`: out of any group). At most `MOVE_MAX` in one go (SB-08); an
+ * unknown group moves nothing. `moved` lists the sessions whose group changed, with the group each was in.
+ */
+export function moveToGroup(s: GroupsState, keys: string[], id: string | null): { state: GroupsState; moved: GroupMove[] } {
+  if (id !== null && !s.groups.some((g) => g.id === id)) return { state: s, moved: [] };
+  const members = { ...s.members };
+  const moved: GroupMove[] = [];
+  for (const key of [...new Set(keys)].slice(0, MOVE_MAX)) {
+    const from = members[key] ?? null;
+    if (from === id) continue;
+    moved.push({ key, from });
+    if (id === null) delete members[key];
+    else members[key] = id;
+  }
+  return moved.length ? { state: { ...s, members }, moved } : { state: s, moved };
+}
+
+/** Puts the sessions of a move back into the groups they came from (the toast's Undo). */
+export function undoMove(s: GroupsState, moved: GroupMove[]): GroupsState {
+  const members = { ...s.members };
+  for (const { key, from } of moved) {
+    if (from === null || !s.groups.some((g) => g.id === from)) delete members[key];
+    else members[key] = from;
+  }
+  return { ...s, members };
+}
+
+/**
+ * A list with `key` placed before the item that was at `before` (0..length; the end for anything past
+ * it), as a drag's insertion line or one step of ⌥↑ / ⌥↓ says. A key not in the list is inserted.
+ */
+export function moveKey(keys: string[], key: string, before: number): string[] {
+  return placeKeys(keys, [key], before);
+}
+
+/** Several keys placed together, in their given order, before the item that was at `before` (a dragged selection). */
+export function placeKeys(keys: string[], moving: string[], before: number): string[] {
+  const take = new Set(moving);
+  const at = Math.max(0, Math.min(Math.round(before), keys.length));
+  const rest = keys.filter((k) => !take.has(k));
+  const shift = keys.slice(0, at).filter((k) => take.has(k)).length;
+  rest.splice(Math.min(at - shift, rest.length), 0, ...[...take]);
+  return rest;
+}
+
+/** SB-15: a group moved before the group that was at `before` (drag or ⌥↑ / ⌥↓). */
+export function moveGroup(s: GroupsState, id: string, before: number): GroupsState {
+  const ids = s.groups.map((g) => g.id);
+  if (!ids.includes(id)) return s;
+  const order = moveKey(ids, id, before);
+  if (order.every((x, i) => x === ids[i])) return s;
+  const byId = new Map(s.groups.map((g) => [g.id, g]));
+  return { ...s, groups: order.map((x) => byId.get(x) as CustomGroup) };
+}
+
+/** Items in a remembered order first (SB-15 / SB-42), then the others in the order they came. */
+export function orderBy<T>(items: T[], order: readonly string[], keyOf: (x: T) => string): T[] {
+  if (!order.length) return items;
+  const at = new Map(order.map((k, i) => [k, i]));
+  const known = items.filter((x) => at.has(keyOf(x))).sort((a, b) => (at.get(keyOf(a)) as number) - (at.get(keyOf(b)) as number));
+  return [...known, ...items.filter((x) => !at.has(keyOf(x)))];
+}
+
+/**
+ * "Custom groups" (SB-08's section layout): one section per group made here, in its order (empty ones
+ * too, so a row can be dropped there), then the sessions in no group. Items keep their order.
+ */
+export function customSections<T extends { key: string }>(items: T[], s: GroupsState): { sections: Array<{ group: CustomGroup; items: T[] }>; rest: T[] } {
+  const by = new Map(s.groups.map((g) => [g.id, [] as T[]]));
+  const rest: T[] = [];
+  for (const x of items) {
+    const list = by.get(s.members[x.key] ?? "");
+    if (list) list.push(x);
+    else rest.push(x);
+  }
+  return { sections: s.groups.map((group) => ({ group, items: by.get(group.id) as T[] })), rest };
+}
+
+/** SB-38: sessions in the "Older" bucket a week or more without activity, not archived yet. */
+export const OLDER_DAYS = 7;
+export function olderSessions<T extends { meta: WsMeta }>(items: T[], now: number): T[] {
+  const before = now - OLDER_DAYS * 86_400_000;
+  return items.filter((x) => !x.meta.archived && x.meta.last_activity < before);
+}
+
+/** SB-04: the two densities. Compact is the default (the session list's 28 px rows); comfortable is 30 px (desktop). */
+export type Density = "compact" | "comfortable";
+export const DENSITY: Record<Density, { row: number; font: number; groupFont: number; radius: number; groupTop: number; gap: number; meta: number }> = {
+  compact: { row: 28, font: 13, groupFont: 12, radius: 6, groupTop: 12, gap: 2, meta: 20 },
+  comfortable: { row: 30, font: 14, groupFont: 13, radius: 8, groupTop: 14, gap: 2, meta: 20 },
+};
+
+/** How rows are drawn: the density and whether they carry the metadata line (SB-12's "Show"). */
+export interface DisplayPrefs {
+  density: Density;
+  meta: boolean;
+}
+export const DEFAULT_DISPLAY: DisplayPrefs = { density: "compact", meta: false };
+
+export function normalizeDisplay(raw: unknown): DisplayPrefs {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return { density: pick(o.density, ["compact", "comfortable"] as const, DEFAULT_DISPLAY.density), meta: o.meta === true };
+}
+
+export function isDefaultDisplay(d: DisplayPrefs): boolean {
+  return d.density === DEFAULT_DISPLAY.density && d.meta === DEFAULT_DISPLAY.meta;
+}
+
+/**
+ * SB-28's second line: blocked (something waits for a person, unless the row sits under "Needs you"),
+ * else the branch, then the folder (left out when the group header already names it), then the computer
+ * when it is not this one and the header does not say it. Null fields are left out; null: no line at all.
+ */
+export function metaLine(
+  m: WsMeta,
+  o: { groupFolder?: string | null; host?: string | null; underBlocked?: boolean },
+): { blocked: WsPending | null; branch: string | null; folder: string | null; host: string | null } | null {
+  if (!o.underBlocked && m.pending && m.state !== "ended") return { blocked: m.pending, branch: null, folder: null, host: null };
+  const branch = m.branch?.trim() || null;
+  const name = folderName(m.cwd) || trimFolder(m.cwd) || null;
+  const folder = name && !(o.groupFolder && sameFolder(o.groupFolder, m.cwd)) ? name : null;
+  const host = o.host?.trim() || null;
+  if (!branch && !folder && !host) return null;
+  return { blocked: null, branch, folder, host };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -606,6 +835,8 @@ export interface WsSnapshot {
   first: Record<string, string>;
   /** The session open in the workspace now. */
   current: string | null;
+  /** Groups made here, who is in them, and the pinned order (all on this device). */
+  groups: GroupsState;
   rev: number;
 }
 
@@ -634,6 +865,7 @@ const KEYS = {
   base: "ai-remote.ws.baselined",
   acked: "ai-remote.ws.ackedTurns",
   cache: "ai-remote.ws.cache",
+  groups: "ai-remote.ws.groups",
 } as const;
 
 /** Most sessions cached per computer, and remembered first messages / seen marks overall. */
@@ -679,6 +911,7 @@ export class WorkspaceStore {
       withArchived: false,
       first: this.read(KEYS.first, {}),
       current: null,
+      groups: normalizeGroups(this.read<unknown>(KEYS.groups, null)),
       rev: 0,
     };
     this.baselined = new Set(this.read<string[]>(KEYS.base, []));
@@ -717,6 +950,7 @@ export class WorkspaceStore {
     if (next.pins) this.write(KEYS.pins, this.snap.pins);
     if (next.first) this.write(KEYS.first, this.snap.first);
     if (next.acked) this.write(KEYS.acked, this.snap.acked);
+    if (next.groups) this.write(KEYS.groups, this.snap.groups);
     this.listeners.forEach((l) => l());
   }
 
@@ -890,6 +1124,21 @@ export class WorkspaceStore {
       else seen[key] = was.seen;
       this.set({ acked, seen, unread: was.explicit ? [...this.snap.unread.filter((k) => k !== key), key] : this.snap.unread });
     };
+  }
+
+  /**
+   * The groups made here after a change (lib functions compute it from `get().groups`); members are
+   * kept for the last 2000 sessions, and so is the pinned order.
+   */
+  setGroups(next: GroupsState) {
+    if (next === this.snap.groups) return;
+    this.set({ groups: { ...next, members: keepLast(next.members, MAX_MARKS), pinOrder: next.pinOrder.slice(-MAX_MARKS) } });
+  }
+
+  /** The group a session was moved into here, if it still exists. */
+  groupOf(key: string): CustomGroup | null {
+    const id = this.snap.groups.members[key];
+    return (id && this.snap.groups.groups.find((g) => g.id === id)) || null;
   }
 
   /** Whether archived sessions are asked for and kept (the list's filter shows them); asks again when it changes. */

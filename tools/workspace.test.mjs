@@ -810,3 +810,162 @@ test("archive undo preserves events arriving after its filtered row is restored 
   assert.equal(restored.meta.state, "running");
   assert.equal(restored.meta.last_seq, 99);
 });
+
+// ---- Groups made here, pinned order, density and the metadata line (SB-04 / SB-08 / SB-15 / SB-28 / SB-36 / SB-38 / SB-42)
+
+test("custom groups: names are 1–200 characters, broken saved entries are dropped", () => {
+  assert.equal(ws.cleanGroupName("   "), null);
+  assert.equal(ws.cleanGroupName("  发布   前 检查 "), "发布 前 检查");
+  assert.equal(ws.cleanGroupName("x".repeat(250)).length, 200);
+  const saved = ws.normalizeGroups({
+    groups: [{ id: "a", name: "Release" }, { id: "a", name: "dup" }, { id: "", name: "no id" }, { id: "b", name: "  " }, { id: "c", name: "QA" }, "junk"],
+    members: { "pc/1": "a", "pc/2": "gone", "pc/3": 7, "mac/9": "c" },
+    pinOrder: ["pc/1", "pc/1", 3, "mac/9"],
+  });
+  assert.deepEqual(plain(saved), { groups: [{ id: "a", name: "Release" }, { id: "c", name: "QA" }], members: { "pc/1": "a", "mac/9": "c" }, pinOrder: ["pc/1", "mac/9"] });
+  assert.deepEqual(plain(ws.normalizeGroups(null)), plain(ws.EMPTY_GROUPS));
+});
+
+test("custom groups: create, rename, move sessions of several computers in, out, and undo", () => {
+  let s = ws.EMPTY_GROUPS;
+  const made = ws.createGroup(s, " Release ", "g1");
+  assert.deepEqual(plain(made.group), { id: "g1", name: "Release" });
+  s = made.state;
+  assert.equal(ws.createGroup(s, "", "g2"), null);
+  assert.equal(ws.createGroup(s, "Again", "g1"), null);
+  s = ws.createGroup(s, "QA", "g2").state;
+  assert.equal(ws.renameGroup(s, "g2", "   "), s);
+  assert.equal(ws.renameGroup(s, "g2", "QA"), s);
+  s = ws.renameGroup(s, "g2", "测试");
+  assert.deepEqual(plain(s.groups.map((g) => g.name)), ["Release", "测试"]);
+  // Sessions of two computers share one group.
+  const m = ws.moveToGroup(s, ["pc/1", "mac/1", "pc/1"], "g1");
+  assert.deepEqual(plain(m.moved), [{ key: "pc/1", from: null }, { key: "mac/1", from: null }]);
+  s = m.state;
+  const again = ws.moveToGroup(s, ["pc/1"], "g1");
+  assert.equal(again.state, s);
+  assert.deepEqual(plain(again.moved), []);
+  assert.deepEqual(plain(ws.moveToGroup(s, ["pc/1"], "nope").moved), []);
+  const out = ws.moveToGroup(s, ["mac/1", "pc/2"], "g2");
+  assert.deepEqual(plain(out.moved), [{ key: "mac/1", from: "g1" }, { key: "pc/2", from: null }]);
+  const undone = ws.undoMove(out.state, out.moved);
+  assert.deepEqual(plain(undone.members), { "pc/1": "g1", "mac/1": "g1" });
+  const removed = ws.moveToGroup(s, ["pc/1"], null);
+  assert.deepEqual(plain(removed.state.members), { "mac/1": "g1" });
+  // At most 100 move in one go (SB-08).
+  const many = Array.from({ length: 130 }, (_, i) => `pc/${i}`);
+  assert.equal(ws.moveToGroup(s, many, "g2").moved.length, ws.MOVE_MAX);
+});
+
+test("deleting a group sends its sessions back to Ungrouped; undo puts group, place and members back", () => {
+  let s = ws.createGroup(ws.EMPTY_GROUPS, "A", "a").state;
+  s = ws.createGroup(s, "B", "b").state;
+  s = ws.createGroup(s, "C", "c").state;
+  s = ws.moveToGroup(s, ["h/1", "h/2"], "b").state;
+  s = ws.moveToGroup(s, ["h/3"], "c").state;
+  const { state, undo } = ws.deleteGroup(s, "b");
+  assert.deepEqual(plain(state.groups.map((g) => g.id)), ["a", "c"]);
+  assert.deepEqual(plain(state.members), { "h/3": "c" });
+  assert.deepEqual(plain(undo), { group: { id: "b", name: "B" }, index: 1, members: ["h/1", "h/2"] });
+  // Meanwhile h/2 went elsewhere: it stays there.
+  const moved = ws.moveToGroup(state, ["h/2"], "a").state;
+  const back = ws.restoreGroup(moved, undo);
+  assert.deepEqual(plain(back.groups.map((g) => g.id)), ["a", "b", "c"]);
+  assert.deepEqual(plain(back.members), { "h/3": "c", "h/2": "a", "h/1": "b" });
+  assert.equal(ws.restoreGroup(back, undo), back);
+  assert.deepEqual(plain(ws.deleteGroup(s, "zz").undo), null);
+});
+
+test("the custom grouping draws every group in its order, empty ones too, then the rest", () => {
+  let s = ws.createGroup(ws.EMPTY_GROUPS, "Later", "l").state;
+  s = ws.createGroup(s, "Now", "n").state;
+  s = ws.moveToGroup(s, ["pc/b"], "n").state;
+  s = { ...s, members: { ...s.members, "pc/x": "deleted" } };
+  const items = ["pc/a", "pc/b", "mac/c", "pc/x"].map((key) => ({ key }));
+  const { sections, rest } = ws.customSections(items, s);
+  assert.deepEqual(plain(sections.map((x) => [x.group.id, x.items.map((i) => i.key)])), [["l", []], ["n", ["pc/b"]]]);
+  assert.deepEqual(plain(rest.map((i) => i.key)), ["pc/a", "mac/c", "pc/x"]);
+  // SB-15: a group dragged (or ⌥↑) before another; nothing changes for its own place.
+  assert.deepEqual(plain(ws.moveGroup(s, "n", 0).groups.map((g) => g.id)), ["n", "l"]);
+  assert.equal(ws.moveGroup(s, "l", 0), s);
+  assert.equal(ws.moveGroup(s, "l", 1), s);
+  assert.deepEqual(plain(ws.moveGroup(s, "l", 2).groups.map((g) => g.id)), ["n", "l"]);
+  assert.equal(ws.rowsBeforeMore("custom"), 5);
+  assert.equal(ws.normalizeList({ groupBy: "custom" }).groupBy, "custom");
+});
+
+test("drag order: a key goes before the row at the insertion line; a selection moves together", () => {
+  const k = ["a", "b", "c", "d"];
+  assert.deepEqual(plain(ws.moveKey(k, "a", 0)), k);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 1)), k);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 2)), ["b", "a", "c", "d"]);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 4)), ["b", "c", "d", "a"]);
+  assert.deepEqual(plain(ws.moveKey(k, "d", 0)), ["d", "a", "b", "c"]);
+  assert.deepEqual(plain(ws.moveKey(k, "c", 99)), ["a", "b", "d", "c"]);
+  // ⌥↓ is "before the row two below", ⌥↑ "before the row above".
+  assert.deepEqual(plain(ws.moveKey(k, "b", 1 + 2)), ["a", "c", "b", "d"]);
+  assert.deepEqual(plain(ws.moveKey(k, "b", 1 - 1)), ["b", "a", "c", "d"]);
+  // A newly pinned key joins at the line.
+  assert.deepEqual(plain(ws.moveKey(k, "new", 1)), ["a", "new", "b", "c", "d"]);
+  assert.deepEqual(plain(ws.placeKeys(k, ["d", "a"], 2)), ["b", "d", "a", "c"]);
+  assert.deepEqual(plain(ws.placeKeys(k, ["x", "b"], 0)), ["x", "b", "a", "c", "d"]);
+  // A remembered order comes first; the rest keep their order after it (SB-15 / SB-42).
+  const items = ["p", "q", "r", "s"].map((key) => ({ key }));
+  assert.deepEqual(plain(ws.orderBy(items, ["r", "gone", "p"], (x) => x.key).map((x) => x.key)), ["r", "p", "q", "s"]);
+  assert.equal(ws.orderBy(items, [], (x) => x.key), items);
+});
+
+test("the store keeps groups on this device across a remount, and asks no host about them", async () => {
+  const storage = makeStorage();
+  const { store, calls } = storeWith({ "new chat_sessions": { sessions: [meta({ id: "a" })] } }, { storage, computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const made = ws.createGroup(store.get().groups, "Ship", "g");
+  store.setGroups(ws.moveToGroup(made.state, ["new/a", "old/z"], "g").state);
+  assert.equal(store.groupOf("new/a").name, "Ship");
+  assert.equal(store.groupOf("nobody/x"), null);
+  const rev = store.get().rev;
+  store.setGroups(store.get().groups);
+  assert.equal(store.get().rev, rev);
+  assert.deepEqual(plain(JSON.parse(storage.store.get("ai-remote.ws.groups")).members), { "new/a": "g", "old/z": "g" });
+  assert.deepEqual(plain(calls.map((c) => c[1])), ["chat_sessions"]);
+  const again = storeWith({}, { storage, computers: [] }).store;
+  assert.deepEqual(plain(again.get().groups.groups), [{ id: "g", name: "Ship" }]);
+  assert.equal(again.groupOf("old/z").id, "g");
+});
+
+test("density and the metadata line: compact by default, comfortable 30 px; unknown values take the default", () => {
+  assert.deepEqual(plain(ws.normalizeDisplay(null)), { density: "compact", meta: false });
+  assert.deepEqual(plain(ws.normalizeDisplay({ density: "huge", meta: "yes" })), { density: "compact", meta: false });
+  assert.deepEqual(plain(ws.normalizeDisplay({ density: "comfortable", meta: true })), { density: "comfortable", meta: true });
+  assert.equal(ws.isDefaultDisplay(ws.DEFAULT_DISPLAY), true);
+  assert.equal(ws.isDefaultDisplay({ density: "comfortable", meta: false }), false);
+  assert.equal(ws.DENSITY.compact.row, 28);
+  assert.equal(ws.DENSITY.comfortable.row, 30);
+  assert.equal(ws.DENSITY.compact.gap, 2);
+});
+
+test("the metadata line: blocked first, else branch, folder unless the header names it, and the computer", () => {
+  const m = meta({ cwd: "/home/me/app", branch: " feat/x " });
+  assert.deepEqual(plain(ws.metaLine(m, {})), { blocked: null, branch: "feat/x", folder: "app", host: null });
+  assert.deepEqual(plain(ws.metaLine(m, { groupFolder: "/home/me/app/" })), { blocked: null, branch: "feat/x", folder: null, host: null });
+  assert.deepEqual(plain(ws.metaLine(m, { host: "lab-pc" })), { blocked: null, branch: "feat/x", folder: "app", host: "lab-pc" });
+  const waiting = meta({ pending: "permission", branch: "main" });
+  assert.deepEqual(plain(ws.metaLine(waiting, {})), { blocked: "permission", branch: null, folder: null, host: null });
+  // Under "Needs you" the header says it already; an ended session waits for nobody.
+  assert.equal(ws.metaLine(waiting, { underBlocked: true }).blocked, null);
+  assert.equal(ws.metaLine({ ...waiting, state: "ended" }, {}).blocked, null);
+  assert.equal(ws.metaLine(meta({ cwd: "/home/me/app", branch: null }), { groupFolder: "/home/me/app" }), null);
+});
+
+test("the Older bucket's bulk archive counts sessions a week or more without activity, not archived", () => {
+  const now = new Date(2026, 9, 26, 12).getTime();
+  const day = 86_400_000;
+  const xs = [
+    item("pc", meta({ id: "fresh", last_activity: now - 6 * day })),
+    item("pc", meta({ id: "old", last_activity: now - 8 * day })),
+    item("mac", meta({ id: "older", last_activity: now - 30 * day })),
+    item("mac", meta({ id: "gone", last_activity: now - 30 * day, archived: true })),
+  ];
+  assert.deepEqual(plain(ws.olderSessions(xs, now).map((x) => x.meta.id)), ["old", "older"]);
+  assert.equal(ws.OLDER_DAYS, 7);
+});
