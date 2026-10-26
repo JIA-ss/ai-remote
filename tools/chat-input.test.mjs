@@ -170,7 +170,7 @@ test("Claude gates only the first hello; a later disconnection keeps the undeliv
     "../../lib/claude": { STRAY_ENTER_MS: 250 },
     "../AgentChat": { useConversation: () => conv, sentBySession: new Map(), useNowTick: () => 0 },
     "../chat/Composer": { Composer }, "../chat/FolderPicker": {}, "../chat/Preview": {}, "../Icon": {},
-    "./Cards": {}, "./ClaudeTurn": { openStore: () => ({}) }, "./ClaudeTranscript": {}, "./Dock": {},
+    "./Cards": {}, "./ClaudeTurn": { openStore: () => ({}) }, "./ClaudeTranscript": {}, "./Dock": {}, "./ModelPicker": {},
   });
   const props = { host: "test", target: { session: "one" }, onLeave() {} };
   const composerProps = () => {

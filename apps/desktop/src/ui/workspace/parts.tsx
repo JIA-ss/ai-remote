@@ -113,6 +113,8 @@ export interface MenuItem {
   detail?: string;
   checked?: boolean;
   icon?: ReactNode;
+  /** Takes the focus when the menu opens (instead of the checked item). */
+  autofocus?: boolean;
   run: () => void;
 }
 
@@ -220,6 +222,7 @@ export function PopMenu({ at, items, onClose, label, className, footer }: { at: 
             aria-checked={it.checked}
             className={cx("ws-menu-item", it.danger && "danger", it.detail && "detailed")}
             disabled={it.disabled}
+            data-autofocus={it.autofocus || undefined}
             title={it.disabled ? it.note : undefined}
             onClick={() => pick(it)}
           >

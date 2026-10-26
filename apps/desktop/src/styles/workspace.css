@@ -350,8 +350,13 @@
    beneath the folder list must not show through its footer or rows. No video blur is involved. */
 .gl-win .ws .ws-chip-folder .nt-folder-pop { background: var(--ws-s3); box-shadow: var(--ws-shadow-pop), var(--ws-ring); }
 .ws-model { position: relative; }
-/* The model menu (NS-32) is a .ws-menu; its last line is a field for another model. */
-.ws-menu.ws-model-pop { width: 260px; }
+/* The model menu (NS-32) is a .ws-menu; its last line is a field for another model. A long list scrolls
+   inside the window (the menu is placed to fit it). The chip: the model name, then the effort word in
+   the secondary ink (NS-32, CP-57). */
+.ws-menu.ws-model-pop { width: 288px; max-width: calc(100vw - 16px); max-height: min(560px, calc(100vh - 16px)); overflow-y: auto; overscroll-behavior: contain; }
+.ws-menu.ws-model-pop > * { flex: none; }
+.ws-chip-sub { flex: none; white-space: nowrap; color: var(--ws-t3); }
+.ws-model-chip { gap: 5px; }
 .ws-menu-field { padding: 2px 2px 2px; }
 .ws-menu-field input { width: 100%; height: 28px; padding: 0 8px; border: 0; outline: 0; border-radius: 6px; background: var(--ws-hover); color: var(--ws-t1); font-size: 12px; user-select: text; }
 .ws-menu-field input::placeholder { color: var(--ws-t3); }

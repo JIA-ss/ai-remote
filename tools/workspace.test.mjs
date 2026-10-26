@@ -825,3 +825,59 @@ test("model menu (NS-32): Claude Code's aliases by name, other agents none; type
   assert.deepEqual(plain(ws.rememberModel(["a"], "  ", "codex-app-server")), ["a"], "nothing typed, nothing kept");
   assert.deepEqual(plain(ws.rememberModel(["1", "2", "3", "4", "5"], "6", "codex-app-server")), ["6", "1", "2", "3", "4"], "at most five");
 });
+
+test("models and effort levels (NS-29, NS-32, NS-33): what is offered, the levels a model takes, what a place remembers", () => {
+  const claude = "claude-stream-json";
+  const codex = "codex-app-server";
+  const offered = [
+    { id: "opus", name: "Opus 5.5", description: "Best", efforts: ["low", "medium", "high", "xhigh", "max"], default: true },
+    { id: "haiku", name: "Haiku 5.5", efforts: ["low", "high"] },
+    { id: "old", name: "Haiku 4.5" },
+  ];
+  // What the agent offered; Claude Code's aliases until it has said; nothing for others.
+  assert.deepEqual(plain(ws.modelChoices(offered, claude)).map((m) => m.id), ["opus", "haiku", "old"]);
+  assert.deepEqual(plain(ws.modelChoices(null, claude)).map((m) => m.name), ["Opus", "Sonnet", "Haiku"]);
+  assert.deepEqual(plain(ws.modelChoices([], codex)), []);
+  // The default entry, by id; levels as the agent said them, all of Claude Code's for a model it did not describe.
+  assert.equal(ws.modelEntry(offered, "").id, "opus");
+  assert.equal(ws.modelEntry(offered, " haiku ").id, "haiku");
+  assert.equal(ws.modelEntry(offered, "x"), null);
+  assert.deepEqual(plain(ws.effortsFor(offered, "", claude)), ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(plain(ws.effortsFor(offered, "old", claude)), [], "a model without levels takes none");
+  assert.deepEqual(plain(ws.effortsFor(offered, "claude-x", claude)), plain(ws.EFFORTS), "typed by hand: Claude Code's levels");
+  assert.deepEqual(plain(ws.effortsFor([], "gpt-x", codex)), [], "Codex: only what it said");
+  // NS-33: a level the new model does not take is not carried over.
+  assert.equal(ws.keepEffort(offered, "haiku", "high", claude), "high");
+  assert.equal(ws.keepEffort(offered, "haiku", "xhigh", claude), null);
+  assert.equal(ws.keepEffort(offered, "old", "low", claude), null);
+  assert.equal(ws.keepEffort(offered, "opus", null, claude), null);
+  // The chip's name: the model's, the default's for "", an alias's or the id typed.
+  assert.equal(ws.modelName(offered, "", claude), "Opus 5.5");
+  assert.equal(ws.modelName(offered, "haiku", claude), "Haiku 5.5");
+  assert.equal(ws.modelName([], "sonnet", claude), "Sonnet");
+  assert.equal(ws.modelName([], "", claude), "", "the default when the agent did not say");
+  assert.equal(ws.modelName([], "gpt-x", codex), "gpt-x");
+
+  // NS-29: by computer, folder and agent; the newest places kept.
+  const key = ws.placeModelKey("pc", "/w/app/", "claude");
+  assert.equal(key, ws.placeModelKey("pc", "/w/app", "claude"), "a trailing separator is the same folder");
+  assert.notEqual(key, ws.placeModelKey("pc", "/w/app", "codex"));
+  let saved = ws.rememberPlaceModel({}, key, "haiku", "high", 10);
+  saved = ws.rememberPlaceModel(saved, ws.placeModelKey("pc", "/w/b", "claude"), "", null, 20, 1);
+  assert.deepEqual(Object.keys(saved), [ws.placeModelKey("pc", "/w/b", "claude")], "at most the newest one");
+  saved = ws.rememberPlaceModel({}, key, " haiku ", "high", 10);
+  const place = { host: "pc", cwd: "/w/app", runtime: "claude", protocol: claude };
+  assert.deepEqual(plain(ws.placeDefaults(saved, [], place, offered)), { model: "haiku", effort: "high" });
+  // What a place remembers loses a level its model no longer takes.
+  assert.deepEqual(plain(ws.placeDefaults(ws.rememberPlaceModel({}, key, "old", "high", 1), [], place, offered)), { model: "old", effort: null });
+  // A folder without a record: its latest session with this agent, while that model is still offered.
+  const item = (over) => ({ host: "pc", key: `pc/${over.id}`, meta: { runtime: "claude", cwd: "/w/app", started_at: 1, ...over } });
+  const items = [item({ id: "a", model: "opus", effort: "low", started_at: 5 }), item({ id: "b", model: "haiku", effort: "high", started_at: 9 }),
+    item({ id: "c", model: "sonnet", runtime: "codex", started_at: 20 })];
+  assert.deepEqual(plain(ws.placeDefaults({}, items, place, offered)), { model: "haiku", effort: "high" });
+  assert.deepEqual(plain(ws.placeDefaults({}, [item({ id: "d", model: "gone", effort: "low", started_at: 30 })], place, offered)), { model: "", effort: null },
+    "a model no longer offered is not taken");
+  assert.deepEqual(plain(ws.placeDefaults({}, [], place, offered)), { model: "", effort: null });
+  // A `model` event changes the open session's metadata.
+  assert.deepEqual(plain(ws.eventPatch({ t: "model", seq: 4, model: "haiku", effort: null })), { last_seq: 4, model: "haiku", effort: null });
+});
