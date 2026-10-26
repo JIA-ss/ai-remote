@@ -75,6 +75,7 @@ parser.add_argument("--langs", default="zh,en")
 parser.add_argument("--themes", default="light,dark")
 parser.add_argument("--no-interactions", action="store_true", help="skip the navigation / reduced / sheet scenarios")
 parser.add_argument("--verbose", action="store_true", help="print every passing check too")
+parser.add_argument("--lint", nargs="+", type=Path, metavar="CSS", help="only lint these style sheets (no browser) and exit")
 args = parser.parse_args()
 
 # A fresh browser profile each run (Camofox keeps per-user storage between runs); deleted at the end.
@@ -159,11 +160,12 @@ def split_selectors(prelude):
     return [p for p in parts if p]
 
 
-def lint_styles():
-    for path in LINTED:
+def lint_styles(paths):
+    for path in paths:
         if not path.exists():
             continue
-        rel = path.relative_to(ROOT).as_posix()
+        path = path.resolve()
+        rel = path.relative_to(ROOT).as_posix() if ROOT in path.parents else str(path)
         for prelude, body in css_rules(path.read_text(encoding="utf-8")):
             decls = [(m.group(1).strip().lower(), m.group(2).strip()) for m in re.finditer(r"([-\w]+)\s*:\s*([^;]+)", body)]
             for i, (prop, value) in enumerate(decls):
@@ -237,6 +239,22 @@ def wait_http(url, seconds=40):
         except OSError:
             time.sleep(0.3)
     raise RuntimeError(f"{url} did not answer")
+
+
+def stop(process):
+    """Stop the Vite this audit started, with npx's node child."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    import signal
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(10)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def app_call(source):
@@ -625,7 +643,17 @@ def interactions():
 
 # ---------------------------------------------------------------- main
 
+def summary():
+    failed = [c for c in checks if not c["ok"]]
+    return failed, f"{len(checks) - len(failed)} checks passed" + (f", {len(failed)} failed" if failed else "")
+
+
 def main():
+    if args.lint:
+        lint_styles(args.lint)
+        failed, line = summary()
+        print(line)
+        sys.exit(1 if failed else 0)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "screens").mkdir(exist_ok=True)
     for old in (args.out / "screens").glob("*.png"):
@@ -638,7 +666,7 @@ def main():
         "Viewport 1280x800 (set through a REST call that never answers, then verified); Camoufox spoofs innerWidth, so the sidebar is pinned expanded.",
         "Contrast (WCAG 4.5:1 on tints over the native material) is not measured here.",
     ]
-    lint_styles()
+    lint_styles(LINTED)
 
     vite = None
     base = args.url.rstrip("/") if args.url else None
@@ -648,8 +676,9 @@ def main():
         port = free_port()
         base = f"http://127.0.0.1:{port}"
         npx = "npx.cmd" if sys.platform == "win32" else "npx"
+        # Its own process group: npx starts node as a child, and both must go at the end.
         vite = subprocess.Popen([npx, "vite", "--port", str(port), "--strictPort", "--host", "127.0.0.1"], cwd=DESKTOP,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=sys.platform != "win32")
     state["base"] = base
     langs = [x for x in args.langs.split(",") if x]
     themes = [x for x in args.themes.split(",") if x]
@@ -705,20 +734,16 @@ def main():
         except Exception:
             pass
         if vite:
-            vite.terminate()
-            try:
-                vite.wait(10)
-            except subprocess.TimeoutExpired:
-                vite.kill()
+            stop(vite)
 
-    failed = [c for c in checks if not c["ok"]]
+    failed, line = summary()
     report = {"status": "passed" if not failed else "failed", "passed": len(checks) - len(failed), "failed": len(failed),
               "seconds": round(time.monotonic() - started, 1), "url": base, "screens": str(args.out / "screens"),
               "limitations": limitations, "failures": failed, "checks": checks}
     if error:
         report["error"] = error
     (args.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print(f"{len(checks) - len(failed)} checks passed" + (f", {len(failed)} failed" if failed else "") + f"; screenshots and report.json in {args.out}")
+    print(f"{line}; screenshots and report.json in {args.out}")
     sys.exit(1 if failed else 0)
 
 
