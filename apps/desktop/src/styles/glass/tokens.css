@@ -139,6 +139,12 @@
   --gl-stage-rim: linear-gradient(180deg, rgb(255 255 255 / .22), rgb(255 255 255 / .04) 45%, rgb(255 255 255 / .06));
   --gl-stage-shadow: 0 0 0 .5px rgb(0 0 0 / .55), 0 8px 24px rgb(0 0 0 / .45);
 }
+/* Amber text ("waits for you") on the light material: native.css's #B8760A is 2.7:1 on the content
+   plane and 3.5:1 on a card. #724906 (#B8760A with 38 % black) keeps 12 px text at 5.7:1 on the
+   plane, 7.3:1 on cards, 5.3:1 on the amber tint and 5.8:1 on the preview's sidebar (derived with the
+   WCAG formula against the bounding material colours, not measured on screen). Without the material
+   the opaque surfaces keep native.css's value. */
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] { --you-text: #724906; }
 /* The preview's stand-in backdrop is fixed, so its side tint carries the sidebar's contrast on its own. */
 :root[data-material="preview"][data-theme="dark"] { --gl-side: rgb(28 28 31 / .55); --gl-content: rgb(30 30 32 / .80); }
 :root[data-material="preview"][data-theme="light"] { --gl-side: rgb(246 246 248 / .50); --gl-content: rgb(244 244 247 / .76); }

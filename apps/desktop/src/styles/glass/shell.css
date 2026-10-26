@@ -52,6 +52,17 @@
 .gl-win .side .gl-disclosure[aria-expanded="true"] .gl-chev { transform: rotate(90deg); }
 .gl-win .side .side-devices { -webkit-mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); }
 
+/* Sidebar text on the material: group titles, counts and the status line under each computer are
+   11-12 px text, so --text-2 rather than --text-3 (on the preview's sidebar --text-3 is 3.0:1 dark,
+   3.2:1 light; --text-2 is 5.2 / 4.9), and the agent's blue is lifted (3.9:1 dark, 3.5:1 light ->
+   5.0 / 5.0). Derived with the WCAG formula, not measured: the real material follows the wallpaper.
+   Amber ("waits for you") gets its light value from tokens.css. */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side :is(.side-h, .side-h .n, .nv .end.device-count, .pc .st) { color: var(--text-2); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side button.side-h:hover { color: var(--text-1); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side .pc .st.you { color: var(--you-text); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="dark"] .gl-win .side .pc .st.agent { color: color-mix(in srgb, var(--agent) 80%, #fff); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .gl-win .side .pc .st.agent { color: color-mix(in srgb, var(--agent) 80%, #000); }
+
 /* compact: the same rows, icons only; names and shortcuts are in each row's title */
 .gl-win[data-sidebar="compact"] .side :is(.search, .nv > .lbl, .nv > .end.device-count, .pc .tx, .pc .mini, .side-h > *, .empty-note, .gl-appname) { display: none; }
 .gl-win[data-sidebar="compact"] .side .gl-side-search {

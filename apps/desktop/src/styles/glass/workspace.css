@@ -27,6 +27,15 @@
   --ws-hover: rgb(11 11 11 / .05);
   --ws-selected: rgb(11 11 11 / .08);
 }
+/* on a card (a step list, the environment picker) the dark plane's tertiary and warning inks fall
+   under 4.5:1 (#9b9992 3.9:1, #db9300 4.3:1, derived): lifted inside cards to 4.9 / 5.0:1 */
+:root:is([data-material="native"], [data-material="preview"]):not([data-theme="light"]) .ws .ws-card {
+  --ws-t3: #aeaca5;
+  --ws-warn-text: color-mix(in srgb, #db9300 85%, #fff);
+}
+
+/* the Computers segment's amber dot (workspace.css): no knockout ring on the translucent sidebar */
+:root:is([data-material="native"], [data-material="preview"]) .ws-mode > .gl-mode-dot { box-shadow: none; }
 
 /* ---- the frame: material under the sidebar, the content tint under the main pane ---- */
 :root:is([data-material="native"], [data-material="preview"]) .ws { background: transparent; }

@@ -37,6 +37,10 @@
 .spage.gl-st .gnote { margin: 8px 4px 0; max-width: 640px; font-size: 12px; line-height: 17px; color: var(--text-2); }
 .spage.gl-st :is(.grp-h, .grp-sub) + .gnote { margin-top: 0; }
 .spage.gl-st .gnote.c-danger { color: var(--danger); }
+/* the error note on the translucent plane: --danger is 4.25:1 dark and 3.47:1 light there (derived);
+   a lighter / darker mix keeps 12 px text at 4.9 / 4.8:1 */
+:root:is([data-material="native"], [data-material="preview"])[data-theme="dark"] .spage.gl-st .gnote.c-danger { color: color-mix(in srgb, var(--danger) 85%, #fff); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .spage.gl-st .gnote.c-danger { color: color-mix(in srgb, var(--danger) 82%, #000); }
 
 /* ---- rows: icon tile, title and description, the control at the end; hairlines between rows
    start where the text starts ---- */

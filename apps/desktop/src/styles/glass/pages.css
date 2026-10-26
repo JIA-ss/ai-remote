@@ -55,9 +55,6 @@
 .devices-page .gl-attn-l2 { font-size: 12px; line-height: 16px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .devices-page .gl-attn-go { flex: none; display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 8px; font-size: 13px; font-weight: 500; color: var(--you-text); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .gl-attn { border-radius: var(--gl-r-card); }
-/* amber text on the light plane: --you-text measures about 3:1 there; a darker mix keeps 13 px
-   text above 4.5:1 on the amber tint and on white cards (derived with the WCAG formula, not measured) */
-:root[data-theme="light"] .devices-page :is(.gl-attn-go, .device-card-agent.you) { color: color-mix(in srgb, var(--you-text) 72%, #000); }
 
 /* cards: name, OS, a status pill, the status sentence, at most two facts, two actions */
 .devices-page .device-grid { gap: 12px; }
@@ -65,7 +62,7 @@
 .devices-page .device-card-top { gap: 12px; }
 .devices-page .device-card-icon { width: 36px; height: 36px; border-radius: 10px; }
 .devices-page .device-card-name { font-size: 15px; line-height: 20px; }
-.devices-page .device-card-name > span { margin-top: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.devices-page .device-card-name > span { margin-top: 0; font-size: 12px; line-height: 16px; color: var(--text-2); }
 .devices-page .device-card-top > .device-card-status { height: 22px; padding: 0 9px 0 8px; gap: 6px; border-radius: 11px; background: var(--fill-1); font-size: 11px; font-weight: 500; color: var(--text-2); }
 .devices-page .device-card-status .device-status-dot { width: 6px; height: 6px; }
 .devices-page .device-card-agent { margin: 14px 0 0; font-size: 13px; line-height: 18px; color: var(--text-1); }
@@ -96,7 +93,9 @@
 .cpage .cp-cols.two { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--stroke-1); }
 .cpage .cp-cols.gl-aside { display: flex; flex-direction: column; gap: 24px; margin: 0; padding: 4px 0 0; border-top: 0; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .cp-cols.two { border-top: var(--gl-hair) solid var(--gl-sep); }
-.cpage .colh { margin-bottom: 8px; }
+.cpage .colh { margin-bottom: 8px; color: var(--text-2); }
+/* who started the task and the steps' times are text too */
+.cpage .cp-cols .c3, .cpage .log .lr > .t { color: var(--text-2); }
 /* "This computer's activity ›": a quiet text action under the steps */
 .gl-main .gl-more { display: inline-flex; align-items: center; gap: 2px; height: 26px; margin: 8px 0 0 -10px; padding: 0 8px 0 10px; border-radius: 13px;
   font: inherit; font-size: 12px; color: var(--text-2); background: transparent; }
@@ -195,7 +194,7 @@
 .act .tbl .th { position: sticky; top: var(--tb-h); z-index: 2; background: rgb(var(--gl-edge-rgb) / .96); }
 .act .tbl .tday { padding: 16px 12px 6px; }
 /* header and day labels are text: --text-2 (--text-3 falls under 4.5:1 on the translucent plane) */
-.act .tbl :is(.th, .tday) { color: var(--text-2); }
+.act .tbl :is(.th, .tday, .tr .t), .act .mm .ax .s, .act .insp :is(.c3, .footnote) { color: var(--text-2); }
 .act .insp .gl-insp-close { display: none; }
 .act .tbl .tr { cursor: default; }
 .act .tbl .tr:not(.sel):hover { background: var(--fill-1); }
@@ -276,7 +275,7 @@
 .gl-pair .gl-pair-d { margin-top: 6px; font-size: 13px; line-height: 20px; text-wrap: pretty; }
 .gl-pair .nt-code-input { max-width: none; margin-top: 24px; }
 .gl-pair .gl-pair-ticket { display: block; width: 100%; margin-top: 24px; }
-.gl-pair .gl-pair-hint { margin-top: 8px; }
+.gl-pair .gl-pair-hint { margin-top: 8px; color: var(--text-2); }
 .gl-pair .gl-pair-name { display: flex; flex-direction: column; gap: 6px; margin-top: 24px; }
 .gl-pair .gl-pair-name .body { font-size: 13px; line-height: 18px; color: var(--text-2); }
 .gl-pair .gl-pair-name .field { width: 100%; }
@@ -305,7 +304,7 @@
 .gl-welcome .door .ic { padding-top: 1px; }
 .gl-welcome .door .ttl { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text-1); }
 .gl-welcome .door .d { margin-top: 2px; font-size: 13px; line-height: 20px; }
-.gl-welcome .door .note { margin-top: 4px; font-size: 12px; line-height: 16px; }
+.gl-welcome .door .note { margin-top: 4px; font-size: 12px; line-height: 16px; color: var(--text-2); }
 .gl-welcome .door .a { margin-top: 12px; }
 .gl-welcome .door .a .btn { height: 30px; padding: 0 14px; gap: 6px; display: inline-flex; align-items: center; font-size: 13px; }
 .gl-welcome .gl-wl-agents { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 0 4px; font-size: 12px; line-height: 18px; color: var(--text-2); }
@@ -320,7 +319,8 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .door + .door::before { height: var(--gl-hair); background: var(--gl-sep); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stagebox { border-radius: var(--gl-r-card); clip-path: inset(0 round var(--gl-r-card)); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stage-wrap { border-radius: var(--gl-r-card); }
-/* Reduced transparency: the figure's capsule loses its blur the way v2.css already does for the
-   system setting (prefers-reduced-transparency), so data-material="none" leaves no blur anywhere. */
-:root[data-material="none"] .gl-welcome .capsule { background: #1E2128; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* The figure is a stage picture: its capsule is painted opaque, never blurred (v2.css gives it a
+   30 px blur, and the clipped .stagebox around it would make that blur sample only the figure).
+   Reduced transparency also drops its noise layer, as v2.css does for the system setting. */
+.gl-welcome .capsule { background: #1E2128; -webkit-backdrop-filter: none; backdrop-filter: none; }
 :root[data-material="none"] .gl-welcome .capsule::before { display: none; }
