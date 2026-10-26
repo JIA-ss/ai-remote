@@ -187,3 +187,28 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel { background: var(--gl-sel-list); box-shadow: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel + .tr { box-shadow: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .insp .gl-insp-foot { border-top: var(--gl-hair) solid var(--gl-sep); }
+
+/* ======================================================================================
+   Pairing: one centred column; the reverse entry at the bottom
+   ====================================================================================== */
+.ppage .gl-pair { max-width: 520px; margin: 0 auto; padding: 4vh 0 40px; }
+.gl-pair .steps4 { margin: 0 0 28px; }
+.gl-pair .gl-pair-step > .hd { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -.015em; }
+.gl-pair .gl-pair-d { margin-top: 6px; font-size: 13px; line-height: 20px; text-wrap: pretty; }
+.gl-pair .nt-code-input { max-width: none; margin-top: 24px; }
+.gl-pair .gl-pair-ticket { display: block; width: 100%; margin-top: 24px; }
+.gl-pair .gl-pair-hint { margin-top: 8px; }
+.gl-pair .gl-pair-name { display: flex; flex-direction: column; gap: 6px; margin-top: 24px; }
+.gl-pair .gl-pair-name .body { font-size: 13px; line-height: 18px; color: var(--text-2); }
+.gl-pair .gl-pair-name .field { width: 100%; }
+.gl-pair .conseq { margin-top: 14px; }
+.gl-pair .gl-pair-acts { display: flex; align-items: center; gap: 8px; margin-top: 24px; }
+.gl-pair .gl-pair-acts .gl-pair-alt { margin-left: auto; }
+.gl-pair .gl-pair-words { margin-top: 32px; white-space: normal; }
+.gl-pair .gl-pair-note { margin-top: 20px; }
+.gl-pair .gl-pair-done { display: flex; align-items: center; gap: 14px; }
+.gl-pair .gl-pair-rev { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 40px; padding-top: 18px;
+  border-top: 1px solid var(--stroke-1); font-size: 13px; line-height: 20px; color: var(--text-2); }
+.gl-pair .gl-pair-rev .btn { flex: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-pair .gl-pair-rev { border-top: var(--gl-hair) solid var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-pair .field.lg { border-radius: var(--gl-r-field); }
