@@ -26,7 +26,7 @@
    opaque --raised look. */
 
 /* ---- the shared paint: thick glass, ring, inner stroke (Windows), float shadow ---- */
-:root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .cl-jump),
 :root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump,
 :root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float) {
   isolation: isolate;
@@ -35,16 +35,17 @@
   background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
   box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
 }
-/* The blur. A code block's actions stay invisible until the block is hovered: only the shown one
-   blurs, so a long conversation does not carry a blurred layer per code block. */
+/* The blur. A code block's actions and the jump buttons stay invisible until they are needed: only
+   the shown one blurs, so a long conversation does not carry an invisible blurred layer per code
+   block, and a transcript that is followed live has none over its scrolling rows. */
 :root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
-:root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump,
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-chat:not(.cdx) .nt-jump, .cl-jump)[data-shown="true"],
 :root:is([data-material="native"], [data-material="preview"]) .nt-cb:is(:hover, :focus-within) .acts.float:not(.nt-pv-dlg .acts.float) {
   -webkit-backdrop-filter: blur(36px) saturate(160%);
   backdrop-filter: blur(36px) saturate(160%);
 }
 :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
-:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-chat:not(.cdx) .nt-jump,
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.nt-chat:not(.cdx) .nt-jump, .cl-jump)[data-shown="true"],
 :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-cb:is(:hover, :focus-within) .acts.float:not(.nt-pv-dlg .acts.float) {
   -webkit-backdrop-filter: blur(30px) saturate(125%);
   backdrop-filter: blur(30px) saturate(125%);
@@ -52,7 +53,7 @@
 /* The rim: material.css's masked 1 px ring, bright at the top. The / list scrolls inside itself, and a
    ring placed in a scroller scrolls away with the rows, so the list gets its highlight from inset
    shadows instead (below). */
-:root:is([data-material="native"], [data-material="preview"]) :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg)::before,
+:root:is([data-material="native"], [data-material="preview"]) :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .cl-jump)::before,
 :root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump::before,
 :root:is([data-material="native"], [data-material="preview"]) .nt-cb .acts.float:not(.nt-pv-dlg .acts.float)::before {
   content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; padding: 1px; pointer-events: none;
@@ -63,8 +64,8 @@
   mask-composite: exclude;
   transition: opacity var(--gl-dur) ease;
 }
-:root[data-window-active="false"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .nt-cb .acts.float)::before { opacity: .4; }
-:root[data-os="windows"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .nt-cb .acts.float)::before { display: none; }
+:root[data-window-active="false"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .cl-jump, .nt-cb .acts.float)::before { opacity: .4; }
+:root[data-os="windows"] :is(.nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-jump, .cl-jump, .nt-cb .acts.float)::before { display: none; }
 :root:is([data-material="native"], [data-material="preview"])[data-theme="dark"]:not([data-os="windows"]) .nt-ac {
   box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .05), var(--gl-sh-float);
 }
@@ -119,11 +120,26 @@
 
 /* where backdrop-filter does not exist: an opaque floor, as fallbacks.css gives .gl-glass */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-chat:not(.cdx) .nt-jump, .nt-cb .acts.float) { background: rgb(var(--gl-g-rgb) / .96); }
+  :root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-chat:not(.cdx) .nt-jump, .cl-jump, .nt-cb .acts.float) { background: rgb(var(--gl-g-rgb) / .96); }
 }
 
-/* ---- the Claude view's jump-to-latest ---- */
-/* A small button floating over the transcript: functional glass, so it blurs only while the material
-   is on (claude.css paints its fill and rim). Reduce transparency and higher contrast keep that fill
-   with nothing blurred. */
-:root:is([data-material="native"], [data-material="preview"]) .cl-jump { -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+/* ---- the Claude view's jump-to-latest and its permission-mode menu ---- */
+/* The jump is a small button floating over the transcript: with the material on it takes the shared
+   thick recipe above (paint, rim, the blur only while it is shown, Windows radius, the opaque floor
+   where backdrop-filter does not exist), keeping its round shape and busy ring from claude.css. */
+:root:is([data-material="native"], [data-material="preview"]) .cl-jump { border-radius: 50%; color: var(--cl-text); }
+:root:is([data-material="native"], [data-material="preview"]) .cl-jump[data-busy] { box-shadow: 0 0 0 .5px color-mix(in srgb, var(--cl-warm) 50%, transparent), var(--gl-rim-in), var(--gl-sh-float); }
+:root:is([data-material="native"], [data-material="preview"]) .cl-jump:hover { background: rgb(var(--gl-g-rgb) / .96); }
+/* Reduce transparency and higher contrast: claude.css's 80 % fill would let the transcript show
+   through an unblurred button, so the fill turns opaque. */
+:root[data-material="none"] .cl-jump { background: var(--cl-card); }
+/* The permission-mode menus (the dock's mode chip and a plan card's accept modes) sit in the same
+   composer as the / list: the same popover shape, ring and rim, in the glass colour but opaque (they
+   open over the composer's own text, like the workspace composer's popovers). */
+:root:is([data-material="native"], [data-material="preview"]) .cl-menu {
+  border-radius: var(--gl-r-pop);
+  background: rgb(var(--gl-g-rgb));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+}
+:root:is([data-material="native"], [data-material="preview"]) .cl-menu button { border-radius: var(--gl-r-row); }
+:root:is([data-material="native"], [data-material="preview"]) .cl-menu button:hover { background: var(--gl-hover); }
