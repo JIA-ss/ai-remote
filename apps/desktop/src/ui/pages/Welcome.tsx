@@ -1,12 +1,13 @@
-// First run: the product in one sentence, the two ways in, and the turn line told as a story.
+// First run: the product in one sentence, the two ways in (one grouped card, no command lines: the
+// app itself pairs and sets up), and the turn line told as a story beside it. The figure is drawn at
+// its own width and scaled down to the column, so it never runs past the window.
 
 import { t } from "../../lib/i18n";
-import { CmdLine } from "../CmdLine";
 import { Glyph, Pointer, SeatMark, Wordmark } from "../glyphs";
 import { Icon } from "../Icon";
 import { TurnLine, type TurnSpec } from "../TurnLine";
 import { WelcomeFigure } from "../WelcomeFigure";
-import { cx } from "../util";
+import { cx, useSize } from "../util";
 
 /** Display text with phrase marks: `|` allows a break there (Chinese is set keep-all), a newline forces one. */
 function phrases(s: string): React.ReactNode {
@@ -27,12 +28,24 @@ function phrases(s: string): React.ReactNode {
 export function WelcomePage({
   onPair,
   onSetupHost,
+  onAgents,
 }: {
   onPair: () => void;
   /** Settings › This device with the enable dialog open (the administrator confirms once). */
   onSetupHost: () => void;
+  /** Settings › Agent access (how to connect Claude Code, Codex, ...); a text hint without it. */
+  onAgents?: () => void;
 }) {
   const W = 616;
+  const [pageRef, page] = useSize<HTMLDivElement>();
+  const [figRef, fig] = useSize<HTMLDivElement>();
+  // The figure keeps its drawn proportions and is scaled to its column. Side by side while that
+  // column keeps it at 72 % or more; below that it goes under the two doors at up to full size.
+  const GAP = 48;
+  const total = Math.min(page.w || 1180, 1180);
+  const sideW = ((total - GAP) * 1.15) / 2.15;
+  const side = sideW / W >= 0.72;
+  const scale = Math.min(1, (side ? sideW : total) / W);
   const spec: TurnSpec = {
     // A finished story: the wait was answered, so it is the thin stroke with its decision dot, not dashes.
     segs: [
@@ -63,7 +76,11 @@ export function WelcomePage({
     [88, "agent", "fr_stop5", "up"],
   ];
   return (
-    <div className="spread" style={{ inset: 0, overflow: "auto" }}>
+    <div
+      className={cx("spread", "gl-welcome", !side && "stacked")}
+      ref={pageRef}
+      style={{ gridTemplateColumns: side ? `minmax(0, ${total - GAP - sideW}px) ${sideW}px` : "minmax(0, 1fr)" }}
+    >
       <div className="lcol">
         <div>
           <Wordmark h={24} />
@@ -78,13 +95,13 @@ export function WelcomePage({
             <div>
               <div className="ttl">{t("fr_ctl")}</div>
               <div className="d">{t("fr_ctl_d")}</div>
+              <div className="note">{t("pg_ctl_note")}</div>
               <div className="a">
-                <button className="btn primary lg" onClick={onPair}>
+                <button className="btn primary" onClick={onPair}>
                   <Icon name="add" size={14} />
                   {t("pair")}
                 </button>
               </div>
-              <div className="note">{t("fr_ctl_note")}</div>
             </div>
           </div>
           <div className="door">
@@ -93,70 +110,69 @@ export function WelcomePage({
             </div>
             <div>
               <div className="ttl">{t("fr_host")}</div>
-              <div className="d">{t("fr_host_d")}</div>
+              <div className="d">{t("pg_host_d")}</div>
+              <div className="note">{t("fr_host_note")}</div>
               <div className="a">
-                <button className="btn lg" onClick={onSetupHost}>
-                  {t("setup_this")}
+                <button className="btn" onClick={onSetupHost}>
+                  {t("setup_this")}…
                 </button>
               </div>
-              <div className="note">{t("fr_host_note")}</div>
             </div>
           </div>
         </div>
+        <div className="gl-wl-agents">
+          <Icon name="puzzle" size={14} />
+          <span>{t("pg_agents_note")}</span>
+          {onAgents && (
+            <button className="nt-link" onClick={onAgents}>
+              {t("pg_agents_go")}
+            </button>
+          )}
+        </div>
       </div>
-      <div>
-        <div className="fig">
-          <div className="stage-wrap">
-            <div className="stagebox stage" style={{ height: 452 }}>
-              <div className="capsule compact" style={{ top: 20, left: "50%", transform: "translateX(-50%)" }}>
-                <span className="disc">
-                  <SeatMark state="agent" h={20} />
-                </span>
-                <div className="who">
-                  <span className="l1">{t("cap_agent_1", { agent: "Claude Code" })}</span>
-                  <span className="l2">{t("cap_agent_2", { device: "home-laptop" })}</span>
+      <div className="rcol">
+        <div className="gl-fig-box" style={{ height: fig.h ? Math.ceil(fig.h * scale) : undefined }}>
+          <div className="fig" ref={figRef} style={{ width: W, transform: scale < 1 ? `scale(${scale})` : undefined }}>
+            <div className="stage-wrap">
+              <div className="stagebox stage" style={{ height: 452 }}>
+                <div className="capsule compact" style={{ top: 20, left: "50%", transform: "translateX(-50%)" }}>
+                  <span className="disc">
+                    <SeatMark state="agent" h={20} />
+                  </span>
+                  <div className="who">
+                    <span className="l1">{t("cap_agent_1", { agent: "Claude Code" })}</span>
+                    <span className="l2">{t("cap_agent_2", { device: "home-laptop" })}</span>
+                  </div>
+                  <span className="pill take">{t("take_over")}</span>
+                  <span className="pill">
+                    <Glyph name="paused" size={16} />
+                    {t("pause_agent")}
+                  </span>
                 </div>
-                <span className="pill take">{t("take_over")}</span>
-                <span className="pill">
-                  <Glyph name="paused" size={16} />
-                  {t("pause_agent")}
-                </span>
-              </div>
-              <div className="clip">
-                <WelcomeFigure />
-              </div>
-              <div className="clipframe" />
-            </div>
-          </div>
-          <div className="stops">
-            {stops.map(([p, who, key, pos], i) => {
-              const last = i === stops.length - 1;
-              return (
-                <div key={key} className={cx("lbl", pos)} style={last ? { right: 0, textAlign: "right" } : { left: Math.max(0, X(p) - 1) }}>
-                  <b style={last ? { justifyContent: "flex-end" } : undefined}>
-                    <Pointer who={who} h={11} ui />
-                    {t(key as Parameters<typeof t>[0])}
-                  </b>
-                  {t(`${key}_d` as Parameters<typeof t>[0])}
+                <div className="clip">
+                  <WelcomeFigure />
                 </div>
-              );
-            })}
-            <div style={{ position: "absolute", left: 0, top: 63 }}>
-              <TurnLine spec={spec} w={W} />
-            </div>
-          </div>
-          <div className="figcap">{t("fr_fig")}</div>
-          <div className="agentfoot" style={{ marginTop: 30 }}>
-            <div style={{ paddingTop: 2, color: "var(--text-2)" }}>
-              <Icon name="terminal" size={20} />
-            </div>
-            <div>
-              <div className="strong">{t("fr_agent")}</div>
-              <div className="body c2" style={{ marginTop: 2 }}>
-                {t("fr_agent_d")}
+                <div className="clipframe" />
               </div>
-              <CmdLine cmd="claude mcp add ai-remote -- ai-remote mcp" />
             </div>
+            <div className="stops">
+              {stops.map(([p, who, key, pos], i) => {
+                const last = i === stops.length - 1;
+                return (
+                  <div key={key} className={cx("lbl", pos)} style={last ? { right: 0, textAlign: "right" } : { left: Math.max(0, X(p) - 1) }}>
+                    <b style={last ? { justifyContent: "flex-end" } : undefined}>
+                      <Pointer who={who} h={11} ui />
+                      {t(key as Parameters<typeof t>[0])}
+                    </b>
+                    {t(`${key}_d` as Parameters<typeof t>[0])}
+                  </div>
+                );
+              })}
+              <div style={{ position: "absolute", left: 0, top: 63 }}>
+                <TurnLine spec={spec} w={W} />
+              </div>
+            </div>
+            <div className="figcap">{t("fr_fig")}</div>
           </div>
         </div>
       </div>

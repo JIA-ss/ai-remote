@@ -303,9 +303,22 @@ export const zh: Record<keyof typeof en, string> = {
   sc_search: "搜索电脑",
   sc_fullscreen: "全屏观看",
   // glass: pages (add keys below, above its end marker)
+  pg_done: "完成",
+  pg_ctl_note: "在要被控制的电脑上打开 ai-remote，到 设置 › 本设备 显示配对码。",
+  pg_host_d: "开启后，你其他设备上的智能体就能使用这台电脑。每台要配对的设备都要你批准。",
+  pg_agents_note: "让 Claude Code、Codex 等智能体使用 ai-remote：设置 › 智能体接入。",
+  pg_agents_go: "智能体接入…",
+  pg_done_d: "授予的权限：{level}。把智能体接入 ai-remote 后，就能在这里看它工作。",
+  pg_err_words_d: "这台电脑上的配对已删除。请在 {host} 上换一个配对码，并在那边的 设置 › 本设备 里移除这台设备。",
+  pg_act_empty: "还没有活动",
+  pg_act_empty_host: "{host} 上还没有活动",
+  pg_act_empty_d: "智能体开始工作后，每一步都会记在这里。",
+  pg_act_show_all: "查看所有电脑",
   // glass: pages end
 
   // glass: computer (add keys below, above its end marker)
+  cp_os: "系统",
+  cp_idle_none: "这里还没有任何活动。智能体接入 ai-remote 后就会开始。",
   // glass: computer end
 
   // glass: settings (add keys below, above its end marker)
