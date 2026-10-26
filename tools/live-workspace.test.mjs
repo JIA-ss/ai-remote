@@ -140,7 +140,8 @@ function workspaceFixture({ width = 660, embedded = true, route = {}, initialTar
     "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
     "./NewSession": { NewSession }, "./SessionPage": { SessionPage }, "./Sidebar": { Sidebar }, "./Palette": { Palette },
     "./parts": parts,
-    "./actions": { archive() {}, markDone() {}, togglePin() {}, toggleRead() {}, unarchive() {} },
+    "./actions": { archive() {}, fork() {}, markDone() {}, togglePin() {}, toggleRead() {}, unarchive() {} },
+    "./FamilyConfirm": { FamilyConfirm: () => null },
     "./useWorkspace": { useWorkspace: () => ({ items: [], loaded: true }), workspace: { items: () => [], dot: () => null } },
   }, {
     Node, Element, HTMLElement: Element, HTMLInputElement: class extends Element {},

@@ -49,6 +49,10 @@ export interface WsMeta {
   pinned?: boolean;
   archived?: boolean;
   permission_mode?: string | null;
+  /** The session this one was forked from (same host), if it is a fork. */
+  parent?: string | null;
+  /** Titles it had before, oldest first (search matches them, SB-06). */
+  previous_titles?: string[];
 }
 
 /** A session with the computer it is on. */
@@ -437,6 +441,21 @@ export interface SearchFields {
   folder: string;
   branch: string;
   computer: string;
+  /** Titles it had before (a match there is a main result, shown with "Formerly: …"). */
+  previous?: string[];
+}
+
+/** SB-06: the latest earlier title holding every word of `query`, when the current title does not. */
+export function formerTitle(query: string, title: string, previous: string[] | null | undefined): string | null {
+  const words = searchTokens(query);
+  if (!words.length || !previous?.length) return null;
+  const has = (s: string) => {
+    const l = s.toLowerCase();
+    return words.every((w) => l.includes(w));
+  };
+  if (has(title)) return null;
+  for (let i = previous.length - 1; i >= 0; i--) if (has(previous[i])) return previous[i];
+  return null;
 }
 
 /**
@@ -453,13 +472,149 @@ export function searchSessions<T extends { meta: WsMeta }>(items: T[], query: st
   for (const x of recent) {
     const f = fields(x);
     const title = f.title.toLowerCase();
-    if (words.every((w) => title.includes(w))) primary.push(x);
+    if (words.every((w) => title.includes(w)) || formerTitle(query, f.title, f.previous)) primary.push(x);
     else {
       const hay = [title, f.folder.toLowerCase(), f.branch.toLowerCase(), f.computer.toLowerCase()];
       if (words.every((w) => hay.some((h) => h.includes(w)))) more.push(x);
     }
   }
   return [...primary.slice(0, 100), ...more];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Searching what was said (SB-06's deeper search, the host's `chat_search`)
+
+/** A deeper search starts at this many characters, this long after the last key; its spinner shows this late. */
+export const DEEP_SEARCH = { MIN_CHARS: 3, DEBOUNCE_MS: 150, SPINNER_MS: 150, LIMIT: 20, MAX: 50 } as const;
+
+/** Whether a query is long enough to search what was said. */
+export function deepQuery(query: string): boolean {
+  return [...query.trim()].length >= DEEP_SEARCH.MIN_CHARS;
+}
+
+export interface ContentExcerpt {
+  role: "user" | "agent";
+  seq: number;
+  text: string;
+}
+
+/** A session whose messages hold the query, as one host's `chat_search` found it. */
+export interface ContentHit {
+  host: string;
+  key: string;
+  meta: WsMeta;
+  hits: number;
+  excerpts: ContentExcerpt[];
+}
+
+/**
+ * The deeper search's group (SB-06): every host's `chat_search` results merged, newest first, without
+ * the sessions the main results already show, at most `max`. Broken entries are dropped.
+ */
+export function contentHits(answers: Array<{ host: string; found: unknown }>, shown: Set<string>, max: number = DEEP_SEARCH.MAX): ContentHit[] {
+  const out: ContentHit[] = [];
+  for (const { host, found } of answers) {
+    const results = (found as { results?: unknown } | null)?.results;
+    if (!Array.isArray(results)) continue;
+    for (const r of results) {
+      if (!r || typeof r !== "object") continue;
+      const o = r as Record<string, unknown>;
+      const meta = normalizeMeta({ ...o, id: o.session });
+      if (!meta) continue;
+      const key = sessionKey(host, meta.id);
+      if (shown.has(key) || out.some((x) => x.key === key)) continue;
+      const excerpts = (Array.isArray(o.excerpts) ? o.excerpts : [])
+        .filter((e): e is ContentExcerpt => !!e && typeof e === "object" && typeof (e as ContentExcerpt).text === "string")
+        .map((e) => ({ role: e.role === "user" ? "user" as const : "agent" as const, seq: Number(e.seq) || 0, text: e.text }));
+      out.push({ host, key, meta, hits: typeof o.hits === "number" ? o.hits : excerpts.length, excerpts });
+    }
+  }
+  return out.sort((a, b) => b.meta.last_activity - a.meta.last_activity).slice(0, max);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Forks (SB-29): a fork sits under the session it was forked from
+
+/** Why a session cannot be forked now (none: it can). A fork copies what Claude Code or Codex saved. */
+export type ForkBlock = "agent" | "no_turn" | "running" | "archived";
+
+export function forkBlock(m: WsMeta): ForkBlock | null {
+  // Claude Code sessions carry a permission mode (the host gives one to them only); else by id or name.
+  const agent = !!m.permission_mode || /\b(claude|codex)\b/i.test(`${m.runtime} ${m.name}`);
+  if (!agent) return "agent";
+  if (m.archived) return "archived";
+  if (!m.turns) return "no_turn";
+  if (isRunning(m)) return "running";
+  return null;
+}
+
+export interface FamilyNode<T> {
+  item: T;
+  children: FamilyNode<T>[];
+}
+
+/**
+ * SB-29: `items` (one list's rows, in order) with each fork under the session it was forked from when
+ * that one is in the same list; the others stay where they were. `detached` forks (moved to the top
+ * level when their parent was archived alone, SB-37) stay at the top level.
+ */
+export function nestFamilies<T extends WsItem>(items: T[], detached?: ReadonlySet<string>): FamilyNode<T>[] {
+  const keys = new Set(items.map((x) => x.key));
+  const parentOf = (x: T) => {
+    const k = x.meta.parent && !detached?.has(x.key) ? sessionKey(x.host, x.meta.parent) : null;
+    return k && k !== x.key && keys.has(k) ? k : null;
+  };
+  const kids = new Map<string, T[]>();
+  for (const x of items) {
+    const k = parentOf(x);
+    if (k) kids.set(k, [...(kids.get(k) ?? []), x]);
+  }
+  const seen = new Set<string>();
+  const node = (x: T): FamilyNode<T> => {
+    seen.add(x.key);
+    return { item: x, children: (kids.get(x.key) ?? []).filter((c) => !seen.has(c.key)).map(node) };
+  };
+  const roots = items.filter((x) => !parentOf(x)).map(node);
+  // Forks of each other (no root): the first of each such circle stands at the top level.
+  for (const x of items) if (!seen.has(x.key)) roots.push(node(x));
+  return roots;
+}
+
+/** Every session under `n` (not `n` itself), depth first. */
+export function descendants<T>(n: FamilyNode<T>): T[] {
+  return n.children.flatMap((c) => [c.item, ...descendants(c)]);
+}
+
+/** Whether `key` is `n` or under it. */
+export function inFamily<T extends { key: string }>(n: FamilyNode<T>, key: string | null): boolean {
+  return !!key && (n.item.key === key || n.children.some((c) => inFamily(c, key)));
+}
+
+/** SB-29's line for hidden forks: how many, and how many failed, are unread and run. */
+export function familySummary<T>(n: FamilyNode<T>, dot: (x: T) => Dot | null): { count: number; failed: number; unread: number; running: number } {
+  const all = descendants(n);
+  const dots = all.map(dot);
+  return {
+    count: all.length,
+    failed: dots.filter((d) => d === "failed").length,
+    unread: dots.filter((d) => d === "unread").length,
+    running: dots.filter((d) => d === "running").length,
+  };
+}
+
+/** Every session forked (directly or not) from `x`, among `items`. */
+export function forksOf<T extends WsItem>(x: WsItem, items: T[]): T[] {
+  const out: T[] = [];
+  const walk = (host: string, id: string) => {
+    for (const c of items) {
+      if (c.host === host && c.meta.parent === id && !out.includes(c) && c.key !== x.key) {
+        out.push(c);
+        walk(c.host, c.meta.id);
+      }
+    }
+  };
+  walk(x.host, x.meta.id);
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -604,6 +759,8 @@ export interface WsSnapshot {
   withArchived: boolean;
   /** The first message this device sent to a session, for hosts that do not keep it. */
   first: Record<string, string>;
+  /** Forks moved to the top level (their parent was archived alone, SB-37). */
+  detached: string[];
   /** The session open in the workspace now. */
   current: string | null;
   rev: number;
@@ -631,6 +788,7 @@ const KEYS = {
   unread: "ai-remote.ws.unread",
   pins: "ai-remote.ws.pins",
   first: "ai-remote.ws.first",
+  detached: "ai-remote.ws.detached",
   base: "ai-remote.ws.baselined",
   acked: "ai-remote.ws.ackedTurns",
   cache: "ai-remote.ws.cache",
@@ -678,6 +836,7 @@ export class WorkspaceStore {
       acked: this.read(KEYS.acked, {}),
       withArchived: false,
       first: this.read(KEYS.first, {}),
+      detached: this.read(KEYS.detached, []),
       current: null,
       rev: 0,
     };
@@ -717,6 +876,7 @@ export class WorkspaceStore {
     if (next.pins) this.write(KEYS.pins, this.snap.pins);
     if (next.first) this.write(KEYS.first, this.snap.first);
     if (next.acked) this.write(KEYS.acked, this.snap.acked);
+    if (next.detached) this.write(KEYS.detached, this.snap.detached);
     this.listeners.forEach((l) => l());
   }
 
@@ -1097,6 +1257,39 @@ export class WorkspaceStore {
       }
       throw e instanceof Error ? e : new Error(msg);
     }
+  }
+
+  /**
+   * Forks a session (`chat_start` with `fork_of`): the new one is listed at once, under its parent.
+   * A host from before forks refuses (it wants an agent and a folder): rejected with `unsupported`.
+   */
+  async fork(host: string, id: string, intent?: string): Promise<{ session: string; ticket: string | null }> {
+    let v: Record<string, unknown> & { session?: string; ticket?: string };
+    try {
+      v = (await this.deps.call(host, "chat_start", { fork_of: id, ...(intent ? { intent } : {}) })) as typeof v;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(/missing field .?runtime|unknown field .?fork_of/i.test(msg) ? "unsupported" : msg);
+    }
+    const meta = normalizeMeta({ ...v, id: v.session });
+    if (!meta) throw new Error("chat_start did not name the new session");
+    this.addSession(host, { ...meta, parent: meta.parent ?? id });
+    return { session: meta.id, ticket: typeof v.ticket === "string" ? v.ticket : null };
+  }
+
+  /** One host's `chat_search` answer (rejects as the tool does: a host without it says `unknown tool`). */
+  search(host: string, query: string, limit: number = DEEP_SEARCH.LIMIT): Promise<unknown> {
+    return this.deps.call(host, "chat_search", { query, limit });
+  }
+
+  /** Moves forks to the top level (`on`), or back under their parent; kept on this device. */
+  detach(keys: string[], on: boolean) {
+    const set = new Set(this.snap.detached);
+    for (const k of keys) {
+      if (on) set.add(k);
+      else set.delete(k);
+    }
+    this.set({ detached: [...set].slice(-MAX_MARKS) });
   }
 
   /** Ends a session on its host (its transcript stays). */

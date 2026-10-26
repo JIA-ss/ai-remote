@@ -7,7 +7,7 @@
 // own (new session there, copy the path, collapse the others — also Alt+click).
 
 import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { folderName, knownHome } from "../../lib/chat";
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
@@ -16,6 +16,10 @@ import {
   aggregateDot,
   dateBuckets,
   DEFAULT_LIST,
+  descendants,
+  familySummary,
+  inFamily,
+  nestFamilies,
   groupSessions,
   isAscending,
   isDefaultList,
@@ -32,6 +36,7 @@ import {
   truncateGroup,
   withAscending,
   type DayBucket,
+  type FamilyNode,
   type GroupBy,
   type ListPrefs,
   type Place,
@@ -41,12 +46,16 @@ import {
   type WsSnapshot,
 } from "../../lib/workspace";
 import { cx } from "../util";
-import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
+import { archive, forkItem, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { ModeSwitch, type AppMode } from "./ModeSwitch";
 import { ComputerMark, modLabel, PopMenu, StatusDot, useOverflow, viewHeight, workspaceOwnsEvent, type MenuAt, type MenuItem, type MenuLine, type Toast } from "./parts";
 import { workspace } from "./useWorkspace";
 
 const COLLAPSED = "ai-remote.ws.collapsed";
+/** Sessions whose forks are hidden (SB-29), by key. */
+const FAMILIES = "ai-remote.ws.families";
+/** SB-29: a second click on a fork arrow this soon after the first is ignored. */
+const FAMILY_GUARD_MS = 500;
 /** How the list groups, sorts and filters (SB-46). */
 const LIST = "ai-remote.ws.list";
 const PINNED_KEY = "pinned";
@@ -182,7 +191,21 @@ function readList(): ListPrefs {
 
 /** A session's title as shown ("Untitled session" when it has none at all). */
 export function titleOf(x: WsItem): string {
+  // A fork nobody named yet: "Fork of <its parent>".
+  if (x.meta.parent && !x.meta.title?.trim()) {
+    const parent = workspace.find(x.host, x.meta.parent);
+    if (parent && parent.key !== x.key && parent.meta.parent !== x.meta.id) return t("ws_fork_title", { title: titleOf(parent) });
+  }
   return workspace.title(x) || t("ws_untitled");
+}
+
+function readFamilies(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(FAMILIES) ?? "[]");
+    return new Set(Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 /** One group as the list draws it: a folder on a computer (with its `+`), a day, a state, or everything. */
@@ -273,6 +296,26 @@ export function Sidebar(p: SidebarProps) {
     return { pinned: g.pinned, groups: shown };
   }, [items, p.snap.pins, prefs]);
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  // SB-29: whose forks are hidden; the arrow ignores a second click within 500 ms.
+  const [folds, setFolds] = useState(readFamilies);
+  const foldClicks = useRef(new Map<string, number>());
+  const toggleFamily = (key: string) => {
+    const now = Date.now();
+    if (now - (foldClicks.current.get(key) ?? 0) < FAMILY_GUARD_MS) return;
+    foldClicks.current.set(key, now);
+    setFolds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        localStorage.setItem(FAMILIES, JSON.stringify([...next].slice(-500)));
+      } catch {
+        // Kept for this run only.
+      }
+      return next;
+    });
+  };
+  const detached = useMemo(() => new Set(p.snap.detached), [p.snap.detached]);
   const [opened, setOpened] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<{ key: string; at: MenuAt } | null>(null);
   const [groupMenu, setGroupMenu] = useState<{ key: string; at: MenuAt } | null>(null);
@@ -342,7 +385,7 @@ export function Sidebar(p: SidebarProps) {
     if (item) { clearSelection(); p.onOpen(item.host, item.meta.id); }
   });
   const computer = (host: string) => p.computers.find((c) => c.host.name === host) ?? null;
-  const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived };
+  const ctx: ActionCtx = { toast: p.toast, onArchived: p.onArchived, onOpen: p.onOpen };
   const selectedItems = selection.keys.flatMap((key) => byKey.get(key) ? [byKey.get(key)!] : []);
   const bulk = selectedItems.length > 1 && !!menu && selection.keys.includes(menu.key);
   const selectAllKeys = [...pinned, ...groups.flatMap((g) => g.items)].map((x) => x.key);
@@ -458,7 +501,7 @@ export function Sidebar(p: SidebarProps) {
     const ids = new Set<string>();
     if (pinned.length) ids.add(`group:${PINNED_KEY}`);
     for (const g of groups) ids.add(`group:${g.key}`).add(`more:${g.key}`);
-    for (const x of items) ids.add(`row:${x.key}`);
+    for (const x of items) ids.add(`row:${x.key}`).add(`sum:${x.key}`);
     return ids;
   }, [items, pinned, groups]);
   const firstRow = groups[0]?.key === ALL_KEY && groups[0].items[0] ? `row:${groups[0].items[0].key}` : null;
@@ -488,6 +531,7 @@ export function Sidebar(p: SidebarProps) {
       { key: "pin", label: t(workspace.isPinned(x) ? "ws_unpin" : "ws_pin"), letter: "p", run: () => togglePin(x, ctx) },
       read,
       { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: oldNote, run: () => p.setRenaming(x.key) },
+      forkItem(x, ctx),
       "sep",
       { key: "archive", label: t("ws_archive"), letter: "a", disabled: old, note: oldNote, run: () => archive(x, ctx) },
       ...(x.meta.state === "ended" ? [] : [endItem(x)]),
@@ -571,11 +615,13 @@ export function Sidebar(p: SidebarProps) {
     ];
   };
 
-  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean } = {}) => (
+  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean; depth?: number; family?: { open: boolean; onToggle: () => void } } = {}) => (
     <Row
       key={x.key}
       item={x}
       lead={opts.lead}
+      depth={opts.depth ?? 0}
+      family={opts.family}
       jump={jumps.indexOf(x.key) + 1 || undefined}
       env={opts.env && !x.local ? (computer(x.host) ?? { os: null, online: x.online }) : null}
       selected={x.key === p.current}
@@ -607,6 +653,44 @@ export function Sidebar(p: SidebarProps) {
       }}
     />
   );
+
+  // SB-29: a session, then (while not hidden) its forks indented under it with the guide line; hidden
+  // forks leave one line saying how many there are, and how many failed, are unread or run.
+  const family = (n: FamilyNode<WsItem>, depth: number, opts: { env?: boolean }): ReactNode => {
+    const key = n.item.key;
+    if (!n.children.length) return row(n.item, { ...opts, depth });
+    const open = !folds.has(key);
+    const kids = open ? n.children : n.children.filter((c) => inFamily(c, p.current));
+    // The line counts the forks it stands for: those shown (the open one) are not hidden.
+    const hidden = n.children.filter((c) => !kids.includes(c));
+    const sum = open || !hidden.length ? null : familySummary({ item: n.item, children: hidden }, (x) => workspace.dot(x));
+    const depthStyle = { "--ws-depth": depth } as CSSProperties;
+    return (
+      <Fragment key={key}>
+        {row(n.item, { ...opts, depth, family: { open, onToggle: () => toggleFamily(key) } })}
+        <div className="ws-family" style={depthStyle} data-family-of={key}>
+          {kids.map((c) => family(c, depth + 1, opts))}
+          {sum && (
+            <button
+              type="button"
+              className="ws-family-sum"
+              style={{ "--ws-depth": depth } as CSSProperties}
+              data-ws-nav
+              tabIndex={navIndex(`sum:${key}`)}
+              onFocus={() => setFocusId(`sum:${key}`)}
+              aria-expanded={false}
+              onClick={() => toggleFamily(key)}
+            >
+              <span>{t(sum.count === 1 ? "ws_family_count_one" : "ws_family_count_many", { n: sum.count })}</span>
+              {sum.failed > 0 && <span className="bad">· {t("ws_family_failed", { n: sum.failed })}</span>}
+              {sum.unread > 0 && <span>· {t("ws_family_unread", { n: sum.unread })}</span>}
+              {sum.running > 0 && <span>· {t("ws_family_running", { n: sum.running })}</span>}
+            </button>
+          )}
+        </div>
+      </Fragment>
+    );
+  };
 
   const noComputers = p.computers.length === 0;
   const loading = !all.length && p.computers.some((c) => c.online === true && (!p.snap.hosts[c.host.name] || p.snap.hosts[c.host.name].status === "loading"));
@@ -702,7 +786,14 @@ export function Sidebar(p: SidebarProps) {
           const folded = collapsed.has(g.key);
           const keep = new Set(p.current ? [p.current] : []);
           const limit = rowsBeforeMore(prefs.groupBy);
-          const cut = truncateGroup(g.items, limit, keep, opened.has(g.key), (x) => workspace.dot(x) === "awaiting");
+          // Families are cut as one: a fork shows with the session it came from.
+          const nodes = nestFamilies(g.items, detached);
+          const byRoot = new Map(nodes.map((n) => [n.item.key, n]));
+          for (const n of nodes) if (inFamily(n, p.current)) keep.add(n.item.key);
+          const cut = truncateGroup(nodes.map((n) => n.item), limit, keep, opened.has(g.key), (x) => {
+            const n = byRoot.get(x.key);
+            return !!n && [n.item, ...descendants(n)].some((y) => workspace.dot(y) === "awaiting");
+          });
           const place = g.place;
           const c = place ? computer(place.host) : null;
           const offline = c?.online !== true;
@@ -733,7 +824,7 @@ export function Sidebar(p: SidebarProps) {
             return (
               <div key={g.key} className="ws-sec ws-sec-flat" data-group={g.key}>
                 <div className="ws-sec-rows" role="group" aria-label={g.label}>
-                  {rows.map((x) => row(x, { env: envRows }))}
+                  {rows.map((x) => (byRoot.has(x.key) ? family(byRoot.get(x.key)!, 0, { env: envRows }) : row(x, { env: envRows })))}
                   {more}
                 </div>
               </div>
@@ -774,7 +865,7 @@ export function Sidebar(p: SidebarProps) {
                 )
               }
             >
-              {rows.map((x) => row(x, { env: envRows }))}
+              {folded ? rows.map((x) => row(x, { env: envRows })) : rows.map((x) => (byRoot.has(x.key) ? family(byRoot.get(x.key)!, 0, { env: envRows }) : row(x, { env: envRows })))}
               {more}
             </Section>
           );
@@ -887,6 +978,8 @@ function Section({
 function Row({
   item,
   lead,
+  depth,
+  family,
   jump,
   env,
   selected,
@@ -902,6 +995,10 @@ function Row({
 }: {
   item: WsItem;
   lead?: boolean;
+  /** How far under the session it was forked from (SB-29). */
+  depth: number;
+  /** A session with forks: whether they show, and the arrow that shows or hides them. */
+  family?: { open: boolean; onToggle: () => void };
   jump?: number;
   /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
   env: Pick<Computer, "os" | "online"> | null;
@@ -933,6 +1030,17 @@ function Row({
       data-menu-open={menuOpen ? "" : undefined}
       data-decorated={decorated ? "" : undefined}
       data-archived={item.meta.archived ? "" : undefined}
+      data-family={family ? (family.open ? "open" : "closed") : undefined}
+      data-depth={depth || undefined}
+      style={depth ? ({ "--ws-depth": depth } as CSSProperties) : undefined}
+      onKeyDown={(e) => {
+        // A tree's keys: → shows the forks, ← hides them.
+        if (!family || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+        if ((e.key === "ArrowRight" && !family.open) || (e.key === "ArrowLeft" && family.open)) {
+          e.preventDefault();
+          family.onToggle();
+        }
+      }}
       onPointerEnter={(e) => e.pointerType === "mouse" && onHover(e.currentTarget)}
       onPointerLeave={() => onHover(null)}
       onPointerDown={() => onHover(null)}
@@ -950,7 +1058,16 @@ function Row({
           data-ws-nav
           tabIndex={tabIndex}
           onFocus={onFocus}
-          onClick={onOpen}
+          onClick={(e) => {
+            // The arrow after the title (inside the row's button) shows or hides the forks.
+            if (family && (e.target as HTMLElement).closest(".ws-row-family")) {
+              e.preventDefault();
+              family.onToggle();
+              return;
+            }
+            onOpen(e);
+          }}
+          aria-expanded={family ? family.open : undefined}
           aria-current={selected ? "page" : undefined}
           aria-pressed={multiSelected}
           aria-description={item.meta.archived ? t("ws_archived_row") : undefined}
@@ -963,6 +1080,11 @@ function Row({
           <span className="ws-row-title" ref={ref}>
             {title}
           </span>
+          {family && (
+            <span className="ws-row-family" data-open={family.open ? "" : undefined} title={t("ws_family_toggle")} aria-hidden>
+              <ChevronRight size={13} strokeWidth={1.75} />
+            </span>
+          )}
         </button>
       )}
       {!renaming && branch && (

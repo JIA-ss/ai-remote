@@ -19,11 +19,12 @@ import { Palette } from "./Palette";
 import { Corner, modKey, Toasts, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
 import { SessionPage } from "./SessionPage";
 import { Sidebar } from "./Sidebar";
-import { archive, markDone, togglePin, toggleRead, unarchive } from "./actions";
+import { archive, fork, markDone, togglePin, toggleRead, unarchive } from "./actions";
+import { FamilyConfirm } from "./FamilyConfirm";
 import { useWorkspace, workspace } from "./useWorkspace";
 
 /** The session shortcuts' keys (with ⌘⌥ / Ctrl+Alt). */
-const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA"]);
+const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA", "KeyO"]);
 
 /** Where the workspace is: a session on a computer, or the new-session page (with the place it was
  *  opened for). The shell's `{ page: "agents" }` route carries the same fields. */
@@ -180,11 +181,14 @@ export function Workspace({
         const x = key ? workspace.items().find((i) => i.key === key) : null;
         if (!x) return;
         e.preventDefault();
-        const ctx = { toast, onArchived: (k: string) => k === current && newSession() };
+        const ctx = { toast, onArchived: (k: string) => k === current && newSession(), onOpen: openSession };
         if (e.code === "KeyP") togglePin(x, ctx);
         else if (e.code === "KeyU") {
           if (workspace.dot(x) === "failed") markDone(x, ctx);
           else toggleRead(x);
+        } else if (e.code === "KeyO") {
+          // ⌘⌥O forks (SB-39); a session that cannot be forked now stays as it is.
+          fork(x, ctx);
         } else if (e.code === "KeyA") {
           if (x.meta.archived) unarchive(x, ctx);
           else archive(x, ctx);
@@ -397,6 +401,7 @@ export function Workspace({
             onLeave={() => newSession()}
             onArchived={(key) => key === current && newSession()}
             onNew={() => newSession()}
+            onOpen={openSession}
             toast={toast}
           />
         ) : (
@@ -417,6 +422,7 @@ export function Workspace({
           />
         )}
         <Toasts list={toasts} onDone={(id) => setToasts((l) => l.filter((x) => x.id !== id))} />
+        <FamilyConfirm />
       </main>
       {palette && (
         <Palette

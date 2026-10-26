@@ -810,3 +810,107 @@ test("archive undo preserves events arriving after its filtered row is restored 
   assert.equal(restored.meta.state, "running");
   assert.equal(restored.meta.last_seq, 99);
 });
+
+test("forks nest under the session they came from, in list order, and detached ones stay on top", () => {
+  const a = item("pc", meta({ id: "a" }));
+  const b = item("pc", meta({ id: "b", parent: "a" }));
+  const c = item("pc", meta({ id: "c", parent: "b" }));
+  const d = item("pc", meta({ id: "d", parent: "a" }));
+  const other = item("lab", meta({ id: "e", parent: "a" })); // same id on another host is not a child
+  const orphan = item("pc", meta({ id: "f", parent: "gone" }));
+  const tree = ws.nestFamilies([d, a, other, c, b, orphan]);
+  const shape = (n) => [n.item.key, n.children.map(shape)];
+  assert.deepEqual(plain(tree.map(shape)), [
+    ["pc/a", [["pc/d", []], ["pc/b", [["pc/c", []]]]]],
+    ["lab/e", []],
+    ["pc/f", []],
+  ]);
+  assert.deepEqual(plain(ws.descendants(tree[0]).map((x) => x.key)), ["pc/d", "pc/b", "pc/c"]);
+  assert.equal(ws.inFamily(tree[0], "pc/c"), true);
+  assert.equal(ws.inFamily(tree[0], "lab/e"), false);
+  assert.equal(ws.inFamily(tree[0], null), false);
+  // Moved to the top level: b (with its own fork c) stands alone.
+  const flat = ws.nestFamilies([a, b, c], new Set(["pc/b"]));
+  assert.deepEqual(plain(flat.map(shape)), [["pc/a", []], ["pc/b", [["pc/c", []]]]]);
+  // Forks of each other (no root) are not lost.
+  const x = item("pc", meta({ id: "x", parent: "y" }));
+  const y = item("pc", meta({ id: "y", parent: "x" }));
+  assert.equal(ws.nestFamilies([x, y]).length, 1);
+  assert.deepEqual(plain(ws.forksOf(a, [a, b, c, d, other, orphan]).map((z) => z.key)), ["pc/b", "pc/c", "pc/d"]);
+});
+
+test("hidden forks are summed up: how many, and how many failed, are unread and run", () => {
+  const p = item("pc", meta({ id: "p" }));
+  const kids = [
+    item("pc", meta({ id: "k1", parent: "p", last_status: "failed" })),
+    item("pc", meta({ id: "k2", parent: "p", state: "running" })),
+    item("pc", meta({ id: "k3", parent: "k2" })),
+  ];
+  const [tree] = ws.nestFamilies([p, ...kids]);
+  const dots = { "pc/k1": "failed", "pc/k2": "running", "pc/k3": "unread" };
+  assert.deepEqual(plain(ws.familySummary(tree, (x) => dots[x.key] ?? null)), { count: 3, failed: 1, unread: 1, running: 1 });
+});
+
+test("only Claude Code and Codex sessions that answered and do not run can be forked", () => {
+  const claude = meta({ permission_mode: "bypassPermissions" });
+  assert.equal(ws.forkBlock(claude), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "codex", name: "Codex" })), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "fake-codex", name: "Fake" })), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "opencode", name: "OpenCode" })), "agent");
+  assert.equal(ws.forkBlock({ ...claude, turns: 0 }), "no_turn");
+  assert.equal(ws.forkBlock({ ...claude, state: "running" }), "running");
+  assert.equal(ws.forkBlock({ ...claude, state: "starting" }), "running");
+  assert.equal(ws.forkBlock({ ...claude, archived: true }), "archived");
+  assert.equal(ws.forkBlock({ ...claude, state: "ended" }), null);
+});
+
+test("earlier titles are main search results and say which one matched", () => {
+  const renamed = item("pc", meta({ id: "r", title: "Ship 2.0", previous_titles: ["fix login bug", "Login rework"], last_activity: 10 }));
+  const other = item("pc", meta({ id: "o", title: "Docs", cwd: "/home/me/login", last_activity: 20 }));
+  const fields = (x) => ({ title: x.meta.title, folder: x.meta.cwd, branch: "", computer: x.host, previous: x.meta.previous_titles });
+  assert.deepEqual(plain(ws.searchSessions([other, renamed], "login", fields).map((x) => x.key)), ["pc/r", "pc/o"]);
+  assert.equal(ws.formerTitle("LOGIN", "Ship 2.0", renamed.meta.previous_titles), "Login rework");
+  assert.equal(ws.formerTitle("bug login", "Ship 2.0", renamed.meta.previous_titles), "fix login bug");
+  assert.equal(ws.formerTitle("ship", "Ship 2.0", renamed.meta.previous_titles), null, "the current title matched");
+  assert.equal(ws.formerTitle("login", "Ship", undefined), null);
+});
+
+test("what each host found said is merged newest first, without the sessions already listed", () => {
+  assert.equal(ws.deepQuery("ab"), false);
+  assert.equal(ws.deepQuery(" abc "), true);
+  assert.equal(ws.deepQuery("构建失"), true);
+  const hit = (session, last_activity, text) => ({ session, title: null, first_text: "x", runtime: "claude", name: "Claude Code", cwd: "/w", state: "idle", last_activity, hits: 2, excerpts: [{ role: "user", seq: 3, text }] });
+  const merged = ws.contentHits(
+    [
+      { host: "pc", found: { results: [hit("a", 10, "kiwi one"), hit("b", 30, "kiwi two"), { broken: true }] } },
+      { host: "lab", found: { results: [hit("a", 20, "kiwi lab")] } },
+      { host: "old", found: null },
+    ],
+    new Set(["pc/b"]),
+  );
+  assert.deepEqual(plain(merged.map((h) => [h.key, h.excerpts[0].text, h.hits])), [["lab/a", "kiwi lab", 2], ["pc/a", "kiwi one", 2]]);
+  assert.equal(ws.contentHits([{ host: "pc", found: { results: [hit("a", 1, "x"), hit("b", 2, "y")] } }], new Set(), 1).length, 1);
+});
+
+test("a fork is listed at once under its parent, and an old host's refusal says unsupported", async () => {
+  const calls = [];
+  const store = new ws.WorkspaceStore({
+    call: async (host, tool, args) => {
+      calls.push([host, tool, args]);
+      if (host === "old") throw new Error("Mcp error: invalid arguments: missing field `runtime`");
+      if (tool === "chat_search") return { results: [], truncated: false };
+      return { session: "f1", ticket: "t", id: "f1", runtime: "claude", name: "Claude Code", cwd: "/w", state: "parked", turns: 2, started_at: 5, last_activity: 5, parent: "p1" };
+    },
+  });
+  const r = await store.fork("pc", "p1", "why");
+  assert.deepEqual(plain(r), { session: "f1", ticket: "t" });
+  assert.deepEqual(plain(calls[0]), ["pc", "chat_start", { fork_of: "p1", intent: "why" }]);
+  assert.equal(store.get().hosts.pc.sessions[0].parent, "p1");
+  await assert.rejects(store.fork("old", "p1"), /unsupported/);
+  await store.search("pc", "kiwi");
+  assert.deepEqual(plain(calls.at(-1)), ["pc", "chat_search", { query: "kiwi", limit: 20 }]);
+  store.detach(["pc/f1"], true);
+  assert.deepEqual(plain(store.get().detached), ["pc/f1"]);
+  store.detach(["pc/f1"], false);
+  assert.deepEqual(plain(store.get().detached), []);
+});

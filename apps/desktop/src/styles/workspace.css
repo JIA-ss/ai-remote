@@ -401,3 +401,43 @@
 .ws-toast-act { flex: none; height: 26px; padding: 0 10px; border-radius: 6px; background: var(--ws-hover); color: var(--ws-t1); }
 .ws-toast-act:hover { background: var(--ws-selected); }
 @keyframes ws-toast-in { from { opacity: 0; translate: 0 6px; } }
+
+/* SB-29: forks under the session they came from — 20 px a level, an L-shaped guide down to the last fork */
+.ws-row { --ws-indent: calc(var(--ws-depth, 0) * 20px); }
+.ws-row-main { padding-left: calc(8px + var(--ws-indent)); }
+.ws-row[data-family] .ws-row-title { flex: 0 1 auto; }
+.ws-row-family { flex: none; width: 18px; height: 18px; margin-right: auto; display: grid; place-items: center; border-radius: 4px; color: var(--ws-t3); }
+.ws-row-family:hover { color: var(--ws-t1); background: var(--ws-hover); }
+.ws-row-family > svg { transition: transform 150ms ease-out; }
+.ws-row-family[data-open] > svg { transform: rotate(90deg); }
+.ws-family { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.ws-family::after { content: ""; position: absolute; pointer-events: none; top: 4px; bottom: 14px; left: calc(var(--ws-depth, 0) * 20px + 14px); width: 10px;
+  border-left: 1px solid var(--ws-line-strong); border-bottom: 1px solid var(--ws-line-strong); border-bottom-left-radius: 6px; }
+.ws-family-sum { height: 28px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 9px 0 calc(28px + var(--ws-depth, 0) * 20px); border-radius: 6px; color: var(--ws-t3); font-size: 12px; text-align: left; }
+.ws-family-sum:hover { background: var(--ws-hover); color: var(--ws-t2); }
+.ws-family-sum:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent); }
+.ws-family-sum .bad { color: var(--ws-danger-text); }
+@media (prefers-reduced-motion: reduce) { .ws-row-family > svg { transition: none; } }
+
+/* SB-37: archive a session alone or with its forks */
+.ws-scrim:has(> .ws-confirm) { align-items: center; padding-top: 0; background: rgb(0 0 0 / .18); }
+.ws-confirm { width: min(420px, calc(100vw - 32px)); padding: 18px 18px 14px; border-radius: 12px; background: var(--ws-s3); color: var(--ws-t1); box-shadow: var(--ws-shadow-pop), var(--ws-ring); animation: ws-pop 120ms ease-out; }
+.ws-confirm h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.ws-confirm p { margin: 0 0 16px; color: var(--ws-t2); line-height: 20px; }
+.ws-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.ws-btn-primary { background: var(--ws-accent); color: #fff; box-shadow: none; }
+.ws-btn-primary:hover { background: color-mix(in srgb, var(--ws-accent) 88%, #000); }
+.ws-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ws-accent) 55%, transparent); }
+
+/* SB-06: earlier titles and what was said */
+.ws-palette-row.two { height: auto; min-height: 44px; padding-top: 5px; padding-bottom: 5px; align-items: flex-start; }
+.ws-palette-row.two .ws-palette-dot { height: 20px; }
+.ws-palette-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ws-palette-top { display: flex; align-items: center; gap: 8px; min-width: 0; height: 20px; }
+.ws-palette-sub { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 16px; color: var(--ws-t3); }
+.ws-palette-sub b { font-weight: 500; color: var(--ws-t2); }
+.ws-palette-h.deep { display: flex; align-items: center; gap: 6px; }
+.ws-spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--ws-line-strong); border-top-color: var(--ws-t2); animation: ws-spin 700ms linear infinite; }
+@keyframes ws-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ws-spin { animation-duration: 2s; } }
+.ws-palette-note { padding: 2px 10px 6px; font-size: 12px; color: var(--ws-t3); }

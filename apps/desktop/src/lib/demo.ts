@@ -629,6 +629,9 @@ interface DemoMeta {
   archived?: boolean;
   permission_mode?: string;
   seq?: number;
+  /** A fork's parent session, and the titles a session had before (design 1.1). */
+  parent?: string;
+  previous_titles?: string[];
 }
 const demoMeta = new Map<string, DemoMeta>([
   ["c3f9a1e7b2c4d", { title: "Fix the Q3 export date error", auto_title: "Fix the Q3 export date error", title_source: "agent", branch: "fix/quarter-dates", pinned: true, permission_mode: "bypassPermissions" }],
@@ -651,6 +654,11 @@ function demoWorkspaceSessions() {
     { title: "Flaky invoice rounding test", last_status: "failed", last_reason: "pytest exited with code 1", branch: "fix/rounding" });
   add("office-pc", { id: "w-bill-4", runtime: "claude", name: "Claude Code", cwd: bill, state: "idle", started_at: ago(300), last_activity: ago(180) },
     { title: "Document the refunds API", last_status: "completed", branch: "main" });
+  // Two forks of it (SB-29): one not named yet ("Fork of …"), one renamed since (a former title for ⌘K).
+  add("office-pc", { id: "w-bill-4a", runtime: "claude", name: "Claude Code", cwd: bill, state: "idle", started_at: ago(170), last_activity: ago(160) },
+    { title: null, auto_title: null, parent: "w-bill-4", last_status: "completed", branch: "main", permission_mode: "bypassPermissions" });
+  add("office-pc", { id: "w-bill-4b", runtime: "claude", name: "Claude Code", cwd: bill, state: "idle", started_at: ago(175), last_activity: ago(165) },
+    { title: "Refund examples for the API docs", parent: "w-bill-4", previous_titles: ["Sample refund payloads"], last_status: "failed", last_reason: "markdownlint exited with code 1", branch: "main", permission_mode: "bypassPermissions" });
   add("office-pc", { id: "w-bill-5", runtime: "claude", name: "Claude Code", cwd: bill, state: "parked", started_at: ago(1500), last_activity: ago(1400) },
     { title: "Upgrade to Python 3.13", last_status: "completed" });
   add("office-pc", { id: "w-bill-6", runtime: "codex", name: "Codex", cwd: bill, state: "ended", started_at: ago(3000), last_activity: ago(2900) },
@@ -694,7 +702,45 @@ function demoDescribe(s: SessionInfo, host: string): Record<string, unknown> {
     pinned: m.pinned || undefined,
     archived: m.archived || undefined,
     permission_mode: m.permission_mode,
+    parent: m.parent,
+    previous_titles: m.previous_titles?.length ? m.previous_titles : undefined,
   };
+}
+
+/** What was said in the demo's sessions on `host` (the host's `chat_search`). */
+function demoSearch(host: string, query: string, limit: number) {
+  const words = query.trim().toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const results: Array<Record<string, unknown>> = [];
+  if (!words.length) return { results, truncated: false, searched: 0, elapsed_ms: 0 };
+  const sessions = demoSessions.filter((x) => demoHostOf(x.id) === host).sort((a, b) => b.last_activity - a.last_activity);
+  for (const x of sessions) {
+    const passages: Array<{ role: "user" | "agent"; seq: number; text: string }> = [];
+    const open = new Map<string, { seq: number; text: string }>();
+    for (const e of demoLogs.get(x.id) ?? []) {
+      const ev = e as { t: string; seq: number; text?: string; id?: string; delta?: boolean };
+      if (ev.t === "user") passages.push({ role: "user", seq: ev.seq, text: ev.text ?? "" });
+      else if (ev.t === "message") {
+        const m = open.get(ev.id ?? "") ?? { seq: ev.seq, text: "" };
+        m.text = ev.delta ? m.text + (ev.text ?? "") : (ev.text ?? "");
+        open.set(ev.id ?? "", m);
+      }
+    }
+    for (const m of open.values()) passages.push({ role: "agent", ...m });
+    const hits = passages
+      .map((q) => ({ ...q, text: q.text.replace(/\s+/g, " ").trim() }))
+      .filter((q) => words.every((w) => q.text.toLowerCase().includes(w)));
+    if (!hits.length) continue;
+    const excerpts = hits.slice(-3).map((q) => {
+      const at = Math.max(0, q.text.toLowerCase().indexOf(words[0]) - 50);
+      const cut = q.text.slice(at, at + 158);
+      return { role: q.role, seq: q.seq, text: `${at > 0 ? "…" : ""}${cut}${at + 158 < q.text.length ? "…" : ""}` };
+    });
+    const d = demoDescribe(x, host);
+    results.push({ session: x.id, title: d.title ?? null, first_text: d.first_text ?? null, runtime: x.runtime, name: x.name, cwd: x.cwd, state: x.state,
+      archived: !!d.archived, parent: d.parent ?? null, last_activity: x.last_activity, hits: hits.length, excerpts });
+    if (results.length >= limit) break;
+  }
+  return { results, truncated: false, searched: sessions.length, elapsed_ms: 3 };
 }
 
 /** After the first look at the list: one running session finishes (unread), another computer gets a new one. */
@@ -1293,7 +1339,9 @@ function demoChatTool(host: string, tool: string, args: Record<string, unknown>)
       const m = demoMeta.get(s.id) ?? {};
       if (typeof args.title === "string") {
         const title = args.title.trim();
-        m.title = title || (m.auto_title ?? null);
+        const next = title || (m.auto_title ?? null);
+        if (m.title && m.title !== next) m.previous_titles = [...(m.previous_titles ?? []).filter((x) => x !== m.title), m.title].slice(-10);
+        m.title = next;
         m.title_source = title ? "user" : "auto";
       }
       if (typeof args.pinned === "boolean") m.pinned = args.pinned;
@@ -1301,8 +1349,28 @@ function demoChatTool(host: string, tool: string, args: Record<string, unknown>)
       demoMeta.set(s.id, m);
       return ok(demoDescribe(s, host));
     }
+    case "chat_search": {
+      if (DEMO_OLD_HOSTS.has(host)) return { isError: true, content: [{ type: "text", text: "unknown tool 'chat_search'" }] };
+      const limit = Math.min(50, Math.max(1, typeof args.limit === "number" ? args.limit : 20));
+      return ok(demoSearch(host, String(args.query ?? ""), limit));
+    }
     case "chat_start": {
       if (!demoChatEnabled) return { isError: true, content: [{ type: "text", text: "coding agents are switched off on this host" }] };
+      if (typeof args.fork_of === "string") {
+        // A fork (design 1.1): the parent's agent, folder and mode, its finished turns copied.
+        const parent = demoSessions.find((x) => x.id === args.fork_of && demoHostOf(x.id) === host);
+        if (!parent) return { isError: true, content: [{ type: "text", text: `no chat session '${String(args.fork_of)}' on this host` }] };
+        if (!parent.turns) return { isError: true, content: [{ type: "text", text: `session '${parent.id}' has no conversation to fork yet: it has not run a turn` }] };
+        const pm = demoMeta.get(parent.id) ?? {};
+        const f: SessionInfo = { ...parent, id: `c${Math.random().toString(16).slice(2, 14)}`, state: "parked", by: { device: "home-laptop" }, started_at: Date.now(), last_activity: Date.now() };
+        demoSessions.unshift(f);
+        demoSessionHost.set(f.id, host);
+        const copied = (demoLogs.get(parent.id) ?? []).filter((e) => e.t !== "title");
+        demoLogs.set(f.id, copied.map((e, i) => ({ ...e, seq: i + 1 }) as ChatEvent));
+        f.seq = copied.length;
+        demoMeta.set(f.id, { parent: parent.id, permission_mode: pm.permission_mode, first_text: pm.first_text, branch: pm.branch, auto_title: null });
+        return ok({ ...demoDescribe(f, host), session: f.id, ticket: ticket(f.id), role: "rw", expires_in_secs: 120 });
+      }
       const rt = demoRuntimes.runtimes.find((r) => r.id === args.runtime);
       const s: SessionInfo = { id: `c${Math.random().toString(16).slice(2, 14)}`, runtime: String(args.runtime), name: rt?.name ?? String(args.runtime),
         cwd: String(args.cwd), state: "idle", by: { device: "home-laptop" }, started_at: Date.now(), turns: 0, last_activity: Date.now(), seq: 0 };
