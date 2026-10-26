@@ -82,6 +82,9 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const guard = useRef<NavGuard | null>(null);
+  // Pairing's "Show this computer's pair code…" opens the dialog in Settings › This device; closing it
+  // returns to pairing instead of leaving the person on a settings page they never asked for.
+  const pairCodeReturn = useRef(false);
 
   const context = route.page === "session" ? "session" : "shell";
   const sidebar = sidebarState(sidebarPref, context, startWidth);
@@ -102,9 +105,13 @@ export default function App() {
     const m = modeOf(route);
     if (m) saveMode(m);
   }, [route]);
-  /** Every in-app navigation passes the current page's guard (pairing asks before it is left). */
-  const commit = (next: (h: History) => History) => {
-    const run = () => setHist(next);
+  /** Every navigation, the tray's included, passes the current page's guard (pairing asks before it
+   *  is left); `after` runs only once the move happens. */
+  const commit = (next: (h: History) => History, after?: () => void) => {
+    const run = () => {
+      setHist(next);
+      after?.();
+    };
     const g = guard.current;
     if (g && g(() => {
       guard.current = null;
@@ -120,8 +127,9 @@ export default function App() {
   /** Settings › This device with an action for HostPanel, the same path the tray takes. */
   const openSettingsIntent = (to: Omit<TrayIntent, "n">) => {
     const r = fromTray(to);
-    if (r) go(r);
-    setIntent({ ...to, n: Date.now() });
+    const fire = () => setIntent({ ...to, n: Date.now() });
+    if (r) commit((h) => push(h, r), fire);
+    else fire();
   };
 
   const toggleSidebar = () =>
@@ -139,6 +147,7 @@ export default function App() {
   // A page's guard only holds while that page is shown.
   useEffect(() => {
     if (route.page !== "pair") guard.current = null;
+    if (route.page !== "settings" && route.page !== "pair") pairCodeReturn.current = false;
   }, [route.page]);
 
   // ---- the tray, the window going to the tray ----
@@ -153,8 +162,10 @@ export default function App() {
         // No view: the window was only brought back (Dock, a click on the icon); stay where we are.
         const r = fromTray(to);
         if (!r) return;
-        setHist((h) => push(h, r));
-        setIntent({ ...to, n: Date.now() });
+        // Through the guard: leaving pairing before its words are checked asks first (and the
+        // unconfirmed pairing is removed), from the tray menu as from the window. commit only reads
+        // the guard ref and setHist, so the first render's copy is the right one here.
+        commit((h) => push(h, r), () => setIntent({ ...to, n: Date.now() }));
       }).then(keep);
       // A live view must not go on unseen.
       void listen("window-hidden", () => {
@@ -333,7 +344,19 @@ export default function App() {
   {
     let page: ReactNode;
     if (route.page === "settings")
-      page = <SettingsPage sec={route.sec} status={status} onStatus={() => setStatusRound((n) => n + 1)} intent={intent} />;
+      page = (
+        <SettingsPage
+          sec={route.sec}
+          status={status}
+          onStatus={() => setStatusRound((n) => n + 1)}
+          intent={intent}
+          onPairCodeClosed={() => {
+            if (!pairCodeReturn.current) return;
+            pairCodeReturn.current = false;
+            back();
+          }}
+        />
+      );
     else if (!snap.ready) page = <div className="gl-empty gl-starting">{t("starting")}</div>;
     else if (snap.error)
       page = (
@@ -391,7 +414,10 @@ export default function App() {
             await store.refresh();
             go({ page: "computer", host: h, tab: "overview" }, "replace");
           }}
-          onShowMyCode={() => openSettingsIntent({ view: "settings", sec: "device", action: "pair_code" })}
+          onShowMyCode={() => {
+            pairCodeReturn.current = true;
+            openSettingsIntent({ view: "settings", sec: "device", action: "pair_code" });
+          }}
           registerGuard={(g) => (guard.current = g)}
           onAgents={() => go({ page: "settings", sec: "agents" })}
         />

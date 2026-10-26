@@ -134,6 +134,7 @@ export function SettingsPage({
   status,
   onStatus,
   intent = null,
+  onPairCodeClosed,
 }: {
   sec: Section;
   status: AgentStatus | null;
@@ -141,6 +142,8 @@ export function SettingsPage({
   onStatus: () => void;
   /** A tray intent: its action, anchor or error goes to This device. */
   intent?: TrayIntent | null;
+  /** The pair-code dialog closed (the shell returns to the page that asked for it). */
+  onPairCodeClosed?: () => void;
 }) {
   const name = status?.name ?? "";
   const ledes: Partial<Record<Section, Key>> = {
@@ -155,7 +158,7 @@ export function SettingsPage({
       {lede && <p className="gl-lede">{t(lede, { name })}</p>}
       {sec === "general" && <General />}
       {sec === "agents" && <Agents status={status} name={name} onChange={onStatus} />}
-      {sec === "device" && <Device status={status} intent={intent} />}
+      {sec === "device" && <Device status={status} intent={intent} onPairCodeClosed={onPairCodeClosed} />}
       {sec === "network" && <Network />}
       {sec === "approvals" && <Approvals />}
       {sec === "about" && <About version={status?.version} />}
@@ -419,7 +422,7 @@ const shortKey = (id: string) => {
   return `eid:${hex.slice(0, 16).replace(/(.{4})(?=.)/g, "$1 ")}`;
 };
 
-function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIntent | null }) {
+function Device({ status, intent, onPairCodeClosed }: { status: AgentStatus | null; intent: TrayIntent | null; onPairCodeClosed?: () => void }) {
   const [copied, setCopied] = useState(false);
   const id = status?.device ?? "";
   // This computer as a host: its paired controllers when ai-remote host runs here, `null` when not.
@@ -455,7 +458,7 @@ function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIn
           </button>
         </Row>
       </div>
-      <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()}>
+      <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()} onPairCodeClosed={onPairCodeClosed}>
         {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
         {controllers && <LocalAgents />}
       </HostPanel>
@@ -535,11 +538,13 @@ function HostPanel({
   name,
   intent,
   onChanged,
+  onPairCodeClosed,
   children,
 }: {
   name: string;
   intent: TrayIntent | null;
   onChanged: () => void;
+  onPairCodeClosed?: () => void;
   /** Shown right after the host's state: the paired controllers. */
   children?: React.ReactNode;
 }) {
@@ -968,7 +973,16 @@ function HostPanel({
           }}
         />
       )}
-      {pairOpen && <PairCodeDialog name={name} connected={connected} onClose={() => setPairOpen(false)} />}
+      {pairOpen && (
+        <PairCodeDialog
+          name={name}
+          connected={connected}
+          onClose={() => {
+            setPairOpen(false);
+            onPairCodeClosed?.();
+          }}
+        />
+      )}
       {askStop && (
         <Confirm
           title={t("lh_stop_q")}
