@@ -815,6 +815,35 @@
     const queuedTurn = await until("queued turn", () => turns().length > nDrawl && /QUEUED after the answer/.test(text($(".nt-user", lastTurn()))), 20000);
     await check("the queued message is the next turn, not a steer", !!queuedTurn && !$$(".nt-user[data-steer='1']", turns()[nDrawl - 1]).length);
     await idle();
+
+    // 10b. The model and reasoning-effort picker under the composer (XNT-35..37): Codex's default model at
+    // its own level, without "GPT-"; a choice is a `model` command and Codex's next turn/start carries it.
+    const pickerText = () => text($(".cdx .x-model"));
+    const picker = await until("model picker", () => $(".cdx .x-model"), 5000);
+    await check("the composer shows the model and its effort level, without GPT-", !!picker && /^Fake/.test(pickerText()) && /中|Medium/.test(pickerText()), pickerText());
+    keyDown(composer(), "M", { code: "KeyM", ctrlKey: true, shiftKey: true });
+    const modelMenu = await until("model menu", () => $(".ws-model-pop"), 3000);
+    const menuItems = () => $$(".ws-model-pop .ws-menu-item").map(text);
+    await check("Ctrl+Shift+M opens it: the default, the models Codex offers (not a hidden one), the levels",
+      !!modelMenu && menuItems().some((x) => /^GPT Fake Mini/.test(x)) && !menuItems().some((x) => /Hidden/.test(x)) && menuItems().some((x) => /^(低|Low)$/.test(x)),
+      menuItems().join(" | "));
+    $$(".ws-model-pop .ws-menu-item").find((b) => /^GPT Fake Mini/.test(text(b))).click();
+    const mini = await until("Mini in use", () => /^Fake Mini/.test(pickerText()) && pickerText(), 5000);
+    await check("choosing a model shows once the host holds it, at that model's own level", !!mini && /低|Low/.test(mini), pickerText());
+    $(".cdx .x-model").click();
+    await until("model menu again", () => $(".ws-model-pop"), 3000);
+    await check("the levels follow the chosen model", menuItems().some((x) => /^(高|High)$/.test(x)) && !menuItems().some((x) => /^(中|Medium)$/.test(x)), menuItems().join(" | "));
+    $$(".ws-model-pop .ws-menu-item").find((b) => /^(高|High)$/.test(text(b))).click();
+    await until("High in use", () => /高|High/.test(pickerText()), 5000);
+    $(".cdx .x-model").click();
+    const toClose = await until("model menu to close", () => $(".ws-model-pop"), 3000);
+    keyDown(toClose, "Escape");
+    await sleep(150);
+    await check("Esc closes the menu and does not arm Stop", !$(".ws-model-pop") && text($$(".nt-compose .round")[0]) !== "Esc");
+    await sendTurn("WHICH model now");
+    await idle();
+    await check("Codex's next turn runs with the chosen model and level", /model=gpt-fake-mini effort=high/.test(text(lastTurn())), text(lastTurn()).slice(-120));
+    await shot("c08b-model-picker");
     const codexTurns = turns().length;
 
     // 11. Find works in the Codex view.

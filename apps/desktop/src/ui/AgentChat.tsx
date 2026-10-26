@@ -37,6 +37,7 @@ import {
   type Runtime,
   type RuntimesReport,
   type SessionInfo,
+  modelCommand,
 } from "../lib/chat";
 import { codexTurn, isCodexRuntime, pendingRequest } from "../lib/codex";
 import { t } from "../lib/i18n";
@@ -48,6 +49,7 @@ import { secs } from "./chat/Rows";
 import { PreviewProvider } from "./chat/Preview";
 import { Transcript } from "./chat/Transcript";
 import { CodexLiveStrip, livePlan } from "./codex/CodexLiveStrip";
+import { CodexModelPicker } from "./codex/CodexModelPicker";
 import { CodexRequestCard, dropDraft, requestKey } from "./codex/CodexRequestCard";
 import { Icon } from "./Icon";
 import { ClaudeConversation } from "./claude/ClaudeConversation";
@@ -521,6 +523,12 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
   const agent = hello?.runtime.name ?? t("hc_agent");
   // Codex conversations are laid out the way Codex's own app shows them; others keep this panel's rows.
   const codex = isCodexRuntime(hello?.runtime);
+  // The model and effort Codex works at (its `models` / `model` events, else the hello): offered only
+  // when the host takes the `model` command (its hello lists models) and Codex named some.
+  const root = useRef<HTMLDivElement>(null);
+  const models = chat.models ?? hello?.models ?? [];
+  const inUse = chat.model ?? { model: hello?.model ?? null, effort: hello?.effort ?? null };
+  const choosesModel = codex && !!hello?.models && models.length > 0;
   const canSteer = !!hello?.caps?.steer;
   const ph = phase(chat);
   const sendRef = useRef(send);
@@ -625,6 +633,7 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
 
   return (
     <div
+      ref={root}
       className={cx("nt-chat", codex && "cdx")}
       onKeyDownCapture={(e) => {
         onEsc(e);
@@ -722,6 +731,11 @@ export function ConversationPanel({ host, target, onLeave, conv }: { host: strin
           send({ interrupt: {} });
         }}
         variant={codex ? "codex" : "default"}
+        trail={choosesModel && hello ? (
+          <CodexModelPicker scope={root} runtime={hello.runtime.id} protocol={hello.runtime.protocol ?? undefined} models={models}
+            model={inUse.model ?? ""} effort={inUse.effort} disabled={readonly || ended}
+            onPick={(m, e) => send(modelCommand(m || null, e))} />
+        ) : null}
         stopping={chat.state === "interrupting"}
         forceQueue={answering}
         escArmed={escArmed}

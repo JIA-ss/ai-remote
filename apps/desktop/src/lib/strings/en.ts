@@ -1398,6 +1398,7 @@ export const en = {
   cdx_btn_steer: "Steer",
   cdx_btn_queue: "Queue",
   cdx_btn_stop: "Stop",
+  cdx_model_tip: "Choose the model and reasoning effort ({key}, or Ctrl+Shift+M)",
   cdx_hint_queue: "{k}Enter queues it for after this turn",
   cdx_loading: "Loading conversation…",
   cdx_exit_unknown: "Exit code unknown",

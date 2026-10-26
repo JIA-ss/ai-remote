@@ -1387,6 +1387,7 @@ export const zh: Record<keyof typeof en, string> = {
   cdx_btn_steer: "插话",
   cdx_btn_queue: "排队",
   cdx_btn_stop: "停止",
+  cdx_model_tip: "选择模型与推理强度（{key}，或 Ctrl+Shift+M）",
   cdx_hint_queue: "{k}Enter：本轮结束后再发",
   cdx_loading: "正在加载对话…",
   cdx_exit_unknown: "退出码未知",

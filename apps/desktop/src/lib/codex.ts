@@ -9,7 +9,7 @@
 // module turns the events of a turn (lib/chat.ts) into that structure. The layout was studied from
 // Codex's app; the code and wording here are this project's own.
 
-import { baseName, diffRows, type Block, type Chat, type MessagePhase, type PlanEntry, type QuestionBlock, type TextBlock, type ToolItem, type Turn } from "./chat";
+import { baseName, diffRows, type Block, type Chat, type MessagePhase, type ModelInfo, type PlanEntry, type QuestionBlock, type TextBlock, type ToolItem, type Turn } from "./chat";
 import { inlineText, parseInline } from "./markdown";
 
 /** Whether a session's agent is Codex: by its protocol, or (hosts that do not say) its id or name. */
@@ -1114,3 +1114,14 @@ export function formatMsgTime(ts: number, now: number, lang: string): string {
 }
 
 export type { MessagePhase };
+
+/**
+ * The model picker's words under the composer (XNT-35): the model's name without its "GPT-" prefix and
+ * the reasoning effort it works at — the one chosen, else that model's own default. With no model
+ * chosen it is the model Codex uses by default (the one marked default, else the first offered).
+ */
+export function codexModelWords(models: readonly ModelInfo[], model: string | null | undefined, effort: string | null | undefined): { name: string; effort: string | null } {
+  const m = model?.trim() ?? "";
+  const entry = m ? models.find((x) => x.id === m) : models.find((x) => x.default) ?? models[0];
+  return { name: (entry?.name ?? m).replace(/^gpt[-\s]+/i, ""), effort: effort || entry?.default_effort || null };
+}

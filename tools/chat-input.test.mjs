@@ -194,7 +194,7 @@ test("the shared conversation panel also gates the first hello, including its Co
     "../lib/codex": { isCodexRuntime: (runtime) => runtime?.id === "codex", pendingRequest: () => null },
     "./chat/Composer": { Composer }, "./chat/FolderPicker": {}, "./chat/Rows": {}, "./chat/Preview": {},
     "./chat/Transcript": {}, "./codex/CodexLiveStrip": { livePlan: () => null },
-    "./codex/CodexRequestCard": {}, "./Icon": {}, "./claude/ClaudeConversation": {},
+    "./codex/CodexRequestCard": {}, "./codex/CodexModelPicker": {}, "./Icon": {}, "./claude/ClaudeConversation": {},
   });
   const props = { host: "test", target: { session: "one" }, onLeave() {}, conv };
   const composerProps = () => findView(h.render(h.exports.ConversationPanel, props), (el) => el.type === Composer).props;

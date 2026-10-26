@@ -386,3 +386,18 @@
 /* the answer streams without a caret, as in Codex */
 .cdx .nt-md.streaming > :last-child::after { content: none; }
 .cdx-changes { container-type: inline-size; }
+
+/* The model and reasoning-effort picker under the composer (XNT-35): a quiet button in the third ink,
+   the model's name, its effort level and a 14 px down arrow; the menu is the shared model menu. */
+.cdx-model { display: inline-flex; min-width: 0; flex: 0 1 auto; }
+.cdx .x-model { height: 28px; max-width: 100%; min-width: 0; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px 0 8px; border-radius: 999px;
+  color: var(--x-3rd); font-size: 13px; line-height: 18px; background: transparent; }
+.cdx .x-model:hover:not(:disabled), .cdx .x-model[aria-expanded="true"] { background: var(--x-hover); color: var(--x-ink); }
+.cdx .x-model:disabled { opacity: .5; cursor: default; }
+.cdx .x-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cdx .x-model-effort { flex: none; }
+.cdx .x-model-arrow { flex: none; width: 14px; height: 14px; }
+@media (prefers-reduced-motion: no-preference) { .cdx .x-model { transition: background-color .15s, color .15s; } }
+.cdx .ws-menu { --ws-s3: var(--raised); --ws-t1: var(--x-ink); --ws-t2: var(--x-2nd); --ws-t3: var(--x-3rd); --ws-t4: var(--x-40);
+  --ws-line: var(--x-line); --ws-hover: var(--x-hover); --ws-accent: var(--x-accent-text); --ws-danger-text: var(--x-del);
+  box-shadow: var(--ws-shadow-pop, 0 8px 24px #00000052, 0 2px 6px #00000033), var(--ws-ring, inset 0 0 0 1px var(--x-border-heavy)); font-size: 13px; line-height: 19px; }
