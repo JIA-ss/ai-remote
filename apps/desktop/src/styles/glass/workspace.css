@@ -45,6 +45,7 @@
 /* ---- sidebar: its top strip, the mode switch, search, rows ---- */
 /* icon buttons are round, like the shell's sidebar toggle (inside a capsule they fit its radius) */
 :root:is([data-material="native"], [data-material="preview"]) .ws-ib { border-radius: 14px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .ws-ib { border-radius: 4px; }
 :root:is([data-material="native"], [data-material="preview"]) .ws-ib:hover:not(:disabled) { background: var(--gl-hover); }
 :root:is([data-material="native"], [data-material="preview"]) .ws-ib:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
 /* the computers / agents switch: the same track as the shell's (.gl-side-modes in workspace.css) */
@@ -90,6 +91,7 @@
 }
 :root:is([data-material="native"], [data-material="preview"]) .ws-tb { gap: 8px; padding: 0 8px; }
 :root:is([data-material="native"], [data-material="preview"]) .ws-tb > .ws-corner { margin-right: 0; }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end) > .ws-ib { border-radius: calc(var(--gl-cap-h) / 2 - 2px); }
 :root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end) > .ws-ib:hover:not(:disabled) { background: var(--fill-1); }
 :root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end) > .ws-ib:active:not(:disabled) { background: var(--fill-2); }
 :root:is([data-material="native"], [data-material="preview"]) .ws-title:hover:not([aria-disabled]) { background: var(--gl-hover); }
@@ -114,7 +116,7 @@
   border-radius: var(--gl-r-pop);
   box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
 }
-:root:is([data-material="native"], [data-material="preview"]) .ws .ws-model-pop input { background: var(--gl-field); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge); }
+:root:is([data-material="native"], [data-material="preview"]) .ws .ws-model-pop input { border-radius: var(--gl-r-row); background: var(--gl-field); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge); }
 
 /* ---- the conversation on the plane. Claude's view carries the class `page`, which native.css paints
    with --layer (the workspace's opaque surface), and its bottom fade ended in the opaque sidebar
