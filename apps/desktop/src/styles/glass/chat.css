@@ -78,7 +78,7 @@
 :root:is([data-material="native"], [data-material="preview"]) .nt-ac .it { border-radius: var(--gl-r-row); }
 :root:is([data-material="native"], [data-material="preview"]) .nt-ac .it.on { background: var(--gl-sel); }
 /* context usage */
-:root:is([data-material="native"], [data-material="preview"]) .nt-usage { padding: 14px 16px; border-radius: var(--gl-r-pop); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-usage { border-radius: var(--gl-r-pop); }
 :root:is([data-material="native"], [data-material="preview"]) .nt-usage .meter { background: var(--fill-2); }
 /* find: one capsule, its 24 px buttons concentric (16 − 4) */
 :root:is([data-material="native"], [data-material="preview"]) .nt-transcript .nt-findbar { height: 32px; box-sizing: border-box; padding: 0 4px 0 12px; border-radius: 16px; }
