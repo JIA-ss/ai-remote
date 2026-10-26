@@ -382,7 +382,7 @@ workspace → audit 的顺序 `--no-ff` 合进本分支（基线 main `ccbcf37` 
   前缀写法靠 `--lint` 读源码。
 
 **没测 / 待办**：
-- 原生 e2e（对话 / 预览 / render / offline）这次没跑；真机深浅玻璃、窗口失焦、不同壁纸下的对比度、Windows Mica 与标题条都没看。
+- 原生 e2e（对话 / 预览 / render / offline）这次没跑（后来在"合并前验收"里补跑，全过）；真机深浅玻璃、窗口失焦、不同壁纸下的对比度、Windows Mica 与标题条都没看。
 - 文中对比度数字都是按 WCAG 公式推导的，不是屏幕实测：设置次要文字 `--text-2` ≥ 4.6:1；工作区三级文字深色 `#9b9992`、浅色
   `#6c6a65`（浅色原生最坏约 3.9:1，原来不透明底上就只有约 3.5:1）。浅色 `--you-text` 与构建产物里的前缀模糊已在"复审修复"里处理。
 - `.gl-win .nt-compose`（`surfaces.css`）的特异度压过 `.cl-compose` / `.cdx` 的输入框底色，两种模式现在都套 `.gl-win`，所以外观一致，
@@ -422,6 +422,23 @@ workspace → audit 的顺序 `--no-ff` 合进本分支（基线 main `ccbcf37` 
 **实测**（本机 macOS，Vite 1538，Camofox headless；各 1 次）：`tsc`、`npm run build` 过；`node --test tools/*.test.mjs` **428 项，426 过，
 0 失败，2 跳过**；`network-ui-smoke.py` 17/17；`desktop-overlays-smoke.py` 122/122；`desktop-ui-smoke.py` **1885 项全过，0 失败，
 86.8 秒，127 张截图**（`/tmp/glass-repair-acc/`）。原生 e2e 没跑（`a3c5bba` 恢复的是 main 的角落按钮，e2e 依赖的结构与 main 相同）。
+
+### 合并前验收（2026-10-26，同分支）
+
+产品代码 = `412a137`（复审修复的最后一个提交），之后只改了 CI、测试工具和本文档。本机 macOS 27.0.1，debug 包
+（`npx tauri build --debug --no-bundle`，构建后 `bindings.ts` 无变化），本机隔离被控端 + 替身智能体，两端 `quiet = true`。
+- 禁改文件对 main `ccbcf37` 的 diff 为空：`Session.tsx`、`RemoteInput.tsx`、`native.css`、生成样式表、`src-tauri/src/**`、`bindings.ts`。
+- 静态：`tsc --noEmit`、`npm run build` 过；`node --test tools/*.test.mjs` **428 项，426 过，0 失败，2 跳过**。
+- 原生 e2e（各列项数 × 连跑次数，全部 all passed）：对话 **77 ×3**；预览 **31 ×2**；渲染 **12 ×1**；离线 **7 ×1**；Codex **121 ×1**
+  （日志里那条 `FAIL please…` 是替身回合的正文，不是失败项）；工作区 **161 ×1**（157 秒，含实时视图里角落 ‹ › 的四项历史检查）；
+  导航 / 窄芯片 **10 ×2**；Claude 细节 **28 ×2**。导航和细节第一次因显示器睡眠（屏幕枚举为空）被硬门槛拒跑，`caffeinate -u` 唤醒后重跑。
+- Camofox：`network-ui-smoke.py` **17/17**；`desktop-overlays-smoke.py` **122/122**；`desktop-ui-smoke.py` **1885 项全过**。
+  浮层冒烟第一次因 Camofox 浏览器还没启动而退出（它要求 `browserConnected`，另两个冒烟靠第一个标签页按需启动），现在只要求服务健康。
+- CI：`glass-audit.test.mjs`、`glass-build.test.mjs` 加进 `desktop.yml` 的显式测试列表，macOS 任务加一步
+  `python3 tools/desktop-ui-smoke.py --lint`（不带参数时检查与完整巡检相同的样式表，当前 42 项）。
+- **没测**：真 App 窗口里的原生材质。这次验收时本机停在锁屏，整屏截图只有锁屏，所以深浅色真窗口、失焦、不同壁纸都没看到；
+  原生 e2e 的截图是 WKWebView 快照，只含网页本身（窗口透明处是透明像素），证明 WebKit 下布局与染色，不证明材质。
+  Windows（Mica、标题条、WebView2 下的新页面）没跑；对比度仍是推导值。
 
 ## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
 

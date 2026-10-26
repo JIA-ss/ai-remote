@@ -180,8 +180,9 @@ def main():
     started = time.monotonic()
     original_transparency = None
     try:
-        if not call("GET", "/health").get("browserConnected"):
-            raise RuntimeError(f"Camofox at {args.camofox} has no browser connected")
+        # Camofox starts its browser on the first tab, as the other two smokes rely on.
+        if not call("GET", "/health").get("ok"):
+            raise RuntimeError(f"Camofox at {args.camofox} is not healthy")
         tab = call("POST", "/tabs", {"userId": USER, "sessionKey": "overlays-smoke", "url": args.url})["tabId"]
         try:
             # Camofox applies the size and then may never answer on a viewport-less context, so do not
