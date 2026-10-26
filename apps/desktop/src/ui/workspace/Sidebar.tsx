@@ -503,7 +503,8 @@ export function Sidebar(p: SidebarProps) {
   // ---- Groups made here, pins in their order, and dragging (SB-08 / SB-15 / SB-36 / SB-38 / SB-42) ----
   const pinnedKeys = pinned.map((x) => x.key);
   const failToast = (e: unknown) => p.toast({ text: t("ws_failed", { error: String((e as Error)?.message ?? e) }), tone: "error" });
-  const refocus = (selector: string) => requestAnimationFrame(() => list.current?.querySelector<HTMLElement>(selector)?.focus());
+  // After the change is drawn (a timer, not a frame: a hidden window draws no frames).
+  const refocus = (selector: string) => setTimeout(() => list.current?.querySelector<HTMLElement>(selector)?.focus(), 0);
   /** Pins or unpins rows through the batch path (it keeps an old host's pins here); what changed, for an undo. */
   const setPinned = (keys: string[], on: boolean): Promise<BatchChange[]> => {
     const rows = keys.flatMap((k) => {
@@ -535,6 +536,8 @@ export function Sidebar(p: SidebarProps) {
     workspace.setGroups(state);
     if (id !== null) setPrefs((q) => (q.groupBy === "custom" ? q : { ...q, groupBy: "custom" }));
     const unpinned = pins ? setPinned(keys, false) : Promise.resolve([] as BatchChange[]);
+    // Only unpinned (dragged out of Pinned, in no group): the row moving down says it.
+    if (!moved.length) return;
     const one = keys.length === 1 ? byKey.get(keys[0]) : undefined;
     const group = state.groups.find((g) => g.id === id)?.name ?? "";
     const text = id !== null
