@@ -748,7 +748,7 @@ pub(crate) struct Proc {
     session: Option<u32>,
     /// An OS helper that lives and dies with the processes it serves (Windows' console host): never
     /// counted as something the job left running, and it may outlive its console by a moment.
-    os_helper: bool,
+    pub(crate) os_helper: bool,
 }
 
 /// A job's main process as recorded: the pid with the start time identifies it.
