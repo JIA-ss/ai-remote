@@ -315,6 +315,10 @@ export const zh: Record<keyof typeof en, string> = {
   pg_act_empty_d: "智能体开始工作后，每一步都会记在这里。",
   pg_act_show_all: "查看所有电脑",
   pg_agents_lead: "想让 Claude Code、Codex 等智能体使用 ai-remote？",
+  pg_ins_label: "详情",
+  pg_ins_close: "关闭详情",
+  pg_act_steps_one: "1 步",
+  pg_act_steps_many: "{n} 步",
   // glass: pages end
 
   // glass: computer (add keys below, above its end marker)

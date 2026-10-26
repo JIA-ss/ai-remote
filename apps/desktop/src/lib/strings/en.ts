@@ -313,6 +313,10 @@ export const en = {
   pg_act_empty_d: "Once an agent starts working, every step is recorded here.",
   pg_act_show_all: "Show all computers",
   pg_agents_lead: "Want Claude Code, Codex or another agent to use ai-remote?",
+  pg_ins_label: "Details",
+  pg_ins_close: "Close details",
+  pg_act_steps_one: "1 step",
+  pg_act_steps_many: "{n} steps",
   // glass: pages end
 
   // glass: computer (add keys below, above its end marker)

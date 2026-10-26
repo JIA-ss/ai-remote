@@ -478,26 +478,29 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
     case "activity": {
       const shown = activityComputers(snap, route.host);
       const steps = shown.reduce((sum, c) => sum + c.feed.steps.length, 0);
+      // The filter sits over the list it filters (the centre slot), so the second line only counts.
       return {
         title: t("activity"),
-        subtitle: t("activity_subtitle", { scope: route.host ?? t("activity_all"), n: steps }),
-        end: (
-          <span className="nt-select-wrap">
-            <select
-              className="nt-select"
-              aria-label={t("activity_filter")}
-              value={route.host ?? ""}
-              onChange={(e) => go(e.target.value ? { page: "activity", host: e.target.value } : { page: "activity" }, "replace")}
-            >
-              <option value="">{t("activity_all")}</option>
-              {snap.computers.map((c) => (
-                <option key={c.host.name} value={c.host.name}>
-                  {c.host.name}
-                </option>
-              ))}
-            </select>
-            <Icon name="chevD" size={12} />
-          </span>
+        subtitle: steps > 0 ? t(steps === 1 ? "pg_act_steps_one" : "pg_act_steps_many", { n: steps }) : undefined,
+        center: (
+          <div className="gl-cap gl-glass thin gl-act-filter">
+            <span className="nt-select-wrap">
+              <select
+                className="nt-select"
+                aria-label={t("activity_filter")}
+                value={route.host ?? ""}
+                onChange={(e) => go(e.target.value ? { page: "activity", host: e.target.value } : { page: "activity" }, "replace")}
+              >
+                <option value="">{t("activity_all")}</option>
+                {snap.computers.map((c) => (
+                  <option key={c.host.name} value={c.host.name}>
+                    {c.host.name}
+                  </option>
+                ))}
+              </select>
+              <Icon name="chevD" size={12} />
+            </span>
+          </div>
         ),
       };
     }

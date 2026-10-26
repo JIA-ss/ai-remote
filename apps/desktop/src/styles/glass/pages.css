@@ -182,11 +182,21 @@
    Activity: a table under a hard edge, grouped by day; rows are buttons (Enter / Space)
    ====================================================================================== */
 .act.gl-act-empty { grid-template-columns: minmax(0, 1fr); }
+/* the list is the scroller (v2-pages.css clips it for its fade; main's inline overflow went with the
+   rewrite), so every row stays reachable and the header below can stick */
+.act > .act-list { overflow-y: auto; }
+/* the inspector starts under the toolbar strip: no divider or tint runs up through the toolbar */
+.gl-main > .nt-content > .act > .insp { margin-top: var(--tb-h); padding-top: 16px; }
 .act .gl-act-lede { font-size: 13px; line-height: 20px; color: var(--text-2); }
 .act .mm { margin-top: 16px; }
+/* the table's band (header, hover, selection) lines up with the timeline card above it */
+.act .tbl { margin-left: 0; margin-right: 0; }
 /* the header stays under the toolbar while the rows scroll: it continues the hard edge */
 .act .tbl .th { position: sticky; top: var(--tb-h); z-index: 2; background: rgb(var(--gl-edge-rgb) / .96); }
 .act .tbl .tday { padding: 16px 12px 6px; }
+/* header and day labels are text: --text-2 (--text-3 falls under 4.5:1 on the translucent plane) */
+.act .tbl :is(.th, .tday) { color: var(--text-2); }
+.act .insp .gl-insp-close { display: none; }
 .act .tbl .tr { cursor: default; }
 .act .tbl .tr:not(.sel):hover { background: var(--fill-1); }
 .act .tbl .tr:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
@@ -200,6 +210,62 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel { background: var(--gl-sel-list); box-shadow: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .tbl .tr.sel + .tr { box-shadow: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .act .insp .gl-insp-foot { border-top: var(--gl-hair) solid var(--gl-sep); }
+
+/* Narrow windows: beside a 340 px inspector the event column shrank to nothing (86 px at 1180 px with
+   the sidebar expanded, 6 px at 1100). Below about 1000 px of content the list takes the whole width
+   and the inspector becomes a drawer over its right side, shown only while a row is picked. Window
+   media queries per sidebar state (as shell.css: a size container would also contain the page's
+   fixed dialogs on some WebKit versions). The drawer floats over the rows, so with the material on it
+   is thick functional glass (a leaf: nothing in it blurs); without, the opaque raised colour. */
+.act .insp .gl-insp-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; place-items: center; border-radius: 12px; color: var(--text-2); }
+.act .insp .gl-insp-close:hover { background: var(--fill-1); color: var(--text-1); }
+.act .insp .gl-insp-close:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+@media (max-width: 1240px) {
+  .gl-win:not([data-sidebar="compact"]) .act { grid-template-columns: minmax(0, 1fr); }
+  .gl-win:not([data-sidebar="compact"]) .gl-main > .nt-content > .act > .insp { position: absolute; z-index: 3; top: 0; right: 12px; bottom: 12px; width: min(340px, calc(100% - 48px));
+    margin-top: calc(var(--tb-h) + 8px); padding: 16px 20px 18px; border-radius: var(--r-float); border-left: 0; background: var(--raised); box-shadow: var(--shadow-dialog); }
+  .gl-win:not([data-sidebar="compact"]) .act:not(:has(.tr.sel)) > .insp { display: none; }
+  .gl-win:not([data-sidebar="compact"]) .act .insp .gl-insp-close { display: grid; }
+  .gl-win:not([data-sidebar="compact"]) .act .insp .hdr { padding-right: 32px; }
+  :root:is([data-material="native"], [data-material="preview"]) .gl-win:not([data-sidebar="compact"]) .act > .insp {
+    isolation: isolate; border-radius: var(--gl-r-pop);
+    background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
+    box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet);
+    -webkit-backdrop-filter: blur(36px) saturate(160%);
+    backdrop-filter: blur(36px) saturate(160%);
+  }
+  :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .gl-win:not([data-sidebar="compact"]) .act > .insp {
+    -webkit-backdrop-filter: blur(30px) saturate(125%);
+    backdrop-filter: blur(30px) saturate(125%);
+  }
+}
+@media (max-width: 1072px) {
+  .gl-win[data-sidebar="compact"] .act { grid-template-columns: minmax(0, 1fr); }
+  .gl-win[data-sidebar="compact"] .gl-main > .nt-content > .act > .insp { position: absolute; z-index: 3; top: 0; right: 12px; bottom: 12px; width: min(340px, calc(100% - 48px));
+    margin-top: calc(var(--tb-h) + 8px); padding: 16px 20px 18px; border-radius: var(--r-float); border-left: 0; background: var(--raised); box-shadow: var(--shadow-dialog); }
+  .gl-win[data-sidebar="compact"] .act:not(:has(.tr.sel)) > .insp { display: none; }
+  .gl-win[data-sidebar="compact"] .act .insp .gl-insp-close { display: grid; }
+  .gl-win[data-sidebar="compact"] .act .insp .hdr { padding-right: 32px; }
+  :root:is([data-material="native"], [data-material="preview"]) .gl-win[data-sidebar="compact"] .act > .insp {
+    isolation: isolate; border-radius: var(--gl-r-pop);
+    background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
+    box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet);
+    -webkit-backdrop-filter: blur(36px) saturate(160%);
+    backdrop-filter: blur(36px) saturate(160%);
+  }
+  :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .gl-win[data-sidebar="compact"] .act > .insp {
+    -webkit-backdrop-filter: blur(30px) saturate(125%);
+    backdrop-filter: blur(30px) saturate(125%);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media (max-width: 1240px) {
+    :root:is([data-material="native"], [data-material="preview"]) .gl-win:not([data-sidebar="compact"]) .act > .insp { background: rgb(var(--gl-g-rgb) / .96); }
+  }
+  @media (max-width: 1072px) {
+    :root:is([data-material="native"], [data-material="preview"]) .gl-win[data-sidebar="compact"] .act > .insp { background: rgb(var(--gl-g-rgb) / .96); }
+  }
+}
 
 /* ======================================================================================
    Pairing: one centred column; the reverse entry at the bottom

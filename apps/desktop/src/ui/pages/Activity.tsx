@@ -1,5 +1,7 @@
 // Activity: every step on every computer (or the one the toolbar's filter picked), newest first and
 // grouped by day, with an inspector for the picked row. The toolbar edge is hard here: a table follows.
+// In a narrow window the inspector is a drawer over the list's right side, shown only while a row is
+// picked (glass/pages.css); picking the row again, its close button or Escape put it away.
 
 import { Fragment, useMemo, useState } from "react";
 import { currentLang, t } from "../../lib/i18n";
@@ -85,9 +87,16 @@ export function ActivityPage({
         </div>
       </div>
     );
-  const pick = (key: string) => setSel(key);
+  const pick = (key: string) => setSel((cur) => (cur === key ? null : key));
   return (
-    <div className="act">
+    <div
+      className="act"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || !sel || e.defaultPrevented) return;
+        e.preventDefault();
+        setSel(null);
+      }}
+    >
       <div className="act-list" ref={listRef}>
         <div className="gl-act-lede">{t("act_sub")}</div>
         {mm.length > 0 && (
@@ -154,18 +163,26 @@ export function ActivityPage({
           })}
         </div>
       </div>
-      <aside className="insp">
+      <aside className="insp" aria-label={t("pg_ins_label")}>
         {picked ? (
           <>
+            <button type="button" className="gl-insp-close" onClick={() => setSel(null)} aria-label={t("pg_ins_close")} title={t("pg_ins_close")}>
+              <Icon name="x" size={12} />
+            </button>
             <div className="hdr">
               <span className="w" style={picked.s.approvalId ? undefined : { color: "var(--agent)" }}>
                 <Pointer who={picked.s.approvalId || picked.s.byPerson ? "you" : "agent"} h={12} ui />
-                {picked.s.approvalId ? t("ins_decision") : t("ins_step")}
+                {picked.s.approvalId ? t(picked.s.state === "waiting" ? "out_waiting" : "ins_decision") : t("ins_step")}
               </span>
               <span className="tm">{clock(picked.s.decidedMs ?? picked.s.startedMs)}</span>
             </div>
             <div className="ttl" style={{ marginTop: 12 }}>
-              {picked.s.approvalId ? receiptOf(picked.s, picked.c.host.name).a : (picked.s.intent ?? picked.s.tool)}
+              {/* a request still waiting has no decision to state yet: say what was asked */}
+              {picked.s.approvalId
+                ? picked.s.state === "waiting"
+                  ? receiptOf(picked.s, picked.c.host.name).q
+                  : receiptOf(picked.s, picked.c.host.name).a
+                : (picked.s.intent ?? picked.s.tool)}
             </div>
             <div className="body c2" style={{ marginTop: 4 }}>
               {agentLabel(picked.c.feed.agent)} · {picked.c.host.name}

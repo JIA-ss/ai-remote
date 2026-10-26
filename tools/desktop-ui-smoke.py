@@ -21,11 +21,13 @@ link in zh / en and light / dark, screenshotted, and checked in the page:
     with opacity < 1, filter, mask or will-change, and no ancestor that is itself glass; at most one
     blurred element animating;
   - no dialog (.cdlg / .smoke) inside .win, no horizontal overflow, no Vite error overlay;
+  - on shell routes, no page root (or column directly in it) clips content it cannot scroll to;
   - with html[data-material=none] (the app's own setReducedTransparency, after every screen) there
     is no element with a backdrop-filter at all.
 
 Then the interactions: Settings > General > Glass effects set to reduced through its select (and
-back), Settings -> sidebar -> Devices with < and > in between, a session -> workspace sidebar ->
+back), Activity in a 960 x 600 frame with either sidebar (event column >= 120 px, the list scrolls to
+its last row, the inspector is a drawer shown only for a picked row), Settings -> sidebar -> Devices with < and > in between, a session -> workspace sidebar ->
 Computers, a session's < to its computer, the computer-less workspace -> Computers, and a sheet
 opened over the computer page (it sits outside .win, its ancestors are clean).
 
@@ -354,6 +356,11 @@ return {
     return (s.overflowX === 'auto' || s.overflowX === 'scroll') && e.scrollWidth > e.clientWidth + 1 && e.getClientRects().length > 0
       && !e.matches('pre, pre *, code, textarea, table, .mono, .nt-out, .nt-diff-rows') && !e.closest(%(stage)s); })
     .map(e => desc(e) + ' ' + e.scrollWidth + '/' + e.clientWidth),
+  // a page root (or a column directly in it) whose content runs past its box while it clips:
+  // what is below can never be scrolled to (the activity list once lost its overflow this way)
+  clipped: [...d.querySelectorAll(ROOTS.join(','))].flatMap(r => [r, ...r.children]).filter(e => { const s = cs(e);
+    return (s.overflowY === 'hidden' || s.overflowY === 'clip') && e.scrollHeight > e.clientHeight + 1 && e.getClientRects().length > 0
+      && !e.closest(%(stage)s); }).map(e => desc(e) + ' ' + e.scrollHeight + '/' + e.clientHeight),
   errorOverlay: !!d.querySelector('vite-error-overlay'),
   demo: !!d.querySelector('.demo-badge'),
 };""" % {"roots": json.dumps(ROOTS), "stage": json.dumps(STAGE), "surfaces": json.dumps(SURFACES)}
@@ -474,6 +481,8 @@ def audit_screen(name, query, kind, root, expect, lang, theme):
     o = a["overflow"]
     check(f"{tag}: no horizontal overflow", o["doc"] <= o["view"] + 1 and (not o["content"] or o["content"][0] <= o["content"][1] + 1), o)
     check(f"{tag}: no sideways scrolling inside the page", not a["hscroll"], a["hscroll"])
+    if kind == "shell":
+        check(f"{tag}: no page column clips content it cannot scroll to", not a["clipped"], a["clipped"])
 
     # The same screen with the material off: not a single backdrop-filter may remain.
     set_reduced(True)
@@ -508,11 +517,12 @@ def self_test():
         plant(cap, 'div', '', 'backdrop-filter: blur(3px)'),
         plant(d.querySelector('.win'), 'div', 'cdlg', ''),
         plant(d.querySelector('.nt-session'), 'h1', '', ''),
-        plant(d.querySelector('.win'), 'div', 'spage', ''),
+        plant(d.querySelector('.win'), 'div', 'spage', 'overflow: hidden'),
         plant(d.querySelector('.nt-session'), 'div', '', 'overflow-x: auto; width: 40px'),
       ];
       if (ok.some(e => !e)) return false;
       ok[5].append(Object.assign(d.createElement('div'), {style: 'width: 200px; height: 1px'}));
+      ok[4].append(Object.assign(d.createElement('div'), {style: 'width: 1px; height: 40px'}));
       d.querySelector('.nt-session .gl-toolbar').style.opacity = '0.9';
       d.querySelector('.nt-session').style.willChange = 'transform';
       d.querySelector('.nt-live-workspace').style.filter = 'saturate(1.1)';
@@ -530,6 +540,7 @@ def self_test():
     check("self-test: a second h1 is caught", len(a["h1Shell"]) == 2, a["h1Shell"])
     check("self-test: a second page root is caught", a["roots"][".spage"] == 1 and a["roots"][".nt-session"] == 1, a["roots"])
     check("self-test: sideways scrolling is caught", any("gl-audit-plant" in x for x in a["hscroll"]), a["hscroll"])
+    check("self-test: a page column clipping what it cannot scroll to is caught", any("gl-audit-plant" in x for x in a["clipped"]), a["clipped"])
     set_reduced(True)
     until("return d.documentElement.dataset.material === 'none';", 3)
     b = audit()
@@ -645,6 +656,48 @@ def interactions():
               and until("return !d.querySelector('.gl-modal-root') && !d.documentElement.hasAttribute('data-modal');"))
 
 
+def narrow_activity():
+    """Activity in a 960 x 600 window (an iframe of that size: the REST viewport is fixed at 1280 x 800),
+    with the sidebar expanded and compact: the event column keeps a readable width, the list scrolls
+    to its last row, and the inspector is a drawer that only shows while a row is picked."""
+    lang = "zh"
+    if not load(f"shotlang={lang}&shottheme=dark&view=devices", ".devices-page"):
+        check("narrow activity: a page to host the frame loads", False)
+        return
+    for side in ("expanded", "compact"):
+        tag = f"narrow activity 960x600 ({side} sidebar)"
+        fjs(f"""localStorage.setItem('ai-remote.sidebar', JSON.stringify({{shell: {json.dumps(side)}, session: 'compact'}}));
+          d.getElementById('gl-audit-frame')?.remove();
+          const f = Object.assign(d.createElement('iframe'), {{id: 'gl-audit-frame', src: '/?shotlang={lang}&shottheme=dark&view=activity'}});
+          f.style.cssText = 'position:fixed;left:0;top:0;width:960px;height:600px;border:0;z-index:2147483647;background:#000';
+          d.body.append(f); return true;""")
+        frame = "const f = d.getElementById('gl-audit-frame'); const fd = f && f.contentDocument; if (!fd) return null; "
+        ready = until(frame + f"return fd.querySelector('.gl-win')?.dataset.sidebar === {json.dumps(side)} && fd.querySelectorAll('.act .tr').length > 0;", 15)
+        if not check(f"{tag}: loads", ready):
+            continue
+        time.sleep(0.4)
+        m = fjs(frame + """const fw = f.contentWindow, list = fd.querySelector('.act-list'), cell = fd.querySelector('.act .tr .s');
+          const insp = fd.querySelector('.act .insp');
+          list.scrollTop = list.scrollHeight;
+          const rows = fd.querySelectorAll('.act .tr'), last = rows[rows.length - 1].getBoundingClientRect(), box = list.getBoundingClientRect();
+          return {event: Math.round(cell.getBoundingClientRect().width), overflow: fw.getComputedStyle(list).overflowY,
+            lastVisible: last.bottom <= box.bottom + 1, inspShown: fw.getComputedStyle(insp).display !== 'none'};""")
+        check(f"{tag}: the event column is at least 120 px", m["event"] >= 120, m)
+        check(f"{tag}: the list scrolls to its last row", m["overflow"] in ("auto", "scroll") and m["lastVisible"], m)
+        check(f"{tag}: no inspector until a row is picked", not m["inspShown"], m)
+        fjs(frame + "fd.querySelector('.act-list').scrollTop = 0; fd.querySelectorAll('.act .tr')[1].click(); return true;")
+        shown = until(frame + """const i = fd.querySelector('.act .insp'), r = i.getBoundingClientRect();
+          return f.contentWindow.getComputedStyle(i).display !== 'none' && r.left >= 0 && r.right <= 960 && r.bottom <= 600
+            && !!fd.querySelector('.act .insp .gl-insp-close') && {left: Math.round(r.left), width: Math.round(r.width)};""", 3)
+        check(f"{tag}: picking a row shows the inspector drawer inside the window", shown, shown)
+        settle(0.5)
+        shot(f"x-activity-960-{side}-{lang}-dark")
+        fjs(frame + "fd.querySelector('.act .tr.sel').dispatchEvent(new f.contentWindow.KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); return true;")
+        check(f"{tag}: Escape puts the drawer away", until(frame + "return f.contentWindow.getComputedStyle(fd.querySelector('.act .insp')).display === 'none';", 3))
+    fjs("""d.getElementById('gl-audit-frame')?.remove();
+      localStorage.setItem('ai-remote.sidebar', JSON.stringify({shell: 'expanded', session: 'compact'})); return true;""")
+
+
 # ---------------------------------------------------------------- main
 
 def summary():
@@ -729,6 +782,10 @@ def main():
                 interactions()
             except Exception as e:
                 check("interactions ran", False, str(e))
+            try:
+                narrow_activity()
+            except Exception as e:
+                check("narrow activity ran", False, str(e))
     except Exception as e:
         error = str(e)
         check("audit ran", False, error)
