@@ -321,7 +321,8 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 - **快捷键**：`KeyContext.agents` 为真时外壳不处理 ⌘N / 搜索 / 侧栏开关（工作区有自己的 ⌘N、⌘K、⌘B），历史、设置、⌘1–3 照旧。
 - **组件**：`Workspace.tsx` 去掉自带的历史栈，‹ › 用外壳的 `back` / `forward`，打开页面走 `onRoute` → 外壳 `push`；新建会话页的预填从路由的
   `place` 读。外壳 `Sidebar` 加 `onMode`，渲染 `ModeSwitch`；位置与玻璃样式写在 `styles/workspace.css` 的 `.gl-side-modes`
-  （展开时顶栏右端的胶囊，紧凑时竖排在顶栏下），没动 glass 包的文件。工作区整窗时不套 `.gl-win`，仍是自己的不透明面。
+  （展开时顶栏右端的胶囊，紧凑时竖排在顶栏下），没动 glass 包的文件。当时工作区整窗不套 `.gl-win`、是自己的不透明面；
+  2026-10-26 起整窗也套 `.gl-win`，坐在原生材质上（见"桌面端毛玻璃第二阶段 · 收尾"）。
 - **验证**（本机 macOS，camofox + vite 演示后端，端口 1451）：工作区 ⇄ 电脑往返、工作区会话 → 推流 → ‹ 回会话、‹ › 跨两半边、
   设置从工作区进出、外壳侧栏「智能体」回到上次的工作区位置、无 `view` 重开回到上次半边、工作区里 ⌘N 新建而不是配对、⌘\ 不改外壳侧栏偏好、
   鼠标侧键后退；12 张截图在 `/tmp/merge-glass-shots/`（不进仓库）。门槛：`cargo fmt --all --check`、`npx tsc --noEmit -p .`、
@@ -329,6 +330,68 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 - **没验证**：真实 Tauri 窗口（macOS 红绿灯与切换的间距、Windows 标题条）、`window-hidden` 事件本身（只有 `hidden` 的单测）、
   真正的窄窗（只用 ⌘\ 切到紧凑看过）。camofox（Firefox 内核）里 Codex 输入框有一条 2 px 的滚动条（textarea 内容高 30、框高 28），
   那是 `ui/chat/Composer.tsx` 的老样式，这次合并没碰。
+
+## 桌面端毛玻璃第二阶段 · 收尾：页面、设置、实时画面、工作区、巡检（2026-10-26，分支 `feat/desktop-glass-finish`）
+
+第一阶段（PR #41）和浮层（PR #44）之后剩下的工作分成五个包，各自在独立 worktree 里做完，再按 pages → settings → live →
+workspace → audit 的顺序 `--no-ff` 合进本分支（基线 main `ccbcf37` + 一个文案准备提交，五次合并都没有冲突）。
+设计依据仍是本机 `~/ai-remote-notes/glass/glass-design/` 的 final-decisions 与方案 A；规格早于工作区，冲突时以代码现状为准。
+
+- **pages**（`ui/pages/*`、`Devices.tsx`、`ComputerTabs.tsx` 的访问权限标签、`Decide.tsx` 两个可选外观参数、`glass/pages.css`）：
+  设备页去掉三块统计和安全脚注，有请求等待时才出现琥珀提示条；统一空状态 `EmptyState`（`.gl-blank`）；电脑页概览点画面进入会话、
+  "这台电脑"的事实移到访问权限标签、三个标签改分组卡片；待批准去掉页内大标题、每张卡可"打开 {host}"、今天已处理的折叠；
+  活动按日期分组、行可键盘选中、表头吸在工具栏下；配对改居中单列、去掉命令行、加「取消」和反向配对入口、接上 `registerGuard`
+  （校验词没确认就离开会先问"放弃这次配对？"）；欢迎页两扇门合成一张卡、页面上不再有命令行。
+- **settings**（`Settings.tsx`、`glass/settings.css`）：去掉页内 `.hd`，每页仍只有工具栏里的一个 h1；常规只留语言 / 外观 / 玻璃效果，
+  新增只读"键盘快捷键"分组；本设备第一组是"我"，权限全部正常时折成一行；智能体接入每个客户端一个选择框加一个复制按钮，原文收进
+  "手动设置"；网络 DOM 不变只改样式；关于是全应用唯一显示版本的地方。样式全部限定在 `.spage.gl-st`，居中 720 px 一栏。
+- **live**（`glass/stage.css`、`glass/chat.css`）：舞台上浮着的东西一律"舞台玻璃"（深色半透明填充 + 描边，**没有任何模糊**，实测
+  舞台内 0 个元素带 `backdrop-filter`）；对话浮层（`/` 列表、用量、查找条、引用、跳到最新、代码块按钮、文件预览）是真正的玻璃；
+  实时视图挂载时居中弹框和文件预览不模糊、改不透明（它们会盖住画面）。顺手修了横幅截断、HUD 被横幅盖住、标题信息被截断。
+- **workspace**（新 `glass/workspace.css`，`App.tsx` 整窗工作区根加 `gl-win`）：工作区不再画自己的不透明面，侧栏 / 主区用外壳的
+  染色；工具栏按钮组是 thin 玻璃胶囊；菜单、悬停卡、⌘K 面板、toast 是玻璃。目录 / 模型弹层故意保持不透明（chat e2e 检查目录弹层
+  alpha 255）；窄窗浮出的侧栏故意不模糊（模糊会成为里面 fixed 菜单的定位容器，嵌入时菜单错位）。
+- **audit**（`tools/desktop-ui-smoke.py` 原地重写，新 `tools/glass-audit.test.mjs`）：Camofox REST，自己在空闲端口起 Vite（或 `--url`），
+  20 个路由 × 中英 × 深浅各截图，中文另截减少透明度；每页断言一个页面根且是深链那个、h1 数、侧栏、舞台和内容面 0 模糊、
+  玻璃元素祖先没有 opacity / filter / mask / will-change、对话框不在 `.win` 里、无横向溢出、`data-material=none` 后 0 个模糊；
+  加上设置里真实切换玻璃效果、‹ › 往返、会话 ↔ 工作区 ↔ 电脑的导航场景；每次运行先埋 15 种违规确认检测器能报；
+  `--lint` 只做静态检查（带前缀的字面值写在前、每个模糊选择器以 `data-material` 门控开头）。
+  例外写在 docstring：实时并排视图是两个窗格（窗格外 1 个 h1、工作区里至多 1 个）；会话 / 智能体页检查工作区自己的侧栏开关
+  而不是外壳侧栏；Camoufox 把 `innerWidth` 伪装成 960，所以把侧栏固定为展开。
+
+**集成时补的**（提交 `aa685ec`、`2377a7a`）：
+- 欢迎页标题改成 h1（工具栏是 bare 的，原来整页没有 h1）；插画里的 `.capsule` 在 `data-material="none"` 下去掉模糊，照搬
+  v2.css 对系统"减少透明度"的处理。Claude 视图"跳到最新"的模糊从 `claude.css` 移到 `glass/chat.css`，按材质门控、字面值前缀在前。
+- `App.tsx` 给欢迎页和配对页传 `onAgents`，"智能体接入…"成为指向 设置 › 智能体接入 的链接；欢迎页那行改成一句话加链接（新文案键
+  `pg_agents_lead`，en / zh 各一个）。
+- 页面按钮和设置页同一种填充（D.5：深 .10 / 浅 .06，悬停 .14 / .09，做法是在按钮自身上重指 `--fill-1/--fill-2`，着色变体不受影响），
+  工作区上方的决策卡也是胶囊按钮；电脑页各标签的分组标题 / 说明和设置页一样是 12 px `--text-2`，带描述的行都是 52 px。
+- 实时视图里工作区角落只留侧栏开关：会话工具栏的 ‹ › 走的是同一份历史，一个窗口只留一组前进后退。
+- 设置 › 批准方式在 Mac 上"可在这里拒绝；允许请在被控端…"只在"各台电脑"标题下说一次，不再每行重复。
+- `tools/desktop-overlays-smoke.py` 原来调用本仓库之外的 `camofox` 命令行做健康检查（本机没有，第一项检查前就退出），改成 REST
+  `/health`；viewport 请求加 3 秒超时并用 matchMedia 确认 1280×800（和巡检同一做法）。检查项一条没改。
+
+**实测**（本机 macOS 27.0.1，Node 24.16.0，Python 3.9.6，Camofox headless；HEAD = `aa685ec`，各 1 次）：
+- `npx tsc --noEmit -p .`、`npm run build` 通过；`node --test tools/*.test.mjs` **426 项，424 过，0 失败，2 跳过**（基线 423/421/0/2，
+  新增 3 项是 `glass-audit.test.mjs`）。
+- `network-ui-smoke.py` **17/17**；`desktop-overlays-smoke.py` **122/122**；`desktop-ui-smoke.py` **1788 项全过，0 失败，86.4 秒，125 张截图**。
+  集成修复前同一巡检是 1778 过、10 失败（欢迎页无 h1 ×4、减少透明度后插画胶囊仍模糊 ×4、`claude.css` 的 `.cl-jump` 静态检查 ×2）。
+- 截图（不进仓库）：巡检 `/tmp/glass2-acc/ui/screens/`，浮层 `/tmp/glass2-acc/overlays/`，网络 `/tmp/glass2-acc/network/`，
+  集成目检 `/tmp/glass2-acc/visual/` 与拼图 `/tmp/glass2-acc/sheets/`。各包自己的截图在 `/tmp/g2-*-shots/`。
+- 截图只证明布局和染色：Camofox 是 Firefox，不画 `backdrop-filter`，模糊只核对计算样式；Firefox 没有 `-webkit-backdrop-filter`，
+  前缀写法靠 `--lint` 读源码。
+
+**没测 / 待办**：
+- 原生 e2e（对话 / 预览 / render / offline）这次没跑；真机深浅玻璃、窗口失焦、不同壁纸下的对比度、Windows Mica 与标题条都没看。
+- 文中对比度数字都是按 WCAG 公式推导的，不是屏幕实测：设置次要文字 `--text-2` ≥ 4.6:1；工作区三级文字深色 `#9b9992`、浅色
+  `#6c6a65`（浅色原生最坏约 3.9:1，原来不透明底上就只有约 3.5:1）；浅色 `--you-text` 在内容面上约 3:1，只有设备页用更深的混色
+  提到约 5.4:1，全局令牌没动。
+- `npm run build` 的 CSS 压缩（Vite 8 / lightningcss）会把源码里写在前面的 `-webkit-backdrop-filter` 字面值改写成跟无前缀那条一样的
+  `var()` 形式（`material.css` 一开始就这样，不是这次引入）。macOS 15 起的 WebKit 认无前缀写法，影响面是更老的 WebKit；
+  要修需要改 `vite.config.ts` 的 CSS 压缩 / 目标设置并在真 App 里确认，这次没动。
+- `.gl-win .nt-compose`（`surfaces.css`）的特异度压过 `.cl-compose` / `.cdx` 的输入框底色，两种模式现在都套 `.gl-win`，所以外观一致，
+  但 Codex 输入框聚焦时的加深没有了。
+- 电脑页的"工具""编程智能体"两个标签只套了分组外观，没有按规格重排。
 
 ## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
 
@@ -391,13 +454,12 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 
 ### 没做 / 下一步
 
-- [ ] 第 2 段页面精修（设计里拆好的工作包，文件已拆开可并行）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
+- [x] 第 2 段页面精修（2026-10-26 完成，见"桌面端毛玻璃第二阶段 · 收尾"；浮层部分见"第二阶段 · 浮层"）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
       设置各分区重排（`.hd` 大标题、"我"图块、版本行去重、快捷键分组）；`Modal.tsx` 统一对话框并 portal 到 body（目前对话框仍在页面树里，
       `data-modal` 还没有地方设置）；决策卡 Esc 只拒绝一张；会话舞台浮条的"舞台玻璃"外观（`stage.css`）；对话面板浮层（`chat.css`）。
 - [ ] 真机验证：原生材质在不同壁纸下的对比度（内容面透明度是推导值）；tauri#12804（透明窗口里 CSS 模糊取到文字颜色）；
       滚动边缘上 mask + 模糊叠加；`setTheme` 后托盘菜单外观；Windows 11 Mica 是否透出来、plugin-frame 标题条是否挡住工具栏按钮（win-dev 未测）。
-- [ ] `tools/desktop-ui-smoke.py` 已过期（找 `.capsule`、`.stream-request`），应改写成 Camofox REST 版的玻璃巡检（每页一个页面根、
-      一个 h1、舞台内 0 个模糊元素、对话框不在 `.win` 里）。
+- [x] `tools/desktop-ui-smoke.py` 已改写成 Camofox REST 版的玻璃巡检（2026-10-26，见"桌面端毛玻璃第二阶段 · 收尾"）。
 - [ ] macOS 系统"减少透明度 / 增强对比度"在 WKWebView 里没有媒体查询，要 Rust 侧用 NSWorkspace 桥接（没做，目前只有应用内开关）。
 
 ## Codex 会话按 Codex 自家应用的样子显示（2026-10-22 ~ 23，分支 `feat/codex-chat-view`，worktree `../ai-remote-codex-view`）
