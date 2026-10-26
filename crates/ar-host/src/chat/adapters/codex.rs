@@ -509,7 +509,6 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::Thread { .. }), Ok(r)) => {
                 if let Some(id) = r["thread"]["id"].as_str() {
                     st.thread = Some(id.to_string());
-                    st.ready = true;
                     // The thread's own model when none was asked for: the default to go back to.
                     if opts.model.is_none()
                         && let Some(m) = r["model"].as_str()
@@ -517,9 +516,8 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                         st.base = Some((m.to_string(), r["reasoningEffort"].as_str().map(str::to_string)));
                     }
                     outs.push(Out::Session(id.to_string()));
-                    while let Some((text, images)) = st.waiting.pop_front() {
-                        writes.push(turn_start(st, &text, &images));
-                    }
+                    // Messages wait for the model list (one round trip): a model chosen without a
+                    // level then runs at its own default level from the first turn.
                     writes.push(st.request("model/list", json!({"limit": 100}), Pending::Models));
                     writes.push(st.request("skills/list", json!({"cwds": [opts.cwd]}), Pending::Skills));
                 } else {
@@ -582,10 +580,17 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     .collect();
                 outs.push(Out::Ev(Ev::Commands { commands }));
             }
-            (Some(Pending::Models), Ok(r)) => {
-                st.models = models(&r);
-                if !st.models.is_empty() {
-                    outs.push(Out::Ev(Ev::Models { models: st.models.clone() }));
+            (Some(Pending::Models), r) => {
+                // A Codex without `model/list` answers with an error: it goes on without a list.
+                if let Ok(r) = r {
+                    st.models = models(&r);
+                    if !st.models.is_empty() {
+                        outs.push(Out::Ev(Ev::Models { models: st.models.clone() }));
+                    }
+                }
+                st.ready = true;
+                while let Some((text, images)) = st.waiting.pop_front() {
+                    writes.push(turn_start(st, &text, &images));
                 }
             }
             (Some(Pending::Terminals { items }), Ok(r)) => {
@@ -1358,12 +1363,16 @@ mod tests {
         assert_eq!(start["params"]["model"], "m1");
         let (w, o) = handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"th"}}}"#, &opts(None));
         assert!(matches!(&o[0], Out::Session(s) if s == "th"));
+        assert!(w[0].contains("model/list") && !w.iter().any(|l| l.contains("turn/start")), "{w:?}");
+        // The first turn waits for the model list (a Codex without one answers with an error).
+        let (w, _) = handle(&mut st, r#"{"id":3,"error":{"code":-32601,"message":"unknown method"}}"#, &opts(None));
         let turn: Value = serde_json::from_str(&w[0]).unwrap();
         assert_eq!(
             (turn["method"].as_str(), turn["params"]["input"][0]["text"].as_str()),
             (Some("turn/start"), Some("hi"))
         );
-        handle(&mut st, r#"{"id":3,"result":{"turn":{"id":"tu"}}}"#, &opts(None));
+        // Ids 3 and 4 are the model and skill lists.
+        handle(&mut st, r#"{"id":5,"result":{"turn":{"id":"tu"}}}"#, &opts(None));
         assert_eq!(st.turn.as_deref(), Some("tu"));
     }
 

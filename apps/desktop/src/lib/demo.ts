@@ -3,7 +3,7 @@
 
 import type { Backend, ToolResult } from "./api";
 import type { RemoteMonitor } from "./monitors";
-import { requester, type ChatEvent, type ChatHello, type ChatReply, type ChatState, type RuntimesReport, type SessionInfo } from "./chat";
+import { requester, type ChatEvent, type ChatHello, type ChatReply, type ChatState, type ModelInfo, type RuntimesReport, type SessionInfo } from "./chat";
 import type {
   ConnectedAgent,
   Driver,
@@ -278,7 +278,8 @@ export const demoBackend: Backend = {
     demoTickets.delete(ticket);
     const log = demoLogs.get(s.id) ?? [];
     const hello: ChatHello = { session: s.id, role: "rw", runtime: { id: s.runtime, name: s.name, protocol: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.protocol ?? null }, cwd: s.cwd, state: s.state,
-      seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host };
+      seq: log.length, caps: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.caps ?? null, host,
+      models: demoRuntimes.runtimes.find((r) => r.id === s.runtime)?.models ?? [], model: demoModels.get(s.id)?.model ?? null, effort: demoModels.get(s.id)?.effort ?? null };
     const commands = s.runtime.startsWith("codex") ? DEMO_SKILLS : [...DEMO_COMMANDS, ...DEMO_SKILLS.map((k) => ({ ...k, insert: `/${k.name}` }))];
     onEvent({ seq: -1, ts: Date.now(), turn: 0, t: "commands", commands });
     for (const e of log) if (e.seq > since) onEvent(e);
@@ -576,15 +577,31 @@ const demoTickets = new Map<string, string>();
 const demoChatListeners = new Map<string, Set<(e: ChatEvent) => void>>();
 
 const CAPS = { interrupt: true, resume: true, partial: true, thinking: true, questions: true };
+/** The models each demo agent offers (as Claude Code's `initialize` and Codex's `model/list` report them). */
+const DEMO_CLAUDE_MODELS: ModelInfo[] = [
+  { id: "opus", name: "Opus 5.5", description: "Best for everyday, complex tasks", efforts: ["low", "medium", "high", "xhigh", "max"], default: true },
+  { id: "fable", name: "Fable 5.1", description: "Most capable for your hardest and longest-running tasks", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "sonnet", name: "Sonnet 5.5", description: "Efficient for routine tasks", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "haiku", name: "Haiku 5.5", description: "Fastest for quick answers", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", description: "Fastest for quick answers" },
+  { id: "claude-opus-4-6", name: "Opus 4.6", description: "Best for everyday, complex tasks", efforts: ["low", "medium", "high", "max"] },
+];
+const DEMO_CODEX_MODELS: ModelInfo[] = [
+  { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", description: "Frontier agentic coding model.", efforts: ["low", "medium", "high", "xhigh"], default_effort: "medium", default: true },
+  { id: "gpt-6.1-sol-mini", name: "GPT-6.1 Sol Mini", description: "Smaller, faster and cheaper.", efforts: ["low", "medium", "high"], default_effort: "medium" },
+];
+/** The model and effort level each demo session runs with (none: the agent's default). */
+const demoModels = new Map<string, { model: string | null; effort: string | null }>([["c3f9a1e7b2c4d", { model: null, effort: "xhigh" }]]);
+
 const demoRuntimes: RuntimesReport = {
   host: { can_start: true, reason: null, enabled: true, max_live: 4 },
   runtimes: [
     { id: "claude", name: "Claude Code", base: "claude", custom: false, protocol: "claude-stream-json", verdict: "ok", version: "2.1.174",
       path: "C:\\Users\\me\\.local\\bin\\claude.exe", login: { state: "logged_in", method: "claude.ai", plan: "max" },
-      caps: { ...CAPS, steer: true, permissions: true, questions_multi: true } },
+      caps: { ...CAPS, steer: true, permissions: true, questions_multi: true }, models: DEMO_CLAUDE_MODELS },
     { id: "codex", name: "Codex", base: "codex", custom: false, protocol: "codex-app-server", verdict: "ok", version: "0.163.0",
       path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd", login: { state: "logged_in", method: "chatgpt" },
-      caps: { ...CAPS, steer: true } },
+      caps: { ...CAPS, steer: true }, models: DEMO_CODEX_MODELS },
     { id: "opencode", name: "OpenCode", base: "opencode", custom: false, protocol: "acp", verdict: "ok", version: "1.2.4",
       path: "C:\\Users\\me\\AppData\\Roaming\\npm\\opencode.cmd", login: null,
       caps: { ...CAPS, questions: false, steer: false } },
@@ -1238,6 +1255,13 @@ async function demoChatCommand(s: SessionInfo, c: Record<string, unknown>): Prom
   if (md?.mode) {
     demoModes.set(s.id, md.mode);
     push(s, { t: "mode", mode: md.mode });
+  }
+  const mo = c.model as { model?: string | null; effort?: string | null } | undefined;
+  if (mo) {
+    await wait(120);
+    const next = { model: mo.model ?? null, effort: mo.effort ?? null };
+    demoModels.set(s.id, next);
+    push(s, { t: "model", ...next });
   }
   if (c.interrupt && run) await demoStop(s, run);
   if (c.end) setState(s, "ended");

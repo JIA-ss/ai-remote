@@ -445,7 +445,14 @@ def short(n):
     end()
 
 
-SCRIPTS = [("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact), ("RESOLVED", resolved),
+def which(n):
+    """Says the model and effort level this turn runs with, as turn/start set them."""
+    if not message(f"a{n}", f"model={state['model']} effort={state['effort']}", "final_answer"):
+        return end("interrupted")
+    end()
+
+
+SCRIPTS = [("WHICH", which), ("EXPLORE", explore), ("ASK", ask), ("STEERME", steerme), ("SLOW", slow), ("FAIL", fail), ("MANY", many), ("NOPHASE", nophase), ("COMPACT", compact), ("RESOLVED", resolved),
            ("REEDIT", reedit), ("BADPATCH", badpatch), ("LATEPHASE", latephase), ("DRAWL", drawl)]
 
 
@@ -481,10 +488,23 @@ for line in sys.stdin:
         result(rid, {"userAgent": "fake-codex/0.163.0", "platformFamily": "unix", "platformOs": sys.platform})
     elif method in ("thread/start", "thread/resume"):
         state["cwd"] = params.get("cwd") or state["cwd"]
-        result(rid, {"thread": {"id": THREAD, "preview": "", "cwd": state["cwd"]}, "model": "gpt-fake", "cwd": state["cwd"]})
+        result(rid, {"thread": {"id": THREAD, "preview": "", "cwd": state["cwd"]}, "model": "gpt-fake", "reasoningEffort": "medium", "cwd": state["cwd"]})
+    elif method == "model/list":
+        level = lambda *names: [{"reasoningEffort": n, "description": n} for n in names]
+        result(rid, {"data": [
+            {"id": "gpt-fake", "model": "gpt-fake", "displayName": "GPT Fake", "description": "The stand-in's default", "isDefault": True, "hidden": False,
+             "defaultReasoningEffort": "medium", "supportedReasoningEfforts": level("low", "medium", "high")},
+            {"id": "gpt-fake-mini", "model": "gpt-fake-mini", "displayName": "GPT Fake Mini", "description": "Smaller and faster", "isDefault": False, "hidden": False,
+             "defaultReasoningEffort": "low", "supportedReasoningEfforts": level("low", "high")},
+            {"id": "gpt-fake-hidden", "model": "gpt-fake-hidden", "displayName": "Hidden", "isDefault": False, "hidden": True,
+             "defaultReasoningEffort": "low", "supportedReasoningEfforts": level("low")},
+        ], "nextCursor": None})
     elif method == "skills/list":
         result(rid, {"data": [{"cwd": state["cwd"], "skills": [{"name": "tidy", "path": "/skills/tidy/SKILL.md", "description": "Tidy imports and formatting", "enabled": True}], "errors": []}]})
     elif method == "turn/start":
+        # A turn's model and level hold for the turns after it; null keeps the last ones (as Codex does).
+        state["model"] = params.get("model") or state.get("model") or "gpt-fake"
+        state["effort"] = params.get("effort") or state.get("effort") or "medium"
         state["turn"] = f"tu-{state['n'] + 1}"
         result(rid, {"turn": {"id": state["turn"], "items": [], "status": "inProgress", "error": None}})
         threading.Thread(target=run_turn, args=(text_of(params.get("input") or []),), daemon=True).start()

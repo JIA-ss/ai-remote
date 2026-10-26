@@ -402,6 +402,8 @@ export function NewSession({
       });
       rememberCwd(host, cwd.trim());
       rememberPlace({ host, cwd: cwd.trim() });
+      // Asked again next time: the agent now running there reports its models to the host.
+      runtimesOf.delete(host);
       writeJson(AGENT, { ...readJson<Record<string, string>>(AGENT, {}), [host]: runtime.id });
       writeJson(PLACE_MODELS, rememberPlaceModel(readJson<Record<string, PlaceModel>>(PLACE_MODELS, {}), placeModelKey(host, cwd.trim(), runtime.id), model, effort, Date.now()));
       const meta = normalizeMeta({ ...v, id: v.session });

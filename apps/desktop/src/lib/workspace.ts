@@ -535,10 +535,13 @@ export function modelLabel(model: string, protocol: string | undefined): string 
 /** Effort levels lowest first, as Claude Code names them (NS-33); Codex may offer others (`minimal`, `none`). */
 export const EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 
-/** The models to choose from: what the agent offered, else Claude Code's aliases (other agents: none). */
+/**
+ * The models to choose from: what the agent offered, else Claude Code's aliases (other agents: none),
+ * which take every level `claude --help` names (an agent's own entry without levels takes none).
+ */
 export function modelChoices(models: readonly ModelInfo[] | null | undefined, protocol: string | undefined): ModelInfo[] {
   if (models?.length) return [...models];
-  return modelPresets(protocol).map((p) => ({ id: p.id, name: p.label }));
+  return modelPresets(protocol).map((p) => ({ id: p.id, name: p.label, efforts: [...EFFORTS] }));
 }
 
 /** The entry for `model` in `models` ("" or null: the one the agent uses by default), or null. */

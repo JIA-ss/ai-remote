@@ -930,3 +930,149 @@ async fn a_codex_session_records_its_model_and_level_for_the_next_turn() {
     assert_eq!((codex.meta().model.as_deref(), codex.meta().effort.as_deref()), (Some("gpt-x"), Some("xhigh")));
     assert_eq!(codex.describe()["effort"], "xhigh");
 }
+
+/// The agent's own record of a session: the JSON lines file under `dir` whose name contains `id`.
+fn agent_record(dir: &std::path::Path, id: &str) -> Option<String> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy().contains(id)) {
+                return std::fs::read_to_string(&p).ok();
+            }
+        }
+    }
+    None
+}
+
+/// The command line of a running process (Unix `ps`).
+fn args_of(pid: u32) -> String {
+    let out = std::process::Command::new("ps").args(["-o", "args=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A real Claude Code (`AR_REAL_CLAUDE=<path>`, signed in; spends two short turns): the models it lists,
+/// a switch from its default to haiku in the running process (its own session record names the model
+/// of each answer), then another effort level restarting it with `--effort`.
+#[tokio::test]
+#[ignore]
+async fn real_claude_switches_models_and_restarts_for_a_level() {
+    let Ok(program) = std::env::var("AR_REAL_CLAUDE") else { return };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"claude\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "real", f.work.to_str().unwrap(), None, true, None, None, None).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("你是哪个模型？只回答模型名。"));
+    let end = wait(&mut rx, "turn_end").await;
+    eprintln!("default: {}", end["final_text"]);
+    let models = chat.meta().models;
+    eprintln!("models: {}", models.iter().map(|m| format!("{} {:?}", m.id, m.efforts)).collect::<Vec<_>>().join(" | "));
+    assert!(models.iter().any(|m| m.id == "haiku"), "{models:?}");
+    let pid = chat.meta().pid;
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: None, by: person("laptop") });
+    let ev = wait(&mut rx, "model").await;
+    assert_eq!(ev["model"], "haiku", "{ev}");
+    // Another wording: the same message id would be taken for a repeat.
+    chat.send(input("现在你是哪个模型？只回答模型名。"));
+    let end = wait(&mut rx, "turn_end").await;
+    eprintln!("haiku: {}", end["final_text"]);
+    assert_eq!(chat.meta().pid, pid, "switched in the same process");
+    let home = std::env::var("HOME").unwrap();
+    let id = chat.meta().proto_session.unwrap();
+    let record =
+        agent_record(&std::path::Path::new(&home).join(".claude/projects"), &id).expect("Claude Code's session record");
+    let used: Vec<String> = record
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "assistant")
+        .filter_map(|v| v["message"]["model"].as_str().map(str::to_string))
+        .collect();
+    eprintln!("answered by: {used:?}");
+    assert!(
+        used.first().is_some_and(|m| !m.contains("haiku")) && used.last().is_some_and(|m| m.contains("haiku")),
+        "{used:?}"
+    );
+    // Another level: a new process with `--effort`, resuming the same conversation.
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: Some("low".into()), by: person("laptop") });
+    wait(&mut rx, "model").await;
+    let n = wait(&mut rx, "notice").await;
+    assert_eq!(n["code"], "resumed", "{n}");
+    let now = chat.meta().pid.expect("a process");
+    let args = args_of(now);
+    eprintln!("restarted: {args}");
+    assert!(Some(now) != pid && args.contains("--effort low") && args.contains(&format!("--resume {id}")), "{args}");
+    chat.send(Cmd::End { reason: "done".into() });
+}
+
+/// A real Codex (`AR_REAL_CODEX=<path>`, `AR_REAL_CODEX_MODEL=<a model the account may use>`; two short
+/// turns): its model list, then another effort level for the next turn; its own session record says
+/// which level each turn ran with.
+#[tokio::test]
+#[ignore]
+async fn real_codex_takes_another_effort_level_with_the_next_turn() {
+    let (Ok(program), Ok(model)) = (std::env::var("AR_REAL_CODEX"), std::env::var("AR_REAL_CODEX_MODEL")) else {
+        return;
+    };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"codex\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let chat = m
+        .start(creator(), "real", f.work.to_str().unwrap(), Some(model.clone()), true, None, None, None)
+        .await
+        .unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("Reply with exactly: one"));
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    let models = chat.meta().models;
+    eprintln!(
+        "models: {}",
+        models
+            .iter()
+            .map(|m| format!("{} {:?} {:?}", m.id, m.efforts, m.default_effort))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    let entry = models.iter().find(|m| m.id == model).expect("the model is listed").clone();
+    let level = ["low", "minimal", "high"]
+        .into_iter()
+        .find(|l| entry.efforts.iter().any(|e| e == l))
+        .expect("a level to switch to")
+        .to_string();
+    chat.send(Cmd::SetModel { model: Some(model.clone()), effort: Some(level.clone()), by: person("laptop") });
+    let ev = wait(&mut rx, "model").await;
+    assert_eq!(ev["effort"], level.as_str(), "{ev}");
+    chat.send(input("Reply with exactly: two"));
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    let home = std::env::var("HOME").unwrap();
+    let id = chat.meta().proto_session.unwrap();
+    let record =
+        agent_record(&std::path::Path::new(&home).join(".codex/sessions"), &id).expect("Codex's session record");
+    let turns: Vec<(String, String)> = record
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "turn_context")
+        .map(|v| {
+            (
+                v["payload"]["model"].as_str().unwrap_or("").to_string(),
+                v["payload"]["effort"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    eprintln!("turns ran with: {turns:?}");
+    assert_eq!(turns.last(), Some(&(model.clone(), level.clone())), "{turns:?}");
+    assert!(turns.len() >= 2 && turns[0].1 != level, "the first turn ran with another level: {turns:?}");
+    chat.send(Cmd::End { reason: "done".into() });
+}

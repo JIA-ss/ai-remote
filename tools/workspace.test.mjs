@@ -838,6 +838,7 @@ test("models and effort levels (NS-29, NS-32, NS-33): what is offered, the level
   assert.deepEqual(plain(ws.modelChoices(offered, claude)).map((m) => m.id), ["opus", "haiku", "old"]);
   assert.deepEqual(plain(ws.modelChoices(null, claude)).map((m) => m.name), ["Opus", "Sonnet", "Haiku"]);
   assert.deepEqual(plain(ws.modelChoices([], codex)), []);
+  assert.deepEqual(plain(ws.effortsFor(ws.modelChoices(null, claude), "haiku", claude)), plain(ws.EFFORTS), "an alias takes every level");
   // The default entry, by id; levels as the agent said them, all of Claude Code's for a model it did not describe.
   assert.equal(ws.modelEntry(offered, "").id, "opus");
   assert.equal(ws.modelEntry(offered, " haiku ").id, "haiku");
