@@ -505,6 +505,31 @@ export function compactEnvironment(compact: boolean, available: number, required
 // The new-session page: recent projects (NS-04) and next steps (NS-08 / NS-09)
 
 /** A computer and a folder on it. */
+/** The models Claude Code takes by alias (NS-32: the model menu's choices). Other agents name none here. */
+export const CLAUDE_MODELS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "opus", label: "Opus" },
+  { id: "sonnet", label: "Sonnet" },
+  { id: "haiku", label: "Haiku" },
+];
+
+/** The model menu's fixed choices for an agent speaking `protocol`. */
+export function modelPresets(protocol: string | undefined): ReadonlyArray<{ id: string; label: string }> {
+  return protocol === "claude-stream-json" ? CLAUDE_MODELS : [];
+}
+
+/** What the model chip says: an alias by its name, any other model as typed ("" is the agent's default). */
+export function modelLabel(model: string, protocol: string | undefined): string {
+  const m = model.trim();
+  return modelPresets(protocol).find((p) => p.id === m)?.label ?? m;
+}
+
+/** Models typed for an agent, newest first: the new one in front, no presets, no repeats, at most `max`. */
+export function rememberModel(list: readonly string[], model: string, protocol: string | undefined, max = 5): string[] {
+  const m = model.trim();
+  if (!m || modelPresets(protocol).some((p) => p.id === m)) return list.slice(0, max);
+  return [m, ...list.filter((x) => x !== m)].slice(0, max);
+}
+
 export interface Place {
   host: string;
   cwd: string;

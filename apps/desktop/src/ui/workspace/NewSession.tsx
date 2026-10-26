@@ -11,7 +11,7 @@ import { folderChoices, folderName, lastCwd, recentCwds, rememberCwd, sameFolder
 import { isCodexRuntime } from "../../lib/codex";
 import { t } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
-import { compactEnvironment, isRunning, keepOrder, lastSeq, normalizeMeta, recentPlaces, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
+import { compactEnvironment, isRunning, keepOrder, lastSeq, modelLabel, modelPresets, normalizeMeta, recentPlaces, rememberModel, seatSteps, type Place, type WsItem, type WsSnapshot } from "../../lib/workspace";
 import { FolderPicker, type Listing } from "../chat/FolderPicker";
 import { cx } from "../util";
 import { ComputerMark, isMac, modKey, modLabel, PopMenu, workspaceOwnsEvent, type MenuAt, type MenuLine, type Toast } from "./parts";
@@ -22,10 +22,13 @@ import { call, workspace } from "./useWorkspace";
 const PLACES = "ai-remote.ws.places";
 /** The agent last started on each computer. */
 const AGENT = "ai-remote.ws.agent";
+/** Models typed for each agent (by runtime id), newest first, for the model menu. */
+const MODELS = "ai-remote.ws.models";
 /** Next steps closed by hand: kind, subject and a stamp; a new stamp brings the step back (NS-14). */
 const DISMISSED = "ai-remote.ws.dismissed";
 
 type Started = Place & { at: number };
+type MenuKind = "env" | "mode" | "agent" | "model";
 
 function readJson<V>(key: string, fallback: V): V {
   try {
@@ -164,7 +167,7 @@ export function NewSession({
   const [text, setText] = useState(draft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ kind: "env" | "mode" | "agent"; at: MenuAt } | null>(null);
+  const [menu, setMenu] = useState<{ kind: MenuKind; at: MenuAt } | null>(null);
   const [dismissed, setDismissed] = useState<string[]>(() => readJson<string[]>(DISMISSED, []));
   const [summary, setSummary] = useState<{ steps: Step[]; at: MenuAt } | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -406,7 +409,26 @@ export function NewSession({
     { heading: t("ws_agent") },
     ...ready.map((r) => ({ key: r.id, label: r.name, detail: r.version ?? undefined, checked: r.id === runtime?.id, run: () => { setRuntimeId(r.id); setModel(""); } })),
   ];
-  const openMenu = (kind: "env" | "mode" | "agent", el: HTMLElement, side: "below" | "above") => setMenu({ kind, at: { anchor: el.getBoundingClientRect(), side } });
+  // NS-32: the model chip opens a menu like the others ("Model · this session"): the agent's default,
+  // Claude Code's aliases, models typed before for this agent, and a field for another one.
+  const presets = modelPresets(runtime?.protocol);
+  const typed = runtime ? (readJson<Record<string, string[]>>(MODELS, {})[runtime.id] ?? []) : [];
+  const custom = !!model && !presets.some((p) => p.id === model);
+  const pickModel = (m: string) => {
+    setModel(m);
+    if (runtime && m) {
+      const all = readJson<Record<string, string[]>>(MODELS, {});
+      writeJson(MODELS, { ...all, [runtime.id]: rememberModel(all[runtime.id] ?? [], m, runtime.protocol) });
+    }
+  };
+  const modelMenu: MenuLine[] = [
+    { heading: t("ws_model_title") },
+    { key: "default", label: t("ws_model_default"), detail: t("ws_model_default_d"), checked: !model, run: () => setModel("") },
+    ...presets.map((p) => ({ key: `p:${p.id}`, label: p.label, checked: model === p.id, run: () => setModel(p.id) })),
+    ...(custom && !typed.includes(model) ? [{ key: `c:${model}`, label: model, checked: true, run: () => {} }] : []),
+    ...(typed.length ? [{ heading: t("ws_model_recent") }, ...typed.map((m) => ({ key: `t:${m}`, label: m, checked: model === m, run: () => pickModel(m) }))] : []),
+  ];
+  const openMenu = (kind: MenuKind, el: HTMLElement, side: "below" | "above") => setMenu({ kind, at: { anchor: el.getBoundingClientRect(), side } });
   const canSend = !!text.trim() && !busy && !!runtime && online;
 
   return (
@@ -584,7 +606,18 @@ export function NewSession({
                   <button type="button" className="ws-chip" aria-haspopup="menu" disabled={ready.length < 2} title={t("ws_agent")} onClick={(e) => openMenu("agent", e.currentTarget, "above")}>
                     <span className="ws-chip-text">{runtime.name}</span>
                   </button>
-                  <ModelChip key={runtime.id} value={model} onChange={setModel} codex={isCodexRuntime(runtime)} />
+                  <div className="ws-model">
+                    <button
+                      type="button"
+                      className={cx("ws-chip", model && "set")}
+                      aria-haspopup="menu"
+                      aria-expanded={menu?.kind === "model"}
+                      title={t("ws_model")}
+                      onClick={(e) => (menu?.kind === "model" ? setMenu(null) : openMenu("model", e.currentTarget, "above"))}
+                    >
+                      <span className="ws-chip-text">{modelLabel(model, runtime.protocol) || t("ws_model_default")}</span>
+                    </button>
+                  </div>
                 </>
               )}
             </div>
@@ -595,9 +628,22 @@ export function NewSession({
       {menu && (
         <PopMenu
           at={menu.at}
-          label={menu.kind === "env" ? t("ws_choose_env") : menu.kind === "mode" ? t("ws_perm_title") : t("ws_agent")}
-          items={menu.kind === "env" ? envMenu : menu.kind === "mode" ? modeMenu : agentMenu}
-          className={menu.kind === "mode" ? "wide" : undefined}
+          label={menu.kind === "env" ? t("ws_choose_env") : menu.kind === "mode" ? t("ws_perm_title") : menu.kind === "model" ? t("ws_model_title") : t("ws_agent")}
+          items={menu.kind === "env" ? envMenu : menu.kind === "mode" ? modeMenu : menu.kind === "model" ? modelMenu : agentMenu}
+          className={menu.kind === "mode" ? "wide" : menu.kind === "model" ? "ws-model-pop" : undefined}
+          footer={
+            menu.kind === "model" && runtime ? (
+              <ModelField
+                initial={custom ? model : ""}
+                codex={isCodexRuntime(runtime)}
+                first={!presets.length && !typed.length && !custom}
+                onDone={(m) => {
+                  pickModel(m);
+                  setMenu(null);
+                }}
+              />
+            ) : undefined
+          }
           onClose={() => setMenu(null)}
         />
       )}
@@ -652,48 +698,30 @@ function StepRow({ step, onOpen, onFolder, onDismiss }: { step: Step; onOpen: (x
   );
 }
 
-/** The model chip: "Default model" or the one typed, set in a small field under it. */
-function ModelChip({ value, onChange, codex }: { value: string; onChange: (v: string) => void; codex: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [v, setV] = useState(value);
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const down = (e: Event) => {
-      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", down, true);
-    return () => document.removeEventListener("pointerdown", down, true);
-  }, [open]);
+/** The model menu's last line: another model by name, used with Enter ("" is the agent's default). */
+function ModelField({ initial, codex, first, onDone }: { initial: string; codex: boolean; first: boolean; onDone: (model: string) => void }) {
+  const [v, setV] = useState(initial);
   return (
-    <div className="ws-model" ref={box}>
-      <button type="button" className={cx("ws-chip", value && "set")} aria-expanded={open} title={t("ws_model")} onClick={() => { setV(value); setOpen((o) => !o); }}>
-        <span className="ws-chip-text">{value || t("ws_model_default")}</span>
-      </button>
-      {open && (
-        <div className="ws-model-pop" role="dialog" aria-label={t("ws_model")}>
-          <input
-            autoFocus
-            className="mono"
-            value={v}
-            placeholder={codex ? "gpt-…" : t("ws_model_ph")}
-            aria-label={t("ws_model")}
-            spellCheck={false}
-            onChange={(e) => setV(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onChange(v.trim());
-                setOpen(false);
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                setOpen(false);
-              }
-            }}
-          />
-        </div>
-      )}
-    </div>
+    <>
+      <div className="ws-menu-sep" role="separator" />
+      <div className="ws-menu-field">
+        <input
+          className="mono"
+          value={v}
+          data-autofocus={first || undefined}
+          placeholder={codex ? "gpt-…" : t("ws_model_other_ph")}
+          aria-label={t("ws_model_other")}
+          spellCheck={false}
+          onChange={(e) => setV(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              onDone(v.trim());
+            }
+          }}
+        />
+      </div>
+    </>
   );
 }

@@ -138,7 +138,7 @@ function place(at: MenuAt, w: number, h: number): { x: number; y: number } {
  * A popup menu at a point (a right click) or beside an element: closes on Esc, a click elsewhere,
  * scrolling or leaving the window; ↑ / ↓ / Enter and the items' letters choose.
  */
-export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; items: MenuLine[]; onClose: () => void; label: string; className?: string }) {
+export function PopMenu({ at, items, onClose, label, className, footer }: { at: MenuAt; items: MenuLine[]; onClose: () => void; label: string; className?: string; footer?: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   useLayoutEffect(() => {
@@ -152,7 +152,7 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
     // The measuring commit is hidden, so focus only after positioning makes the menu visible.
     // Item/confirmation updates keep the current focus instead of moving it back to the first button.
     if (!pos || !el) return;
-    (el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+    (el.querySelector<HTMLElement>("[data-autofocus]") ?? el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
   }, [pos]);
   useEffect(() => {
     const down = (e: Event) => {
@@ -184,8 +184,10 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
       aria-label={label}
       style={pos ? { left: pos.x, top: pos.y } : { left: 0, top: 0, visibility: "hidden" }}
       onKeyDown={(e) => {
-        const buttons = [...(box.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
-        const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        // A footer's field (the model menu's "another model") is a stop of ↑ / ↓ too.
+        const buttons = [...(box.current?.querySelectorAll<HTMLElement>("button:not(:disabled), .ws-menu-field input") ?? [])];
+        const i = buttons.indexOf(document.activeElement as HTMLElement);
+        const typing = (e.target as HTMLElement | null)?.tagName === "INPUT";
         if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
@@ -194,7 +196,7 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
           e.preventDefault();
           const n = buttons.length;
           if (n) buttons[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus();
-        } else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+        } else if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
           const it = items.find((x): x is MenuItem => isItem(x) && x.letter === e.key.toLowerCase());
           if (it) {
             e.preventDefault();
@@ -231,6 +233,7 @@ export function PopMenu({ at, items, onClose, label, className }: { at: MenuAt; 
           </button>
         ),
       )}
+      {footer}
     </div>
   );
 }

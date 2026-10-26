@@ -810,3 +810,18 @@ test("archive undo preserves events arriving after its filtered row is restored 
   assert.equal(restored.meta.state, "running");
   assert.equal(restored.meta.last_seq, 99);
 });
+
+test("model menu (NS-32): Claude Code's aliases by name, other agents none; typed models newest first", () => {
+  assert.deepEqual(plain(ws.modelPresets("claude-stream-json")).map((p) => p.id), ["opus", "sonnet", "haiku"]);
+  assert.deepEqual(plain(ws.modelPresets("codex-app-server")), []);
+  assert.deepEqual(plain(ws.modelPresets(undefined)), []);
+  assert.equal(ws.modelLabel("opus", "claude-stream-json"), "Opus");
+  assert.equal(ws.modelLabel(" claude-sonnet-4-5 ", "claude-stream-json"), "claude-sonnet-4-5");
+  assert.equal(ws.modelLabel("opus", "codex-app-server"), "opus", "an alias means nothing to another agent");
+  assert.equal(ws.modelLabel("", "claude-stream-json"), "", "empty is the agent's default");
+  assert.deepEqual(plain(ws.rememberModel(["a", "b"], "c", "codex-app-server")), ["c", "a", "b"]);
+  assert.deepEqual(plain(ws.rememberModel(["a", "b", "c"], "b", "codex-app-server")), ["b", "a", "c"], "used again moves to the front");
+  assert.deepEqual(plain(ws.rememberModel(["a"], "sonnet", "claude-stream-json")), ["a"], "an alias is in the menu already");
+  assert.deepEqual(plain(ws.rememberModel(["a"], "  ", "codex-app-server")), ["a"], "nothing typed, nothing kept");
+  assert.deepEqual(plain(ws.rememberModel(["1", "2", "3", "4", "5"], "6", "codex-app-server")), ["6", "1", "2", "3", "4"], "at most five");
+});
