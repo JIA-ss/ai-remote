@@ -72,3 +72,66 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card { border-radius: var(--gl-r-card); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .devices-page .device-card-icon { background: var(--fill-1); }
 
+/* ======================================================================================
+   Computer: overview (headline, decision, live preview, task and recent steps) and the tabs
+   ====================================================================================== */
+.cpage > .cp-hl:first-child { margin-top: 4px; }
+.cpage .cp-hl.tab { margin-top: 4px; }
+.cpage .cp-grid { margin-top: 28px; column-gap: 20px; row-gap: 20px; }
+/* nothing to decide: the picture and the task / steps sit side by side */
+.cpage .cp-grid.calm { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: start; }
+.cpage .cp-grid > .pv-wrap { align-self: start; }
+.cpage .cp-cols { column-gap: 32px; }
+.cpage .cp-cols.two { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--stroke-1); }
+.cpage .cp-cols.side { display: flex; flex-direction: column; gap: 24px; margin: 0; padding: 4px 0 0; border-top: 0; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .cp-cols.two { border-top: var(--gl-hair) solid var(--gl-sep); }
+.cpage .colh { margin-bottom: 8px; }
+/* "This computer's activity ›": a quiet text action under the steps */
+.gl-main .gl-more { display: inline-flex; align-items: center; gap: 2px; height: 26px; margin: 8px 0 0 -10px; padding: 0 8px 0 10px; border-radius: 13px;
+  font: inherit; font-size: 12px; color: var(--text-2); background: transparent; }
+.gl-main .gl-more:hover { color: var(--text-1); background: var(--fill-1); }
+.gl-main .gl-more:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+
+/* the live preview: a stage picture, so stage glass (dark fill, a highlight edge) and never a blur */
+.cpage .pv { padding: 10px 10px 12px; }
+.cpage .pv .cap2 { padding: 10px 4px 0; }
+.cpage .pv .pvline { margin-top: 12px; padding: 0 2px; }
+.cpage .pv .cap2 .l1 { color: #F2F2F3; overflow: hidden; text-overflow: ellipsis; }
+.cpage .pv .cap2 .l2 { color: #A6A6AD; }
+.cpage .pv .pvline { color: #8E8E96; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .pv {
+  border-radius: var(--gl-r-card); clip-path: inset(0 round var(--gl-r-card));
+  background: var(--gl-stage-glass); box-shadow: inset 0 0 0 var(--gl-hair) rgb(255 255 255 / .12);
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .pv .shot { border-radius: 6px; }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .gl-win .cpage .pv { background: rgb(28 28 30 / .92); }
+.cpage .gl-pv-open { position: absolute; inset: 0; z-index: 7; display: grid; place-items: center; width: 100%; height: 100%; padding: 0; margin: 0;
+  border: 0; border-radius: inherit; background: transparent; cursor: pointer; transition: background-color 150ms ease; }
+.cpage .gl-pv-open:hover { background: rgb(0 0 0 / .14); }
+.cpage .gl-pv-open:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.cpage .gl-pv-go { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 16px;
+  background: rgb(24 24 26 / .80); box-shadow: inset 0 0 0 .5px rgb(255 255 255 / .18), 0 4px 14px rgb(0 0 0 / .35);
+  color: #F2F2F3; font-size: 13px; font-weight: 500; opacity: 0; transform: translateY(3px); transition: opacity 150ms ease, transform 150ms ease; }
+.cpage .gl-pv-open:is(:hover, :focus-visible) .gl-pv-go { opacity: 1; transform: none; }
+
+/* the tabs: grouped cards (D.4) — group titles outside the card, rows with hairlines inset from the text */
+.cpage .tab-grid { margin-top: 24px; column-gap: 28px; }
+.cpage .tab-grid > div > .grp-h { margin: 24px 4px 6px; }
+.cpage .tab-grid > div > .grp-h:first-child { margin-top: 0; }
+.cpage .tab-grid .grp-sub { margin: -2px 4px 8px; }
+.cpage .tab-grid .gnote { margin: 6px 4px 0; }
+.cpage .tab-grid .gr { min-height: 48px; padding: 8px 14px; column-gap: 12px; grid-template-columns: 28px minmax(0, 1fr) auto; }
+.cpage .tab-grid .gr.noic { grid-template-columns: minmax(0, 1fr) auto; }
+.cpage .tab-grid .gr:has(.ds) { min-height: 54px; }
+.cpage .tab-grid .gr .ic { width: 28px; height: 28px; }
+.cpage .tab-grid .gr + .gr::before { left: 54px; right: 14px; }
+.cpage .tab-grid .gr.noic + .gr::before, .cpage .tab-grid .gr + .gr.noic::before { left: 14px; }
+.cpage .tab-grid .gr.pick { cursor: pointer; }
+.cpage .tab-grid .gr.pick:hover { background: var(--fill-1); }
+.cpage .tab-grid .gr.pick:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+.cpage .gl-facts .gl-fact { font-size: 13px; color: var(--text-2); text-align: right; }
+.cpage .gl-facts .gl-fact .mono { font-size: 12px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .grp { border-radius: var(--gl-r-card); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr + .gr::before { height: var(--gl-hair); background: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.pick:hover { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .cpage .tab-grid .gr.sel { background: var(--gl-sel-list); }
