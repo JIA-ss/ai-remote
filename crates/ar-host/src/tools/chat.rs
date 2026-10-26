@@ -36,6 +36,7 @@ pub fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(Interrupt::new()),
         Arc::new(End::new()),
         Arc::new(FilePreview::new()),
+        Arc::new(Search::new()),
     ]
 }
 
@@ -119,10 +120,19 @@ impl Tool for Sessions {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct StartParams {
-    /// The agent, by id from chat_runtimes (`claude`, `codex`, `gemini`, ...).
-    runtime: String,
-    /// The folder the agent works in: an absolute path on this host (`~` is the home folder).
-    cwd: String,
+    /// The agent, by id from chat_runtimes (`claude`, `codex`, `gemini`, ...). Not needed with
+    /// fork_of.
+    #[serde(default)]
+    runtime: Option<String>,
+    /// The folder the agent works in: an absolute path on this host (`~` is the home folder). Not
+    /// needed with fork_of.
+    #[serde(default)]
+    cwd: Option<String>,
+    /// Fork this session (an id from chat_sessions) instead: the new session has its agent, folder,
+    /// model and permission mode, and its agent copies that conversation as last saved and goes on
+    /// apart from it. Claude Code and Codex sessions that have run a turn only.
+    #[serde(default)]
+    fork_of: Option<String>,
     /// A first message, sent as soon as the agent is up.
     #[serde(default)]
     prompt: Option<String>,
@@ -154,7 +164,8 @@ impl Start {
                 "Starts a coding agent on this host in a folder, running as the signed-in user without asking before \
                  it acts (bypass mode): it may run any command and change any file the user can. Returns the session \
                  and a ticket for the chat channel (valid once, 2 minutes), over which messages go to the agent and \
-                 its events come back.",
+                 its events come back. With fork_of it forks a session instead: same agent and folder, a copy of its \
+                 conversation.",
             ),
         }
     }
@@ -173,11 +184,22 @@ impl Tool for Start {
     async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
         let p: StartParams = parse(args)?;
         let _ = p.intent;
-        let chat = ctx
-            .host
-            .chat()
-            .start(ctx.session.peer.clone(), &p.runtime, &p.cwd, p.model, p.hardened, p.prompt, p.permission_mode)
-            .await?;
+        let peer = ctx.session.peer.clone();
+        let chat = match (p.fork_of, p.runtime, p.cwd) {
+            (Some(parent), runtime, cwd) => {
+                if runtime.is_some() || cwd.is_some() || p.model.is_some() || p.permission_mode.is_some() {
+                    anyhow::bail!(
+                        "a fork takes its agent, folder, model and permission mode from the session it forks; leave \
+                         out runtime, cwd, model and permission_mode"
+                    );
+                }
+                ctx.host.chat().fork(peer, &parent, p.prompt).await?
+            }
+            (None, Some(runtime), Some(cwd)) => {
+                ctx.host.chat().start(peer, &runtime, &cwd, p.model, p.hardened, p.prompt, p.permission_mode).await?
+            }
+            (None, _, _) => anyhow::bail!("chat_start needs runtime and cwd (or fork_of, to fork a session)"),
+        };
         let ticket = ctx.host.chat().issue_ticket(&chat.id, ctx.session.peer.principal.clone(), Role::Rw);
         let mut v = chat.describe();
         v["session"] = json!(chat.id);
@@ -399,5 +421,54 @@ impl Tool for FilePreview {
         let mut r = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
         r.structured_content = Some(value);
         Ok(r)
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SearchParams {
+    /// Words to look for; a passage matches when it contains every one, ignoring case.
+    query: String,
+    /// At most this many sessions (default 20, at most 50).
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+struct Search {
+    spec: ToolSpec,
+}
+
+impl Search {
+    fn new() -> Self {
+        Self {
+            spec: ToolSpec::new::<SearchParams>(
+                "chat_search",
+                Level::Admin,
+                "Searches what was said in the coding-agent sessions on this host (messages and the agents' answers, \
+                 not tool output): sessions most recently active first, each with how many passages match and up to \
+                 3 excerpts. Reads for at most 1.5 s; truncated=true when it stopped before reading everything.",
+            )
+            .allow()
+            .read_only(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Search {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, ctx: &ToolCtx<'_>, args: JsonObject) -> Result<CallToolResult> {
+        let p: SearchParams = parse(args)?;
+        if p.query.chars().count() > 200 {
+            anyhow::bail!("a search query has at most 200 characters");
+        }
+        let limit = p.limit.unwrap_or(20).clamp(1, 50);
+        let chat = ctx.host.chat().clone();
+        let found = tokio::task::spawn_blocking(move || chat.search(&p.query, limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("search worker failed: {e}"))?;
+        Ok(json(found))
     }
 }

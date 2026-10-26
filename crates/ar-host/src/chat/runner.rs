@@ -459,14 +459,18 @@ impl RunnerLink {
         model: Option<&str>,
         hardened: bool,
         resume: Option<&str>,
+        fork: bool,
         permission_mode: Option<&str>,
     ) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
         let c = self.ensure().await?;
         let (out_tx, out) = mpsc::channel(1024);
         c.lives.lock().unwrap().insert(live.to_string(), Sink { out: out_tx, last: 0, marked: 0 });
+        // A fork names the conversation as `fork_from`, not `resume`: a runner from before forks
+        // ignores the field and starts a new conversation, instead of continuing the other session's.
+        let (resume, fork_from) = if fork { (None, resume) } else { (resume, None) };
         let req = json!({
             "op": "launch", "live": live, "runtime": runtime, "custom": custom, "cwd": cwd, "model": model,
-            "hardened": hardened, "resume": resume, "permission_mode": permission_mode,
+            "hardened": hardened, "resume": resume, "fork_from": fork_from, "permission_mode": permission_mode,
         });
         let info = match self.request(&c, req, LOOKUP).await.and_then(|v| Ok(serde_json::from_value::<LiveInfo>(v)?)) {
             Ok(i) => i,
@@ -679,6 +683,9 @@ struct Req {
     hardened: bool,
     #[serde(default)]
     resume: Option<String>,
+    /// A conversation to fork (the host sends it apart from `resume`, see the launch request).
+    #[serde(default)]
+    fork_from: Option<String>,
     #[serde(default)]
     permission_mode: Option<String>,
     #[serde(default)]
@@ -892,7 +899,8 @@ impl Runner {
             cwd: &cwd,
             model: req.model.as_deref(),
             hardened: req.hardened,
-            resume: req.resume.as_deref(),
+            resume: req.resume.as_deref().or(req.fork_from.as_deref()),
+            fork: req.resume.is_none() && req.fork_from.is_some(),
             permission_mode: req.permission_mode.as_deref(),
         })?;
         let l = Arc::new(RLive {

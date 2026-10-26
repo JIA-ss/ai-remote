@@ -21,7 +21,9 @@ use super::*;
 const FAKE_CLAUDE: &str = r###"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 MODE=$(printf '%s ' "$@" | sed -n 's/.*--permission-mode \([A-Za-z]*\).*/\1/p')
-echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake-session\",\"skills\":[\"tidy\"],\"permissionMode\":\"$MODE\"}"
+FORK=$(printf '%s ' "$@" | sed -n 's/.*--resume \([^ ]*\) --fork-session.*/\1/p')
+SID=fake-session; [ -n "$FORK" ] && SID=fake-fork
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$SID\",\"skills\":[\"tidy\"],\"permissionMode\":\"$MODE\"}"
 REPLAY='{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"(replay)"}]}}'
 SLOW=""
 field() { printf '%s' "$line" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
@@ -81,7 +83,7 @@ while IFS= read -r line; do
       echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-edit","type":"tool_result","content":"updated"}]},"tool_use_result":{"filePath":"/w/t.py","oldString":"b = 2","newString":"b = 20","structuredPatch":[{"oldStart":1,"oldLines":3,"newStart":1,"newLines":3,"lines":[" a = 1","-b = 2","+b = 20"," c = 3"]}]}}'
       echo '{"type":"result","subtype":"success","is_error":false,"result":"edited"}' ;;
     *)
-      echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"echo"}]}}'
+      echo "{\"type\":\"assistant\",\"message\":{\"id\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"echo${FORK:+ forked from }$FORK\"}]}}"
       echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}' ;;
   esac
 done
@@ -102,7 +104,8 @@ fn fixture() -> Fixture {
     let cfg = format!(
         "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{0}\"\n\n\
          [[agent]]\nid = \"fake-nosteer\"\nbase = \"claude\"\ncommand = \"{0}\"\nsteer = false\n\n\
-         [[agent]]\nid = \"fake-codex\"\nbase = \"codex\"\ncommand = \"{0}\"\n",
+         [[agent]]\nid = \"fake-codex\"\nbase = \"codex\"\ncommand = \"{0}\"\n\n\
+         [[agent]]\nid = \"fake-acp\"\nbase = \"gemini\"\ncommand = \"{0}\"\n",
         fake.display()
     );
     std::fs::write(root.join("chat.toml"), cfg).unwrap();
@@ -788,4 +791,116 @@ async fn real_claude_asks_titles_and_switches_modes() {
     let mode = wait(&mut rx, "mode").await;
     assert_eq!(mode["mode"], "plan", "{mode}");
     chat.send(Cmd::End { reason: "done".into() });
+}
+
+#[tokio::test]
+async fn a_fork_copies_the_finished_turns_and_its_agent_forks_the_conversation() {
+    let f = fixture();
+    let (m, mut audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let parent =
+        m.start(creator(), "fake", work, Some("haiku".into()), false, None, Some("default".into())).await.unwrap();
+    // No turn yet: no conversation to copy.
+    let e = m.fork(creator(), &parent.id, None).await.err().expect("refused").to_string();
+    assert!(e.contains("has not run a turn"), "{e}");
+    let mut rx = parent.live.subscribe();
+    parent.send(input("remember KIWI"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let _ = wait_for(&mut rx, |v| v["t"] == "title").await;
+    m.update(&parent.id, Some("Fruit".into()), None, None, &creator()).unwrap();
+
+    let child = m.fork(creator(), &parent.id, None).await.unwrap();
+    let cm = child.meta();
+    assert_eq!(cm.parent.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(cm.fork_from.as_deref(), Some("fake-session"));
+    assert_eq!(
+        (cm.runtime.as_str(), cm.cwd.as_str(), cm.model.as_deref(), cm.permission_mode.as_deref()),
+        ("fake", parent.meta().cwd.as_str(), Some("haiku"), Some("default"))
+    );
+    assert_eq!((cm.turns, cm.title.as_deref(), cm.first_text.as_deref()), (1, None, Some("remember KIWI")));
+    assert_eq!(child.describe()["parent"], json!(parent.id));
+    // Its transcript starts with the parent's turn, numbered from 1, without the parent's titles.
+    let log = std::fs::read_to_string(child.dir.join("events.jsonl")).unwrap();
+    assert!(log.starts_with("{\"seq\":1,") && log.contains("remember KIWI"), "{log}");
+    assert!(!log.contains("\"t\":\"title\""), "{log}");
+    let seqs: Vec<u64> = log.lines().filter_map(line_seq).collect();
+    assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
+
+    // Its agent forks the parent's conversation, then goes on in its own.
+    let mut crx = child.live.subscribe();
+    child.send(input("which word?"));
+    let said = wait_for(&mut crx, |v| v["t"] == "message").await;
+    assert_eq!(said["text"], "echo forked from fake-session");
+    wait_for(&mut crx, |v| v["t"] == "turn_end").await;
+    assert_eq!(child.meta().proto_session.as_deref(), Some("fake-fork"));
+    assert_eq!(child.meta().turns, 2);
+    assert_eq!(parent.meta().proto_session.as_deref(), Some("fake-session"));
+    let a = loop {
+        let a = audit.recv().await.unwrap();
+        if a["action"] == "fork" {
+            break a;
+        }
+    };
+    assert_eq!((a["chat"].as_str(), a["parent"].as_str()), (Some(child.id.as_str()), Some(parent.id.as_str())));
+    // A running parent forks too: what is saved is copied, the running turn is not.
+    parent.send(input("SLOW"));
+    wait_for(&mut rx, |v| v["t"] == "tool_call").await;
+    let second = m.fork(creator(), &parent.id, None).await.unwrap();
+    let log = std::fs::read_to_string(second.dir.join("events.jsonl")).unwrap();
+    assert!(log.contains("remember KIWI") && !log.contains("SLOW"), "{log}");
+    parent.send(Cmd::Interrupt { then: None });
+    // Agents that cannot copy a conversation refuse, saying why.
+    let acp = m.start(creator(), "fake-acp", work, None, false, None, None).await.unwrap();
+    let e = m.fork(creator(), &acp.id, None).await.err().expect("refused").to_string();
+    assert!(e.contains("cannot be forked"), "{e}");
+    assert!(m.fork(creator(), "c-none", None).await.is_err());
+}
+
+#[tokio::test]
+async fn earlier_titles_are_kept_for_search() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    assert!(chat.describe().get("previous_titles").is_none());
+    for t in ["one", "two", "two", "three"] {
+        m.update(&chat.id, Some(t.into()), None, None, &creator()).unwrap();
+    }
+    assert_eq!(chat.meta().previous_titles, ["one", "two"]);
+    // Back to an earlier name: it is the title again, not an earlier one.
+    m.update(&chat.id, Some("one".into()), None, None, &creator()).unwrap();
+    assert_eq!(chat.describe()["previous_titles"], json!(["two", "three"]));
+    m.update(&chat.id, Some(String::new()), None, None, &creator()).unwrap();
+    assert_eq!(chat.meta().previous_titles, ["two", "three", "one"]);
+    for i in 0..20 {
+        m.update(&chat.id, Some(format!("t{i}")), None, None, &creator()).unwrap();
+    }
+    let p = chat.meta().previous_titles;
+    assert_eq!((p.len(), p.first().map(String::as_str), p.last().map(String::as_str)), (10, Some("t9"), Some("t18")));
+}
+
+#[tokio::test]
+async fn search_finds_what_was_said_newest_session_first() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let a = m.start(creator(), "fake", work, None, false, None, None).await.unwrap();
+    let mut rx = a.live.subscribe();
+    a.send(input("deploy the KIWI build"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let b = m.start(creator(), "fake", work, None, false, None, None).await.unwrap();
+    let mut rx = b.live.subscribe();
+    b.send(input("kiwi build again"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let found = m.search("Kiwi build", 20);
+    let ids: Vec<&str> = found["results"].as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
+    assert_eq!(ids, [b.id.as_str(), a.id.as_str()]);
+    assert_eq!(found["results"][1]["excerpts"][0]["text"], "deploy the KIWI build");
+    assert_eq!(found["results"][1]["hits"], 1);
+    assert_eq!(found["truncated"], false);
+    assert_eq!(m.search("kiwi", 1)["results"].as_array().unwrap().len(), 1);
+    assert!(m.search("kiwi nothing", 20)["results"].as_array().unwrap().is_empty());
+    assert!(m.search("  ", 20)["results"].as_array().unwrap().is_empty());
+    // "echo" is the agent's answer: it is searched too.
+    assert_eq!(m.search("echo", 20)["results"][0]["excerpts"][0]["role"], "agent");
 }

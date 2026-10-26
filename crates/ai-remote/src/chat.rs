@@ -35,6 +35,24 @@ pub enum ChatCommand {
     },
     /// Start an agent in a folder on the host and talk to it: each line is a message.
     Start(StartArgs),
+    /// Fork a session: a new one with the same agent and folder and a copy of its conversation
+    /// (Claude Code and Codex). Prints the new session.
+    Fork {
+        session: String,
+        /// A first message for the fork.
+        #[arg(long)]
+        prompt: Option<String>,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Sessions whose messages contain every word of QUERY, with excerpts.
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[command(flatten)]
+        target: Target,
+    },
     /// Give an agent one task, print its answer and end the session.
     Run(RunArgs),
     /// Watch a running session (and, if you started it, keep talking).
@@ -185,6 +203,35 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
                 );
             }
             chat.interactive(json_out).await?;
+        }
+        ChatCommand::Fork { session, prompt, target } => {
+            let mut args = json!({"fork_of": session});
+            if let Some(p) = prompt {
+                args["prompt"] = p.into();
+            }
+            let v = call(profile, &target, "chat_start", args).await?.ok();
+            if json_out {
+                print_json(&v);
+            } else {
+                println!("{}", v["session"].as_str().unwrap_or("?"));
+            }
+        }
+        ChatCommand::Search { query, limit, target } => {
+            let v = call(profile, &target, "chat_search", json!({"query": query, "limit": limit})).await?.ok();
+            if json_out {
+                print_json(&v);
+            } else {
+                for r in v["results"].as_array().into_iter().flatten() {
+                    let title = r["title"].as_str().or(r["first_text"].as_str()).unwrap_or("");
+                    println!("{}  {} match(es)  {}", r["session"].as_str().unwrap_or("?"), r["hits"], title);
+                    for e in r["excerpts"].as_array().into_iter().flatten() {
+                        println!("    {}: {}", e["role"].as_str().unwrap_or("?"), e["text"].as_str().unwrap_or(""));
+                    }
+                }
+                if v["truncated"] == true {
+                    eprintln!("(stopped before reading every session)");
+                }
+            }
         }
         ChatCommand::Attach { session, since, target } => {
             let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();

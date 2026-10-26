@@ -56,6 +56,10 @@ pub struct Launch<'a> {
     pub hardened: bool,
     /// The agent's own conversation id to continue.
     pub resume: Option<&'a str>,
+    /// `resume` is another session's conversation to copy into a new one (a fork), not to continue:
+    /// Claude Code's `--fork-session`, Codex's `thread/fork`. Only those two can (see
+    /// [`can_fork`]).
+    pub fork: bool,
     /// Claude Code's permission mode (see [`PERMISSION_MODES`]); `None` is `bypassPermissions`.
     pub permission_mode: Option<&'a str>,
 }
@@ -74,6 +78,12 @@ pub enum Decision {
 
 /// Claude Code's permission modes a session may use.
 pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// Whether sessions of agents speaking `protocol` can be forked: copied into a new conversation
+/// that goes on apart from the first. ACP has no way to copy a conversation.
+pub fn can_fork(protocol: Protocol) -> bool {
+    matches!(protocol, Protocol::ClaudeStreamJson | Protocol::CodexAppServer)
+}
 
 /// The mode a Claude Code session runs in when none was chosen (what sessions always did).
 pub const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
@@ -115,10 +125,14 @@ pub fn launch(l: Launch<'_>) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
                 cwd: l.cwd.display().to_string(),
                 model: l.model.map(str::to_string),
                 resume: l.resume.map(str::to_string),
+                fork: l.fork,
             };
             tokio::spawn(codex::run(proc, lines, cmds, out_tx, name, opts));
         }
         Protocol::Acp => {
+            if l.fork {
+                anyhow::bail!("{} cannot fork a conversation", l.resolved.name);
+            }
             let opts = acp::Opts {
                 cwd: l.cwd.display().to_string(),
                 resume: l.resume.map(str::to_string),

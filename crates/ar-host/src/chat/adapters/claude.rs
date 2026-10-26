@@ -86,6 +86,10 @@ pub fn args(l: &super::Launch<'_>) -> Vec<String> {
     }
     if let Some(r) = l.resume {
         a.extend(["--resume".into(), r.into()]);
+        if l.fork {
+            // A new session id with the earlier conversation copied in; the first goes on unchanged.
+            a.push("--fork-session".into());
+        }
     }
     a
 }
@@ -996,6 +1000,7 @@ mod tests {
             model: Some("haiku"),
             hardened: true,
             resume: Some("s1"),
+            fork: false,
             permission_mode: None,
         };
         let a = args(&l).join(" ");
@@ -1009,6 +1014,9 @@ mod tests {
         assert!(args(&l).join(" ").contains("--permission-mode bypassPermissions"));
         assert!(a.contains("--setting-sources user --strict-mcp-config"), "{a}");
         assert!(a.ends_with("--model haiku --resume s1"), "{a}");
+        // A fork copies the conversation into a new session instead of continuing it.
+        let l = super::super::Launch { fork: true, permission_mode: None, ..l };
+        assert!(args(&l).join(" ").ends_with("--resume s1 --fork-session"));
     }
 
     fn replay() -> Value {

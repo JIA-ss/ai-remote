@@ -63,6 +63,8 @@ pub struct Opts {
     pub cwd: String,
     pub model: Option<String>,
     pub resume: Option<String>,
+    /// `resume` is a thread to fork (`thread/fork`: a new thread with its turns), not to continue.
+    pub fork: bool,
 }
 
 pub fn args(_l: &super::Launch<'_>) -> Vec<String> {
@@ -102,6 +104,8 @@ enum Pending {
     Thread {
         resumed: bool,
     },
+    /// `thread/fork`: a new thread with another's turns.
+    Fork,
     TurnStart,
     Steer {
         id: String,
@@ -409,6 +413,17 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
             (Some(Pending::Initialize), Ok(_)) => {
                 writes.push(jsonrpc::notification("initialized", None));
                 match &opts.resume {
+                    Some(thread) if opts.fork => {
+                        // Bypassed like a thread we start; the turns are not needed in the answer.
+                        let mut p = json!({
+                            "threadId": thread, "cwd": opts.cwd, "approvalPolicy": "never",
+                            "sandbox": "danger-full-access", "excludeTurns": true,
+                        });
+                        if let Some(m) = &opts.model {
+                            p["model"] = json!(m);
+                        }
+                        writes.push(st.request("thread/fork", p, Pending::Fork));
+                    }
                     Some(thread) => {
                         let mut p = json!({"threadId": thread});
                         if let Some(m) = &opts.model {
@@ -420,7 +435,7 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                 }
             }
             (Some(Pending::Initialize), Err(e)) => outs.push(Out::Exited(format!("Codex refused to start: {e}"))),
-            (Some(Pending::Thread { .. }), Ok(r)) => {
+            (Some(Pending::Thread { .. } | Pending::Fork), Ok(r)) => {
                 if let Some(id) = r["thread"]["id"].as_str() {
                     st.thread = Some(id.to_string());
                     st.ready = true;
@@ -439,6 +454,15 @@ fn handle(st: &mut State, line: &str, opts: &Opts) -> (Vec<String>, Vec<Out>) {
                     level: "warn",
                     code: "context_lost",
                     text: format!("Codex could not continue the earlier conversation ({e}); a new one starts"),
+                }));
+                writes.push(thread_start(st, opts));
+            }
+            (Some(Pending::Fork), Err(e)) => {
+                outs.push(Out::Ev(Ev::Notice {
+                    input_id: None,
+                    level: "warn",
+                    code: "context_lost",
+                    text: format!("Codex could not fork the earlier conversation ({e}); a new one starts"),
                 }));
                 writes.push(thread_start(st, opts));
             }
@@ -1242,7 +1266,35 @@ mod tests {
     use super::*;
 
     fn opts(resume: Option<&str>) -> Opts {
-        Opts { cwd: "/w".into(), model: Some("m1".into()), resume: resume.map(str::to_string) }
+        Opts { cwd: "/w".into(), model: Some("m1".into()), resume: resume.map(str::to_string), fork: false }
+    }
+
+    #[test]
+    fn a_fork_asks_for_a_new_thread_with_the_old_ones_turns() {
+        let o = Opts { fork: true, ..opts(Some("parent")) };
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        st.waiting.push_back(("again".into(), vec![]));
+        let (w, _) = handle(&mut st, r#"{"id":1,"result":{}}"#, &o);
+        let fork: Value = serde_json::from_str(&w[1]).unwrap();
+        assert_eq!(fork["method"], "thread/fork");
+        assert_eq!(
+            fork["params"],
+            json!({"threadId": "parent", "cwd": "/w", "approvalPolicy": "never", "sandbox": "danger-full-access",
+                   "excludeTurns": true, "model": "m1"})
+        );
+        // The answer names the new thread: the session goes on in it.
+        let (w, outs) = handle(&mut st, r#"{"id":2,"result":{"thread":{"id":"child"},"model":"m1"}}"#, &o);
+        assert!(matches!(&outs[0], Out::Session(s) if s == "child"));
+        let turn: Value = serde_json::from_str(&w[0]).unwrap();
+        assert_eq!((turn["method"].as_str(), turn["params"]["threadId"].as_str()), (Some("turn/start"), Some("child")));
+        // A fork Codex refuses starts afresh and says so.
+        let mut st = State::default();
+        let _ = st.request("initialize", json!({}), Pending::Initialize);
+        handle(&mut st, r#"{"id":1,"result":{}}"#, &o);
+        let (w, outs) = handle(&mut st, r#"{"id":2,"error":{"code":-1,"message":"no rollout"}}"#, &o);
+        assert!(matches!(&outs[0], Out::Ev(Ev::Notice { code: "context_lost", .. })));
+        assert!(w[0].contains("thread/start"));
     }
 
     #[test]

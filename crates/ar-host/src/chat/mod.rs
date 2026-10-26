@@ -44,6 +44,7 @@ pub mod runner;
 #[cfg(windows)]
 pub mod runner_win;
 pub mod runtimes;
+pub mod search;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -177,10 +178,39 @@ pub struct Meta {
     /// Claude Code's permission mode (see [`adapters::PERMISSION_MODES`]); other agents have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// The session this one was forked from (see [`ChatManager::fork`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The parent's own conversation id when it was forked: the first agent process copies that
+    /// conversation into a new one (and reports its id as `proto_session`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_from: Option<String>,
+    /// The titles it had before, oldest first (at most [`PREVIOUS_TITLES`]), for search.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_titles: Vec<String>,
 }
 
 /// Characters of the first message kept in [`Meta::first_text`].
 pub const FIRST_TEXT: usize = 200;
+
+/// Earlier titles kept in [`Meta::previous_titles`].
+pub const PREVIOUS_TITLES: usize = 10;
+
+impl Meta {
+    /// Sets the title (none: back to the first message), remembering the one it replaces.
+    fn retitle(&mut self, title: Option<String>) {
+        if let Some(old) = self.title.take().filter(|old| Some(old) != title.as_ref()) {
+            self.previous_titles.retain(|t| *t != old);
+            self.previous_titles.push(old);
+            let extra = self.previous_titles.len().saturating_sub(PREVIOUS_TITLES);
+            self.previous_titles.drain(..extra);
+        }
+        if let Some(t) = &title {
+            self.previous_titles.retain(|p| p != t);
+        }
+        self.title = title;
+    }
+}
 
 /// What an open request waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +541,44 @@ impl ChatManager {
         v.into_iter().map(|(_, v)| v).collect()
     }
 
+    /// Searches what was said in every session here (see [`search`]): at most `limit` sessions,
+    /// most recently active first, with the number of matching passages and excerpts of the last
+    /// ones. Blocks while it reads; run it off the async threads.
+    pub fn search(&self, query: &str, limit: usize) -> Value {
+        let terms = search::terms(query);
+        let mut chats: Vec<(Meta, PathBuf)> =
+            self.all().iter().map(|c| (c.meta(), c.dir.join("events.jsonl"))).collect();
+        chats.sort_by_key(|(m, _)| std::cmp::Reverse(m.last_activity));
+        let started = Instant::now();
+        let mut budget = search::Budget::new(search::TIME_BUDGET, search::READ_BUDGET);
+        let (mut results, mut truncated, mut searched) = (Vec::new(), false, 0);
+        if !terms.is_empty() {
+            for (m, path) in chats {
+                if results.len() >= limit {
+                    break;
+                }
+                let found = search::transcript(&path, &terms, &mut budget);
+                searched += 1;
+                if found.hits > 0 {
+                    results.push(json!({
+                        "session": m.id, "title": m.title, "first_text": m.first_text, "runtime": m.runtime,
+                        "name": m.name, "cwd": m.cwd, "state": m.state, "archived": m.archived,
+                        "parent": m.parent, "last_activity": m.last_activity, "hits": found.hits,
+                        "excerpts": found.excerpts,
+                    }));
+                }
+                if found.truncated {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        json!({
+            "results": results, "truncated": truncated, "searched": searched,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        })
+    }
+
     /// The protocol of agent `id` (built in or custom).
     pub fn protocol_of(&self, id: &str) -> Option<Protocol> {
         runtimes::protocol_of(id, &self.custom())
@@ -536,10 +604,10 @@ impl ChatManager {
         chat.set_meta(|m| {
             if let Some(t) = &title {
                 if t.is_empty() {
-                    m.title = None;
+                    m.retitle(None);
                     m.title_source = None;
                 } else {
-                    m.title = Some(t.clone());
+                    m.retitle(Some(t.clone()));
                     m.title_source = Some("user".into());
                 }
             }
@@ -590,6 +658,44 @@ impl ChatManager {
         prompt: Option<String>,
         permission_mode: Option<String>,
     ) -> Result<Arc<Chat>> {
+        self.create(creator, runtime, cwd, model, hardened, prompt, permission_mode, None).await
+    }
+
+    /// Forks session `parent` for `creator`: a new session with its agent, folder, model and
+    /// permission mode, whose agent copies the parent's conversation as it was last saved (a turn
+    /// running now is left out) and goes on apart from it; the parent is not changed. Its
+    /// transcript starts with the parent's finished turns. Only Claude Code (`--fork-session`)
+    /// and Codex (`thread/fork`) can copy a conversation, and the parent's agent must have one
+    /// (it has run a turn).
+    pub async fn fork(&self, creator: Peer, parent: &str, prompt: Option<String>) -> Result<Arc<Chat>> {
+        let p = self.get(parent)?;
+        let pm = p.meta();
+        if !self.protocol_of(&pm.runtime).is_some_and(adapters::can_fork) {
+            bail!(
+                "{} sessions cannot be forked: only Claude Code and Codex can copy a conversation into a new one",
+                pm.name
+            );
+        }
+        let Some(from) = pm.proto_session.clone().filter(|_| pm.turns > 0) else {
+            bail!("session '{}' has no conversation to fork yet: it has not run a turn", p.id);
+        };
+        let (runtime, cwd) = (pm.runtime.clone(), pm.cwd.clone());
+        self.create(creator, &runtime, &cwd, pm.model.clone(), pm.hardened, prompt, pm.permission_mode, Some((p, from)))
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create(
+        &self,
+        creator: Peer,
+        runtime: &str,
+        cwd: &str,
+        model: Option<String>,
+        hardened: bool,
+        prompt: Option<String>,
+        permission_mode: Option<String>,
+        fork: Option<(Arc<Chat>, String)>,
+    ) -> Result<Arc<Chat>> {
         if let Some(m) = &permission_mode
             && !PERMISSION_MODES.contains(&m.as_str())
         {
@@ -632,6 +738,22 @@ impl ChatManager {
         let id = format!("c{}", &random_hex()[..12]);
         let dir = self.0.dir.join(&id);
         std::fs::create_dir_all(&dir)?;
+        // A fork's transcript starts with the parent's finished turns, as its agent's copy does.
+        let copied = match &fork {
+            Some((parent, _)) => {
+                let (from, to) = (parent.dir.join("events.jsonl"), dir.join("events.jsonl"));
+                match tokio::task::spawn_blocking(move || copy_transcript(&from, &to)).await {
+                    Ok(Ok(turns)) => turns,
+                    Ok(Err(e)) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        bail!("cannot copy the transcript of session '{}': {e}", parent.id);
+                    }
+                    Err(e) => bail!("transcript copy failed: {e}"),
+                }
+            }
+            None => 0,
+        };
+        let parent_meta = fork.as_ref().map(|(p, _)| p.meta());
         let by = By { device: creator.name.clone(), principal: creator.principal.clone() };
         // Only Claude Code has permission modes; its sessions always say which they run in.
         let permission_mode = (self.protocol_of(&rid) == Some(Protocol::ClaudeStreamJson))
@@ -648,32 +770,36 @@ impl ChatManager {
             started_at: now_ms(),
             state: State::Parked,
             proto_session: None,
-            turns: 0,
+            turns: copied,
             pid: None,
             pid_start: None,
             ended_at: None,
             end_reason: None,
             last_activity: now_ms(),
-            commands: Vec::new(),
-            images: None,
+            commands: parent_meta.as_ref().map(|p| p.commands.clone()).unwrap_or_default(),
+            images: parent_meta.as_ref().and_then(|p| p.images),
             turn: None,
             runner_live: None,
             runner_seq: None,
             title: None,
             title_source: None,
-            first_text: None,
+            first_text: parent_meta.as_ref().filter(|_| copied > 0).and_then(|p| p.first_text.clone()),
             last_status: None,
             last_reason: None,
             pending: None,
             pinned: false,
             archived: false,
             permission_mode: permission_mode.clone(),
+            parent: fork.as_ref().map(|(p, _)| p.id.clone()),
+            fork_from: fork.as_ref().map(|(_, from)| from.clone()),
+            previous_titles: Vec::new(),
         };
         let chat = self.insert(meta, creator, &dir, false)?;
         self.audit(json!({
-            "kind": "chat_session", "action": "start", "chat": id, "runtime": rid,
-            "program": program, "cwd": chat.meta().cwd, "by": by.device,
+            "kind": "chat_session", "action": if fork.is_some() { "fork" } else { "start" }, "chat": id,
+            "runtime": rid, "program": program, "cwd": chat.meta().cwd, "by": by.device,
             "principal": by.principal, "hardened": hardened, "permission_mode": permission_mode,
+            "parent": fork.as_ref().map(|(p, _)| p.id.clone()),
         }));
         if let Some(text) = prompt.filter(|t| !t.trim().is_empty()) {
             chat.send(Cmd::Input(Input { id: format!("u{}", &random_hex()[..8]), text, by, images: Vec::new() }));
@@ -973,6 +1099,8 @@ impl Chat {
             ("pending", m.pending.map(|p| json!(p))),
             ("permission_mode", m.permission_mode.map(Value::from)),
             ("branch", git::branch(Path::new(&m.cwd)).map(Value::from)),
+            ("parent", m.parent.map(Value::from)),
+            ("previous_titles", (!m.previous_titles.is_empty()).then(|| json!(m.previous_titles))),
         ];
         for (k, x) in extra {
             if let Some(x) = x {
@@ -1153,6 +1281,54 @@ fn scan_log(path: &Path) -> (u64, u32, u64) {
         }
     }
     (seq, turn, bytes)
+}
+
+/// Copies the transcript `from` to `to` up to the end of its last finished turn (what follows, a
+/// turn running now, is left out as the agent's copy of the conversation leaves it out), numbering
+/// the events again from 1 and leaving out titles (a fork has its own). Returns the number of the
+/// last turn copied. Reads and writes one line at a time.
+fn copy_transcript(from: &Path, to: &Path) -> std::io::Result<u32> {
+    use std::io::{BufWriter, Read};
+    // The first pass finds where the last finished turn ends.
+    let mut end = 0u64;
+    let mut pos = 0u64;
+    let mut turns = 0u32;
+    let mut reader = BufReader::new(File::open(from)?);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            break;
+        }
+        pos += n as u64;
+        if line.contains("\"t\":\"turn_end\"") && line.ends_with('\n') {
+            end = pos;
+            if let Some(t) = serde_json::from_str::<Value>(&line).ok().and_then(|v| v["turn"].as_u64()) {
+                turns = t as u32;
+            }
+        }
+    }
+    let mut reader = BufReader::new(File::open(from)?.take(end));
+    let file = OpenOptions::new().create_new(true).write(true).open(to)?;
+    restrict(&file, to);
+    let mut out = BufWriter::new(file);
+    let mut seq = 0u64;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let Some(rest) = line.strip_prefix("{\"seq\":") else { continue };
+        let Some(i) = rest.find(',') else { continue };
+        if line.contains("\"t\":\"title\"") {
+            continue;
+        }
+        seq += 1;
+        write!(out, "{{\"seq\":{seq},{}", &rest[i + 1..])?;
+    }
+    out.flush()?;
+    Ok(turns)
 }
 
 fn restrict(_f: &File, path: &Path) {
@@ -1621,7 +1797,8 @@ impl Driver {
                     cwd: Path::new(&meta.cwd),
                     model: meta.model.as_deref(),
                     hardened: meta.hardened,
-                    resume: meta.proto_session.as_deref(),
+                    resume: meta.proto_session.as_deref().or(meta.fork_from.as_deref()),
+                    fork: meta.proto_session.is_none() && meta.fork_from.is_some(),
                     permission_mode: meta.permission_mode.as_deref(),
                 })?;
                 (handle, out, None, resolved.caps.steer)
@@ -1636,7 +1813,8 @@ impl Driver {
                         &meta.cwd,
                         meta.model.as_deref(),
                         meta.hardened,
-                        meta.proto_session.as_deref(),
+                        meta.proto_session.as_deref().or(meta.fork_from.as_deref()),
+                        meta.proto_session.is_none() && meta.fork_from.is_some(),
                         meta.permission_mode.as_deref(),
                     )
                     .await?;
@@ -1713,7 +1891,7 @@ impl Driver {
                 // A name a person gave is not replaced by the agent's.
                 if self.chat.meta().title_source.as_deref() != Some("user") {
                     self.chat.set_meta(|m| {
-                        m.title = Some(title.clone());
+                        m.retitle(Some(title.clone()));
                         m.title_source = Some(source.clone());
                     });
                     self.chat.emit(Ev::Title { title, source });
