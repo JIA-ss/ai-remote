@@ -302,10 +302,23 @@ export const zh: Record<keyof typeof en, string> = {
   sc_pair: "配对新电脑",
   sc_search: "搜索电脑",
   sc_fullscreen: "全屏观看",
-  // glass: pages
-  // glass: computer
-  // glass: settings
-  // glass: overlays
+  // glass: pages (add keys below, above its end marker)
+  // glass: pages end
+
+  // glass: computer (add keys below, above its end marker)
+  // glass: computer end
+
+  // glass: settings (add keys below, above its end marker)
+  // glass: settings end
+
+  // glass: overlays (add keys below, above its end marker)
+  // glass: overlays end
+
+  // glass: workspace (add keys below, above its end marker)
+  // glass: workspace end
+
+  // glass: live (add keys below, above its end marker)
+  // glass: live end
   // glass: end
   g_needs: "需要你处理",
   g_working: "智能体工作中",

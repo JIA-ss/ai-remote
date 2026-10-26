@@ -300,10 +300,23 @@ export const en = {
   sc_pair: "Pair a computer",
   sc_search: "Search computers",
   sc_fullscreen: "Full screen",
-  // glass: pages
-  // glass: computer
-  // glass: settings
-  // glass: overlays
+  // glass: pages (add keys below, above its end marker)
+  // glass: pages end
+
+  // glass: computer (add keys below, above its end marker)
+  // glass: computer end
+
+  // glass: settings (add keys below, above its end marker)
+  // glass: settings end
+
+  // glass: overlays (add keys below, above its end marker)
+  // glass: overlays end
+
+  // glass: workspace (add keys below, above its end marker)
+  // glass: workspace end
+
+  // glass: live (add keys below, above its end marker)
+  // glass: live end
   // glass: end
   g_needs: "Needs you",
   g_working: "Agent working",
