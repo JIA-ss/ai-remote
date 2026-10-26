@@ -13,7 +13,6 @@ system install prompts and real host pairing still need native acceptance.
 import argparse
 import json
 import os
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -32,12 +31,12 @@ tab = None
 counter = 0
 
 
-def call(method, path, body=None, raw=False):
+def call(method, path, body=None, raw=False, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(args.camofox + path, data=data, method=method,
                                      headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read()
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"Camofox {path}: {error.code} {error.read().decode(errors='replace')[:500]}") from None
@@ -181,10 +180,17 @@ def main():
     started = time.monotonic()
     original_transparency = None
     try:
-        subprocess.run(["camofox", "--session", args.session, "health"], env=os.environ.copy(),
-                       check=True, stdout=subprocess.DEVNULL)
+        if not call("GET", "/health").get("browserConnected"):
+            raise RuntimeError(f"Camofox at {args.camofox} has no browser connected")
         tab = call("POST", "/tabs", {"userId": USER, "sessionKey": "overlays-smoke", "url": args.url})["tabId"]
-        call("POST", f"/tabs/{tab}/viewport", {"userId": USER, "width": 1280, "height": 800})
+        try:
+            # Camofox applies the size and then may never answer on a viewport-less context, so do not
+            # wait for the reply; the size itself is verified below.
+            call("POST", f"/tabs/{tab}/viewport", {"userId": USER, "width": 1280, "height": 800}, timeout=3)
+        except OSError:
+            pass
+        if not until("matchMedia('(width: 1280px) and (height: 800px)').matches"):
+            raise RuntimeError("the viewport did not become 1280x800")
         original_transparency = js("localStorage.getItem('ai-remote.reduce-transparency')")
         main_js("const {setReducedTransparency}=await import('/src/lib/platform.ts');setReducedTransparency(false);return true;")
         for theme in ["light", "dark"]:
