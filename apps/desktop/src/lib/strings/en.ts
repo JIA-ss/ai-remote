@@ -211,6 +211,7 @@ export const en = {
   ws_show_meta_detail: "A second line under the title: branch, folder or what blocks it",
   ws_older_bulk: "Bulk actions for older sessions",
   ws_drop_unpin: "Let go to unpin",
+  ws_drop_ungroup: "Drop here to take it out of its group",
   ws_older_archive: "Archive all ({n})",
   ws_older_archive_confirm: "Click again to archive {n} older sessions",
   ws_older_none: "No sessions older than a week",

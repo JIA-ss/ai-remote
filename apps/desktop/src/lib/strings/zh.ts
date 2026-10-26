@@ -213,6 +213,7 @@ export const zh: Record<keyof typeof en, string> = {
   ws_show_meta_detail: "在标题下多一行：分支、文件夹或阻塞原因",
   ws_older_bulk: "批量处理较旧会话",
   ws_drop_unpin: "松手即取消置顶",
+  ws_drop_ungroup: "拖到这里即移出分组",
   ws_older_archive: "全部归档（{n}）",
   ws_older_archive_confirm: "再次点击以归档 {n} 个较旧会话",
   ws_older_none: "没有一周以前的会话",
