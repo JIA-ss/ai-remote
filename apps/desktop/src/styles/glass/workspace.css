@@ -87,7 +87,7 @@
   background: rgb(var(--gl-g-rgb) / var(--gl-g-thin));
   box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-cap);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+  backdrop-filter: blur(24px) saturate(180%);
 }
 :root:is([data-material="native"], [data-material="preview"]) .ws-tb { gap: 8px; padding: 0 8px; }
 :root:is([data-material="native"], [data-material="preview"]) .ws-tb > .ws-corner { margin-right: 0; }
@@ -130,12 +130,12 @@
   background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
   box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
   -webkit-backdrop-filter: blur(36px) saturate(160%);
-  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+  backdrop-filter: blur(36px) saturate(160%);
 }
 :root:is([data-material="native"], [data-material="preview"]) .ws-toast:not(.error) {
   background: rgb(var(--gl-g-rgb) / var(--gl-g-regular));
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+  backdrop-filter: blur(24px) saturate(180%);
 }
 :root:is([data-material="native"], [data-material="preview"]) :is(.ws-menu, .ws-hovercard, .ws-toast) { border-radius: var(--gl-r-pop); }
 :root:is([data-material="native"], [data-material="preview"]) .ws-palette { position: relative; border-radius: var(--gl-r-sheet); box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet); }

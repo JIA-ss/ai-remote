@@ -41,7 +41,7 @@
 :root:is([data-material="native"], [data-material="preview"]) .nt-chat:not(.cdx) .nt-jump,
 :root:is([data-material="native"], [data-material="preview"]) .nt-cb:is(:hover, :focus-within) .acts.float:not(.nt-pv-dlg .acts.float) {
   -webkit-backdrop-filter: blur(36px) saturate(160%);
-  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+  backdrop-filter: blur(36px) saturate(160%);
 }
 :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg),
 :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-chat:not(.cdx) .nt-jump,

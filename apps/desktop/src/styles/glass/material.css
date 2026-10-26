@@ -5,7 +5,10 @@
    - it is a leaf: no glass inside glass, and no ancestor with opacity < 1, filter, mask, clip-path or
      will-change (each makes that ancestor the backdrop root, and the glass then blurs only it);
    - radius, background and backdrop-filter sit on the same element (display block / flex);
-   - the prefixed declaration carries literal values first (some WebKit builds ignore var() there);
+   - both declarations carry literal values, the prefixed one first: some WebKit builds ignore var()
+     in -webkit-backdrop-filter, and the production CSS minifier (Vite's Lightning CSS) folds the pair
+     into one value taken from the unprefixed declaration, so a var() there would replace the prefixed
+     literal in the shipped sheet. Per-OS radii are separate literal rules ([data-os="windows"]);
    - only one blurred layer animates at a time, and the blur radius itself never animates;
    - never inside .nt-stage (the 75 fps picture would be re-blurred every frame).
 
@@ -34,11 +37,11 @@
 /* the blur: on with the material only */
 :root:is([data-material="native"], [data-material="preview"]) .gl-glass {
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+  backdrop-filter: blur(24px) saturate(180%);
 }
 :root:is([data-material="native"], [data-material="preview"]) :is(.gl-glass.thick, .cdlg, .menu) {
   -webkit-backdrop-filter: blur(36px) saturate(160%);
-  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+  backdrop-filter: blur(36px) saturate(160%);
 }
 :root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.gl-glass, .cdlg, .menu) {
   -webkit-backdrop-filter: blur(30px) saturate(125%);

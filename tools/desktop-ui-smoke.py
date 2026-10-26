@@ -36,7 +36,8 @@ detector to report it, so a clean run means the detectors work.
 
 A static lint runs first over the glass layer and the app's own sheets (styles/glass, workspace,
 claude, codex, app): every non-none backdrop-filter has a -webkit-backdrop-filter with a literal value
-before it in the same rule, and its selectors start with
+before it in the same rule, is itself literal (the production minifier folds the pair into the
+unprefixed value, so a var() there would reach the prefixed declaration), and its selectors start with
 :root:is([data-material="native"], [data-material="preview"]).
 
 Engine notes. Camofox is Firefox (Camoufox) headless: it does not paint backdrop-filter, but
@@ -175,6 +176,9 @@ def lint_styles(paths):
                 prefixed = [v for p, v in decls[:i] if p == "-webkit-backdrop-filter"]
                 check(f"lint prefixed literal -webkit-backdrop-filter first: {where}", prefixed and "var(" not in prefixed[-1],
                       {"prefixed": prefixed, "unprefixed": value})
+                # The production minifier (Lightning CSS) folds the pair into one value taken from the
+                # unprefixed declaration: a var() there replaces the prefixed literal in the shipped sheet.
+                check(f"lint unprefixed backdrop-filter literal too: {where}", "var(" not in value, {"unprefixed": value})
                 ungated = [s for s in split_selectors(prelude) if not GATE.match(s)]
                 check(f"lint gated on data-material: {where}", not ungated, {"ungated": ungated})
 

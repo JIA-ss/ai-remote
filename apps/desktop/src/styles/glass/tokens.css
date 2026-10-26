@@ -55,9 +55,6 @@
   --gl-g-thin: 1;
   --gl-g-regular: 1;
   --gl-g-thick: 1;
-  --gl-blur: 24px;
-  --gl-blur-thick: 36px;
-  --gl-sat: 180%;
   --gl-ring: rgb(255 255 255 / .08);
   --gl-rim: none;
   --gl-rim-in: 0 0 #0000;
@@ -161,9 +158,6 @@
   --gl-g-thin: .70;
   --gl-g-regular: .78;
   --gl-g-thick: .88;
-  --gl-blur: 30px;
-  --gl-blur-thick: 30px;
-  --gl-sat: 125%;
   --gl-ring: rgb(0 0 0 / .20);
   --gl-rim: none;
   --gl-rim-in: inset 0 0 0 1px rgb(255 255 255 / .06);
@@ -188,9 +182,6 @@
   --gl-g-thin: .74;
   --gl-g-regular: .80;
   --gl-g-thick: .88;
-  --gl-blur: 30px;
-  --gl-blur-thick: 30px;
-  --gl-sat: 125%;
   --gl-ring: rgb(0 0 0 / .06);
   --gl-rim: none;
   --gl-rim-in: inset 0 0 0 1px rgb(255 255 255 / .5);

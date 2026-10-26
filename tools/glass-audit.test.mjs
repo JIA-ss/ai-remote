@@ -1,6 +1,6 @@
 // The glass audit's static lint (tools/desktop-ui-smoke.py --lint): what Firefox-based Camofox cannot
-// see at runtime, a literal -webkit-backdrop-filter before every backdrop-filter and the
-// data-material gate on every blurring rule. Fixture sheets only, so the result does not depend on
+// see at runtime, a literal -webkit-backdrop-filter before every backdrop-filter, a literal unprefixed
+// value (the minifier folds the pair into it) and the data-material gate on every blurring rule. Fixture sheets only, so the result does not depend on
 // the state of the real style sheets.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -28,11 +28,11 @@ function lint(css) {
 
 test("a gated rule with the literal prefixed declaration first passes", () => {
   const { status, out } = lint(`/* a brace in a comment { */
-${GATE} .a { color: red; -webkit-backdrop-filter: blur(4px) saturate(1.8); backdrop-filter: var(--gl-blur); }
+${GATE} .a { color: red; -webkit-backdrop-filter: blur(4px) saturate(1.8); backdrop-filter: blur(4px) saturate(1.8); }
 ${GATE}[data-os="windows"] :is(.b, .c) { -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
 .d { -webkit-backdrop-filter: none; backdrop-filter: none; }`);
   assert.equal(status, 0, out);
-  assert.match(out, /^4 checks passed$/m);
+  assert.match(out, /^6 checks passed$/m);
 });
 
 test("a missing or var() prefixed declaration fails", () => {
@@ -43,7 +43,8 @@ ${GATE} .c { backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px); }`)
   assert.match(out, /FAIL lint prefixed literal -webkit-backdrop-filter first: .*\.a/);
   assert.match(out, /FAIL lint prefixed literal -webkit-backdrop-filter first: .*\.b/);
   assert.match(out, /FAIL lint prefixed literal -webkit-backdrop-filter first: .*\.c/);
-  assert.match(out, /^3 checks passed, 3 failed$/m);
+  assert.match(out, /FAIL lint unprefixed backdrop-filter literal too: .*\.b/);
+  assert.match(out, /^5 checks passed, 4 failed$/m);
 });
 
 test("every selector of a blurring rule must be gated, also inside at-rules", () => {
@@ -54,5 +55,12 @@ test("every selector of a blurring rule must be gated, also inside at-rules", ()
   assert.equal(status, 1, out);
   assert.match(out, /FAIL lint gated on data-material: .*\.plain .*"ungated": \["\.plain"\]/);
   assert.match(out, /"ungated": \["\.leak:is\(\.x, \.y\)"\]/);
-  assert.match(out, /^2 checks passed, 2 failed$/m);
+  assert.match(out, /^4 checks passed, 2 failed$/m);
+});
+
+test("a var() in the unprefixed declaration fails even with the literal prefixed one first", () => {
+  const { status, out } = lint(`${GATE} .a { -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(var(--r, 24px)); }`);
+  assert.equal(status, 1, out);
+  assert.match(out, /FAIL lint unprefixed backdrop-filter literal too: .*\.a/);
+  assert.match(out, /^2 checks passed, 1 failed$/m);
 });
