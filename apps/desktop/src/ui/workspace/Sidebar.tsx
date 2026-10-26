@@ -6,25 +6,43 @@
 // dot that turns into "…" on hover. A right click or "…" opens the row's menu; a group header has its
 // own (new session there, copy the path, collapse the others — also Alt+click).
 
-import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Plus, Search, Settings } from "lucide-react";
+import { ChevronRight, CodeXml, GitBranch, ListFilter, MoreHorizontal, Pin, Plus, Search, Settings } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { folderName, knownHome } from "../../lib/chat";
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { Computer } from "../../lib/store";
-import { EMPTY_SELECTION, readLocked as batchReadLocked, runBatch, selectRow, undoBatch, type BatchKind, type BatchResult, type RowSelection } from "../../lib/workspace-batch";
+import { EMPTY_SELECTION, readLocked as batchReadLocked, runBatch, selectRow, undoBatch, type BatchChange, type BatchKind, type BatchResult, type RowSelection } from "../../lib/workspace-batch";
 import {
   aggregateDot,
+  createGroup,
+  customSections,
   dateBuckets,
+  DEFAULT_DISPLAY,
   DEFAULT_LIST,
+  deleteGroup,
+  EMPTY_GROUPS,
   descendants,
   familySummary,
   inFamily,
   nestFamilies,
   groupSessions,
   isAscending,
+  isDefaultDisplay,
   isDefaultList,
   isFiltered,
+  metaLine,
+  MOVE_MAX,
+  moveGroup,
+  moveKey,
+  moveToGroup,
+  normalizeDisplay,
   normalizeList,
+  olderSessions,
+  orderBy,
+  placeKeys,
+  renameGroup,
+  restoreGroup,
+  undoMove,
   rowsBeforeMore,
   SESSION_JUMP,
   sessionJumpChord,
@@ -35,8 +53,11 @@ import {
   stateBuckets,
   truncateGroup,
   withAscending,
+  type CustomGroup,
   type DayBucket,
   type FamilyNode,
+  type Density,
+  type DisplayPrefs,
   type GroupBy,
   type ListPrefs,
   type Place,
@@ -58,8 +79,17 @@ const FAMILIES = "ai-remote.ws.families";
 const FAMILY_GUARD_MS = 500;
 /** How the list groups, sorts and filters (SB-46). */
 const LIST = "ai-remote.ws.list";
+/** Density and the metadata line (SB-04 / SB-28), kept apart from the list settings. */
+const DISPLAY = "ai-remote.ws.display";
 const PINNED_KEY = "pinned";
 const ALL_KEY = "all";
+/** The custom grouping's sections: one per group made here, then the sessions in none. */
+const customKey = (id: string) => `custom:${id}`;
+const UNGROUPED_KEY = "custom:";
+/** A drag starts once the pointer has moved this far (px) from where it went down. */
+const DRAG_START = 4;
+/** A new group's id: unique on this device. */
+const newGroupId = () => `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 /** SB-41: number the rows actually drawn by the current grouping (not rows behind Show more). */
 function useSessionJumps(list: RefObject<HTMLDivElement | null>, disabled: boolean, onOpen: (key: string) => void): string[] {
@@ -181,6 +211,14 @@ function readCollapsed(): Set<string> {
   }
 }
 
+function readDisplay(): DisplayPrefs {
+  try {
+    return normalizeDisplay(JSON.parse(localStorage.getItem(DISPLAY) ?? "null"));
+  } catch {
+    return DEFAULT_DISPLAY;
+  }
+}
+
 function readList(): ListPrefs {
   try {
     return normalizeList(JSON.parse(localStorage.getItem(LIST) ?? "null"));
@@ -215,7 +253,35 @@ interface Shown {
   title?: string;
   /** A folder group: where `+` starts a session, and whether the computer is this one. */
   place?: Place & { local: boolean };
+  /** A group made here (the custom grouping), or the sessions in none of them. */
+  custom?: CustomGroup;
+  ungrouped?: boolean;
+  /** The date grouping's "Older" bucket, with its bulk action (SB-38). */
+  older?: boolean;
+  /** The state grouping's "Needs you": its rows need not say they are blocked (SB-28). */
+  blocked?: boolean;
   items: WsItem[];
+}
+
+/** Where a dragged row or group would land (SB-42). */
+type DropTarget =
+  | { type: "pin"; before: number }
+  | { type: "group"; id: string }
+  | { type: "ungroup" }
+  | { type: "unpin" }
+  | { type: "order"; before: number };
+
+interface DragState {
+  kind: "row" | "group";
+  /** The rows dragged (the selection when the row is in it), or the group's id. */
+  keys: string[];
+  /** The rows were all pinned when the drag started. */
+  fromPinned: boolean;
+  x: number;
+  y: number;
+  target: DropTarget | null;
+  /** The insertion line, in the list's scrolled coordinates. */
+  line: number | null;
 }
 
 const dayLabel = (b: DayBucket<WsItem>) =>
@@ -265,9 +331,24 @@ export function Sidebar(p: SidebarProps) {
   useEffect(() => workspace.setArchived(prefs.status !== "active"), [prefs.status]);
   const all = useMemo(() => workspace.items(), [p.snap]);
   const items = useMemo(() => all.filter((x) => shownByStatus(x.meta, prefs.status)), [all, prefs.status]);
+  const [display, setDisplayState] = useState(readDisplay);
+  const setDisplay = (change: Partial<DisplayPrefs> | ((d: DisplayPrefs) => DisplayPrefs)) =>
+    setDisplayState((prev) => {
+      const next = typeof change === "function" ? change(prev) : { ...prev, ...change };
+      try {
+        localStorage.setItem(DISPLAY, JSON.stringify(next));
+      } catch {
+        // Kept for this run only.
+      }
+      return next;
+    });
+  // A snapshot from before groups existed (a test fixture) has none.
+  const groupsState = p.snap.groups ?? EMPTY_GROUPS;
   const { pinned, groups } = useMemo(() => {
     const pinnedOf = (x: WsItem) => workspace.isPinned(x);
     const g = groupSessions(items, { pinned: pinnedOf, title: titleOf, home: knownHome, sort: prefs.sort, reversed: prefs.reversed });
+    // SB-42: pins in the order they were dragged into; others follow in the list's order.
+    g.pinned = orderBy(g.pinned, groupsState.pinOrder, (x) => x.key);
     if (prefs.groupBy === "project") {
       const shown: Shown[] = g.groups.map((x) => ({
         key: x.key,
@@ -285,16 +366,23 @@ export function Sidebar(p: SidebarProps) {
       prefs.reversed,
     );
     let shown: Shown[];
-    if (prefs.groupBy === "date") {
+    if (prefs.groupBy === "custom") {
+      // SB-08: a section per group made here (empty ones too: something can be dropped there), then the rest.
+      const { sections, rest: loose } = customSections(rest, groupsState);
+      shown = [
+        ...sections.map(({ group, items: xs }) => ({ key: customKey(group.id), label: group.name, custom: group, items: xs })),
+        { key: UNGROUPED_KEY, label: t("ws_ungrouped"), ungrouped: true, items: loose },
+      ];
+    } else if (prefs.groupBy === "date") {
       const by = prefs.sort === "created" ? "started_at" : "last_activity";
-      shown = dateBuckets(rest, Date.now(), by, prefs.sort !== "alpha" && isAscending(prefs)).map((b) => ({ key: `date:${b.key}`, label: dayLabel(b), items: b.items }));
+      shown = dateBuckets(rest, Date.now(), by, prefs.sort !== "alpha" && isAscending(prefs)).map((b) => ({ key: `date:${b.key}`, label: dayLabel(b), older: b.kind === "older", items: b.items }));
     } else if (prefs.groupBy === "state") {
-      shown = stateBuckets(rest, (x) => stateBucket(x.meta, workspace.dot(x))).map((b) => ({ key: `state:${b.key}`, label: t(`ws_state_${b.key}` as Key), items: b.items }));
+      shown = stateBuckets(rest, (x) => stateBucket(x.meta, workspace.dot(x))).map((b) => ({ key: `state:${b.key}`, label: t(`ws_state_${b.key}` as Key), blocked: b.key === "blocked", items: b.items }));
     } else {
       shown = rest.length ? [{ key: ALL_KEY, label: t("ws_sessions_head"), items: rest }] : [];
     }
     return { pinned: g.pinned, groups: shown };
-  }, [items, p.snap.pins, prefs]);
+  }, [items, p.snap.pins, prefs, groupsState]);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   // SB-29: whose forks are hidden; the arrow ignores a second click within 500 ms.
   const [folds, setFolds] = useState(readFamilies);
@@ -327,6 +415,18 @@ export function Sidebar(p: SidebarProps) {
   const [selection, setSelection] = useState<RowSelection>(EMPTY_SELECTION);
   const [batchBusy, setBatchBusy] = useState(false);
   const batchQueue = useRef(Promise.resolve());
+  // Groups made here (SB-08 / SB-36): "Move to group" for some rows, a header being named or renamed,
+  // the confirm steps of deleting a group and of the "Older" bucket's archive (SB-38), and a drag (SB-42).
+  const [moveMenu, setMoveMenu] = useState<{ keys: string[]; at: MenuAt } | null>(null);
+  const [creating, setCreating] = useState<{ keys: string[] } | null>(null);
+  const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [olderMenu, setOlderMenu] = useState<{ key: string; at: MenuAt } | null>(null);
+  const [confirmOlder, setConfirmOlder] = useState(false);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  /** When a drag last ended: the click that follows it does not open or fold anything. */
+  const dragEnded = useRef(0);
   const clearSelection = () => setSelection((s) => s.keys.length ? EMPTY_SELECTION : s);
   useEffect(() => {
     const valid = new Set(items.map((x) => x.key));
@@ -359,7 +459,7 @@ export function Sidebar(p: SidebarProps) {
       }
       if (e.key !== "Escape") return;
       e.preventDefault(); e.stopPropagation();
-      setSelection(EMPTY_SELECTION); setMenu(null); setGroupMenu(null); setListMenu(null);
+      setSelection(EMPTY_SELECTION); setMenu(null); setGroupMenu(null); setListMenu(null); setMoveMenu(null);
     };
     window.addEventListener("keydown", escape, true);
     return () => window.removeEventListener("keydown", escape, true);
@@ -368,7 +468,7 @@ export function Sidebar(p: SidebarProps) {
   // once), gone 200 ms after the pointer leaves; not while a menu is open or a row is being renamed.
   const [card, setCard] = useState<{ key: string; rect: DOMRect } | null>(null);
   const cardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const quiet = !!menu || !!groupMenu || !!listMenu || !!p.renaming;
+  const quiet = !!menu || !!groupMenu || !!listMenu || !!moveMenu || !!olderMenu || !!drag || !!renamingGroup || !!creating || !!p.renaming;
   const hoverRow = (key: string | null, el?: HTMLElement) => {
     if (cardTimer.current) clearTimeout(cardTimer.current);
     if (key && el && !quiet) cardTimer.current = setTimeout(() => setCard({ key, rect: el.getBoundingClientRect() }), card ? 0 : 500);
@@ -435,8 +535,273 @@ export function Sidebar(p: SidebarProps) {
     return [
       action("pin", !pinned, t(pinned ? "ws_batch_unpin" : "ws_batch_pin", { n }), "p"),
       action("read", !read, t(read ? "ws_batch_unread" : "ws_batch_read", { n }), "u", selectedItems.some(batchReadLocked)),
+      {
+        key: "batch-move", label: t("ws_move_n_to_group", { n }), disabled: batchBusy || n > MOVE_MAX,
+        note: batchBusy ? t("ws_batch_busy") : t("ws_move_too_many", { n: MOVE_MAX }),
+        run: () => { const keys = selectedItems.map((x) => x.key); const at = menu?.at; clearSelection(); if (at) setMoveMenu({ keys, at }); },
+      },
       "sep", action("archive", !archived, t(archived ? "ws_batch_unarchive" : "ws_batch_archive", { n }), "a"),
     ];
+  };
+
+  // ---- Groups made here, pins in their order, and dragging (SB-08 / SB-15 / SB-36 / SB-38 / SB-42) ----
+  const pinnedKeys = pinned.map((x) => x.key);
+  const failToast = (e: unknown) => p.toast({ text: t("ws_failed", { error: String((e as Error)?.message ?? e) }), tone: "error" });
+  // After the change is drawn (a timer, not a frame: a hidden window draws no frames).
+  const refocus = (selector: string) => setTimeout(() => list.current?.querySelector<HTMLElement>(selector)?.focus(), 0);
+  /** Pins or unpins rows through the batch path (it keeps an old host's pins here); what changed, for an undo. */
+  const setPinned = (keys: string[], on: boolean): Promise<BatchChange[]> => {
+    const rows = keys.flatMap((k) => {
+      const x = byKey.get(k);
+      return x && workspace.isPinned(x) !== on ? [{ ...x, meta: { ...x.meta } }] : [];
+    });
+    if (!rows.length) return Promise.resolve([]);
+    return runBatch(workspace, rows, "pin", on).then(
+      (r) => {
+        if (r.failures.length) p.toast({ text: r.failures.slice(0, 3).map((f) => `${f.title}: ${batchError(f.error)}`).join("; "), tone: "error" });
+        return r.successes;
+      },
+      (e) => {
+        failToast(e);
+        return [];
+      },
+    );
+  };
+  /**
+   * SB-36: rows into a group (`null`: out of theirs). A pinned row moved into a group is unpinned, so the
+   * move shows; taken out of a group it keeps its pin (`unpin` says otherwise, for a row dragged out of
+   * Pinned). The list switches to the custom grouping, where groups show. A toast says it, with an undo.
+   */
+  const moveRows = (keys: string[], id: string | null, unpin = id !== null) => {
+    if (!keys.length) return;
+    const { state, moved } = moveToGroup(workspace.get().groups, keys, id);
+    const pins = unpin && keys.some((k) => { const x = byKey.get(k); return !!x && workspace.isPinned(x); });
+    if (!moved.length && !pins) return;
+    workspace.setGroups(state);
+    if (id !== null) setPrefs((q) => (q.groupBy === "custom" ? q : { ...q, groupBy: "custom" }));
+    const unpinned = pins ? setPinned(keys, false) : Promise.resolve([] as BatchChange[]);
+    // Only unpinned (dragged out of Pinned, in no group): the row moving down says it.
+    if (!moved.length) return;
+    const one = keys.length === 1 ? byKey.get(keys[0]) : undefined;
+    const group = state.groups.find((g) => g.id === id)?.name ?? "";
+    const text = id !== null
+      ? one ? t("ws_moved_one", { title: titleOf(one), group }) : t("ws_moved_many", { n: keys.length, group })
+      : one ? t("ws_removed_one", { title: titleOf(one) }) : t("ws_removed_many", { n: keys.length });
+    let undone = false;
+    p.toast({
+      text,
+      action: {
+        label: t("ws_undo"),
+        run: () => {
+          if (undone) return;
+          undone = true;
+          workspace.setGroups(undoMove(workspace.get().groups, moved));
+          void unpinned.then((changes) => (changes.length ? undoBatch(workspace, changes) : undefined)).catch(failToast);
+        },
+      },
+    });
+  };
+  /** Rows pinned before the pinned row at `before` (a drop on Pinned); already pinned ones just move there. */
+  const pinRows = (keys: string[], before: number) => {
+    workspace.setGroups({ ...workspace.get().groups, pinOrder: placeKeys(pinnedKeys, keys, before) });
+    void setPinned(keys, true);
+  };
+  /** ⌥↑ / ⌥↓ (and the menu): a pinned row one place up or down. */
+  const stepPinned = (key: string, by: -1 | 1) => {
+    const i = pinnedKeys.indexOf(key);
+    if (i < 0 || i + by < 0 || i + by >= pinnedKeys.length) return;
+    workspace.setGroups({ ...workspace.get().groups, pinOrder: moveKey(pinnedKeys, key, by < 0 ? i - 1 : i + 2) });
+    refocus(`[data-pin-zone] [data-row-key="${CSS.escape(key)}"] .ws-row-main`);
+  };
+  /** SB-15: a group made here one place up or down (⌥↑ / ⌥↓ on its header, or its menu). */
+  const stepGroup = (id: string, by: -1 | 1) => {
+    const ids = workspace.get().groups.groups.map((g) => g.id);
+    const i = ids.indexOf(id);
+    if (i < 0 || i + by < 0 || i + by >= ids.length) return;
+    workspace.setGroups(moveGroup(workspace.get().groups, id, by < 0 ? i - 1 : i + 2));
+    refocus(`[data-custom-group="${CSS.escape(id)}"] .ws-gh-toggle`);
+  };
+  /** "New group…": a header to name it in, in the custom grouping; the rows in `keys` then move into it. */
+  const startCreate = (keys: string[] = []) => {
+    setPrefs((q) => (q.groupBy === "custom" ? q : { ...q, groupBy: "custom" }));
+    setMenu(null);
+    setMoveMenu(null);
+    setGroupMenu(null);
+    setListMenu(null);
+    setCreating({ keys });
+  };
+  const finishCreate = (name: string | null) => {
+    const keys = creating?.keys ?? [];
+    setCreating(null);
+    const made = name === null ? null : createGroup(workspace.get().groups, name, newGroupId());
+    if (!made) return;
+    workspace.setGroups(made.state);
+    if (keys.length) moveRows(keys, made.group.id);
+    refocus(`[data-custom-group="${CSS.escape(made.group.id)}"] .ws-gh-toggle`);
+  };
+  const finishRenameGroup = (id: string, name: string | null) => {
+    setRenamingGroup(null);
+    if (name !== null) workspace.setGroups(renameGroup(workspace.get().groups, id, name));
+    refocus(`[data-custom-group="${CSS.escape(id)}"] .ws-gh-toggle`);
+  };
+  /** SB-08: a group deleted; its sessions go back to Ungrouped. The toast's Undo puts it all back. */
+  const removeGroup = (id: string) => {
+    const { state, undo } = deleteGroup(workspace.get().groups, id);
+    if (!undo) return;
+    workspace.setGroups(state);
+    let undone = false;
+    p.toast({
+      text: t("ws_group_deleted", { group: undo.group.name, n: undo.members.length }),
+      action: { label: t("ws_undo"), run: () => { if (!undone) { undone = true; workspace.setGroups(restoreGroup(workspace.get().groups, undo)); } } },
+    });
+  };
+  /** SB-36: the groups (digits 1–9 in order), then "Remove from …" when any row is in one, then "New group…". */
+  const moveMenuItems = (keys: string[]): MenuLine[] => {
+    const lines: MenuLine[] = [];
+    let n = 0;
+    const digit = () => (++n <= 9 ? String(n) : undefined);
+    const tooMany = keys.length > MOVE_MAX;
+    const note = tooMany ? t("ws_move_too_many", { n: MOVE_MAX }) : undefined;
+    for (const g of groupsState.groups) {
+      lines.push({ key: `to-${g.id}`, label: g.name, letter: digit(), checked: keys.every((k) => groupsState.members[k] === g.id), disabled: tooMany, note, run: () => moveRows(keys, g.id) });
+    }
+    const inGroups = [...new Set(keys.map((k) => groupsState.members[k]).filter((id): id is string => !!id && groupsState.groups.some((g) => g.id === id)))];
+    if (inGroups.length) {
+      const only = inGroups.length === 1 && keys.every((k) => groupsState.members[k] === inGroups[0]) ? groupsState.groups.find((g) => g.id === inGroups[0])?.name : undefined;
+      lines.push("sep", { key: "out", label: only ? t("ws_remove_from", { group: only }) : t("ws_remove_from_groups"), letter: digit(), run: () => moveRows(keys, null, false) });
+    }
+    if (lines.length) lines.push("sep");
+    lines.push({ key: "new-group", label: t("ws_new_group"), letter: digit(), disabled: tooMany, note, run: () => startCreate(keys) });
+    return lines;
+  };
+  /** SB-38: the "Older" bucket's bulk archive — sessions a week or more old, confirmed by a second click. */
+  const olderItems = (key: string): MenuLine[] => {
+    const g = groups.find((x) => x.key === key);
+    const old = g ? olderSessions(g.items, Date.now()) : [];
+    if (!old.length) return [{ key: "older-none", label: t("ws_older_none"), disabled: true, run: () => undefined }];
+    return [{
+      key: "older-archive",
+      label: confirmOlder ? t("ws_older_archive_confirm", { n: old.length }) : t("ws_older_archive", { n: old.length }),
+      danger: true,
+      keep: !confirmOlder,
+      disabled: batchBusy,
+      note: t("ws_batch_busy"),
+      run: () => {
+        if (!confirmOlder) { setConfirmOlder(true); return; }
+        setConfirmOlder(false);
+        const chosen = old.map((x) => ({ ...x, meta: { ...x.meta } }));
+        dispatchBatch(() => runBatch(workspace, chosen, "archive", true), t("ws_older_label"), true);
+      },
+    }];
+  };
+
+  /** SB-42: what a drag would land on at a point — Pinned (with its insertion line), a group, Ungrouped, out of Pinned, or a group's new place. */
+  const dropAt = (d: DragState, x: number, y: number): Pick<DragState, "target" | "line"> => {
+    const box = list.current;
+    const none = { target: null, line: null };
+    if (!box) return none;
+    const r = box.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return none;
+    const at = (el: Element, edge: "top" | "bottom") => el.getBoundingClientRect()[edge] - r.top + box.scrollTop;
+    const lineBefore = (els: Element[], before: number) => (before < els.length ? at(els[before], "top") - 1 : at(els[els.length - 1], "bottom") + 1);
+    const beforeOf = (els: Element[]) => {
+      const i = els.findIndex((el) => { const b = el.getBoundingClientRect(); return y < b.top + b.height / 2; });
+      return i < 0 ? els.length : i;
+    };
+    if (d.kind === "group") {
+      const secs = [...box.querySelectorAll("[data-custom-group]")];
+      if (!secs.length) return none;
+      const before = beforeOf(secs);
+      return { target: { type: "order", before }, line: lineBefore(secs, before) };
+    }
+    const el = document.elementFromPoint(x, y);
+    const zone = el?.closest("[data-pin-zone]");
+    if (zone && box.contains(zone)) {
+      const rows = [...zone.querySelectorAll(".ws-row[data-row-key]")];
+      if (el?.closest("[data-drop=pin]") || !rows.length) return { target: { type: "pin", before: 0 }, line: null };
+      const before = beforeOf(rows);
+      return { target: { type: "pin", before }, line: lineBefore(rows, before) };
+    }
+    const custom = el?.closest<HTMLElement>("[data-custom-group]");
+    if (custom?.dataset.customGroup && box.contains(custom)) return { target: { type: "group", id: custom.dataset.customGroup }, line: null };
+    if (el?.closest("[data-ungrouped]")) return { target: { type: "ungroup" }, line: null };
+    if (d.fromPinned && el && box.contains(el)) return { target: { type: "unpin" }, line: null };
+    return none;
+  };
+  const drop = (d: DragState) => {
+    const target = d.target;
+    if (!target) return;
+    if (d.kind === "group") {
+      if (target.type === "order") workspace.setGroups(moveGroup(workspace.get().groups, d.keys[0], target.before));
+      return;
+    }
+    if (target.type === "pin") pinRows(d.keys, target.before);
+    else if (target.type === "group") moveRows(d.keys, target.id);
+    else if (target.type === "ungroup") moveRows(d.keys, null, d.fromPinned);
+    else if (target.type === "unpin") void setPinned(d.keys, false);
+  };
+  /**
+   * A row (or a group's header) pressed with the mouse or a pen: past 4 px it is dragged. The selection
+   * goes along when the row is in it. Esc, losing the window or a cancelled pointer drop nothing; the
+   * click after a drag is swallowed.
+   */
+  const startDrag = (e: React.PointerEvent, kind: DragState["kind"], key: string) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.pointerType === "touch" || p.renaming || renamingGroup || creating) return;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let started = false;
+    const stop = () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("keydown", escape, true);
+      window.removeEventListener("blur", cancel);
+      if (started) dragEnded.current = Date.now();
+      dragRef.current = null;
+      setDrag(null);
+    };
+    const move = (ev: PointerEvent) => {
+      if (!started) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < DRAG_START) return;
+        started = true;
+        const keys = kind === "row" && selection.keys.length > 1 && selection.keys.includes(key) ? selection.keys.filter((k) => byKey.has(k)) : [key];
+        const fromPinned = kind === "row" && keys.every((k) => { const x = byKey.get(k); return !!x && workspace.isPinned(x); });
+        dragRef.current = { kind, keys, fromPinned, x: ev.clientX, y: ev.clientY, target: null, line: null };
+        setMenu(null);
+        setGroupMenu(null);
+        setListMenu(null);
+        setMoveMenu(null);
+        setOlderMenu(null);
+      }
+      ev.preventDefault();
+      const d = dragRef.current;
+      if (!d) return;
+      const box = list.current;
+      if (box) {
+        const r = box.getBoundingClientRect();
+        if (ev.clientY < r.top + 24) box.scrollTop -= 8;
+        else if (ev.clientY > r.bottom - 24) box.scrollTop += 8;
+      }
+      dragRef.current = { ...d, x: ev.clientX, y: ev.clientY, ...dropAt(d, ev.clientX, ev.clientY) };
+      setDrag(dragRef.current);
+    };
+    const up = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      stop();
+      if (d) drop({ ...d, ...dropAt(d, ev.clientX, ev.clientY) });
+    };
+    const cancel = () => stop();
+    const escape = (ev: globalThis.KeyboardEvent) => {
+      if (ev.key !== "Escape" || !started) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      stop();
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("keydown", escape, true);
+    window.addEventListener("blur", cancel);
   };
 
   const saveCollapsed = (next: Set<string>) => {
@@ -473,6 +838,20 @@ export function Sidebar(p: SidebarProps) {
     const nav = [...(list.current?.querySelectorAll<HTMLElement>("[data-ws-nav]") ?? [])];
     const i = nav.indexOf(document.activeElement as HTMLElement);
     const from = nav[i]?.closest<HTMLElement>("[data-row-key]")?.dataset.rowKey ?? null;
+    // SB-42 / SB-15 by keyboard: ⌥↑ / ⌥↓ move a pinned row within Pinned, or a group made here among the groups.
+    if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const by = e.key === "ArrowUp" ? -1 : 1;
+      const el = document.activeElement as HTMLElement | null;
+      const custom = el?.matches(".ws-gh-toggle") ? el.closest<HTMLElement>("[data-custom-group]")?.dataset.customGroup : undefined;
+      if (from && pinnedKeys.includes(from) && el?.closest("[data-pin-zone]")) {
+        e.preventDefault();
+        stepPinned(from, by);
+      } else if (custom) {
+        e.preventDefault();
+        stepGroup(custom, by);
+      }
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     let next = -1;
     if (e.key === "ArrowDown") next = (i + 1) % nav.length;
@@ -528,11 +907,24 @@ export function Sidebar(p: SidebarProps) {
       dot === "failed"
         ? { key: "done", label: t("ws_mark_done"), letter: "u", run: () => markDone(x, ctx) }
         : { key: "read", label: t(unread ? "ws_mark_read" : "ws_mark_unread"), letter: "u", disabled: readLocked(x), note: t("ws_read_busy"), run: () => toggleRead(x) };
+    // SB-35's "organize": order within Pinned, and Move to group (SB-36).
+    const pinAt = pinnedKeys.indexOf(x.key);
+    const organize: MenuLine[] = [
+      ...(pinAt >= 0
+        ? [
+            { key: "pin-up", label: t("ws_pinned_up"), disabled: pinAt === 0, run: () => stepPinned(x.key, -1) },
+            { key: "pin-down", label: t("ws_pinned_down"), disabled: pinAt === pinnedKeys.length - 1, run: () => stepPinned(x.key, 1) },
+          ]
+        : []),
+      { key: "move", label: t("ws_move_to_group"), run: () => { const at = menu?.at; if (at) setMoveMenu({ keys: [x.key], at }); } },
+    ];
     return [
       { key: "pin", label: t(workspace.isPinned(x) ? "ws_unpin" : "ws_pin"), letter: "p", run: () => togglePin(x, ctx) },
       read,
       { key: "rename", label: t("ws_rename"), letter: "r", disabled: old, note: oldNote, run: () => p.setRenaming(x.key) },
       forkItem(x, ctx),
+      "sep",
+      ...organize,
       "sep",
       { key: "archive", label: t("ws_archive"), letter: "a", disabled: old, note: oldNote, run: () => archive(x, ctx) },
       ...(x.meta.state === "ended" ? [] : [endItem(x)]),
@@ -574,11 +966,40 @@ export function Sidebar(p: SidebarProps) {
         "sep",
       );
     }
+    // A group made here (SB-45): rename in place, its place among the groups (SB-15), a new one; delete at the end.
+    const custom = g?.custom;
+    const order = groupsState.groups.findIndex((x) => x.id === custom?.id);
+    if (custom) {
+      lines.push(
+        { key: "rename-group", label: t("ws_group_rename"), letter: "r", run: () => setRenamingGroup(custom.id) },
+        { key: "group-up", label: t("ws_group_up"), disabled: order <= 0, run: () => stepGroup(custom.id, -1) },
+        { key: "group-down", label: t("ws_group_down"), disabled: order >= groupsState.groups.length - 1, run: () => stepGroup(custom.id, 1) },
+        "sep",
+      );
+    }
+    if (custom || g?.ungrouped) lines.push({ key: "new-group", label: t("ws_new_group"), run: () => startCreate() }, "sep");
     const keys = [...(pinned.length ? [PINNED_KEY] : []), ...groups.map((x) => x.key)];
     lines.push(
       { key: "fold", label: t("ws_fold_others"), disabled: keys.every((k) => k === key || collapsed.has(k)), run: () => toggleGroup(key, true) },
       { key: "unfold", label: t("ws_expand_all"), disabled: !keys.some((k) => collapsed.has(k)), run: () => saveCollapsed(new Set()) },
     );
+    if (g?.older) lines.push("sep", ...olderItems(g.key));
+    if (custom) {
+      lines.push("sep", {
+        key: "delete-group",
+        label: confirmDelete === custom.id ? t("ws_group_delete_confirm") : t("ws_group_delete"),
+        letter: "d",
+        danger: true,
+        keep: confirmDelete !== custom.id,
+        run: () => {
+          if (confirmDelete !== custom.id) setConfirmDelete(custom.id);
+          else {
+            setConfirmDelete(null);
+            removeGroup(custom.id);
+          }
+        },
+      });
+    }
     return lines;
   };
 
@@ -590,11 +1011,14 @@ export function Sidebar(p: SidebarProps) {
     const sortBy = (v: SortMode, k: Key) => choice(`s-${v}`, t(k), prefs.sort === v, () => setPrefs({ sort: v, reversed: false }));
     const status = (v: StatusFilter, k: Key) => choice(`f-${v}`, t(k), prefs.status === v, () => setPrefs({ status: v }));
     const asc = isAscending(prefs);
+    const density = (v: Density, k: Key) => choice(`d-${v}`, t(k), display.density === v, () => setDisplay({ density: v }));
     return [
       { key: "select-all", label: t("ws_select_all"), disabled: !!selectAllNote, note: selectAllNote, run: selectAll },
+      { key: "new-group", label: t("ws_new_group"), run: () => startCreate() },
       "sep",
       { heading: t("ws_group_by") },
       groupBy("project", "ws_group_project"),
+      groupBy("custom", "ws_group_custom"),
       groupBy("date", "ws_group_date"),
       groupBy("state", "ws_group_state"),
       groupBy("none", "ws_group_none"),
@@ -612,17 +1036,36 @@ export function Sidebar(p: SidebarProps) {
       status("archived", "ws_status_archived"),
       status("all", "ws_status_all"),
       "sep",
-      { key: "reset", label: t("ws_list_reset"), disabled: isDefaultList(prefs), note: t("ws_list_reset_none"), run: () => setPrefs(() => DEFAULT_LIST) },
+      // SB-04 / SB-28: how rows are drawn.
+      { heading: t("ws_rows_head") },
+      density("compact", "ws_density_compact"),
+      density("comfortable", "ws_density_comfortable"),
+      { ...choice("meta", t("ws_show_meta"), display.meta, () => setDisplay((d) => ({ ...d, meta: !d.meta }))), detail: t("ws_show_meta_detail") },
+      "sep",
+      {
+        key: "reset",
+        label: t("ws_list_reset"),
+        disabled: isDefaultList(prefs) && isDefaultDisplay(display),
+        note: t("ws_list_reset_none"),
+        run: () => {
+          setPrefs(() => DEFAULT_LIST);
+          setDisplay(() => DEFAULT_DISPLAY);
+        },
+      },
     ];
   };
 
-  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean; depth?: number; family?: { open: boolean; onToggle: (guarded?: boolean) => void } } = {}) => (
+  const row = (x: WsItem, opts: { lead?: boolean; env?: boolean; groupFolder?: string; blocked?: boolean; depth?: number; family?: { open: boolean; onToggle: (guarded?: boolean) => void } } = {}) => (
     <Row
       key={x.key}
       item={x}
       lead={opts.lead}
       depth={opts.depth ?? 0}
       family={opts.family}
+      metaOn={display.meta}
+      meta={display.meta ? metaLine(x.meta, { groupFolder: opts.groupFolder, underBlocked: opts.blocked, host: !x.local && prefs.groupBy !== "project" ? x.host : null }) : null}
+      dragging={!!drag && drag.kind === "row" && drag.keys.includes(x.key)}
+      onDragStart={(e) => startDrag(e, "row", x.key)}
       jump={jumps.indexOf(x.key) + 1 || undefined}
       env={opts.env && !x.local ? (computer(x.host) ?? { os: null, online: x.online }) : null}
       selected={x.key === p.current}
@@ -657,7 +1100,7 @@ export function Sidebar(p: SidebarProps) {
 
   // SB-29: a session, then (while not hidden) its forks indented under it with the guide line; hidden
   // forks leave one line saying how many there are, and how many failed, are unread or run.
-  const family = (n: FamilyNode<WsItem>, depth: number, opts: { env?: boolean }): ReactNode => {
+  const family = (n: FamilyNode<WsItem>, depth: number, opts: { env?: boolean; groupFolder?: string; blocked?: boolean }): ReactNode => {
     const key = n.item.key;
     if (!n.children.length) return row(n.item, { ...opts, depth });
     const open = !folds.has(key);
@@ -702,9 +1145,27 @@ export function Sidebar(p: SidebarProps) {
   // SB-47: off the folder grouping (where the header names the computer), rows from other computers carry its mark.
   const envRows = prefs.groupBy !== "project";
   const listLabel = filtered ? t("ws_group_sort_on") : t("ws_group_sort");
+  // While a row that is not pinned is dragged, Pinned shows its drop row (and appears when empty).
+  const pinDrop = !!drag && drag.kind === "row" && !drag.fromPinned;
+  const overPinRow = drag?.target?.type === "pin" && drag.line === null;
+  const dragTitle = drag ? (drag.kind === "group" ? (groupsState.groups.find((g) => g.id === drag.keys[0])?.name ?? "") : drag.keys.length > 1 ? t("ws_drag_count", { n: drag.keys.length }) : byKey.get(drag.keys[0]) ? titleOf(byKey.get(drag.keys[0]) as WsItem) : "") : "";
+  const dragHint = !drag?.target
+    ? null
+    : drag.target.type === "pin" ? t("ws_drop_pin_over")
+      : drag.target.type === "unpin" ? t("ws_drop_unpin")
+        : drag.target.type === "ungroup" ? t("ws_ungrouped")
+          : drag.target.type === "group" ? (groupsState.groups.find((g) => g.id === (drag.target as { id: string }).id)?.name ?? null)
+            : null;
+  const creatingHeader = creating && prefs.groupBy === "custom" && (
+    <div className="ws-sec ws-sec-new" data-group="custom:new">
+      <div className="ws-gh">
+        <RenameField initial="" label={t("ws_group_name_field")} className="ws-gh-rename" onDone={finishCreate} />
+      </div>
+    </div>
+  );
 
   return (
-    <nav ref={side} className="ws-side" aria-label={t("ws_sidebar")}>
+    <nav ref={side} className="ws-side" aria-label={t("ws_sidebar")} data-density={display.density} data-dragging={drag ? drag.kind : undefined}>
       <div className="ws-side-top" data-tauri-drag-region>
         {p.corner}
         <div className="ws-drag" data-tauri-drag-region />
@@ -729,7 +1190,21 @@ export function Sidebar(p: SidebarProps) {
         </span>
         <span>{t("ws_new")}</span>
       </button>
-      <div className="ws-list" ref={list} onKeyDown={onListKey} onScroll={() => card && setCard(null)} role="list" aria-label={t("ws_sessions")}>
+      <div
+        className="ws-list"
+        ref={list}
+        onKeyDown={onListKey}
+        onScroll={() => card && setCard(null)}
+        onClickCapture={(e) => {
+          // The click that ends a drag neither opens the row nor folds the group it was let go on.
+          if (Date.now() - dragEnded.current < 120) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        role="list"
+        aria-label={t("ws_sessions")}
+      >
         {noComputers ? (
           <div className="ws-list-empty">
             <p>{t("ws_no_computers")}</p>
@@ -745,7 +1220,7 @@ export function Sidebar(p: SidebarProps) {
         ) : !all.length && !notes.length && !filtered ? (
           <div className="ws-list-note">{t("ws_empty")}</div>
         ) : null}
-        {pinned.length > 0 && (
+        {(pinned.length > 0 || pinDrop) && (
           <Section
             id={PINNED_KEY}
             label={t("ws_pinned")}
@@ -755,11 +1230,23 @@ export function Sidebar(p: SidebarProps) {
             dot={aggregateDot(pinned.map((x) => workspace.dot(x)))}
             tabIndex={navIndex(`group:${PINNED_KEY}`)}
             onFocus={() => setFocusId(`group:${PINNED_KEY}`)}
+            attrs={{ "data-pin-zone": "" }}
+            // SB-42: while a row that is not pinned is dragged, Pinned's header line becomes the row it is
+            // let go on to pin it (the same height, so nothing under the pointer moves).
+            head={
+              pinDrop ? (
+                <div className="ws-pin-drop" data-drop="pin" data-over={overPinRow ? "" : undefined}>
+                  <Pin className="ws-pin-drop-icon" size={14} strokeWidth={1.5} />
+                  <span>{overPinRow ? t("ws_drop_pin_over") : t("ws_drop_pin")}</span>
+                </div>
+              ) : undefined
+            }
           >
             {(collapsed.has(PINNED_KEY) ? pinned.filter((x) => x.key === p.current) : pinned).map((x) => row(x, { lead: true }))}
           </Section>
         )}
-        {(all.length > 0 || filtered) && !noComputers && (
+        {/* With nothing pinned, Pinned's drop row takes the place of this header line during a drag. */}
+        {(all.length > 0 || filtered) && !noComputers && !(pinDrop && !pinned.length) && (
           <div className="ws-list-head" data-open={listMenu ? "" : undefined}>
             <span className="ws-list-head-label">{selection.keys.length ? t("ws_selection_count", { n: selection.keys.length }) : t("ws_sessions_head")}</span>
             <button
@@ -775,7 +1262,7 @@ export function Sidebar(p: SidebarProps) {
             </button>
           </div>
         )}
-        {filtered && !groups.length && (
+        {filtered && !groups.some((g) => g.items.length) && (
           <div className="ws-filter-empty">
             <p>{t("ws_no_match")}</p>
             <button type="button" className="ws-link" onClick={() => setPrefs({ status: "active" })}>
@@ -784,9 +1271,11 @@ export function Sidebar(p: SidebarProps) {
           </div>
         )}
         {groups.map((g) => {
+          // Ungrouped shows when it has rows, or as a place to drop a row out of its group (or out of Pinned).
+          if (g.ungrouped && !g.items.length && drag?.kind !== "row") return creatingHeader ? <Fragment key="custom:new">{creatingHeader}</Fragment> : null;
           const folded = collapsed.has(g.key);
           const keep = new Set(p.current ? [p.current] : []);
-          const limit = rowsBeforeMore(prefs.groupBy);
+          const limit = g.ungrouped ? rowsBeforeMore("none") : rowsBeforeMore(prefs.groupBy);
           // Families are cut as one: a fork shows with the session it came from.
           const nodes = nestFamilies(g.items, detached);
           const byRoot = new Map(nodes.map((n) => [n.item.key, n]));
@@ -831,7 +1320,8 @@ export function Sidebar(p: SidebarProps) {
               </div>
             );
           }
-          return (
+          const custom = g.custom;
+          const section = (
             <Section
               key={g.key}
               id={g.key}
@@ -843,8 +1333,29 @@ export function Sidebar(p: SidebarProps) {
               dot={aggregateDot(g.items.map((x) => workspace.dot(x)))}
               tabIndex={navIndex(`group:${g.key}`)}
               onFocus={() => setFocusId(`group:${g.key}`)}
+              attrs={custom ? { "data-custom-group": custom.id } : g.ungrouped ? { "data-ungrouped": "" } : undefined}
+              dropOver={!!drag?.target && ((drag.target.type === "group" && drag.target.id === custom?.id) || (drag.target.type === "ungroup" && !!g.ungrouped))}
+              dragging={drag?.kind === "group" && drag.keys[0] === custom?.id}
+              renaming={!!custom && renamingGroup === custom.id}
+              onRenamed={custom ? (name) => finishRenameGroup(custom.id, name) : undefined}
+              onHeadPointerDown={custom ? (e) => startDrag(e, "group", custom.id) : undefined}
               trailing={
-                place && (
+                g.older ? (
+                  <button
+                    type="button"
+                    className="ws-gh-add"
+                    tabIndex={-1}
+                    aria-label={t("ws_older_bulk")}
+                    title={t("ws_older_bulk")}
+                    aria-expanded={olderMenu?.key === g.key}
+                    onClick={(e) => {
+                      setConfirmOlder(false);
+                      setOlderMenu(olderMenu ? null : { key: g.key, at: { anchor: e.currentTarget.getBoundingClientRect() } });
+                    }}
+                  >
+                    <MoreHorizontal size={15} strokeWidth={1.5} />
+                  </button>
+                ) : place && (
                   <>
                     {!place.local && (
                       <span className="ws-gh-env" title={g.title}>
@@ -866,11 +1377,26 @@ export function Sidebar(p: SidebarProps) {
                 )
               }
             >
-              {folded ? rows.map((x) => row(x, { env: envRows })) : rows.map((x) => (byRoot.has(x.key) ? family(byRoot.get(x.key)!, 0, { env: envRows }) : row(x, { env: envRows })))}
+              {(() => {
+                const o = { env: envRows, groupFolder: place?.cwd, blocked: g.blocked };
+                return folded ? rows.map((x) => row(x, o)) : rows.map((x) => (byRoot.has(x.key) ? family(byRoot.get(x.key)!, 0, o) : row(x, o)));
+              })()}
               {more}
+              {!g.items.length && !folded && (
+                <div className="ws-group-empty">{custom ? t("ws_group_empty") : t("ws_drop_ungroup")}</div>
+              )}
             </Section>
           );
+          return g.ungrouped && creatingHeader ? (
+            <Fragment key={g.key}>
+              {creatingHeader}
+              {section}
+            </Fragment>
+          ) : (
+            section
+          );
         })}
+        {drag?.line != null && <div className="ws-drop-line" style={{ top: drag.line }} aria-hidden />}
         {notes.length > 0 && (
           <div className="ws-host-notes">
             {notes.map(({ c, h }) => (
@@ -906,7 +1432,15 @@ export function Sidebar(p: SidebarProps) {
         />
       )}
       {listMenu && <PopMenu at={listMenu} label={listLabel} items={listMenuItems()} onClose={() => setListMenu(null)} />}
+      {moveMenu && <PopMenu at={moveMenu.at} className="ws-move-menu" label={t("ws_move_menu")} items={moveMenuItems(moveMenu.keys)} onClose={() => setMoveMenu(null)} />}
+      {olderMenu && <PopMenu at={olderMenu.at} className="ws-older-menu" label={t("ws_older_bulk")} items={olderItems(olderMenu.key)} onClose={() => { setOlderMenu(null); setConfirmOlder(false); }} />}
       {card && byKey.get(card.key) && <RowCard item={byKey.get(card.key) as WsItem} rect={card.rect} />}
+      {drag && (
+        <div className="ws-drag-ghost" style={{ left: drag.x + 12, top: drag.y + 10 }} aria-hidden>
+          <span className="ws-drag-ghost-title">{dragTitle}</span>
+          {dragHint && <span className="ws-drag-ghost-hint">{dragHint}</span>}
+        </div>
+      )}
     </nav>
   );
 }
@@ -926,6 +1460,13 @@ function Section({
   trailing,
   tabIndex,
   onFocus,
+  attrs,
+  dropOver,
+  dragging,
+  renaming,
+  onRenamed,
+  onHeadPointerDown,
+  head,
   children,
 }: {
   id: string;
@@ -938,11 +1479,39 @@ function Section({
   trailing?: ReactNode;
   tabIndex?: number;
   onFocus: () => void;
+  /** What the drag code looks for: `data-pin-zone`, `data-custom-group`, `data-ungrouped`. */
+  attrs?: Record<string, string>;
+  /** A dragged row would land here (SB-42's 2 px ring). */
+  dropOver?: boolean;
+  /** This group's header is the one being dragged. */
+  dragging?: boolean;
+  /** A group made here being renamed in place (SB-45): Enter or leaving keeps it, Esc does not. */
+  renaming?: boolean;
+  onRenamed?: (name: string | null) => void;
+  onHeadPointerDown?: (e: React.PointerEvent) => void;
+  /** What the header line shows instead of its label (Pinned's drop row during a drag). */
+  head?: ReactNode;
   children: ReactNode;
 }) {
   const ref = useOverflow<HTMLSpanElement>(label);
+  // VS-34: opening a group grows its rows from nothing (grid rows 0fr → 1fr) while they fade in, 150 ms
+  // ease-out; folding is at once. The attribute goes when the animation ends (or after 260 ms: reduced
+  // motion has no animation to end).
+  const wasCollapsed = useRef(collapsed);
+  const [expanding, setExpanding] = useState(false);
+  useLayoutEffect(() => {
+    const opened = wasCollapsed.current && !collapsed;
+    wasCollapsed.current = collapsed;
+    if (!opened) {
+      setExpanding(false);
+      return;
+    }
+    setExpanding(true);
+    const id = setTimeout(() => setExpanding(false), 260);
+    return () => clearTimeout(id);
+  }, [collapsed]);
   return (
-    <div className="ws-sec" data-collapsed={collapsed ? "" : undefined} data-group={id}>
+    <div className="ws-sec" data-collapsed={collapsed ? "" : undefined} data-group={id} data-drop-over={dropOver ? "" : undefined} data-dragging={dragging ? "" : undefined} {...attrs}>
       <div
         className="ws-gh"
         onContextMenu={(e) => {
@@ -950,27 +1519,42 @@ function Section({
           onMenu({ x: e.clientX, y: e.clientY });
         }}
       >
-        <button
-          type="button"
-          className="ws-gh-toggle"
-          data-ws-nav
-          data-group-toggle
-          aria-expanded={!collapsed}
-          title={title}
-          tabIndex={tabIndex}
-          onFocus={onFocus}
-          onClick={(e) => onToggle(e.altKey)}
-        >
-          <span className="ws-gh-label" ref={ref}>
-            {label}
-          </span>
-          <ChevronRight className="ws-gh-caret" size={12} strokeWidth={2} />
-        </button>
-        <span className="ws-gh-badge">{collapsed && dot && <StatusDot kind={dot} />}</span>
-        {trailing}
+        {head ? (
+          head
+        ) : renaming && onRenamed ? (
+          <RenameField initial={label} label={t("ws_group_name_field")} className="ws-gh-rename" onDone={onRenamed} />
+        ) : (
+          <button
+            type="button"
+            className="ws-gh-toggle"
+            data-ws-nav
+            data-group-toggle
+            aria-expanded={!collapsed}
+            title={title}
+            tabIndex={tabIndex}
+            onFocus={onFocus}
+            onPointerDown={onHeadPointerDown}
+            onClick={(e) => onToggle(e.altKey)}
+          >
+            <span className="ws-gh-label" ref={ref}>
+              {label}
+            </span>
+            <ChevronRight className="ws-gh-caret" size={12} strokeWidth={2} />
+          </button>
+        )}
+        {!head && <span className="ws-gh-badge">{collapsed && dot && <StatusDot kind={dot} />}</span>}
+        {!head && trailing}
       </div>
-      <div className="ws-sec-rows" role="group" aria-label={label}>
-        {children}
+      <div
+        className="ws-sec-body"
+        data-expanding={expanding ? "" : undefined}
+        onAnimationEnd={(e) => {
+          if (e.target === e.currentTarget) setExpanding(false);
+        }}
+      >
+        <div className="ws-sec-rows" role="group" aria-label={label}>
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -993,6 +1577,10 @@ function Row({
   onOpen,
   onMenu,
   onRenamed,
+  metaOn,
+  meta,
+  dragging,
+  onDragStart,
 }: {
   item: WsItem;
   lead?: boolean;
@@ -1001,6 +1589,12 @@ function Row({
   /** A session with forks: whether they show, and the arrow that shows or hides them. */
   family?: { open: boolean; onToggle: (guarded?: boolean) => void };
   jump?: number;
+  /** SB-28: the metadata line is on (the branch moves there), and what it says (null: nothing for this row). */
+  metaOn: boolean;
+  meta: ReturnType<typeof metaLine>;
+  /** The row is part of what is being dragged (SB-42). */
+  dragging: boolean;
+  onDragStart: (e: React.PointerEvent) => void;
   /** SB-47: the computer's mark at the row's end (when no dot is there), off the folder grouping. */
   env: Pick<Computer, "os" | "online"> | null;
   selected: boolean;
@@ -1018,9 +1612,11 @@ function Row({
   const title = titleOf(item);
   const dot = workspace.dot(item);
   const ref = useOverflow<HTMLSpanElement>(title);
-  const branch = item.meta.branch?.trim();
+  const branch = metaOn ? undefined : item.meta.branch?.trim();
   const mark = !dot && env ? env : null;
   const decorated = !!dot || !!branch || !!mark;
+  const metaParts = meta ? (meta.blocked ? [t("ws_blocked"), t(PENDING_TEXT[meta.blocked])] : [meta.branch, meta.folder, meta.host].filter((x): x is string => !!x)) : [];
+  const metaText = metaParts.length ? new Intl.ListFormat(currentLang() === "zh" ? "zh-CN" : "en", { type: "unit" }).format(metaParts) : "";
   return (
     <div
       className="ws-row"
@@ -1042,9 +1638,14 @@ function Row({
           family.onToggle(false);
         }
       }}
+      data-meta={metaOn && meta ? "" : undefined}
+      data-dragging={dragging ? "" : undefined}
       onPointerEnter={(e) => e.pointerType === "mouse" && onHover(e.currentTarget)}
       onPointerLeave={() => onHover(null)}
-      onPointerDown={() => onHover(null)}
+      onPointerDown={(e) => {
+        onHover(null);
+        if (!renaming && !(e.target as Element).closest(".ws-row-more")) onDragStart(e);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu({ x: e.clientX, y: e.clientY });
@@ -1078,8 +1679,31 @@ function Row({
               {jump ? <kbd className="ws-jump-key" aria-hidden>{jump}</kbd> : <CodeXml size={14} strokeWidth={1.5} />}
             </span>
           )}
-          <span className="ws-row-title" ref={ref}>
-            {title}
+          <span className="ws-row-text">
+            <span className="ws-row-title" ref={ref}>
+              {title}
+            </span>
+            {metaOn && meta && (
+              <span className="ws-row-meta" title={metaText}>
+                {meta.blocked ? (
+                  <>
+                    <span className="ws-row-blocked">{t("ws_blocked")}</span>
+                    <span className="ws-row-meta-part">{t(PENDING_TEXT[meta.blocked])}</span>
+                  </>
+                ) : (
+                  <>
+                    {meta.branch && (
+                      <span className="ws-row-meta-part">
+                        <GitBranch size={12} strokeWidth={1.5} />
+                        {meta.branch}
+                      </span>
+                    )}
+                    {meta.folder && <span className="ws-row-meta-part">{meta.folder}</span>}
+                    {meta.host && <span className="ws-row-meta-part">{meta.host}</span>}
+                  </>
+                )}
+              </span>
+            )}
           </span>
           {family && (
             <span className="ws-row-family" data-open={family.open ? "" : undefined} title={t("ws_family_toggle")} aria-hidden>
@@ -1171,7 +1795,7 @@ function RowCard({ item, rect }: { item: WsItem; rect: DOMRect }) {
  * trimmed text, empty going back to the automatic title, and nothing when it did not change. A blur
  * right after it opened (250 ms) takes the focus back.
  */
-export function RenameField({ initial, onDone, className }: { initial: string; onDone: (title: string | null) => void; className?: string }) {
+export function RenameField({ initial, onDone, className, label }: { initial: string; onDone: (title: string | null) => void; className?: string; label?: string }) {
   const ref = useRef<HTMLInputElement>(null);
   const opened = useRef(Date.now());
   const done = useRef(false);
@@ -1191,7 +1815,7 @@ export function RenameField({ initial, onDone, className }: { initial: string; o
     <input
       ref={ref}
       className={cx("ws-rename", className)}
-      aria-label={t("ws_rename_field")}
+      aria-label={label ?? t("ws_rename_field")}
       value={value}
       size={Math.min(Math.max(value.length, 1), 30)}
       spellCheck={false}

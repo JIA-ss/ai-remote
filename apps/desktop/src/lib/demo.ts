@@ -667,6 +667,11 @@ function demoWorkspaceSessions() {
     { title: "Add request ids to every log line", last_status: "interrupted" });
   add("office-pc", { id: "w-old-1", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(9000), last_activity: ago(8800) },
     { title: "Spike: GraphQL gateway", last_status: "completed", archived: true });
+  // Two sessions more than a week old: the date grouping's "Older" bucket and its bulk archive (SB-38).
+  add("office-pc", { id: "w-old-2", runtime: "claude", name: "Claude Code", cwd: bill, state: "ended", started_at: ago(18000), last_activity: ago(17800) },
+    { title: "Try a queue for invoice emails", last_status: "completed" });
+  add("office-pc", { id: "w-old-3", runtime: "codex", name: "Codex", cwd: bill, state: "ended", started_at: ago(43000), last_activity: ago(42900) },
+    { title: "Benchmark the PDF renderer", last_status: "completed" });
   add("office-pc", { id: "w-game-1", runtime: "claude", name: "Claude Code", cwd: "D:\\games\\client", state: "running", started_at: ago(40), last_activity: ago(4) },
     { title: "Profile the loading screen hitch", pending: "question", branch: "perf/loading" });
   add("studio-mac", { id: "m-site-1", runtime: "claude", name: "Claude Code", cwd: "/Users/me/code/site", state: "running", started_at: ago(20), last_activity: ago(0.5) },

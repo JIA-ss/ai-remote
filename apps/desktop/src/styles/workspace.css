@@ -81,7 +81,7 @@
 /* ---- 2. Frame: sidebar flush left, full height, a hairline on its right (VS-03, the flat variant) ---- */
 .ws { position: relative; flex: 1; min-height: 0; display: flex; background: var(--ws-s1); color: var(--ws-t1); font-size: 13px; line-height: 19px; }
 .ws.dragging, .ws.dragging * { cursor: col-resize !important; user-select: none; }
-.ws-side { width: var(--ws-side-w, 288px); flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--ws-side); border-right: .5px solid var(--ws-line); user-select: none; }
+.ws-side { --ws-row-h: 28px; --ws-row-font: 13px; --ws-group-font: 12px; --ws-row-radius: 6px; --ws-group-top: 10px; width: var(--ws-side-w, 288px); flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--ws-side); border-right: .5px solid var(--ws-line); user-select: none; }
 .ws[data-side="float"] .ws-side { position: absolute; left: 0; top: 0; bottom: 0; z-index: 40; box-shadow: var(--ws-shadow-pop); }
 .ws-float-scrim { position: absolute; inset: 0; z-index: 39; }
 .ws-grip { position: relative; z-index: 5; flex: none; width: 7px; margin: 0 -4px 0 -3px; cursor: col-resize; outline: none; }
@@ -138,10 +138,10 @@
 .ws-nav.on { background: var(--ws-selected); color: var(--ws-t1); }
 .ws-nav .ws-lead { color: var(--ws-t2); }
 
-.ws-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 8px 12px; scrollbar-width: thin; }
+.ws-list { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 8px 12px; scrollbar-width: thin; }
 .ws-sec + .ws-sec { margin-top: 0; }
-.ws-gh { display: flex; align-items: center; height: 24px; margin: 10px 0 2px; }
-.ws-gh-toggle { flex: 1; min-width: 0; height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; border-radius: 6px; color: var(--ws-t3); font-size: 12px; line-height: 16px; text-align: left; transition: color 60ms; }
+.ws-gh { display: flex; align-items: center; height: 24px; margin: var(--ws-group-top) 0 2px; }
+.ws-gh-toggle { flex: 1; min-width: 0; height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px; border-radius: var(--ws-row-radius); color: var(--ws-t3); font-size: var(--ws-group-font); line-height: 16px; text-align: left; transition: color 60ms; }
 .ws-gh-toggle:hover { color: var(--ws-t2); }
 .ws-gh-toggle:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent), 0 0 6px 0 color-mix(in srgb, var(--ws-accent) 20%, transparent); }
 .ws-gh-label { min-width: 0; white-space: nowrap; overflow: hidden; }
@@ -156,19 +156,31 @@
 .ws-gh-add:hover:not(:disabled) { background: var(--ws-hover); color: var(--ws-t1); }
 .ws-gh-add:disabled { opacity: .35; }
 .ws-sec-rows { display: flex; flex-direction: column; gap: 2px; }
+/* VS-34: a group opened grows from nothing (grid rows 0fr → 1fr) and fades in, 150 ms ease-out; the caret
+   turns in 60 ms. Folding is at once. Nothing moves under "reduce motion". */
+.ws-sec-body { display: grid; grid-template-rows: 1fr; grid-template-columns: minmax(0, 1fr); }
+.ws-sec-body > .ws-sec-rows { min-width: 0; min-height: 0; }
+.ws-sec-body[data-expanding] > .ws-sec-rows { overflow: hidden; }
+@keyframes ws-expand-rows { from { grid-template-rows: 0fr; } }
+@keyframes ws-expand-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) {
+  .ws-sec-body[data-expanding] { animation: ws-expand-rows 150ms ease-out, ws-expand-fade 150ms ease-out; }
+}
+@media (prefers-reduced-motion: reduce) { .ws-gh-caret { transition: none; } }
 .ws-sec[data-collapsed] .ws-sec-rows:empty { display: none; }
 
-.ws-row { position: relative; height: 28px; flex: none; display: flex; align-items: center; border-radius: 6px; color: var(--ws-t2); }
+.ws-row { position: relative; height: var(--ws-row-h); flex: none; display: flex; align-items: center; border-radius: var(--ws-row-radius); color: var(--ws-t2); font-size: var(--ws-row-font); }
 .ws-row:hover, .ws-row[data-menu-open] { background: var(--ws-hover); }
 .ws-row[data-selected] { background: var(--ws-hover); color: var(--ws-t1); }
 .ws-row[data-selected]:hover { background: var(--ws-selected); }
-.ws-row-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; padding-left: 8px; border-radius: 6px; color: inherit; text-align: left; }
+.ws-row-main { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 4px; padding-left: 8px; border-radius: var(--ws-row-radius); color: inherit; text-align: left; }
 .ws-row-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent), 0 0 6px 0 color-mix(in srgb, var(--ws-accent) 20%, transparent); }
 .ws-row[data-multi-selected] { background: color-mix(in srgb, var(--ws-accent) 14%, var(--ws-side)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ws-accent) 35%, transparent); }
 .ws-row-lead { width: 16px; flex: none; display: grid; place-items: center; color: var(--ws-t3); }
 .ws-jump-key { display: grid; place-items: center; height: 16px; min-width: 16px; padding: 0 2px; border: .5px solid var(--ws-line); border-radius: 3px; font: inherit; font-size: 10px; line-height: 1; color: var(--ws-t1); background: var(--ws-s3); }
 .ws-row[data-selected] .ws-row-lead { color: var(--ws-t1); }
-.ws-row-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; padding: 4px 0; }
+.ws-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.ws-row-title { flex: none; min-width: 0; white-space: nowrap; overflow: hidden; padding: 4px 0; }
 .ws-row-title[data-overflowing] { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); }
 .ws-row-branch { flex: 0 1 auto; max-width: 30%; min-width: 0; display: inline-flex; align-items: center; gap: 3px; padding: 0 2px 0 6px; font-size: 12px; line-height: 16px; color: var(--ws-t3); }
 .ws-row-branch > svg { flex: none; }
@@ -180,7 +192,7 @@
 .ws-row:hover .ws-row-more, .ws-row:has(:focus-visible) .ws-row-more, .ws-row[data-menu-open] .ws-row-more { opacity: 1; }
 .ws-row:hover .ws-row-dot, .ws-row:has(:focus-visible) .ws-row-dot, .ws-row[data-menu-open] .ws-row-dot { opacity: 0; }
 .ws-rename { flex: 1; min-width: 0; height: 24px; margin: 0 2px; padding: 0 6px; border: 0; border-radius: 4px; outline: 1.5px solid var(--ws-accent); outline-offset: 0; background: var(--ws-s3); color: var(--ws-t1); font: inherit; font-size: 13px; user-select: text; }
-.ws-more { height: 28px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 9px 0 8px; border-radius: 6px; color: var(--ws-t3); font-size: 12px; text-align: left; }
+.ws-more { height: var(--ws-row-h); flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 9px 0 8px; border-radius: var(--ws-row-radius); color: var(--ws-t3); font-size: 12px; text-align: left; }
 .ws-more:hover { background: var(--ws-hover); color: var(--ws-t2); }
 .ws-more:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--ws-accent); }
 
@@ -205,7 +217,7 @@
 
 /* "Sessions" over the groups, with "Group and sort" (SB-12): the button sits at 70 % until the sidebar is
    hovered (VS-30's hover-reveal), and stays blue while a filter is on (SB-11) */
-.ws-list-head { display: flex; align-items: center; height: 24px; margin: 10px 0 2px; padding-left: 8px; }
+.ws-list-head { display: flex; align-items: center; height: 24px; margin: var(--ws-group-top) 0 2px; padding-left: 8px; }
 .ws-list-head-label { flex: 1; min-width: 0; font-size: 12px; line-height: 16px; color: var(--ws-t3); white-space: nowrap; overflow: hidden; }
 .ws-list-filter { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 6px; color: var(--ws-t3); opacity: .7; transition: opacity 120ms var(--ws-ease), background-color 60ms; }
 .ws-side:hover .ws-list-filter, .ws-list-head[data-open] .ws-list-filter, .ws-list-filter.on { opacity: 1; }
@@ -220,6 +232,38 @@
 /* an archived row (listed under "Archived" / "All sessions"), and a computer's mark where no dot is (SB-47) */
 .ws-row[data-archived] .ws-row-title { color: var(--ws-t3); }
 .ws-row-env { display: grid; place-items: center; color: var(--ws-t3); }
+
+/* SB-04: comfortable density (desktop): 30 px rows, 14 px titles, 13 px headers, 8 px corners; rows stay 2 px apart */
+.ws-side[data-density="comfortable"] { --ws-row-h: 30px; --ws-row-font: 14px; --ws-group-font: 13px; --ws-row-radius: 8px; --ws-group-top: 12px; }
+/* SB-28: the metadata line, a 20 px line under the title: branch, folder, computer 8 px apart (no dots) */
+.ws-row[data-meta] { height: calc(var(--ws-row-h) + 20px); }
+.ws-row[data-meta] .ws-row-title { padding: 0; line-height: 20px; }
+.ws-row-meta { display: flex; align-items: center; gap: 8px; min-width: 0; height: 16px; font-size: 12px; line-height: 16px; color: var(--ws-t3); white-space: nowrap; overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent); }
+.ws-row-meta-part { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+.ws-row-meta-part > svg { flex: none; }
+.ws-row-blocked { flex: none; color: var(--ws-warn-text); }
+
+/* SB-08 / SB-36: a group made here, named in place; an empty one says how to fill it */
+.ws-gh-rename { flex: 1; height: 24px; margin: 0; font-size: var(--ws-group-font); }
+.ws-group-empty { padding: 5px 8px; border: 1px dashed var(--ws-line); border-radius: var(--ws-row-radius); font-size: 12px; line-height: 16px; color: var(--ws-t3); }
+
+/* SB-42: dragging — what is dragged dims; Pinned's drop row (its pin turned 6° and 1.05×), a target's
+   2 px accent ring, the insertion line, and a small label by the pointer */
+.ws-side[data-dragging], .ws-side[data-dragging] * { cursor: grabbing !important; }
+.ws-row[data-dragging] { opacity: .45; }
+.ws-sec[data-dragging] > .ws-gh { opacity: .45; }
+.ws-sec[data-drop-over] { border-radius: 8px; background: color-mix(in srgb, var(--ws-accent) 8%, transparent); box-shadow: inset 0 0 0 2px var(--ws-accent); }
+.ws-pin-drop { height: 24px; flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px; border: 1px dashed var(--ws-line-strong); border-radius: var(--ws-row-radius);
+  color: var(--ws-t3); font-size: 12px; transition: background-color 60ms, color 60ms; }
+.ws-pin-drop[data-over] { border-style: solid; background: var(--ws-selected); color: var(--ws-t2); }
+.ws-pin-drop-icon { flex: none; transform: rotate(6deg) scale(1.05); }
+.ws-drop-line { position: absolute; left: 8px; right: 8px; z-index: 3; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--ws-accent); pointer-events: none; }
+.ws-drop-line::before { content: ""; position: absolute; left: -3px; top: -2px; width: 6px; height: 6px; border-radius: 50%; background: var(--ws-accent); }
+.ws-drag-ghost { position: fixed; z-index: 70; max-width: 240px; padding: 4px 10px; display: flex; flex-direction: column; border-radius: 8px; background: var(--ws-s3); color: var(--ws-t1);
+  box-shadow: var(--ws-shadow-pop), var(--ws-ring); font-size: 12px; line-height: 16px; pointer-events: none; }
+.ws-drag-ghost-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-drag-ghost-hint { color: var(--ws-accent-text); }
 
 .ws-list-note { padding: 10px 8px; font-size: 12px; line-height: 15px; color: var(--ws-t3); }
 .ws-list-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 8px; color: var(--ws-t2); }
@@ -355,9 +399,11 @@
 .ws-model-pop input:focus-visible { box-shadow: inset 0 0 0 1px var(--ws-accent); }
 
 /* ---- 7. Menus, the ⌘K panel, toasts ---- */
-.ws-menu { position: fixed; z-index: 60; min-width: 200px; max-width: 340px; padding: 4px; display: flex; flex-direction: column; gap: 1px; border-radius: 10px; background: var(--ws-s3);
+.ws-menu { position: fixed; z-index: 60; min-width: 200px; max-width: 340px; max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 4px; display: flex; flex-direction: column; gap: 1px; border-radius: 10px; background: var(--ws-s3);
   box-shadow: var(--ws-shadow-pop), var(--ws-ring); animation: ws-pop 120ms var(--ws-ease); }
 .ws-menu.wide { min-width: 260px; }
+/* A long menu ("Group and sort" with its rows options) scrolls inside the window instead of running off it. */
+.ws-menu > * { flex-shrink: 0; }
 @keyframes ws-pop { from { opacity: 0; transform: scale(.98); } }
 .ws-menu-item { min-height: 28px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; color: var(--ws-t1); text-align: left; }
 .ws-menu-item:hover:not(:disabled), .ws-menu-item:focus-visible { outline: none; background: var(--ws-hover); }
