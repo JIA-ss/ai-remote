@@ -212,3 +212,31 @@
 .gl-pair .gl-pair-rev .btn { flex: none; }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-pair .gl-pair-rev { border-top: var(--gl-hair) solid var(--gl-sep); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-pair .field.lg { border-radius: var(--gl-r-field); }
+
+/* ======================================================================================
+   Welcome: hero, the two doors as one grouped card, the figure (a stage picture: no blur added)
+   ====================================================================================== */
+.spread.gl-welcome { overflow-x: hidden; column-gap: 48px; row-gap: 40px; padding-left: 40px; padding-right: 40px; padding-bottom: 40px; justify-content: center; align-content: start; }
+.gl-welcome .lcol { min-width: 0; max-width: 560px; }
+.gl-welcome .hero { margin-top: 18px; }
+.gl-welcome .lede { margin-top: 14px; font-size: 13px; line-height: 20px; }
+.gl-welcome .doors { margin-top: 28px; border-top: 0; border-radius: var(--r-card); background: var(--card); overflow: hidden; }
+.gl-welcome .door { position: relative; grid-template-columns: 32px minmax(0, 1fr); column-gap: 14px; padding: 16px 18px; border-bottom: 0; }
+.gl-welcome .door + .door::before { content: ""; position: absolute; top: 0; left: 64px; right: 18px; height: 1px; background: var(--stroke-1); }
+.gl-welcome .door .ic { padding-top: 1px; }
+.gl-welcome .door .ttl { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text-1); }
+.gl-welcome .door .d { margin-top: 2px; font-size: 13px; line-height: 20px; }
+.gl-welcome .door .note { margin-top: 4px; font-size: 12px; line-height: 16px; }
+.gl-welcome .door .a { margin-top: 12px; }
+.gl-welcome .door .a .btn { height: 30px; padding: 0 14px; gap: 6px; display: inline-flex; align-items: center; font-size: 13px; }
+.gl-welcome .gl-wl-agents { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 14px; padding: 0 4px; font-size: 12px; line-height: 18px; color: var(--text-3); }
+.gl-welcome .gl-wl-agents > :is(svg, .fi) { flex: none; }
+.gl-welcome .gl-wl-agents .nt-link { font-size: 12px; }
+.gl-welcome .rcol { min-width: 0; }
+.gl-welcome .gl-fig-box { position: relative; }
+.gl-welcome .fig { transform-origin: top left; }
+.gl-welcome.stacked .lcol { max-width: 616px; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .doors { border-radius: var(--gl-r-card); background: var(--gl-card); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .door + .door::before { height: var(--gl-hair); background: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stagebox { border-radius: var(--gl-r-card); clip-path: inset(0 round var(--gl-r-card)); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stage-wrap { border-radius: var(--gl-r-card); }
