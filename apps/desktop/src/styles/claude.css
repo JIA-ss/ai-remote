@@ -235,7 +235,7 @@
 
 /* back to the latest (TR-16, TR-17) */
 .cl-jump { position: absolute; left: 50%; bottom: 14px; z-index: 1; width: 36px; height: 36px; margin-left: -18px; border-radius: 50%; display: grid; place-items: center;
-  color: var(--cl-text); background: color-mix(in srgb, var(--cl-card) 80%, transparent); backdrop-filter: blur(8px); box-shadow: 0 0 0 .5px var(--cl-a3), var(--cl-shadow-sm);
+  color: var(--cl-text); background: color-mix(in srgb, var(--cl-card) 80%, transparent); box-shadow: 0 0 0 .5px var(--cl-a3), var(--cl-shadow-sm);
   opacity: 0; pointer-events: none; transition: opacity .2s; }
 .cl-jump[data-shown="true"] { opacity: 1; pointer-events: auto; }
 .cl-jump[data-busy] { box-shadow: 0 0 0 .5px color-mix(in srgb, var(--cl-warm) 50%, transparent), var(--cl-shadow-sm); }

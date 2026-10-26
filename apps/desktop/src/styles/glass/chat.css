@@ -122,7 +122,8 @@
   :root:is([data-material="native"], [data-material="preview"]) :is(.nt-ac, .nt-usage, .nt-findbar, .nt-quote, .nt-pv-dlg, .nt-chat:not(.cdx) .nt-jump, .nt-cb .acts.float) { background: rgb(var(--gl-g-rgb) / .96); }
 }
 
-/* ---- without the material: no stray blur ---- */
-/* The Claude view's jump-to-latest blurs whatever the material (claude.css). Reduce transparency and
-   higher contrast promise an opaque window with nothing blurred; claude.css's own fill stays. */
-:root[data-material="none"] .cl-jump { -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* ---- the Claude view's jump-to-latest ---- */
+/* A small button floating over the transcript: functional glass, so it blurs only while the material
+   is on (claude.css paints its fill and rim). Reduce transparency and higher contrast keep that fill
+   with nothing blurred. */
+:root:is([data-material="native"], [data-material="preview"]) .cl-jump { -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }

@@ -85,7 +85,7 @@ export function WelcomePage({
         <div>
           <Wordmark h={24} />
         </div>
-        <div className="hero">{phrases(t("fr_title"))}</div>
+        <h1 className="hero">{phrases(t("fr_title"))}</h1>
         <div className="lede">{t("fr_sub")}</div>
         <div className="doors">
           <div className="door">
@@ -122,11 +122,15 @@ export function WelcomePage({
         </div>
         <div className="gl-wl-agents">
           <Icon name="puzzle" size={14} />
-          <span>{t("pg_agents_note")}</span>
-          {onAgents && (
-            <button className="nt-link" onClick={onAgents}>
-              {t("pg_agents_go")}
-            </button>
+          {onAgents ? (
+            <p>
+              {t("pg_agents_lead")}{" "}
+              <button className="nt-link" onClick={onAgents}>
+                {t("pg_agents_go")}
+              </button>
+            </p>
+          ) : (
+            <p>{t("pg_agents_note")}</p>
           )}
         </div>
       </div>

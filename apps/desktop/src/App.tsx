@@ -358,6 +358,7 @@ export default function App() {
             leaveWelcome();
             openSettingsIntent({ view: "settings", sec: "device", action: "enable" });
           }}
+          onAgents={() => go({ page: "settings", sec: "agents" })}
         />
       );
     else if (route.page === "devices")
@@ -392,6 +393,7 @@ export default function App() {
           }}
           onShowMyCode={() => openSettingsIntent({ view: "settings", sec: "device", action: "pair_code" })}
           registerGuard={(g) => (guard.current = g)}
+          onAgents={() => go({ page: "settings", sec: "agents" })}
         />
       );
     else if (route.page === "computer") {

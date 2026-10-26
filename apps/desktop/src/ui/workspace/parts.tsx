@@ -29,7 +29,9 @@ export function workspaceOwnsEvent(pane: HTMLElement | null, e: { target: EventT
   return pane.dataset.keyboardActive === "true";
 }
 
-/** The window's top-left corner: room for the traffic lights (macOS), sidebar toggle, back, forward (SB-01). */
+/** The window's top-left corner: room for the traffic lights (macOS), sidebar toggle, back, forward (SB-01).
+ *  Embedded beside the live screen the session's toolbar already has ‹ › for the same history, so the
+ *  corner keeps only the sidebar toggle there (one pair of history buttons per window). */
 export function Corner({ onToggle, back, forward, embedded = false }: { onToggle: () => void; back: (() => void) | null; forward: (() => void) | null; embedded?: boolean }) {
   return (
     <div className="ws-corner">
@@ -37,12 +39,16 @@ export function Corner({ onToggle, back, forward, embedded = false }: { onToggle
       <button type="button" className="ws-ib" onClick={onToggle} aria-label={t("ws_toggle_sidebar")} title={`${t("ws_toggle_sidebar")} (${modLabel}B)`}>
         <PanelLeft size={16} strokeWidth={1.5} />
       </button>
-      <button type="button" className="ws-ib" onClick={() => back?.()} disabled={!back} aria-label={t("ws_back")} title={t("ws_back")}>
-        <ArrowLeft size={16} strokeWidth={1.5} />
-      </button>
-      <button type="button" className="ws-ib" onClick={() => forward?.()} disabled={!forward} aria-label={t("ws_forward")} title={t("ws_forward")}>
-        <ArrowRight size={16} strokeWidth={1.5} />
-      </button>
+      {!embedded && (
+        <>
+          <button type="button" className="ws-ib" onClick={() => back?.()} disabled={!back} aria-label={t("ws_back")} title={t("ws_back")}>
+            <ArrowLeft size={16} strokeWidth={1.5} />
+          </button>
+          <button type="button" className="ws-ib" onClick={() => forward?.()} disabled={!forward} aria-label={t("ws_forward")} title={t("ws_forward")}>
+            <ArrowRight size={16} strokeWidth={1.5} />
+          </button>
+        </>
+      )}
     </div>
   );
 }

@@ -1516,6 +1516,8 @@ function Approvals() {
       </div>
       {/* whether each computer takes this device's key */}
       <div className="grp-h">{t("st_ap_hosts_h")}</div>
+      {/* On a Mac every computer says the same thing (deny here, allow elsewhere): say it once. */}
+      {mac && hosts.length > 0 && <div className="grp-sub">{t("ap_mac_deny_only")}</div>}
       {hosts.length === 0 ? (
         <div className="gnote">{t("ap_no_computers")}</div>
       ) : (
@@ -1529,7 +1531,7 @@ function Approvals() {
                 ic={<span className={cx("check", v === true && "on")}>{v === true && <Icon name="check" size={12} />}</span>}
                 tt={h}
                 ds={
-                  mac ? t("ap_mac_deny_only") : v === true
+                  mac ? undefined : v === true
                     ? t("ap_accepted")
                     : v === "asking"
                       ? t("ap_asking", { host: h })

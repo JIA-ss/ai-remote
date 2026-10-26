@@ -30,7 +30,12 @@
 
 /* buttons on the content plane are capsules with the material on (Apple: buttons ≥ 28 px are
    capsules; Windows keeps Fluent's 4 px through --gl-r-btn) */
-:root:is([data-material="native"], [data-material="preview"]) :is(.devices-page, .cpage, .ipage, .ppage, .spread, .act) .btn { border-radius: var(--gl-r-btn); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.devices-page, .cpage, .ipage, .ppage, .spread, .act, .nt-chat-approval) .btn { border-radius: var(--gl-r-btn); }
+/* and the same fill as the settings page's buttons (D.5: .10 / .06, hover .14 / .09): the plain
+   .btn paints --fill-1 (hover --fill-2), which is a shade too faint on the translucent plane, so the
+   two tokens are re-pointed on the button itself; tinted variants (primary, danger, you) keep theirs */
+:root:is([data-material="native"], [data-material="preview"]) :is(.devices-page, .cpage, .ipage, .ppage, .spread, .act, .nt-chat-approval) .btn { --fill-1: rgb(255 255 255 / .10); --fill-2: rgb(255 255 255 / .14); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] :is(.devices-page, .cpage, .ipage, .ppage, .spread, .act, .nt-chat-approval) .btn { --fill-1: rgb(0 0 0 / .06); --fill-2: rgb(0 0 0 / .09); }
 
 /* ======================================================================================
    Devices
@@ -122,13 +127,15 @@
 
 /* the tabs: grouped cards (D.4) — group titles outside the card, rows with hairlines inset from the text */
 .cpage .tab-grid { margin-top: 24px; column-gap: 28px; }
-.cpage .tab-grid > div > .grp-h { min-height: 28px; align-items: center; margin: 20px 4px 4px; }
+/* headings and notes read as the settings page's do: 12 px --text-2 (--text-3 falls under 4.5:1 on the
+   translucent plane; see settings.css) */
+.cpage .tab-grid > div > .grp-h { min-height: 28px; align-items: center; margin: 20px 4px 4px; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0; color: var(--text-2); }
 .cpage .tab-grid > div > .grp-h:first-child { margin-top: 0; }
-.cpage .tab-grid .grp-sub { margin: -2px 4px 8px; }
-.cpage .tab-grid .gnote { margin: 6px 4px 0; }
+.cpage .tab-grid .grp-sub { margin: -2px 4px 8px; font-size: 12px; line-height: 17px; color: var(--text-2); }
+.cpage .tab-grid .gnote { margin: 6px 4px 0; font-size: 12px; line-height: 17px; color: var(--text-2); }
 .cpage .tab-grid .gr { min-height: 44px; padding: 8px 14px; column-gap: 12px; grid-template-columns: 28px minmax(0, 1fr) auto; }
 .cpage .tab-grid .gr.noic { grid-template-columns: minmax(0, 1fr) auto; }
-.cpage .tab-grid .gr:has(.ds) { min-height: 54px; }
+.cpage .tab-grid .gr:has(.ds) { min-height: 52px; }
 .cpage .tab-grid .gr .ic { width: 28px; height: 28px; }
 .cpage .tab-grid .gr + .gr::before { left: 54px; right: 14px; }
 .cpage .tab-grid .gr.noic + .gr::before, .cpage .tab-grid .gr + .gr.noic::before { left: 14px; }
@@ -224,7 +231,7 @@
    ====================================================================================== */
 .spread.gl-welcome { overflow-x: hidden; column-gap: 48px; row-gap: 40px; padding-left: 40px; padding-right: 40px; padding-bottom: 40px; justify-content: center; align-content: start; }
 .gl-welcome .lcol { min-width: 0; max-width: 560px; }
-.gl-welcome .hero { margin-top: 18px; }
+.gl-welcome .hero { margin-top: 18px; margin-bottom: 0; }
 .gl-welcome .lede { margin-top: 14px; font-size: 13px; line-height: 20px; }
 .gl-welcome .doors { margin-top: 28px; border-top: 0; border-radius: var(--r-card); background: var(--card); overflow: hidden; }
 .gl-welcome .door { position: relative; grid-template-columns: 32px minmax(0, 1fr); column-gap: 14px; padding: 16px 18px; border-bottom: 0; }
@@ -235,8 +242,9 @@
 .gl-welcome .door .note { margin-top: 4px; font-size: 12px; line-height: 16px; }
 .gl-welcome .door .a { margin-top: 12px; }
 .gl-welcome .door .a .btn { height: 30px; padding: 0 14px; gap: 6px; display: inline-flex; align-items: center; font-size: 13px; }
-.gl-welcome .gl-wl-agents { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 14px; padding: 0 4px; font-size: 12px; line-height: 18px; color: var(--text-3); }
-.gl-welcome .gl-wl-agents > :is(svg, .fi) { flex: none; }
+.gl-welcome .gl-wl-agents { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 0 4px; font-size: 12px; line-height: 18px; color: var(--text-2); }
+.gl-welcome .gl-wl-agents > :is(svg, .fi) { flex: none; margin-top: 2px; }
+.gl-welcome .gl-wl-agents > p { margin: 0; min-width: 0; }
 .gl-welcome .gl-wl-agents .nt-link { font-size: 12px; }
 .gl-welcome .rcol { min-width: 0; }
 .gl-welcome .gl-fig-box { position: relative; }
@@ -246,3 +254,7 @@
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .door + .door::before { height: var(--gl-hair); background: var(--gl-sep); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stagebox { border-radius: var(--gl-r-card); clip-path: inset(0 round var(--gl-r-card)); }
 :root:is([data-material="native"], [data-material="preview"]) .gl-win .gl-welcome .stage-wrap { border-radius: var(--gl-r-card); }
+/* Reduced transparency: the figure's capsule loses its blur the way v2.css already does for the
+   system setting (prefers-reduced-transparency), so data-material="none" leaves no blur anywhere. */
+:root[data-material="none"] .gl-welcome .capsule { background: #1E2128; -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-material="none"] .gl-welcome .capsule::before { display: none; }

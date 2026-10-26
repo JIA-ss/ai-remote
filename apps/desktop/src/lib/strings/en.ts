@@ -312,6 +312,7 @@ export const en = {
   pg_act_empty_host: "No activity on {host} yet",
   pg_act_empty_d: "Once an agent starts working, every step is recorded here.",
   pg_act_show_all: "Show all computers",
+  pg_agents_lead: "Want Claude Code, Codex or another agent to use ai-remote?",
   // glass: pages end
 
   // glass: computer (add keys below, above its end marker)
