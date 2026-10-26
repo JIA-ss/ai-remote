@@ -122,6 +122,41 @@ Claude 会话的 `permission_mode` 记为 `bypassPermissions`（旧会话都是�
 管道协议同步扩展：`LiveCmd::Permit`、`LiveCmd::SetMode`、`Answer` 带 `answers`；新事件经 `Out::Ev` 原样传。
 另加 `LiveCmd::GenerateTitle`（首条消息后要标题），`launch` 请求带 `permission_mode`。
 
+### 1.6 模型与推理强度（2026-10-26）
+
+规格 NS-29 / NS-32 / NS-33 / CP-53 / CP-57。全部是可选字段，旧控制端忽略；旧被控端的 hello 没有 `models`，新控制端据此不显示会话页的模型按钮。
+
+```json
+{"t":"models","models":[{"id":"opus","name":"Opus 5.5","description":"…","efforts":["low","medium","high","xhigh","max"],"default":true},
+                        {"id":"gpt-x","name":"GPT X","efforts":["low","medium","high"],"default_effort":"medium"}]}
+{"t":"model","model":"haiku","effort":"high"}            // null：智能体自己的默认
+{"model":{"model":"haiku","effort":"low"}}               // 上行命令；null 或不写 = 默认
+```
+
+- **数据来源**：Claude Code 启动时的 `control_request initialize` 应答带 `models`（`value`、`displayName`、`description`、
+  `supportsEffort`、`supportedEffortLevels`）；第一项 `value: "default"`（`resolvedModel` 是默认实际用的模型）不列出，改为把
+  `resolvedModel` 相同的第一项标 `default`；`supportsEffort` 为 false 或没有档位的模型 `efforts` 为空（例如 Haiku 4.5）。
+  Codex 在线程起来后调 `model/list`（`{limit:100}`），取 `id`、`displayName`、`description`、`isDefault`、`defaultReasoningEffort`、
+  `supportedReasoningEfforts[].reasoningEffort`，`hidden` 的不列。ACP 智能体取 `model` 配置项的可选值（不分档）。
+- **会话中换**：Claude Code 用 `control_request set_model`（`default` 表示默认），应答成功才记下并发 `model`，失败发通知
+  `model_rejected`（原话，例如 `Model 'x' not found`）。没有换档位的控制请求（2.1.308 对 `set_effort` 回 "Unsupported control
+  request subtype"），所以档位变了时：会话立即记下并发 `model`，在没有轮次进行时停掉进程、以新的 `--model` / `--effort` 和
+  `--resume` 重新启动（发 `resumed` 通知）；轮次进行中则等这一轮结束再重启。Codex 不需要重启：`turn/start` 的 `model` /
+  `effort` 作用于这一轮及之后，`null` 表示沿用，所以适配器每轮带上选定的值；只选模型时带该模型的 `defaultReasoningEffort`；
+  选过之后改回默认，显式发线程原来的模型和档位（`thread/start` / `thread/resume` 应答里的 `model`、`reasoningEffort`，没有时用列表的
+  默认项）。第一轮等 `model/list` 应答（一次往返）后再发。ACP 用 `session/set_config_option`。
+- **持久化**：`meta.json` 记 `model`、`effort`、`models`；`chat_sessions` 带 `effort`；被控端按智能体 id 记最后一次的列表（启动时从
+  各会话的 meta 恢复），`chat_runtimes` 的每个智能体带 `models`（没运行过就没有）。`chat_start` 新增可选 `effort`；校验：模型名
+  `valid_token`、档位小写字母数字和 `-_`、最长 16；所选模型（在已知列表里）不接受的档位被去掉。审计 `chat_session` `model`。
+- **runner**：`LiveCmd::SetModel` 经管道为 `{"t":"model","model","effort"}`，launch 请求带 `effort`，`Out::ModelSet` 原样回传。
+  旧 runner（跨被控端重启活下来的）不认 `model` 命令时这条命令丢失，会话的模型不变（不报错）。
+- **桌面端**：新建会话页的模型芯片和会话页输入框下巴右侧的按钮打开同一个菜单（`ui/workspace/ModelMenu.tsx`）：标题「模型」/
+  「模型 · 仅本会话」，默认项（有默认模型时写出名字）、各模型（带一行说明）、用过的自定义模型、推理强度一段（只列所选模型接受的
+  档位，加「默认」）、最底下「自定义模型 ID…」输入框。芯片是模型名 + 次级色的档位词。⌘⇧I 打开，⌘⇧E 打开并聚焦档位。
+  新建会话页按「电脑 + 文件夹 + 智能体」在开会话时记住模型和档位（localStorage `ai-remote.ws.place-models`），没有记录的文件夹
+  用它最近一个同智能体会话的值（模型仍在列表里时）；权限模式不记。被控端还没报过列表时用 Claude Code 的别名（Opus / Sonnet /
+  Haiku，五档全给）。
+
 ## 2. 桌面端结构
 
 规格（仓库外，行为 + 参数 + 依据，不含官方代码）：`~/ar-refs/spec/claude-{SB,NS,SP,TR,TC,CP,VS}.md`

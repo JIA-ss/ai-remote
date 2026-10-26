@@ -170,6 +170,7 @@ can; do not start one without being asked. On the command line:
 ai-remote chat list                                         # installed agents, versions, sign-in
 ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; prints the answer
 ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
+ai-remote chat start claude --cwd ~/code/app --model haiku --effort low   # a model and effort level instead of the defaults
 ai-remote chat send <session> "now run the tests" --wait
 ai-remote chat send <session> "stop after the first file" --steer   # into the running turn (Claude, Codex)
 ai-remote chat send <session> "what is wrong here?" --image shot.png  # images: PNG/JPEG/GIF/WebP, ≤3.75 MiB, up to 4

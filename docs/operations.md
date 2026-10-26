@@ -457,7 +457,7 @@ exactly as they do to an agent's calls. `--json` prints machine-readable output.
 | `ai-remote push <local> <remote> [--force] [--mkdir]` | `files_push` + the file channel | admin, asks |
 | `ai-remote pull <remote> [<local>] [--force]` | `files_pull` + the file channel | admin, asks |
 | `ai-remote chat list [--refresh]` | `chat_runtimes` | admin |
-| `ai-remote chat start <agent> --cwd <dir> [--prompt ..] [--model ..] [--hardened]` | `chat_start` + the chat channel | admin, asks |
+| `ai-remote chat start <agent> --cwd <dir> [--prompt ..] [--model ..] [--effort ..] [--hardened]` | `chat_start` + the chat channel | admin, asks |
 | `ai-remote chat run <agent> "<task>" --cwd <dir> [--keep]` | `chat_start` + the chat channel; prints the answer | admin, asks |
 | `ai-remote chat sessions` / `attach <id>` / `send <id> "<text>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`, `chat_attach`, `chat_interrupt`, `chat_end` | admin |
 | `ai-remote chat send <id> "<text>" --image <file>` / `commands <id>` / `files <id> [query]` | the chat channel: an image with a message, the agent's slash commands and skills, files in the session's folder | admin |
