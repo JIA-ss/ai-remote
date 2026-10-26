@@ -307,7 +307,7 @@ export default function App() {
   // The agents workspace: the whole window, its own sidebar; its pages are entries of this history.
   if (route.page === "agents") {
     return (
-      <div className="win" data-route="agents" style={{ width: "100vw", height: "100vh" }}>
+      <div className="win gl-win" data-route="agents" style={{ width: "100vw", height: "100vh" }}>
         {snap.ready && (
           <Workspace
             computers={snap.computers}

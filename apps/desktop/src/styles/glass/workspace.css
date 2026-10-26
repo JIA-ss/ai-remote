@@ -1,0 +1,186 @@
+/* glass/workspace.css: the agents workspace (ui/workspace) under the glass layer, in both places it
+   lives: the whole window (view=agents with no computer to watch) and the pane beside the live
+   screen (ui/LiveWorkspace.tsx). Imported last from src/index.css, after workspace.css, codex.css and
+   claude.css, so a rule here wins its ties with theirs.
+
+   The same physical model as the shell (glass/surfaces.css, glass/shell.css):
+   - the workspace root paints nothing: its sidebar sits on the window's material with the faint side
+     tint, its main pane on the content tint, separated by the content plane's hairline;
+   - rows, search and selection take the shell sidebar's tokens (--gl-hover, --gl-sel, --gl-field);
+   - the page toolbar is a transparent strip whose button groups are thin glass capsules;
+   - menus, the hover card and the ⌘K palette are thick glass, toasts regular glass, the palette over
+     an unblurred scrim. No blurred element sits inside another one;
+   - the composer's two popovers stay opaque (the folder list must not let the composer's text show
+     through: tools/desktop-chat-e2e.js reads its computed alpha), painted in the glass colour;
+   - a sidebar floating over the pane (narrow windows) is not blurred: a backdrop-filter would also
+     become the containing block of the fixed menus and hover cards inside it, so it is an opaque
+     panel in the glass colour instead.
+
+   Every rule needs the material on: selectors start with
+   :root:is([data-material="native"], [data-material="preview"]), spelled out each time (no nesting).
+   With data-material="none" the workspace keeps its own opaque look from workspace.css. */
+
+/* ---- inks: the tertiary ink is lifted for the translucent plane; light hovers become tints ---- */
+:root:is([data-material="native"], [data-material="preview"]):not([data-theme="light"]) .ws { --ws-t3: #9b9992; }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .ws {
+  --ws-t3: #6c6a65;
+  --ws-hover: rgb(11 11 11 / .05);
+  --ws-selected: rgb(11 11 11 / .08);
+}
+
+/* ---- the frame: material under the sidebar, the content tint under the main pane ---- */
+:root:is([data-material="native"], [data-material="preview"]) .ws { background: transparent; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-side { background: var(--gl-side); border-right: 0; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-main {
+  background: var(--gl-content);
+  box-shadow: inset var(--gl-hair) 0 0 var(--gl-side-sep);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws:not([data-side="docked"]) .ws-main { box-shadow: none; }
+/* narrow: the sidebar floats over the pane; opaque in the glass colour, never blurred (see the header) */
+:root:is([data-material="native"], [data-material="preview"]) .ws[data-side="float"] .ws-side {
+  background: rgb(var(--gl-g-rgb));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+}
+
+/* ---- sidebar: its top strip, the mode switch, search, rows ---- */
+/* icon buttons are round, like the shell's sidebar toggle (inside a capsule they fit its radius) */
+:root:is([data-material="native"], [data-material="preview"]) .ws-ib { border-radius: 14px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-ib:hover:not(:disabled) { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-ib:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+/* the computers / agents switch: the same track as the shell's (.gl-side-modes in workspace.css) */
+:root:is([data-material="native"], [data-material="preview"]) .ws-side-top > .ws-modes { border-radius: 14px; background: rgb(255 255 255 / .06); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .ws-side-top > .ws-modes { background: rgb(0 0 0 / .04); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-side-top > .ws-modes .ws-mode { width: 32px; border-radius: 12px; color: var(--text-2); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-side-top > .ws-modes .ws-mode:hover:not(.on) { background: var(--gl-hover); color: var(--text-1); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-side-top > .ws-modes .ws-mode:focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-side-top > .ws-modes .ws-mode.on { color: var(--text-1); background: rgb(255 255 255 / .14); box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .ws-side-top > .ws-modes .ws-mode.on { background: #FFFFFF; box-shadow: 0 1px 2px rgb(0 0 0 / .10), 0 0 0 .5px rgb(0 0 0 / .05); }
+/* search: the shell's capsule field */
+:root:is([data-material="native"], [data-material="preview"]) .ws-search {
+  height: 28px; border-radius: 14px;
+  background: var(--gl-field); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws-search:hover { background: var(--gl-field); box-shadow: inset 0 0 0 var(--gl-hair) var(--ws-line-strong); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-search:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent) 35%, transparent); }
+/* "New" and the session rows: the shell sidebar's hover and selection */
+:root:is([data-material="native"], [data-material="preview"]) .ws-nav { height: 28px; }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-nav, .ws-more, .ws-list-filter, .ws-gh-add):hover { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-nav.on { background: var(--gl-sel); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-row:hover, .ws-row[data-menu-open]) { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-row[data-selected], .ws-row[data-selected]:hover) { background: var(--gl-sel); }
+/* a multi-selection mixed the accent into the opaque sidebar colour: a tint instead */
+:root:is([data-material="native"], [data-material="preview"]) .ws-row[data-multi-selected] {
+  background: color-mix(in srgb, var(--ws-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ws-accent) 35%, transparent);
+}
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-jump-key, .ws-rename) { background: var(--gl-field); }
+
+/* ---- page toolbar: a transparent strip; the corner (toggle, back, forward) and the page's own
+   buttons are thin glass capsules. On macOS the traffic-light room is taken out of the corner's box
+   (still a drag region) so the capsule starts where the shell's sidebar toggle does (x 74). ---- */
+:root:is([data-material="native"], [data-material="preview"]) .ws-tb > .ws-corner:has(> .ws-lights) { position: relative; margin-left: 66px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-tb > .ws-corner > .ws-lights { position: absolute; right: 100%; top: 0; height: 100%; }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end:not(:empty)) {
+  position: relative; isolation: isolate;
+  height: var(--gl-cap-h); padding: 2px; gap: 2px; border-radius: calc(var(--gl-cap-h) / 2);
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-thin));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-cap);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws-tb { gap: 8px; padding: 0 8px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-tb > .ws-corner { margin-right: 0; }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end) > .ws-ib:hover:not(:disabled) { background: var(--fill-1); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end) > .ws-ib:active:not(:disabled) { background: var(--fill-2); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-title:hover:not([aria-disabled]) { background: var(--gl-hover); }
+
+/* ---- the new-session page: cards on the content plane, the composer a field ---- */
+:root:is([data-material="native"], [data-material="preview"]) .ws-card {
+  background: var(--gl-card);
+  box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-card-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws-env-foot { border-top-color: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-env-row:hover:not(:disabled), .ws-env-btn:hover:not(:disabled), .ws-step:hover:not(.static), .ws-chip:hover:not(:disabled), .ws-chip[aria-expanded="true"]) { background: var(--gl-hover); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-composer {
+  background: var(--gl-field);
+  box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws-composer:hover { box-shadow: inset 0 0 0 var(--gl-hair) var(--ws-line-strong); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-composer:focus-within { box-shadow: inset 0 0 0 1px var(--ws-line-strong); }
+/* the composer's popovers: opaque, in the glass colour and outline */
+:root:is([data-material="native"], [data-material="preview"]) .ws .ws-chip-folder .nt-folder-pop,
+:root:is([data-material="native"], [data-material="preview"]) .ws .ws-model-pop {
+  background: rgb(var(--gl-g-rgb));
+  border-radius: var(--gl-r-pop);
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws .ws-model-pop input { background: var(--gl-field); box-shadow: inset 0 0 0 var(--gl-hair) var(--gl-field-edge); }
+
+/* ---- the conversation on the plane. Claude's view carries the class `page`, which native.css paints
+   with --layer (the workspace's opaque surface), and its bottom fade ended in the opaque sidebar
+   colour: both follow the plane instead. ---- */
+:root:is([data-material="native"], [data-material="preview"]) .ws .nt-chat.page { background: transparent; }
+:root:is([data-material="native"], [data-material="preview"]) .ws .cl-root { --cl-bg: rgb(var(--gl-edge-rgb) / .8); }
+
+/* ---- functional glass: menus and the hover card (thick), toasts (regular), the ⌘K palette ---- */
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-menu, .ws-hovercard, .ws-palette, .ws-toast) {
+  isolation: isolate;
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-thick));
+  box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-float);
+  -webkit-backdrop-filter: blur(36px) saturate(160%);
+  backdrop-filter: blur(var(--gl-blur-thick, 36px)) saturate(160%);
+}
+:root:is([data-material="native"], [data-material="preview"]) .ws-toast:not(.error) {
+  background: rgb(var(--gl-g-rgb) / var(--gl-g-regular));
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(var(--gl-blur, 24px)) saturate(var(--gl-sat, 180%));
+}
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-menu, .ws-hovercard, .ws-toast) { border-radius: var(--gl-r-pop); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-palette { position: relative; border-radius: var(--gl-r-sheet); box-shadow: 0 0 0 var(--gl-hair) var(--gl-ring), var(--gl-rim-in), var(--gl-sh-sheet); }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] :is(.ws-tb > .ws-corner, .ws-tb-end:not(:empty), .ws-menu, .ws-hovercard, .ws-palette, .ws-toast) {
+  -webkit-backdrop-filter: blur(30px) saturate(125%);
+  backdrop-filter: blur(30px) saturate(125%);
+}
+/* the rim: the masked 1 px highlight ring of material.css (Windows draws none: Fluent has no rim) */
+:root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end:not(:empty), .ws-menu, .ws-hovercard, .ws-palette, .ws-toast)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: var(--gl-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+:root[data-os="windows"] :is(.ws-tb > .ws-corner, .ws-tb-end, .ws-menu, .ws-hovercard, .ws-palette, .ws-toast)::before { display: none; }
+:root[data-window-active="false"] :is(.ws-tb > .ws-corner, .ws-tb-end, .ws-menu, .ws-hovercard, .ws-palette, .ws-toast)::before { opacity: .4; }
+
+/* menus: concentric rows (14 − 6 = 8); macOS highlights the row in the accent, as the shell's menus do */
+:root:is([data-material="native"], [data-material="preview"]) .ws-menu { padding: 6px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-menu-item { border-radius: var(--gl-r-row); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-menu-sep { height: var(--gl-hair); background: var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .ws-menu-item:is(:hover, :focus-visible):not(:disabled) { background: var(--agent); color: var(--agent-on); }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .ws-menu-item:is(:hover, :focus-visible):not(:disabled) :is(.ws-menu-icon, .ws-menu-icon .ws-warn-icon, .ws-menu-detail, .ws-menu-key, .ws-menu-check) { color: inherit; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="mac"] .ws-menu-item:is(:hover, :focus-visible):not(:disabled) :is(.ws-menu-detail, .ws-menu-key) { opacity: .8; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .ws-menu-item:is(:hover, :focus-visible):not(:disabled) { background: var(--gl-hover); }
+
+/* the ⌘K palette: a sheet over an unblurred scrim (the scrim is its parent, so it never animates) */
+:root:is([data-material="native"], [data-material="preview"]) .ws-scrim { background: var(--gl-scrim); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-palette-q { height: 48px; padding: 0 18px; border-bottom: var(--gl-hair) solid var(--gl-sep); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-palette-list { padding: 6px; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-palette-row { border-radius: var(--gl-r-row); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-palette-row.on { background: var(--gl-sel); }
+
+/* toasts: the action is a capsule */
+:root:is([data-material="native"], [data-material="preview"]) .ws-toast { position: relative; }
+:root:is([data-material="native"], [data-material="preview"]) .ws-toast-act { border-radius: 13px; background: var(--fill-1); }
+:root:is([data-material="native"], [data-material="preview"]) .ws-toast-act:hover { background: var(--fill-2); }
+
+/* no backdrop-filter at all: an opaque floor under the glass colour */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:is([data-material="native"], [data-material="preview"]) :is(.ws-tb > .ws-corner, .ws-tb-end:not(:empty), .ws-menu, .ws-hovercard, .ws-palette, .ws-toast) { background: rgb(var(--gl-g-rgb) / .96); }
+}

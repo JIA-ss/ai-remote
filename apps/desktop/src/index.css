@@ -10,3 +10,5 @@
 @import "./styles/codex.css";
 @import "./styles/workspace.css";
 @import "./styles/claude.css";
+/* the glass layer for the agents workspace: after the workspace, Codex and Claude sheets it overrides */
+@import "./styles/glass/workspace.css";
