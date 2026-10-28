@@ -32,6 +32,20 @@ export interface Caps {
   questions_multi?: boolean;
 }
 
+/**
+ * A model an agent offers (`models` events, the hello, `chat_runtimes`): `id` is what the agent takes,
+ * `efforts` the levels it takes lowest first (none: it takes no level), `default` the one used when
+ * none is chosen.
+ */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  description?: string;
+  efforts?: string[];
+  default_effort?: string;
+  default?: boolean;
+}
+
 /** An agent installed on a host, as `chat_runtimes` reports it. */
 export interface Runtime {
   id: string;
@@ -45,6 +59,8 @@ export interface Runtime {
   detail?: string | null;
   login?: { state: "logged_in" | "logged_out" | "unknown"; method?: string | null; plan?: string | null } | null;
   caps: Caps;
+  /** The models the agent offered last on this host (none until it has run there once). */
+  models?: ModelInfo[];
 }
 
 export interface RuntimesReport {
@@ -137,6 +153,10 @@ export type ChatEvent = { seq: number; ts: number; turn: number } & (
   | { t: "notice"; level: "info" | "warn" | "error" | "debug"; code: string; text: string; input_id?: string }
   | { t: "commands"; commands: SlashCommand[] }
   | { t: "agent"; images?: boolean }
+  /** The models the agent offers now (the whole list). */
+  | { t: "models"; models: ModelInfo[] }
+  /** The model and effort level later messages run with (null: the agent's default). */
+  | { t: "model"; model?: string | null; effort?: string | null }
 );
 
 /**
@@ -221,6 +241,12 @@ export interface ChatHello {
   images?: boolean;
   /** The permission mode when the channel opened (`mode` events update it; older hosts leave it out). */
   permission_mode?: string | null;
+  /** The models the agent offers as last known (`models` events replace them). A host that sends it
+   *  takes the `model` command; older hosts leave it out. */
+  models?: ModelInfo[];
+  /** The model and effort level the next message runs with (null: the agent's default; `model` events update them). */
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface ToolItem {
@@ -339,12 +365,16 @@ export interface Chat {
   title: { text: string; source: string } | null;
   /** Claude's permission mode from its last `mode` event (null: the host did not say). */
   mode: string | null;
+  /** The agent's models from its last `models` event (null: none came). */
+  models: ModelInfo[] | null;
+  /** The model and level from the last `model` event (null: none came; the hello says what holds). */
+  model: { model: string | null; effort: string | null } | null;
   /** Permissions and plans the agent asked about, open and settled, in the order they came. */
   requests: Request[];
 }
 
 export const emptyChat = (): Chat => ({ seq: 0, state: "idle", queued: [], turns: [], notices: [], context: null, inputs: [], dropped: [], commands: null, images: null, usage: null,
-  title: null, mode: null, requests: [] });
+  title: null, mode: null, models: null, model: null, requests: [] });
 
 /** Requests kept (settled ones are only the transcript's record of them). */
 export const MAX_REQUESTS = 200;
@@ -437,6 +467,12 @@ export function reduceChat(prev: Chat, e: ChatEvent): Chat {
       return c;
     case "mode":
       c.mode = e.mode;
+      return c;
+    case "models":
+      c.models = Array.isArray(e.models) ? e.models : [];
+      return c;
+    case "model":
+      c.model = { model: e.model ?? null, effort: e.effort ?? null };
       return c;
     case "permission":
     case "plan_review": {
@@ -611,6 +647,11 @@ export function permitCommand(rid: string, decision: PermitDecision, extra: { me
 /** Switching Claude's permission mode. */
 export function modeCommand(mode: string): { mode: { mode: string } } {
   return { mode: { mode } };
+}
+
+/** The model and effort level for the next messages (null: the agent's default). */
+export function modelCommand(model: string | null, effort: string | null): { model: { model: string | null; effort: string | null } } {
+  return { model: { model: model?.trim() || null, effort: effort?.trim() || null } };
 }
 
 /** Answering a question: `text` is the first part's answer (what an older host reads), `answers` all of them by question. */

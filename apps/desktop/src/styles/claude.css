@@ -368,5 +368,23 @@
 .cl-chip.warn { color: var(--cl-warn); }
 .cl-chip:disabled { opacity: .5; }
 .cl-chip-note { font-size: 11px; color: var(--cl-warn); }
+/* The chin as in the official app (CP-53, NS-31): the permission mode is plain grey words (its icon and
+   chevron stay in the menu; bypass is not drawn as a warning on the chip); on the right the model name
+   and the effort word in the secondary ink, then the context ring. */
+.cl-compose .nt-compose-ft .cl-mode > .cl-chip > svg { display: none; }
+.cl-compose .nt-compose-ft .cl-mode > .cl-chip { padding: 0 6px; }
+.cl-compose .nt-compose-ft .cl-chip.warn { color: var(--cl-text-2); }
+.cl-compose .nt-compose-ft .cl-chip.warn:hover:not(:disabled) { color: var(--cl-text); }
+.cl-model { position: relative; display: inline-flex; min-width: 0; flex: 0 1 auto; }
+.cl-root .cl-model-chip { height: 24px; max-width: 100%; min-width: 0; display: inline-flex; align-items: center; gap: 5px; padding: 0 6px; border-radius: 6px;
+  font-size: 12px; color: var(--cl-text-2); white-space: nowrap; }
+.cl-root .cl-model-chip:hover:not(:disabled), .cl-root .cl-model-chip[aria-expanded="true"] { background: var(--cl-a1); color: var(--cl-text); }
+.cl-root .cl-model-chip:disabled { opacity: .5; }
+.cl-root .cl-model-chip .ws-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: inherit; }
+.cl-root .cl-model-chip .ws-chip-sub { flex: none; color: var(--cl-muted); }
+/* The model menu outside the workspace (the chat tab beside the live view) takes the app's own palette. */
+.cl-root .ws-menu { --ws-s3: var(--raised); --ws-t1: var(--text-1); --ws-t2: var(--text-2); --ws-t3: var(--text-3); --ws-t4: var(--text-4);
+  --ws-line: var(--stroke-1); --ws-hover: var(--fill-1); --ws-accent: var(--agent); --ws-danger-text: var(--danger); --ws-warn-text: var(--you-text);
+  box-shadow: var(--ws-shadow-pop, 0 8px 24px #00000052, 0 2px 6px #00000033), var(--ws-ring, inset 0 0 0 1px var(--stroke-1)); font-size: 13px; line-height: 19px; }
 .cdlg.cl-confirm .ttl { font-size: 15px; font-weight: 600; color: var(--text-1); }
 .cl-root .nt-chat-hd .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -42,7 +42,8 @@ this machine and a host, run `ai-remote push` / `ai-remote pull` in a terminal."
 /// Host tools an MCP client cannot complete: they hand out a ticket for the files channel, which
 /// only `ai-remote push` / `pull` speak, or work the desktop app's own views (`chat_update`). Kept out of an
 /// agent's tool list.
-const CHANNEL_TOOLS: [&str; 6] = ["files_push", "files_pull", "chat_start", "chat_attach", "chat_file", "chat_update"];
+const CHANNEL_TOOLS: [&str; 7] =
+    ["files_push", "files_pull", "chat_start", "chat_attach", "chat_file", "chat_update", "chat_search"];
 
 #[derive(Clone)]
 pub(crate) struct Aggregator {

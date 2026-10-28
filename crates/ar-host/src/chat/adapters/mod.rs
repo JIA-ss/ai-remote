@@ -40,6 +40,13 @@ pub enum LiveCmd {
     Permit { rid: String, decision: Decision, message: Option<String>, mode: Option<String> },
     /// Switch the permission mode (Claude Code only; the session refuses it for other agents).
     SetMode { mode: String },
+    /// Use this model and effort level from now on (`None`: the agent's default). Claude Code
+    /// switches models with `set_model` and answers [`Out::ModelSet`] or a `model_rejected`
+    /// notice; Codex sends them with every `turn/start`. Sent only where the running process can
+    /// take the change (see the session's `set_model`).
+    ///
+    /// [`Out::ModelSet`]: super::event::Out::ModelSet
+    SetModel { model: Option<String>, effort: Option<String> },
     /// Ask the agent for a title for the conversation that starts with `description` (Claude Code
     /// only; others ignore it). Answered with a `title` event, or not at all.
     GenerateTitle { description: String },
@@ -56,8 +63,14 @@ pub struct Launch<'a> {
     pub hardened: bool,
     /// The agent's own conversation id to continue.
     pub resume: Option<&'a str>,
+    /// `resume` is another session's conversation to copy into a new one (a fork), not to continue:
+    /// Claude Code's `--fork-session`, Codex's `thread/fork`. Only those two can (see
+    /// [`can_fork`]).
+    pub fork: bool,
     /// Claude Code's permission mode (see [`PERMISSION_MODES`]); `None` is `bypassPermissions`.
     pub permission_mode: Option<&'a str>,
+    /// The effort level (Claude Code's `--effort`, Codex's `effort`); `None`: the agent's default.
+    pub effort: Option<&'a str>,
 }
 
 /// What a person decided about a permission or a plan.
@@ -74,6 +87,12 @@ pub enum Decision {
 
 /// Claude Code's permission modes a session may use.
 pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// Whether sessions of agents speaking `protocol` can be forked: copied into a new conversation
+/// that goes on apart from the first. ACP has no way to copy a conversation.
+pub fn can_fork(protocol: Protocol) -> bool {
+    matches!(protocol, Protocol::ClaudeStreamJson | Protocol::CodexAppServer)
+}
 
 /// The mode a Claude Code session runs in when none was chosen (what sessions always did).
 pub const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
@@ -114,11 +133,16 @@ pub fn launch(l: Launch<'_>) -> Result<(LiveHandle, mpsc::Receiver<Out>)> {
             let opts = codex::Opts {
                 cwd: l.cwd.display().to_string(),
                 model: l.model.map(str::to_string),
+                effort: l.effort.map(str::to_string),
                 resume: l.resume.map(str::to_string),
+                fork: l.fork,
             };
             tokio::spawn(codex::run(proc, lines, cmds, out_tx, name, opts));
         }
         Protocol::Acp => {
+            if l.fork {
+                anyhow::bail!("{} cannot fork a conversation", l.resolved.name);
+            }
             let opts = acp::Opts {
                 cwd: l.cwd.display().to_string(),
                 resume: l.resume.map(str::to_string),

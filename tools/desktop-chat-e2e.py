@@ -233,7 +233,22 @@ def out(v):
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
 mode = sys.argv[sys.argv.index("--permission-mode") + 1] if "--permission-mode" in sys.argv else "default"
-out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"], "permissionMode": mode})
+# A fork (--resume X --fork-session) is session fork-X and says so in its plain answers.
+resume = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else None
+forked = resume if "--fork-session" in sys.argv else None
+tail = f" (forked from {forked})" if forked else ""
+# The model and effort level it runs with (WHICH says them): --model / --effort, then set_model.
+model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else ""
+effort = sys.argv[sys.argv.index("--effort") + 1] if "--effort" in sys.argv else ""
+LEVELS = ["low", "medium", "high", "xhigh", "max"]
+MODELS = [
+    {"value": "default", "resolvedModel": "claude-fake-opus", "displayName": "Default (recommended)", "description": "Opus 5.5 · the stand-in's default", "supportsEffort": True, "supportedEffortLevels": LEVELS},
+    {"value": "opus", "resolvedModel": "claude-fake-opus", "displayName": "Opus 5.5", "description": "Best for everyday, complex tasks", "supportsEffort": True, "supportedEffortLevels": LEVELS},
+    {"value": "sonnet", "resolvedModel": "claude-fake-sonnet", "displayName": "Sonnet 5.5", "description": "Efficient for routine tasks", "supportsEffort": True, "supportedEffortLevels": LEVELS},
+    {"value": "haiku", "resolvedModel": "claude-fake-haiku", "displayName": "Haiku 5.5", "description": "Fastest for quick answers", "supportsEffort": True, "supportedEffortLevels": LEVELS},
+    {"value": "claude-haiku-4-5-20251001", "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku 4.5", "description": "Fastest for quick answers"},
+]
+out({"type": "system", "subtype": "init", "session_id": f"fork-{forked}" if forked else "fake-session", "skills": ["tidy"], "permissionMode": mode})
 OLD = "def quarter_end(year, q):\n    return date(year, q * 3, 31)\n"
 ANSWER = """Fixed: the quarter end was always **day 31**.
 
@@ -408,7 +423,12 @@ for line in sys.stdin:
         out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"commands": [
             {"name": "review", "description": "Review the changes on this branch", "argumentHint": "<pr>"},
             {"name": "release-notes", "description": "Draft release notes from the commits"},
-            {"name": "tidy", "description": "Tidy the code (a skill)"}]}}})
+            {"name": "tidy", "description": "Tidy the code (a skill)"}], "models": MODELS}}})
+        continue
+    if msg.get("type") == "control_request" and msg["request"].get("subtype") == "set_model":
+        model = msg["request"].get("model") or ""
+        model = "" if model == "default" else model
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {"model": "claude-fake-" + (model or "opus")}}})
         continue
     if msg.get("type") == "control_request" and msg["request"].get("subtype") == "generate_session_title":
         title = "Fake: " + msg["request"].get("description", "")[:40]
@@ -464,6 +484,8 @@ for line in sys.stdin:
         out({"type": "assistant", "message": {"id": "st", "content": [{"type": "text", "text": "steered: " + text}]}})
         out({"type": "result", "subtype": "success", "is_error": False, "result": "steered: " + text})
         continue
+    if "WHICH" in text:
+        done(f"model={model} effort={effort}"); continue
     if "CODEDETAILS" in text:
         code_details(); continue
     if "ASKDETAILS" in text:
@@ -500,10 +522,10 @@ for line in sys.stdin:
     if "AGENT" in text:
         subagent(); continue
     out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m"}}})
-    for word in ("you ", "said: ", text):
+    for word in ("you ", "said: ", text + tail):
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word}}})
-    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text}]}})
-    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text})
+    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text + tail}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text + tail})
 '''
 
 for exe in (options.cli, options.app):

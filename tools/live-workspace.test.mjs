@@ -69,7 +69,7 @@ test("a new popup menu focuses its chosen row only after its measured position i
     if (style.visibility !== "hidden") document.activeElement = selected; } };
   const document = { body, activeElement: body, documentElement: { clientWidth: 1280, clientHeight: 800 }, addEventListener() {}, removeEventListener() {} };
   const element = { getBoundingClientRect: () => ({ width: 220, height: 150 }),
-    querySelector: (selector) => selector.includes("aria-checked=true") ? selected : first,
+    querySelector: (selector) => selector.includes("data-autofocus") ? null : selector.includes("aria-checked=true") ? selected : first,
     querySelectorAll: () => [first, selected], contains: (node) => node === first || node === selected };
   const { PopMenu } = compiled("ui/workspace/parts.tsx", {
     react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key }, "../../lib/platform": { detectOs: () => "mac" },
@@ -140,7 +140,8 @@ function workspaceFixture({ width = 660, embedded = true, route = {}, initialTar
     "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
     "./NewSession": { NewSession }, "./SessionPage": { SessionPage }, "./Sidebar": { Sidebar }, "./Palette": { Palette },
     "./parts": parts,
-    "./actions": { archive() {}, markDone() {}, togglePin() {}, toggleRead() {}, unarchive() {} },
+    "./actions": { archive() {}, fork() {}, markDone() {}, togglePin() {}, toggleRead() {}, unarchive() {} },
+    "./FamilyConfirm": { FamilyConfirm: () => null },
     "./useWorkspace": { useWorkspace: () => ({ items: [], loaded: true }), workspace: { items: () => [], dot: () => null } },
   }, {
     Node, Element, HTMLElement: Element, HTMLInputElement: class extends Element {},

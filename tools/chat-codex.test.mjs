@@ -700,3 +700,19 @@ for (const file of ["desktop-chat-codex-e2e.js", "desktop-chat-codex-real.js"]) 
     assert.ok(missed.checks.some((c) => !c.ok));
   });
 }
+
+test("the model picker's words: no GPT- prefix, the default model when none is chosen, the effort it works at", () => {
+  const models = [
+    { id: "gpt-5.5", name: "GPT-5.5", default: true, efforts: ["low", "medium", "high"], default_effort: "medium" },
+    { id: "gpt-5.5-mini", name: "GPT-5.5 mini", efforts: ["low", "high"], default_effort: "low" },
+  ];
+  const w = (model, effort) => JSON.parse(JSON.stringify(codex.codexModelWords(models, model, effort)));
+  assert.deepEqual(w(null, null), { name: "5.5", effort: "medium" }, "nothing chosen: Codex's default model at its own level");
+  assert.deepEqual(w("gpt-5.5-mini", null), { name: "5.5 mini", effort: "low" }, "a model without a level works at its own default");
+  assert.deepEqual(w("gpt-5.5-mini", "high"), { name: "5.5 mini", effort: "high" });
+  assert.deepEqual(w("", "high"), { name: "5.5", effort: "high" }, "the default model at a chosen level");
+  assert.deepEqual(w("my-model", null), { name: "my-model", effort: null }, "a model typed by hand: its ID, no level known");
+  assert.deepEqual(JSON.parse(JSON.stringify(codex.codexModelWords([{ id: "a", name: "Alpha", default_effort: "low" }, { id: "b", name: "Beta" }], null, null))),
+    { name: "Alpha", effort: "low" }, "no default marked: the first offered");
+  assert.deepEqual(JSON.parse(JSON.stringify(codex.codexModelWords([], null, null))), { name: "", effort: null });
+});

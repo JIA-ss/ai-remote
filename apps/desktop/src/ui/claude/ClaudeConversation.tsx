@@ -14,6 +14,7 @@ import {
   markAnswered,
   markResolved,
   modeCommand,
+  modelCommand,
   permitCommand,
   rememberSent,
   type InputMode,
@@ -32,6 +33,7 @@ import { CardDock, type CardActions } from "./Cards";
 import { openStore } from "./ClaudeTurn";
 import { ClaudeTranscript } from "./ClaudeTranscript";
 import { ModePicker, StatusLine, TodoDock } from "./Dock";
+import { ModelPicker } from "./ModelPicker";
 
 export function ClaudeConversation({ host, target, onLeave, variant = "page" }: { host: string; target: ChatTarget; onLeave: (gone?: boolean) => void; variant?: "page" | "rail" }) {
   const conv = useConversation(host, target);
@@ -63,6 +65,11 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
   const agent = hello?.runtime.name ?? t("hc_agent");
   const claude = hello?.runtime.protocol === "claude-stream-json" || hello?.runtime.id === "claude";
   const permissions = !!hello?.caps?.permissions;
+  // CP-53: the model and effort level, where the host takes the `model` command (its hello lists models);
+  // an ACP agent without a model choice has none to offer.
+  const models = chat.models ?? hello?.models ?? null;
+  const inUse = chat.model ?? { model: hello?.model ?? null, effort: hello?.effort ?? null };
+  const choosesModel = !!hello?.models && (claude || (models?.length ?? 0) > 0);
   useEffect(() => {
     if (!running) setStopping(false);
   }, [running]);
@@ -216,6 +223,11 @@ function ClaudeView({ host, target, onLeave, variant, conv }: { host: string; ta
           onDraft={setDraft}
           holdEnter={holdEnter}
           escClaimed={cards}
+          trail={choosesModel && hello ? (
+            <ModelPicker scope={root} runtime={hello.runtime.id} protocol={hello.runtime.protocol ?? undefined} models={models ?? []}
+              model={inUse.model ?? ""} effort={inUse.effort} disabled={readonly || ended}
+              onPick={(m, e) => send(modelCommand(m || null, e))} />
+          ) : null}
           lead={claude && permissions ? (
             <ModePicker mode={chat.mode ?? hello?.permission_mode ?? null} busy={running} agent={agent} host={host} folder={hello?.cwd ?? ""} disabled={readonly || ended}
               onPick={(m: Mode) => send(modeCommand(m))} />

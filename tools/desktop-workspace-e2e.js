@@ -18,9 +18,20 @@
 //      an edit's diff with its real line numbers, stop and continue, a waiting message edited and taken back.
 //   C. First answer wins: a second connection to the same session answers an approval; the desktop's card
 //      goes when the host says it was resolved.
+//   E. (between A9 and A10) Fork from the row menu: the fork under its parent with the guide line, its
+//      agent continuing a copy of the conversation, folding to a summary line, ⌘K finding it by what was
+//      said (the hosts' chat_search) and the parent by a title it had before, archiving asking about it.
+//   M. Models and effort levels (inside A): the new-session page's model menu and ⌘⇧E, the first message
+//      starting with them, the place remembering them, the composer chin's button switching the model in
+//      place and the effort level by a restart, and a Codex session's next turn/start carrying both.
 //   D. Three idle sessions outside the current conversation: modifier/range selection, the batch
 //      menu's keyboard focus, pin/read/archive and Undo; `chat_sessions` independently confirms the
 //      host's persisted pin/archive fields, including the archived-only query.
+//   E. Groups made on this device with the same sessions: New group named in place, Move to group by
+//      digit and by click (with Undo), pointer-event drags into a group (its ring), onto Pinned's drop
+//      row and between pinned rows (the insertion line; pins confirmed on the host), out of Pinned, a
+//      cancelled drag, group order by drag and ⌥↓, pinned order by ⌥↓, rename and delete (Undo),
+//      comfortable rows with the metadata line, and the group's open animation under the motion setting.
 (async () => {
   const CFG = __CONFIG__;
   const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -293,6 +304,24 @@
     await check("the folder picker browses the computer and takes the work folder", !!(await browseTo(above, workName, workName)), folderShown());
     const modeText = await pickMode(0);
     await check("the permission mode can be set to Ask", /询问|Ask/.test(modeText), modeText);
+    // M1. NS-32 / NS-33: the model chip opens a menu (Claude Code's aliases before the agent has run on
+    // this computer) and ⌘⇧E opens it at the effort levels; both go with the first message.
+    const modelChip = () => $(".ws-env-trail .ws-model-chip");
+    const chipWords = (chip) => `${text($(".ws-chip-text", chip))}|${text($(".ws-chip-sub", chip))}`;
+    modelChip()?.click();
+    const haiku = await until("model menu", () => $$(".ws-menu [role=menuitemradio]").find((b) => /^Haiku/.test(text($(".ws-menu-label", b)))), 5000);
+    await check("M1 the model chip opens a menu of models with a custom ID field", !!haiku && !!$(".ws-menu .ws-menu-field input"),
+      text($(".ws-menu")).slice(0, 200));
+    haiku?.click();
+    await until("model menu closed", () => !$(".ws-menu"), 3000);
+    $(".ws-new .ws-composer textarea")?.focus();
+    chord("e", { shiftKey: true });
+    const high = await until("effort levels", () => document.activeElement?.closest(".ws-menu")
+      && $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === L("高", "High")), 5000);
+    await check("M1 ⌘⇧E opens the menu at the effort levels", !!high && /默认|Default/.test(text(document.activeElement)), text(document.activeElement));
+    high?.click();
+    await check("M1 the chip shows the model and the effort word", !!(await until("model chip", () => chipWords(modelChip()) === `Haiku|${L("高", "High")}`, 3000)),
+      chipWords(modelChip()));
     await shot("a01-new-session");
     const prompt1 = "DELAYTITLE LATER6 整理季度导出脚本";
     const k1 = await start(prompt1);
@@ -313,15 +342,54 @@
     if (titled) await note(`the agent's title showed ${((Date.now() - sentAt) / 1000).toFixed(1)} s after the first message`);
     await check("the agent's title replaces it", !!titled, `${rowTitle(k1)} | ${pageTitle()}`);
     await check("the turn ends by itself", !!(await said("later: DELAYTITLE", 20000)));
+    const m1 = (await hostCall("chat_sessions")).sessions.find((x) => k1?.endsWith(`/${x.id}`));
+    await check("M1 the session started with the chosen model and effort level", m1?.model === "haiku" && m1?.effort === "high",
+      JSON.stringify({ model: m1?.model, effort: m1?.effort }));
     // An occluded/locked desktop polls at the store's idle 20 s cadence, instead of 4 s. Observe
     // the natural poll; do not force a refresh or fail before that configured interval can elapse.
     const settledAt = Date.now();
     await check("the ended session has no dot (it is open)", !!(await until("no dot", () => dotOf(k1) === null, 35000)),
       `${dotOf(k1)}; ${(Date.now() - settledAt) / 1000} s; visibility: ${document.visibilityState}`);
 
+    // M2. CP-53: the composer chin's right side: the model (the agent's own list now) and the effort word,
+    // then the context ring. A model switches in the running process; another level restarts it.
+    const chin = () => $(".ws-main .cl-model-chip");
+    await check("M2 the chin shows the model's name and its effort word", !!(await until("chin model", () => chipWords(chin()) === `Haiku 5.5|${L("高", "High")}`, 15000)),
+      chipWords(chin()));
+    const chinBox = chin()?.getBoundingClientRect();
+    const modeBox = $(".ws-main .nt-compose-ft .cl-mode")?.getBoundingClientRect();
+    await check("M2 the model sits right of the permission mode, inside the composer's width", !!chinBox && !!modeBox && chinBox.left > modeBox.right
+      && chinBox.right <= ($(".ws-main .nt-compose")?.getBoundingClientRect().right ?? 0) + 1, `${chinBox?.left} ${modeBox?.right}`);
+    await send("WHICH 1");
+    await check("M2 the agent runs with the chosen model and level", !!(await said("model=haiku effort=high")));
+    chin()?.click();
+    const opus = await until("session model menu", () => $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === "Opus 5.5"), 5000);
+    await check("M2 its menu is titled for this session and lists the agent's models", !!opus && /仅本会话|this session/.test(text($(".ws-menu .ws-menu-h"))),
+      text($(".ws-menu")).slice(0, 160));
+    const pop = $(".ws-menu")?.getBoundingClientRect();
+    await check("M2 the menu stays inside the window", !!pop && pop.top >= 0 && pop.left >= 0 && pop.bottom <= innerHeight && pop.right <= innerWidth,
+      pop && `${pop.left},${pop.top},${pop.right},${pop.bottom} / ${innerWidth}x${innerHeight}`);
+    await shot("a01b-model-menu");
+    opus?.click();
+    await check("M2 a model chosen mid-session shows once the host says it holds", !!(await until("chin opus", () => text($(".ws-chip-text", chin())) === "Opus 5.5", 10000)),
+      chipWords(chin()));
+    await send("WHICH 2");
+    await check("M2 the running agent switched in place", !!(await said("model=opus effort=high")));
+    composer()?.focus();
+    chord("e", { shiftKey: true });
+    const low = await until("effort item", () => document.activeElement?.closest(".ws-menu") && $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === L("低", "Low")), 5000);
+    await check("M2 ⌘⇧E opens it at the effort levels, the current one focused", !!low && text(document.activeElement) === L("高", "High"), text(document.activeElement));
+    low?.click();
+    await check("M2 another effort level shows", !!(await until("chin low", () => text($(".ws-chip-sub", chin())) === L("低", "Low"), 10000)), chipWords(chin()));
+    await send("WHICH 3");
+    await check("M2 the agent restarted with it and the conversation goes on", !!(await said("model=opus effort=low", 30000)));
+    await idle();
+
     // A2. Unread: a session that moves on while another is open gets a blue dot; opening it clears it.
     await newSession();
     await check("New keeps the last place", folderShown() === workName, folderShown());
+    await check("M3 the place remembers the model and level it started with (NS-29)", !!(await until("remembered model", () =>
+      /^Haiku/.test(text($(".ws-chip-text", modelChip()))) && text($(".ws-chip-sub", modelChip())) === L("高", "High"), 5000)), chipWords(modelChip()));
     const k2 = await start("LATER25 第二个会话");
     await check("a second session opens", !!k2 && k2 !== k1, k2);
     await openRow(k1);
@@ -425,18 +493,21 @@
     // The row disappears optimistically; the Undo toast follows the host's completed update.
     await check("with a toast that can undo it", !!(await until("archive Undo toast", () => $$(".ws-toast").find((x) => $(".ws-toast-act", x)), 10000)));
     const filter = () => $$(".ws-menu [role=menuitemradio]");
+    // The "Show" choices by their labels (the menu also lists groupings, order and row density).
+    const show = (which) => filter().find((b) => ({ active: /^(未归档的|Not archived)$/, archived: /^(已归档的|Archived)$/, all: /^(全部会话|All sessions)$/ })[which]
+      .test(text($(".ws-menu-label", b))));
     $(".ws-list-filter").click();
-    (await until("list menu", () => filter().length >= 12 && filter(), 5000))?.[10].click();
+    (await until("list menu", () => show("archived"), 5000))?.click();
     const back = await until("archived row", () => rowOf(k2)?.hasAttribute("data-archived") && rowOf(k2), 10000);
     await check("the archived view lists it, marked", !!back);
     await sleep(5000); // a poll with the archived list
     await check("the open session's page stays while the list shows archived sessions", !!$(".ws-session .nt-chat") && !$(".ws-session .ws-state"),
       text($(".ws-session .ws-state")) || "");
     await shot("a06-archived");
-    filter()[11]?.click();
+    show("all")?.click();
     await sleep(5000);
     await check("the All view lists archived and other sessions together", !!rowOf(k2) && !!rowOf(k1), `${!!rowOf(k1)} ${!!rowOf(k2)}`);
-    filter()[10]?.click();
+    show("archived")?.click();
     await until("archived row", () => rowOf(k2), 10000);
     closeMenu();
     await until("menu closed", () => !$(".ws-menu"), 3000);
@@ -446,7 +517,7 @@
     unarch?.click();
     await check("Unarchive takes it out of the archived view, with a toast", !!(await until("unarchived", () => !rowOf(k2) && $$(".ws-toast").some((x) => /取消归档|Unarchived/.test(x.textContent)), 10000)));
     $(".ws-list-filter").click();
-    (await until("list menu", () => filter().length >= 12 && filter(), 5000))?.[9].click();
+    (await until("list menu", () => show("active"), 5000))?.click();
     closeMenu();
     await check("the active view has it again", !!(await until("active again", () => rowOf(k2) && !rowOf(k2).hasAttribute("data-archived") && !$(".ws-list-filter.on"), 10000)));
     await openRow(k1);
@@ -465,12 +536,56 @@
       !!codexComposer && codexComposer.bottom <= innerHeight - 12, codexComposer && `${codexComposer.bottom} / ${innerHeight}`);
     await shot("a07-codex");
 
+    // M4. Codex: the host lists the models model/list gave, and a model and level chosen go with the next
+    // turn/start (Codex keeps them; back to the default sends the thread's own). The Codex view's own
+    // composer belongs to another piece of work, so the command goes over a second connection here.
+    const cx = { events: [] };
+    try {
+      const att = await hostCall("chat_attach", { session: k3.split("/").pop() });
+      const cb = window.__TAURI_INTERNALS__.transformCallback((raw) => { if (raw && "message" in raw) cx.events.push(raw.message); });
+      const channel = { toJSON: () => `__CHANNEL__:${cb}`, __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cb}` };
+      const [id, hello] = await invoke("open_chat", { host: CFG.host, request: { ticket: att.ticket, since: 0 }, onEvent: channel });
+      Object.assign(cx, { id, hello });
+    } catch (e) {
+      cx.error = String(e && e.message || e);
+    }
+    await check("M4 a Codex session's hello lists its models (hidden ones left out)", (cx.hello?.models ?? []).map((m) => m.id).join() === "gpt-fake,gpt-fake-mini",
+      cx.error ?? JSON.stringify(cx.hello?.models ?? null).slice(0, 200));
+    if (cx.id !== undefined) {
+      const turnText = async (what, ms = 20000) => until(what, () => cx.events.find((e) => e?.t === "turn_end" && (e.final_text ?? "").includes(what)), ms);
+      await invoke("chat_send", { id: cx.id, command: { model: { model: "gpt-fake-mini", effort: "high" } } });
+      await check("M4 the host takes the model and level for the next turn", !!(await until("codex model event", () =>
+        cx.events.find((e) => e?.t === "model" && e.model === "gpt-fake-mini" && e.effort === "high"), 10000)));
+      await invoke("chat_send", { id: cx.id, command: { input: { id: `w${Date.now()}`, text: "WHICH mini" } } });
+      await check("M4 turn/start carries the chosen model and effort level", !!(await turnText("model=gpt-fake-mini effort=high")));
+      await invoke("chat_send", { id: cx.id, command: { model: { model: null, effort: null } } });
+      await invoke("chat_send", { id: cx.id, command: { input: { id: `w${Date.now()}`, text: "WHICH default" } } });
+      await check("M4 back to the default sends the thread's own model and level", !!(await turnText("model=gpt-fake effort=medium")));
+      await invoke("close_chat", { id: cx.id }).catch(() => {});
+    }
+    // The new-session page now offers Codex's own models and levels (asked again after a start).
+    await newSession();
+    await pickAgent("Codex fake");
+    modelChip()?.click();
+    const mini = await until("codex models", () => $$(".ws-menu [role=menuitemradio]").find((b) => text($(".ws-menu-label", b)) === "GPT Fake Mini"), 10000);
+    await check("M4 the new-session page lists Codex's models after it ran here", !!mini, text($(".ws-menu")).slice(0, 200));
+    mini?.click();
+    await until("menu closed", () => !$(".ws-menu"), 3000);
+    modelChip()?.click();
+    const levels = await until("codex levels", () => $(".ws-menu") && $$(".ws-menu [role=menuitemradio]").map((b) => text($(".ws-menu-label", b))), 5000);
+    await check("M4 only the levels that model takes are offered, its own default named", !!levels && levels.includes(L("高", "High"))
+      && !levels.includes(L("中", "Medium")) && levels.some((l) => /低|Low/.test(l) && /默认|Default/.test(l)), (levels ?? []).join(" | "));
+    await shot("a07b-codex-model-menu");
+    closeMenu();
+    await until("menu closed", () => !$(".ws-menu"), 3000);
+
     // A8. ⌘K: by title, by folder; Enter opens.
     chord("k");
     const pq = await until("palette", () => $(".ws-palette input"), 5000);
     await check("⌘K opens the search", !!pq);
     setValue(pq, "重命名");
-    const hit = await until("title hit", () => $$(".ws-palette-row").length === 1 && text($(".ws-palette-title")) === name2, 5000);
+    const mainRows = () => $$(".ws-palette-row:not([data-content-hit])");
+    const hit = await until("title hit", () => mainRows().length === 1 && text($(".ws-palette-title", mainRows()[0])) === name2, 5000);
     await check("it finds a session by its title", !!hit, $$(".ws-palette-row").map(text).join(" | "));
     await shot("a08-search");
     keyDown(pq, "Enter");
@@ -478,7 +593,7 @@
     chord("k");
     const pq2 = await until("palette", () => $(".ws-palette input"), 5000);
     setValue(pq2, "src");
-    const byFolder = await until("folder hit", () => $$(".ws-palette-row").length >= 1 && $$(".ws-palette-row").every((r) => text($(".ws-palette-where", r)).includes("src")) && $$(".ws-palette-row"), 5000);
+    const byFolder = await until("folder hit", () => mainRows().length >= 1 && mainRows().every((r) => text($(".ws-palette-where", r)).includes("src")) && mainRows(), 5000);
     await check("it finds a session by its folder", !!byFolder && byFolder.length === 1, $$(".ws-palette-row").map(text).join(" | "));
     keyDown(pq2, "Enter");
     await check("and opens the Codex one", !!(await until("codex again", () => !$(".ws-palette") && currentKey() === k3 && $(".ws-main .nt-chat.cdx"), 30000)),
@@ -494,6 +609,99 @@
     await check("↑ moves back", document.activeElement === from);
     document.activeElement.click();
     await check("the focused row opens", !!(await until("opened by key", () => currentKey() === k1, 5000)));
+
+    // E. A fork (SB-29) and the deeper search (SB-06): the row menu's Fork copies k1's conversation into a
+    // new session listed under it; the tree folds into a summary line and back; ⌘K finds the fork by what
+    // was said in it (not in its parent), and k1 by a title it had before; archiving k1 asks about its fork.
+    {
+      await openRow(k1);
+      await idle(30000);
+      const forkKeysBefore = new Set($$(".ws-row[data-row-key]").map((r) => r.dataset.rowKey));
+      await rowMenu(k1);
+      const forkItem = await until("Fork item", () => byLetter("F"), 3000);
+      await check("the row menu offers Fork for an idle Claude session", !!forkItem && !forkItem.disabled && /分叉|Fork/.test(text(forkItem)), $(".ws-menu")?.textContent);
+      forkItem?.click();
+      const kf = await until("the fork opened", () => {
+        const key = currentKey();
+        return key && key !== k1 && !forkKeysBefore.has(key) && readyConversation(key) && key;
+      }, 30000);
+      await check("Fork opens a new session", !!kf, `${currentKey()}`);
+      if (!kf) throw sceneError("fork: no new session");
+      await check("the fork is told in a toast", $$(".ws-toast").some((x) => /已分叉|Forked/.test(x.textContent)), $$(".ws-toast").map(text).join(" | "));
+      const fid = kf.slice(kf.indexOf("/") + 1), pid = k1.slice(k1.indexOf("/") + 1);
+      const listed = (await hostCall("chat_sessions")).sessions.find((s) => s.id === fid);
+      await check("the host keeps the fork's parent, agent and folder", listed?.parent === pid && listed?.runtime && listed?.cwd === CFG.work,
+        JSON.stringify(listed ?? {}).slice(0, 300));
+      await check("the fork sits under its parent, indented, with the guide line", rowOf(kf)?.dataset.depth === "1"
+        && rowOf(k1)?.dataset.family === "open" && !!$(`.ws-family[data-family-of="${CSS.escape(k1)}"] .ws-row[data-row-key="${CSS.escape(kf)}"]`));
+      await check("an unnamed fork is named after its parent", /的分叉|^Fork of /.test(rowTitle(kf)), rowTitle(kf));
+      await check("the fork's conversation starts with its parent's turns",
+        !!(await until("copied turns", () => $$(".ws-main .nt-user").some((u) => u.textContent.includes(prompt1)), 15000)));
+      await send("which word ZEBRAFORK", { newTurn: true });
+      await check("the fork's agent continues a copy of the parent's conversation",
+        !!(await said("(forked from fake-session)", 30000)), text(lastTurn()).slice(-200));
+      await idle();
+      await shot("e01-fork-tree");
+      // Folding: shown again by the summary line; a second click within 500 ms is ignored.
+      await openRow(k1);
+      const arrow = () => $(".ws-row-family", rowOf(k1));
+      arrow()?.click();
+      arrow()?.click();
+      const folded = await until("forks hidden", () => rowOf(k1)?.dataset.family === "closed" && !rowOf(kf) && $(".ws-family-sum"), 3000);
+      await check("the arrow hides the forks (a second click within 500 ms is ignored) and a line counts them", !!folded
+        && /1/.test(text(folded)), text(folded));
+      await check("the folded family is remembered here", (localStorage.getItem("ai-remote.ws.families") ?? "").includes(k1));
+      await check("the arrow does not open the session", currentKey() === k1);
+      await shot("e02-forks-hidden");
+      $(".ws-family-sum")?.click();
+      await check("the summary line shows the forks again", !!(await until("forks shown", () => rowOf(k1)?.dataset.family === "open" && rowOf(kf), 3000)));
+      // ⌘K: what was said in the fork (not in its parent) is found by the hosts' search, with an excerpt.
+      chord("k");
+      const dq = await until("palette", () => $(".ws-palette input"), 5000);
+      setValue(dq, "zebrafork");
+      const content = await until("content hit", () => $(`.ws-palette-row[data-content-hit="${CSS.escape(kf)}"]`), 15000);
+      await check("⌘K finds the fork by what was said in it, with an excerpt", !!content && /ZEBRAFORK/.test(text(content)) && /在内容中|In conversations/.test(text($("[data-content-head]"))),
+        $$(".ws-palette-row").map(text).join(" | "));
+      await check("its parent was not told it", !$(`.ws-palette-row[data-content-hit="${CSS.escape(k1)}"]`));
+      await shot("e03-deep-search");
+      content?.click();
+      await check("a content hit opens its session", !!(await until("opened from content", () => !$(".ws-palette") && currentKey() === kf, 10000)), currentKey());
+      // A title it had before is a main result, said so.
+      const former = "E2E ALPHA 曾用名";
+      await hostCall("chat_update", { session: pid, title: former });
+      await hostCall("chat_update", { session: pid, title: name1 });
+      chord("k");
+      const fq = await until("palette", () => $(".ws-palette input"), 5000);
+      setValue(fq, "alpha");
+      // The list learns the earlier title at its next poll (every 4 s, 20 s while the window is hidden).
+      const formerRow = await until("former title listed", () =>
+        $$(".ws-palette-row:not([data-content-hit])").find((r) => text($(".ws-palette-title", r)) === name1 && $("[data-formerly]", r)), 30000);
+      await check("⌘K finds a session by a title it had before, saying so", !!formerRow && text($("[data-formerly]", formerRow)).includes(former), $$(".ws-palette-row").map(text).join(" | "));
+      await shot("e04-formerly");
+      keyDown(fq, "Escape");
+      await until("palette closed", () => !$(".ws-palette"), 3000);
+      // Archiving a session with a fork asks first; "only this one" moves the fork to the top level, Undo puts it back.
+      await rowMenu(k1);
+      byLetter("A")?.click();
+      const ask = await until("archive question", () => $(".ws-confirm"), 5000);
+      await check("archiving a session with a fork asks whether the fork goes too", !!ask && /1/.test(text(ask)) && !!$("[data-family-only]", ask) && !!$("[data-family-all]", ask), text(ask));
+      await shot("e05-archive-ask");
+      $("[data-family-only]", ask)?.click();
+      const moved = await until("fork on top", () => !$(".ws-confirm") && !rowOf(k1) && rowOf(kf) && !rowOf(kf).dataset.depth, 10000);
+      await check("only this one: the parent is archived and its fork moves to the top level", !!moved);
+      const undo = await until("archive toast", () => $$(".ws-toast").find((x) => /已归档|Archived/.test(x.textContent)), 5000);
+      $(".ws-toast-act", undo)?.click();
+      await check("Undo brings the parent back with its fork under it", !!(await until("family again", () => rowOf(k1) && !rowOf(k1).hasAttribute("data-archived")
+        && rowOf(kf)?.dataset.depth === "1", 15000)));
+      // The fork's agent ends (the isolated host runs at most four).
+      await hostCall("chat_end", { session: fid });
+      let forkEnded = false;
+      for (const end = Date.now() + 15000; Date.now() < end && !forkEnded; await sleep(250)) {
+        forkEnded = (await hostCall("chat_sessions")).sessions.some((s) => s.id === fid && s.state === "ended");
+      }
+      await check("the fork ends on its host", forkEnded);
+      await openRow(k1);
+    }
 
     // A10. ⌘B hides and shows the sidebar; its edge drags to a width that stays; a double click resets it.
     chord("b");
@@ -1033,7 +1241,8 @@
     await check("Shift-click selects the range in the drawn list order", sameKeys(selectedKeys(), drawn.slice(rangeStart, rangeEnd + 1)), selectedKeys().join(", "));
     await selectBatch();
     const bulkMenu = await batchMenu();
-    await check("right-clicking a selected row opens the three-session batch menu", /3/.test(bulkMenu.getAttribute("aria-label") ?? "") && $$(".ws-menu-item", bulkMenu).length === 3);
+    await check("right-clicking a selected row opens the three-session batch menu (pin, read, Move to group, archive)", /3/.test(bulkMenu.getAttribute("aria-label") ?? "")
+      && $$(".ws-menu-item", bulkMenu).length === 4 && /移动到组|Move 3 sessions to group/.test(text(bulkMenu)));
     await check("the batch menu receives keyboard focus", bulkMenu.contains(document.activeElement), text(document.activeElement));
     // Resource evidence from WK itself: fonts.check can succeed through fallback. The shared
     // five-second deadline is only a waiting budget, not a measured font-loading duration.
@@ -1095,6 +1304,195 @@
     await check("the real host's archived query no longer contains these three sessions", !!(await batchHost("archive Undo persisted", (xs) => batchIds.every((id) => !xs.some((x) => x.id === id)), { archived: true })));
     await check("batch actions finish with no selection and the same current conversation", !selectedKeys().length && !$(".ws-menu") && currentKey() === kq);
     await shot("d02-batch-restored");
+
+    // ===== E. Groups made here, drag, density and motion (SB-04 / SB-08 / SB-15 / SB-28 / SB-36 / SB-42 / VS-34) =====
+    // Driven by DOM events (pointer events for the drags, keydown for the keyboard paths). Groups live in
+    // this device's storage; pins still go through chat_update and are confirmed on the real host.
+    const groupsKey = "ai-remote.ws.groups";
+    const groupsSaved = () => { try { return JSON.parse(localStorage.getItem(groupsKey) ?? "null") ?? { groups: [], members: {}, pinOrder: [] }; } catch { return { groups: [], members: {}, pinOrder: [] }; } };
+    const listPrefs = () => { try { return JSON.parse(localStorage.getItem("ai-remote.ws.list") ?? "{}"); } catch { return {}; } };
+    const groupId = (name) => groupsSaved().groups.find((g) => g.name === name)?.id ?? null;
+    const groupSec = (name) => { const id = groupId(name); return id ? $(`[data-custom-group="${CSS.escape(id)}"]`) : null; };
+    const inGroup = (key, name) => !!groupSec(name)?.contains(rowOf(key));
+    const inPinned = (key) => !!rowOf(key)?.closest("[data-pin-zone]");
+    const ungrouped = () => $("[data-ungrouped]");
+    const menuLabel = (re) => $$(".ws-menu .ws-menu-item").find((b) => re.test(text($(".ws-menu-label", b))));
+    const center = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+    const ptr = (type, x, y) => (document.elementFromPoint(x, y) ?? document.body).dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true, pointerId: 11, pointerType: "mouse", isPrimary: true, button: 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y,
+    }));
+    /** Presses a row (or a header), moves in steps to a point given by `to()` (read after the drag started), and holds there. */
+    async function dragHold(el, to) {
+      el.scrollIntoView({ block: "nearest" });
+      const from = center(el);
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, pointerId: 11, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1, clientX: from.x, clientY: from.y }));
+      await sleep(30);
+      ptr("pointermove", from.x, from.y - 8);
+      await sleep(60);
+      const end = to();
+      for (let i = 1; i <= 6; i++) { ptr("pointermove", from.x + (end.x - from.x) * i / 6, from.y - 8 + (end.y - from.y + 8) * i / 6); await sleep(30); }
+      return end;
+    }
+    const letGo = async (at) => { ptr("pointerup", at.x, at.y); await sleep(250); };
+    async function listMenu() {
+      if (!$(".ws-menu")) $(".ws-list-filter")?.click();
+      return until("Group and sort menu", () => menuLabel(/新建组|New group/), 3000);
+    }
+    async function newGroupNamed(name) {
+      (await listMenu())?.click();
+      const input = await until("the new group's name field", () => $(".ws-sec-new input"), 3000);
+      if (!input) throw sceneError("groups: no name field for a new group");
+      setValue(input, name);
+      keyDown(input, "Enter");
+      return until(`group ${name}`, () => groupSec(name), 3000);
+    }
+    const ga = "E2E 发布前";
+    const gb = "E2E 稍后";
+    await clearBatch();
+    const g1 = await newGroupNamed(ga);
+    await check("New group… names a group in its header and switches the list to Custom groups", !!g1 && listPrefs().groupBy === "custom"
+      && groupsSaved().groups.some((g) => g.name === ga), JSON.stringify({ prefs: listPrefs(), groups: groupsSaved().groups }));
+    const g2 = await newGroupNamed(gb);
+    await check("a second group follows the first, both drawn with the sessions in none under Ungrouped", !!g2
+      && $$("[data-custom-group]").map((s) => s.dataset.customGroup).join() === [groupId(ga), groupId(gb)].join() && !!ungrouped());
+    await check("an empty group says how to fill it", /拖到这里|Drag sessions here/.test(text($(".ws-group-empty", groupSec(ga)))));
+    // SB-36 by keyboard: the row's menu, Move to group…, then the digit of the first group.
+    await rowMenu(k1);
+    menuLabel(/移动到组|Move to group/)?.click();
+    const moveMenu = await until("Move to group menu", () => $(".ws-move-menu"), 3000);
+    await check("Move to group lists the groups with digits, then New group…", !!moveMenu
+      && text($(".ws-menu-key", menuLabel(new RegExp(`^${ga}$`)))) === "1" && !!menuLabel(/新建组|New group/), text(moveMenu));
+    keyDown(document.activeElement ?? moveMenu, "1", { code: "Digit1" });
+    await check("digit 1 moves the session into the first group, said in a toast", !!(await until("k1 in group A", () => inGroup(k1, ga), 3000))
+      && $$(".ws-toast").some((el) => /移到|Moved/.test(text(el))));
+    const moveToast = $$(".ws-toast").find((el) => /移到|Moved/.test(text(el)));
+    $(".ws-toast-act", moveToast)?.click();
+    await check("the toast's Undo takes it out again", !!(await until("k1 out of group A", () => !inGroup(k1, ga) && ungrouped()?.contains(rowOf(k1)), 3000)));
+    await rowMenu(k1);
+    menuLabel(/移动到组|Move to group/)?.click();
+    (await until("Move to group menu again", () => menuLabel(new RegExp(`^${ga}$`)), 3000))?.click();
+    await check("a click in Move to group moves it as well", !!(await until("k1 in group A again", () => inGroup(k1, ga), 3000)));
+    // SB-42: drag a row into a group (the target's ring while held), Esc cancels a drag.
+    let at = await dragHold($(".ws-row-main", rowOf(k2)), () => center($(".ws-gh", groupSec(gb))));
+    await check("a row held over a group rings it and labels the drag", groupSec(gb)?.hasAttribute("data-drop-over") && !!$(".ws-drag-ghost")
+      && rowOf(k2)?.hasAttribute("data-dragging"), text($(".ws-drag-ghost")));
+    await letGo(at);
+    await check("letting go moves the session into that group", !!(await until("k2 in group B", () => inGroup(k2, gb), 3000)) && !$(".ws-drag-ghost"));
+    at = await dragHold($(".ws-row-main", rowOf(k3)), () => center($(".ws-gh", groupSec(ga))));
+    keyDown(document.body, "Escape");
+    await sleep(100);
+    await letGo(at);
+    await check("Esc cancels a drag: nothing moves, the drag's label goes, the open session stays", !inGroup(k3, ga) && !$(".ws-drag-ghost")
+      && !$(".ws-row[data-dragging]") && currentKey() === kq);
+    await shot("e01-custom-groups");
+    // SB-42: Pinned's drop row pins (confirmed by the host), then a second row goes before it at the insertion line.
+    at = await dragHold($(".ws-row-main", rowOf(k3)), () => center($("[data-drop=pin]")));
+    await check("dragging a row that is not pinned turns Pinned's header into its drop row", !!$("[data-drop=pin][data-over]")
+      && /松手即置顶|Let go to pin/.test(text($("[data-drop=pin]"))));
+    // The click a real mouse sends right after letting go must not open the dragged session.
+    ptr("pointerup", at.x, at.y);
+    $(".ws-row-main", rowOf(k3))?.click();
+    await sleep(250);
+    await check("the click that ends a drag does not open the dragged session", currentKey() === kq, currentKey());
+    const id3 = k3.slice(k3.indexOf("/") + 1);
+    const id1 = k1.slice(k1.indexOf("/") + 1);
+    await check("let go on the drop row: pinned here and on the host", !!(await until("k3 pinned", () => inPinned(k3), 5000))
+      && !!(await batchHost("k3 pinned", (xs) => xs.some((x) => x.id === id3 && x.pinned === true))));
+    at = await dragHold($(".ws-row-main", rowOf(k1)), () => { const r = rowOf(k3).getBoundingClientRect(); return { x: r.left + 40, y: r.top + 3 }; });
+    const line = $(".ws-drop-line");
+    await check("between pinned rows the drag shows an insertion line", !!line && Math.abs(line.getBoundingClientRect().top - rowOf(k3).getBoundingClientRect().top) <= 4,
+      `${line?.getBoundingClientRect().top} vs ${rowOf(k3)?.getBoundingClientRect().top}`);
+    await shot("e02-drag-insertion-line");
+    await letGo(at);
+    const pinnedOrder = () => $$("[data-pin-zone] .ws-row").map((r) => r.dataset.rowKey).filter((k) => k === k1 || k === k3);
+    await check("let go at the line: pinned before the other, and still in its group", !!(await until("k1 pinned first", () => pinnedOrder().join() === [k1, k3].join(), 5000))
+      && groupsSaved().members[k1] === groupId(ga) && !!(await batchHost("k1 pinned", (xs) => xs.some((x) => x.id === id1 && x.pinned === true))));
+    // ⌥↓ on a pinned row moves it down within Pinned (SB-42 by keyboard).
+    $(".ws-row-main", rowOf(k1)).focus();
+    keyDown(document.activeElement, "ArrowDown", { altKey: true, code: "ArrowDown" });
+    await check("⌥↓ moves a pinned row below the next one, and the order is kept here", !!(await until("k1 after k3", () => pinnedOrder().join() === [k3, k1].join(), 3000))
+      && groupsSaved().pinOrder.indexOf(k3) < groupsSaved().pinOrder.indexOf(k1));
+    await check("the moved row keeps the keyboard focus", !!(await until("focus kept", () => document.activeElement === $(".ws-row-main", rowOf(k1)), 2000)));
+    // Out of Pinned: onto a group (moves in, unpins), and onto Ungrouped (unpins).
+    at = await dragHold($(".ws-row-main", rowOf(k1)), () => center($(".ws-gh", groupSec(gb))));
+    await letGo(at);
+    await check("a pinned row dropped on a group moves there and is unpinned on the host", !!(await until("k1 in group B", () => inGroup(k1, gb) && !inPinned(k1), 5000))
+      && !!(await batchHost("k1 unpinned", (xs) => xs.some((x) => x.id === id1 && x.pinned === false))));
+    at = await dragHold($(".ws-row-main", rowOf(k3)), () => { const u = ungrouped(); u.scrollIntoView({ block: "nearest" }); return center($(".ws-gh", u)); });
+    await letGo(at);
+    await check("a pinned row dragged out onto Ungrouped is unpinned", !!(await until("k3 unpinned", () => !inPinned(k3) && ungrouped()?.contains(rowOf(k3)), 5000))
+      && !!(await batchHost("k3 unpinned", (xs) => xs.some((x) => x.id === id3 && x.pinned === false))));
+    // SB-15: a group's header dragged above the other, then ⌥↓ on it puts it back.
+    const order = () => $$("[data-custom-group]").map((s) => s.dataset.customGroup).join();
+    at = await dragHold($(".ws-gh-toggle", groupSec(gb)), () => { const r = groupSec(ga).getBoundingClientRect(); return { x: r.left + 60, y: r.top + 4 }; });
+    await check("dragging a group's header shows the line between groups", !!$(".ws-drop-line") && groupSec(gb)?.hasAttribute("data-dragging"));
+    await letGo(at);
+    await check("let go: the group goes first, kept on this device", !!(await until("B first", () => order() === [groupId(gb), groupId(ga)].join(), 3000))
+      && groupsSaved().groups.map((g) => g.name).join() === [gb, ga].join());
+    $(".ws-gh-toggle", groupSec(gb)).focus();
+    keyDown(document.activeElement, "ArrowDown", { altKey: true, code: "ArrowDown" });
+    await check("⌥↓ on a group's header moves it back down", !!(await until("A first", () => order() === [groupId(ga), groupId(gb)].join(), 3000)));
+    // SB-45: rename a group in place from its menu; delete it (second click), sessions back to Ungrouped, Undo.
+    const groupMenu = async (name) => {
+      const head = $(".ws-gh", groupSec(name));
+      head.scrollIntoView({ block: "nearest" });
+      const c = center(head);
+      head.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: c.x, clientY: c.y }));
+      return until("group menu", () => menuLabel(/删除组|Delete group/), 3000);
+    };
+    await groupMenu(ga);
+    menuLabel(/重命名组|Rename group/)?.click();
+    const renameGroupField = await until("group rename field", () => $("input.ws-gh-rename", groupSec(ga)), 3000);
+    const ga2 = "E2E 已改名";
+    if (renameGroupField) { setValue(renameGroupField, ga2); keyDown(renameGroupField, "Enter"); }
+    await check("a group is renamed in place (Enter keeps it)", !!(await until("renamed group", () => groupSec(ga2) && text($(".ws-gh-label", groupSec(ga2))) === ga2, 3000)));
+    await groupMenu(gb);
+    menuLabel(/删除组|Delete group/)?.click();
+    const confirmDelete = await until("delete confirm", () => menuLabel(/再次点击|Click again/), 2000);
+    await check("deleting a group asks for a second click", !!confirmDelete && !!groupSec(gb));
+    confirmDelete?.click();
+    await check("a deleted group's sessions go back to Ungrouped, said in a toast", !!(await until("B deleted", () => !groupSec(gb) && ungrouped()?.contains(rowOf(k1)) && ungrouped()?.contains(rowOf(k2)), 3000))
+      && $$(".ws-toast").some((el) => /已删除组|Deleted/.test(text(el))));
+    $(".ws-toast-act", $$(".ws-toast").find((el) => /已删除组|Deleted/.test(text(el))))?.click();
+    await check("Undo brings the group back in its place with its sessions", !!(await until("B restored", () => inGroup(k1, gb) && inGroup(k2, gb), 3000))
+      && order() === [groupId(ga2), groupId(gb)].join());
+    // SB-04 / SB-28: comfortable rows and the metadata line, from Group and sort.
+    await listMenu();
+    menuLabel(/^舒适$|^Comfortable$/)?.click();
+    menuLabel(/^元数据$|^Details$/)?.click();
+    closeMenu();
+    const rowHeight = () => Math.round(rowOf(kq)?.getBoundingClientRect().height ?? 0);
+    await check("Comfortable makes rows 30 px; the metadata line adds 20 px with the folder", !!(await until("comfortable", () => $(".ws-side")?.dataset.density === "comfortable", 3000))
+      && rowHeight() === 50 && rowOf(kq).hasAttribute("data-meta") && text($(".ws-row-meta", rowOf(kq))).includes(workName), `${rowHeight()} ${text($(".ws-row-meta", rowOf(kq)))}`);
+    await shot("e03-comfortable-details");
+    await listMenu();
+    menuLabel(/^紧凑$|^Compact$/)?.click();
+    menuLabel(/^元数据$|^Details$/)?.click();
+    closeMenu();
+    await check("Compact rows are 28 px again, one line", !!(await until("compact", () => rowHeight() === 28 && !rowOf(kq).hasAttribute("data-meta"), 3000)), rowHeight());
+    // VS-34: a group opens with grid rows 0fr → 1fr and a fade (150 ms), none under "reduce motion".
+    const head = $(".ws-gh-toggle", groupSec(gb));
+    head.click();
+    await until("B folded", () => groupSec(gb).hasAttribute("data-collapsed"), 2000);
+    head.click();
+    // React draws a click's update in a microtask: look a moment later, well inside the 150 ms.
+    await sleep(20);
+    const body = $(".ws-sec-body", groupSec(gb));
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const animation = body ? getComputedStyle(body).animationName : "";
+    await check(`opening a group animates its rows (${reduce ? "reduce motion: none" : "150 ms grid rows and fade"})`, !!body?.hasAttribute("data-expanding")
+      && (reduce ? animation === "none" : /ws-expand-rows/.test(animation) && /ws-expand-fade/.test(animation)), animation);
+    await check("the opening ends by itself (no animation to wait for under reduce motion)", !!(await until("expanding ends", () => !body.hasAttribute("data-expanding"), 1500)));
+    const motionRules = [...document.styleSheets].flatMap((s) => { try { return [...s.cssRules]; } catch { return []; } })
+      .filter((r) => r instanceof CSSMediaRule && /prefers-reduced-motion:\s*no-preference/.test(r.conditionText ?? r.media.mediaText))
+      .flatMap((r) => [...r.cssRules].map((x) => x.selectorText ?? ""));
+    await check("the group animation is only declared for no motion preference", motionRules.some((sel) => sel.includes(".ws-sec-body[data-expanding]")), motionRules.join(" | ").slice(0, 200));
+    // Back to the defaults (folders) for what follows; the groups stay on this device but are not drawn.
+    await listMenu();
+    menuLabel(/恢复默认|Restore defaults/)?.click();
+    await check("Restore defaults goes back to folders, compact, no metadata line", !!(await until("defaults", () => listPrefs().groupBy === "project" && !$("[data-custom-group]") && $(".ws-side")?.dataset.density === "compact", 3000)));
+    closeMenu();
+    await check("groups never reached the host: its sessions carry only their own fields", !!(await batchHost("no group fields", (xs) => xs.every((x) => !("group" in x) && !("groups" in x)))));
     // The same live workspace stays mounted after the batch metadata checks. Exercise main's
     // conversation/project history with the batch restored before its expendable session is ended.
     await check("the live view reuses one complete workspace and one screen", $$(".nt-live-workspace .ws[data-embedded=true]").length === 1

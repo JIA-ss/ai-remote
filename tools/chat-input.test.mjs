@@ -170,7 +170,7 @@ test("Claude gates only the first hello; a later disconnection keeps the undeliv
     "../../lib/claude": { STRAY_ENTER_MS: 250 },
     "../AgentChat": { useConversation: () => conv, sentBySession: new Map(), useNowTick: () => 0 },
     "../chat/Composer": { Composer }, "../chat/FolderPicker": {}, "../chat/Preview": {}, "../Icon": {},
-    "./Cards": {}, "./ClaudeTurn": { openStore: () => ({}) }, "./ClaudeTranscript": {}, "./Dock": {},
+    "./Cards": {}, "./ClaudeTurn": { openStore: () => ({}) }, "./ClaudeTranscript": {}, "./Dock": {}, "./ModelPicker": {},
   });
   const props = { host: "test", target: { session: "one" }, onLeave() {} };
   const composerProps = () => {
@@ -194,7 +194,7 @@ test("the shared conversation panel also gates the first hello, including its Co
     "../lib/codex": { isCodexRuntime: (runtime) => runtime?.id === "codex", pendingRequest: () => null },
     "./chat/Composer": { Composer }, "./chat/FolderPicker": {}, "./chat/Rows": {}, "./chat/Preview": {},
     "./chat/Transcript": {}, "./codex/CodexLiveStrip": { livePlan: () => null },
-    "./codex/CodexRequestCard": {}, "./Icon": {}, "./claude/ClaudeConversation": {},
+    "./codex/CodexRequestCard": {}, "./codex/CodexModelPicker": {}, "./Icon": {}, "./claude/ClaudeConversation": {},
   });
   const props = { host: "test", target: { session: "one" }, onLeave() {}, conv };
   const composerProps = () => findView(h.render(h.exports.ConversationPanel, props), (el) => el.type === Composer).props;
