@@ -685,6 +685,16 @@
       byLetter("A")?.click();
       const ask = await until("archive question", () => $(".ws-confirm"), 5000);
       await check("archiving a session with a fork asks whether the fork goes too", !!ask && /1/.test(text(ask)) && !!$("[data-family-only]", ask) && !!$("[data-family-all]", ask), text(ask));
+      const beforeFamilyNavigation = currentKey();
+      chord("n");
+      await sleep(100);
+      await check("the family archive dialog keeps New from navigating behind it", !!$(".ws-confirm") && currentKey() === beforeFamilyNavigation);
+      const familyButtons = $$("button", ask);
+      familyButtons.at(-1).focus();
+      keyDown(familyButtons.at(-1), "Tab");
+      await check("the family archive dialog wraps Tab to its first control", document.activeElement === familyButtons[0]);
+      keyDown(familyButtons[0], "Tab", { shiftKey: true });
+      await check("the family archive dialog wraps Shift+Tab back to its last control", document.activeElement === familyButtons.at(-1));
       await shot("e05-archive-ask");
       $("[data-family-only]", ask)?.click();
       const moved = await until("fork on top", () => !$(".ws-confirm") && !rowOf(k1) && rowOf(kf) && !rowOf(kf).dataset.depth, 10000);

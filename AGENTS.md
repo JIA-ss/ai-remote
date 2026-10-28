@@ -8,7 +8,7 @@
 - 旧工作区原始 33 文件已完整保存在 stash `6641ee8429553bbe3323bfb35a99174365a61779`，基准另留 `codex/pre-main-integration-20261028`；早先的 `97dc84f` 备份保留。旧页面与玻璃实现由已整合的新版本承接，独有的启动门闸、fieldset 锁定、焦点返回/短窗菜单、搜索键盘归属、复制与保存反馈、撤销配对失败处理、远程浮条焦点及 debug 验收唤醒按行为合回；保留新版分组/模型/嵌入工作区，未用旧文件整份覆盖。
 - 已核对其他 8 个 worktree 均洁净。旧 `verify/codex-ios-layout` 的 9 个提交已由 `e425dda` 合并为正式 iOS 修复；早期导航/Claude/批量/MCP 分支也已有改写或整合提交进入主干，不再把旧实验与历史副本重新叠加。原始分支和 stash 都保留。
 - 验收证据位于 `target/main-integration-20261028/`（不入库）。Camofox 改复用命名 `ai-remote-ui` fixture session，只关闭本轮 tab；全矩阵 1885 项通过，127 张布局截图已通过 7 张联系表检查。此项只证明演示页面布局、着色与计算样式，不证明原生毛玻璃、真实视频或物理输入。
-- 本机静态门槛：fmt、全工作区/all-targets Clippy、TypeScript、前端构建通过；Rust 全量 455 通过 / 11 忽略，Node 全量 451 项中 450 通过 / 1 平台跳过。新增组件回归实测搜索/审批期间的快捷键归属、失焦恢复和撤销配对失败留在原步骤且可重试。最后涉及的 activity/pair/settings-device 又经 Camofox 326 项通过。最终原生链路和两平台 CI 的准确终态记录在 [PR #57](https://github.com/JIA-ss/ai-remote/pull/57) 的验证段及本地证据目录；没有安装正式应用或迁移用户配置。历史实测与未测边界保留，不能把整合等同于文档里的全部长期路线图完成。
+- 本机静态门槛：fmt、全工作区/all-targets Clippy、TypeScript、前端构建通过；Rust 全量 455 通过 / 11 忽略，Node 全量 451 项中 450 通过 / 1 平台跳过。新增组件回归实测搜索/审批期间的快捷键归属、失焦恢复和撤销配对失败留在原步骤且可重试。原生工作区首轮 235 项通过；随后审查将新增分叉归档确认接入公共 Modal，补 Tab/Shift+Tab 约束、背景 New 拦截及相应原生断言，最终结果见 PR。最后涉及的 activity/pair/settings-device 又经 Camofox 326 项通过。最终原生链路和两平台 CI 的准确终态记录在 [PR #57](https://github.com/JIA-ss/ai-remote/pull/57) 的验证段及本地证据目录；没有安装正式应用或迁移用户配置。历史实测与未测边界保留，不能把整合等同于文档里的全部长期路线图完成。
 
 ## MCP 公开目录入口（2026-10-24）
 

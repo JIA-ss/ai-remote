@@ -13,9 +13,10 @@ function syncSheets() {
 }
 
 export function Modal({
-  label, children, onClose, dismissible = true, role = "dialog", className, size, initialFocus,
+  label, describedBy, children, onClose, dismissible = true, role = "dialog", className, size, initialFocus,
 }: {
   label: string;
+  describedBy?: string;
   children: ReactNode;
   onClose: () => void;
   dismissible?: boolean;
@@ -107,7 +108,7 @@ export function Modal({
         if (sheets.at(-1) === layer.current && latest.current.dismissible) latest.current.onClose();
       }} />
       <div ref={dialog} className={cx("cdlg gl-sheet gl-glass thick", size === "wide" && "gl-sheet-wide", className)} role={role}
-        aria-modal="true" aria-label={label} tabIndex={-1}>
+        aria-modal="true" aria-label={label} aria-describedby={describedBy} tabIndex={-1}>
         {children}
       </div>
     </div>,
