@@ -4,6 +4,10 @@
 本流前一段（分支 `ws/claude`）已提交：`lib/chat.ts` 的新事件与 reducer、`lib/markdown.ts` 尾块增量解析、`lib/claude.ts` 布局纯函数
 与 `tools/claude-view.test.mjs`。本段（分支 `ws/claude-s1`）在其上做界面。
 
+## 主干整合追记（2026-10-28）
+
+模型与推理强度已和玻璃页面、工作区第三阶段一起进入本轮 main 整合候选；`b6350a8` 又接入了 Codex 会话输入栏的选择器（`ui/codex/CodexModelPicker.tsx`），因此文末“Codex 会话页没接”仅描述此前提交的状态。当前整合验证见 AGENTS.md 顶部。缓存热切换确认、fast 模式和长期对话待办仍保留，真实 CLI 或物理输入的旧证据不当作本轮复验。
+
 ## 当前集成与验收状态（2026-10-24）
 
 - P1 / P2 已随 PR #45 / #47 合入 main `028ccc9` / `1aefe9f`，PR #49 / #50 随后合入 main `1ddacb1`；P3 的 PR #48 已合入 **main `35f54a3`**。产品实现为 `f688335`，本机 macOS 应用/CLI 指纹前缀为 `4d62b9a6` / `3e35eed8`。Claude 整页接线、ANSI/diff 与提问细节均已完成。

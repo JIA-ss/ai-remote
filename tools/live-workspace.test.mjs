@@ -20,7 +20,7 @@ function compiled(path, dependencies, globals = {}, expose = "") {
   vm.runInNewContext(text, { exports, require(name) {
     assert.ok(name in dependencies, `unexpected dependency ${name}`);
     return dependencies[name];
-  }, console, setTimeout, clearTimeout, Map, Set, Date, ...globals }, { filename: path });
+  }, console, setTimeout, clearTimeout, Map, Set, Date, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, ...globals }, { filename: path });
   return exports;
 }
 
@@ -75,7 +75,8 @@ test("a new popup menu focuses its chosen row only after its measured position i
     react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key }, "../../lib/platform": { detectOs: () => "mac" },
     "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") },
     "lucide-react": Object.fromEntries(["ArrowLeft", "ArrowRight", "Check", "Laptop", "LaptopMinimal", "Monitor", "PanelLeft"].map((name) => [name, () => null])),
-  }, { document, window: { addEventListener() {}, removeEventListener() {} } });
+  }, { document, HTMLElement: Element, ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, window: { addEventListener() {}, removeEventListener() {} } });
   const props = { at: { x: 30, y: 50 }, label: "Session actions", onClose: () => { closed++; },
     items: [{ key: "first", label: "First", run() {} }, { key: "selected", label: "Selected", checked: true, run() {} }] };
   const render = () => h.render(PopMenu, props, (tree) => { tree.props.ref.current = element; style = tree.props.style; });
@@ -95,7 +96,7 @@ test("a new popup menu focuses its chosen row only after its measured position i
   tree = render();
   assert.equal(focuses.length, 1, "retained-menu confirmation updates do not refocus its first or checked item");
   assert.equal(document.activeElement, input, "a field the person focused keeps its focus across item updates");
-  const key = { key: "Escape", preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
+  const key = { key: "Escape", nativeEvent: {}, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
   tree.props.onKeyDown(key);
   assert.equal(closed, 1);
   assert.equal(key.prevented, true);
@@ -297,6 +298,8 @@ test("a removed right-pane control keeps workspace shortcuts on body until the p
   f.documentEvent("focusin", f.body);
   assert.equal(f.key(f.body, "k").defaultPrevented, true, "Search still belongs to the pane used immediately before the fallback");
   assert.ok(nodes(f.render()).some((n) => n.type === f.Palette));
+  nodes(f.render()).find((n) => n.type === f.Palette).props.onClose();
+  f.render();
   f.documentEvent("pointerdown", f.remote);
   assert.equal(f.key(f.body, "n").defaultPrevented, false, "using the remote picture clears the workspace's body fallback ownership");
   assert.deepEqual(f.calls, []);
@@ -565,4 +568,89 @@ test("sidebar multi-selection capture leaves external and inert panes' keys unto
   assert.equal(press(remote, "F2").stopped, true, "standalone retains its existing window-wide multi-selection guard");
   h.close();
   assert.ok([...listeners.values()].every((set) => set.size === 0));
+});
+
+
+test("search and approval dialogs keep workspace navigation shortcuts from changing the page behind them", () => {
+  const f = workspaceFixture(); f.render(); f.render();
+  f.key(f.inside, "k"); f.render();
+  assert.equal(f.key(f.inside, "n").defaultPrevented, false);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.key(f.inside, "b").defaultPrevented, false);
+  assert.equal(f.key(f.inside, "k").defaultPrevented, true, "the search shortcut still closes its own panel");
+  f.render();
+  f.document.documentElement.dataset.modal = "1";
+  assert.equal(f.key(f.inside, "n").defaultPrevented, false);
+  assert.deepEqual(f.calls, []);
+  delete f.document.documentElement.dataset.modal;
+  assert.equal(f.key(f.inside, "n").defaultPrevented, true);
+  assert.deepEqual(f.calls, [{ place: null }]);
+  f.close();
+});
+
+
+test("transient panels restore a connected opener after unmount without stealing a new focus target", () => {
+  const run = (nextFocus, connected = true) => {
+    const h = hooks(), frames = [];
+    const body = new Element(), opener = new Element(), panel = new Element(), field = new Element(panel), outside = new Element();
+    opener.isConnected = true; field.isConnected = true; outside.isConnected = true;
+    const document = { body, activeElement: opener };
+    let restored = 0;
+    opener.focus = () => { restored++; document.activeElement = opener; };
+    const { useReturnFocus } = compiled("ui/workspace/parts.tsx", {
+      react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key }, "../../lib/platform": { detectOs: () => "mac" },
+      "../util": {}, "lucide-react": {},
+    }, { document, HTMLElement: Element, requestAnimationFrame: (fn) => frames.push(fn), cancelAnimationFrame() {} });
+    const ref = { current: panel };
+    h.render(() => { useReturnFocus(ref); return null; }, {});
+    document.activeElement = field; h.close();
+    opener.isConnected = connected;
+    document.activeElement = nextFocus === "body" ? body : outside;
+    frames.splice(0).forEach((fn) => fn());
+    return restored;
+  };
+  assert.equal(run("body"), 1);
+  assert.equal(run("outside"), 0, "a click or navigation that already moved focus wins over the old opener");
+  assert.equal(run("body", false), 0, "a removed opener is never focused");
+});
+
+
+test("pairing cannot navigate during connection, and a failed revocation stays visible and retryable", async () => {
+  const h = hooks();
+  h.react.useContext = () => null;
+  let guard = null, finishPair, failRevocation = true, navigated = 0;
+  const pairResult = new Promise((resolve) => { finishPair = resolve; });
+  const Confirm = () => null;
+  const { PairPage } = compiled("ui/pages/Pair.tsx", {
+    react: h.react, "react/jsx-runtime": runtime, "../../lib/i18n": { t: (key) => key },
+    "../../lib/api": { api: { pair: () => pairResult, unpair: async () => { if (failRevocation) throw new Error("revocation unavailable"); } } },
+    "../ComputerTabs": { Confirm }, "../glyphs": { SeatMark: () => null }, "../Icon": { Icon: () => null },
+    "../PairCode": { groupCode: (value) => value, looksLikeTicket: () => false, toDigits: (value) => value.replace(/\D/g, "") },
+    "../Shell": { ShellContext: {} }, "../util": { cx: (...xs) => xs.filter(Boolean).join(" ") }, "./common": { levelName: () => "control" },
+  });
+  const props = { onPaired() {}, registerGuard: (value) => { guard = value; } };
+  const render = () => h.render(PairPage, props);
+  const button = (tree, label) => nodes(tree).find((node) => node.type === "button" && node.props.children === label);
+  let tree = render();
+  nodes(tree).find((node) => node.type === "input" && node.props.inputMode === "numeric").props.onChange({ target: { value: "12345678" } });
+  tree = render(); button(tree, "pair_btn").props.onClick(); tree = render();
+  assert.equal(guard(() => navigated++), true);
+  assert.equal(navigated, 0);
+  assert.equal(nodes(tree).find((node) => node.props?.inputMode === "numeric").props.disabled, true);
+  finishPair({ peer: "fixture-host", sas: "one-two", level: "control" });
+  await pairResult; await new Promise((resolve) => setImmediate(resolve)); tree = render();
+  assert.ok(button(tree, "no_match"), JSON.stringify(nodes(tree).filter((node) => node.type === "button").map((node) => node.props.children)));
+  await button(tree, "no_match").props.onClick(); tree = render();
+  assert.ok(button(tree, "match"), "a failed mismatch revocation keeps the safety words on screen");
+  assert.ok(nodes(tree).some((node) => node.props?.role === "alert" && /revocation unavailable/.test(node.props.children)));
+  guard(() => navigated++); tree = render();
+  let confirm = nodes(tree).find((node) => node.type === Confirm);
+  await assert.rejects(confirm.props.onYes, /revocation unavailable/);
+  assert.equal(navigated, 0);
+  assert.ok(nodes(render()).some((node) => node.type === Confirm));
+  failRevocation = false;
+  confirm = nodes(render()).find((node) => node.type === Confirm);
+  await confirm.props.onYes(); render();
+  assert.equal(navigated, 1, "navigation resumes only after the tentative pairing is revoked");
+  h.close();
 });

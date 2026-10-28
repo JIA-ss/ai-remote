@@ -2,7 +2,7 @@
 // Agent access, This device, Network, Approving and About. Only what works today is shown; nothing
 // here is a switch that does nothing.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
 import { en } from "../lib/strings/en";
@@ -423,7 +423,6 @@ const shortKey = (id: string) => {
 };
 
 function Device({ status, intent, onPairCodeClosed }: { status: AgentStatus | null; intent: TrayIntent | null; onPairCodeClosed?: () => void }) {
-  const [copied, setCopied] = useState(false);
   const id = status?.device ?? "";
   // This computer as a host: its paired controllers when ai-remote host runs here, `null` when not.
   const [controllers, setControllers] = useState<LocalController[] | null | undefined>(undefined);
@@ -444,18 +443,7 @@ function Device({ status, intent, onPairCodeClosed }: { status: AgentStatus | nu
         <Row ic={<OsGlyph os={os} size={18} />} tt={status?.name || "—"} ds={t("st_me_d", { os: t(mac ? "mac" : "win") })} />
         <Row ic={<Icon name="key" />} tt={t("dv_key")} ds={t("dv_key_d")}>
           <span className="mono gl-st-val">{id ? shortKey(id) : "—"}</span>
-          <button
-            className="btn icon"
-            aria-label={t("copy")}
-            disabled={!id}
-            onClick={() => {
-              void navigator.clipboard?.writeText(id);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }}
-          >
-            <Icon name={copied ? "check" : "copy"} size={14} />
-          </button>
+          <CopyText text={id} iconOnly disabled={!id} />
         </Row>
       </div>
       <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()} onPairCodeClosed={onPairCodeClosed}>
@@ -1044,21 +1032,35 @@ function Network() {
   return (
     <>
       <div className="grp-h">{t("nw_mode")}</div>
-      <div className="grp" role="radiogroup" aria-label={t("nw_mode")}>
+      <div className="grp" role="radiogroup" aria-label={t("nw_mode")} aria-busy={busy}>
         {modes.map(([m, tt, ds]) => {
           const on = net?.mode === m;
+          const disabled = !net || busy;
           const pick = () => {
-            if (!on) void change({ mode: m });
+            if (!on && !disabled) void change({ mode: m });
           };
           return (
             <div
               key={m}
-              className={cx("gr", !on && "pick")}
+              className={cx("gr", "settings-mode", on && "sel", !on && !disabled && "pick")}
               role="radio"
               aria-checked={on}
-              tabIndex={0}
+              aria-disabled={disabled}
+              tabIndex={on || (!net && m === "auto") ? 0 : -1}
               onClick={pick}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && pick()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  pick();
+                } else if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(e.key)) {
+                  e.preventDefault();
+                  if (disabled) return;
+                  const direction = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+                  const next = e.key === "Home" ? 0 : e.key === "End" ? modes.length - 1 : (modes.findIndex(([mode]) => mode === m) + direction + modes.length) % modes.length;
+                  e.currentTarget.parentElement?.querySelectorAll<HTMLElement>("[role=radio]")[next]?.focus();
+                  if (modes[next][0] !== m) void change({ mode: modes[next][0] });
+                }
+              }}
             >
               <span className="ic bare">
                 <span className={cx("radio", on && "on")} />
@@ -1184,19 +1186,38 @@ function Toggle({
 }
 
 /** A copy button that says so for a moment after copying. */
-function CopyText({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+function CopyText({ text, iconOnly = false, disabled = false }: { text: string; iconOnly?: boolean; disabled?: boolean }) {
+  const [state, setState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (reset.current) clearTimeout(reset.current);
+  }, []);
+  const label = t(state === "copied" ? "nw_copied" : "nw_copy");
   return (
-    <button
-      className="btn"
-      onClick={() => {
-        void navigator.clipboard?.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-    >
-      {t(copied ? "nw_copied" : "nw_copy")}
-    </button>
+    <span className="settings-copy">
+      <button
+        className={cx("btn", iconOnly && "icon")}
+        aria-label={iconOnly ? label : undefined}
+        title={iconOnly ? label : undefined}
+        disabled={disabled || state === "copying"}
+        onClick={async () => {
+          if (reset.current) clearTimeout(reset.current);
+          setState("copying");
+          try {
+            await navigator.clipboard.writeText(text);
+            setState("copied");
+            reset.current = setTimeout(() => setState("idle"), 1500);
+          } catch {
+            setState("error");
+          }
+        }}
+      >
+        {iconOnly ? <Icon name={state === "copied" ? "check" : "copy"} size={14} /> : label}
+      </button>
+      <span className={state === "error" ? "cap c-danger" : "gl-sr"} role="status">
+        {state === "error" ? t("copy_failed") : state === "copied" ? t("nw_copied") : ""}
+      </span>
+    </span>
   );
 }
 
@@ -1208,6 +1229,7 @@ function HostAddress({ host }: { host: Host }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
+    if (busy) return;
     if (!validAddressInput(value)) {
       setError(t("nw_bad_addr"));
       return;
@@ -1226,12 +1248,12 @@ function HostAddress({ host }: { host: Host }) {
   };
   const shown = addrs.length > 0 ? <span className="mono">{shareableAddresses(addrs).join(", ") || addrs.join(", ")}</span> : t("nw_none");
   return (
-    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger">{error}</span> : shown}>
+    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger" role="alert">{error}</span> : shown}>
       {editing ? (
         <>
           <input
             className="field"
-            style={{ width: 190 }}
+            disabled={busy}
             value={value}
             autoFocus
             placeholder={t("nw_addr_ph")}
@@ -1241,15 +1263,17 @@ function HostAddress({ host }: { host: Host }) {
               setError(null);
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || busy) return;
               if (e.key === "Enter") void save();
               if (e.key === "Escape") setEditing(false);
             }}
           />
-          <button className="btn" disabled={busy} onClick={() => void save()}>
+          <button className="btn" disabled={busy || !validAddressInput(value)} onClick={() => void save()}>
             {t("nw_save")}
           </button>
           <button
             className="btn"
+            disabled={busy}
             onClick={() => {
               setEditing(false);
               setError(null);
@@ -1259,7 +1283,11 @@ function HostAddress({ host }: { host: Host }) {
           </button>
         </>
       ) : (
-        <button className="btn" onClick={() => setEditing(true)}>
+        <button className="btn" onClick={() => {
+          setValue(shareableAddresses(addrs).join(", ") || addrs.join(", "));
+          setError(null);
+          setEditing(true);
+        }}>
           {t("nw_edit")}
         </button>
       )}

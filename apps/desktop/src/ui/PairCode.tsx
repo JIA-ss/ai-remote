@@ -222,10 +222,12 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
                       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: "center" }}>
                         <button
                           className="btn"
-                          onClick={() => {
-                            void navigator.clipboard?.writeText(ticket.line);
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 1500);
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(ticket.line);
+                              setCopied(true);
+                              setTimeout(() => setCopied(false), 1500);
+                            } catch (e) { setError(String(e)); }
                           }}
                         >
                           <Icon name={copied ? "check" : "copy"} size={14} />
@@ -239,12 +241,12 @@ export function PairCodeDialog({ name, connected, onClose }: { name: string; con
               )}
             </>
           )}
-          {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
+          {error && <div className="cap c-danger" role="alert" style={{ marginTop: 10 }}>{error}</div>}
         </div>
         <div className="f">
           {paired && !verdict ? (
             <>
-              <button className="btn primary" onClick={() => setVerdict("match")}>
+              <button className="btn primary" disabled={busy} onClick={() => setVerdict("match")}>
                 {t("pc_match")}
               </button>
               <button

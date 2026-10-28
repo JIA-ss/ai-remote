@@ -294,6 +294,8 @@ const dayLabel = (b: DayBucket<WsItem>) =>
         : new Date(b.day).toLocaleDateString(currentLang() === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric" });
 
 export interface SidebarProps {
+  rootRef?: RefObject<HTMLElement | null>;
+  modal?: boolean;
   snap: WsSnapshot;
   computers: Computer[];
   corner: ReactNode;
@@ -414,6 +416,10 @@ export function Sidebar(p: SidebarProps) {
   const [focusId, setFocusId] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const side = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (p.rootRef) p.rootRef.current = side.current;
+    return () => { if (p.rootRef) p.rootRef.current = null; };
+  }, [p.rootRef]);
   const [selection, setSelection] = useState<RowSelection>(EMPTY_SELECTION);
   const [batchBusy, setBatchBusy] = useState(false);
   const batchQueue = useRef(Promise.resolve());
@@ -1167,7 +1173,7 @@ export function Sidebar(p: SidebarProps) {
   );
 
   return (
-    <nav ref={side} className="ws-side" aria-label={t("ws_sidebar")} data-density={display.density} data-dragging={drag ? drag.kind : undefined}>
+    <nav ref={side} role={p.modal ? "dialog" : undefined} aria-modal={p.modal || undefined} className="ws-side" aria-label={t("ws_sidebar")} data-density={display.density} data-dragging={drag ? drag.kind : undefined}>
       <div className="ws-side-top" data-tauri-drag-region>
         {p.corner}
         <div className="ws-drag" data-tauri-drag-region />
@@ -1514,7 +1520,8 @@ function Section({
         className="ws-gh"
         onContextMenu={(e) => {
           e.preventDefault();
-          onMenu({ x: e.clientX, y: e.clientY });
+          e.currentTarget.querySelector<HTMLButtonElement>(".ws-gh-toggle")?.focus({ preventScroll: true });
+          onMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { anchor: e.currentTarget.getBoundingClientRect() });
         }}
       >
         {head ? (
@@ -1646,7 +1653,8 @@ function Row({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        onMenu({ x: e.clientX, y: e.clientY });
+        e.currentTarget.querySelector<HTMLButtonElement>(".ws-row-main")?.focus({ preventScroll: true });
+        onMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { anchor: e.currentTarget.getBoundingClientRect() });
       }}
     >
       {renaming ? (

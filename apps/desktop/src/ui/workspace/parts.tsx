@@ -17,6 +17,33 @@ export const modLabel = isMac ? "⌘" : "Ctrl+";
 export const viewWidth = () => document.documentElement.clientWidth || window.innerWidth;
 export const viewHeight = () => document.documentElement.clientHeight || window.innerHeight;
 
+/** Return to the control that opened a transient panel, unless its action already moved focus. */
+export function useReturnFocus(ref: RefObject<HTMLElement | null>, open = true) {
+  const origin = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  const restoring = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      wasOpen.current = false;
+      return;
+    }
+    if (restoring.current !== null) cancelAnimationFrame(restoring.current);
+    if (!wasOpen.current) origin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    wasOpen.current = true;
+    const panel = ref.current;
+    return () => {
+      const opener = origin.current;
+      restoring.current = requestAnimationFrame(() => {
+        restoring.current = null;
+        const active = document.activeElement;
+        if (opener?.isConnected && (active === document.body || !active?.isConnected || !!panel?.contains(active))) {
+          opener.focus({ preventScroll: true });
+        }
+      });
+    };
+  }, [ref, open]);
+}
+
 /** Whether an embedded workspace owns a key. Removing a focused row or drawer sends focus back to
  *  body; keep the last pane's shortcuts working until a real pointer / focus action selects another
  *  pane. A concrete target outside the workspace always wins over that remembered ownership. */
@@ -143,17 +170,28 @@ function place(at: MenuAt, w: number, h: number): { x: number; y: number } {
 export function PopMenu({ at, items, onClose, label, className, footer }: { at: MenuAt; items: MenuLine[]; onClose: () => void; label: string; className?: string; footer?: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const focused = useRef(false);
+  useReturnFocus(box);
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPos(place(at, r.width, r.height));
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const next = place(at, r.width, r.height);
+      setPos((prev) => prev?.x === next.x && prev.y === next.y ? prev : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
   }, [at]);
   useLayoutEffect(() => {
     const el = box.current;
     // The measuring commit is hidden, so focus only after positioning makes the menu visible.
     // Item/confirmation updates keep the current focus instead of moving it back to the first button.
-    if (!pos || !el) return;
+    if (!pos || !el || focused.current) return;
+    focused.current = true;
     (el.querySelector<HTMLElement>("[data-autofocus]") ?? el.querySelector<HTMLButtonElement>("button[aria-checked=true]:not(:disabled)") ?? el.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
   }, [pos]);
   useEffect(() => {
@@ -190,6 +228,7 @@ export function PopMenu({ at, items, onClose, label, className, footer }: { at: 
         const buttons = [...(box.current?.querySelectorAll<HTMLElement>("button:not(:disabled), .ws-menu-field input") ?? [])];
         const i = buttons.indexOf(document.activeElement as HTMLElement);
         const typing = (e.target as HTMLElement | null)?.tagName === "INPUT";
+        if (e.nativeEvent.isComposing) return;
         if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
@@ -198,6 +237,11 @@ export function PopMenu({ at, items, onClose, label, className, footer }: { at: 
           e.preventDefault();
           const n = buttons.length;
           if (n) buttons[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus();
+        } else if (!typing && (e.key === "Home" || e.key === "End")) {
+          e.preventDefault();
+          buttons[e.key === "Home" ? 0 : buttons.length - 1]?.focus();
+        } else if (e.key === "Tab") {
+          onClose();
         } else if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
           const it = items.find((x): x is MenuItem => isItem(x) && x.letter === e.key.toLowerCase());
           if (it) {
@@ -218,6 +262,7 @@ export function PopMenu({ at, items, onClose, label, className, footer }: { at: 
           <button
             key={it.key}
             type="button"
+            tabIndex={-1}
             role={it.checked === undefined ? "menuitem" : "menuitemradio"}
             aria-checked={it.checked}
             className={cx("ws-menu-item", it.danger && "danger", it.detail && "detailed")}

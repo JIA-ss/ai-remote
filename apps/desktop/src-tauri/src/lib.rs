@@ -1510,6 +1510,8 @@ fn smoke(app: &tauri::App) {
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
         let shots = std::path::Path::new(&out).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        let mut last_wake = std::time::Instant::now();
         while script.is_some() && std::time::Instant::now() < deadline {
             let signals: Vec<(String, String)> =
                 SMOKE_SIGNALS.lock().map(|mut s| s.drain(..).collect()).unwrap_or_default();
@@ -1539,6 +1541,17 @@ fn smoke(app: &tauri::App) {
             }
             if done {
                 break;
+            }
+            // An occluded WKWebView can suspend JS timers even while the process holds an App Nap
+            // activity. A native evaluation wakes the scripted smoke run; without it, delayed-agent
+            // assertions resume only when the final capture evaluates the page at the deadline.
+            // This loop exists only in debug builds with an explicit AI_REMOTE_SMOKE_SCRIPT.
+            #[cfg(target_os = "macos")]
+            if last_wake.elapsed() >= std::time::Duration::from_secs(1) {
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.eval("void 0");
+                }
+                last_wake = std::time::Instant::now();
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

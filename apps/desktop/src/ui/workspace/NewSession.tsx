@@ -5,7 +5,7 @@
 // agent and its model. Sending the first message starts the session (`chat_start` with the message)
 // and opens it; ⌘↵ starts it and stays here.
 
-import { ArrowUp, ChevronDown, Code, ScrollText, ShieldCheck, TriangleAlert, X } from "lucide-react";
+import { ArrowUp, Bot, ChevronDown, Code, ScrollText, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { folderChoices, folderName, lastCwd, recentCwds, rememberCwd, sameFolder, type Runtime, type RuntimesReport } from "../../lib/chat";
 import { isCodexRuntime } from "../../lib/codex";
@@ -183,6 +183,7 @@ export function NewSession({
   const ready = rt?.report?.runtimes.filter((r) => r.verdict === "ok") ?? [];
   const [runtimeId, setRuntimeId] = useState<string | null>(null);
   const runtime: Runtime | null = ready.find((r) => r.id === runtimeId) ?? ready.find((r) => r.id === readJson<Record<string, string>>(AGENT, {})[host ?? ""]) ?? ready[0] ?? null;
+  const canStart = online && !!runtime && rt?.report?.host.can_start === true;
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<string | null>(null);
   const [mode, setMode] = useState<PermissionMode>("bypassPermissions");
@@ -196,10 +197,11 @@ export function NewSession({
   const area = useRef<HTMLTextAreaElement>(null);
   const folderBox = useRef<HTMLDivElement>(null);
   const cardsBox = useRef<HTMLDivElement>(null);
+  const introBox = useRef<HTMLDivElement>(null);
   const envCard = useRef<HTMLElement>(null);
   const stepsCard = useRef<HTMLElement>(null);
   const composer = useRef<HTMLDivElement>(null);
-  const environment = useRef<HTMLDivElement>(null);
+  const environment = useRef<HTMLFieldSetElement>(null);
   const [compactEnv, setCompactEnv] = useState(false);
   const compactEnvRef = useRef(false);
   // NS-34: measure the full labels even while only their icons are drawn. The measurement attribute
@@ -313,18 +315,20 @@ export function NewSession({
       const top = box.getBoundingClientRect().top;
       const bottom = composer.current ? composer.current.getBoundingClientRect().bottom - 2.75 * rem : box.getBoundingClientRect().bottom;
       const env = envCard.current?.offsetHeight ?? 0;
-      const nominal = env ? env + 2 + 3.25 * rem : 2.5 * rem;
+      const intro = introBox.current?.offsetHeight ?? 0;
+      const nominal = intro + 16 + (env ? env + 2 + 3.25 * rem : 2.5 * rem);
       const room = Math.max(0, (bottom - top - nominal) / 2);
       setSpacer(room);
       // The next steps as they are when all shown (kept while some are left out, so it does not flip back).
       if (!tightRef.current && stepsCard.current) stepsFull.current = stepsCard.current.offsetHeight;
-      const next = stepsFull.current > 0 && room + env + 12 + stepsFull.current + 24 > box.clientHeight;
+      const next = stepsFull.current > 0 && room + intro + 16 + env + 12 + stepsFull.current + 24 > box.clientHeight;
       tightRef.current = next;
       setTight(next);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(box);
+    if (introBox.current) ro.observe(introBox.current);
     if (envCard.current) ro.observe(envCard.current);
     if (composer.current) ro.observe(composer.current);
     if (stepsCard.current) ro.observe(stepsCard.current);
@@ -383,7 +387,7 @@ export function NewSession({
   const start = async (stay: boolean) => {
     const prompt = text.trim();
     if (!prompt || busy) return;
-    if (!host || !online || !runtime) return;
+    if (!host || !canStart || !runtime) return;
     if (!cwd.trim()) {
       openFolder();
       return;
@@ -473,10 +477,10 @@ export function NewSession({
   });
   const openMenu = (kind: MenuKind, el: HTMLElement, side: "below" | "above", focus?: ModelFocus) => setMenu({ kind, at: { anchor: el.getBoundingClientRect(), side }, focus });
   // CP-53: ⌘⇧I opens the model menu, ⌘⇧E the same menu at its effort levels.
-  useModelKeys(page, !!runtime, (focus) => {
+  useModelKeys(page, !!runtime && !busy, (focus) => {
     if (modelBtn.current) openMenu("model", modelBtn.current, "above", focus);
   });
-  const canSend = !!text.trim() && !busy && !!runtime && online;
+  const canSend = !!text.trim() && !busy && canStart;
 
   return (
     <div className="ws-page ws-new" ref={page}>
@@ -493,8 +497,14 @@ export function NewSession({
           <div className="ws-new-spacer" style={{ height: spacer }} />
           {!busy && (
             <div className="ws-cards">
+              <div className="ws-new-intro" ref={introBox}>
+                <span className="ws-new-mark" aria-hidden><Bot size={23} strokeWidth={1.5} /></span>
+                <h2>{t("ws_new_heading")}</h2>
+                <p>{computers.length ? t("ws_new_hint") : t("ws_no_computers")}</p>
+              </div>
               {computers.length > 0 && (
                 <section className="ws-card ws-env-card" ref={envCard} aria-label={t("ws_recent_places")}>
+                  {places.length > 0 && <h3 className="ws-card-heading">{t("ws_recent_places")}</h3>}
                   {places.length > 0 && (
                     <ul className="ws-env-rows">
                       {places.map((pl) => {
@@ -539,9 +549,6 @@ export function NewSession({
               )}
               {computers.length === 0 && (
                 <section className="ws-card ws-steps">
-                  <div className="ws-step static">
-                    <span className="ws-step-title">{t("ws_no_computers")}</span>
-                  </div>
                   <button type="button" className="ws-step ws-step-cta" onClick={onPair}>
                     <span className="ws-step-title">{t("ws_pair")}</span>
                   </button>
@@ -549,6 +556,7 @@ export function NewSession({
               )}
               {seats.length > 0 && (
                 <section className="ws-card ws-steps" ref={stepsCard} aria-label={t("ws_next_steps")}>
+                  <h3 className="ws-card-heading">{t("ws_next_steps")}</h3>
                   {seats.flatMap((g, gi) => [
                     ...g.shown.map((s) => <StepRow key={key(s)} step={s} onOpen={onOpen} onFolder={() => openFolder()} onDismiss={() => dismiss(s)} />),
                     ...(g.rest.length
@@ -576,11 +584,12 @@ export function NewSession({
           )}
         </div>
         <div className="ws-new-bottom">
-          <div className={cx("ws-composer", busy && "busy")} ref={composer}>
+          <div className={cx("ws-composer", busy && "busy")} ref={composer} aria-busy={busy}>
             <textarea
               ref={area}
               rows={1}
               value={text}
+              readOnly={busy}
               placeholder={t("ws_placeholder")}
               aria-label={t("ws_placeholder")}
               onChange={(e) => {
@@ -604,7 +613,7 @@ export function NewSession({
               <ArrowUp size={16} strokeWidth={2} />
             </button>
           </div>
-          <div className="ws-env" ref={environment} data-compact={compactEnv || undefined}>
+          <fieldset className="ws-env" ref={environment} data-compact={compactEnv || undefined} disabled={busy} aria-label={t("ws_choose_env")}>
             <div className="ws-env-lead">
               <button
                 type="button"
@@ -669,8 +678,8 @@ export function NewSession({
                 </>
               )}
             </div>
-          </div>
-          {line && <div className={cx("ws-env-line", line.kind)}>{line.text}</div>}
+          </fieldset>
+          {line && <div className={cx("ws-env-line", line.kind)} role={line.kind === "blocking" ? "alert" : "status"}>{line.text}</div>}
         </div>
       </div>
       {menu && (

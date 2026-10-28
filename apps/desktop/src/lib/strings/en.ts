@@ -79,6 +79,8 @@ export const en = {
   ws_search_recent: "Recent",
   ws_search_results: "Sessions",
   ws_new_title: "New session",
+  ws_new_heading: "What would you like to work on?",
+  ws_new_hint: "Choose a computer and project, then describe your task.",
   ws_recent_places: "Recent projects",
   ws_choose_env: "Choose environment",
   ws_browse: "Browse folders…",

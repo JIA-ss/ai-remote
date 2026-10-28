@@ -16,7 +16,7 @@ import type { ChatTarget } from "../AgentChat";
 import type { AppMode } from "./ModeSwitch";
 import { NewSession } from "./NewSession";
 import { Palette } from "./Palette";
-import { Corner, modKey, Toasts, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
+import { Corner, modKey, Toasts, useReturnFocus, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
 import { SessionPage } from "./SessionPage";
 import { Sidebar } from "./Sidebar";
 import { archive, fork, markDone, togglePin, toggleRead, unarchive } from "./actions";
@@ -107,11 +107,13 @@ export function Workspace({
   const [peek, setPeek] = useState(false);
   const [edgeHint, setEdgeHint] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const sideRoot = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
   const winW = useWorkspaceWidth(root, embedded);
   const narrow = winW <= narrowAt(side.w);
   const docked = !narrow && !side.hidden;
   const shown = docked || (narrow && floatOpen);
+  const modalSide = narrow && floatOpen && !peek;
   const width = Math.min(side.w, sidebarMax(winW));
   const [palette, setPalette] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -120,6 +122,36 @@ export function Workspace({
   /** Tickets from `chat_start`, for the first look at a session just started here. */
   const tickets = useRef(new Map<string, string>());
   const current = route.host && route.session ? sessionKey(route.host, route.session) : null;
+
+  useReturnFocus(sideRoot, modalSide);
+  useLayoutEffect(() => {
+    if (modalSide) sideRoot.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [modalSide]);
+  useEffect(() => {
+    if (!modalSide) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.documentElement.dataset.modal) return;
+      if (e.target instanceof Element && e.target.closest(".ws-palette, .ws-menu")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setFloatOpen(false);
+      } else if (e.key === "Tab") {
+        const controls = [...(sideRoot.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex]") ?? [])]
+          .filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (!first) return;
+        const active = document.activeElement;
+        if (!sideRoot.current?.contains(active) || active === (e.shiftKey ? first : last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [modalSide]);
+
 
   useLayoutEffect(() => {
     const pane = root.current;
@@ -162,7 +194,10 @@ export function Workspace({
   // A rename of the title belongs to the page it started on (also when ‹ › leave it).
   useEffect(() => setRenamingTitle(false), [route.host, route.session]);
   const openSession = (host: string, id: string) => {
-    if (route.host === host && route.session === id) return;
+    if (route.host === host && route.session === id) {
+      if (narrow) setFloatOpen(false);
+      return;
+    }
     go({ host, session: id });
   };
   const newSession = (place?: Place) => go({ place: place ?? null });
@@ -171,6 +206,8 @@ export function Workspace({
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || (embedded && !workspaceOwnsEvent(root.current, e))) return;
+      if (document.documentElement.dataset.modal) return;
+      if (palette && !(modKey(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k")) return;
       if (e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey && current && !editable(e.target) && !(e.target as HTMLElement | null)?.closest?.(".ws-list")) {
         e.preventDefault();
         setRenamingTitle(true);
@@ -332,6 +369,8 @@ export function Workspace({
   const corner = <Corner onToggle={toggle} back={back} forward={forward} embedded={embedded} />;
   const sidebar = (
     <Sidebar
+      rootRef={sideRoot}
+      modal={modalSide}
       snap={snap}
       computers={computers}
       corner={corner}
@@ -388,7 +427,7 @@ export function Workspace({
       )}
       {narrow && floatOpen && !peek && <div className="ws-float-scrim" onPointerDown={() => setFloatOpen(false)} />}
       {edgeHint && <div className="ws-peek-hint" aria-hidden />}
-      <main className="ws-main">
+      <main className="ws-main" inert={modalSide}>
         {route.host && route.session ? (
           <SessionPage
             key={`${route.host}/${route.session}`}

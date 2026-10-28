@@ -81,6 +81,8 @@ export const zh: Record<keyof typeof en, string> = {
   ws_search_recent: "最近",
   ws_search_results: "会话",
   ws_new_title: "新建会话",
+  ws_new_heading: "这次想完成什么？",
+  ws_new_hint: "选择电脑和项目，写下你想完成的任务。",
   ws_recent_places: "最近项目",
   ws_choose_env: "选择环境",
   ws_browse: "浏览文件夹…",

@@ -48,9 +48,9 @@ export function PairPage({
   const unchecked = step === 2 && !!paired;
   useEffect(() => {
     if (!registerGuard) return;
-    registerGuard(unchecked ? (proceed) => (setLeaving(() => proceed), true) : null);
+    registerGuard(busy || unchecked ? (proceed) => { if (!busy) setLeaving(() => proceed); return true; } : null);
     return () => registerGuard(null);
-  }, [unchecked, registerGuard]);
+  }, [busy, unchecked, registerGuard]);
 
   const pair = async () => {
     if (!ready || busy) return;
@@ -95,7 +95,7 @@ export function PairPage({
             <div className="body c2 gl-pair-d">{t(useTicket ? "pr_ticket_d" : "pr_door1_d")}</div>
             {useTicket ? (
               <textarea
-                className="ta-input mono gl-pair-ticket"
+                className="ta-input mono gl-pair-ticket" disabled={busy}
                 rows={4}
                 value={ticket}
                 autoFocus
@@ -105,7 +105,7 @@ export function PairPage({
             ) : (
               <>
                 <input
-                  className="nt-code-input"
+                  className="nt-code-input" disabled={busy}
                   aria-label={t("pr_code_label")}
                   inputMode="numeric"
                   autoComplete="one-time-code"
@@ -123,14 +123,14 @@ export function PairPage({
                     }
                     setCode(groupCode(v));
                   }}
-                  onKeyDown={(e) => e.key === "Enter" && void pair()}
+                  onKeyDown={(e) => !e.nativeEvent.isComposing && e.key === "Enter" && void pair()}
                 />
                 <div className="cap c3 gl-pair-hint">{t("pr_code_hint")}</div>
               </>
             )}
             <label className="gl-pair-name">
               <span className="body">{t("pr_name")}</span>
-              <input className="field lg ph-field" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pr_name_ph")} />
+              <input className="field lg ph-field" disabled={busy} value={name} onChange={(e) => setName(e.target.value)} placeholder={t("pr_name_ph")} />
             </label>
             {error && (
               <div className="conseq">
@@ -175,19 +175,22 @@ export function PairPage({
             <div className="body c2 gl-pair-d">{t("pr_words_d")}</div>
             <div className="words gl-pair-words">{paired.sas.split(/[-\s]+/).join(" ")}</div>
             <div className="gl-pair-acts">
-              <button className="btn primary lg" onClick={() => setStep(3)}>
+              <button className="btn primary lg" disabled={busy} onClick={() => setStep(3)}>
                 {t("match")}
               </button>
               <button
-                className="btn lg"
+                className="btn lg" disabled={busy}
                 onClick={async () => {
-                  await api.unpair(paired.peer).catch(() => {});
-                  setStep("mismatch");
+                  setBusy(true); setError(null);
+                  try { await api.unpair(paired.peer); setStep("mismatch"); }
+                  catch (e) { setError(String(e instanceof Error ? e.message : e)); }
+                  finally { setBusy(false); }
                 }}
               >
                 {t("no_match")}
               </button>
             </div>
+            {error && <div className="conseq" role="alert">{error}</div>}
             <div className="cap c2 gl-pair-note">{t("pr_mismatch_note", { host })}</div>
           </div>
         )}
@@ -244,7 +247,7 @@ export function PairPage({
           danger
           onNo={() => setLeaving(null)}
           onYes={async () => {
-            await api.unpair(paired.peer).catch(() => {});
+            await api.unpair(paired.peer);
             const go = leaving;
             setLeaving(null);
             go();

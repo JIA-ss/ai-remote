@@ -5,7 +5,7 @@
 // conversations" with an excerpt; a small spinner shows if that takes over 150 ms. With nothing typed
 // it lists the latest sessions. ↑ / ↓ move, Enter opens, Esc closes.
 
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { folderName } from "../../lib/chat";
 import { t } from "../../lib/i18n";
@@ -20,7 +20,7 @@ import {
   type WsSnapshot,
 } from "../../lib/workspace";
 import { cx } from "../util";
-import { StatusDot } from "./parts";
+import { StatusDot, useReturnFocus } from "./parts";
 import { titleOf } from "./Sidebar";
 import { workspace } from "./useWorkspace";
 
@@ -40,6 +40,8 @@ export function Palette({ snap, onOpen, onClose }: { snap: WsSnapshot; onOpen: (
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useReturnFocus(panel);
   const items = useMemo(() => workspace.items(), [snap]);
   const fields = (x: WsItem) => ({ title: titleOf(x), folder: x.meta.cwd, branch: x.meta.branch ?? "", computer: x.host, previous: x.meta.previous_titles });
   const results = useMemo(() => {
@@ -93,13 +95,26 @@ export function Palette({ snap, onOpen, onClose }: { snap: WsSnapshot; onOpen: (
   useEffect(() => input.current?.focus(), []);
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(`[data-i="${at}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [at]);
+  }, [at, query, total]);
   const openHit = (h: ContentHit) => onOpen(workspace.find(h.host, h.meta.id) ?? { host: h.host, key: h.key, meta: h.meta, local: false, online: true });
   const pick = (i: number) => (i < results.length ? onOpen(results[i]) : content[i - results.length] && openHit(content[i - results.length]));
   const searching = spinner && deepQuery(query) && !(deep && deep.query === query.trim());
   return (
     <div className="ws-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="ws-palette" role="dialog" aria-modal="true" aria-label={t("ws_palette")}>
+      <div ref={panel} className="ws-palette" role="dialog" aria-modal="true" aria-label={t("ws_palette")}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
+          else if (e.key === "Tab") {
+            const controls = panel.current?.querySelectorAll<HTMLElement>("input, button:not([tabindex='-1'])");
+            if (!controls?.length) return;
+            if (document.activeElement === (e.shiftKey ? controls[0] : controls[controls.length - 1])) {
+              e.preventDefault();
+              (e.shiftKey ? controls[controls.length - 1] : controls[0]).focus();
+            }
+          }
+        }}>
+
         <div className="ws-palette-q">
           <Search size={16} strokeWidth={1.5} />
           <input
@@ -132,6 +147,9 @@ export function Palette({ snap, onOpen, onClose }: { snap: WsSnapshot; onOpen: (
               }
             }}
           />
+          <button type="button" className="ws-ib ws-palette-close" aria-label={t("hc_preview_close")} title={t("hc_preview_close")} onClick={onClose}>
+            <X size={15} strokeWidth={1.5} />
+          </button>
         </div>
         <div className="ws-palette-list" id="ws-palette-list" role="listbox" ref={list}>
           {results.length > 0 && <div className="ws-palette-h">{query.trim() ? t("ws_search_results") : t("ws_search_recent")}</div>}
@@ -145,10 +163,12 @@ export function Palette({ snap, onOpen, onClose }: { snap: WsSnapshot; onOpen: (
                 id={`ws-p-${i}`}
                 data-i={i}
                 type="button"
+                tabIndex={-1}
                 role="option"
                 aria-selected={i === at}
                 className={cx("ws-palette-row", i === at && "on", former && "two")}
                 onMouseMove={() => i !== at && setActive(i)}
+                onPointerDown={(e) => e.preventDefault()}
                 onClick={() => onOpen(x)}
               >
                 <span className="ws-palette-dot">{dot && <StatusDot kind={dot} />}</span>
@@ -189,10 +209,12 @@ export function Palette({ snap, onOpen, onClose }: { snap: WsSnapshot; onOpen: (
                 data-i={i}
                 data-content-hit={h.key}
                 type="button"
+                tabIndex={-1}
                 role="option"
                 aria-selected={i === at}
                 className={cx("ws-palette-row two", i === at && "on")}
                 onMouseMove={() => i !== at && setActive(i)}
+                onPointerDown={(e) => e.preventDefault()}
                 onClick={() => openHit(h)}
               >
                 <span className="ws-palette-dot">{x && workspace.dot(x) && <StatusDot kind={workspace.dot(x)!} />}</span>

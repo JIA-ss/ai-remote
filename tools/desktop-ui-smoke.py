@@ -2,7 +2,7 @@
 """Glass acceptance audit of the desktop app's browser preview (demo backend), through the local
 Camofox server's REST API.
 
-  python3 tools/desktop-ui-smoke.py [--url http://127.0.0.1:1535] [--camofox http://127.0.0.1:9377]
+  python3 tools/desktop-ui-smoke.py [--url http://127.0.0.1:1535] [--camofox http://127.0.0.1:9378]
                                     [--out target/glass-audit] [--only settings] [--langs zh] [--themes dark]
 
 Without --url it starts the Vite preview itself on a free port and stops it afterwards. Every screen
@@ -71,7 +71,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DESKTOP = ROOT / "apps/desktop"
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--url", help="an already running preview, e.g. http://127.0.0.1:1535 (default: start one)")
-parser.add_argument("--camofox", default="http://127.0.0.1:9377")
+parser.add_argument("--camofox", default="http://127.0.0.1:9378")
+parser.add_argument("--session", default="ai-remote-ui", help="durable Camofox session for local fixtures")
 parser.add_argument("--out", "--output", dest="out", type=Path, default=ROOT / "target/glass-audit")
 parser.add_argument("--only", help="comma-separated substrings: audit only the screens whose name contains one")
 parser.add_argument("--langs", default="zh,en")
@@ -81,8 +82,8 @@ parser.add_argument("--verbose", action="store_true", help="print every passing 
 parser.add_argument("--lint", nargs="*", type=Path, metavar="CSS", help="only lint these style sheets (default: the glass, workspace, claude, codex and app sheets) without a browser, and exit")
 args = parser.parse_args()
 
-# A fresh browser profile each run (Camofox keeps per-user storage between runs); deleted at the end.
-USER = f"glass-audit-{os.getpid()}"
+# A durable, named fixture profile; preserve other tabs and the browser identity.
+USER = "camofox-" + args.session
 W, H = 1280, 800
 # Loopback only, never through a system proxy (a proxy answered 400 for 127.0.0.1 on this machine).
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -791,7 +792,7 @@ def main():
         check("audit ran", False, error)
     finally:
         try:
-            call("DELETE", f"/sessions/{USER}")
+            call("DELETE", f"/tabs/{state['tab']}?userId={USER}")
         except Exception:
             pass
         if vite:

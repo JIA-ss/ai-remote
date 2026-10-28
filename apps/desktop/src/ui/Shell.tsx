@@ -293,6 +293,7 @@ export function Sidebar({
       className={cx("nv", isActive(n) && "sel")}
       onClick={() => onNav(n)}
       aria-current={isActive(n) ? "page" : undefined}
+      aria-label={n === "devices" ? `${label} ${computers.length}` : n === "approvals" && waiting > 0 ? `${label} ${t("sidebar_attention", { n: waiting })}` : label}
       title={label + hint(key)}
     >
       {icon}
@@ -362,7 +363,7 @@ export function Sidebar({
           </>
         ) : (
           groups.map(([g, list]) => {
-            const folds = g === "offline" && !q;
+            const folds = g === "offline" && !q && state === "expanded";
             const open = !folds || offlineOpen;
             return (
               <div key={g} className={cx("side-g", `g-${g}`)}>

@@ -2,6 +2,14 @@
 
 给接手开发的人和 coding agent 的工作笔记。用户文档在 `README*.md` 和 `docs/`；这里只记**当前在做什么、为什么这么做、下一步是什么、踩过的坑**。每次推进后更新本文件，并在提交说明里写清思路。
 
+## 主干 feature 整合（2026-10-28）
+
+- 当前主检出已从 `feat/ipad-12-9` 切到 `main`，先快进远端 `a4d6c58`，再整合 `feat/desktop-glass-finish`（`03df6bb`）、`feat/workspace-stage3` / `feat/codex-model-chips`（同一个 `b6350a8`）与 `fix/e2e-lan-only`（`e612dd6`）。新能力包含分组/拖拽/密度、分叉树/曾用名/正文搜索、三类适配器的模型与推理强度，以及 Codex 输入栏选择器。
+- 旧工作区原始 33 文件已完整保存在 stash `6641ee8429553bbe3323bfb35a99174365a61779`，基准另留 `codex/pre-main-integration-20261028`；早先的 `97dc84f` 备份保留。旧页面与玻璃实现由已整合的新版本承接，独有的启动门闸、fieldset 锁定、焦点返回/短窗菜单、搜索键盘归属、复制与保存反馈、撤销配对失败处理、远程浮条焦点及 debug 验收唤醒按行为合回；保留新版分组/模型/嵌入工作区，未用旧文件整份覆盖。
+- 已核对其他 8 个 worktree 均洁净。旧 `verify/codex-ios-layout` 的 9 个提交已由 `e425dda` 合并为正式 iOS 修复；早期导航/Claude/批量/MCP 分支也已有改写或整合提交进入主干，不再把旧实验与历史副本重新叠加。原始分支和 stash 都保留。
+- 验收证据位于 `target/main-integration-20261028/`（不入库）。Camofox 改复用命名 `ai-remote-ui` fixture session，只关闭本轮 tab；全矩阵 1885 项通过，127 张布局截图已通过 7 张联系表检查。此项只证明演示页面布局、着色与计算样式，不证明原生毛玻璃、真实视频或物理输入。
+- 本机静态门槛：fmt、全工作区/all-targets Clippy、TypeScript、前端构建通过；Rust 全量 455 通过 / 11 忽略，Node 全量 451 项中 450 通过 / 1 平台跳过。新增组件回归实测搜索/审批期间的快捷键归属、失焦恢复和撤销配对失败留在原步骤且可重试。最后涉及的 activity/pair/settings-device 又经 Camofox 326 项通过。原生链路和两平台 CI 仍待本轮结果；没有安装正式应用或迁移用户配置。历史实测与未测边界保留，不能把整合等同于文档里的全部长期路线图完成。
+
 ## MCP 公开目录入口（2026-10-24）
 
 - 中英文 README 首屏并排展示官方 mcpservers.org 收录徽章与既有 M8ven 发布者徽章；导航与 MCP 接入段指向项目的真实公开目录页面。
@@ -3396,3 +3404,51 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
   网络首轮回环请求经系统代理得到 HTTP 400，仅测试进程使用直接回环 opener 后通过，未改系统代理。
 - 原生对话 / 预览 / render / offline 回归、深浅色 WindowServer 截图与真实快捷键的最终结果集中记录在 PR #44；
   本机当前未锁屏且录屏权限已授予。证据目录 `/Volumes/SSD-2TB/MacData/Artifacts/ai-remote-pr44-merge-20261024`；旧失败不删除。
+
+
+## 本地同步远端（2026-10-25）
+
+- `feat/ipad-12-9` 从 `7f993b8` 快进到 `38f19eb`（47 个提交），保留原有未提交的桌面 UI / 玻璃改动。
+- 恢复改动时合并 `AGENTS.md`、工作区样式与新会话环境栏：保留远端窄布局测量和本地 fieldset 禁用语义。
+  原始 33 个文件的现场保存在 Git stash `97dc84f441f954af3eeee358f105ee6cb96d4db9`；本轮不提交或推送。
+- 同步后 TypeScript、前端约定测试（375 项：374 过 / 1 跳过）、`git diff --check` 通过；无未解决冲突。
+  26 个无交叠的已跟踪文件及 2 个新文件与备份逐字节一致；本轮未跑 Rust 或 UI E2E。
+
+## 桌面 UI / UX 整体精修（2026-10-24）
+
+- 延续原生玻璃外壳，完成普通页面的第二阶段精修：设备页用一行状态与等底边的设备卡；电脑页明确离线 / 无权限预览；
+  欢迎与配对有清晰双向入口；活动记录按真实日期分组，支持键盘选行、关闭详情回焦点和窄窗上下布局。
+  设置页统一 760px 阅读宽度与分组行，减少重复版本信息；网络选择支持方向键，保存与复制成功以真实 Promise 结果为准。
+- `ui/Modal.tsx` 统一 Confirm、配对码和开启被控端弹窗：原生 `dialog.showModal()` + body portal，约束焦点、关闭回焦点、
+  `html[data-modal]` 阻止背后快捷键，运行期间禁关闭。配对尚未核对安全词时，侧栏、历史和托盘导航均先确认；
+  撤销配对失败必须留在确认框，不能吞掉错误后离开。紧凑侧栏保留导航名称，离线分组没有不可见的 Tab 停靠点。
+- 工作区新会话增加任务引导与分区标题；搜索、模型输入、菜单、浮动侧栏补齐焦点返回与键盘行为；菜单在短窗内滚动。
+  启动期间锁定草稿与环境，`can_start=false` 禁发送。远程控制栏有键盘焦点时不再自动隐藏，视频舞台不叠加 backdrop blur。
+- 验收脚本 `tools/desktop-ui-smoke.py` 使用 Camofox 命名 session，逐操作绑定本次创建的 tab ID；不要依赖 CLI 的共享 current tab。
+  `--matrix-only` 复查 13 个路由 × 深浅色 × 960/1280 窗口；`--workspace-only` 复查搜索、模型保存与 640px 预览浮动侧栏
+  （640px 小于原生窗口 960px 下限，仅为自适应分支验证）。截图与失败轮次在 `target/ui-modernization/`，不入库。
+- 本机 Rust fmt / Clippy、438 通过 / 9 忽略、前端 266 通过 / 1 跳过、TypeScript、前端 build 和原生 debug build 通过。
+  Camofox 最终矩阵 161 项 / 52 张截图、工作区交互 25 项通过；最终合并验收 240 项 / 68 张截图通过，
+  原生隔离 quiet host + 真实 QUIC + 替身智能体的工作区 E2E 106/106 通过（1 次，使用下述调试唤醒）。
+  最后的 Watch 路由确有 `monitor not found` 日志：只验证同一对话旁的画面页面与 Back 返回，不证明真实视频帧成功。
+- 原生验收前两轮在隐藏 WKWebView 等待定时事件时停滞，关截图诊断也复现；直到截止时再次执行页面脚本才继续。
+  debug 的显式 `AI_REMOTE_SMOKE_SCRIPT` 循环现每秒做一次空原生 evaluation，避免该验收环境的后台计时挂起；
+  不进入 release 或日常 App。保留了旧失败日志，带此测试唤醒的结果不能充作普通前台 / 失焦运行性能证明。
+  本轮没有 Windows 真机材质、不同壁纸对比度、手动 VoiceOver 或 iOS 实机验收结论。
+
+### 毛玻璃补齐（同日用户追问）
+
+- 前一轮工作区的 `.ws`、`.ws-main` 和 Claude `.page` 仍有实色底，挡住原生材质；不能把布局翻新截图当成玻璃已验收。
+  新增 `styles/glass/workspace.css`，在 Codex / workspace / Claude 样式之后加载，只在 native / preview 材质生效：
+  窗口与工作区根透明、主内容只涂一次 `--gl-content`、正文透明，卡片 / 输入半透明、菜单和搜索等浮层用厚玻璃。
+  保留实色 `--canvas` / `--ws-s1`，因为它们也用于发送按钮的反色文字，直接设透明会让箭头消失。
+  `none` 保留实色；关闭了 Claude 返回底部按钮在 none 模式下遗留的 blur；原生 dialog 恢复 thick 材质，只有预览保留 .98 填充。
+- 原生截图必须通过 WindowServer / 系统截图确认，`lib.rs` 的 macOS smoke capture 是 WKWebView snapshot，采不到桌面材质。
+  本机系统查询确认 `CGSSessionScreenIsLocked=1`、系统 reduceTransparency=false；原生实拍被锁屏阻断，已请用户解锁。
+  隔离测试窗口、临时彩色背景窗口和测试进程已清理，不改用户壁纸或已安装 App；截图准备脚本留在 `target/ui-modernization/`。
+  Camofox 专项入口 `--material-only` 核对新会话 / Claude / Codex 深浅色的透明层与实色回退；仍不能替代原生实拍。
+- 用户随后要求尝试 ai-remote 解锁：当前普通 macOS host 确实把已登录会话的锁屏标为 `desktop_usable=true`、
+  `secure_desktop=true`，不能沿用旧 skill 的“锁屏一定无法输入”结论。已修正仓库 skill 的旧说明。
+  两次隔离 quiet host / control 配对现场检查保存于 `target/ui-modernization/unlock-check/`：锁屏时 monitors=[]，
+  screenshot 明确报无显示器；发送一次 Return 返回 ok，之后仍为 lock screen。这里只证明输入事件发出，
+  没有密码框接收或解锁证据；解锁仍需机主正常登录认证。临时 host、controller 与配对均已清理。

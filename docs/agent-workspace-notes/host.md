@@ -3,6 +3,10 @@
 分支 `ws/host-s1`，起点 `0bc1d81`。对应 `docs/agent-workspace.zh-CN.md` 第 1 节，和设计不一致的地方已改回设计文档（第 1 节里的"实现说明"
 和"实测"表）。
 
+## 主干整合追记（2026-10-28）
+
+分叉/正文搜索和三类适配器的模型/推理强度协议已进入本轮 main 整合候选，桌面新建页、Claude 与 Codex 会话输入栏都已接入。当前整合验证与未测条件见 AGENTS.md 顶部；下方各次实验的数量和失败继续属于各自源码基准。
+
 ## 做了什么
 
 - **会话元数据**（`chat/mod.rs` 的 `Meta`）：`title` / `title_source`、`first_text`、`last_status` / `last_reason`、`pending`、`pinned`、

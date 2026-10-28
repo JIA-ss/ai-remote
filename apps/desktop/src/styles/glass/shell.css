@@ -73,7 +73,7 @@
 .gl-win[data-sidebar="compact"] .side .nv > .end.badge { position: absolute; top: 6px; right: 11px; min-width: 0; width: 8px; height: 8px; padding: 0; border-radius: 50%; font-size: 0; }
 .gl-win[data-sidebar="compact"] .side .pc { width: 48px; padding: 6px 0; grid-template-columns: 1fr; justify-items: center; }
 .gl-win[data-sidebar="compact"] .side .pc .tile { grid-row: auto; align-self: center; }
-.gl-win[data-sidebar="compact"] .side .side-h { height: 9px; padding: 0; margin: 4px 0; pointer-events: none; }
+.gl-win[data-sidebar="compact"] .side .side-h { height: 9px; padding: 0; margin: 4px 0; pointer-events: none; font-size: 0; }
 .gl-win[data-sidebar="compact"] .side .side-h::after { content: ""; display: block; margin: 4px 14px 0; height: var(--gl-hair); background: var(--gl-sep); }
 
 /* ---- toolbar: a transparent strip; the groups on it are glass capsules ---- */
@@ -195,3 +195,23 @@
 .gl-win .gl-main > .nt-session { width: auto; height: auto; flex: 1; min-height: 0; min-width: 0; }
 .gl-win .nt-session > .tb.gl-toolbar { position: relative; }
 .gl-win .nt-session.immersive > .tb.gl-toolbar { display: none; }
+
+/* A quieter, roomier hierarchy for the permanent navigation. */
+.gl-win[data-sidebar="expanded"] .side { padding-inline: 12px; }
+.gl-win[data-sidebar="expanded"] .side > .nv { min-height: 34px; height: 34px; border-radius: 9px; }
+.gl-win[data-sidebar="expanded"] .side .pc { padding-block: 8px; border-radius: 9px; }
+.gl-win[data-sidebar="expanded"] .side .search { height: 32px; margin-bottom: 12px; border-radius: 9px; }
+.gl-win .side > .nv[aria-current="page"] {
+  background: color-mix(in srgb, var(--agent) 12%, var(--gl-hover));
+  color: var(--text-1); font-weight: 600;
+}
+.gl-win .side > .nv:nth-last-child(2) { margin-top: 8px; }
+.gl-win .side-devices { scrollbar-width: thin; }
+.gl-win .gl-toolbar .gl-nav { gap: 0; }
+/* Long host names give way before the toolbar actions do. */
+.gl-win .gl-toolbar .gl-titles { max-width: min(280px, 28vw); }
+@media (max-width: 1060px) {
+  .gl-win .gl-toolbar { gap: 8px; }
+  .gl-win .gl-toolbar .demo-badge { max-width: 54px; overflow: hidden; text-overflow: ellipsis; }
+  .gl-win .gl-toolbar .gl-sub { display: none; }
+}

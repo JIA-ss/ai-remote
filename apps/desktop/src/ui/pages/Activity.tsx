@@ -3,7 +3,7 @@
 // In a narrow window the inspector is a drawer over the list's right side, shown only while a row is
 // picked (glass/pages.css); picking the row again, its close button or Escape put it away.
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { currentLang, t } from "../../lib/i18n";
 import type { Computer, Snapshot } from "../../lib/store";
 import type { Step } from "../../lib/types";
@@ -60,6 +60,11 @@ export function ActivityPage({
   onOpenComputer?: (host: string) => void;
 }) {
   const now = useNow(5000);
+  const root = useRef<HTMLDivElement>(null);
+  const closeSelection = () => {
+    root.current?.querySelector<HTMLElement>(".tr.sel")?.focus({ preventScroll: true });
+    setSel(null);
+  };
   const [sel, setSel] = useState<string | null>(null);
   const [listRef, list] = useSize<HTMLDivElement>();
   const shown = useMemo(() => activityComputers(snap, host), [snap, host]);
@@ -90,11 +95,11 @@ export function ActivityPage({
   const pick = (key: string) => setSel((cur) => (cur === key ? null : key));
   return (
     <div
-      className="act"
+      className="act" ref={root}
       onKeyDown={(e) => {
         if (e.key !== "Escape" || !sel || e.defaultPrevented) return;
         e.preventDefault();
-        setSel(null);
+        closeSelection();
       }}
     >
       <div className="act-list" ref={listRef}>
@@ -166,7 +171,7 @@ export function ActivityPage({
       <aside className="insp" aria-label={t("pg_ins_label")}>
         {picked ? (
           <>
-            <button type="button" className="gl-insp-close" onClick={() => setSel(null)} aria-label={t("pg_ins_close")} title={t("pg_ins_close")}>
+            <button type="button" className="gl-insp-close" onClick={closeSelection} aria-label={t("pg_ins_close")} title={t("pg_ins_close")}>
               <Icon name="x" size={12} />
             </button>
             <div className="hdr">
