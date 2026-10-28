@@ -8,6 +8,17 @@
 - 沿用已有深浅品牌插图、客户端配置和权限说明，保留 Pre-alpha、未签名分发与平台 WIP / 验收边界；目录收录不扩大功能或安全保证。
 - 本次仅文档更新；已核验徽章 SVG 的 HTTP 200，公开项目页由浏览器另行验收。主干仍通过文档 PR 与原有四项必需 CI 合入，不绕分支保护。
 
+## 测试实例只走局域网（2026-10-26）
+
+- 起因：用户担心办公网里"乱发包、乱扫"。装好的两台都是 quiet + `mode = "lan"`，但测试脚本给临时实例只写了 `quiet = true`，它们跑的是
+  自动模式：每轮都连 n0 公共中继和地址查询（HTTPS 443），中继的网络报告还探测 80 端口。本机 lsof 抓到过另一会话的测试被控端连着
+  5 个公网 IP 的 443。
+- 现在 `desktop-chat-e2e.py`、`ui-smoke.py`、`phone-chat-smoke.py`、`desktop-chat-preview-remote.py` 的临时 home 都写 quiet + LAN，
+  被控端用随机空闲 UDP 端口（不用 47800，本机装好的被控端占着）。`chat-smoke.py` 由另一会话改。`network-e2e.py` 本来就是这样。
+- 实测（Mac，替身）：Claude 细节 31 项、Codex 125 项全过，测试进程全程没有 TCP 连接，被控端日志写明 "LAN mode: no relay, no address
+  lookup"；按 `ui-smoke.py` 的配置起被控端、配对、调用 doctor 也通过且无 TCP。`ui-smoke.py`（Windows 原生）和 `phone-chat-smoke.py`
+  本身没整轮跑。UDP 去向 lsof 看不到（未连接的 QUIC 套接字），无 TCP 只说明没连中继和地址查询。
+
 ## 通用约定
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：

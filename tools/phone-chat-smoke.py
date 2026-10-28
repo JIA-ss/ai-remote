@@ -8,14 +8,17 @@ device may talk), then sends, queues, stops and resumes on its own.
 
   python3 tools/phone-chat-smoke.py [--cli target/debug/ai-remote]
 
-Every home (host, command line, phone) gets `[network] quiet = true` in host/ and controller/, and the run
-stops unless the host reports quiet mode: no mDNS or UPnP on the office network.
+Every home (host, command line, phone) gets `[network] quiet = true` and `mode = "lan"` in host/ and
+controller/, and the run stops unless the host reports quiet mode: no mDNS or UPnP on the office network,
+and no relay or address lookup (nothing outside this machine). The host listens on a free UDP port, not
+47800 (an installed host may hold it).
 
 macOS only; needs Command Line Tools, not Xcode. The UIKit parts of the view are not exercised here.
 """
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -58,10 +61,14 @@ with tempfile.TemporaryDirectory(prefix="apc-", dir="/tmp") as tmp:
     (base / "outside/named.md").write_text("# named\n", encoding="utf-8")
     (base / "outside/secret.md").write_text("# secret\n", encoding="utf-8")
     (host_home / "host").mkdir(parents=True)
-    # Quiet mode on every role of every home (no mDNS or UPnP on the local network), the phone's too.
-    quiet = "[network]\nquiet = true\n"
+    # Quiet and Local network only on every role of every home, the phone's too.
+    quiet = '[network]\nquiet = true\nmode = "lan"\n'
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("0.0.0.0", 0))
+        host_port = probe.getsockname()[1]
     (host_home / "host" / "ai-remote.toml").write_text(
-        '[host]\napproval_prompt = false\n\n' + quiet + '\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+        '[host]\napproval_prompt = false\n\n' + quiet + f'port = {host_port}\n' + '\n[[rule]]\ntool = "chat_*"\naction = "allow"\n',
+        encoding="utf-8")
     for home in (host_home, ctl_home, phone):
         for role in ("host", "controller"):
             (home / role).mkdir(parents=True, exist_ok=True)

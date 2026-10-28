@@ -30,7 +30,9 @@ the person looks elsewhere; a first message with DELAYTITLE gets its title 4 s l
 CODEDETAILS emits successful terminal output and an ANSI Markdown fence; ASKDETAILS asks one formatted
 question and echoes its raw answer as JSON (tools/desktop-claude-details-e2e.js).
 
-Every home gets `[network] quiet = true` for the host and controller roles. The default app window
+Every home gets `[network] quiet = true` and `mode = "lan"` (Local network only: no relay, no address
+lookup) for the host and controller roles, so a run contacts nothing outside this machine; the host
+listens on a free UDP port, not 47800 (an installed host may hold it). The default app window
 stays off screen; --visible requests a visible window instead. Screenshots land in --out.
 Screenshots settle finite entrance/exit animations at their terminal state; infinite live indicators
 stay active. This verifies screenshot content, not animation timing or performance.
@@ -45,6 +47,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -553,10 +556,14 @@ with tempfile.TemporaryDirectory(prefix="adc-", dir=TMP, **({"ignore_cleanup_err
         (work / ".claude" / "commands").mkdir(parents=True)
         (work / ".claude" / "commands" / "pong.md").write_text(
             "Reply with exactly the word SKILLPONG and nothing else.\n", encoding="utf-8")
-    quiet = "[network]\nquiet = true\n"
+    quiet = '[network]\nquiet = true\nmode = "lan"\n'
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("0.0.0.0", 0))
+        host_port = probe.getsockname()[1]
     (host_home / "host").mkdir(parents=True)
     (host_home / "host" / "ai-remote.toml").write_text(
-        '[host]\napproval_prompt = false\n\n' + quiet + '\n[[rule]]\ntool = "chat_*"\naction = "allow"\n', encoding="utf-8")
+        '[host]\napproval_prompt = false\n\n' + quiet + f'port = {host_port}\n' + '\n[[rule]]\ntool = "chat_*"\naction = "allow"\n',
+        encoding="utf-8")
     for home in (host_home, desk):
         for role in ("host", "controller"):
             (home / role).mkdir(parents=True, exist_ok=True)
