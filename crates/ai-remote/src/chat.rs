@@ -35,6 +35,24 @@ pub enum ChatCommand {
     },
     /// Start an agent in a folder on the host and talk to it: each line is a message.
     Start(StartArgs),
+    /// Fork a session: a new one with the same agent and folder and a copy of its conversation
+    /// (Claude Code and Codex). Prints the new session.
+    Fork {
+        session: String,
+        /// A first message for the fork.
+        #[arg(long)]
+        prompt: Option<String>,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Sessions whose messages contain every word of QUERY, with excerpts.
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[command(flatten)]
+        target: Target,
+    },
     /// Give an agent one task, print its answer and end the session.
     Run(RunArgs),
     /// Watch a running session (and, if you started it, keep talking).
@@ -112,6 +130,9 @@ pub struct StartArgs {
     /// A model instead of the agent's default.
     #[arg(long)]
     pub model: Option<String>,
+    /// An effort level instead of the agent's default (Claude Code: low, medium, high, xhigh, max).
+    #[arg(long)]
+    pub effort: Option<String>,
     /// Ignore the folder's own agent settings, hooks and MCP servers where the agent supports it.
     #[arg(long)]
     pub hardened: bool,
@@ -128,6 +149,8 @@ pub struct RunArgs {
     pub cwd: String,
     #[arg(long)]
     pub model: Option<String>,
+    #[arg(long)]
+    pub effort: Option<String>,
     #[arg(long)]
     pub hardened: bool,
     /// Keep the session instead of ending it after the answer.
@@ -173,6 +196,9 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             if let Some(m) = a.model {
                 args["model"] = m.into();
             }
+            if let Some(e) = a.effort {
+                args["effort"] = e.into();
+            }
             let started = call(profile, &a.target, "chat_start", args).await?.ok();
             let mut chat = Conversation::open(profile, &a.target, &started, 0).await?;
             if !json_out {
@@ -186,6 +212,35 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             }
             chat.interactive(json_out).await?;
         }
+        ChatCommand::Fork { session, prompt, target } => {
+            let mut args = json!({"fork_of": session});
+            if let Some(p) = prompt {
+                args["prompt"] = p.into();
+            }
+            let v = call(profile, &target, "chat_start", args).await?.ok();
+            if json_out {
+                print_json(&v);
+            } else {
+                println!("{}", v["session"].as_str().unwrap_or("?"));
+            }
+        }
+        ChatCommand::Search { query, limit, target } => {
+            let v = call(profile, &target, "chat_search", json!({"query": query, "limit": limit})).await?.ok();
+            if json_out {
+                print_json(&v);
+            } else {
+                for r in v["results"].as_array().into_iter().flatten() {
+                    let title = r["title"].as_str().or(r["first_text"].as_str()).unwrap_or("");
+                    println!("{}  {} match(es)  {}", r["session"].as_str().unwrap_or("?"), r["hits"], title);
+                    for e in r["excerpts"].as_array().into_iter().flatten() {
+                        println!("    {}: {}", e["role"].as_str().unwrap_or("?"), e["text"].as_str().unwrap_or(""));
+                    }
+                }
+                if v["truncated"] == true {
+                    eprintln!("(stopped before reading every session)");
+                }
+            }
+        }
         ChatCommand::Attach { session, since, target } => {
             let issued = call(profile, &target, "chat_attach", json!({"session": session})).await?.ok();
             let mut chat = Conversation::open(profile, &target, &issued, since).await?;
@@ -195,6 +250,9 @@ pub async fn command(profile: &Profile, cmd: ChatCommand, json_out: bool) -> Res
             let mut args = json!({"runtime": a.runtime, "cwd": a.cwd, "hardened": a.hardened, "prompt": a.task});
             if let Some(m) = a.model {
                 args["model"] = m.into();
+            }
+            if let Some(e) = a.effort {
+                args["effort"] = e.into();
             }
             let started = call(profile, &a.target, "chat_start", args).await?.ok();
             let mut chat = Conversation::open(profile, &a.target, &started, 0).await?;

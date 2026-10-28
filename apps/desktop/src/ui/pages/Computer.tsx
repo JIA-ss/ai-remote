@@ -1,5 +1,6 @@
-// The computer page: its news in one large sentence, the live preview and recent steps (Overview),
-// this device's access, the tools on offer and the coding agents (the tabs sit in the toolbar).
+// The computer page: its news in one large sentence, the decision when one waits, the live preview
+// (the picture opens the live view) and the current task with recent steps (Overview); this device's
+// access with the computer's facts, the tools on offer and the coding agents (the tabs sit in the toolbar).
 
 import { currentLang, t, type Key } from "../../lib/i18n";
 import type { ComputerTab } from "../../lib/nav";
@@ -8,23 +9,23 @@ import type { Step } from "../../lib/types";
 import type { ChatTarget } from "../AgentChat";
 import { AccessTab, AgentsTab, ToolsTab } from "../ComputerTabs";
 import { DecisionCard } from "../Decide";
-import { Pointer, SeatMark } from "../glyphs";
+import { SeatMark } from "../glyphs";
 import { Icon } from "../Icon";
 import { Stream } from "../Session";
 import { statusOf } from "../Shell";
 import { TurnLine, turnSpec } from "../TurnLine";
-import { agentLabel, clock, cx, relayNote, useNow, useShortWindow, useSize } from "../util";
-import { levelName } from "./common";
+import { canWatch } from "../Devices";
+import { agentLabel, clock, cx, useNow, useShortWindow, useSize } from "../util";
 
-/** The computer page's headline and lede: what is happening there, in one sentence. */
-function news(c: Computer, now: number): { hl: string; lede: string | null; who: "you" | "agent" | "idle" } {
+/** The computer page's headline and lede: what is happening there, in one sentence. `detail` is the
+ *  host's own wording of a problem (English, technical), kept for the lede's tooltip. */
+function news(c: Computer, now: number): { hl: string; lede: string | null; who: "you" | "agent" | "idle"; detail?: string } {
   const host = c.host.name;
   const agent = agentLabel(c.feed.agent);
   const g = groupOf(c, now);
   const p = c.feed.pending[0];
-  if (g === "offline") return { hl: t("hl_offline", { host }), lede: c.problem, who: "idle" };
+  if (g === "offline") return { hl: t("hl_offline", { host }), lede: t("cp_offline_d"), who: "idle", detail: c.problem ?? undefined };
   if (p) {
-    const asked = c.feed.steps.find((s) => s.approvalId === p.id);
     const hl =
       p.tool === "shell"
         ? t("hl_waiting_shell")
@@ -33,7 +34,8 @@ function news(c: Computer, now: number): { hl: string; lede: string | null; who:
           : p.tool.startsWith("files_")
             ? t("hl_waiting_file")
             : t("hl_waiting_tool", { tool: p.tool });
-    return { hl, lede: t("lede_waiting", { agent, time: clock(asked?.startedMs ?? now), tool: p.tool }), who: "you" };
+    // the decision card right below says who asks, what, and when: no second sentence here
+    return { hl, lede: null, who: "you" };
   }
   if (g === "you") return { hl: t("hl_you", { host }), lede: t("lede_you", { agent }), who: "you" };
   if (c.feed.driver.state === "paused")
@@ -48,7 +50,7 @@ function news(c: Computer, now: number): { hl: string; lede: string | null; who:
   if (c.online === null) return { hl: t("hl_connecting", { host }), lede: null, who: "idle" };
   return {
     hl: t("hl_idle", { host }),
-    lede: last ? t("lede_idle", { time: clock(last.startedMs, false) }) : t("lede_idle_none"),
+    lede: last ? t("lede_idle", { time: clock(last.startedMs, false) }) : t("cp_idle_none"),
     who: "idle",
   };
 }
@@ -156,24 +158,59 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
   const [pvRef, pv] = useSize<HTMLDivElement>();
   const spec = turnSpec(c.feed, now, c.online !== false);
   const off = c.online === false;
+  const watch = canWatch(c);
   const group = groupOf(c, now);
   const n = news(c, now);
-  // Below 860 px tall the footer keeps two columns: the facts are in the top line and the Access tab.
-  const recent = short ? (currentLang() === "zh" ? 2 : 3) : 4;
+  const recent = short ? (currentLang() === "zh" ? 3 : 4) : 5;
+  // The task and the recent steps: under the decision when one waits, beside the picture otherwise.
+  const side = (
+    <div className={cx("cp-cols", pending ? "two" : "gl-aside")}>
+      <div>
+        <div className="colh">{t("cur_task")}</div>
+        {c.feed.task ? (
+          <>
+            <div className="body">{c.feed.task.text}</div>
+            <div className="cap c3" style={{ marginTop: 6 }}>
+              {t("cur_task_by", { agent, time: clock(c.feed.task.ts, false), device: c.feed.task.peer })}
+            </div>
+          </>
+        ) : (
+          <div className="body c3">{c.feed.agent ? agent : "—"}</div>
+        )}
+      </div>
+      <div>
+        <div className="colh">{t("recent_steps")}</div>
+        {c.feed.steps.length === 0 ? <div className="body c3">{t("no_steps")}</div> : <StepRows steps={[...c.feed.steps].reverse().slice(0, recent)} />}
+        <button type="button" className="gl-more" onClick={onActivity}>
+          {t("activity_of_host")}
+          <Icon name="chevR" size={12} />
+        </button>
+      </div>
+    </div>
+  );
   return (
     <>
+      {/* the same heading as the other tabs and pairing (glass/pages.css): no mark in front of it */}
       <div className="cp-hl">
-        {n.who === "you" ? <Pointer who="you" h={28} ui /> : n.who === "agent" ? <Pointer who="agent" h={28} ui /> : <SeatMark state="idle" h={24} />}
         <div className="dsp">{n.hl}</div>
       </div>
-      {n.lede && <div className="cp-lede lede">{n.lede}</div>}
-      <div className="cp-grid">
-        {pending ? <DecisionCard p={pending} host={c.host.name} agent={agent} askedMs={askedStep?.startedMs} wide /> : <div />}
+      {n.lede && <div className="cp-lede lede" title={n.detail}>{n.lede}</div>}
+      <div className={cx("cp-grid", !pending && "calm")}>
+        {pending && <DecisionCard p={pending} host={c.host.name} agent={agent} askedMs={askedStep?.startedMs} wide />}
         <div className="pv-wrap">
           <div className="pv stage" ref={pvRef}>
             <div className={cx("shot", off && "desat")} style={{ height: Math.round((((pv.w || 400) - 24) * 10) / 16) }}>
               {!off && <Stream host={c.host.name} maxFps={2} maxLongEdge={960} />}
               <div className={cx("frame", c.feed.driver.state === "person" ? "you" : group === "working" || group === "needs" ? "agent" : "idle")} />
+              {/* The picture is the card's one action: it opens the live view, as the toolbar's button does. */}
+              {watch && (
+                <button type="button" className="gl-pv-open" onClick={onWatch} aria-label={t("devices_watch_host", { host: c.host.name })}>
+                  <span className="gl-pv-go">
+                    <Icon name="eye" size={14} />
+                    {t("watch_live")}
+                  </span>
+                </button>
+              )}
             </div>
             {spec && (
               <div className="pvline">
@@ -184,61 +221,16 @@ function Overview({ c, short, onWatch, onActivity }: { c: Computer; short: boole
             <div className="cap2">
               <SeatMark state={group === "needs" ? "waiting" : group === "you" ? "you" : group === "working" ? "agent" : "idle"} h={18} />
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <span className="l1">{st.text}</span>
+                {/* while a request waits, the card above already says so: the picture names the agent */}
+                <span className="l1">{pending ? agent : st.text}</span>
                 <span className="l2">{off ? t("st_offline") : `${t("live")} · ${clock(now, false)}`}</span>
               </div>
-              {!off && (
-                <button className="watch" onClick={onWatch}>
-                  <Icon name="eye" size={14} />
-                  {t("watch_live")}
-                </button>
-              )}
             </div>
           </div>
         </div>
+        {!pending && side}
       </div>
-      <div className={cx("cp-cols", short && "two")}>
-        <div>
-          <div className="colh">{t("cur_task")}</div>
-          {c.feed.task ? (
-            <>
-              <div className="body">{c.feed.task.text}</div>
-              <div className="cap c3" style={{ marginTop: 6 }}>
-                {t("cur_task_by", { agent, time: clock(c.feed.task.ts, false), device: c.feed.task.peer })}
-              </div>
-            </>
-          ) : (
-            <div className="body c3">{c.feed.agent ? agent : "—"}</div>
-          )}
-        </div>
-        <div>
-          <div className="colh">
-            {t("recent_steps")}
-            <button className="end" onClick={onActivity}>
-              {t("see_all")}
-            </button>
-          </div>
-          {c.feed.steps.length === 0 ? <div className="body c3">{t("no_steps")}</div> : <StepRows steps={[...c.feed.steps].reverse().slice(0, recent)} />}
-        </div>
-        {!short && (
-          <div>
-            <div className="colh">{t("this_computer")}</div>
-            <dl className="dl">
-              <dt>{t("connection")}</dt>
-              <dd title={relayNote(c.host)?.detail}>
-                {c.host.path ? t(c.host.path === "relay" ? (c.host.relayN0 ? "conn_relayed_n0" : "conn_relayed") : "conn_direct") : "—"}
-              </dd>
-              <dt>{t("your_level")}</dt>
-              <dd>
-                {levelName(c.feed.level !== undefined ? c.feed.level : c.host.levelAtPairing)}
-                {c.feed.bypass && <span className="c-danger">{` · ${t("bypass_fact")}`}</span>}
-              </dd>
-              <dt>{t("device_key")}</dt>
-              <dd className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</dd>
-            </dl>
-          </div>
-        )}
-      </div>
+      {pending && side}
     </>
   );
 }

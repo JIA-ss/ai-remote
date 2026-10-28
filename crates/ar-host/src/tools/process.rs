@@ -344,8 +344,11 @@ mod tests {
         assert!(v["still_running"].as_array().unwrap().is_empty(), "{v}");
         let (rows, _) = list(None, Some(pid));
         assert!(rows.is_empty(), "the shell is gone");
-        // The grandchild (ping / sleep) is gone too: nothing with our shell as parent remains.
+        // The grandchild (ping / sleep) is gone too: nothing with our shell as parent remains. Windows'
+        // console host is not part of the tree (see `Proc::os_helper`) and may outlive the shell by a
+        // moment, so it does not count as left over.
         let table = ProcTable::read();
-        assert!(!table.procs.iter().any(|p| p.parent == Some(pid)), "no leftover child");
+        let leftover: Vec<_> = table.procs.iter().filter(|p| p.parent == Some(pid) && !p.os_helper).collect();
+        assert!(leftover.is_empty(), "no leftover child: {leftover:?}");
     }
 }

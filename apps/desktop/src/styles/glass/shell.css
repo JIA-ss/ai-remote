@@ -52,6 +52,17 @@
 .gl-win .side .gl-disclosure[aria-expanded="true"] .gl-chev { transform: rotate(90deg); }
 .gl-win .side .side-devices { -webkit-mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent); }
 
+/* Sidebar text on the material: group titles, counts and the status line under each computer are
+   11-12 px text, so --text-2 rather than --text-3 (on the preview's sidebar --text-3 is 3.0:1 dark,
+   3.2:1 light; --text-2 is 5.2 / 4.9), and the agent's blue is lifted (3.9:1 dark, 3.5:1 light ->
+   5.0 / 5.0). Derived with the WCAG formula, not measured: the real material follows the wallpaper.
+   Amber ("waits for you") gets its light value from tokens.css. */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side :is(.side-h, .side-h .n, .nv .end.device-count, .pc .st) { color: var(--text-2); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side button.side-h:hover { color: var(--text-1); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .side .pc .st.you { color: var(--you-text); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="dark"] .gl-win .side .pc .st.agent { color: color-mix(in srgb, var(--agent) 80%, #fff); }
+:root:is([data-material="native"], [data-material="preview"])[data-theme="light"] .gl-win .side .pc .st.agent { color: color-mix(in srgb, var(--agent) 80%, #000); }
+
 /* compact: the same rows, icons only; names and shortcuts are in each row's title */
 .gl-win[data-sidebar="compact"] .side :is(.search, .nv > .lbl, .nv > .end.device-count, .pc .tx, .pc .mini, .side-h > *, .empty-note, .gl-appname) { display: none; }
 .gl-win[data-sidebar="compact"] .side .gl-side-search {
@@ -62,7 +73,7 @@
 .gl-win[data-sidebar="compact"] .side .nv > .end.badge { position: absolute; top: 6px; right: 11px; min-width: 0; width: 8px; height: 8px; padding: 0; border-radius: 50%; font-size: 0; }
 .gl-win[data-sidebar="compact"] .side .pc { width: 48px; padding: 6px 0; grid-template-columns: 1fr; justify-items: center; }
 .gl-win[data-sidebar="compact"] .side .pc .tile { grid-row: auto; align-self: center; }
-.gl-win[data-sidebar="compact"] .side .side-h { height: 9px; padding: 0; margin: 4px 0; pointer-events: none; }
+.gl-win[data-sidebar="compact"] .side .side-h { height: 9px; padding: 0; margin: 4px 0; pointer-events: none; font-size: 0; }
 .gl-win[data-sidebar="compact"] .side .side-h::after { content: ""; display: block; margin: 4px 14px 0; height: var(--gl-hair); background: var(--gl-sep); }
 
 /* ---- toolbar: a transparent strip; the groups on it are glass capsules ---- */
@@ -135,9 +146,16 @@
    (Window media queries, not container queries: a size container would also become the containing
    block of the fixed dialogs inside the page on some WebKit versions.) */
 @media (max-width: 1180px) { .gl-toolbar .gl-titles:has(+ .gl-center) .gl-sub { display: none; } }
+/* Only the expanded sidebar leaves the toolbar short of room (960 px, the window's minimum, leaves
+   720 px); with the compact one it keeps 888 px and every label fits. The selected segment keeps its
+   label, so the toolbar always says where you are (settings has no visible title of its own); the
+   others show their icon, with the name in their title. A primary action that drops its label keeps
+   its name as aria-label and title (App.tsx). */
 @media (max-width: 1060px) {
-  .gl-cap .gl-segbtn:has(> :is(svg, .fi, .g)) > .lbl, .gl-primary .btn.primary > .lbl { display: none; }
-  .gl-primary .btn.primary { width: var(--gl-cap-h); padding: 0; justify-content: center; }
+  .gl-win:not([data-sidebar="compact"]) .gl-cap .gl-segbtn:not(.sel):has(> :is(svg, .fi, .g)) > .lbl,
+  .gl-win:not([data-sidebar="compact"]) .gl-primary .btn.primary > .lbl { display: none; }
+  .gl-win:not([data-sidebar="compact"]) .gl-cap .gl-segbtn:not(.sel):has(> :is(svg, .fi, .g)) { padding: 0 9px; }
+  .gl-win:not([data-sidebar="compact"]) .gl-primary .btn.primary { width: var(--gl-cap-h); padding: 0; justify-content: center; }
 }
 
 /* ---- pages under the toolbar: they start at the top and scroll beneath it ---- */
@@ -177,3 +195,23 @@
 .gl-win .gl-main > .nt-session { width: auto; height: auto; flex: 1; min-height: 0; min-width: 0; }
 .gl-win .nt-session > .tb.gl-toolbar { position: relative; }
 .gl-win .nt-session.immersive > .tb.gl-toolbar { display: none; }
+
+/* A quieter, roomier hierarchy for the permanent navigation. */
+.gl-win[data-sidebar="expanded"] .side { padding-inline: 12px; }
+.gl-win[data-sidebar="expanded"] .side > .nv { min-height: 34px; height: 34px; border-radius: 9px; }
+.gl-win[data-sidebar="expanded"] .side .pc { padding-block: 8px; border-radius: 9px; }
+.gl-win[data-sidebar="expanded"] .side .search { height: 32px; margin-bottom: 12px; border-radius: 9px; }
+.gl-win .side > .nv[aria-current="page"] {
+  background: color-mix(in srgb, var(--agent) 12%, var(--gl-hover));
+  color: var(--text-1); font-weight: 600;
+}
+.gl-win .side > .nv:nth-last-child(2) { margin-top: 8px; }
+.gl-win .side-devices { scrollbar-width: thin; }
+.gl-win .gl-toolbar .gl-nav { gap: 0; }
+/* Long host names give way before the toolbar actions do. */
+.gl-win .gl-toolbar .gl-titles { max-width: min(280px, 28vw); }
+@media (max-width: 1060px) {
+  .gl-win .gl-toolbar { gap: 8px; }
+  .gl-win .gl-toolbar .demo-badge { max-width: 54px; overflow: hidden; text-overflow: ellipsis; }
+  .gl-win .gl-toolbar .gl-sub { display: none; }
+}

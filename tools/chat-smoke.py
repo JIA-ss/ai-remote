@@ -64,14 +64,19 @@ def check(name, ok, detail=""):
 
 # Speaks just enough of Claude Code's stream-json: echoes each message (and replays it, as
 # --replay-user-messages does); one containing SLOW runs until interrupted, or until another message
-# arrives, which joins that turn (a steer) and ends it.
+# arrives, which joins that turn (a steer) and ends it. Started with --resume X --fork-session (a fork)
+# it is session fork-X and says "(forked from X)" in its answers.
 FAKE_AGENT = r'''
 import json, sys, threading
 def out(v):
     sys.stdout.write(json.dumps(v) + "\n"); sys.stdout.flush()
 if "--version" in sys.argv:
     print("2.1.0 (Claude Code)"); sys.exit(0)
-out({"type": "system", "subtype": "init", "session_id": "fake-session", "skills": ["tidy"]})
+argv = sys.argv[1:]
+resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+forked = resume if "--fork-session" in argv else None
+out({"type": "system", "subtype": "init", "session_id": f"fork-{forked}" if forked else "fake-session", "skills": ["tidy"]})
+tail = f" (forked from {forked})" if forked else ""
 slow = None
 for line in sys.stdin:
     msg = json.loads(line)
@@ -108,10 +113,10 @@ for line in sys.stdin:
         out({"type": "assistant", "message": {"id": "s", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "sleep 600"}}]}})
         continue
     out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m"}}})
-    for word in ("you ", "said: ", text):
+    for word in ("you ", "said: ", text + tail):
         out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": word}}})
-    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text}]}})
-    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text})
+    out({"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "you said: " + text + tail}]}})
+    out({"type": "result", "subtype": "success", "is_error": False, "result": "you said: " + text + tail})
 '''
 
 with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" else None, ignore_cleanup_errors=True) as tmp:
@@ -383,6 +388,60 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
               and b64[:40] not in p.stdout, json.dumps(users)[:300])
         check("the command list is in the transcript once", sum(1 for e in events if e.get("t") == "commands" and "seq" in e) == 1)
 
+        # A fork: same agent and folder, the conversation copied, then its own.
+        def replay(session):
+            p = subprocess.run([str(options.cli), "--home", str(ctl_home), "--json", "chat", "attach", session],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env,
+                               stdin=subprocess.DEVNULL)
+            return [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+
+        before = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid)
+        parent_users = [e["text"] for e in replay(sid) if e.get("t") == "user"]
+        r = cli("--json", "chat", "fork", sid)
+        fork = json.loads(r.stdout) if r.returncode == 0 else {}
+        fid = fork.get("session")
+        check("chat fork starts a session with the parent's agent and folder",
+              fid is not None and fork.get("parent") == sid and fork.get("runtime") == "fake" and fork.get("cwd") == before["cwd"],
+              f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-200:]}")
+        r = cli("chat", "send", fid or "x", "which word", "--wait")
+        check("the fork's agent forks the parent's conversation (--resume … --fork-session)",
+              r.returncode == 0 and "you said: which word (forked from fake-session)" in r.stdout, f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-300:]}")
+        sessions = {x["id"]: x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"]}
+        check("chat sessions gives the fork its parent", sessions.get(fid, {}).get("parent") == sid, json.dumps(sessions.get(fid))[:300])
+        check("the fork starts with the parent's turns; the parent is unchanged",
+              sessions.get(fid, {}).get("turns") == before["turns"] + 1 and sessions[sid]["turns"] == before["turns"],
+              f"{sessions.get(fid, {}).get('turns')} / {sessions[sid]['turns']} (was {before['turns']})")
+        fusers = [e["text"] for e in replay(fid or "x") if e.get("t") == "user"]
+        check("the fork's transcript replays the parent's messages, then its own",
+              fusers == parent_users + ["which word"] and len(parent_users) > 0, str(fusers)[:300])
+        r = cli("call", "chat_start", json.dumps({"fork_of": sid, "runtime": "fake"}))
+        check("a fork refuses another agent or folder", r.returncode == 2 and "takes its agent" in (r.stdout + r.stderr),
+              f"code {r.returncode}: {r.stdout[-200:]} {r.stderr[-200:]}")
+        r = cli("call", "chat_start", json.dumps({"fork_of": "c-nope"}))
+        check("forking an unknown session is refused", r.returncode == 2, f"code {r.returncode}: {r.stderr[-200:]}")
+
+        # Earlier titles, and searching what was said.
+        for title in ("Release work", "Release prep"):
+            cli("call", "chat_update", json.dumps({"session": sid, "title": title}))
+        s = next(x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == sid)
+        check("chat sessions lists earlier titles", "Release work" in s.get("previous_titles", []) and s.get("title") == "Release prep",
+              json.dumps(s)[:300])
+        r = cli("--json", "chat", "search", "AFTER slow")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        hits = {x["session"]: x for x in found.get("results", [])}
+        check("chat search finds a message in the session and its fork", sid in hits and fid in hits and found.get("truncated") is False,
+              f"code {r.returncode}: {r.stdout[-300:]} {r.stderr[-200:]}")
+        check("search results carry excerpts of what was said",
+              any("after slow" in e["text"] for e in hits.get(sid, {}).get("excerpts", [])), json.dumps(hits.get(sid))[:300])
+        r = cli("--json", "chat", "search", "hello there you said")
+        found = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("search matches every word, in the agent's answers too",
+              any(e["role"] == "agent" for x in found.get("results", []) for e in x["excerpts"]), r.stdout[-300:])
+        r = cli("--json", "chat", "search", "kiwi-not-said-anywhere")
+        check("a search with no match returns no sessions", r.returncode == 0 and json.loads(r.stdout)["results"] == [], r.stdout[-200:])
+        if fid:
+            cli("chat", "end", fid)
+
         r = cli("chat", "end", sid)
         check("chat end", r.returncode == 0, r.stderr[-200:])
         if options.hostw:
@@ -401,7 +460,7 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
 
         audit = [json.loads(l) for l in (host_home / "host" / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
         turns = [a for a in audit if a.get("kind") == "chat_turn"]
-        check("each turn is audited", len(turns) == 8, str(len(turns)))
+        check("each turn is audited (the fork's too)", len(turns) == 9, str(len(turns)))
         check("the audit counts steers", sum(t.get("steers", 0) for t in turns) == 1)
         check("the audit keeps hashes, not the conversation", not any("hello there" in json.dumps(a) for a in audit
                                                                       if a.get("kind", "").startswith("chat")))
@@ -472,6 +531,28 @@ with tempfile.TemporaryDirectory(prefix="arc-", dir="/tmp" if os.name != "nt" el
             r = cli("chat", "send", rsid, "What word did I ask you to remember? Reply with just that word.", "--wait", timeout=300)
             check(f"real {kind}: the next turn keeps the context", r.returncode == 0 and "KIWI" in r.stdout.upper(),
                   f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+            if rows.get(f"real-{kind}", {}).get("protocol") in ("claude-stream-json", "codex-app-server"):
+                # A fork copies the conversation; what it is told next stays out of the parent's.
+                r = cli("--json", "chat", "fork", rsid)
+                fsid = json.loads(r.stdout).get("session") if r.returncode == 0 else None
+                check(f"real {kind}: forks the session", fsid is not None, r.stderr[-300:])
+                if fsid:
+                    t0 = time.time()
+                    r = cli("chat", "send", fsid, "What word did I ask you to remember earlier? Reply with just that word.",
+                            "--wait", timeout=300)
+                    check(f"real {kind}: the fork remembers the parent's conversation", r.returncode == 0 and "KIWI" in r.stdout.upper(),
+                          f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+                    r = cli("chat", "send", fsid, "Also remember the word MANGO. Reply with OK.", "--wait", timeout=300)
+                    t0 = time.time()
+                    r = cli("chat", "send", rsid, "List every word I asked you to remember, separated by spaces. "
+                            "Reply with just the words.", "--wait", timeout=300)
+                    up = r.stdout.upper()
+                    check(f"real {kind}: the parent does not see what the fork was told",
+                          r.returncode == 0 and "KIWI" in up and "MANGO" not in up,
+                          f"{time.time() - t0:.1f} s: {r.stdout[-200:]} {r.stderr[-200:]}")
+                    fs = next((x for x in json.loads(cli("--json", "chat", "sessions").stdout)["sessions"] if x["id"] == fsid), {})
+                    check(f"real {kind}: the fork has its own conversation", fs.get("parent") == rsid, json.dumps(fs)[:300])
+                    cli("chat", "end", fsid)
             # An image, and a command or skill from the agent's own list.
             takes_images = json.loads(cli("--json", "chat", "commands", rsid).stdout or "{}").get("images", True)
             r = cli("chat", "send", rsid, "What colour is this image? Reply with one word.", "--image", work / "red.png",

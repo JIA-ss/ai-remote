@@ -293,6 +293,7 @@ export function Sidebar({
       className={cx("nv", isActive(n) && "sel")}
       onClick={() => onNav(n)}
       aria-current={isActive(n) ? "page" : undefined}
+      aria-label={n === "devices" ? `${label} ${computers.length}` : n === "approvals" && waiting > 0 ? `${label} ${t("sidebar_attention", { n: waiting })}` : label}
       title={label + hint(key)}
     >
       {icon}
@@ -339,7 +340,7 @@ export function Sidebar({
       <button type="button" className="gl-side-search" onClick={onSearch} aria-label={t("search_computers")} title={`${t("search_computers")} · ${shortcutLabel("search", os)}`}>
         <Icon name="search" size={16} />
       </button>
-      {navRow("devices", <Icon name="monitor" size={16} />, t("devices"), "page1", <span className="end device-count">{computers.length}</span>)}
+      {navRow("devices", <Icon name="monitor" size={16} />, t("devices"), "page1", computers.length > 0 && <span className="end device-count">{computers.length}</span>)}
       {navRow(
         "approvals",
         <Glyph name="approval" size={16} />,
@@ -362,7 +363,7 @@ export function Sidebar({
           </>
         ) : (
           groups.map(([g, list]) => {
-            const folds = g === "offline" && !q;
+            const folds = g === "offline" && !q && state === "expanded";
             const open = !folds || offlineOpen;
             return (
               <div key={g} className={cx("side-g", `g-${g}`)}>
@@ -375,7 +376,8 @@ export function Sidebar({
                 ) : (
                   <div className="side-h">
                     <span className="lbl">{t(GROUP_LABEL[g])}</span>
-                    <span className="n">{list.length}</span>
+                    {/* a count only says something above one row (the folding group keeps it: its rows may be hidden) */}
+                    {list.length > 1 && <span className="n">{list.length}</span>}
                   </div>
                 )}
                 {open &&

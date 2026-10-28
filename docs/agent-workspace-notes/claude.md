@@ -4,6 +4,10 @@
 本流前一段（分支 `ws/claude`）已提交：`lib/chat.ts` 的新事件与 reducer、`lib/markdown.ts` 尾块增量解析、`lib/claude.ts` 布局纯函数
 与 `tools/claude-view.test.mjs`。本段（分支 `ws/claude-s1`）在其上做界面。
 
+## 主干整合追记（2026-10-28）
+
+模型与推理强度已和玻璃页面、工作区第三阶段一起进入PR #57 的整合源码；`b6350a8` 又接入了 Codex 会话输入栏的选择器（`ui/codex/CodexModelPicker.tsx`），因此文末“Codex 会话页没接”仅描述此前提交的状态。当前整合验证见 AGENTS.md 顶部。缓存热切换确认、fast 模式和长期对话待办仍保留，真实 CLI 或物理输入的旧证据不当作本轮复验。
+
 ## 当前集成与验收状态（2026-10-24）
 
 - P1 / P2 已随 PR #45 / #47 合入 main `028ccc9` / `1aefe9f`，PR #49 / #50 随后合入 main `1ddacb1`；P3 的 PR #48 已合入 **main `35f54a3`**。产品实现为 `f688335`，本机 macOS 应用/CLI 指纹前缀为 `4d62b9a6` / `3e35eed8`。Claude 整页接线、ANSI/diff 与提问细节均已完成。
@@ -132,3 +136,31 @@ Windows `40012531342` 两项失败属于工作区首个真实解码帧断言，�
 - 当前 core `40024928040` / native `40024928047` 两平台四项及 Windows 聊天 `40024928145` 共五项全部成功。最终 Windows 合并树 `b3c4464` 已核对等于源码 `35f54a3`，12 轮 818/818 通过；142 张新安全裁图已独立逐张通过，裁图 SHA、尺寸与完整集合末次复验一致。原图下载数为 0，原图 SHA 仅 CI 记录，本地只复验裁图。更早 `f688335` core `40023600939` 被新35取代取消，不是产品失败，native `40023600860` 成功；`40023600928` 功能成功但属于更早回退诊断，未选未审的 142 图不计入最终集合。旧 Windows 812/6 与独立 142 图视觉通过继续保留。
 - 最终 Windows 两轮 workspace 均实际解码到 1024×768，未见会话/stream-ended 错误；每轮 OperationError 2 次、默认偏好回退 2 次、caught-up 2 次，配置回退后在该环境恢复。`no-preference` 不等于已实测软件解码；检查点等待 0 ms 不代表流启动时延。四阶段 ownership 与 host 元数据布尔两轮全真，不能据此追认旧失败瞬间的具体条件。
 - PR #48 已合 main `35f54a3`；main push 生成 core `40029749650` / native `40029749530`；本交接稿形成时未取得终态，未纳入合入前五项成功证据，终态另看对应运行。文档独立 PR 也须等四项必需检查。main35 尚待 Mac 与 Windows 开发机分别安装/确认，本会话未安装 P3；PR #50 另会话 Mac 既有安装历史不覆盖本批。真实 Claude 未登录、物理键鼠/IME/读屏器、动画节拍/性能与本机完整 Xcode 边界继续保留。
+
+## 模型与推理强度（2026-10-26，分支 `feat/ws-model-effort2`）
+
+用户反馈：模型选择按钮没适配。新建页的模型芯片点开只是一个文本框（另一会话已改成菜单，本分支在其上接数据），会话页输入框下面没有模型 / 推理强度选择。
+协议见 `docs/agent-workspace.zh-CN.md` 1.6、`docs/tools.md` 5.15。
+
+- **做了什么**：被控端上报模型列表（Claude `initialize`、Codex `model/list`、ACP 配置项）并在会话中换模型 / 档位（Claude
+  `set_model` 原地换、换档位重启续接；Codex 下一轮 `turn/start` 带上；ACP 配置项）；新建页和会话页共用 `ui/workspace/ModelMenu.tsx`
+  的菜单；会话页下巴右侧 `ui/claude/ModelPicker.tsx`（`Composer` 新增可选 `trail`，Codex 视图不传、不受影响）；左侧权限模式在下巴里
+  改成纯文字（图标、箭头只留在菜单里，跳过权限确认不再用警告色，NS-31）。
+- **实测**（本机 macOS，各 1 次，花额度）：
+  - 真实 Claude Code 2.1.308（`AR_REAL_CLAUDE=… cargo test -p ar-host --lib chat::tests::real_claude_switches_models -- --ignored`）：
+    列表 12 个模型（Haiku 4.5 不分档，Opus 4.6 / Sonnet 4.6 没有 xhigh）；默认问「你是哪个模型」答 "Claude Opus 5.5"，`set_model haiku`
+    后同一进程答 "Claude Haiku 5.5"，Claude 自己的会话记录里回答的模型依次是 `claude-opus-5-5` → `claude-haiku-5-5`；再换档位 `low`
+    后新进程命令行带 `--model haiku --effort low --resume <同一会话>`。这个用例前两次失败是测试自己的错（两次提问用了同一个消息 id，
+    第二条被当作重复丢掉），改后通过。
+  - 真实 Codex 0.163（`AR_REAL_CODEX=… AR_REAL_CODEX_MODEL=gpt-5.6-luna … real_codex`）：两轮，Codex 的会话记录里 `turn_context`
+    依次是 `(gpt-5.6-luna, xhigh)`、`(gpt-5.6-luna, low)`。第一轮是 xhigh，因为当时第一轮的 `turn/start` 早于 `model/list` 的应答发出，
+    用了本机 `config.toml` 的档位；之后改成第一轮等列表应答（单测覆盖，真实 Codex 没有再跑）。
+- **门槛**（本机，见提交）：Rust fmt / clippy / 全工作区测试；前端 426 项（424 过、2 平台跳过）；tsc；
+  `E2E_SCRIPT=tools/desktop-workspace-e2e.js` 连续两轮 182/182（zh 深色、en 浅色；新增 M1–M4 共 21 项）；`tools/chat-smoke.py --quiet` 35/35。
+  截图（vite 演示 + 无头 Chrome，深/浅 × 中/英，新建页菜单、会话页菜单、推流旁窄工作区 ⌘⇧E、352 px 窄栏）16 张逐张看过，不进仓库。
+- **没做**：CP-56（缓存仍热时换模型 / 档位的确认框）、fast 模式（⌘⌥F）、按环境标强调色与「改用环境的 X」（我们没有环境的概念，
+  会话页不标强调色）；Codex 会话页（`ui/codex/`）的输入框没接，接法：hello 的 `models` / `model` / `effort`、`models` / `model`
+  事件（`lib/chat.ts` 的 reducer 已存到 `chat.models` / `chat.model`），发 `modelCommand(model, effort)`，下一轮 `turn/start` 生效；
+  可直接复用 `ModelMenu.tsx` 的 `modelMenuLines` / `ModelChipText` / `useModelKeys`。Claude 的列表要等智能体在这台被控端上运行过
+  一次才有（之前新建页用别名兜底）；Codex 第一次在某台被控端上开会话时新建页没有它的模型和档位可选。Windows、真实窗口里的手感没测。
+

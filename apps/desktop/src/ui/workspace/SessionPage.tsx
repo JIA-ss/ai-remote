@@ -16,7 +16,7 @@ import { ClaudeConversation } from "../claude/ClaudeConversation";
 import { CodexConversation, isCodexRuntime } from "../codex/CodexConversation";
 import { Later, PopMenu, type MenuLine, type Toast } from "./parts";
 import { RenameField, titleOf } from "./Sidebar";
-import { archive, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
+import { archive, forkItem, markDone, readLocked, togglePin, toggleRead, unarchive, type ActionCtx } from "./actions";
 import { workspace } from "./useWorkspace";
 
 /** SP-45: how long a computer that dropped off counts as reconnecting before the page says it is offline. */
@@ -35,6 +35,7 @@ export function SessionPage({
   onLeave,
   onArchived,
   onNew,
+  onOpen,
   toast,
   embedded = false,
 }: {
@@ -51,6 +52,8 @@ export function SessionPage({
   onLeave: () => void;
   onArchived: (key: string) => void;
   onNew: () => void;
+  /** Opens another session (a fork made from the menu). */
+  onOpen?: (host: string, id: string) => void;
   toast: (t: Omit<Toast, "id">) => void;
   embedded?: boolean;
 }) {
@@ -131,7 +134,7 @@ export function SessionPage({
   }
 
   const menuItems = (x: WsItem): MenuLine[] => {
-    const ctx: ActionCtx = { toast, onArchived };
+    const ctx: ActionCtx = { toast, onArchived, onOpen };
     const dot = workspace.dot(x);
     const unread = workspace.unread(x);
     if (x.meta.archived) {
@@ -147,6 +150,7 @@ export function SessionPage({
       dot === "failed"
         ? { key: "done", label: t("ws_mark_done"), letter: "u", run: () => markDone(x, ctx) }
         : { key: "read", label: t(unread ? "ws_mark_read" : "ws_mark_unread"), letter: "u", disabled: readLocked(x), note: t("ws_read_busy"), run: () => toggleRead(x) },
+      forkItem(x, ctx),
       "sep",
       { key: "archive", label: t("ws_archive"), letter: "a", disabled: old, note: t("ws_old_host", { host }), run: () => archive(x, ctx) },
       ...(x.meta.state === "ended"

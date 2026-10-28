@@ -392,10 +392,12 @@ claude mcp add ai-remote -- ai-remote mcp
 | `ai-remote push <本地> <远端> [--force] [--mkdir]` | `files_push` + 文件通道 | admin，默认要审批 |
 | `ai-remote pull <远端> [<本地>] [--force]` | `files_pull` + 文件通道 | admin，默认要审批 |
 | `ai-remote chat list [--refresh]` | `chat_runtimes` | admin |
-| `ai-remote chat start <智能体> --cwd <目录> [--prompt ..] [--model ..] [--hardened]` | `chat_start` + 对话通道 | admin，默认要审批 |
+| `ai-remote chat start <智能体> --cwd <目录> [--prompt ..] [--model ..] [--effort ..] [--hardened]` | `chat_start` + 对话通道 | admin，默认要审批 |
 | `ai-remote chat run <智能体> "<任务>" --cwd <目录> [--keep]` | `chat_start` + 对话通道，打印回答 | admin，默认要审批 |
 | `ai-remote chat sessions` / `attach <id>` / `send <id> "<文本>" [--wait]` / `interrupt <id>` / `end <id>` | `chat_sessions`、`chat_attach`、`chat_interrupt`、`chat_end` | admin |
 | `ai-remote chat send <id> "<文本>" --image <文件>` / `commands <id>` / `files <id> [查询]` | 对话通道：随消息发图片、列出智能体的斜杠命令和技能、列出会话目录下的文件 | admin |
+| `ai-remote chat fork <id> [--prompt ..]` | 带 `fork_of` 的 `chat_start`：新会话带着对话的副本（Claude Code、Codex），打印新会话 | admin，询问 |
+| `ai-remote chat search "<词>" [--limit N]` | `chat_search`：消息里包含每个词的会话，带摘录 | admin |
 
 **发往哪台被控端。** 依次取 `--host <名称>`、环境变量 `AI_REMOTE_HOST`、本设备的默认被控端、唯一配对的被控端。
 `ai-remote hosts default <名称>` 设置默认被控端（保存在 `controller/hosts.json`；MCP 会话里调用没指定 `host`

@@ -8,7 +8,7 @@
 // so tools/workspace.test.mjs runs it in node. The store reaches hosts only through the `call` it is
 // given (ui/workspace/useWorkspace.ts gives it the app's tool call).
 
-import { folderName, parentFolder, sameFolder, tildeFolder, trimFolder, type ChatState } from "./chat";
+import { folderName, parentFolder, sameFolder, tildeFolder, trimFolder, type ChatState, type ModelInfo } from "./chat";
 
 // ---------------------------------------------------------------------------------------------
 // Session metadata
@@ -49,6 +49,12 @@ export interface WsMeta {
   pinned?: boolean;
   archived?: boolean;
   permission_mode?: string | null;
+  /** The session this one was forked from (same host), if it is a fork. */
+  parent?: string | null;
+  /** Titles it had before, oldest first (search matches them, SB-06). */
+  previous_titles?: string[];
+  /** The effort level the session runs with (null: the agent's default). */
+  effort?: string | null;
 }
 
 /** A session with the computer it is on. */
@@ -142,8 +148,32 @@ export function eventPatch(e: { t: string; seq?: number; ts?: number; [k: string
     case "mode":
       if (typeof e.mode === "string") p.permission_mode = e.mode;
       break;
+    case "model":
+      p.model = typeof e.model === "string" ? e.model : null;
+      p.effort = typeof e.effort === "string" ? e.effort : null;
+      break;
   }
   return Object.keys(p).length ? p : null;
+}
+
+/** The fields a chat event changes (`eventPatch`); everything else only comes with `chat_sessions`. */
+const EVENT_FIELDS = ["title", "title_source", "state", "pending", "last_status", "last_reason", "permission_mode", "last_seq", "last_activity"] as const;
+
+/**
+ * A `chat_sessions` answer merged with what is known here: a session whose events seen here are newer
+ * than the answer (a poll sent before a question arrived on the open conversation, answered after it)
+ * keeps those events' fields; the rest is the host's. Sessions are the answer's.
+ */
+export function keepNewerEvents(known: WsMeta[], answer: WsMeta[]): WsMeta[] {
+  if (!known.length) return answer;
+  const byId = new Map(known.map((m) => [m.id, m]));
+  return answer.map((m) => {
+    const here = byId.get(m.id);
+    if (!here || lastSeq(here) <= lastSeq(m)) return m;
+    const kept: Partial<WsMeta> = {};
+    for (const k of EVENT_FIELDS) if (k in here) (kept as Record<string, unknown>)[k] = here[k];
+    return { ...m, ...kept };
+  });
 }
 
 /** First line of a message, at most `max` characters (NS-38: 80), or "" for nothing. */
@@ -311,8 +341,8 @@ export function truncateGroup<T extends { key: string }>(items: T[], limit: numb
 // ---------------------------------------------------------------------------------------------
 // How the list groups, sorts and filters (SB-09..SB-14, SB-46)
 
-/** SB-09: by folder on a computer (the default here), by day, by state, or not at all. */
-export type GroupBy = "project" | "date" | "state" | "none";
+/** SB-09: by folder on a computer (the default here), by the groups made here (SB-08), by day, by state, or not at all. */
+export type GroupBy = "project" | "custom" | "date" | "state" | "none";
 /** SB-11: the sessions listed — those not archived (default), the archived ones, or both. */
 export type StatusFilter = "active" | "archived" | "all";
 
@@ -332,7 +362,7 @@ const pick = <V extends string>(v: unknown, ok: readonly V[], fallback: V): V =>
 export function normalizeList(raw: unknown): ListPrefs {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
-    groupBy: pick(o.groupBy, ["project", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
+    groupBy: pick(o.groupBy, ["project", "custom", "date", "state", "none"] as const, DEFAULT_LIST.groupBy),
     sort: pick(o.sort, ["recency", "created", "alpha"] as const, DEFAULT_LIST.sort),
     reversed: o.reversed === true,
     status: pick(o.status, ["active", "archived", "all"] as const, DEFAULT_LIST.status),
@@ -418,6 +448,235 @@ export function stateBuckets<T>(items: T[], bucketOf: (x: T) => StateBucket): Ar
 }
 
 // ---------------------------------------------------------------------------------------------
+// Groups made here, the pinned order (SB-08 / SB-15 / SB-36 / SB-42), the "Older" bucket's bulk
+// action (SB-38), and how rows are drawn: density (SB-04) and the metadata line (SB-28). All of it
+// stays on this device: a group holds sessions by `host/id`, so sessions of several computers can
+// share one, and a host only ever sees its session ids.
+
+/** A group made here: a name (1–200 characters, SB-08) and a stable id. */
+export interface CustomGroup {
+  id: string;
+  name: string;
+}
+
+export interface GroupsState {
+  /** The groups in the order they are drawn (SB-15: the person's order). */
+  groups: CustomGroup[];
+  /** Session (`host/id`) → the group it was moved into; a session is in one group at most. */
+  members: Record<string, string>;
+  /** Pinned sessions in the order they were put (SB-42); pins not in it follow, in the list's order. */
+  pinOrder: string[];
+}
+
+export const EMPTY_GROUPS: GroupsState = { groups: [], members: {}, pinOrder: [] };
+/** SB-08: a group's name is 1–200 characters; at most 100 sessions move in one go. */
+export const GROUP_NAME_MAX = 200;
+export const MOVE_MAX = 100;
+
+/** A name as kept: inner runs of space made one, trimmed, at most 200 characters; null for an empty one. */
+export function cleanGroupName(raw: string): string | null {
+  const v = raw.replace(/\s+/g, " ").trim();
+  return v ? v.slice(0, GROUP_NAME_MAX) : null;
+}
+
+/** Saved groups as they can be used: broken entries dropped, members of groups that are gone forgotten. */
+export function normalizeGroups(raw: unknown): GroupsState {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const seen = new Set<string>();
+  const groups: CustomGroup[] = [];
+  for (const g of Array.isArray(o.groups) ? o.groups : []) {
+    const r = g && typeof g === "object" ? (g as Record<string, unknown>) : {};
+    const id = typeof r.id === "string" ? r.id : "";
+    const name = typeof r.name === "string" ? cleanGroupName(r.name) : null;
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    groups.push({ id, name });
+  }
+  const members: Record<string, string> = {};
+  if (o.members && typeof o.members === "object") {
+    for (const [k, v] of Object.entries(o.members as Record<string, unknown>)) if (typeof v === "string" && seen.has(v)) members[k] = v;
+  }
+  const pinOrder = Array.isArray(o.pinOrder) ? [...new Set(o.pinOrder.filter((k): k is string => typeof k === "string"))] : [];
+  return { groups, members, pinOrder };
+}
+
+/** A new group at the end of the order; null when the name is empty or the id is taken. */
+export function createGroup(s: GroupsState, name: string, id: string): { state: GroupsState; group: CustomGroup } | null {
+  const clean = cleanGroupName(name);
+  if (!clean || !id || s.groups.some((g) => g.id === id)) return null;
+  const group = { id, name: clean };
+  return { state: { ...s, groups: [...s.groups, group] }, group };
+}
+
+/** A group renamed; the same state when the name is empty or unchanged. */
+export function renameGroup(s: GroupsState, id: string, name: string): GroupsState {
+  const clean = cleanGroupName(name);
+  if (!clean || !s.groups.some((g) => g.id === id && g.name !== clean)) return s;
+  return { ...s, groups: s.groups.map((g) => (g.id === id ? { ...g, name: clean } : g)) };
+}
+
+export interface DeletedGroup {
+  group: CustomGroup;
+  index: number;
+  members: string[];
+}
+
+/**
+ * SB-08: a group deleted, its sessions back in the list's own section. What comes back lets the toast's
+ * Undo put the group, its place and its sessions back as they were.
+ */
+export function deleteGroup(s: GroupsState, id: string): { state: GroupsState; undo: DeletedGroup | null } {
+  const index = s.groups.findIndex((g) => g.id === id);
+  if (index < 0) return { state: s, undo: null };
+  const members = Object.keys(s.members).filter((k) => s.members[k] === id);
+  const rest = { ...s.members };
+  for (const k of members) delete rest[k];
+  return { state: { ...s, groups: s.groups.filter((g) => g.id !== id), members: rest }, undo: { group: s.groups[index], index, members } };
+}
+
+/** Undoes `deleteGroup`: the group at its place again, with its sessions that went into no other group since. */
+export function restoreGroup(s: GroupsState, undo: DeletedGroup): GroupsState {
+  if (s.groups.some((g) => g.id === undo.group.id)) return s;
+  const groups = [...s.groups];
+  groups.splice(Math.min(undo.index, groups.length), 0, undo.group);
+  const members = { ...s.members };
+  for (const k of undo.members) if (!members[k]) members[k] = undo.group.id;
+  return { ...s, groups, members };
+}
+
+export interface GroupMove {
+  key: string;
+  from: string | null;
+}
+
+/**
+ * Sessions moved into a group (`null`: out of any group). At most `MOVE_MAX` in one go (SB-08); an
+ * unknown group moves nothing. `moved` lists the sessions whose group changed, with the group each was in.
+ */
+export function moveToGroup(s: GroupsState, keys: string[], id: string | null): { state: GroupsState; moved: GroupMove[] } {
+  if (id !== null && !s.groups.some((g) => g.id === id)) return { state: s, moved: [] };
+  const members = { ...s.members };
+  const moved: GroupMove[] = [];
+  for (const key of [...new Set(keys)].slice(0, MOVE_MAX)) {
+    const from = members[key] ?? null;
+    if (from === id) continue;
+    moved.push({ key, from });
+    if (id === null) delete members[key];
+    else members[key] = id;
+  }
+  return moved.length ? { state: { ...s, members }, moved } : { state: s, moved };
+}
+
+/** Puts the sessions of a move back into the groups they came from (the toast's Undo). */
+export function undoMove(s: GroupsState, moved: GroupMove[]): GroupsState {
+  const members = { ...s.members };
+  for (const { key, from } of moved) {
+    if (from === null || !s.groups.some((g) => g.id === from)) delete members[key];
+    else members[key] = from;
+  }
+  return { ...s, members };
+}
+
+/**
+ * A list with `key` placed before the item that was at `before` (0..length; the end for anything past
+ * it), as a drag's insertion line or one step of ⌥↑ / ⌥↓ says. A key not in the list is inserted.
+ */
+export function moveKey(keys: string[], key: string, before: number): string[] {
+  return placeKeys(keys, [key], before);
+}
+
+/** Several keys placed together, in their given order, before the item that was at `before` (a dragged selection). */
+export function placeKeys(keys: string[], moving: string[], before: number): string[] {
+  const take = new Set(moving);
+  const at = Math.max(0, Math.min(Math.round(before), keys.length));
+  const rest = keys.filter((k) => !take.has(k));
+  const shift = keys.slice(0, at).filter((k) => take.has(k)).length;
+  rest.splice(Math.min(at - shift, rest.length), 0, ...[...take]);
+  return rest;
+}
+
+/** SB-15: a group moved before the group that was at `before` (drag or ⌥↑ / ⌥↓). */
+export function moveGroup(s: GroupsState, id: string, before: number): GroupsState {
+  const ids = s.groups.map((g) => g.id);
+  if (!ids.includes(id)) return s;
+  const order = moveKey(ids, id, before);
+  if (order.every((x, i) => x === ids[i])) return s;
+  const byId = new Map(s.groups.map((g) => [g.id, g]));
+  return { ...s, groups: order.map((x) => byId.get(x) as CustomGroup) };
+}
+
+/** Items in a remembered order first (SB-15 / SB-42), then the others in the order they came. */
+export function orderBy<T>(items: T[], order: readonly string[], keyOf: (x: T) => string): T[] {
+  if (!order.length) return items;
+  const at = new Map(order.map((k, i) => [k, i]));
+  const known = items.filter((x) => at.has(keyOf(x))).sort((a, b) => (at.get(keyOf(a)) as number) - (at.get(keyOf(b)) as number));
+  return [...known, ...items.filter((x) => !at.has(keyOf(x)))];
+}
+
+/**
+ * "Custom groups" (SB-08's section layout): one section per group made here, in its order (empty ones
+ * too, so a row can be dropped there), then the sessions in no group. Items keep their order.
+ */
+export function customSections<T extends { key: string }>(items: T[], s: GroupsState): { sections: Array<{ group: CustomGroup; items: T[] }>; rest: T[] } {
+  const by = new Map(s.groups.map((g) => [g.id, [] as T[]]));
+  const rest: T[] = [];
+  for (const x of items) {
+    const list = by.get(s.members[x.key] ?? "");
+    if (list) list.push(x);
+    else rest.push(x);
+  }
+  return { sections: s.groups.map((group) => ({ group, items: by.get(group.id) as T[] })), rest };
+}
+
+/** SB-38: sessions in the "Older" bucket a week or more without activity, not archived yet. */
+export const OLDER_DAYS = 7;
+export function olderSessions<T extends { meta: WsMeta }>(items: T[], now: number): T[] {
+  const before = now - OLDER_DAYS * 86_400_000;
+  return items.filter((x) => !x.meta.archived && x.meta.last_activity < before);
+}
+
+/** SB-04: the two densities. Compact is the default (the session list's 28 px rows); comfortable is 30 px (desktop). */
+export type Density = "compact" | "comfortable";
+export const DENSITY: Record<Density, { row: number; font: number; groupFont: number; radius: number; groupTop: number; gap: number; meta: number }> = {
+  compact: { row: 28, font: 13, groupFont: 12, radius: 6, groupTop: 12, gap: 2, meta: 20 },
+  comfortable: { row: 30, font: 14, groupFont: 13, radius: 8, groupTop: 14, gap: 2, meta: 20 },
+};
+
+/** How rows are drawn: the density and whether they carry the metadata line (SB-12's "Show"). */
+export interface DisplayPrefs {
+  density: Density;
+  meta: boolean;
+}
+export const DEFAULT_DISPLAY: DisplayPrefs = { density: "compact", meta: false };
+
+export function normalizeDisplay(raw: unknown): DisplayPrefs {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return { density: pick(o.density, ["compact", "comfortable"] as const, DEFAULT_DISPLAY.density), meta: o.meta === true };
+}
+
+export function isDefaultDisplay(d: DisplayPrefs): boolean {
+  return d.density === DEFAULT_DISPLAY.density && d.meta === DEFAULT_DISPLAY.meta;
+}
+
+/**
+ * SB-28's second line: blocked (something waits for a person, unless the row sits under "Needs you"),
+ * else the branch, then the folder (left out when the group header already names it), then the computer
+ * when it is not this one and the header does not say it. Null fields are left out; null: no line at all.
+ */
+export function metaLine(
+  m: WsMeta,
+  o: { groupFolder?: string | null; host?: string | null; underBlocked?: boolean },
+): { blocked: WsPending | null; branch: string | null; folder: string | null; host: string | null } | null {
+  if (!o.underBlocked && m.pending && m.state !== "ended") return { blocked: m.pending, branch: null, folder: null, host: null };
+  const branch = m.branch?.trim() || null;
+  const name = folderName(m.cwd) || trimFolder(m.cwd) || null;
+  const folder = name && !(o.groupFolder && sameFolder(o.groupFolder, m.cwd)) ? name : null;
+  const host = o.host?.trim() || null;
+  if (!branch && !folder && !host) return null;
+  return { blocked: null, branch, folder, host };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Search (SB-06)
 
 /**
@@ -437,6 +696,21 @@ export interface SearchFields {
   folder: string;
   branch: string;
   computer: string;
+  /** Titles it had before (a match there is a main result, shown with "Formerly: …"). */
+  previous?: string[];
+}
+
+/** SB-06: the latest earlier title holding every word of `query`, when the current title does not. */
+export function formerTitle(query: string, title: string, previous: string[] | null | undefined): string | null {
+  const words = searchTokens(query);
+  if (!words.length || !previous?.length) return null;
+  const has = (s: string) => {
+    const l = s.toLowerCase();
+    return words.every((w) => l.includes(w));
+  };
+  if (has(title)) return null;
+  for (let i = previous.length - 1; i >= 0; i--) if (has(previous[i])) return previous[i];
+  return null;
 }
 
 /**
@@ -453,13 +727,149 @@ export function searchSessions<T extends { meta: WsMeta }>(items: T[], query: st
   for (const x of recent) {
     const f = fields(x);
     const title = f.title.toLowerCase();
-    if (words.every((w) => title.includes(w))) primary.push(x);
+    if (words.every((w) => title.includes(w)) || formerTitle(query, f.title, f.previous)) primary.push(x);
     else {
       const hay = [title, f.folder.toLowerCase(), f.branch.toLowerCase(), f.computer.toLowerCase()];
       if (words.every((w) => hay.some((h) => h.includes(w)))) more.push(x);
     }
   }
   return [...primary.slice(0, 100), ...more];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Searching what was said (SB-06's deeper search, the host's `chat_search`)
+
+/** A deeper search starts at this many characters, this long after the last key; its spinner shows this late. */
+export const DEEP_SEARCH = { MIN_CHARS: 3, DEBOUNCE_MS: 150, SPINNER_MS: 150, LIMIT: 20, MAX: 50 } as const;
+
+/** Whether a query is long enough to search what was said. */
+export function deepQuery(query: string): boolean {
+  return [...query.trim()].length >= DEEP_SEARCH.MIN_CHARS;
+}
+
+export interface ContentExcerpt {
+  role: "user" | "agent";
+  seq: number;
+  text: string;
+}
+
+/** A session whose messages hold the query, as one host's `chat_search` found it. */
+export interface ContentHit {
+  host: string;
+  key: string;
+  meta: WsMeta;
+  hits: number;
+  excerpts: ContentExcerpt[];
+}
+
+/**
+ * The deeper search's group (SB-06): every host's `chat_search` results merged, newest first, without
+ * the sessions the main results already show, at most `max`. Broken entries are dropped.
+ */
+export function contentHits(answers: Array<{ host: string; found: unknown }>, shown: Set<string>, max: number = DEEP_SEARCH.MAX): ContentHit[] {
+  const out: ContentHit[] = [];
+  for (const { host, found } of answers) {
+    const results = (found as { results?: unknown } | null)?.results;
+    if (!Array.isArray(results)) continue;
+    for (const r of results) {
+      if (!r || typeof r !== "object") continue;
+      const o = r as Record<string, unknown>;
+      const meta = normalizeMeta({ ...o, id: o.session });
+      if (!meta) continue;
+      const key = sessionKey(host, meta.id);
+      if (shown.has(key) || out.some((x) => x.key === key)) continue;
+      const excerpts = (Array.isArray(o.excerpts) ? o.excerpts : [])
+        .filter((e): e is ContentExcerpt => !!e && typeof e === "object" && typeof (e as ContentExcerpt).text === "string")
+        .map((e) => ({ role: e.role === "user" ? "user" as const : "agent" as const, seq: Number(e.seq) || 0, text: e.text }));
+      out.push({ host, key, meta, hits: typeof o.hits === "number" ? o.hits : excerpts.length, excerpts });
+    }
+  }
+  return out.sort((a, b) => b.meta.last_activity - a.meta.last_activity).slice(0, max);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Forks (SB-29): a fork sits under the session it was forked from
+
+/** Why a session cannot be forked now (none: it can). A fork copies what Claude Code or Codex saved. */
+export type ForkBlock = "agent" | "no_turn" | "running" | "archived";
+
+export function forkBlock(m: WsMeta): ForkBlock | null {
+  // Claude Code sessions carry a permission mode (the host gives one to them only); else by id or name.
+  const agent = !!m.permission_mode || /\b(claude|codex)\b/i.test(`${m.runtime} ${m.name}`);
+  if (!agent) return "agent";
+  if (m.archived) return "archived";
+  if (!m.turns) return "no_turn";
+  if (isRunning(m)) return "running";
+  return null;
+}
+
+export interface FamilyNode<T> {
+  item: T;
+  children: FamilyNode<T>[];
+}
+
+/**
+ * SB-29: `items` (one list's rows, in order) with each fork under the session it was forked from when
+ * that one is in the same list; the others stay where they were. `detached` forks (moved to the top
+ * level when their parent was archived alone, SB-37) stay at the top level.
+ */
+export function nestFamilies<T extends WsItem>(items: T[], detached?: ReadonlySet<string>): FamilyNode<T>[] {
+  const keys = new Set(items.map((x) => x.key));
+  const parentOf = (x: T) => {
+    const k = x.meta.parent && !detached?.has(x.key) ? sessionKey(x.host, x.meta.parent) : null;
+    return k && k !== x.key && keys.has(k) ? k : null;
+  };
+  const kids = new Map<string, T[]>();
+  for (const x of items) {
+    const k = parentOf(x);
+    if (k) kids.set(k, [...(kids.get(k) ?? []), x]);
+  }
+  const seen = new Set<string>();
+  const node = (x: T): FamilyNode<T> => {
+    seen.add(x.key);
+    return { item: x, children: (kids.get(x.key) ?? []).filter((c) => !seen.has(c.key)).map(node) };
+  };
+  const roots = items.filter((x) => !parentOf(x)).map(node);
+  // Forks of each other (no root): the first of each such circle stands at the top level.
+  for (const x of items) if (!seen.has(x.key)) roots.push(node(x));
+  return roots;
+}
+
+/** Every session under `n` (not `n` itself), depth first. */
+export function descendants<T>(n: FamilyNode<T>): T[] {
+  return n.children.flatMap((c) => [c.item, ...descendants(c)]);
+}
+
+/** Whether `key` is `n` or under it. */
+export function inFamily<T extends { key: string }>(n: FamilyNode<T>, key: string | null): boolean {
+  return !!key && (n.item.key === key || n.children.some((c) => inFamily(c, key)));
+}
+
+/** SB-29's line for hidden forks: how many, and how many failed, are unread and run. */
+export function familySummary<T>(n: FamilyNode<T>, dot: (x: T) => Dot | null): { count: number; failed: number; unread: number; running: number } {
+  const all = descendants(n);
+  const dots = all.map(dot);
+  return {
+    count: all.length,
+    failed: dots.filter((d) => d === "failed").length,
+    unread: dots.filter((d) => d === "unread").length,
+    running: dots.filter((d) => d === "running").length,
+  };
+}
+
+/** Every session forked (directly or not) from `x`, among `items`. */
+export function forksOf<T extends WsItem>(x: WsItem, items: T[]): T[] {
+  const out: T[] = [];
+  const walk = (host: string, id: string) => {
+    for (const c of items) {
+      if (c.host === host && c.meta.parent === id && !out.includes(c) && c.key !== x.key) {
+        out.push(c);
+        walk(c.host, c.meta.id);
+      }
+    }
+  };
+  walk(x.host, x.meta.id);
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -505,6 +915,117 @@ export function compactEnvironment(compact: boolean, available: number, required
 // The new-session page: recent projects (NS-04) and next steps (NS-08 / NS-09)
 
 /** A computer and a folder on it. */
+/** The models Claude Code takes by alias (NS-32: the model menu's choices). Other agents name none here. */
+export const CLAUDE_MODELS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "opus", label: "Opus" },
+  { id: "sonnet", label: "Sonnet" },
+  { id: "haiku", label: "Haiku" },
+];
+
+/** The model menu's fixed choices for an agent speaking `protocol`. */
+export function modelPresets(protocol: string | undefined): ReadonlyArray<{ id: string; label: string }> {
+  return protocol === "claude-stream-json" ? CLAUDE_MODELS : [];
+}
+
+/** What the model chip says: an alias by its name, any other model as typed ("" is the agent's default). */
+export function modelLabel(model: string, protocol: string | undefined): string {
+  const m = model.trim();
+  return modelPresets(protocol).find((p) => p.id === m)?.label ?? m;
+}
+
+// The model menu (NS-29, NS-32, NS-33): what the agent offers, the effort levels a model takes, and
+// what a place (a computer and a folder) remembers for the next session started there.
+
+/** Effort levels lowest first, as Claude Code names them (NS-33); Codex may offer others (`minimal`, `none`). */
+export const EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The models to choose from: what the agent offered, else Claude Code's aliases (other agents: none),
+ * which take every level `claude --help` names (an agent's own entry without levels takes none).
+ */
+export function modelChoices(models: readonly ModelInfo[] | null | undefined, protocol: string | undefined): ModelInfo[] {
+  if (models?.length) return [...models];
+  return modelPresets(protocol).map((p) => ({ id: p.id, name: p.label, efforts: [...EFFORTS] }));
+}
+
+/** The entry for `model` in `models` ("" or null: the one the agent uses by default), or null. */
+export function modelEntry(models: readonly ModelInfo[], model: string | null | undefined): ModelInfo | null {
+  const m = model?.trim();
+  return (m ? models.find((x) => x.id === m) : models.find((x) => x.default)) ?? null;
+}
+
+/**
+ * The effort levels `model` takes, lowest first: what the agent said for it (none: it takes none);
+ * for a model the agent did not describe, all of Claude Code's levels (`claude --help`) and none for
+ * other agents.
+ */
+export function effortsFor(models: readonly ModelInfo[], model: string | null | undefined, protocol: string | undefined): string[] {
+  const e = modelEntry(models, model);
+  if (e) return [...(e.efforts ?? [])];
+  return protocol === "claude-stream-json" ? [...EFFORTS] : [];
+}
+
+/** `effort` when `model` takes it, else null: a level is not carried over to a model without it (NS-33). */
+export function keepEffort(models: readonly ModelInfo[], model: string | null | undefined, effort: string | null | undefined, protocol: string | undefined): string | null {
+  return effort && effortsFor(models, model, protocol).includes(effort) ? effort : null;
+}
+
+/** What the model chip says: the model's name, the default model's name for "" ("" when the agent did not say). */
+export function modelName(models: readonly ModelInfo[], model: string | null | undefined, protocol: string | undefined): string {
+  const m = model?.trim() ?? "";
+  const e = modelEntry(models, m);
+  if (e) return e.name;
+  return m ? modelLabel(m, protocol) : "";
+}
+
+/** A model and level a place remembers (NS-29). */
+export interface PlaceModel {
+  model: string;
+  effort: string | null;
+  at: number;
+}
+
+/** Where a place's model is kept: the computer, the folder and the agent (a model id is an agent's own). */
+export function placeModelKey(host: string, cwd: string, runtime: string): string {
+  return `${host}\n${trimFolder(cwd)}\n${runtime}`;
+}
+
+/** Remembers what a session was started with in a place; the newest `max` places are kept. */
+export function rememberPlaceModel(all: Record<string, PlaceModel>, key: string, model: string, effort: string | null, now: number, max = 50): Record<string, PlaceModel> {
+  const next: Record<string, PlaceModel> = { ...all, [key]: { model: model.trim(), effort: effort ?? null, at: now } };
+  const keys = Object.keys(next).sort((a, b) => next[b].at - next[a].at);
+  return Object.fromEntries(keys.slice(0, max).map((k) => [k, next[k]]));
+}
+
+/**
+ * NS-29: the model and level a new session in a place starts with. What the last session started
+ * there with this agent used; for a folder without one, its latest session's, as long as that model
+ * is still offered. The permission mode is not remembered. Levels the model does not take are left out.
+ */
+export function placeDefaults(
+  saved: Record<string, PlaceModel>,
+  items: readonly WsItem[],
+  place: { host: string; cwd: string; runtime: string; protocol?: string },
+  models: readonly ModelInfo[],
+): { model: string; effort: string | null } {
+  const fit = (model: string, effort: string | null) => ({ model, effort: keepEffort(models, model, effort, place.protocol) });
+  const kept = saved[placeModelKey(place.host, place.cwd, place.runtime)];
+  if (kept) return fit(kept.model, kept.effort);
+  const last = items
+    .filter((x) => x.host === place.host && x.meta.runtime === place.runtime && sameFolder(x.meta.cwd, place.cwd))
+    .sort((a, b) => b.meta.started_at - a.meta.started_at)[0];
+  const model = last?.meta.model?.trim() ?? "";
+  if (!last || (model && models.length && !models.some((m) => m.id === model))) return { model: "", effort: null };
+  return fit(model, last.meta.effort ?? null);
+}
+
+/** Models typed for an agent, newest first: the new one in front, no presets, no repeats, at most `max`. */
+export function rememberModel(list: readonly string[], model: string, protocol: string | undefined, max = 5): string[] {
+  const m = model.trim();
+  if (!m || modelPresets(protocol).some((p) => p.id === m)) return list.slice(0, max);
+  return [m, ...list.filter((x) => x !== m)].slice(0, max);
+}
+
 export interface Place {
   host: string;
   cwd: string;
@@ -604,8 +1125,12 @@ export interface WsSnapshot {
   withArchived: boolean;
   /** The first message this device sent to a session, for hosts that do not keep it. */
   first: Record<string, string>;
+  /** Forks moved to the top level (their parent was archived alone, SB-37). */
+  detached: string[];
   /** The session open in the workspace now. */
   current: string | null;
+  /** Groups made here, who is in them, and the pinned order (all on this device). */
+  groups: GroupsState;
   rev: number;
 }
 
@@ -631,9 +1156,11 @@ const KEYS = {
   unread: "ai-remote.ws.unread",
   pins: "ai-remote.ws.pins",
   first: "ai-remote.ws.first",
+  detached: "ai-remote.ws.detached",
   base: "ai-remote.ws.baselined",
   acked: "ai-remote.ws.ackedTurns",
   cache: "ai-remote.ws.cache",
+  groups: "ai-remote.ws.groups",
 } as const;
 
 /** Most sessions cached per computer, and remembered first messages / seen marks overall. */
@@ -678,7 +1205,9 @@ export class WorkspaceStore {
       acked: this.read(KEYS.acked, {}),
       withArchived: false,
       first: this.read(KEYS.first, {}),
+      detached: this.read(KEYS.detached, []),
       current: null,
+      groups: normalizeGroups(this.read<unknown>(KEYS.groups, null)),
       rev: 0,
     };
     this.baselined = new Set(this.read<string[]>(KEYS.base, []));
@@ -717,6 +1246,8 @@ export class WorkspaceStore {
     if (next.pins) this.write(KEYS.pins, this.snap.pins);
     if (next.first) this.write(KEYS.first, this.snap.first);
     if (next.acked) this.write(KEYS.acked, this.snap.acked);
+    if (next.detached) this.write(KEYS.detached, this.snap.detached);
+    if (next.groups) this.write(KEYS.groups, this.snap.groups);
     this.listeners.forEach((l) => l());
   }
 
@@ -803,7 +1334,8 @@ export class WorkspaceStore {
       this.setHost(host, (h) => ({
         status: "ok",
         error: null,
-        sessions,
+        // An answer asked for before an event seen meanwhile on the open conversation must not undo it.
+        sessions: keepNewerEvents(h.sessions, sessions),
         // A host once seen with the fields (or answering chat_update) keeps them; one that refused stays refused.
         update: h.update === false && learned !== true ? false : learned ?? h.update,
         fetchedAt: this.deps.now(),
@@ -890,6 +1422,21 @@ export class WorkspaceStore {
       else seen[key] = was.seen;
       this.set({ acked, seen, unread: was.explicit ? [...this.snap.unread.filter((k) => k !== key), key] : this.snap.unread });
     };
+  }
+
+  /**
+   * The groups made here after a change (lib functions compute it from `get().groups`); members are
+   * kept for the last 2000 sessions, and so is the pinned order.
+   */
+  setGroups(next: GroupsState) {
+    if (next === this.snap.groups) return;
+    this.set({ groups: { ...next, members: keepLast(next.members, MAX_MARKS), pinOrder: next.pinOrder.slice(-MAX_MARKS) } });
+  }
+
+  /** The group a session was moved into here, if it still exists. */
+  groupOf(key: string): CustomGroup | null {
+    const id = this.snap.groups.members[key];
+    return (id && this.snap.groups.groups.find((g) => g.id === id)) || null;
   }
 
   /** Whether archived sessions are asked for and kept (the list's filter shows them); asks again when it changes. */
@@ -1097,6 +1644,39 @@ export class WorkspaceStore {
       }
       throw e instanceof Error ? e : new Error(msg);
     }
+  }
+
+  /**
+   * Forks a session (`chat_start` with `fork_of`): the new one is listed at once, under its parent.
+   * A host from before forks refuses (it wants an agent and a folder): rejected with `unsupported`.
+   */
+  async fork(host: string, id: string, intent?: string): Promise<{ session: string; ticket: string | null }> {
+    let v: Record<string, unknown> & { session?: string; ticket?: string };
+    try {
+      v = (await this.deps.call(host, "chat_start", { fork_of: id, ...(intent ? { intent } : {}) })) as typeof v;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(/missing field .?runtime|unknown field .?fork_of/i.test(msg) ? "unsupported" : msg);
+    }
+    const meta = normalizeMeta({ ...v, id: v.session });
+    if (!meta) throw new Error("chat_start did not name the new session");
+    this.addSession(host, { ...meta, parent: meta.parent ?? id });
+    return { session: meta.id, ticket: typeof v.ticket === "string" ? v.ticket : null };
+  }
+
+  /** One host's `chat_search` answer (rejects as the tool does: a host without it says `unknown tool`). */
+  search(host: string, query: string, limit: number = DEEP_SEARCH.LIMIT): Promise<unknown> {
+    return this.deps.call(host, "chat_search", { query, limit });
+  }
+
+  /** Moves forks to the top level (`on`), or back under their parent; kept on this device. */
+  detach(keys: string[], on: boolean) {
+    const set = new Set(this.snap.detached);
+    for (const k of keys) {
+      if (on) set.add(k);
+      else set.delete(k);
+    }
+    this.set({ detached: [...set].slice(-MAX_MARKS) });
   }
 
   /** Ends a session on its host (its transcript stays). */

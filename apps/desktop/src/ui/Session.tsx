@@ -501,7 +501,7 @@ export function SessionPage({
   const hideSoon = () => {
     if (chromeTimer.current) window.clearTimeout(chromeTimer.current);
     chromeTimer.current = window.setTimeout(() => {
-      if (stageRef.current?.querySelector(".nt-anchor:hover, .nt-anchor select:focus, .nt-drive-options:hover, .nt-drive-options:focus-within")) hideSoon();
+      if (stageRef.current?.querySelector(".nt-anchor:hover, .nt-anchor:focus-within, .nt-drive-options:hover, .nt-drive-options:focus-within")) hideSoon();
       else setChrome(false);
     }, 3000);
   };

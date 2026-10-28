@@ -17,18 +17,32 @@ use super::*;
 /// asks with `can_use_tool`: ASK asks two questions (AskUserQuestion), PLAN proposes a plan
 /// (ExitPlanMode), PERMIT wants to run a command (with a rule to allow it for the session). The
 /// turn then ends with what the answer said: `allowed <answers>` or `denied <message>`. EDIT edits
-/// a file and its result carries a `structuredPatch`.
+/// a file and its result carries a `structuredPatch`. `initialize` lists models; `set_model`
+/// switches (`nope` is not found); WHICH answers with the model, effort level and process id.
 const FAKE_CLAUDE: &str = r###"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi
 MODE=$(printf '%s ' "$@" | sed -n 's/.*--permission-mode \([A-Za-z]*\).*/\1/p')
-echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake-session\",\"skills\":[\"tidy\"],\"permissionMode\":\"$MODE\"}"
+FORK=$(printf '%s ' "$@" | sed -n 's/.*--resume \([^ ]*\) --fork-session.*/\1/p')
+SID=fake-session; [ -n "$FORK" ] && SID=fake-fork
+MODEL=$(printf '%s ' "$@" | sed -n 's/.*--model \([^ ]*\).*/\1/p')
+EFFORT=$(printf '%s ' "$@" | sed -n 's/.*--effort \([a-z]*\).*/\1/p')
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$SID\",\"skills\":[\"tidy\"],\"permissionMode\":\"$MODE\"}"
 REPLAY='{"type":"user","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"(replay)"}]}}'
 SLOW=""
 field() { printf '%s' "$line" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
 while IFS= read -r line; do
   case "$line" in
     *'"subtype":"initialize"'*)
-      echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[{"name":"review","description":"Review the changes","argumentHint":"<pr>"},{"name":"tidy","description":"A skill"}]}}}'
+      echo '{"type":"control_response","response":{"subtype":"success","request_id":"ar-init","response":{"commands":[{"name":"review","description":"Review the changes","argumentHint":"<pr>"},{"name":"tidy","description":"A skill"}],"models":[{"value":"default","resolvedModel":"m-opus","displayName":"Default","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"opus","resolvedModel":"m-opus","displayName":"Opus","description":"Big","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"haiku","resolvedModel":"m-haiku","displayName":"Haiku","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"old","resolvedModel":"m-old","displayName":"Old"}]}}}'
+      continue ;;
+    *'"subtype":"set_model"'*)
+      M=$(field model)
+      if [ "$M" = "nope" ]; then
+        echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"error\",\"request_id\":\"$(field request_id)\",\"error\":\"Model 'nope' not found\",\"error_code\":\"not_found\"}}"
+      else
+        MODEL=$M
+        echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(field request_id)\",\"response\":{\"model\":\"m-$M\"}}}"
+      fi
       continue ;;
     *'"subtype":"generate_session_title"'*)
       echo "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(field request_id)\",\"response\":{\"title\":\"Fake title\"}}}"
@@ -76,12 +90,14 @@ while IFS= read -r line; do
     *PERMIT*)
       echo '{"type":"assistant","message":{"id":"pm","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"cargo build"}}]}}'
       echo '{"type":"control_request","request_id":"cu-bash","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo build"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"cargo build"}],"behavior":"allow","destination":"localSettings"}],"decision_reason":"This command requires approval","tool_use_id":"tu-bash"}}' ;;
+    *WHICH*)
+      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"model=$MODEL effort=$EFFORT pid=$$\"}" ;;
     *EDIT*)
       echo '{"type":"assistant","message":{"id":"ed","content":[{"type":"tool_use","id":"tu-edit","name":"Edit","input":{"file_path":"/w/t.py","old_string":"b = 2","new_string":"b = 20"}}]}}'
       echo '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-edit","type":"tool_result","content":"updated"}]},"tool_use_result":{"filePath":"/w/t.py","oldString":"b = 2","newString":"b = 20","structuredPatch":[{"oldStart":1,"oldLines":3,"newStart":1,"newLines":3,"lines":[" a = 1","-b = 2","+b = 20"," c = 3"]}]}}'
       echo '{"type":"result","subtype":"success","is_error":false,"result":"edited"}' ;;
     *)
-      echo '{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"echo"}]}}'
+      echo "{\"type\":\"assistant\",\"message\":{\"id\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"echo${FORK:+ forked from }$FORK\"}]}}"
       echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}' ;;
   esac
 done
@@ -102,7 +118,8 @@ fn fixture() -> Fixture {
     let cfg = format!(
         "[[agent]]\nid = \"fake\"\nbase = \"claude\"\ncommand = \"{0}\"\n\n\
          [[agent]]\nid = \"fake-nosteer\"\nbase = \"claude\"\ncommand = \"{0}\"\nsteer = false\n\n\
-         [[agent]]\nid = \"fake-codex\"\nbase = \"codex\"\ncommand = \"{0}\"\n",
+         [[agent]]\nid = \"fake-codex\"\nbase = \"codex\"\ncommand = \"{0}\"\n\n\
+         [[agent]]\nid = \"fake-acp\"\nbase = \"gemini\"\ncommand = \"{0}\"\n",
         fake.display()
     );
     std::fs::write(root.join("chat.toml"), cfg).unwrap();
@@ -153,7 +170,7 @@ async fn wait_for(rx: &mut broadcast::Receiver<Arc<str>>, pred: impl Fn(&Value) 
 async fn a_session_runs_turns_queues_interrupts_and_ends() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("hello"));
     let end = wait_for(&mut rx, |v| v["t"] == "turn_end").await;
@@ -215,8 +232,10 @@ async fn a_session_runs_turns_queues_interrupts_and_ends() {
 async fn a_stopped_process_parks_and_the_next_message_resumes() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat =
-        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None).await.unwrap();
+    let chat = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None, None)
+        .await
+        .unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     chat.send(Cmd::Park { reason: "idle".into() });
@@ -233,16 +252,20 @@ async fn a_stopped_process_parks_and_the_next_message_resumes() {
 async fn starting_is_refused_when_switched_off_or_the_folder_is_missing() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None, None).await.is_err());
-    assert!(m.start(creator(), "fake", "relative", None, false, None, None).await.is_err());
-    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None, None).await.is_err());
+    assert!(m.start(creator(), "fake", "/nonexistent/folder", None, false, None, None, None).await.is_err());
+    assert!(m.start(creator(), "fake", "relative", None, false, None, None, None).await.is_err());
+    assert!(m.start(creator(), "nope", f.work.to_str().unwrap(), None, false, None, None, None).await.is_err());
     assert!(
-        m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None, None)
+        m.start(creator(), "fake", f.work.to_str().unwrap(), Some("bad model".into()), false, None, None, None)
             .await
             .is_err()
     );
     m.set_enabled(false).unwrap();
-    let e = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.err().expect("refused");
+    let e = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None)
+        .await
+        .err()
+        .expect("refused");
     assert!(e.to_string().contains("switched off"), "{e}");
     // Persisted for the next host.
     let (m2, _) = manager(&f);
@@ -254,7 +277,7 @@ async fn devices_that_lose_admin_lose_their_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
     let chat =
-        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into()), None).await.unwrap();
+        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("hi".into()), None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
     m.enforce(|_| true);
@@ -298,8 +321,11 @@ async fn a_broken_settings_file_switches_agents_off() {
         .unwrap();
     let (m, _audit) = manager(&f);
     assert!(!m.enabled());
-    let e =
-        m.start(creator(), "claude", f.work.to_str().unwrap(), None, false, None, None).await.err().expect("refused");
+    let e = m
+        .start(creator(), "claude", f.work.to_str().unwrap(), None, false, None, None, None)
+        .await
+        .err()
+        .expect("refused");
     assert!(e.to_string().contains("chat.toml"), "{e}");
     assert!(m.runtimes(false).await["host"]["config_error"].as_str().is_some_and(|s| s.contains("built-in")));
     // Not overwritten by a switch.
@@ -311,7 +337,7 @@ async fn a_broken_settings_file_switches_agents_off() {
 async fn a_steer_joins_the_running_turn() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     let start = wait_for(&mut rx, |v| v["t"] == "turn_start").await;
@@ -336,7 +362,7 @@ async fn a_steer_joins_the_running_turn() {
 async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("LATE"));
     wait_for(&mut rx, |v| v["t"] == "message").await;
@@ -359,7 +385,7 @@ async fn a_steer_the_turn_did_not_read_runs_next_without_being_sent_again() {
 async fn a_steer_with_no_turn_running_starts_one() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(steer("hello"));
     let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
@@ -381,7 +407,8 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
         (Some(true), Some(false))
     );
     assert_eq!(row("opencode")["caps"]["steer"], false);
-    let chat = m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat =
+        m.start(creator(), "fake-nosteer", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("SLOW"));
     wait_for(&mut rx, |v| v["t"] == "tool_call").await;
@@ -403,7 +430,7 @@ async fn an_agent_that_cannot_steer_queues_the_message() {
 async fn previews_read_only_files_the_session_is_about() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     std::fs::write(f.work.join("report.html"), "<h1>hi</h1>").unwrap();
     std::fs::write(f.work.join("notes.txt"), "x").unwrap();
     let outside = f.root.join("elsewhere");
@@ -452,8 +479,10 @@ async fn previews_read_only_files_the_session_is_about() {
 async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat =
-        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None).await.unwrap();
+    let chat = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, Some("first".into()), None, None)
+        .await
+        .unwrap();
     let (_, _, mut rx) = chat.follow(0);
     // `initialize` lists the commands; the first `init` says which are skills.
     let ev = wait_for(&mut rx, |v| v["t"] == "commands" && v["commands"][1]["kind"] == "skill").await;
@@ -477,7 +506,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
     }
     assert_eq!(lists, 0);
     // A new session in the same folder offers them before its agent has started.
-    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let other = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     assert_eq!(m.commands_for(&other).len(), 2);
     assert!(m.commands_for(&chat).iter().any(|c| c.name == "tidy" && c.kind == "skill"));
 }
@@ -486,7 +515,7 @@ async fn the_agents_commands_are_kept_and_offered_to_new_sessions() {
 async fn an_image_reaches_the_agent_and_the_transcript_keeps_only_its_name() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     assert!(m.takes_images(&chat));
     let (_, _, mut rx) = chat.follow(0);
     let mut msg = message("look");
@@ -507,8 +536,10 @@ fn person(device: &str) -> By {
 async fn a_permission_waits_for_the_first_answer_and_can_hold_for_the_session() {
     let f = fixture();
     let (m, mut audit) = manager(&f);
-    let chat =
-        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("default".into())).await.unwrap();
+    let chat = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("default".into()), None)
+        .await
+        .unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("PERMIT"));
     let p = wait_for(&mut rx, |v| v["t"] == "permission").await;
@@ -577,8 +608,10 @@ async fn a_permission_waits_for_the_first_answer_and_can_hold_for_the_session() 
 async fn questions_of_several_parts_and_plans_are_answered_and_switch_the_mode() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat =
-        m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("plan".into())).await.unwrap();
+    let chat = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("plan".into()), None)
+        .await
+        .unwrap();
     assert_eq!(chat.describe()["permission_mode"], "plan");
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("ASK me"));
@@ -629,7 +662,7 @@ async fn questions_of_several_parts_and_plans_are_answered_and_switch_the_mode()
 async fn titles_come_from_the_agent_unless_a_person_named_the_session() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("Fix the build please"));
     // The title may come before the turn's end or after it (the stand-in answers after).
@@ -670,7 +703,7 @@ async fn titles_come_from_the_agent_unless_a_person_named_the_session() {
 async fn an_edit_carries_its_line_numbers_and_modes_are_claude_codes_alone() {
     let f = fixture();
     let (m, _audit) = manager(&f);
-    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None).await.unwrap();
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input("EDIT"));
     let u = wait_for(&mut rx, |v| v["t"] == "tool_update").await;
@@ -679,7 +712,7 @@ async fn an_edit_carries_its_line_numbers_and_modes_are_claude_codes_alone() {
     wait_for(&mut rx, |v| v["t"] == "turn_end").await;
 
     let codex = m
-        .start(creator(), "fake-codex", f.work.to_str().unwrap(), None, false, None, Some("plan".into()))
+        .start(creator(), "fake-codex", f.work.to_str().unwrap(), None, false, None, Some("plan".into()), None)
         .await
         .unwrap();
     assert!(codex.describe().get("permission_mode").is_none(), "only Claude Code has modes");
@@ -689,7 +722,7 @@ async fn an_edit_carries_its_line_numbers_and_modes_are_claude_codes_alone() {
     assert_eq!(n["code"], "mode_rejected");
     // Nothing is asked: an answer finds nothing to take.
     assert!(codex.claim("q1", &[Pending::Question]).is_none());
-    let bad = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("yolo".into())).await;
+    let bad = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, Some("yolo".into()), None).await;
     assert!(bad.is_err());
 }
 
@@ -754,7 +787,7 @@ async fn real_claude_asks_titles_and_switches_modes() {
     let (m, _audit) = manager(&f);
     let work = f.work.to_str().unwrap();
     let chat =
-        m.start(creator(), "real", work, Some("haiku".into()), true, None, Some("default".into())).await.unwrap();
+        m.start(creator(), "real", work, Some("haiku".into()), true, None, Some("default".into()), None).await.unwrap();
     let (_, _, mut rx) = chat.follow(0);
     chat.send(input(
         "Use the AskUserQuestion tool to ask me ONE question: which color I prefer, options red and blue. After I \
@@ -787,5 +820,380 @@ async fn real_claude_asks_titles_and_switches_modes() {
     chat.send(Cmd::SetMode { mode: "plan".into(), by: person("laptop") });
     let mode = wait(&mut rx, "mode").await;
     assert_eq!(mode["mode"], "plan", "{mode}");
+    chat.send(Cmd::End { reason: "done".into() });
+}
+
+#[tokio::test]
+async fn a_fork_copies_the_finished_turns_and_its_agent_forks_the_conversation() {
+    let f = fixture();
+    let (m, mut audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let parent = m
+        .start(creator(), "fake", work, Some("haiku".into()), false, None, Some("default".into()), None)
+        .await
+        .unwrap();
+    // No turn yet: no conversation to copy.
+    let e = m.fork(creator(), &parent.id, None).await.err().expect("refused").to_string();
+    assert!(e.contains("has not run a turn"), "{e}");
+    let mut rx = parent.live.subscribe();
+    parent.send(input("remember KIWI"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let _ = wait_for(&mut rx, |v| v["t"] == "title").await;
+    m.update(&parent.id, Some("Fruit".into()), None, None, &creator()).unwrap();
+
+    let child = m.fork(creator(), &parent.id, None).await.unwrap();
+    let cm = child.meta();
+    assert_eq!(cm.parent.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(cm.fork_from.as_deref(), Some("fake-session"));
+    assert_eq!(
+        (cm.runtime.as_str(), cm.cwd.as_str(), cm.model.as_deref(), cm.permission_mode.as_deref()),
+        ("fake", parent.meta().cwd.as_str(), Some("haiku"), Some("default"))
+    );
+    assert_eq!((cm.turns, cm.title.as_deref(), cm.first_text.as_deref()), (1, None, Some("remember KIWI")));
+    assert_eq!(child.describe()["parent"], json!(parent.id));
+    // A fork that has not run yet forks the conversation it was itself forked from.
+    let grandchild = m.fork(creator(), &child.id, None).await.unwrap();
+    assert_eq!(grandchild.meta().parent.as_deref(), Some(child.id.as_str()));
+    assert_eq!((grandchild.meta().fork_from.as_deref(), grandchild.meta().turns), (Some("fake-session"), 1));
+    // Its transcript starts with the parent's turn, numbered from 1, without the parent's titles.
+    let log = std::fs::read_to_string(child.dir.join("events.jsonl")).unwrap();
+    assert!(log.starts_with("{\"seq\":1,") && log.contains("remember KIWI"), "{log}");
+    assert!(!log.contains("\"t\":\"title\""), "{log}");
+    let seqs: Vec<u64> = log.lines().filter_map(line_seq).collect();
+    assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
+
+    // Its agent forks the parent's conversation, then goes on in its own.
+    let mut crx = child.live.subscribe();
+    child.send(input("which word?"));
+    let said = wait_for(&mut crx, |v| v["t"] == "message").await;
+    assert_eq!(said["text"], "echo forked from fake-session");
+    wait_for(&mut crx, |v| v["t"] == "turn_end").await;
+    assert_eq!(child.meta().proto_session.as_deref(), Some("fake-fork"));
+    assert_eq!(child.meta().turns, 2);
+    assert_eq!(parent.meta().proto_session.as_deref(), Some("fake-session"));
+    let a = loop {
+        let a = audit.recv().await.unwrap();
+        if a["action"] == "fork" {
+            break a;
+        }
+    };
+    assert_eq!((a["chat"].as_str(), a["parent"].as_str()), (Some(child.id.as_str()), Some(parent.id.as_str())));
+    // A running parent forks too: what is saved is copied, the running turn is not.
+    parent.send(input("SLOW"));
+    wait_for(&mut rx, |v| v["t"] == "tool_call").await;
+    let second = m.fork(creator(), &parent.id, None).await.unwrap();
+    let log = std::fs::read_to_string(second.dir.join("events.jsonl")).unwrap();
+    assert!(log.contains("remember KIWI") && !log.contains("SLOW"), "{log}");
+    parent.send(Cmd::Interrupt { then: None });
+    // Agents that cannot copy a conversation refuse, saying why.
+    let acp = m.start(creator(), "fake-acp", work, None, false, None, None, None).await.unwrap();
+    let e = m.fork(creator(), &acp.id, None).await.err().expect("refused").to_string();
+    assert!(e.contains("cannot be forked"), "{e}");
+    assert!(m.fork(creator(), "c-none", None).await.is_err());
+}
+
+#[tokio::test]
+async fn earlier_titles_are_kept_for_search() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
+    assert!(chat.describe().get("previous_titles").is_none());
+    for t in ["one", "two", "two", "three"] {
+        m.update(&chat.id, Some(t.into()), None, None, &creator()).unwrap();
+    }
+    assert_eq!(chat.meta().previous_titles, ["one", "two"]);
+    // Back to an earlier name: it is the title again, not an earlier one.
+    m.update(&chat.id, Some("one".into()), None, None, &creator()).unwrap();
+    assert_eq!(chat.describe()["previous_titles"], json!(["two", "three"]));
+    m.update(&chat.id, Some(String::new()), None, None, &creator()).unwrap();
+    assert_eq!(chat.meta().previous_titles, ["two", "three", "one"]);
+    for i in 0..20 {
+        m.update(&chat.id, Some(format!("t{i}")), None, None, &creator()).unwrap();
+    }
+    let p = chat.meta().previous_titles;
+    assert_eq!((p.len(), p.first().map(String::as_str), p.last().map(String::as_str)), (10, Some("t9"), Some("t18")));
+}
+
+#[tokio::test]
+async fn search_finds_what_was_said_newest_session_first() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let work = f.work.to_str().unwrap();
+    let a = m.start(creator(), "fake", work, None, false, None, None, None).await.unwrap();
+    let mut rx = a.live.subscribe();
+    a.send(input("deploy the KIWI build"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let b = m.start(creator(), "fake", work, None, false, None, None, None).await.unwrap();
+    let mut rx = b.live.subscribe();
+    b.send(input("kiwi build again"));
+    wait_for(&mut rx, |v| v["t"] == "turn_end").await;
+    let found = m.search("Kiwi build", 20);
+    let ids: Vec<&str> = found["results"].as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
+    assert_eq!(ids, [b.id.as_str(), a.id.as_str()]);
+    assert_eq!(found["results"][1]["excerpts"][0]["text"], "deploy the KIWI build");
+    assert_eq!(found["results"][1]["hits"], 1);
+    assert_eq!(found["truncated"], false);
+    assert_eq!(m.search("kiwi", 1)["results"].as_array().unwrap().len(), 1);
+    assert!(m.search("kiwi nothing", 20)["results"].as_array().unwrap().is_empty());
+    assert!(m.search("  ", 20)["results"].as_array().unwrap().is_empty());
+    // "echo" is the agent's answer: it is searched too.
+    assert_eq!(m.search("echo", 20)["results"][0]["excerpts"][0]["role"], "agent");
+}
+
+/// Asks the stand-in which model, level and process it runs with.
+async fn which(rx: &mut broadcast::Receiver<Arc<str>>, chat: &Chat) -> String {
+    chat.send(input(&format!("WHICH {}", random_hex())));
+    let end = wait_for(rx, |v| v["t"] == "turn_end").await;
+    end["final_text"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn models_and_effort_levels_switch_in_place_or_by_a_restart() {
+    let f = fixture();
+    let (m, mut audit) = manager(&f);
+    let chat = m
+        .start(creator(), "fake", f.work.to_str().unwrap(), None, false, None, None, Some("high".into()))
+        .await
+        .unwrap();
+    assert_eq!(chat.describe()["effort"], "high");
+    let (_, _, mut rx) = chat.follow(0);
+    let first = which(&mut rx, &chat).await;
+    assert!(first.starts_with("model= effort=high"), "{first}");
+    // The models from `initialize`: kept, offered to the runtimes report and to new sessions.
+    let (lines, _, _) = chat.follow(0);
+    let ev: Value = lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["t"] == "models")
+        .expect("a models event");
+    assert_eq!(
+        ev["models"][0],
+        json!({"id": "opus", "name": "Opus", "description": "Big", "efforts": ["low", "high"], "default": true})
+    );
+    assert_eq!(chat.meta().models.len(), 3);
+    let report = m.runtimes(false).await;
+    let fake = report["runtimes"].as_array().unwrap().iter().find(|r| r["id"] == "fake").unwrap().clone();
+    assert_eq!(fake["models"].as_array().map(Vec::len), Some(3));
+
+    // Only the model: switched in the running process.
+    let pid = chat.meta().pid;
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: Some("high".into()), by: person("laptop") });
+    let ev = wait_for(&mut rx, |v| v["t"] == "model").await;
+    assert_eq!((ev["model"].as_str(), ev["effort"].as_str()), (Some("haiku"), Some("high")));
+    let now = which(&mut rx, &chat).await;
+    assert!(now.starts_with("model=haiku effort=high"), "{now}");
+    assert_eq!(chat.meta().pid, pid);
+    assert_eq!(chat.meta().model.as_deref(), Some("haiku"));
+
+    // A model it does not have: its reason, nothing changes.
+    chat.send(Cmd::SetModel { model: Some("nope".into()), effort: Some("high".into()), by: person("laptop") });
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "model_rejected");
+    assert_eq!(chat.meta().model.as_deref(), Some("haiku"));
+
+    // Another effort level: the process restarts and resumes the conversation.
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: Some("low".into()), by: person("laptop") });
+    let ev = wait_for(&mut rx, |v| v["t"] == "model").await;
+    assert_eq!(ev["effort"], "low");
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "resumed");
+    let now = which(&mut rx, &chat).await;
+    assert!(now.starts_with("model=haiku effort=low"), "{now}");
+    assert_ne!(chat.meta().pid, pid);
+
+    // A model that takes no level drops it (and so restarts without one); a bad level is refused.
+    chat.send(Cmd::SetModel { model: Some("old".into()), effort: Some("low".into()), by: person("laptop") });
+    let ev = wait_for(&mut rx, |v| v["t"] == "model").await;
+    assert_eq!((ev["model"].as_str(), ev["effort"].as_str()), (Some("old"), None));
+    let now = which(&mut rx, &chat).await;
+    assert!(now.starts_with("model=old effort= "), "{now}");
+    chat.send(Cmd::SetModel { model: None, effort: Some("Hi!".into()), by: person("laptop") });
+    let n = wait_for(&mut rx, |v| v["t"] == "notice").await;
+    assert_eq!(n["code"], "model_rejected");
+
+    // Without a process the choice is recorded for the next start.
+    chat.send(Cmd::Park { reason: "idle".into() });
+    wait_for(&mut rx, |v| v["t"] == "state" && v["state"] == "parked").await;
+    chat.send(Cmd::SetModel { model: None, effort: Some("high".into()), by: person("laptop") });
+    let ev = wait_for(&mut rx, |v| v["t"] == "model").await;
+    assert_eq!((ev["model"].as_str(), ev["effort"].as_str()), (None, Some("high")));
+    assert!(chat.meta().pid.is_none());
+    let now = which(&mut rx, &chat).await;
+    assert!(now.starts_with("model= effort=high"), "{now}");
+
+    // Who switched is audited.
+    let mut switched = 0;
+    while let Ok(v) = audit.try_recv() {
+        if v["action"] == "model" {
+            switched += 1;
+        }
+    }
+    assert!(switched >= 4, "{switched}");
+    // A new host offers the list before any agent runs.
+    drop(chat);
+    let (m2, _) = manager(&f);
+    let report = m2.runtimes(false).await;
+    let fake = report["runtimes"].as_array().unwrap().iter().find(|r| r["id"] == "fake").unwrap().clone();
+    assert_eq!(fake["models"].as_array().map(Vec::len), Some(3));
+}
+
+#[tokio::test]
+async fn a_codex_session_records_its_model_and_level_for_the_next_turn() {
+    let f = fixture();
+    let (m, _audit) = manager(&f);
+    let codex =
+        m.start(creator(), "fake-codex", f.work.to_str().unwrap(), None, false, None, None, None).await.unwrap();
+    let (_, _, mut rx) = codex.follow(0);
+    codex.send(Cmd::SetModel { model: Some("gpt-x".into()), effort: Some("xhigh".into()), by: person("laptop") });
+    let ev = wait_for(&mut rx, |v| v["t"] == "model").await;
+    assert_eq!((ev["model"].as_str(), ev["effort"].as_str()), (Some("gpt-x"), Some("xhigh")));
+    assert_eq!((codex.meta().model.as_deref(), codex.meta().effort.as_deref()), (Some("gpt-x"), Some("xhigh")));
+    assert_eq!(codex.describe()["effort"], "xhigh");
+}
+
+/// The agent's own record of a session: the JSON lines file under `dir` whose name contains `id`.
+fn agent_record(dir: &std::path::Path, id: &str) -> Option<String> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy().contains(id)) {
+                return std::fs::read_to_string(&p).ok();
+            }
+        }
+    }
+    None
+}
+
+/// The command line of a running process (Unix `ps`).
+fn args_of(pid: u32) -> String {
+    let out = std::process::Command::new("ps").args(["-o", "args=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A real Claude Code (`AR_REAL_CLAUDE=<path>`, signed in; spends two short turns): the models it lists,
+/// a switch from its default to haiku in the running process (its own session record names the model
+/// of each answer), then another effort level restarting it with `--effort`.
+#[tokio::test]
+#[ignore]
+async fn real_claude_switches_models_and_restarts_for_a_level() {
+    let Ok(program) = std::env::var("AR_REAL_CLAUDE") else { return };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"claude\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let chat = m.start(creator(), "real", f.work.to_str().unwrap(), None, true, None, None, None).await.unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("你是哪个模型？只回答模型名。"));
+    let end = wait(&mut rx, "turn_end").await;
+    eprintln!("default: {}", end["final_text"]);
+    let models = chat.meta().models;
+    eprintln!("models: {}", models.iter().map(|m| format!("{} {:?}", m.id, m.efforts)).collect::<Vec<_>>().join(" | "));
+    assert!(models.iter().any(|m| m.id == "haiku"), "{models:?}");
+    let pid = chat.meta().pid;
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: None, by: person("laptop") });
+    let ev = wait(&mut rx, "model").await;
+    assert_eq!(ev["model"], "haiku", "{ev}");
+    // Another wording: the same message id would be taken for a repeat.
+    chat.send(input("现在你是哪个模型？只回答模型名。"));
+    let end = wait(&mut rx, "turn_end").await;
+    eprintln!("haiku: {}", end["final_text"]);
+    assert_eq!(chat.meta().pid, pid, "switched in the same process");
+    let home = std::env::var("HOME").unwrap();
+    let id = chat.meta().proto_session.unwrap();
+    let record =
+        agent_record(&std::path::Path::new(&home).join(".claude/projects"), &id).expect("Claude Code's session record");
+    let used: Vec<String> = record
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "assistant")
+        .filter_map(|v| v["message"]["model"].as_str().map(str::to_string))
+        .collect();
+    eprintln!("answered by: {used:?}");
+    assert!(
+        used.first().is_some_and(|m| !m.contains("haiku")) && used.last().is_some_and(|m| m.contains("haiku")),
+        "{used:?}"
+    );
+    // Another level: a new process with `--effort`, resuming the same conversation.
+    chat.send(Cmd::SetModel { model: Some("haiku".into()), effort: Some("low".into()), by: person("laptop") });
+    wait(&mut rx, "model").await;
+    let n = wait(&mut rx, "notice").await;
+    assert_eq!(n["code"], "resumed", "{n}");
+    let now = chat.meta().pid.expect("a process");
+    let args = args_of(now);
+    eprintln!("restarted: {args}");
+    assert!(Some(now) != pid && args.contains("--effort low") && args.contains(&format!("--resume {id}")), "{args}");
+    chat.send(Cmd::End { reason: "done".into() });
+}
+
+/// A real Codex (`AR_REAL_CODEX=<path>`, `AR_REAL_CODEX_MODEL=<a model the account may use>`; two short
+/// turns): its model list, then another effort level for the next turn; its own session record says
+/// which level each turn ran with.
+#[tokio::test]
+#[ignore]
+async fn real_codex_takes_another_effort_level_with_the_next_turn() {
+    let (Ok(program), Ok(model)) = (std::env::var("AR_REAL_CODEX"), std::env::var("AR_REAL_CODEX_MODEL")) else {
+        return;
+    };
+    let f = fixture();
+    std::fs::write(
+        f.root.join("chat.toml"),
+        format!("[[agent]]\nid = \"real\"\nbase = \"codex\"\ncommand = {}\n", json!(program)),
+    )
+    .unwrap();
+    let (m, _audit) = manager(&f);
+    let chat = m
+        .start(creator(), "real", f.work.to_str().unwrap(), Some(model.clone()), true, None, None, None)
+        .await
+        .unwrap();
+    let (_, _, mut rx) = chat.follow(0);
+    chat.send(input("Reply with exactly: one"));
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    let models = chat.meta().models;
+    eprintln!(
+        "models: {}",
+        models
+            .iter()
+            .map(|m| format!("{} {:?} {:?}", m.id, m.efforts, m.default_effort))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    let entry = models.iter().find(|m| m.id == model).expect("the model is listed").clone();
+    let level = ["low", "minimal", "high"]
+        .into_iter()
+        .find(|l| entry.efforts.iter().any(|e| e == l))
+        .expect("a level to switch to")
+        .to_string();
+    chat.send(Cmd::SetModel { model: Some(model.clone()), effort: Some(level.clone()), by: person("laptop") });
+    let ev = wait(&mut rx, "model").await;
+    assert_eq!(ev["effort"], level.as_str(), "{ev}");
+    chat.send(input("Reply with exactly: two"));
+    let end = wait(&mut rx, "turn_end").await;
+    assert_eq!(end["status"], "completed", "{end}");
+    let home = std::env::var("HOME").unwrap();
+    let id = chat.meta().proto_session.unwrap();
+    let record =
+        agent_record(&std::path::Path::new(&home).join(".codex/sessions"), &id).expect("Codex's session record");
+    let turns: Vec<(String, String)> = record
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "turn_context")
+        .map(|v| {
+            (
+                v["payload"]["model"].as_str().unwrap_or("").to_string(),
+                v["payload"]["effort"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    eprintln!("turns ran with: {turns:?}");
+    assert_eq!(turns.last(), Some(&(model.clone(), level.clone())), "{turns:?}");
+    assert!(turns.len() >= 2 && turns[0].1 != level, "the first turn ran with another level: {turns:?}");
     chat.send(Cmd::End { reason: "done".into() });
 }

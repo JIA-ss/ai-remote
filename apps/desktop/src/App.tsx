@@ -39,7 +39,7 @@ import {
   type SidebarPref,
 } from "./lib/nav";
 import { detectOs } from "./lib/platform";
-import { mouseActionOf, shortcutOf, type Action } from "./lib/shortcuts";
+import { mouseActionOf, shortcutLabel, shortcutOf, type Action } from "./lib/shortcuts";
 import { allPending, store, useStore, type Computer, type Snapshot } from "./lib/store";
 import type { AgentStatus, TrayIntent } from "./lib/types";
 import { DevicesPage } from "./ui/Devices";
@@ -82,6 +82,9 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const guard = useRef<NavGuard | null>(null);
+  // Pairing's "Show this computer's pair code…" opens the dialog in Settings › This device; closing it
+  // returns to pairing instead of leaving the person on a settings page they never asked for.
+  const pairCodeReturn = useRef(false);
 
   const context = route.page === "session" ? "session" : "shell";
   const sidebar = sidebarState(sidebarPref, context, startWidth);
@@ -102,9 +105,13 @@ export default function App() {
     const m = modeOf(route);
     if (m) saveMode(m);
   }, [route]);
-  /** Every in-app navigation passes the current page's guard (pairing asks before it is left). */
-  const commit = (next: (h: History) => History) => {
-    const run = () => setHist(next);
+  /** Every navigation, the tray's included, passes the current page's guard (pairing asks before it
+   *  is left); `after` runs only once the move happens. */
+  const commit = (next: (h: History) => History, after?: () => void) => {
+    const run = () => {
+      setHist(next);
+      after?.();
+    };
     const g = guard.current;
     if (g && g(() => {
       guard.current = null;
@@ -120,8 +127,9 @@ export default function App() {
   /** Settings › This device with an action for HostPanel, the same path the tray takes. */
   const openSettingsIntent = (to: Omit<TrayIntent, "n">) => {
     const r = fromTray(to);
-    if (r) go(r);
-    setIntent({ ...to, n: Date.now() });
+    const fire = () => setIntent({ ...to, n: Date.now() });
+    if (r) commit((h) => push(h, r), fire);
+    else fire();
   };
 
   const toggleSidebar = () =>
@@ -139,6 +147,7 @@ export default function App() {
   // A page's guard only holds while that page is shown.
   useEffect(() => {
     if (route.page !== "pair") guard.current = null;
+    if (route.page !== "settings" && route.page !== "pair") pairCodeReturn.current = false;
   }, [route.page]);
 
   // ---- the tray, the window going to the tray ----
@@ -153,8 +162,10 @@ export default function App() {
         // No view: the window was only brought back (Dock, a click on the icon); stay where we are.
         const r = fromTray(to);
         if (!r) return;
-        setHist((h) => push(h, r));
-        setIntent({ ...to, n: Date.now() });
+        // Through the guard: leaving pairing before its words are checked asks first (and the
+        // unconfirmed pairing is removed), from the tray menu as from the window. commit only reads
+        // the guard ref and setHist, so the first render's copy is the right one here.
+        commit((h) => push(h, r), () => setIntent({ ...to, n: Date.now() }));
       }).then(keep);
       // A live view must not go on unseen.
       void listen("window-hidden", () => {
@@ -307,7 +318,7 @@ export default function App() {
   // The agents workspace: the whole window, its own sidebar; its pages are entries of this history.
   if (route.page === "agents") {
     return (
-      <div className="win" data-route="agents" style={{ width: "100vw", height: "100vh" }}>
+      <div className="win gl-win" data-route="agents" style={{ width: "100vw", height: "100vh" }}>
         {snap.ready && (
           <Workspace
             computers={snap.computers}
@@ -333,7 +344,19 @@ export default function App() {
   {
     let page: ReactNode;
     if (route.page === "settings")
-      page = <SettingsPage sec={route.sec} status={status} onStatus={() => setStatusRound((n) => n + 1)} intent={intent} />;
+      page = (
+        <SettingsPage
+          sec={route.sec}
+          status={status}
+          onStatus={() => setStatusRound((n) => n + 1)}
+          intent={intent}
+          onPairCodeClosed={() => {
+            if (!pairCodeReturn.current) return;
+            pairCodeReturn.current = false;
+            back();
+          }}
+        />
+      );
     else if (!snap.ready) page = <div className="gl-empty gl-starting">{t("starting")}</div>;
     else if (snap.error)
       page = (
@@ -358,6 +381,7 @@ export default function App() {
             leaveWelcome();
             openSettingsIntent({ view: "settings", sec: "device", action: "enable" });
           }}
+          onAgents={() => go({ page: "settings", sec: "agents" })}
         />
       );
     else if (route.page === "devices")
@@ -390,8 +414,12 @@ export default function App() {
             await store.refresh();
             go({ page: "computer", host: h, tab: "overview" }, "replace");
           }}
-          onShowMyCode={() => openSettingsIntent({ view: "settings", sec: "device", action: "pair_code" })}
+          onShowMyCode={() => {
+            pairCodeReturn.current = true;
+            openSettingsIntent({ view: "settings", sec: "device", action: "pair_code" });
+          }}
           registerGuard={(g) => (guard.current = g)}
+          onAgents={() => go({ page: "settings", sec: "agents" })}
         />
       );
     else if (route.page === "computer") {
@@ -458,11 +486,13 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
       return { bare: true };
     case "devices": {
       const online = snap.computers.filter((c) => c.online === true).length;
+      // With no computer yet the empty state is the one way to pair: no count, no second button.
+      const none = snap.ready && !snap.error && snap.computers.length === 0;
       return {
         title: t("devices"),
-        subtitle: snap.ready && !snap.error ? t("devices_subtitle", { online, n: snap.computers.length }) : undefined,
-        primary: (
-          <button type="button" className="btn primary" onClick={() => go({ page: "pair" })}>
+        subtitle: snap.ready && !snap.error && !none ? t("devices_subtitle", { online, n: snap.computers.length }) : undefined,
+        primary: none ? undefined : (
+          <button type="button" className="btn primary" onClick={() => go({ page: "pair" })} aria-label={t("pair")} title={`${t("pair")} · ${shortcutLabel("pair", os)}`}>
             <Icon name="add" size={14} />
             <span className="lbl">{t("pair")}</span>
           </button>
@@ -471,31 +501,35 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
     }
     case "approvals": {
       const n = allPending(snap).length;
-      return { title: t("approvals"), subtitle: n > 0 ? t("approvals_subtitle", { n }) : t("approvals_clear") };
+      // nothing waiting: the page's empty state says so, the toolbar does not repeat it
+      return { title: t("approvals"), subtitle: n > 0 ? t("approvals_subtitle", { n }) : undefined };
     }
     case "activity": {
       const shown = activityComputers(snap, route.host);
       const steps = shown.reduce((sum, c) => sum + c.feed.steps.length, 0);
+      // The filter sits over the list it filters (the centre slot), so the second line only counts.
       return {
         title: t("activity"),
-        subtitle: t("activity_subtitle", { scope: route.host ?? t("activity_all"), n: steps }),
-        end: (
-          <span className="nt-select-wrap">
-            <select
-              className="nt-select"
-              aria-label={t("activity_filter")}
-              value={route.host ?? ""}
-              onChange={(e) => go(e.target.value ? { page: "activity", host: e.target.value } : { page: "activity" }, "replace")}
-            >
-              <option value="">{t("activity_all")}</option>
-              {snap.computers.map((c) => (
-                <option key={c.host.name} value={c.host.name}>
-                  {c.host.name}
-                </option>
-              ))}
-            </select>
-            <Icon name="chevD" size={12} />
-          </span>
+        subtitle: steps > 0 ? t(steps === 1 ? "pg_act_steps_one" : "pg_act_steps_many", { n: steps }) : undefined,
+        center: (
+          <div className="gl-cap gl-glass thin gl-act-filter">
+            <span className="nt-select-wrap">
+              <select
+                className="nt-select"
+                aria-label={t("activity_filter")}
+                value={route.host ?? ""}
+                onChange={(e) => go(e.target.value ? { page: "activity", host: e.target.value } : { page: "activity" }, "replace")}
+              >
+                <option value="">{t("activity_all")}</option>
+                {snap.computers.map((c) => (
+                  <option key={c.host.name} value={c.host.name}>
+                    {c.host.name}
+                  </option>
+                ))}
+              </select>
+              <Icon name="chevD" size={12} />
+            </span>
+          </div>
         ),
       };
     }
@@ -516,7 +550,7 @@ function toolbarFor(route: Route, snap: Snapshot, go: (r: Route, how?: "push" | 
         subtitle: <Facts items={computerFacts(c)} />,
         center: <ComputerTabStrip tab={route.tab} onTab={(tab) => go({ page: "computer", host: c.host.name, tab }, "replace")} />,
         primary: canWatch ? (
-          <button type="button" className="btn primary" onClick={() => go({ page: "session", host: c.host.name })}>
+          <button type="button" className="btn primary" onClick={() => go({ page: "session", host: c.host.name })} aria-label={t("watch_live")} title={t("watch_live")}>
             <Icon name="eye" size={14} />
             <span className="lbl">{t("watch_live")}</span>
           </button>

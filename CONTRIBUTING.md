@@ -20,10 +20,12 @@ node --test tools/mcp-install.test.mjs
 node --test tools/desktop-state.test.mjs
 ```
 
-For desktop UI changes, run `npm run dev` in `apps/desktop`, then
-`python3 tools/desktop-ui-smoke.py` from the root. This uses the durable headless Camofox
-`general` session and a labelled browser demo. Reports and screenshots are saved under
-`target/ui-modernization/browser`; they do not replace native Tauri, video or device acceptance.
+For desktop UI changes, run `python3 tools/desktop-ui-smoke.py` from the root with the Camofox
+REST server listening on `http://127.0.0.1:9377`. It starts its own Vite preview with the labelled
+demo backend (or uses `--url`), checks every page in Chinese and English, light and dark, and saves
+screenshots and `report.json` under `target/glass-audit`. `tools/desktop-overlays-smoke.py --url
+<preview>` and `tools/network-ui-smoke.py` cover the sheets and the network page. These browser
+checks do not replace native Tauri, video or device acceptance.
 
 See [Mac development](docs/macos.md), [iPhone development](apps/ios/README.md) and
 [operations](docs/operations.md) for prerequisites and isolated host/controller profiles.

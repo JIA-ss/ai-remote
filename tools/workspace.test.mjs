@@ -810,3 +810,362 @@ test("archive undo preserves events arriving after its filtered row is restored 
   assert.equal(restored.meta.state, "running");
   assert.equal(restored.meta.last_seq, 99);
 });
+
+test("forks nest under the session they came from, in list order, and detached ones stay on top", () => {
+  const a = item("pc", meta({ id: "a" }));
+  const b = item("pc", meta({ id: "b", parent: "a" }));
+  const c = item("pc", meta({ id: "c", parent: "b" }));
+  const d = item("pc", meta({ id: "d", parent: "a" }));
+  const other = item("lab", meta({ id: "e", parent: "a" })); // same id on another host is not a child
+  const orphan = item("pc", meta({ id: "f", parent: "gone" }));
+  const tree = ws.nestFamilies([d, a, other, c, b, orphan]);
+  const shape = (n) => [n.item.key, n.children.map(shape)];
+  assert.deepEqual(plain(tree.map(shape)), [
+    ["pc/a", [["pc/d", []], ["pc/b", [["pc/c", []]]]]],
+    ["lab/e", []],
+    ["pc/f", []],
+  ]);
+  assert.deepEqual(plain(ws.descendants(tree[0]).map((x) => x.key)), ["pc/d", "pc/b", "pc/c"]);
+  assert.equal(ws.inFamily(tree[0], "pc/c"), true);
+  assert.equal(ws.inFamily(tree[0], "lab/e"), false);
+  assert.equal(ws.inFamily(tree[0], null), false);
+  // Moved to the top level: b (with its own fork c) stands alone.
+  const flat = ws.nestFamilies([a, b, c], new Set(["pc/b"]));
+  assert.deepEqual(plain(flat.map(shape)), [["pc/a", []], ["pc/b", [["pc/c", []]]]]);
+  // Forks of each other (no root) are not lost.
+  const x = item("pc", meta({ id: "x", parent: "y" }));
+  const y = item("pc", meta({ id: "y", parent: "x" }));
+  assert.equal(ws.nestFamilies([x, y]).length, 1);
+  assert.deepEqual(plain(ws.forksOf(a, [a, b, c, d, other, orphan]).map((z) => z.key)), ["pc/b", "pc/c", "pc/d"]);
+});
+
+test("hidden forks are summed up: how many, and how many failed, are unread and run", () => {
+  const p = item("pc", meta({ id: "p" }));
+  const kids = [
+    item("pc", meta({ id: "k1", parent: "p", last_status: "failed" })),
+    item("pc", meta({ id: "k2", parent: "p", state: "running" })),
+    item("pc", meta({ id: "k3", parent: "k2" })),
+  ];
+  const [tree] = ws.nestFamilies([p, ...kids]);
+  const dots = { "pc/k1": "failed", "pc/k2": "running", "pc/k3": "unread" };
+  assert.deepEqual(plain(ws.familySummary(tree, (x) => dots[x.key] ?? null)), { count: 3, failed: 1, unread: 1, running: 1 });
+});
+
+test("only Claude Code and Codex sessions that answered and do not run can be forked", () => {
+  const claude = meta({ permission_mode: "bypassPermissions" });
+  assert.equal(ws.forkBlock(claude), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "codex", name: "Codex" })), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "fake-codex", name: "Fake" })), null);
+  assert.equal(ws.forkBlock(meta({ runtime: "opencode", name: "OpenCode" })), "agent");
+  assert.equal(ws.forkBlock({ ...claude, turns: 0 }), "no_turn");
+  assert.equal(ws.forkBlock({ ...claude, state: "running" }), "running");
+  assert.equal(ws.forkBlock({ ...claude, state: "starting" }), "running");
+  assert.equal(ws.forkBlock({ ...claude, archived: true }), "archived");
+  assert.equal(ws.forkBlock({ ...claude, state: "ended" }), null);
+});
+
+test("earlier titles are main search results and say which one matched", () => {
+  const renamed = item("pc", meta({ id: "r", title: "Ship 2.0", previous_titles: ["fix login bug", "Login rework"], last_activity: 10 }));
+  const other = item("pc", meta({ id: "o", title: "Docs", cwd: "/home/me/login", last_activity: 20 }));
+  const fields = (x) => ({ title: x.meta.title, folder: x.meta.cwd, branch: "", computer: x.host, previous: x.meta.previous_titles });
+  assert.deepEqual(plain(ws.searchSessions([other, renamed], "login", fields).map((x) => x.key)), ["pc/r", "pc/o"]);
+  assert.equal(ws.formerTitle("LOGIN", "Ship 2.0", renamed.meta.previous_titles), "Login rework");
+  assert.equal(ws.formerTitle("bug login", "Ship 2.0", renamed.meta.previous_titles), "fix login bug");
+  assert.equal(ws.formerTitle("ship", "Ship 2.0", renamed.meta.previous_titles), null, "the current title matched");
+  assert.equal(ws.formerTitle("login", "Ship", undefined), null);
+});
+
+test("what each host found said is merged newest first, without the sessions already listed", () => {
+  assert.equal(ws.deepQuery("ab"), false);
+  assert.equal(ws.deepQuery(" abc "), true);
+  assert.equal(ws.deepQuery("构建失"), true);
+  const hit = (session, last_activity, text) => ({ session, title: null, first_text: "x", runtime: "claude", name: "Claude Code", cwd: "/w", state: "idle", last_activity, hits: 2, excerpts: [{ role: "user", seq: 3, text }] });
+  const merged = ws.contentHits(
+    [
+      { host: "pc", found: { results: [hit("a", 10, "kiwi one"), hit("b", 30, "kiwi two"), { broken: true }] } },
+      { host: "lab", found: { results: [hit("a", 20, "kiwi lab")] } },
+      { host: "old", found: null },
+    ],
+    new Set(["pc/b"]),
+  );
+  assert.deepEqual(plain(merged.map((h) => [h.key, h.excerpts[0].text, h.hits])), [["lab/a", "kiwi lab", 2], ["pc/a", "kiwi one", 2]]);
+  assert.equal(ws.contentHits([{ host: "pc", found: { results: [hit("a", 1, "x"), hit("b", 2, "y")] } }], new Set(), 1).length, 1);
+});
+
+test("a fork is listed at once under its parent, and an old host's refusal says unsupported", async () => {
+  const calls = [];
+  const store = new ws.WorkspaceStore({
+    call: async (host, tool, args) => {
+      calls.push([host, tool, args]);
+      if (host === "old") throw new Error("Mcp error: invalid arguments: missing field `runtime`");
+      if (tool === "chat_search") return { results: [], truncated: false };
+      return { session: "f1", ticket: "t", id: "f1", runtime: "claude", name: "Claude Code", cwd: "/w", state: "parked", turns: 2, started_at: 5, last_activity: 5, parent: "p1" };
+    },
+  });
+  const r = await store.fork("pc", "p1", "why");
+  assert.deepEqual(plain(r), { session: "f1", ticket: "t" });
+  assert.deepEqual(plain(calls[0]), ["pc", "chat_start", { fork_of: "p1", intent: "why" }]);
+  assert.equal(store.get().hosts.pc.sessions[0].parent, "p1");
+  await assert.rejects(store.fork("old", "p1"), /unsupported/);
+  await store.search("pc", "kiwi");
+  assert.deepEqual(plain(calls.at(-1)), ["pc", "chat_search", { query: "kiwi", limit: 20 }]);
+  store.detach(["pc/f1"], true);
+  assert.deepEqual(plain(store.get().detached), ["pc/f1"]);
+  store.detach(["pc/f1"], false);
+  assert.deepEqual(plain(store.get().detached), []);
+});
+
+test("a poll answered after a newer event on the open conversation keeps that event's fields", async () => {
+  let answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 5, pinned: false })] };
+  const { store } = storeWith({ "new chat_sessions": () => answer }, { computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  // A turn starts and a question arrives on the open conversation (events 8 and 9) ...
+  store.patchSession("new", "a", ws.eventPatch({ t: "state", state: "running", seq: 8 }));
+  store.patchSession("new", "a", ws.eventPatch({ t: "question", seq: 9, ts: 3000 }));
+  // ... while a poll sent before it answers with event 5 (and a pin made on another device).
+  answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 5, pinned: true })] };
+  await store.refreshAll();
+  let x = store.find("new", "a");
+  assert.equal(x.meta.pending, "question");
+  assert.equal(x.meta.state, "running");
+  assert.equal(x.meta.pinned, true);
+  assert.equal(store.dot(x), "awaiting");
+  // The host's next answer is as new as the events here: it wins.
+  answer = { sessions: [meta({ id: "a", state: "idle", last_seq: 12, pending: null, pinned: true })] };
+  await store.refreshAll();
+  x = store.find("new", "a");
+  assert.equal(x.meta.pending, null);
+  assert.equal(x.meta.state, "idle");
+  assert.deepEqual(plain(ws.keepNewerEvents([], [meta({ id: "z" })]).map((m) => m.id)), ["z"]);
+});
+
+// ---- Groups made here, pinned order, density and the metadata line (SB-04 / SB-08 / SB-15 / SB-28 / SB-36 / SB-38 / SB-42)
+
+test("custom groups: names are 1–200 characters, broken saved entries are dropped", () => {
+  assert.equal(ws.cleanGroupName("   "), null);
+  assert.equal(ws.cleanGroupName("  发布   前 检查 "), "发布 前 检查");
+  assert.equal(ws.cleanGroupName("x".repeat(250)).length, 200);
+  const saved = ws.normalizeGroups({
+    groups: [{ id: "a", name: "Release" }, { id: "a", name: "dup" }, { id: "", name: "no id" }, { id: "b", name: "  " }, { id: "c", name: "QA" }, "junk"],
+    members: { "pc/1": "a", "pc/2": "gone", "pc/3": 7, "mac/9": "c" },
+    pinOrder: ["pc/1", "pc/1", 3, "mac/9"],
+  });
+  assert.deepEqual(plain(saved), { groups: [{ id: "a", name: "Release" }, { id: "c", name: "QA" }], members: { "pc/1": "a", "mac/9": "c" }, pinOrder: ["pc/1", "mac/9"] });
+  assert.deepEqual(plain(ws.normalizeGroups(null)), plain(ws.EMPTY_GROUPS));
+});
+
+test("custom groups: create, rename, move sessions of several computers in, out, and undo", () => {
+  let s = ws.EMPTY_GROUPS;
+  const made = ws.createGroup(s, " Release ", "g1");
+  assert.deepEqual(plain(made.group), { id: "g1", name: "Release" });
+  s = made.state;
+  assert.equal(ws.createGroup(s, "", "g2"), null);
+  assert.equal(ws.createGroup(s, "Again", "g1"), null);
+  s = ws.createGroup(s, "QA", "g2").state;
+  assert.equal(ws.renameGroup(s, "g2", "   "), s);
+  assert.equal(ws.renameGroup(s, "g2", "QA"), s);
+  s = ws.renameGroup(s, "g2", "测试");
+  assert.deepEqual(plain(s.groups.map((g) => g.name)), ["Release", "测试"]);
+  // Sessions of two computers share one group.
+  const m = ws.moveToGroup(s, ["pc/1", "mac/1", "pc/1"], "g1");
+  assert.deepEqual(plain(m.moved), [{ key: "pc/1", from: null }, { key: "mac/1", from: null }]);
+  s = m.state;
+  const again = ws.moveToGroup(s, ["pc/1"], "g1");
+  assert.equal(again.state, s);
+  assert.deepEqual(plain(again.moved), []);
+  assert.deepEqual(plain(ws.moveToGroup(s, ["pc/1"], "nope").moved), []);
+  const out = ws.moveToGroup(s, ["mac/1", "pc/2"], "g2");
+  assert.deepEqual(plain(out.moved), [{ key: "mac/1", from: "g1" }, { key: "pc/2", from: null }]);
+  const undone = ws.undoMove(out.state, out.moved);
+  assert.deepEqual(plain(undone.members), { "pc/1": "g1", "mac/1": "g1" });
+  const removed = ws.moveToGroup(s, ["pc/1"], null);
+  assert.deepEqual(plain(removed.state.members), { "mac/1": "g1" });
+  // At most 100 move in one go (SB-08).
+  const many = Array.from({ length: 130 }, (_, i) => `pc/${i}`);
+  assert.equal(ws.moveToGroup(s, many, "g2").moved.length, ws.MOVE_MAX);
+});
+
+test("deleting a group sends its sessions back to Ungrouped; undo puts group, place and members back", () => {
+  let s = ws.createGroup(ws.EMPTY_GROUPS, "A", "a").state;
+  s = ws.createGroup(s, "B", "b").state;
+  s = ws.createGroup(s, "C", "c").state;
+  s = ws.moveToGroup(s, ["h/1", "h/2"], "b").state;
+  s = ws.moveToGroup(s, ["h/3"], "c").state;
+  const { state, undo } = ws.deleteGroup(s, "b");
+  assert.deepEqual(plain(state.groups.map((g) => g.id)), ["a", "c"]);
+  assert.deepEqual(plain(state.members), { "h/3": "c" });
+  assert.deepEqual(plain(undo), { group: { id: "b", name: "B" }, index: 1, members: ["h/1", "h/2"] });
+  // Meanwhile h/2 went elsewhere: it stays there.
+  const moved = ws.moveToGroup(state, ["h/2"], "a").state;
+  const back = ws.restoreGroup(moved, undo);
+  assert.deepEqual(plain(back.groups.map((g) => g.id)), ["a", "b", "c"]);
+  assert.deepEqual(plain(back.members), { "h/3": "c", "h/2": "a", "h/1": "b" });
+  assert.equal(ws.restoreGroup(back, undo), back);
+  assert.deepEqual(plain(ws.deleteGroup(s, "zz").undo), null);
+});
+
+test("the custom grouping draws every group in its order, empty ones too, then the rest", () => {
+  let s = ws.createGroup(ws.EMPTY_GROUPS, "Later", "l").state;
+  s = ws.createGroup(s, "Now", "n").state;
+  s = ws.moveToGroup(s, ["pc/b"], "n").state;
+  s = { ...s, members: { ...s.members, "pc/x": "deleted" } };
+  const items = ["pc/a", "pc/b", "mac/c", "pc/x"].map((key) => ({ key }));
+  const { sections, rest } = ws.customSections(items, s);
+  assert.deepEqual(plain(sections.map((x) => [x.group.id, x.items.map((i) => i.key)])), [["l", []], ["n", ["pc/b"]]]);
+  assert.deepEqual(plain(rest.map((i) => i.key)), ["pc/a", "mac/c", "pc/x"]);
+  // SB-15: a group dragged (or ⌥↑) before another; nothing changes for its own place.
+  assert.deepEqual(plain(ws.moveGroup(s, "n", 0).groups.map((g) => g.id)), ["n", "l"]);
+  assert.equal(ws.moveGroup(s, "l", 0), s);
+  assert.equal(ws.moveGroup(s, "l", 1), s);
+  assert.deepEqual(plain(ws.moveGroup(s, "l", 2).groups.map((g) => g.id)), ["n", "l"]);
+  assert.equal(ws.rowsBeforeMore("custom"), 5);
+  assert.equal(ws.normalizeList({ groupBy: "custom" }).groupBy, "custom");
+});
+
+test("drag order: a key goes before the row at the insertion line; a selection moves together", () => {
+  const k = ["a", "b", "c", "d"];
+  assert.deepEqual(plain(ws.moveKey(k, "a", 0)), k);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 1)), k);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 2)), ["b", "a", "c", "d"]);
+  assert.deepEqual(plain(ws.moveKey(k, "a", 4)), ["b", "c", "d", "a"]);
+  assert.deepEqual(plain(ws.moveKey(k, "d", 0)), ["d", "a", "b", "c"]);
+  assert.deepEqual(plain(ws.moveKey(k, "c", 99)), ["a", "b", "d", "c"]);
+  // ⌥↓ is "before the row two below", ⌥↑ "before the row above".
+  assert.deepEqual(plain(ws.moveKey(k, "b", 1 + 2)), ["a", "c", "b", "d"]);
+  assert.deepEqual(plain(ws.moveKey(k, "b", 1 - 1)), ["b", "a", "c", "d"]);
+  // A newly pinned key joins at the line.
+  assert.deepEqual(plain(ws.moveKey(k, "new", 1)), ["a", "new", "b", "c", "d"]);
+  assert.deepEqual(plain(ws.placeKeys(k, ["d", "a"], 2)), ["b", "d", "a", "c"]);
+  assert.deepEqual(plain(ws.placeKeys(k, ["x", "b"], 0)), ["x", "b", "a", "c", "d"]);
+  // A remembered order comes first; the rest keep their order after it (SB-15 / SB-42).
+  const items = ["p", "q", "r", "s"].map((key) => ({ key }));
+  assert.deepEqual(plain(ws.orderBy(items, ["r", "gone", "p"], (x) => x.key).map((x) => x.key)), ["r", "p", "q", "s"]);
+  assert.equal(ws.orderBy(items, [], (x) => x.key), items);
+});
+
+test("the store keeps groups on this device across a remount, and asks no host about them", async () => {
+  const storage = makeStorage();
+  const { store, calls } = storeWith({ "new chat_sessions": { sessions: [meta({ id: "a" })] } }, { storage, computers: [{ name: "new", online: true, local: false }] });
+  await store.refreshAll();
+  const made = ws.createGroup(store.get().groups, "Ship", "g");
+  store.setGroups(ws.moveToGroup(made.state, ["new/a", "old/z"], "g").state);
+  assert.equal(store.groupOf("new/a").name, "Ship");
+  assert.equal(store.groupOf("nobody/x"), null);
+  const rev = store.get().rev;
+  store.setGroups(store.get().groups);
+  assert.equal(store.get().rev, rev);
+  assert.deepEqual(plain(JSON.parse(storage.store.get("ai-remote.ws.groups")).members), { "new/a": "g", "old/z": "g" });
+  assert.deepEqual(plain(calls.map((c) => c[1])), ["chat_sessions"]);
+  const again = storeWith({}, { storage, computers: [] }).store;
+  assert.deepEqual(plain(again.get().groups.groups), [{ id: "g", name: "Ship" }]);
+  assert.equal(again.groupOf("old/z").id, "g");
+});
+
+test("density and the metadata line: compact by default, comfortable 30 px; unknown values take the default", () => {
+  assert.deepEqual(plain(ws.normalizeDisplay(null)), { density: "compact", meta: false });
+  assert.deepEqual(plain(ws.normalizeDisplay({ density: "huge", meta: "yes" })), { density: "compact", meta: false });
+  assert.deepEqual(plain(ws.normalizeDisplay({ density: "comfortable", meta: true })), { density: "comfortable", meta: true });
+  assert.equal(ws.isDefaultDisplay(ws.DEFAULT_DISPLAY), true);
+  assert.equal(ws.isDefaultDisplay({ density: "comfortable", meta: false }), false);
+  assert.equal(ws.DENSITY.compact.row, 28);
+  assert.equal(ws.DENSITY.comfortable.row, 30);
+  assert.equal(ws.DENSITY.compact.gap, 2);
+});
+
+test("the metadata line: blocked first, else branch, folder unless the header names it, and the computer", () => {
+  const m = meta({ cwd: "/home/me/app", branch: " feat/x " });
+  assert.deepEqual(plain(ws.metaLine(m, {})), { blocked: null, branch: "feat/x", folder: "app", host: null });
+  assert.deepEqual(plain(ws.metaLine(m, { groupFolder: "/home/me/app/" })), { blocked: null, branch: "feat/x", folder: null, host: null });
+  assert.deepEqual(plain(ws.metaLine(m, { host: "lab-pc" })), { blocked: null, branch: "feat/x", folder: "app", host: "lab-pc" });
+  const waiting = meta({ pending: "permission", branch: "main" });
+  assert.deepEqual(plain(ws.metaLine(waiting, {})), { blocked: "permission", branch: null, folder: null, host: null });
+  // Under "Needs you" the header says it already; an ended session waits for nobody.
+  assert.equal(ws.metaLine(waiting, { underBlocked: true }).blocked, null);
+  assert.equal(ws.metaLine({ ...waiting, state: "ended" }, {}).blocked, null);
+  assert.equal(ws.metaLine(meta({ cwd: "/home/me/app", branch: null }), { groupFolder: "/home/me/app" }), null);
+});
+
+test("the Older bucket's bulk archive counts sessions a week or more without activity, not archived", () => {
+  const now = new Date(2026, 9, 26, 12).getTime();
+  const day = 86_400_000;
+  const xs = [
+    item("pc", meta({ id: "fresh", last_activity: now - 6 * day })),
+    item("pc", meta({ id: "old", last_activity: now - 8 * day })),
+    item("mac", meta({ id: "older", last_activity: now - 30 * day })),
+    item("mac", meta({ id: "gone", last_activity: now - 30 * day, archived: true })),
+  ];
+  assert.deepEqual(plain(ws.olderSessions(xs, now).map((x) => x.meta.id)), ["old", "older"]);
+  assert.equal(ws.OLDER_DAYS, 7);
+});
+
+test("model menu (NS-32): Claude Code's aliases by name, other agents none; typed models newest first", () => {
+  assert.deepEqual(plain(ws.modelPresets("claude-stream-json")).map((p) => p.id), ["opus", "sonnet", "haiku"]);
+  assert.deepEqual(plain(ws.modelPresets("codex-app-server")), []);
+  assert.deepEqual(plain(ws.modelPresets(undefined)), []);
+  assert.equal(ws.modelLabel("opus", "claude-stream-json"), "Opus");
+  assert.equal(ws.modelLabel(" claude-sonnet-4-5 ", "claude-stream-json"), "claude-sonnet-4-5");
+  assert.equal(ws.modelLabel("opus", "codex-app-server"), "opus", "an alias means nothing to another agent");
+  assert.equal(ws.modelLabel("", "claude-stream-json"), "", "empty is the agent's default");
+  assert.deepEqual(plain(ws.rememberModel(["a", "b"], "c", "codex-app-server")), ["c", "a", "b"]);
+  assert.deepEqual(plain(ws.rememberModel(["a", "b", "c"], "b", "codex-app-server")), ["b", "a", "c"], "used again moves to the front");
+  assert.deepEqual(plain(ws.rememberModel(["a"], "sonnet", "claude-stream-json")), ["a"], "an alias is in the menu already");
+  assert.deepEqual(plain(ws.rememberModel(["a"], "  ", "codex-app-server")), ["a"], "nothing typed, nothing kept");
+  assert.deepEqual(plain(ws.rememberModel(["1", "2", "3", "4", "5"], "6", "codex-app-server")), ["6", "1", "2", "3", "4"], "at most five");
+});
+
+test("models and effort levels (NS-29, NS-32, NS-33): what is offered, the levels a model takes, what a place remembers", () => {
+  const claude = "claude-stream-json";
+  const codex = "codex-app-server";
+  const offered = [
+    { id: "opus", name: "Opus 5.5", description: "Best", efforts: ["low", "medium", "high", "xhigh", "max"], default: true },
+    { id: "haiku", name: "Haiku 5.5", efforts: ["low", "high"] },
+    { id: "old", name: "Haiku 4.5" },
+  ];
+  // What the agent offered; Claude Code's aliases until it has said; nothing for others.
+  assert.deepEqual(plain(ws.modelChoices(offered, claude)).map((m) => m.id), ["opus", "haiku", "old"]);
+  assert.deepEqual(plain(ws.modelChoices(null, claude)).map((m) => m.name), ["Opus", "Sonnet", "Haiku"]);
+  assert.deepEqual(plain(ws.modelChoices([], codex)), []);
+  assert.deepEqual(plain(ws.effortsFor(ws.modelChoices(null, claude), "haiku", claude)), plain(ws.EFFORTS), "an alias takes every level");
+  // The default entry, by id; levels as the agent said them, all of Claude Code's for a model it did not describe.
+  assert.equal(ws.modelEntry(offered, "").id, "opus");
+  assert.equal(ws.modelEntry(offered, " haiku ").id, "haiku");
+  assert.equal(ws.modelEntry(offered, "x"), null);
+  assert.deepEqual(plain(ws.effortsFor(offered, "", claude)), ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(plain(ws.effortsFor(offered, "old", claude)), [], "a model without levels takes none");
+  assert.deepEqual(plain(ws.effortsFor(offered, "claude-x", claude)), plain(ws.EFFORTS), "typed by hand: Claude Code's levels");
+  assert.deepEqual(plain(ws.effortsFor([], "gpt-x", codex)), [], "Codex: only what it said");
+  // NS-33: a level the new model does not take is not carried over.
+  assert.equal(ws.keepEffort(offered, "haiku", "high", claude), "high");
+  assert.equal(ws.keepEffort(offered, "haiku", "xhigh", claude), null);
+  assert.equal(ws.keepEffort(offered, "old", "low", claude), null);
+  assert.equal(ws.keepEffort(offered, "opus", null, claude), null);
+  // The chip's name: the model's, the default's for "", an alias's or the id typed.
+  assert.equal(ws.modelName(offered, "", claude), "Opus 5.5");
+  assert.equal(ws.modelName(offered, "haiku", claude), "Haiku 5.5");
+  assert.equal(ws.modelName([], "sonnet", claude), "Sonnet");
+  assert.equal(ws.modelName([], "", claude), "", "the default when the agent did not say");
+  assert.equal(ws.modelName([], "gpt-x", codex), "gpt-x");
+
+  // NS-29: by computer, folder and agent; the newest places kept.
+  const key = ws.placeModelKey("pc", "/w/app/", "claude");
+  assert.equal(key, ws.placeModelKey("pc", "/w/app", "claude"), "a trailing separator is the same folder");
+  assert.notEqual(key, ws.placeModelKey("pc", "/w/app", "codex"));
+  let saved = ws.rememberPlaceModel({}, key, "haiku", "high", 10);
+  saved = ws.rememberPlaceModel(saved, ws.placeModelKey("pc", "/w/b", "claude"), "", null, 20, 1);
+  assert.deepEqual(Object.keys(saved), [ws.placeModelKey("pc", "/w/b", "claude")], "at most the newest one");
+  saved = ws.rememberPlaceModel({}, key, " haiku ", "high", 10);
+  const place = { host: "pc", cwd: "/w/app", runtime: "claude", protocol: claude };
+  assert.deepEqual(plain(ws.placeDefaults(saved, [], place, offered)), { model: "haiku", effort: "high" });
+  // What a place remembers loses a level its model no longer takes.
+  assert.deepEqual(plain(ws.placeDefaults(ws.rememberPlaceModel({}, key, "old", "high", 1), [], place, offered)), { model: "old", effort: null });
+  // A folder without a record: its latest session with this agent, while that model is still offered.
+  const item = (over) => ({ host: "pc", key: `pc/${over.id}`, meta: { runtime: "claude", cwd: "/w/app", started_at: 1, ...over } });
+  const items = [item({ id: "a", model: "opus", effort: "low", started_at: 5 }), item({ id: "b", model: "haiku", effort: "high", started_at: 9 }),
+    item({ id: "c", model: "sonnet", runtime: "codex", started_at: 20 })];
+  assert.deepEqual(plain(ws.placeDefaults({}, items, place, offered)), { model: "haiku", effort: "high" });
+  assert.deepEqual(plain(ws.placeDefaults({}, [item({ id: "d", model: "gone", effort: "low", started_at: 30 })], place, offered)), { model: "", effort: null },
+    "a model no longer offered is not taken");
+  assert.deepEqual(plain(ws.placeDefaults({}, [], place, offered)), { model: "", effort: null });
+  // A `model` event changes the open session's metadata.
+  assert.deepEqual(plain(ws.eventPatch({ t: "model", seq: 4, model: "haiku", effort: null })), { last_seq: 4, model: "haiku", effort: null });
+});

@@ -1,9 +1,64 @@
-/* The live-view rail reuses the workspace's conversations. Stage controls stay opaque: no blur is
-   composited over the video. */
-.nt-session .nt-rail > .nt-chat { margin-top: 0; }
-.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow-y: auto; margin-bottom: 12px; }
-.nt-chat-approval .decide { padding: 12px; }
+/* glass/stage.css: the live view. One screen (toolbar strip + stage) and the complete workspace
+   beside it, split by a draggable separator.
 
+   1. Layout (any material): the split, the screen's toolbar in narrow columns, immersive full screen.
+   2. Chrome around the stage (material on): the screen column sits on the content tint like every
+      other page; the separator is a hairline; the workspace pane carries no second edge.
+   3. Stage glass (material on): everything that floats over the picture (top / bottom bars, the
+      pending banner, the HUD, the handle, connection cards, notices and errors, takeover options).
+      A dark translucent fill, a top-bright highlight rim, one soft shadow, capsule radii, and NO
+      backdrop-filter: a blur over a 75 fps picture is recomputed every frame, and WebKit dropped one
+      of two blurred bars while their transforms animated (AGENTS.md, 2026-10-21). The fill is the
+      same in both themes because the stage is always dark; secondary text is a lighter grey than the
+      app's --text-2 so it keeps 4.5:1 over a white remote screen (derived: #B8B8BF on
+      rgb(24 24 26 / .80) over #FFF is 4.8:1).
+
+   With data-material="none" sections 2 and 3 do not apply: the bars stay today's opaque native.css look. */
+
+/* ==== 1. Layout (any material) ==== */
+
+/* The live-view rail reuses the workspace's conversations. */
+.nt-session .nt-rail > .nt-chat { margin-top: 0; }
+.nt-chat-approval { flex: 0 1 auto; min-height: 0; max-height: 60%; overflow-y: auto; margin-bottom: 12px; }
+.nt-chat-approval .decide { padding: 12px; }
+/* The request above the live workspace. Kept whole it is about 430 px tall, so in a window up to
+   900 px high it is compact by default: who asks, the command (three lines at most), the two answers
+   and the time left, about 210 px; the question repeats the line above it, and the agent's reason,
+   the Mac note and "Tell the agent instead" are behind Details (LiveWorkspace.tsx). Its answers are
+   never pushed into an inner scroll. On the stage, the banner that repeats the same request goes
+   while the card shows (immersive full screen hides the card, and the banner comes back). */
+.nt-chat-approval .gl-appr-more { display: none; flex: none; height: 22px; margin-left: 10px; padding: 0 9px; border-radius: 11px;
+  font: inherit; font-size: 12px; color: var(--text-1); background: var(--fill-1); }
+.nt-chat-approval .gl-appr-more:hover { background: var(--fill-2); }
+.nt-chat-approval .decide .hdr .w + .gl-appr-more { margin-left: auto; }
+.nt-chat-approval .gl-appr-more:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+@media (max-height: 900px) {
+  .nt-live-workspace .nt-chat-approval { max-height: 70%; }
+  .nt-live-workspace .nt-chat-approval .gl-appr-more { display: inline-flex; align-items: center; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide :is(.q, .says, .prov, .tell) { display: none; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .who { margin-top: 8px; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .payload { margin-top: 8px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .acts { margin-top: 10px; }
+  .nt-live-workspace .nt-chat-approval:not(.gl-full) .decide .ft { margin-top: 8px; padding-top: 8px; }
+}
+/* Requests waiting on the other computers: one amber line at the top of the pane (LiveWorkspace.tsx),
+   a button to Approvals. Content-plane paint, no blur. */
+.nt-live-workspace .gl-live-attn { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; margin: 8px 8px 0; padding: 6px 10px 6px 12px;
+  border-radius: var(--r-card); font: inherit; font-size: 12px; line-height: 16px; text-align: left; color: var(--text-1);
+  background: var(--you-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--you-stroke) 32%, transparent); }
+.nt-live-workspace .gl-live-attn:hover { background: color-mix(in srgb, var(--you) 22%, transparent); }
+.nt-live-workspace .gl-live-attn:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+.nt-live-workspace .gl-live-attn-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--you); }
+.nt-live-workspace .gl-live-attn-tx { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nt-live-workspace .gl-live-attn-go { flex: none; font-weight: 600; color: var(--you-text); }
+.nt-live-workspace .gl-live-attn + .nt-chat-approval { padding-top: 8px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-live-workspace .gl-live-attn { border-radius: var(--gl-r-card); }
+.nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-anchor:has(> .nt-wait) { display: none; }
+/* (the HUD then keeps its own place instead of stepping below a banner that is not there) */
+.nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-stage .nt-hud { top: 12px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-live-workspace:not(.immersive):has(> .nt-workspace-pane > .nt-chat-approval) > .nt-session .nt-stage .nt-hud { top: 20px; }
+
+/* Takeover options: a small panel over the stage, above the raised bottom bar. */
 .nt-drive-options { position: absolute; z-index: 9; right: 12px; bottom: 72px; width: min(320px, calc(100% - 24px));
   max-height: calc(100% - 96px); overflow-y: auto; box-sizing: border-box; padding: 14px; border-radius: 12px;
   background: var(--canvas); border: 1px solid var(--stroke-2); color: var(--text-1); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
@@ -21,7 +76,9 @@
 .nt-live-workspace > .nt-session { width: auto; height: auto; min-width: 0; min-height: 0; container: live-screen / inline-size; }
 .nt-live-workspace > .nt-session > .tb.gl-toolbar { position: relative; padding-left: 16px; gap: 8px; }
 [data-os="mac"] .nt-live-workspace > .nt-session > .tb.gl-toolbar { padding-left: 84px; }
-.nt-live-workspace .gl-titles { min-width: 64px; flex: 1; overflow: hidden; }
+/* The title and its facts take their own width and give way only when the strip is short; the
+   empty drag area takes the rest (sharing it half and half cut the facts off in wide columns). */
+.nt-live-workspace .gl-titles { min-width: 64px; flex: 0 1 auto; overflow: hidden; }
 .nt-live-workspace .nt-session .nt-tb-end { min-width: 0; }
 .nt-live-workspace .nt-session .nt-tb-end .nt-select { width: 128px; max-width: 128px; text-overflow: ellipsis; }
 .nt-live-workspace .nt-session .gl-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -36,13 +93,171 @@
 .nt-live-workspace.immersive > .nt-workspace-pane, .nt-live-workspace.immersive > .nt-live-divider,
 .nt-live-workspace:has(> .nt-session.immersive) > .nt-workspace-pane,
 .nt-live-workspace:has(> .nt-session.immersive) > .nt-live-divider { display: none; }
+/* A narrow screen column: the controls take a second line, as one capsule at its right end (it
+   keeps hugging its controls instead of stretching into an empty glass bar). */
 @container live-screen (max-width: 560px) {
   .nt-live-workspace > .nt-session > .tb.gl-toolbar,
   [data-os="mac"] .nt-live-workspace > .nt-session > .tb.gl-toolbar {
     flex-wrap: wrap; height: auto; min-height: 48px; padding: 0 12px 8px;
   }
   [data-os="mac"] .nt-live-workspace .nt-session .gl-nav { margin-left: 68px; }
-  .nt-live-workspace .nt-session .nt-tb-end { flex-basis: 100%; flex-wrap: wrap; justify-content: flex-end; height: auto; min-height: 32px; }
+  .nt-live-workspace .nt-session .nt-tb-end { flex: 0 1 auto; max-width: 100%; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; height: auto; min-height: 32px; }
   .nt-live-workspace .nt-session .nt-tb-end .nt-select { width: clamp(72px, 22cqw, 128px); }
   .nt-live-workspace .nt-session .demo-badge { display: none; }
 }
+/* The pending banner is centred at the top of the stage in the window: the HUD steps below it
+   instead of being covered by it. The banner's anchor is max-content wide and already caps itself at
+   the stage width; a percentage max-width on the banner cycles with it and cut its message short. */
+.nt-session:not(.immersive) .nt-stage:has(.nt-wait) .nt-hud { top: 60px; }
+.nt-stage .nt-anchor > .nt-wait { max-width: none; }
+
+/* ==== 2. Chrome around the stage (material on) ==== */
+
+/* The screen column is a page: its toolbar strip sits on the content tint; the stage below is opaque. */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace > .nt-session { background: var(--gl-content); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace > .nt-session > .tb { border-bottom: 0; }
+/* The separator: the same tint with a hairline down its middle, the accent while it is dragged. */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-divider { background: var(--gl-content); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-divider::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--gl-sep);
+  transition: background-color var(--gl-dur) ease;
+}
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.nt-live-divider:hover, .nt-live-divider:focus-visible, .nt-live-workspace.resizing > .nt-live-divider) { background: var(--gl-content); }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win :is(.nt-live-divider:hover, .nt-live-divider:focus-visible, .nt-live-workspace.resizing > .nt-live-divider)::before { left: 1px; width: 3px; border-radius: 2px; background: var(--agent); }
+/* The workspace pane: the separator already draws the edge. A pending approval above the workspace
+   sits on the content tint, its card one level up (surfaces.css paints .decide). */
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace > .nt-workspace-pane { box-shadow: none; }
+:root:is([data-material="native"], [data-material="preview"]) .gl-win .nt-live-workspace .nt-chat-approval { background: var(--gl-content); box-shadow: inset 0 calc(-1 * var(--gl-hair)) 0 var(--gl-sep); }
+
+/* Sheets are centred on the whole window, so in the live view they cover part of the picture: no
+   blur there (it would re-blur the video every frame), an opaque fill with the same shape, ring, rim
+   and shadow. The chat's file preview does the same (chat.css). */
+:root:is([data-material="native"], [data-material="preview"]):has(.nt-live-workspace) .cdlg.gl-sheet {
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  background: rgb(var(--gl-g-rgb));
+}
+
+/* ==== 3. Stage glass (material on): no backdrop-filter anywhere in here ==== */
+
+/* the shared surface: bars, the pending banner, cards, notices, takeover options */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage :is(.nt-bar, .nt-wait, .nt-stagecard, .nt-drive-options),
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice {
+  --text-1: #F2F2F3; --text-2: #B8B8BF; --text-3: #A0A0A8; --fill-1: rgb(255 255 255 / .10); --fill-2: rgb(255 255 255 / .16);
+  --stroke-1: rgb(255 255 255 / .10); --stroke-2: rgb(255 255 255 / .16); --you: #F0B33A;
+  color-scheme: dark;
+  color: var(--text-1);
+  background: var(--gl-stage-glass);
+  box-shadow: var(--gl-stage-shadow);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+/* the rim: 1 px, bright along the top edge, drawn as a masked ring over the edge only (Windows has
+   no rim token: an inner 1 px stroke instead, below) */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage :is(.nt-bar, .nt-wait, .nt-stagecard, .session-error)::before,
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: var(--gl-stage-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage :is(.nt-bar, .nt-wait, .nt-stagecard, .nt-drive-options),
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage > .nt-notice {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08), var(--gl-stage-shadow);
+}
+:root[data-os="windows"] .nt-stage :is(.nt-bar, .nt-wait, .nt-stagecard, .session-error)::before,
+:root[data-os="windows"] .nt-stage > .nt-notice::before { display: none; }
+
+/* the bars: 40 high, capsule, 32 px controls inside (radius 20 − 4) */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar {
+  height: 40px; gap: 8px; padding: 0 4px 0 14px; border-radius: var(--gl-r-stagebar);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar.top { gap: 6px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar :is(.title, .nt-status) { font-size: 13px; line-height: 18px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .facts { color: var(--text-2); font-size: 12px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .vr { height: 20px; margin: 0 4px; background: var(--stroke-2); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .btn {
+  height: 32px; padding: 0 14px; gap: 6px; border-radius: calc(var(--gl-r-stagebar) - 4px); font-size: 13px; font-weight: 500;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .btn:not(.primary) { background: var(--fill-1); color: var(--text-1); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .btn:not(.primary):not(:disabled):hover { background: var(--fill-2); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .nt-iconbtn { width: 32px; height: 32px; border-radius: calc(var(--gl-r-stagebar) - 4px); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar select.nt-select {
+  height: 32px; padding: 0 28px 0 12px; border-radius: calc(var(--gl-r-stagebar) - 4px); font-size: 12px; background: var(--fill-1);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar select.nt-select:hover { background: var(--fill-2); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar .nt-select-wrap > svg { right: 10px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-bar :is(.btn, .nt-iconbtn):focus-visible { outline: 2px solid var(--agent); outline-offset: -2px; }
+
+/* the pending banner: the same bar, an amber pointer and label instead of a stripe; Review is the
+   one tinted action on it */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-wait {
+  height: 40px; gap: 10px; padding: 0 4px 0 14px; border-radius: var(--gl-r-stagebar); font-size: 13px;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-wait .t { color: var(--text-2); font-variant-numeric: tabular-nums; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-wait .b {
+  height: 32px; padding: 0 14px; border-radius: calc(var(--gl-r-stagebar) - 4px); background: var(--you); color: var(--you-on); font-size: 13px;
+  transition: background-color var(--dur-small) ease;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-wait .b:hover { background: color-mix(in srgb, var(--you) 88%, #fff); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-wait .b:focus-visible { outline: 2px solid #F2F2F3; outline-offset: 2px; }
+
+/* the HUD: a small capsule; its centre lines up with a 40 px bar beside it */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-hud {
+  top: 20px; right: 16px; height: 24px; padding: 0 10px; border-radius: 12px;
+  background: var(--gl-stage-glass); box-shadow: 0 0 0 var(--gl-hair) rgb(255 255 255 / .12), 0 2px 8px rgb(0 0 0 / .30);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-hud :is(.u, .dim) { color: #B8B8BF; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-session:not(.immersive) .nt-stage:has(.nt-wait) .nt-hud { top: 60px; }
+
+/* the handle while you drive: never moves or resizes, only paints */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-handle {
+  background: rgb(24 24 26 / .55); box-shadow: 0 0 0 var(--gl-hair) rgb(255 255 255 / .14);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-handle:hover { background: var(--gl-stage-glass); }
+
+/* connecting / offline cards, "video ended" */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-stagecard { border-radius: var(--gl-r-sheet); padding: 20px 24px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-stagecard .bd { color: var(--text-2); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage :is(.nt-stagecard, .stream-ended) .btn {
+  height: 32px; padding: 0 16px; border-radius: calc(var(--gl-r-stagebar) - 4px); background: rgb(255 255 255 / .12); color: #F2F2F3; font-size: 13px; font-weight: 500;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage :is(.nt-stagecard, .stream-ended) .btn:not(:disabled):hover { background: rgb(255 255 255 / .18); }
+
+/* notices and errors over the picture: capsules (they wrap when long) */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice {
+  min-height: 32px; box-sizing: border-box; padding: 6px 14px; border-radius: 16px; align-items: center;
+  font-size: 12px; line-height: 20px; color: #E8E8ED; white-space: normal;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice:has(> .btn) { padding: 4px 4px 4px 14px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice .btn {
+  height: 24px; padding: 0 10px; border-radius: 12px; background: var(--fill-1); color: var(--text-1); font-size: 12px; white-space: nowrap;
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage > .nt-notice .btn:not(:disabled):hover { background: var(--fill-2); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .session-error {
+  padding: 6px 14px; border-radius: 16px; line-height: 20px; background: rgb(58 29 31 / .92); color: #FFD5D5; box-shadow: var(--gl-stage-shadow);
+}
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage .session-error { box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08), var(--gl-stage-shadow); }
+
+/* takeover options: a small panel over the stage, not a theme surface. It holds a text field and
+   paragraphs, so the fill is the denser end of the stage glass (the picture's edges would otherwise
+   run through the text). It scrolls when the stage is short, so its rim is drawn with inset shadows
+   (an absolutely placed ring would scroll away). */
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options {
+  border: 0; border-radius: 16px; padding: 14px 16px 16px; background: rgb(24 24 26 / .88);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .06), var(--gl-stage-shadow);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options-hd strong { font-weight: 600; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options .nt-iconbtn { border-radius: 14px; }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options textarea {
+  border: 0; border-radius: var(--gl-r-field); padding: 8px 10px; background: rgb(0 0 0 / .28); color: var(--text-1);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .12);
+}
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options textarea:focus-visible { box-shadow: 0 0 0 2px var(--agent); }
+:root:is([data-material="native"], [data-material="preview"]) .nt-stage .nt-drive-options p { color: var(--text-2); }
+
+/* Windows: Fluent radii (bar 8, controls 4) */
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage :is(.nt-hud, .nt-handle, .nt-drive-options .nt-iconbtn) { border-radius: 4px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage :is(.nt-drive-options, .session-error),
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage > .nt-notice { border-radius: 8px; }
+:root:is([data-material="native"], [data-material="preview"])[data-os="windows"] .nt-stage > .nt-notice .btn { border-radius: 4px; }

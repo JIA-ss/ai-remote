@@ -2,17 +2,36 @@
 
 给接手开发的人和 coding agent 的工作笔记。用户文档在 `README*.md` 和 `docs/`；这里只记**当前在做什么、为什么这么做、下一步是什么、踩过的坑**。每次推进后更新本文件，并在提交说明里写清思路。
 
+## 主干 feature 整合（2026-10-28）
+
+- 当前主检出已从 `feat/ipad-12-9` 切到 `main`，先快进远端 `a4d6c58`，再整合 `feat/desktop-glass-finish`（`03df6bb`）、`feat/workspace-stage3` / `feat/codex-model-chips`（同一个 `b6350a8`）与 `fix/e2e-lan-only`（`e612dd6`）。新能力包含分组/拖拽/密度、分叉树/曾用名/正文搜索、三类适配器的模型与推理强度，以及 Codex 输入栏选择器。
+- 旧工作区原始 33 文件已完整保存在 stash `6641ee8429553bbe3323bfb35a99174365a61779`，基准另留 `codex/pre-main-integration-20261028`；早先的 `97dc84f` 备份保留。旧页面与玻璃实现由已整合的新版本承接，独有的启动门闸、fieldset 锁定、焦点返回/短窗菜单、搜索键盘归属、复制与保存反馈、撤销配对失败处理、远程浮条焦点及 debug 验收唤醒按行为合回；保留新版分组/模型/嵌入工作区，未用旧文件整份覆盖。
+- 已核对其他 8 个 worktree 均洁净。旧 `verify/codex-ios-layout` 的 9 个提交已由 `e425dda` 合并为正式 iOS 修复；早期导航/Claude/批量/MCP 分支也已有改写或整合提交进入主干，不再把旧实验与历史副本重新叠加。原始分支和 stash 都保留。
+- 验收证据位于 `target/main-integration-20261028/`（不入库）。Camofox 改复用命名 `ai-remote-ui` fixture session，只关闭本轮 tab；全矩阵 1885 项通过，127 张布局截图已通过 7 张联系表检查。此项只证明演示页面布局、着色与计算样式，不证明原生毛玻璃、真实视频或物理输入。
+- 本机静态门槛：fmt、全工作区/all-targets Clippy、TypeScript、前端构建通过；Rust 全量 455 通过 / 11 忽略，Node 全量 451 项中 450 通过 / 1 平台跳过。新增组件回归实测搜索/审批期间的快捷键归属、失焦恢复和撤销配对失败留在原步骤且可重试。原生工作区首轮 235 项通过；随后审查将新增分叉归档确认接入公共 Modal，补 Tab/Shift+Tab 约束、背景 New 拦截及相应原生断言，新增原生断言又抓到共享弹窗 portal 点击会清掉嵌入工作区键盘归属，关闭后 body 上的快捷键失效；现仅忽略公共 sheet 内的焦点/指针归属切换，仍由 inert 拦住弹窗期间的后台键，真实画面点击照常切换。原 235 项通过和随后失败轮次分开保留，最终结果见 PR。最后涉及的 activity/pair/settings-device 又经 Camofox 326 项通过。最终原生链路和两平台 CI 的准确终态记录在 [PR #57](https://github.com/JIA-ss/ai-remote/pull/57) 的验证段及本地证据目录；没有安装正式应用或迁移用户配置。历史实测与未测边界保留，不能把整合等同于文档里的全部长期路线图完成。
+
 ## MCP 公开目录入口（2026-10-24）
 
 - 中英文 README 首屏并排展示官方 mcpservers.org 收录徽章与既有 M8ven 发布者徽章；导航与 MCP 接入段指向项目的真实公开目录页面。
 - 沿用已有深浅品牌插图、客户端配置和权限说明，保留 Pre-alpha、未签名分发与平台 WIP / 验收边界；目录收录不扩大功能或安全保证。
 - 本次仅文档更新；已核验徽章 SVG 的 HTTP 200，公开项目页由浏览器另行验收。主干仍通过文档 PR 与原有四项必需 CI 合入，不绕分支保护。
 
+## 测试实例只走局域网（2026-10-26）
+
+- 起因：用户担心办公网里"乱发包、乱扫"。装好的两台都是 quiet + `mode = "lan"`，但测试脚本给临时实例只写了 `quiet = true`，它们跑的是
+  自动模式：每轮都连 n0 公共中继和地址查询（HTTPS 443），中继的网络报告还探测 80 端口。本机 lsof 抓到过另一会话的测试被控端连着
+  5 个公网 IP 的 443。
+- 现在 `desktop-chat-e2e.py`、`ui-smoke.py`、`phone-chat-smoke.py`、`desktop-chat-preview-remote.py` 的临时 home 都写 quiet + LAN，
+  被控端用随机空闲 UDP 端口（不用 47800，本机装好的被控端占着）。`chat-smoke.py` 由另一会话改。`network-e2e.py` 本来就是这样。
+- 实测（Mac，替身）：Claude 细节 31 项、Codex 125 项全过，测试进程全程没有 TCP 连接，被控端日志写明 "LAN mode: no relay, no address
+  lookup"；按 `ui-smoke.py` 的配置起被控端、配对、调用 doctor 也通过且无 TCP。`ui-smoke.py`（Windows 原生）和 `phone-chat-smoke.py`
+  本身没整轮跑。UDP 去向 lsof 看不到（未连接的 QUIC 套接字），无 TCP 只说明没连中继和地址查询。
+
 ## 通用约定
 
 - 工具链固定 Rust 1.95.0（`rust-toolchain.toml`），`rustfmt.toml` 行宽 120。提交前：
   `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`、
-  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs tools/live-workspace.test.mjs`、
+  `node --test tools/desktop-state.test.mjs tools/manual-input.test.mjs tools/stream-ui.test.mjs tools/mcp-install.test.mjs tools/network-ui.test.mjs tools/chat-state.test.mjs tools/chat-render.test.mjs tools/chat-preview.test.mjs tools/chat-folder.test.mjs tools/chat-input.test.mjs tools/chat-codex.test.mjs tools/desktop-nav.test.mjs tools/workspace.test.mjs tools/claude-view.test.mjs tools/smoke-sync.test.mjs tools/codex-sync.test.mjs tools/live-workspace.test.mjs tools/glass-audit.test.mjs tools/glass-build.test.mjs`、`python3 tools/desktop-ui-smoke.py --lint`、
   `cd apps/desktop && npx tsc --noEmit -p .`。
 - CI（`.github/workflows/`）在 `macos-15` 和 `windows-2025` 上跑 Rust 测试/Clippy/前端测试；iOS 有单独的 workflow。
   Mac/iOS 代码只能在 Mac 或 CI 上编译，Windows 上改了 `cfg(target_os = "macos")` 的代码要靠 CI 兜底。
@@ -350,7 +369,8 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 - **快捷键**：`KeyContext.agents` 为真时外壳不处理 ⌘N / 搜索 / 侧栏开关（工作区有自己的 ⌘N、⌘K、⌘B），历史、设置、⌘1–3 照旧。
 - **组件**：`Workspace.tsx` 去掉自带的历史栈，‹ › 用外壳的 `back` / `forward`，打开页面走 `onRoute` → 外壳 `push`；新建会话页的预填从路由的
   `place` 读。外壳 `Sidebar` 加 `onMode`，渲染 `ModeSwitch`；位置与玻璃样式写在 `styles/workspace.css` 的 `.gl-side-modes`
-  （展开时顶栏右端的胶囊，紧凑时竖排在顶栏下），没动 glass 包的文件。工作区整窗时不套 `.gl-win`，仍是自己的不透明面。
+  （展开时顶栏右端的胶囊，紧凑时竖排在顶栏下），没动 glass 包的文件。当时工作区整窗不套 `.gl-win`、是自己的不透明面；
+  2026-10-26 起整窗也套 `.gl-win`，坐在原生材质上（见"桌面端毛玻璃第二阶段 · 收尾"）。
 - **验证**（本机 macOS，camofox + vite 演示后端，端口 1451）：工作区 ⇄ 电脑往返、工作区会话 → 推流 → ‹ 回会话、‹ › 跨两半边、
   设置从工作区进出、外壳侧栏「智能体」回到上次的工作区位置、无 `view` 重开回到上次半边、工作区里 ⌘N 新建而不是配对、⌘\ 不改外壳侧栏偏好、
   鼠标侧键后退；12 张截图在 `/tmp/merge-glass-shots/`（不进仓库）。门槛：`cargo fmt --all --check`、`npx tsc --noEmit -p .`、
@@ -358,6 +378,115 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 - **没验证**：真实 Tauri 窗口（macOS 红绿灯与切换的间距、Windows 标题条）、`window-hidden` 事件本身（只有 `hidden` 的单测）、
   真正的窄窗（只用 ⌘\ 切到紧凑看过）。camofox（Firefox 内核）里 Codex 输入框有一条 2 px 的滚动条（textarea 内容高 30、框高 28），
   那是 `ui/chat/Composer.tsx` 的老样式，这次合并没碰。
+
+## 桌面端毛玻璃第二阶段 · 收尾：页面、设置、实时画面、工作区、巡检（2026-10-26，分支 `feat/desktop-glass-finish`）
+
+第一阶段（PR #41）和浮层（PR #44）之后剩下的工作分成五个包，各自在独立 worktree 里做完，再按 pages → settings → live →
+workspace → audit 的顺序 `--no-ff` 合进本分支（基线 main `ccbcf37` + 一个文案准备提交，五次合并都没有冲突）。
+设计依据仍是本机 `~/ai-remote-notes/glass/glass-design/` 的 final-decisions 与方案 A；规格早于工作区，冲突时以代码现状为准。
+
+- **pages**（`ui/pages/*`、`Devices.tsx`、`ComputerTabs.tsx` 的访问权限标签、`Decide.tsx` 两个可选外观参数、`glass/pages.css`）：
+  设备页去掉三块统计和安全脚注，有请求等待时才出现琥珀提示条；统一空状态 `EmptyState`（`.gl-blank`）；电脑页概览点画面进入会话、
+  "这台电脑"的事实移到访问权限标签、三个标签改分组卡片；待批准去掉页内大标题、每张卡可"打开 {host}"、今天已处理的折叠；
+  活动按日期分组、行可键盘选中、表头吸在工具栏下；配对改居中单列、去掉命令行、加「取消」和反向配对入口、接上 `registerGuard`
+  （校验词没确认就离开会先问"放弃这次配对？"）；欢迎页两扇门合成一张卡、页面上不再有命令行。
+- **settings**（`Settings.tsx`、`glass/settings.css`）：去掉页内 `.hd`，每页仍只有工具栏里的一个 h1；常规只留语言 / 外观 / 玻璃效果，
+  新增只读"键盘快捷键"分组；本设备第一组是"我"，权限全部正常时折成一行；智能体接入每个客户端一个选择框加一个复制按钮，原文收进
+  "手动设置"；网络 DOM 不变只改样式；关于是全应用唯一显示版本的地方。样式全部限定在 `.spage.gl-st`，居中 720 px 一栏。
+- **live**（`glass/stage.css`、`glass/chat.css`）：舞台上浮着的东西一律"舞台玻璃"（深色半透明填充 + 描边，**没有任何模糊**，实测
+  舞台内 0 个元素带 `backdrop-filter`）；对话浮层（`/` 列表、用量、查找条、引用、跳到最新、代码块按钮、文件预览）是真正的玻璃；
+  实时视图挂载时居中弹框和文件预览不模糊、改不透明（它们会盖住画面）。顺手修了横幅截断、HUD 被横幅盖住、标题信息被截断。
+- **workspace**（新 `glass/workspace.css`，`App.tsx` 整窗工作区根加 `gl-win`）：工作区不再画自己的不透明面，侧栏 / 主区用外壳的
+  染色；工具栏按钮组是 thin 玻璃胶囊；菜单、悬停卡、⌘K 面板、toast 是玻璃。目录 / 模型弹层故意保持不透明（chat e2e 检查目录弹层
+  alpha 255）；窄窗浮出的侧栏故意不模糊（模糊会成为里面 fixed 菜单的定位容器，嵌入时菜单错位）。
+- **audit**（`tools/desktop-ui-smoke.py` 原地重写，新 `tools/glass-audit.test.mjs`）：Camofox REST，自己在空闲端口起 Vite（或 `--url`），
+  20 个路由 × 中英 × 深浅各截图，中文另截减少透明度；每页断言一个页面根且是深链那个、h1 数、侧栏、舞台和内容面 0 模糊、
+  玻璃元素祖先没有 opacity / filter / mask / will-change、对话框不在 `.win` 里、无横向溢出、`data-material=none` 后 0 个模糊；
+  加上设置里真实切换玻璃效果、‹ › 往返、会话 ↔ 工作区 ↔ 电脑的导航场景；每次运行先埋 15 种违规确认检测器能报；
+  `--lint` 只做静态检查（带前缀的字面值写在前、每个模糊选择器以 `data-material` 门控开头）。
+  例外写在 docstring：实时并排视图是两个窗格（窗格外 1 个 h1、工作区里至多 1 个）；会话 / 智能体页检查工作区自己的侧栏开关
+  而不是外壳侧栏；Camoufox 把 `innerWidth` 伪装成 960，所以把侧栏固定为展开。
+
+**集成时补的**（提交 `aa685ec`、`2377a7a`）：
+- 欢迎页标题改成 h1（工具栏是 bare 的，原来整页没有 h1）；插画里的 `.capsule` 在 `data-material="none"` 下去掉模糊，照搬
+  v2.css 对系统"减少透明度"的处理。Claude 视图"跳到最新"的模糊从 `claude.css` 移到 `glass/chat.css`，按材质门控、字面值前缀在前。
+- `App.tsx` 给欢迎页和配对页传 `onAgents`，"智能体接入…"成为指向 设置 › 智能体接入 的链接；欢迎页那行改成一句话加链接（新文案键
+  `pg_agents_lead`，en / zh 各一个）。
+- 页面按钮和设置页同一种填充（D.5：深 .10 / 浅 .06，悬停 .14 / .09，做法是在按钮自身上重指 `--fill-1/--fill-2`，着色变体不受影响），
+  工作区上方的决策卡也是胶囊按钮；电脑页各标签的分组标题 / 说明和设置页一样是 12 px `--text-2`，带描述的行都是 52 px。
+- （已撤回，见下方"复审修复"）实时视图里工作区角落曾只留侧栏开关。
+- 设置 › 批准方式在 Mac 上"可在这里拒绝；允许请在被控端…"只在"各台电脑"标题下说一次，不再每行重复。
+- `tools/desktop-overlays-smoke.py` 原来调用本仓库之外的 `camofox` 命令行做健康检查（本机没有，第一项检查前就退出），改成 REST
+  `/health`；viewport 请求加 3 秒超时并用 matchMedia 确认 1280×800（和巡检同一做法）。检查项一条没改。
+
+**实测**（本机 macOS 27.0.1，Node 24.16.0，Python 3.9.6，Camofox headless；HEAD = `aa685ec`，各 1 次）：
+- `npx tsc --noEmit -p .`、`npm run build` 通过；`node --test tools/*.test.mjs` **426 项，424 过，0 失败，2 跳过**（基线 423/421/0/2，
+  新增 3 项是 `glass-audit.test.mjs`）。
+- `network-ui-smoke.py` **17/17**；`desktop-overlays-smoke.py` **122/122**；`desktop-ui-smoke.py` **1788 项全过，0 失败，86.4 秒，125 张截图**。
+  集成修复前同一巡检是 1778 过、10 失败（欢迎页无 h1 ×4、减少透明度后插画胶囊仍模糊 ×4、`claude.css` 的 `.cl-jump` 静态检查 ×2）。
+- 截图（不进仓库）：巡检 `/tmp/glass2-acc/ui/screens/`，浮层 `/tmp/glass2-acc/overlays/`，网络 `/tmp/glass2-acc/network/`，
+  集成目检 `/tmp/glass2-acc/visual/` 与拼图 `/tmp/glass2-acc/sheets/`。各包自己的截图在 `/tmp/g2-*-shots/`。
+- 截图只证明布局和染色：Camofox 是 Firefox，不画 `backdrop-filter`，模糊只核对计算样式；Firefox 没有 `-webkit-backdrop-filter`，
+  前缀写法靠 `--lint` 读源码。
+
+**没测 / 待办**：
+- 原生 e2e（对话 / 预览 / render / offline）这次没跑（后来在"合并前验收"里补跑，全过）；真机深浅玻璃、窗口失焦、不同壁纸下的对比度、Windows Mica 与标题条都没看。
+- 文中对比度数字都是按 WCAG 公式推导的，不是屏幕实测：设置次要文字 `--text-2` ≥ 4.6:1；工作区三级文字深色 `#9b9992`、浅色
+  `#6c6a65`（浅色原生最坏约 3.9:1，原来不透明底上就只有约 3.5:1）。浅色 `--you-text` 与构建产物里的前缀模糊已在"复审修复"里处理。
+- `.gl-win .nt-compose`（`surfaces.css`）的特异度压过 `.cl-compose` / `.cdx` 的输入框底色，两种模式现在都套 `.gl-win`，所以外观一致，
+  但 Codex 输入框聚焦时的加深没有了。
+- 电脑页的"工具""编程智能体"两个标签只套了分组外观，没有按规格重排。
+
+### 复审修复（2026-10-26，同分支）
+
+三路复审（契约 / 玻璃 / 视觉）共 33 条，逐条核实后修了 31 条，拒了 2 条。提交按主题分：
+- `a3c5bba` 实时视图工作区角落的 ‹ › 恢复（`tools/desktop-workspace-e2e.js` 用 `.ws-corner .ws-ib` 的 [1] 点后退，`?.click()`
+  缺按钮时静默空过，四项历史检查会超时）。一个窗口两组 ‹ › 走同一份历史，和 main 一样。
+- `4091927` 构建产物保留字面值前缀模糊：Lightning CSS 会把前缀 / 无前缀两条合成一条、取无前缀的值，所以两条都写字面值，
+  `--gl-blur*` / `--gl-sat` 令牌删掉（Windows 本来就是单独的字面值规则）。巡检 `--lint` 加"无前缀也必须字面值"，新测试
+  `tools/glass-build.test.mjs` 真跑一次 `vite build` 查产物（有 24 / 36 / 30 px 字面值，前缀声明里没有 `var()`）。
+- `989c878` 活动记录：列表恢复 `overflow-y: auto`（重写时丢了 main 的内联样式，超过一屏的行看不到）；内容宽不到约 1000 px 时
+  （展开边栏窗口 ≤ 1240、收起 ≤ 1072）检查器变成列表右侧的抽屉，只在选中行时出现（再点一次、关闭按钮、Esc 收起；材质开时是 thick 玻璃）；
+  检查器从工具栏下方开始；筛选器挪到工具栏中间；表格边带与时间线卡片对齐；等待中的请求在检查器里显示"请求运行 …"而不是空设备名的
+  拒绝句。巡检加：shell 路由上页面列不得裁掉滚不到的内容（带自检埋点）、960×600 两种边栏的活动页场景（事件列 ≥ 120 px、能滚到最后一行、抽屉）。
+- `2264652` 对话浮层：跳到最新按钮只在显示时模糊；Claude 的跳到最新用 thick 配方；减少透明度时不透明；Claude 权限模式菜单用玻璃的形状和描边（不透明）。
+- `9675bed` 对比度（推导值）：材质开时浅色 `--you-text` 全局改为 `#724906`（内容面 5.7、卡片 7.3、琥珀底 5.3）；页面上原来 `--text-3`
+  的正文改 `--text-2`；侧栏分组标题 / 计数 / 状态行改 `--text-2`，智能体蓝提亮；设置错误说明、工作区卡片内三级 / 警告色提亮；
+  欢迎页插画胶囊任何材质都不模糊。
+- `8651577` 页面与设置：Mac 上批准卡的"允许"是安静的禁用描边、"拒绝"是主操作；设置 › 批准方式在 Mac 上每行显示状态文字；
+  窄窗（展开边栏 ≤ 1060）分段控件保留选中项文字、主按钮有 aria-label / title；设备页没电脑时不显示计数和工具栏主按钮、卡片上"实时观看"
+  改安静样式、单行分组不显示数字；待批准空状态不重复副标题、和"今天已处理"居中成一列；电脑页概览去掉重复的时间和状态、各标签与配对页
+  统一标题样式、访问权限分组标题改"更改权限"、离线原因本地化（原始错误放 title）；"另外 {n} 项正常"分单复数。
+- `f1af4f7` 实时视图：窗口高 ≤ 900 时工作区上方的请求卡默认紧凑（约 210 px，操作按钮不进内层滚动），"详情"展开；卡片显示时舞台上
+  重复的横幅隐藏；其它电脑有请求时窗格顶部一行琥珀提示直达待批准，工作区"电脑"分段带琥珀点；空工作区只留主区一个配对入口；
+  下一步的原因不再被截成一个字；浮出的侧栏旁加轻遮罩。
+- `1d51890` 托盘导航走配对守卫（`commit` 带 after 回调）；配对页"显示这台电脑的配对码…"关闭浮层后回到配对页。
+- `8023e69` 文案：两种语言同删 25 个没人读的键；中文去掉 host / Agent / deny / control 混排；配对码路径统一"设置 › 本设备 › 显示配对码"。
+
+**拒绝的两条**：工作区侧栏宽度对齐 `--side-w`（工作区侧栏可拖 200–420、默认 288、双击复位，`desktop-workspace-e2e.js` 断言 288，
+强改 240 会坏掉拖动和 e2e；‹ › 统一成同一个胶囊组件也没做）；实时视图工具栏选择框显示完整文字（试过按文字宽度放宽，1280 窗口下标题和
+事实被挤掉、全屏按钮被推出列外，文字来自不能改的 `Session.tsx`，保留 128 px）。
+
+**实测**（本机 macOS，Vite 1538，Camofox headless；各 1 次）：`tsc`、`npm run build` 过；`node --test tools/*.test.mjs` **428 项，426 过，
+0 失败，2 跳过**；`network-ui-smoke.py` 17/17；`desktop-overlays-smoke.py` 122/122；`desktop-ui-smoke.py` **1885 项全过，0 失败，
+86.8 秒，127 张截图**（`/tmp/glass-repair-acc/`）。原生 e2e 没跑（`a3c5bba` 恢复的是 main 的角落按钮，e2e 依赖的结构与 main 相同）。
+
+### 合并前验收（2026-10-26，同分支）
+
+产品代码 = `412a137`（复审修复的最后一个提交），之后只改了 CI、测试工具和本文档。本机 macOS 27.0.1，debug 包
+（`npx tauri build --debug --no-bundle`，构建后 `bindings.ts` 无变化），本机隔离被控端 + 替身智能体，两端 `quiet = true`。
+- 禁改文件对 main `ccbcf37` 的 diff 为空：`Session.tsx`、`RemoteInput.tsx`、`native.css`、生成样式表、`src-tauri/src/**`、`bindings.ts`。
+- 静态：`tsc --noEmit`、`npm run build` 过；`node --test tools/*.test.mjs` **428 项，426 过，0 失败，2 跳过**。
+- 原生 e2e（各列项数 × 连跑次数，全部 all passed）：对话 **77 ×3**；预览 **31 ×2**；渲染 **12 ×1**；离线 **7 ×1**；Codex **121 ×1**
+  （日志里那条 `FAIL please…` 是替身回合的正文，不是失败项）；工作区 **161 ×1**（157 秒，含实时视图里角落 ‹ › 的四项历史检查）；
+  导航 / 窄芯片 **10 ×2**；Claude 细节 **28 ×2**。导航和细节第一次因显示器睡眠（屏幕枚举为空）被硬门槛拒跑，`caffeinate -u` 唤醒后重跑。
+- Camofox：`network-ui-smoke.py` **17/17**；`desktop-overlays-smoke.py` **122/122**；`desktop-ui-smoke.py` **1885 项全过**。
+  浮层冒烟第一次因 Camofox 浏览器还没启动而退出（它要求 `browserConnected`，另两个冒烟靠第一个标签页按需启动），现在只要求服务健康。
+- CI：`glass-audit.test.mjs`、`glass-build.test.mjs` 加进 `desktop.yml` 的显式测试列表，macOS 任务加一步
+  `python3 tools/desktop-ui-smoke.py --lint`（不带参数时检查与完整巡检相同的样式表，当前 42 项）。
+- **没测**：真 App 窗口里的原生材质。这次验收时本机停在锁屏，整屏截图只有锁屏，所以深浅色真窗口、失焦、不同壁纸都没看到；
+  原生 e2e 的截图是 WKWebView 快照，只含网页本身（窗口透明处是透明像素），证明 WebKit 下布局与染色，不证明材质。
+  Windows（Mica、标题条、WebView2 下的新页面）没跑；对比度仍是推导值。
 
 ## 桌面端毛玻璃重做 · 第一阶段：材质层与常驻外壳（2026-10-23，分支 `feat/desktop-glass`，worktree `../ai-remote-glass`）
 
@@ -420,13 +549,12 @@ main 新合入的玻璃外壳把设置、推流、配对都变成了一个窗口
 
 ### 没做 / 下一步
 
-- [ ] 第 2 段页面精修（设计里拆好的工作包，文件已拆开可并行）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
+- [x] 第 2 段页面精修（2026-10-26 完成，见"桌面端毛玻璃第二阶段 · 收尾"；浮层部分见"第二阶段 · 浮层"）：设备页去掉三块重复统计、卡片精简；电脑页 / 待批准 / 活动 / 配对 / 欢迎重排；
       设置各分区重排（`.hd` 大标题、"我"图块、版本行去重、快捷键分组）；`Modal.tsx` 统一对话框并 portal 到 body（目前对话框仍在页面树里，
       `data-modal` 还没有地方设置）；决策卡 Esc 只拒绝一张；会话舞台浮条的"舞台玻璃"外观（`stage.css`）；对话面板浮层（`chat.css`）。
 - [ ] 真机验证：原生材质在不同壁纸下的对比度（内容面透明度是推导值）；tauri#12804（透明窗口里 CSS 模糊取到文字颜色）；
       滚动边缘上 mask + 模糊叠加；`setTheme` 后托盘菜单外观；Windows 11 Mica 是否透出来、plugin-frame 标题条是否挡住工具栏按钮（win-dev 未测）。
-- [ ] `tools/desktop-ui-smoke.py` 已过期（找 `.capsule`、`.stream-request`），应改写成 Camofox REST 版的玻璃巡检（每页一个页面根、
-      一个 h1、舞台内 0 个模糊元素、对话框不在 `.win` 里）。
+- [x] `tools/desktop-ui-smoke.py` 已改写成 Camofox REST 版的玻璃巡检（2026-10-26，见"桌面端毛玻璃第二阶段 · 收尾"）。
 - [ ] macOS 系统"减少透明度 / 增强对比度"在 WKWebView 里没有媒体查询，要 Rust 侧用 NSWorkspace 桥接（没做，目前只有应用内开关）。
 
 ## Codex 会话按 Codex 自家应用的样子显示（2026-10-22 ~ 23，分支 `feat/codex-chat-view`，worktree `../ai-remote-codex-view`）
@@ -3276,3 +3404,51 @@ hostw 的 `LogSink` 来回切换。**Windows 没编译**（本机没有 Windows 
   网络首轮回环请求经系统代理得到 HTTP 400，仅测试进程使用直接回环 opener 后通过，未改系统代理。
 - 原生对话 / 预览 / render / offline 回归、深浅色 WindowServer 截图与真实快捷键的最终结果集中记录在 PR #44；
   本机当前未锁屏且录屏权限已授予。证据目录 `/Volumes/SSD-2TB/MacData/Artifacts/ai-remote-pr44-merge-20261024`；旧失败不删除。
+
+
+## 本地同步远端（2026-10-25）
+
+- `feat/ipad-12-9` 从 `7f993b8` 快进到 `38f19eb`（47 个提交），保留原有未提交的桌面 UI / 玻璃改动。
+- 恢复改动时合并 `AGENTS.md`、工作区样式与新会话环境栏：保留远端窄布局测量和本地 fieldset 禁用语义。
+  原始 33 个文件的现场保存在 Git stash `97dc84f441f954af3eeee358f105ee6cb96d4db9`；本轮不提交或推送。
+- 同步后 TypeScript、前端约定测试（375 项：374 过 / 1 跳过）、`git diff --check` 通过；无未解决冲突。
+  26 个无交叠的已跟踪文件及 2 个新文件与备份逐字节一致；本轮未跑 Rust 或 UI E2E。
+
+## 桌面 UI / UX 整体精修（2026-10-24）
+
+- 延续原生玻璃外壳，完成普通页面的第二阶段精修：设备页用一行状态与等底边的设备卡；电脑页明确离线 / 无权限预览；
+  欢迎与配对有清晰双向入口；活动记录按真实日期分组，支持键盘选行、关闭详情回焦点和窄窗上下布局。
+  设置页统一 760px 阅读宽度与分组行，减少重复版本信息；网络选择支持方向键，保存与复制成功以真实 Promise 结果为准。
+- `ui/Modal.tsx` 统一 Confirm、配对码和开启被控端弹窗：原生 `dialog.showModal()` + body portal，约束焦点、关闭回焦点、
+  `html[data-modal]` 阻止背后快捷键，运行期间禁关闭。配对尚未核对安全词时，侧栏、历史和托盘导航均先确认；
+  撤销配对失败必须留在确认框，不能吞掉错误后离开。紧凑侧栏保留导航名称，离线分组没有不可见的 Tab 停靠点。
+- 工作区新会话增加任务引导与分区标题；搜索、模型输入、菜单、浮动侧栏补齐焦点返回与键盘行为；菜单在短窗内滚动。
+  启动期间锁定草稿与环境，`can_start=false` 禁发送。远程控制栏有键盘焦点时不再自动隐藏，视频舞台不叠加 backdrop blur。
+- 验收脚本 `tools/desktop-ui-smoke.py` 使用 Camofox 命名 session，逐操作绑定本次创建的 tab ID；不要依赖 CLI 的共享 current tab。
+  `--matrix-only` 复查 13 个路由 × 深浅色 × 960/1280 窗口；`--workspace-only` 复查搜索、模型保存与 640px 预览浮动侧栏
+  （640px 小于原生窗口 960px 下限，仅为自适应分支验证）。截图与失败轮次在 `target/ui-modernization/`，不入库。
+- 本机 Rust fmt / Clippy、438 通过 / 9 忽略、前端 266 通过 / 1 跳过、TypeScript、前端 build 和原生 debug build 通过。
+  Camofox 最终矩阵 161 项 / 52 张截图、工作区交互 25 项通过；最终合并验收 240 项 / 68 张截图通过，
+  原生隔离 quiet host + 真实 QUIC + 替身智能体的工作区 E2E 106/106 通过（1 次，使用下述调试唤醒）。
+  最后的 Watch 路由确有 `monitor not found` 日志：只验证同一对话旁的画面页面与 Back 返回，不证明真实视频帧成功。
+- 原生验收前两轮在隐藏 WKWebView 等待定时事件时停滞，关截图诊断也复现；直到截止时再次执行页面脚本才继续。
+  debug 的显式 `AI_REMOTE_SMOKE_SCRIPT` 循环现每秒做一次空原生 evaluation，避免该验收环境的后台计时挂起；
+  不进入 release 或日常 App。保留了旧失败日志，带此测试唤醒的结果不能充作普通前台 / 失焦运行性能证明。
+  本轮没有 Windows 真机材质、不同壁纸对比度、手动 VoiceOver 或 iOS 实机验收结论。
+
+### 毛玻璃补齐（同日用户追问）
+
+- 前一轮工作区的 `.ws`、`.ws-main` 和 Claude `.page` 仍有实色底，挡住原生材质；不能把布局翻新截图当成玻璃已验收。
+  新增 `styles/glass/workspace.css`，在 Codex / workspace / Claude 样式之后加载，只在 native / preview 材质生效：
+  窗口与工作区根透明、主内容只涂一次 `--gl-content`、正文透明，卡片 / 输入半透明、菜单和搜索等浮层用厚玻璃。
+  保留实色 `--canvas` / `--ws-s1`，因为它们也用于发送按钮的反色文字，直接设透明会让箭头消失。
+  `none` 保留实色；关闭了 Claude 返回底部按钮在 none 模式下遗留的 blur；原生 dialog 恢复 thick 材质，只有预览保留 .98 填充。
+- 原生截图必须通过 WindowServer / 系统截图确认，`lib.rs` 的 macOS smoke capture 是 WKWebView snapshot，采不到桌面材质。
+  本机系统查询确认 `CGSSessionScreenIsLocked=1`、系统 reduceTransparency=false；原生实拍被锁屏阻断，已请用户解锁。
+  隔离测试窗口、临时彩色背景窗口和测试进程已清理，不改用户壁纸或已安装 App；截图准备脚本留在 `target/ui-modernization/`。
+  Camofox 专项入口 `--material-only` 核对新会话 / Claude / Codex 深浅色的透明层与实色回退；仍不能替代原生实拍。
+- 用户随后要求尝试 ai-remote 解锁：当前普通 macOS host 确实把已登录会话的锁屏标为 `desktop_usable=true`、
+  `secure_desktop=true`，不能沿用旧 skill 的“锁屏一定无法输入”结论。已修正仓库 skill 的旧说明。
+  两次隔离 quiet host / control 配对现场检查保存于 `target/ui-modernization/unlock-check/`：锁屏时 monitors=[]，
+  screenshot 明确报无显示器；发送一次 Return 返回 ok，之后仍为 lock screen。这里只证明输入事件发出，
+  没有密码框接收或解锁证据；解锁仍需机主正常登录认证。临时 host、controller 与配对均已清理。

@@ -30,8 +30,15 @@ A `host` argument may be omitted when only one computer is paired, when the owne
    comes with `problem`: read it, do not keep redialling.
 2. `use_host <name>`: makes it the default and returns `system_info`.
 3. Read `system_info` before anything else:
-   - `session.desktop_usable`: `false` means locked, a sign-in screen or a security prompt.
-     Screen, input, clipboard and UI tools will refuse. Tell the user; do not work around it.
+   - `session.desktop_usable`: `false` means this host cannot reach the current desktop (for example,
+     another user's console or a login window without a system host). Screen, input, clipboard and
+     UI tools will refuse. Tell the user; do not work around the refusal.
+   - `session.secure_desktop: true` with `desktop_usable: true` is a reachable lock or login screen.
+     An ordinary macOS host implements this for the logged-in user's lock screen; a Windows service
+     or macOS system host can also serve supported secure desktops. Capture and input still need
+     their OS permissions, and unlocking still needs the owner's normal login authentication.
+     Verify actual capture and the resulting session state: tool dispatch alone is not unlock proof.
+     Local approval prompts and clipboard sync are unavailable on a secure desktop.
    - `you.level`: `observe`, `control` or `admin` (section 3). `you.bypass: true` means the owner
      trusts this device with everything; every tool runs without approval, still audited.
    - `monitors`: index, origin and size of each monitor; `screenshot` takes the index.
@@ -63,7 +70,7 @@ was. What the messages mean:
 | `The host's policy does not allow '<tool>'` | a rule forbids it; find another way or tell the user |
 | `The host owner declined '<tool>'` | ask the user what they want instead |
 | `Nobody approved it on the host in time` / `No one can approve actions on the host right now` | the owner is away or the desktop is locked; stop and report |
-| `the desktop is locked or showing a security prompt` | the user must unlock; nothing you send can reach it |
+| `the desktop is locked or showing a security prompt, which this host cannot reach` | this host cannot operate that desktop; the owner must unlock locally or use an already authorized host that can reach it |
 | `an ai-remote approval prompt is open on the host` | wait for the owner to answer, then continue |
 | `the input would go to one of ai-remote's own windows` | you were about to click the approval prompt or the host's terminal; pick another window |
 | `is refused: it locks the workstation` (and similar) | lock, sign-out and secure-attention chords are the owner's; do not send them |
@@ -170,11 +177,14 @@ can; do not start one without being asked. On the command line:
 ai-remote chat list                                         # installed agents, versions, sign-in
 ai-remote chat run codex "fix the failing test" --cwd D:\work\app   # one task; prints the answer
 ai-remote chat start claude --cwd ~/code/app                # interactive; Ctrl+C stops a turn, twice leaves
+ai-remote chat start claude --cwd ~/code/app --model haiku --effort low   # a model and effort level instead of the defaults
 ai-remote chat send <session> "now run the tests" --wait
 ai-remote chat send <session> "stop after the first file" --steer   # into the running turn (Claude, Codex)
 ai-remote chat send <session> "what is wrong here?" --image shot.png  # images: PNG/JPEG/GIF/WebP, ≤3.75 MiB, up to 4
 ai-remote chat commands <session>                           # its slash commands and skills (send one as text: "/review")
 ai-remote chat files <session> main                         # files in its folder matching "main" (to name as @path)
+ai-remote chat fork <session> [--prompt "try it another way"]   # a new session with a copy of its conversation (Claude, Codex)
+ai-remote chat search "export quarter"                      # sessions whose messages hold every word, with excerpts
 ai-remote chat end <session>
 ```
 

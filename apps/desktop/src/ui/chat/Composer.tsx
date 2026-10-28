@@ -309,6 +309,8 @@ export interface ComposerProps {
   escArmed?: boolean;
   /** Shown first in the row under the field (the Claude view's permission mode). */
   lead?: ReactNode;
+  /** Shown at the row's end, before the context ring (the Claude view's model and effort level). */
+  trail?: ReactNode;
   /** Told whether the field has something to send (a card's ⌘↵ leaves a draft to the composer). */
   onDraft?: (has: boolean) => void;
   /** An Enter before this time is the press that answered a card, not a send (`Date.now()` ms). */
@@ -619,7 +621,7 @@ export function Composer(p: ComposerProps) {
           </div>
         </div>
       </div>
-      {(imageNote || (p.running && ready && !p.disabled) || p.context || p.lead) && (
+      {(imageNote || (p.running && ready && !p.disabled) || p.context || p.lead || p.trail) && (
         <div className="nt-compose-ft">
           {p.lead}
           <span className="hint-l">
@@ -628,6 +630,7 @@ export function Composer(p: ComposerProps) {
               <span className="hint">{codex ? t("cdx_hint_queue", { k: isMac() ? "⌘" : "Ctrl+" }) : t("hc_hint_alt")}</span>
             )}
           </span>
+          {p.trail}
           {p.context && <ContextRing used={p.context.used} window={p.context.window} usage={p.usage} />}
         </div>
       )}

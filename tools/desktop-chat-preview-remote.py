@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """File previews in the desktop app against a real coding agent on another computer.
 
-On the other computer, start a test host with its own profile and `[network] quiet = true` in its
-host/ and controller/ ai-remote.toml, and make a pairing ticket for level admin:
+On the other computer, start a test host with its own profile whose host/ and controller/ ai-remote.toml
+have `[network]` with `quiet = true` and `mode = "lan"` (Local network only: no relay, no address lookup),
+and a free `port` for the host (not 47800, which an installed host holds), and make a pairing ticket for
+level admin:
 
   ai-remote --home <test home> host --no-pair-code
   ai-remote --home <test home> --json pair-code --level admin      # the "line" field
@@ -12,7 +14,7 @@ Then here (macOS; build first: cargo build -p ai-remote && (cd apps/desktop && n
   python3 tools/desktop-chat-preview-remote.py --ticket '<line>' --work 'C:\\Users\\me\\preview-work' \
       [--agent 'Claude Code'] [--big out/big.png] [--out /tmp/chat-preview-remote]
 
-The app runs on a throwaway profile (quiet too), paired as `e2e-<pid>`; tools/desktop-chat-preview-real.js
+The app runs on a throwaway profile (quiet and LAN-only too), paired as `e2e-<pid>`; tools/desktop-chat-preview-real.js
 drives it. This spends the agent's quota on the other computer (one short task).
 """
 import argparse
@@ -42,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="adr-", dir="/tmp") as tmp:
     desk = Path(tmp) / "desk"
     for role in ("host", "controller"):
         (desk / role).mkdir(parents=True)
-        (desk / role / "ai-remote.toml").write_text("[network]\nquiet = true\n", encoding="utf-8")
+        (desk / role / "ai-remote.toml").write_text('[network]\nquiet = true\nmode = "lan"\n', encoding="utf-8")
     cli = lambda *a: subprocess.run([str(o.cli), "--home", str(desk), *a], capture_output=True, text=True, env=env, timeout=120)
     name = f"e2e-{os.getpid()}"
     r = cli("pair", o.ticket, "--name", name)

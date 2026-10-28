@@ -16,14 +16,15 @@ import type { ChatTarget } from "../AgentChat";
 import type { AppMode } from "./ModeSwitch";
 import { NewSession } from "./NewSession";
 import { Palette } from "./Palette";
-import { Corner, modKey, Toasts, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
+import { Corner, modKey, Toasts, useReturnFocus, viewWidth, workspaceOwnsEvent, type Toast } from "./parts";
 import { SessionPage } from "./SessionPage";
 import { Sidebar } from "./Sidebar";
-import { archive, markDone, togglePin, toggleRead, unarchive } from "./actions";
+import { archive, fork, markDone, togglePin, toggleRead, unarchive } from "./actions";
+import { FamilyConfirm } from "./FamilyConfirm";
 import { useWorkspace, workspace } from "./useWorkspace";
 
 /** The session shortcuts' keys (with ⌘⌥ / Ctrl+Alt). */
-const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA"]);
+const SESSION_KEYS = new Set(["KeyP", "KeyR", "KeyU", "KeyA", "KeyO"]);
 
 /** Where the workspace is: a session on a computer, or the new-session page (with the place it was
  *  opened for). The shell's `{ page: "agents" }` route carries the same fields. */
@@ -76,6 +77,7 @@ export function Workspace({
   embedded = false,
   onPlaceChange,
   initialTarget,
+  attention,
 }: {
   computers: Computer[];
   device: string;
@@ -95,6 +97,8 @@ export function Workspace({
   onPlaceChange?: (place: Place) => void;
   /** A first-use chat_start ticket supplied by the page that opened this workspace. */
   initialTarget?: (ChatTarget & { host: string }) | null;
+  /** Requests waiting on the computers side, as a sentence (the sidebar's mode switch flags it). */
+  attention?: string;
 }) {
   const snap = useWorkspace(computers, true);
   const [side, setSide] = useState(readSide);
@@ -103,11 +107,13 @@ export function Workspace({
   const [peek, setPeek] = useState(false);
   const [edgeHint, setEdgeHint] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const sideRoot = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
   const winW = useWorkspaceWidth(root, embedded);
   const narrow = winW <= narrowAt(side.w);
   const docked = !narrow && !side.hidden;
   const shown = docked || (narrow && floatOpen);
+  const modalSide = narrow && floatOpen && !peek;
   const width = Math.min(side.w, sidebarMax(winW));
   const [palette, setPalette] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -117,16 +123,49 @@ export function Workspace({
   const tickets = useRef(new Map<string, string>());
   const current = route.host && route.session ? sessionKey(route.host, route.session) : null;
 
+  useReturnFocus(sideRoot, modalSide);
+  useLayoutEffect(() => {
+    if (modalSide) sideRoot.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [modalSide]);
+  useEffect(() => {
+    if (!modalSide) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.documentElement.dataset.modal) return;
+      if (e.target instanceof Element && e.target.closest(".ws-palette, .ws-menu")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setFloatOpen(false);
+      } else if (e.key === "Tab") {
+        const controls = [...(sideRoot.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex]") ?? [])]
+          .filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (!first) return;
+        const active = document.activeElement;
+        if (!sideRoot.current?.contains(active) || active === (e.shiftKey ? first : last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [modalSide]);
+
+
   useLayoutEffect(() => {
     const pane = root.current;
     if (!embedded || !pane) return;
     const own = (target: EventTarget | null) => target instanceof Node && pane.contains(target);
     const set = (target: EventTarget | null) => { pane.dataset.keyboardActive = own(target) ? "true" : "false"; };
     set(document.activeElement);
-    const pointer = (e: PointerEvent) => set(e.target);
+    // A body portal temporarily owns focus and clicks while the workspace is inert. Keep the
+    // previous pane's ownership for when the sheet closes, including if its menu opener was removed.
+    const inSheet = (target: EventTarget | null) => target instanceof Element && !!target.closest(".gl-modal-root");
+    const pointer = (e: PointerEvent) => { if (!inSheet(e.target)) set(e.target); };
     const focus = (e: FocusEvent) => {
       // A focused control may disappear while its click changes the session or closes the drawer.
-      if (e.target !== document.body && e.target !== document.documentElement) set(e.target);
+      if (e.target !== document.body && e.target !== document.documentElement && !inSheet(e.target)) set(e.target);
     };
     document.addEventListener("pointerdown", pointer, true);
     document.addEventListener("focusin", focus, true);
@@ -158,7 +197,10 @@ export function Workspace({
   // A rename of the title belongs to the page it started on (also when ‹ › leave it).
   useEffect(() => setRenamingTitle(false), [route.host, route.session]);
   const openSession = (host: string, id: string) => {
-    if (route.host === host && route.session === id) return;
+    if (route.host === host && route.session === id) {
+      if (narrow) setFloatOpen(false);
+      return;
+    }
     go({ host, session: id });
   };
   const newSession = (place?: Place) => go({ place: place ?? null });
@@ -167,6 +209,8 @@ export function Workspace({
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || (embedded && !workspaceOwnsEvent(root.current, e))) return;
+      if (document.documentElement.dataset.modal) return;
+      if (palette && !(modKey(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k")) return;
       if (e.key === "F2" && !e.metaKey && !e.ctrlKey && !e.altKey && current && !editable(e.target) && !(e.target as HTMLElement | null)?.closest?.(".ws-list")) {
         e.preventDefault();
         setRenamingTitle(true);
@@ -180,11 +224,14 @@ export function Workspace({
         const x = key ? workspace.items().find((i) => i.key === key) : null;
         if (!x) return;
         e.preventDefault();
-        const ctx = { toast, onArchived: (k: string) => k === current && newSession() };
+        const ctx = { toast, onArchived: (k: string) => k === current && newSession(), onOpen: openSession };
         if (e.code === "KeyP") togglePin(x, ctx);
         else if (e.code === "KeyU") {
           if (workspace.dot(x) === "failed") markDone(x, ctx);
           else toggleRead(x);
+        } else if (e.code === "KeyO") {
+          // ⌘⌥O forks (SB-39); a session that cannot be forked now stays as it is.
+          fork(x, ctx);
         } else if (e.code === "KeyA") {
           if (x.meta.archived) unarchive(x, ctx);
           else archive(x, ctx);
@@ -325,11 +372,14 @@ export function Workspace({
   const corner = <Corner onToggle={toggle} back={back} forward={forward} embedded={embedded} />;
   const sidebar = (
     <Sidebar
+      rootRef={sideRoot}
+      modal={modalSide}
       snap={snap}
       computers={computers}
       corner={corner}
       mode="agents"
       onMode={onMode}
+      attention={attention}
       current={current}
       onOpen={openSession}
       onNew={newSession}
@@ -380,7 +430,7 @@ export function Workspace({
       )}
       {narrow && floatOpen && !peek && <div className="ws-float-scrim" onPointerDown={() => setFloatOpen(false)} />}
       {edgeHint && <div className="ws-peek-hint" aria-hidden />}
-      <main className="ws-main">
+      <main className="ws-main" inert={modalSide}>
         {route.host && route.session ? (
           <SessionPage
             key={`${route.host}/${route.session}`}
@@ -397,6 +447,7 @@ export function Workspace({
             onLeave={() => newSession()}
             onArchived={(key) => key === current && newSession()}
             onNew={() => newSession()}
+            onOpen={openSession}
             toast={toast}
           />
         ) : (
@@ -417,6 +468,7 @@ export function Workspace({
           />
         )}
         <Toasts list={toasts} onDone={(id) => setToasts((l) => l.filter((x) => x.id !== id))} />
+        <FamilyConfirm />
       </main>
       {palette && (
         <Palette

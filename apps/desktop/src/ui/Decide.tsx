@@ -45,6 +45,8 @@ export function DecisionCard({
   askedMs,
   onDone,
   escapeScope,
+  macNote = true,
+  aside,
 }: {
   p: PendingApproval;
   host: string;
@@ -55,6 +57,10 @@ export function DecisionCard({
   onDone?: (verdict: "allowed" | "denied") => void;
   /** Beside other interactive views, Esc belongs to this card only while it has the event or focus. */
   escapeScope?: React.RefObject<HTMLElement | null>;
+  /** The "this Mac can only deny" note; a page listing several cards says it once instead. */
+  macNote?: boolean;
+  /** Something at the end of the header, after the time (the approvals page's "Open {host}"). */
+  aside?: React.ReactNode;
 }) {
   const now = useNow(1000);
   const zh = currentLang() === "zh";
@@ -133,18 +139,24 @@ export function DecisionCard({
   const command = commandOf(p.argsPreview);
   const { q, verb } = questionFor(p.tool);
   const danger = destructive(command);
-  const verbBtn = (
+  // On a Mac allowing is not possible here (no Touch ID approval yet): the allow button stays as a
+  // quiet, disabled outline that says why, and Deny becomes the card's one tinted action.
+  const verbBtn = canApprove ? (
     <button
       className={cx("btn", danger ? "danger" : "primary")}
-      disabled={!canApprove || approver !== "ready" || busy !== null}
+      disabled={approver !== "ready" || busy !== null}
       onClick={allow}
       title={approver === "ready" ? t("hello_first") : undefined}
     >
       {busy === "allow" ? t("approving") : verb}
     </button>
+  ) : (
+    <button className="btn gl-allow-off" disabled title={t("ap_mac_deny_only")}>
+      {verb}
+    </button>
   );
   const denyBtn = (
-    <button className="btn" disabled={busy !== null} onClick={() => void deny()}>
+    <button className={cx("btn", !canApprove && "primary")} disabled={busy !== null} onClick={() => void deny()}>
       {t("deny")}
       <span className="kbd">Esc</span>
     </button>
@@ -164,6 +176,7 @@ export function DecisionCard({
           {t("waiting_for_you")}
         </span>
         {askedMs && <span className="tm">{clock(askedMs)}</span>}
+        {aside}
       </div>
       <div className="who">
         <Actor who="agent" h={11} />
@@ -177,7 +190,7 @@ export function DecisionCard({
         </div>
       )}
       <Payload text={command} />
-      {!canApprove && <div className="prov"><Icon name="info" size={16} /><span>{t("approval_unavailable_mac")}</span></div>}
+      {!canApprove && macNote && <div className="prov"><Icon name="info" size={16} /><span>{t("approval_unavailable_mac")}</span></div>}
       {canApprove && approver === "none" && (
         <div className="prov">
           <Icon name="info" size={16} />

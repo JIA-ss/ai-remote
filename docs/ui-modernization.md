@@ -37,6 +37,9 @@ tools/ios.sh mac-core
 python3 tools/ui-smoke.py --out target/ui-modernization/native-mac
 ```
 
+（2026-10-26 起 `tools/desktop-ui-smoke.py` 已改写成玻璃巡检：直接走 Camofox REST、自己起 Vite，结果默认写到
+`target/glass-audit/`，不再使用 `general` session；下面是改写前那一轮的记录。）
+
 本轮本机结果：桌面生产构建与原生 macOS `.app` 打包通过，206 个 Rust 测试通过，Clippy 通过；
 前端 8 个测试通过（本机不具备 PowerShell 的 1 项跳过）。Camofox 在既有 `general` session、
 headless 模式完成搜索、键盘导航、设备详情、接管／交还、外观保存与页面入口检查，并检查

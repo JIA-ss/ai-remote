@@ -12,7 +12,7 @@ import { CmdLine } from "./CmdLine";
 import { Glyph, Pointer } from "./glyphs";
 import { Icon } from "./Icon";
 import { Modal } from "./Modal";
-import { agentLabel, cx } from "./util";
+import { agentLabel, cx, relayNote } from "./util";
 
 const LEVELS: Level[] = ["observe", "control", "admin"];
 const rank = (l: Level | null) => (l ? LEVELS.indexOf(l) : -1);
@@ -107,6 +107,28 @@ export function Confirm({
   );
 }
 
+/** The computer itself: its system, how it is reached and its device key (the Access tab's first group). */
+function ComputerFacts({ c }: { c: Computer }) {
+  const conn = c.host.path ? t(c.host.path === "relay" ? (c.host.relayN0 ? "conn_relayed_n0" : "conn_relayed") : "conn_direct") : "—";
+  const rows: Array<[string, React.ReactNode, string?]> = [
+    [t("cp_os"), c.os ? t(c.os === "mac" ? "mac" : "win") : t("devices_os_unknown")],
+    [t("connection"), conn, relayNote(c.host)?.detail],
+    [t("device_key"), <span className="mono">{c.host.device ? c.host.device.slice(0, 16) : "—"}</span>],
+  ];
+  return (
+    <div className="grp gl-facts">
+      {rows.map(([label, value, title]) => (
+        <div key={label} className="gr noic">
+          <div className="tt">{label}</div>
+          <span className="end gl-fact" title={title}>
+            {value}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => void }) {
   const host = c.host.name;
   const { access, error, reload } = useAccess(host);
@@ -115,13 +137,11 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
   const level = access.level;
   const admin = level === "admin";
   const desc = { observe: "lv_o_d", control: "lv_c_d", admin: "lv_a_d" } as const;
-  const ledes = { observe: "acc_lede_observe", control: "acc_lede_control", admin: "acc_lede_admin" } as const;
   const ruleText = { allow: "rule_allow", ask: "rule_ask", deny: "rule_deny" } as const;
   return (
     <>
       <TabHead
         hl={level ? t("acc_hl", { level: lvlName(level), host }) : t("acc_hl_none", { host })}
-        lede={level ? t(ledes[level], { host }) : null}
       />
       {access.bypass && (
         <div className="body c-danger" role="note" style={{ margin: "8px 0 0", maxWidth: 760, fontSize: 14, lineHeight: 1.65 }}>
@@ -130,7 +150,9 @@ export function AccessTab({ c, onUnpaired }: { c: Computer; onUnpaired: () => vo
       )}
       <div className="tab-grid">
         <div>
-          <div className="grp-h">{t("acc_level", { host })}</div>
+          <div className="grp-h">{t("this_computer")}</div>
+          <ComputerFacts c={c} />
+          <div className="grp-h">{t("cp_acc_change")}</div>
           <div className="grp" role="radiogroup" aria-label={t("acc_level", { host })}>
             {LEVELS.map((l) => {
               const lower = rank(l) < rank(level);

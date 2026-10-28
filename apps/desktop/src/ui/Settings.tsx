@@ -2,13 +2,14 @@
 // Agent access, This device, Network, Approving and About. Only what works today is shown; nothing
 // here is a switch that does nothing.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { followSystemLang, langChoice, setLang, t, type Key } from "../lib/i18n";
 import { en } from "../lib/strings/en";
 import { detectOs, reducedTransparency, setReducedTransparency, setThemeChoice, themeChoice, type ThemeChoice } from "../lib/platform";
 import { MCP_CLIENTS, mcpInstall, type McpClient } from "../lib/mcp-install";
 import type { Section } from "../lib/nav";
+import { shortcutLabel } from "../lib/shortcuts";
 import { useStore } from "../lib/store";
 import type {
   AgentStatus,
@@ -27,7 +28,7 @@ import type { NetworkChange } from "../lib/api";
 import { shareableAddresses, validAddressInput } from "../lib/network";
 import { CmdLine } from "./CmdLine";
 import { Confirm } from "./ComputerTabs";
-import { Glyph, Mark, Pointer } from "./glyphs";
+import { Glyph, Mark, OsGlyph, Pointer } from "./glyphs";
 import { Icon, type IconName } from "./Icon";
 import { PairCodeDialog } from "./PairCode";
 import { Modal } from "./Modal";
@@ -62,11 +63,11 @@ function errorText(e: unknown): string {
 
 /** "Oct 22, 14:30": a 24-hour ticket's end, with the day. */
 
-/** One settings row: icon, title and description, and its control at the end. */
-function Row({ ic, tt, ds, children }: { ic: React.ReactNode; tt: React.ReactNode; ds?: React.ReactNode; children?: React.ReactNode }) {
+/** One settings row: icon (in a tile, or `bare` for a control such as a check box), title and description, and its control at the end. */
+function Row({ ic, bare = false, tt, ds, children }: { ic: React.ReactNode; bare?: boolean; tt: React.ReactNode; ds?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <div className="gr">
-      <span className="ic">{ic}</span>
+      <span className={cx("ic", bare && "bare")}>{ic}</span>
       <div>
         <div className="tt">{tt}</div>
         {ds && <div className="ds">{ds}</div>}
@@ -123,12 +124,17 @@ export function SettingsTabs({ sec, onSec }: { sec: Section; onSec: (sec: Sectio
   );
 }
 
-/** Settings inside the shell: one section at a time; the section is part of the route. */
+/**
+ * Settings inside the shell: one section at a time; the section is part of the route. The toolbar
+ * carries the section's name (its segmented control, and the page's one h1 for screen readers), so
+ * the page starts with its groups, after a line of context where one helps.
+ */
 export function SettingsPage({
   sec,
   status,
   onStatus,
   intent = null,
+  onPairCodeClosed,
 }: {
   sec: Section;
   status: AgentStatus | null;
@@ -136,100 +142,138 @@ export function SettingsPage({
   onStatus: () => void;
   /** A tray intent: its action, anchor or error goes to This device. */
   intent?: TrayIntent | null;
+  /** The pair-code dialog closed (the shell returns to the page that asked for it). */
+  onPairCodeClosed?: () => void;
 }) {
   const name = status?.name ?? "";
-  const heads: Record<Section, [Key, Key]> = {
-    general: ["set_general", mac ? "gn_lede_mac" : "gn_lede"],
-    agents: ["set_agents", "ag_lede"],
-    device: ["set_device", "dv_lede"],
-    network: ["set_network", "nw_lede"],
-    approvals: ["set_approvals", "ap_lede"],
-    about: ["set_about", "ab_lede"],
+  const ledes: Partial<Record<Section, Key>> = {
+    general: mac ? "gn_lede_mac" : "gn_lede",
+    agents: "ag_lede",
+    network: "nw_lede",
+    approvals: "ap_lede",
   };
-  const [hd, lede] = heads[sec];
+  const lede = ledes[sec];
   return (
-    <div className="spage" style={{ overflowY: "auto" }}>
-      <div className="hd">{t(hd)}</div>
-      <div className="body c2" style={{ marginTop: 6, maxWidth: 640 }}>
-        {t(lede, { name })}
-      </div>
-      <div style={{ marginTop: 28 }}>
-        {sec === "general" && <General version={status?.version} />}
-        {sec === "agents" && <Agents status={status} name={name} onChange={onStatus} />}
-        {sec === "device" && <Device status={status} intent={intent} />}
-        {sec === "network" && <Network />}
-        {sec === "approvals" && <Approvals />}
-        {sec === "about" && <About version={status?.version} />}
-      </div>
+    <div className="spage gl-st" data-sec={sec}>
+      {lede && <p className="gl-lede">{t(lede, { name })}</p>}
+      {sec === "general" && <General />}
+      {sec === "agents" && <Agents status={status} name={name} onChange={onStatus} />}
+      {sec === "device" && <Device status={status} intent={intent} onPairCodeClosed={onPairCodeClosed} />}
+      {sec === "network" && <Network />}
+      {sec === "approvals" && <Approvals />}
+      {sec === "about" && <About version={status?.version} />}
     </div>
   );
 }
 
-function General({ version }: { version?: string }) {
+/** A select at the end of a row, with its chevron. */
+function Dropdown({ label, value, onChange, disabled, children }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="dd-wrap">
+      <select className="dd" aria-label={label} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        {children}
+      </select>
+      <Icon name="chevD" size={12} />
+    </span>
+  );
+}
+
+/** The window's shortcuts, as this platform types them (lib/shortcuts.ts is the table they come from). */
+function shortcutRows(): Array<[Key, string[], Key?]> {
+  const os = mac ? "mac" : "windows";
+  const keys = (...actions: Parameters<typeof shortcutLabel>[0][]) => actions.map((a) => shortcutLabel(a, os));
+  return [
+    ["sc_back_fwd", keys("back", "forward")],
+    ["sc_settings", keys("settings")],
+    ["sc_pages", keys("page1", "page2", "page3")],
+    ["sc_pair", keys("pair")],
+    ["sc_search", keys("search")],
+    ["sc_sidebar", mac ? [...keys("sidebar"), "⌃⌘S"] : keys("sidebar")],
+    ["sc_fullscreen", keys("fullscreen")],
+    // the remote session's own key (RemoteInput.tsx), not one of the shell's
+    ["st_sc_handback", [mac ? "⌃⌥H" : "Ctrl+Alt+H"], "gn_hotkey_d"],
+  ];
+}
+
+function General() {
   const [choice, setChoice] = useState(langChoice());
   const [appearance, setAppearance] = useState(themeChoice());
   const [opaque, setOpaque] = useState(reducedTransparency());
   return (
-    <div className="grp">
-      <Row ic={<Icon name="globe" />} tt={t("gn_lang")} ds={t(mac ? "gn_lang_d_mac" : "gn_lang_d")}>
-        <span className="dd-wrap">
-          <select
-            className="dd"
-            aria-label={t("gn_lang")}
-          value={choice}
-          onChange={(e) => {
-            const v = e.target.value as "system" | "en" | "zh";
-            setChoice(v);
-            if (v === "system") followSystemLang();
-            else setLang(v);
-            location.reload();
-          }}
-        >
+    <>
+      <div className="grp">
+        <Row ic={<Icon name="globe" />} tt={t("gn_lang")} ds={t(mac ? "gn_lang_d_mac" : "gn_lang_d")}>
+          <Dropdown
+            label={t("gn_lang")}
+            value={choice}
+            onChange={(value) => {
+              const v = value as "system" | "en" | "zh";
+              setChoice(v);
+              if (v === "system") followSystemLang();
+              else setLang(v);
+              location.reload();
+            }}
+          >
             <option value="system">{t(mac ? "gn_lang_v_mac" : "gn_lang_v")}</option>
             <option value="en">English</option>
             <option value="zh">中文</option>
-          </select>
-          <Icon name="chevD" size={12} />
-        </span>
-      </Row>
-      <Row ic={<Icon name="monitor" />} tt={t("gn_theme_choice")}>
-        <span className="dd-wrap">
-          <select className="dd" aria-label={t("gn_theme_choice")} value={appearance} onChange={(e) => {
-            const next = e.target.value as ThemeChoice;
-            setAppearance(next);
-            setThemeChoice(next);
-          }}>
+          </Dropdown>
+        </Row>
+        <Row ic={<Icon name="monitor" />} tt={t("gn_theme_choice")}>
+          <Dropdown
+            label={t("gn_theme_choice")}
+            value={appearance}
+            onChange={(value) => {
+              const next = value as ThemeChoice;
+              setAppearance(next);
+              setThemeChoice(next);
+            }}
+          >
             <option value="system">{t("gn_theme_system")}</option>
             <option value="light">{t("gn_theme_light")}</option>
             <option value="dark">{t("gn_theme_dark")}</option>
-          </select>
-          <Icon name="chevD" size={12} />
-        </span>
-      </Row>
-      <Row ic={<Icon name="eye" />} tt={t("gn_transparency")} ds={t("gn_transparency_d")}>
-        <span className="dd-wrap">
-          <select className="dd" aria-label={t("gn_transparency")} value={opaque ? "reduced" : "full"} onChange={(e) => {
-            const next = e.target.value === "reduced";
-            setOpaque(next);
-            setReducedTransparency(next);
-          }}>
+          </Dropdown>
+        </Row>
+        <Row ic={<Icon name="eye" />} tt={t("gn_transparency")} ds={t("gn_transparency_d")}>
+          <Dropdown
+            label={t("gn_transparency")}
+            value={opaque ? "reduced" : "full"}
+            onChange={(value) => {
+              const next = value === "reduced";
+              setOpaque(next);
+              setReducedTransparency(next);
+            }}
+          >
             <option value="full">{t("gn_glass_on")}</option>
             <option value="reduced">{t("gn_glass_off")}</option>
-          </select>
-          <Icon name="chevD" size={12} />
-        </span>
-      </Row>
-      <Row ic={<Icon name="keyboard" />} tt={t("gn_hotkey")} ds={t("gn_hotkey_d")}>
-        <span className="kbd" style={{ fontSize: 13, lineHeight: "22px", padding: "0 8px", color: "var(--text-1)" }}>
-          {mac ? "⌃⌥H" : "Ctrl+Alt+H"}
-        </span>
-      </Row>
-      <Row ic={<Mark h={14} />} tt={t("gn_version")} ds={t("gn_version_d")}>
-        <span className="mono" style={{ fontSize: 13 }}>
-          {version ?? "—"}
-        </span>
-      </Row>
-    </div>
+          </Dropdown>
+        </Row>
+      </div>
+      <div className="grp-h">{t("gn_shortcuts")}</div>
+      <div className="grp gl-st-keys">
+        {shortcutRows().map(([label, keys, desc]) => (
+          <div key={label} className="gr noic">
+            <div>
+              <div className="tt">{t(label)}</div>
+              {desc && <div className="ds">{t(desc)}</div>}
+            </div>
+            <span className="end">
+              {keys.map((k) => (
+                <kbd key={k} className="kbd">
+                  {k}
+                </kbd>
+              ))}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -239,10 +283,13 @@ function Agents({ status, name, onChange }: { status: AgentStatus | null; name: 
     const saved = localStorage.getItem("ai-remote.mcp-client");
     return MCP_CLIENTS.some(([id]) => id === saved) ? saved as McpClient : "claude";
   });
+  const [manual, setManual] = useState(false);
   const setup = status?.mcp ? mcpInstall(client, status.mcp, !mac) : null;
   const instructions: Record<McpClient, Key> = {
     claude: "ag_claude_d", codex: "ag_codex_d", cursor: "ag_cursor_d", vscode: "ag_vscode_d", other: "ag_other_d",
   };
+  // One click copies what this client needs; the text itself is the manual fallback, folded away.
+  const copyText = setup?.command ?? setup?.config;
   return (
     <>
       <div className="grp-h">{t("ag_connected")}</div>
@@ -251,19 +298,13 @@ function Agents({ status, name, onChange }: { status: AgentStatus | null; name: 
           {agents.map((a) => (
             <Row
               key={a.id}
-              ic={
-                <span style={{ display: "inline-flex" }}>
-                  <Pointer who="agent" h={15} ui />
-                </span>
-              }
+              ic={<Pointer who="agent" h={15} ui />}
               tt={
                 <>
                   {a.client ?? t("ag_unnamed")}
-                  <span className="facts" style={{ display: "inline-flex", marginLeft: 10, verticalAlign: 1 }}>
-                    <span>
-                      <i className="on" />
-                      {t("online_now")}
-                    </span>
+                  <span className="gl-st-online">
+                    <i />
+                    {t("online_now")}
                   </span>
                 </>
               }
@@ -282,43 +323,96 @@ function Agents({ status, name, onChange }: { status: AgentStatus | null; name: 
           ))}
         </div>
       )}
-      <div className="gnote" style={agents.length ? undefined : { marginTop: 0 }}>
-        {t(agents.length ? "ag_none_other" : "ag_none")}
-      </div>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("ag_add")}
-      </div>
+      <div className="gnote">{t(agents.length ? "ag_none_other" : "ag_none")}</div>
+
+      <div className="grp-h">{t("ag_add")}</div>
+      <div className="grp-sub">{t("ag_add_d", { name })}</div>
       <div className="grp">
-        <div className="gr noic" style={{ display: "block", padding: 16 }}>
-          <div className="ds" style={{ fontSize: 14, lineHeight: "var(--lh-body)", margin: "0 0 12px" }}>
-            {t("ag_add_d", { name })}
-          </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <span className="ds">{t("ag_client")}</span>
-            <select className="dd" value={client} onChange={(e) => {
-              const next = e.target.value as McpClient;
+        <Row ic={<Icon name="terminal" />} tt={t("ag_client")} ds={t(instructions[client])}>
+          <Dropdown
+            label={t("ag_client")}
+            value={client}
+            onChange={(value) => {
+              const next = value as McpClient;
               setClient(next);
               localStorage.setItem("ai-remote.mcp-client", next);
-            }}>
-              {MCP_CLIENTS.map(([id, label]) => <option key={id} value={id}>{label || t("ag_other")}</option>)}
-            </select>
-          </label>
-          <div className="ds" style={{ marginBottom: 12 }}>{t(instructions[client])}</div>
-          {setup ? <>
-            {setup.command && <>
-              <div className="ds" style={{ marginBottom: 8 }}>{t(mac ? "ag_terminal_mac" : "ag_terminal_win")}</div>
-              <CmdLine key={setup.command} cmd={setup.command} multiline />
-            </>}
-            {setup.config && <>
-              {client === "codex" && <div className="ds" style={{ margin: "16px 0 8px" }}>{t("ag_codex_manual")}</div>}
-              <CmdLine key={setup.config} cmd={setup.config} multiline />
-              <div className="ds" style={{ marginTop: 10 }}>{t("ag_merge")}</div>
-            </>}
-            <div className="ds" style={{ marginTop: 14 }}>{t("ag_verify")}</div>
-          </> : <div className="ds">{t("ag_config_missing")}</div>}
-        </div>
+            }}
+          >
+            {MCP_CLIENTS.map(([id, label]) => <option key={id} value={id}>{label || t("ag_other")}</option>)}
+          </Dropdown>
+        </Row>
+        {setup && copyText ? (
+          <>
+            <Row
+              ic={<Icon name="copy" />}
+              tt={t(setup.command ? "st_cmd_t" : "st_cfg_t")}
+              ds={t(setup.command ? (mac ? "st_cmd_d_mac" : "st_cmd_d_win") : "st_cfg_d")}
+            >
+              <CopyButton key={copyText} text={copyText} label={t(setup.command ? "st_copy_cmd" : "st_copy_cfg")} />
+            </Row>
+            <Disclosure open={manual} onToggle={() => setManual((v) => !v)} ic={<Icon name="wrench" />} tt={t("st_manual")} ds={t("st_manual_d")} />
+            {manual && (
+              <div className="gl-st-manual">
+                {setup.command && (
+                  <>
+                    <div className="ds">{t(mac ? "ag_terminal_mac" : "ag_terminal_win")}</div>
+                    <CmdLine key={setup.command} cmd={setup.command} multiline />
+                  </>
+                )}
+                {setup.config && (
+                  <>
+                    {client === "codex" && <div className="ds">{t("ag_codex_manual")}</div>}
+                    <CmdLine key={setup.config} cmd={setup.config} multiline />
+                    <div className="ds">{t("ag_merge")}</div>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <Row ic={<Icon name="copy" />} tt={t("st_cmd_t")} ds={t("ag_config_missing")} />
+        )}
       </div>
+      <div className="gnote">{t("ag_verify")}</div>
     </>
+  );
+}
+
+/** A button that copies `text`, saying so for a moment (or that it could not). */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<"idle" | "done" | "error">("idle");
+  return (
+    <button
+      className="btn primary"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setState("done");
+          setTimeout(() => setState("idle"), 1500);
+        } catch {
+          setState("error");
+        }
+      }}
+    >
+      <Icon name={state === "done" ? "check" : "copy"} size={14} />
+      {state === "done" ? t("copied") : state === "error" ? t("copy_failed") : label}
+    </button>
+  );
+}
+
+/** A row that folds the rows or text after it in and out (the whole row is the button). */
+function Disclosure({ open, onToggle, ic, tt, ds }: { open: boolean; onToggle: () => void; ic: React.ReactNode; tt: React.ReactNode; ds?: React.ReactNode }) {
+  return (
+    <button type="button" className="gr gl-st-more" aria-expanded={open} onClick={onToggle}>
+      <span className="ic">{ic}</span>
+      <span className="gl-st-tx">
+        <span className="tt">{tt}</span>
+        {ds && <span className="ds">{ds}</span>}
+      </span>
+      <span className="end">
+        <Icon name="chevR" size={14} />
+      </span>
+    </button>
   );
 }
 
@@ -328,8 +422,7 @@ const shortKey = (id: string) => {
   return `eid:${hex.slice(0, 16).replace(/(.{4})(?=.)/g, "$1 ")}`;
 };
 
-function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIntent | null }) {
-  const [copied, setCopied] = useState(false);
+function Device({ status, intent, onPairCodeClosed }: { status: AgentStatus | null; intent: TrayIntent | null; onPairCodeClosed?: () => void }) {
   const id = status?.device ?? "";
   // This computer as a host: its paired controllers when ai-remote host runs here, `null` when not.
   const [controllers, setControllers] = useState<LocalController[] | null | undefined>(undefined);
@@ -342,31 +435,18 @@ function Device({ status, intent }: { status: AgentStatus | null; intent: TrayIn
   useEffect(() => {
     void reload();
   }, []);
+  const os = mac ? "mac" : "windows";
   return (
     <>
-      <div className="grp">
-        <Row ic={<Icon name="laptop" />} tt={t("dv_name")} ds={t("dv_name_d")}>
-          <span className="body">{status?.name ?? "—"}</span>
-        </Row>
+      {/* who this device is: the name and key its paired computers know it by */}
+      <div className="grp gl-st-me">
+        <Row ic={<OsGlyph os={os} size={18} />} tt={status?.name || "—"} ds={t("st_me_d", { os: t(mac ? "mac" : "win") })} />
         <Row ic={<Icon name="key" />} tt={t("dv_key")} ds={t("dv_key_d")}>
-          <span className="mono" style={{ fontSize: 13 }}>
-            {id ? shortKey(id) : "—"}
-          </span>
-          <button
-            className="btn icon"
-            aria-label={t("copy")}
-            disabled={!id}
-            onClick={() => {
-              void navigator.clipboard?.writeText(id);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }}
-          >
-            <Icon name={copied ? "check" : "copy"} size={14} />
-          </button>
+          <span className="mono gl-st-val">{id ? shortKey(id) : "—"}</span>
+          <CopyText text={id} iconOnly disabled={!id} />
         </Row>
       </div>
-      <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()}>
+      <HostPanel name={status?.name ?? ""} intent={intent} onChanged={() => void reload()} onPairCodeClosed={onPairCodeClosed}>
         {controllers !== undefined && <TrustedControllers list={controllers} hostError={hostError} reload={reload} />}
         {controllers && <LocalAgents />}
       </HostPanel>
@@ -385,36 +465,30 @@ function LocalAgents() {
   useEffect(() => {
     void load();
   }, []);
-  if (!state) return error ? <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div> : null;
+  if (!state) return error ? <div className="gnote c-danger">{error}</div> : null;
   return (
     <>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("hc_set_h")}
-      </div>
+      <div className="grp-h">{t("hc_set_h")}</div>
       <div className="grp">
         <Row
           ic={<Icon name="terminal" />}
           tt={t("hc_set_t")}
           ds={state.enabled ? (state.live ? t("hc_set_d_live", { n: state.live }) : t("hc_set_d_on")) : t("hc_set_d_off")}
         >
-          <span className="dd-wrap">
-            <select
-              className="dd"
-              aria-label={t("hc_set_t")}
-              value={state.enabled ? "on" : "off"}
-              onChange={(e) => {
-                setError(null);
-                api.setLocalChat(e.target.value === "on").then(load, (err) => setError(String(err)));
-              }}
-            >
-              <option value="on">{t("hc_set_on")}</option>
-              <option value="off">{t("hc_set_off")}</option>
-            </select>
-            <Icon name="chevD" size={12} />
-          </span>
+          <Dropdown
+            label={t("hc_set_t")}
+            value={state.enabled ? "on" : "off"}
+            onChange={(value) => {
+              setError(null);
+              api.setLocalChat(value === "on").then(load, (err) => setError(String(err)));
+            }}
+          >
+            <option value="on">{t("hc_set_on")}</option>
+            <option value="off">{t("hc_set_off")}</option>
+          </Dropdown>
         </Row>
       </div>
-      {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
+      {error && <div className="gnote c-danger">{error}</div>}
     </>
   );
 }
@@ -452,11 +526,13 @@ function HostPanel({
   name,
   intent,
   onChanged,
+  onPairCodeClosed,
   children,
 }: {
   name: string;
   intent: TrayIntent | null;
   onChanged: () => void;
+  onPairCodeClosed?: () => void;
   /** Shown right after the host's state: the paired controllers. */
   children?: React.ReactNode;
 }) {
@@ -481,6 +557,8 @@ function HostPanel({
   const [grantNote, setGrantNote] = useState<Key | null>(null);
   /** What a fresh copy of the host is granted (macOS): a grant the running host still holds may be gone. */
   const [freshGrants, setFreshGrants] = useState<Record<string, boolean> | null>(null);
+  /** The checks that pass, shown (they fold into one line). */
+  const [allChecks, setAllChecks] = useState(false);
   useEffect(() => {
     api.appLoginItem().then(setLoginItem, () => setLoginItem(null));
   }, []);
@@ -658,12 +736,22 @@ function HostPanel({
         : c,
     );
   const permissions = checks.filter((c) => PERMISSION_CHECKS.includes(c.id));
+  // What needs a hand is always shown; what passes folds into one line until asked for.
+  const failing = permissions.filter((c) => c.grade !== "ok");
+  const passing = permissions.filter((c) => c.grade === "ok");
+  const checkRow = (c: DoctorCheck) => (
+    <CheckRow
+      key={c.id}
+      check={c}
+      onGrant={host && mac && can("request_permission") && (c.id === "screen_recording" || c.id === "accessibility") ? () => void grant(c.id) : undefined}
+      granting={granting === c.id ? grantNote : null}
+      busy={granting !== null}
+    />
+  );
   const autostart = checks.find((c) => c.id === "autostart");
   return (
     <>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("lh_h")}
-      </div>
+      <div className="grp-h">{t("lh_h")}</div>
       <div className="grp">
         {lh === undefined ? (
           <Row ic={<Icon name="laptop" />} tt="…" />
@@ -715,37 +803,35 @@ function HostPanel({
           </Row>
         )}
       </div>
-      {error && <div className="cap c-danger" style={{ marginTop: 10 }}>{t("lh_error", { error })}</div>}
+      {error && <div className="gnote c-danger">{t("lh_error", { error })}</div>}
       {children}
 
       {doctor && permissions.length > 0 && (
         <>
-          <div className="grp-h" style={{ marginTop: 28 }}>
-            {t("perm_h")}
-          </div>
+          <div className="grp-h">{t("perm_h")}</div>
           <div className="grp-sub">{t(doctor.checked_in === "host" ? "perm_h_host" : "perm_h_cli")}</div>
           <div className="grp">
-            {permissions.map((c) => (
-              <CheckRow
-                key={c.id}
-                check={c}
-                onGrant={host && mac && can("request_permission") && (c.id === "screen_recording" || c.id === "accessibility") ? () => void grant(c.id) : undefined}
-                granting={granting === c.id ? grantNote : null}
-                busy={granting !== null}
+            {failing.map(checkRow)}
+            {passing.length > 0 && (
+              <Disclosure
+                open={allChecks}
+                onToggle={() => setAllChecks((v) => !v)}
+                ic={<GradeDot grade="ok" />}
+                tt={failing.length ? t(passing.length === 1 ? "st_perm_rest_one" : "st_perm_rest_many", { n: passing.length }) : t("st_perm_ok")}
+                ds={passing.map((c) => checkName(c.id)).join(t("list_sep"))}
               />
-            ))}
+            )}
+            {allChecks && passing.map(checkRow)}
           </div>
         </>
       )}
 
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("as_h")}
-      </div>
+      <div className="grp-h">{t("as_h")}</div>
       <div className="grp">
         {install && !install.installed ? null : autostart ? (
-          <CheckRow check={autostart} />
+          <CheckRow check={autostart} title={t("st_autostart_t")} />
         ) : (
-          <Row ic={<GradeDot grade="skip" />} tt={t("as_h")} ds="—" />
+          <Row ic={<GradeDot grade="skip" />} tt={t("st_autostart_t")} ds="—" />
         )}
         {install && !install.installed && (
           <Row ic={<Icon name="monitor" />} tt={t("en_h")} ds={t(mac ? "en_d_mac" : "en_d_win")}>
@@ -786,31 +872,25 @@ function HostPanel({
           </Row>
         )}
         <Row ic={<Mark h={12} />} tt={t(mac ? "li_mac" : "li_win")} ds={t("li_d")}>
-          <span className="dd-wrap">
-            <select
-              className="dd"
-              aria-label={t(mac ? "li_mac" : "li_win")}
-              value={loginItem ? "on" : "off"}
-              disabled={loginItem === null}
-              onChange={(e) => {
-                const on = e.target.value === "on";
-                setError(null);
-                api.setAppLoginItem(on).then(() => setLoginItem(on), (err) => setError(errorText(err)));
-              }}
-            >
-              <option value="off">{t("li_off")}</option>
-              <option value="on">{t("li_on")}</option>
-            </select>
-            <Icon name="chevD" size={12} />
-          </span>
+          <Dropdown
+            label={t(mac ? "li_mac" : "li_win")}
+            value={loginItem ? "on" : "off"}
+            disabled={loginItem === null}
+            onChange={(value) => {
+              const on = value === "on";
+              setError(null);
+              api.setAppLoginItem(on).then(() => setLoginItem(on), (err) => setError(errorText(err)));
+            }}
+          >
+            <option value="off">{t("li_off")}</option>
+            <option value="on">{t("li_on")}</option>
+          </Dropdown>
         </Row>
       </div>
 
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("rules_h")}
-      </div>
+      <div className="grp-h">{t("rules_h")}</div>
       <div className="grp">
-        <Row ic={<Icon name="shield" />} tt={t("rules_h")} ds={t("rules_d")}>
+        <Row ic={<Icon name="shield" />} tt={t("st_rules_t")} ds={t("rules_d")}>
           <button className="btn" onClick={() => void api.revealProfile().catch((e) => setError(errorText(e)))}>
             <Icon name="open" size={14} />
             {t(mac ? "rules_open_mac" : "rules_open_win")}
@@ -818,7 +898,7 @@ function HostPanel({
         </Row>
       </div>
 
-      <div className="grp-h" id="recent" style={{ marginTop: 28 }}>
+      <div className="grp-h" id="recent">
         {t("recent_h")}
         {host && (
           <button className="btn icon end" aria-label={t("recent_refresh")} onClick={() => setRound((r) => r + 1)}>
@@ -828,18 +908,16 @@ function HostPanel({
       </div>
       <div className="grp-sub">{t("recent_d")}</div>
       {!host ? (
-        <div className="gnote" style={{ marginTop: 0 }}>{t("recent_no_host")}</div>
+        <div className="gnote">{t("recent_no_host")}</div>
       ) : !recent || recent.length === 0 ? (
-        <div className="gnote" style={{ marginTop: 0 }}>{recent ? t("recent_none") : "…"}</div>
+        <div className="gnote">{recent ? t("recent_none") : "…"}</div>
       ) : (
-        <div className="grp">
+        <div className="grp gl-st-log">
           {[...recent].reverse().map((l, i) => (
-            <div key={`${l.ts}-${i}`} className="gr noic" style={{ minHeight: 36, padding: "8px 16px" }}>
-              <div className="ds" style={{ display: "flex", gap: 12, alignItems: "baseline", minWidth: 0 }}>
-                <span className="mono" style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>
-                  {clock(l.ts)}
-                </span>
-                <span className="ell" style={{ color: "var(--text-1)" }}>{auditText(l)}</span>
+            <div key={`${l.ts}-${i}`} className="gr noic">
+              <div className="gl-st-logline">
+                <span className="mono">{clock(l.ts)}</span>
+                <span className="ell">{auditText(l)}</span>
               </div>
             </div>
           ))}
@@ -883,7 +961,16 @@ function HostPanel({
           }}
         />
       )}
-      {pairOpen && <PairCodeDialog name={name} connected={connected} onClose={() => setPairOpen(false)} />}
+      {pairOpen && (
+        <PairCodeDialog
+          name={name}
+          connected={connected}
+          onClose={() => {
+            setPairOpen(false);
+            onPairCodeClosed?.();
+          }}
+        />
+      )}
       {askStop && (
         <Confirm
           title={t("lh_stop_q")}
@@ -945,21 +1032,35 @@ function Network() {
   return (
     <>
       <div className="grp-h">{t("nw_mode")}</div>
-      <div className="grp" role="radiogroup" aria-label={t("nw_mode")}>
+      <div className="grp" role="radiogroup" aria-label={t("nw_mode")} aria-busy={busy}>
         {modes.map(([m, tt, ds]) => {
           const on = net?.mode === m;
+          const disabled = !net || busy;
           const pick = () => {
-            if (!on) void change({ mode: m });
+            if (!on && !disabled) void change({ mode: m });
           };
           return (
             <div
               key={m}
-              className={cx("gr", !on && "pick")}
+              className={cx("gr", "settings-mode", on && "sel", !on && !disabled && "pick")}
               role="radio"
               aria-checked={on}
-              tabIndex={0}
+              aria-disabled={disabled}
+              tabIndex={on || (!net && m === "auto") ? 0 : -1}
               onClick={pick}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && pick()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  pick();
+                } else if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(e.key)) {
+                  e.preventDefault();
+                  if (disabled) return;
+                  const direction = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+                  const next = e.key === "Home" ? 0 : e.key === "End" ? modes.length - 1 : (modes.findIndex(([mode]) => mode === m) + direction + modes.length) % modes.length;
+                  e.currentTarget.parentElement?.querySelectorAll<HTMLElement>("[role=radio]")[next]?.focus();
+                  if (modes[next][0] !== m) void change({ mode: modes[next][0] });
+                }
+              }}
             >
               <span className="ic bare">
                 <span className={cx("radio", on && "on")} />
@@ -1085,19 +1186,38 @@ function Toggle({
 }
 
 /** A copy button that says so for a moment after copying. */
-function CopyText({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+function CopyText({ text, iconOnly = false, disabled = false }: { text: string; iconOnly?: boolean; disabled?: boolean }) {
+  const [state, setState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (reset.current) clearTimeout(reset.current);
+  }, []);
+  const label = t(state === "copied" ? "nw_copied" : "nw_copy");
   return (
-    <button
-      className="btn"
-      onClick={() => {
-        void navigator.clipboard?.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-    >
-      {t(copied ? "nw_copied" : "nw_copy")}
-    </button>
+    <span className="settings-copy">
+      <button
+        className={cx("btn", iconOnly && "icon")}
+        aria-label={iconOnly ? label : undefined}
+        title={iconOnly ? label : undefined}
+        disabled={disabled || state === "copying"}
+        onClick={async () => {
+          if (reset.current) clearTimeout(reset.current);
+          setState("copying");
+          try {
+            await navigator.clipboard.writeText(text);
+            setState("copied");
+            reset.current = setTimeout(() => setState("idle"), 1500);
+          } catch {
+            setState("error");
+          }
+        }}
+      >
+        {iconOnly ? <Icon name={state === "copied" ? "check" : "copy"} size={14} /> : label}
+      </button>
+      <span className={state === "error" ? "cap c-danger" : "gl-sr"} role="status">
+        {state === "error" ? t("copy_failed") : state === "copied" ? t("nw_copied") : ""}
+      </span>
+    </span>
   );
 }
 
@@ -1109,6 +1229,7 @@ function HostAddress({ host }: { host: Host }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
+    if (busy) return;
     if (!validAddressInput(value)) {
       setError(t("nw_bad_addr"));
       return;
@@ -1127,12 +1248,12 @@ function HostAddress({ host }: { host: Host }) {
   };
   const shown = addrs.length > 0 ? <span className="mono">{shareableAddresses(addrs).join(", ") || addrs.join(", ")}</span> : t("nw_none");
   return (
-    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger">{error}</span> : shown}>
+    <Row ic={<Icon name="monitor" />} tt={host.name} ds={error ? <span className="c-danger" role="alert">{error}</span> : shown}>
       {editing ? (
         <>
           <input
             className="field"
-            style={{ width: 190 }}
+            disabled={busy}
             value={value}
             autoFocus
             placeholder={t("nw_addr_ph")}
@@ -1142,15 +1263,17 @@ function HostAddress({ host }: { host: Host }) {
               setError(null);
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || busy) return;
               if (e.key === "Enter") void save();
               if (e.key === "Escape") setEditing(false);
             }}
           />
-          <button className="btn" disabled={busy} onClick={() => void save()}>
+          <button className="btn" disabled={busy || !validAddressInput(value)} onClick={() => void save()}>
             {t("nw_save")}
           </button>
           <button
             className="btn"
+            disabled={busy}
             onClick={() => {
               setEditing(false);
               setError(null);
@@ -1160,7 +1283,11 @@ function HostAddress({ host }: { host: Host }) {
           </button>
         </>
       ) : (
-        <button className="btn" onClick={() => setEditing(true)}>
+        <button className="btn" onClick={() => {
+          setValue(shareableAddresses(addrs).join(", ") || addrs.join(", "));
+          setError(null);
+          setEditing(true);
+        }}>
           {t("nw_edit")}
         </button>
       )}
@@ -1206,11 +1333,14 @@ function auditText(l: AuditLine): string {
 
 function CheckRow({
   check,
+  title,
   onGrant,
   granting = null,
   busy = false,
 }: {
   check: DoctorCheck;
+  /** The row's title where the group's heading already names the check (autostart). */
+  title?: string;
   /** One click: the host asks macOS for this permission (macOS, host running). */
   onGrant?: () => void;
   /** What the page says while this permission is being granted. */
@@ -1224,14 +1354,14 @@ function CheckRow({
   return (
     <Row
       ic={<GradeDot grade={check.grade} />}
-      tt={checkName(check.id)}
+      tt={title ?? checkName(check.id)}
       ds={
         <>
           <div>{checkSummary(check)}</div>
-          {check.grade !== "ok" && checkSummary(check) !== check.summary && <div style={{ marginTop: 2 }}>{check.summary}</div>}
+          {check.grade !== "ok" && checkSummary(check) !== check.summary && <div className="gl-st-extra">{check.summary}</div>}
           {/* The page has buttons for what the host's fix would have you type. */}
-          {check.grade !== "ok" && check.fix && check.id !== "autostart" && !onGrant && <div style={{ marginTop: 2 }}>{t("perm_fix", { fix: check.fix })}</div>}
-          {granting && <div style={{ marginTop: 4, color: "var(--agent)" }}>{t(granting)}</div>}
+          {check.grade !== "ok" && check.fix && check.id !== "autostart" && !onGrant && <div className="gl-st-extra">{t("perm_fix", { fix: check.fix })}</div>}
+          {granting && <div className="gl-st-busy">{t(granting)}</div>}
           {error && <div className="c-danger">{error}</div>}
         </>
       }
@@ -1347,18 +1477,12 @@ function TrustedControllers({
   };
   return (
     <>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("bp_h")}
-      </div>
+      <div className="grp-h">{t("bp_h")}</div>
       <div className="grp-sub">{t("bp_sub")}</div>
       {list === null ? (
-        <div className="gnote" style={{ marginTop: 0 }}>
-          {hostError ?? t("bp_no_host")}
-        </div>
+        <div className="gnote">{hostError ?? t("bp_no_host")}</div>
       ) : list.length === 0 ? (
-        <div className="gnote" style={{ marginTop: 0 }}>
-          {t("bp_none")}
-        </div>
+        <div className="gnote">{t("bp_none")}</div>
       ) : (
         <div className="grp">
           {list.map((c) => (
@@ -1368,31 +1492,27 @@ function TrustedControllers({
               tt={c.name}
               ds={<span className={cx(c.bypass && "c-danger")}>{describe(c)}</span>}
             >
-              <span className="dd-wrap">
-                <select
-                  className="dd"
-                  aria-label={t("bp_h")}
-                  value={c.bypass ? "all" : "ask"}
-                  disabled={!c.bypass && (c.revoked || c.level === null)}
-                  onChange={(e) => {
-                    setError(null);
-                    if (e.target.value === "all") {
-                      setAsk(c);
-                    } else {
-                      api.setLocalBypass(c.name, false).then(load, (err) => setError(errorText(err)));
-                    }
-                  }}
-                >
-                  <option value="ask">{t("bp_v_ask")}</option>
-                  <option value="all">{t("bp_v_all")}</option>
-                </select>
-                <Icon name="chevD" size={12} />
-              </span>
+              <Dropdown
+                label={t("bp_h")}
+                value={c.bypass ? "all" : "ask"}
+                disabled={!c.bypass && (c.revoked || c.level === null)}
+                onChange={(value) => {
+                  setError(null);
+                  if (value === "all") {
+                    setAsk(c);
+                  } else {
+                    api.setLocalBypass(c.name, false).then(load, (err) => setError(errorText(err)));
+                  }
+                }}
+              >
+                <option value="ask">{t("bp_v_ask")}</option>
+                <option value="all">{t("bp_v_all")}</option>
+              </Dropdown>
             </Row>
           ))}
         </div>
       )}
-      {error && list !== null && <div className="cap c-danger" style={{ marginTop: 10 }}>{error}</div>}
+      {error && list !== null && <div className="gnote c-danger">{error}</div>}
       {ask && (
         <Confirm
           title={t("bp_q", { name: ask.name })}
@@ -1431,19 +1551,44 @@ function Approvals() {
   }, [hosts.join("\n"), round]);
   return (
     <>
+      {/* how a request reaches you, and what happens when nobody answers */}
       <div className="grp">
         <Row ic={<Icon name="shield" />} tt={t(mac ? "ap_key_mac" : "ap_key")} ds={t(mac ? "ap_key_d_mac" : "ap_key_d")} />
-        {hosts.map((h) => {
-          const v = state[h];
-          return (
-            <div key={h} className="gr" style={{ minHeight: 48, paddingLeft: 62 }}>
-              <span className="ic bare">
-                <span className={cx("check", v === true && "on")}>{v === true && <Icon name="check" size={12} />}</span>
-              </span>
-              <div>
-                <div className="tt">{h}</div>
-                <div className="ds">
-                  {mac ? t("ap_mac_deny_only") : v === true
+        <Row ic={<Icon name="clock" />} tt={t("ap_timeout")} ds={t("ap_timeout_d2")} />
+      </div>
+      {/* whether each computer takes this device's key */}
+      <div className="grp-h">{t("st_ap_hosts_h")}</div>
+      {/* On a Mac the row above already says deny-here / allow-elsewhere; the list only shows whether
+          each computer takes this device's key, as a status at the end of its row (nothing to tick). */}
+      {mac && hosts.length > 0 && <div className="grp-sub">{t("st_ap_hosts_d_mac")}</div>}
+      {hosts.length === 0 ? (
+        <div className="gnote">{t("ap_no_computers")}</div>
+      ) : (
+        <div className="grp">
+          {hosts.map((h) => {
+            const v = state[h];
+            if (mac)
+              return (
+                <Row key={h} ic={<Icon name="monitor" />} tt={h}>
+                  <span className={cx("gl-st-val", v === true && "gl-st-on")}>
+                    {v === true
+                      ? t("st_ap_mac_on")
+                      : v === "error"
+                        ? t("ap_unreachable")
+                        : v === undefined || v === "asking"
+                          ? t("acc_loading", { host: h })
+                          : t("st_ap_mac_off")}
+                  </span>
+                </Row>
+              );
+            return (
+              <Row
+                key={h}
+                bare
+                ic={<span className={cx("check", v === true && "on")}>{v === true && <Icon name="check" size={12} />}</span>}
+                tt={h}
+                ds={
+                  v === true
                     ? t("ap_accepted")
                     : v === "asking"
                       ? t("ap_asking", { host: h })
@@ -1451,11 +1596,10 @@ function Approvals() {
                         ? t("ap_unreachable")
                         : v === undefined
                           ? t("acc_loading", { host: h })
-                          : t("ap_not_yet")}
-                </div>
-              </div>
-              <span className="end">
-                {!mac && (v === false || v === null) && (
+                          : t("ap_not_yet")
+                }
+              >
+                {(v === false || v === null) && (
                   <button
                     className="btn"
                     onClick={async () => {
@@ -1467,13 +1611,11 @@ function Approvals() {
                     {t("ap_offer")}
                   </button>
                 )}
-              </span>
-            </div>
-          );
-        })}
-        <Row ic={<Icon name="clock" />} tt={t("ap_timeout")} ds={t("ap_timeout_d2")} />
-      </div>
-      {hosts.length === 0 && <div className="gnote">{t("ap_no_computers")}</div>}
+              </Row>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
@@ -1481,18 +1623,20 @@ function Approvals() {
 function About({ version }: { version?: string }) {
   return (
     <>
-      <div className="grp">
+      <div className="grp gl-st-me">
+        {/* the only place the version is shown */}
         <Row ic={<Mark h={14} />} tt="ai-remote" ds={t("ab_what")}>
-          <span className="mono" style={{ fontSize: 13 }}>
+          <span className="mono gl-st-val">
+            <span className="gl-sr">{t("gn_version")} </span>
             {version ?? "—"}
           </span>
         </Row>
         <Row ic={<Icon name="info" />} tt={t("ab_license")} ds={t("ab_license_d")} />
-        <Row ic={<Icon name="link" />} tt={t("ab_source")} ds="github.com/JIA-ss/ai-remote" />
+        <Row ic={<Icon name="link" />} tt={t("ab_source")} ds={<span className="mono">{SOURCE}</span>}>
+          <CopyText text={`https://${SOURCE}`} />
+        </Row>
       </div>
-      <div className="grp-h" style={{ marginTop: 28 }}>
-        {t("set_privacy")}
-      </div>
+      <div className="grp-h">{t("set_privacy")}</div>
       <div className="grp">
         <Row ic={<Icon name="lock" />} tt={t("pv_account")} ds={t("pv_account_d")} />
         <Row ic={<Icon name="eyeOff" />} tt={t("pv_relay")} ds={t("pv_relay_d")} />
@@ -1501,3 +1645,5 @@ function About({ version }: { version?: string }) {
     </>
   );
 }
+
+const SOURCE = "github.com/JIA-ss/ai-remote";
