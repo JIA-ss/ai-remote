@@ -159,10 +159,13 @@ export function Workspace({
     const own = (target: EventTarget | null) => target instanceof Node && pane.contains(target);
     const set = (target: EventTarget | null) => { pane.dataset.keyboardActive = own(target) ? "true" : "false"; };
     set(document.activeElement);
-    const pointer = (e: PointerEvent) => set(e.target);
+    // A body portal temporarily owns focus and clicks while the workspace is inert. Keep the
+    // previous pane's ownership for when the sheet closes, including if its menu opener was removed.
+    const inSheet = (target: EventTarget | null) => target instanceof Element && !!target.closest(".gl-modal-root");
+    const pointer = (e: PointerEvent) => { if (!inSheet(e.target)) set(e.target); };
     const focus = (e: FocusEvent) => {
       // A focused control may disappear while its click changes the session or closes the drawer.
-      if (e.target !== document.body && e.target !== document.documentElement) set(e.target);
+      if (e.target !== document.body && e.target !== document.documentElement && !inSheet(e.target)) set(e.target);
     };
     document.addEventListener("pointerdown", pointer, true);
     document.addEventListener("focusin", focus, true);

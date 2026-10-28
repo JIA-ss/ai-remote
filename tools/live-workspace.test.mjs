@@ -114,6 +114,7 @@ class Element extends Node {
   querySelector() { return null; }
   closest(selector) {
     if (selector === "[inert]") for (let at = this; at; at = at.parent) if (at.inert) return at;
+    if (selector === ".gl-modal-root") for (let at = this; at; at = at.parent) if (at.modalRoot) return at;
     return null;
   }
 }
@@ -653,4 +654,22 @@ test("pairing cannot navigate during connection, and a failed revocation stays v
   await confirm.props.onYes(); render();
   assert.equal(navigated, 1, "navigation resumes only after the tentative pairing is revoked");
   h.close();
+});
+
+
+test("a portaled sheet retains its opening pane ownership without consuming keys while inert", () => {
+  const f = workspaceFixture(); f.render(); f.render();
+  const modal = new Element(); modal.modalRoot = true;
+  const button = new Element(modal);
+  f.root.inert = true;
+  f.document.activeElement = button;
+  f.documentEvent("focusin", button); f.documentEvent("pointerdown", button);
+  assert.equal(f.key(f.body, "n").defaultPrevented, false);
+  assert.deepEqual(f.calls, []);
+  f.root.inert = false;
+  f.document.activeElement = f.body; f.documentEvent("focusin", f.body);
+  assert.equal(f.key(f.body, "b").defaultPrevented, true, "the sheet may have removed its menu opener; body keeps the original pane");
+  f.documentEvent("pointerdown", f.remote);
+  assert.equal(f.key(f.body, "n").defaultPrevented, false, "real interaction with the screen still transfers ownership");
+  f.close();
 });
